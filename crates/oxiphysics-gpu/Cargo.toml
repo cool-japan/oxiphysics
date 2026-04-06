@@ -1,0 +1,15 @@
+[package]
+name = "oxiphysics-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GPU acceleration backends for the OxiPhysics engine"
+categories = ["science", "simulation"]
+keywords = ["gpu", "physics", "acceleration", "parallel", "simulation"]
+
+[dependencies]
+rand = { workspace = true }
+thiserror = { workspace = true }
+oxiphysics-core = { workspace = true }
+rayon = "1"
+

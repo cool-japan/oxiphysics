@@ -1,0 +1,17 @@
+[package]
+name = "oxiphysics-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "File I/O and serialization for the OxiPhysics engine"
+categories = ["science", "filesystem"]
+keywords = ["physics", "io", "vtk", "hdf5", "serialization"]
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+oxiphysics-core = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }

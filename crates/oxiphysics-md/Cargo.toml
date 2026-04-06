@@ -1,0 +1,13 @@
+[package]
+name = "oxiphysics-md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Molecular dynamics simulation for the OxiPhysics engine"
+categories = ["science", "simulation"]
+keywords = ["molecular-dynamics", "physics", "atomistic", "force-field", "simulation"]
+
+[dependencies]
+thiserror = { workspace = true }
+oxiphysics-core = { workspace = true }
+rand = { workspace = true }

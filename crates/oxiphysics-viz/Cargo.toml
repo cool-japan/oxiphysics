@@ -1,0 +1,14 @@
+[package]
+name = "oxiphysics-viz"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Visualization utilities for the OxiPhysics engine"
+categories = ["science", "visualization"]
+keywords = ["physics", "visualization", "rendering", "simulation", "graphics"]
+
+[dependencies]
+rand = { workspace = true }
+thiserror = { workspace = true }
+oxiphysics-core = { workspace = true }
+

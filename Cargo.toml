@@ -1,0 +1,39 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/cool-japan/oxiphysics"
+documentation = "https://docs.rs/oxiphysics"
+authors = ["COOLJAPAN OU (Team Kitasan)"]
+
+[workspace.dependencies]
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+rand = "0.10"
+nalgebra = "0.34"
+serde_json = "1"
+criterion = { version = "0.8", features = ["html_reports"] }
+proptest = "1"
+
+# Workspace-internal dependencies
+oxiphysics-core = { path = "crates/oxiphysics-core", version = "0.1.0" }
+oxiphysics-geometry = { path = "crates/oxiphysics-geometry", version = "0.1.0" }
+oxiphysics-collision = { path = "crates/oxiphysics-collision", version = "0.1.0" }
+oxiphysics-rigid = { path = "crates/oxiphysics-rigid", version = "0.1.0" }
+oxiphysics-constraints = { path = "crates/oxiphysics-constraints", version = "0.1.0" }
+oxiphysics-vehicle = { path = "crates/oxiphysics-vehicle", version = "0.1.0" }
+oxiphysics-sph = { path = "crates/oxiphysics-sph", version = "0.1.0" }
+oxiphysics-lbm = { path = "crates/oxiphysics-lbm", version = "0.1.0" }
+oxiphysics-fem = { path = "crates/oxiphysics-fem", version = "0.1.0" }
+oxiphysics-md = { path = "crates/oxiphysics-md", version = "0.1.0" }
+oxiphysics-softbody = { path = "crates/oxiphysics-softbody", version = "0.1.0" }
+oxiphysics-materials = { path = "crates/oxiphysics-materials", version = "0.1.0" }
+oxiphysics-gpu = { path = "crates/oxiphysics-gpu", version = "0.1.0" }
+oxiphysics-viz = { path = "crates/oxiphysics-viz", version = "0.1.0" }
+oxiphysics-io = { path = "crates/oxiphysics-io", version = "0.1.0" }
+oxiphysics-python = { path = "crates/oxiphysics-python", version = "0.1.0" }
+oxiphysics-wasm = { path = "crates/oxiphysics-wasm", version = "0.1.0" }

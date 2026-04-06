@@ -1,0 +1,16 @@
+[package]
+name = "oxiphysics-collision"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Collision detection algorithms for the OxiPhysics engine"
+categories = ["science", "simulation", "algorithms", "game-engines"]
+keywords = ["collision-detection", "physics", "broadphase", "narrowphase", "gjk"]
+
+[dependencies]
+thiserror = { workspace = true }
+oxiphysics-core = { workspace = true }
+oxiphysics-geometry = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

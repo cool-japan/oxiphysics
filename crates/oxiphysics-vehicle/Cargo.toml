@@ -1,0 +1,15 @@
+[package]
+name = "oxiphysics-vehicle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Vehicle dynamics simulation for the OxiPhysics engine"
+categories = ["science", "simulation", "game-engines"]
+keywords = ["vehicle-dynamics", "physics", "automotive", "simulation", "game-physics"]
+
+[dependencies]
+thiserror = { workspace = true }
+oxiphysics-core = { workspace = true }
+oxiphysics-rigid = { workspace = true }
+oxiphysics-constraints = { workspace = true }
+rand = { workspace = true }

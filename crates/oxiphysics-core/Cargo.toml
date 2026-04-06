@@ -1,0 +1,17 @@
+[package]
+name = "oxiphysics-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core types, traits, and abstractions for the OxiPhysics engine"
+categories = ["science", "mathematics", "algorithms"]
+keywords = ["physics", "mathematics", "numerics", "linear-algebra"]
+
+[dependencies]
+thiserror = { workspace = true }
+nalgebra = { workspace = true }
+serde = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

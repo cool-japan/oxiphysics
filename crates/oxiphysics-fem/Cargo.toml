@@ -1,0 +1,14 @@
+[package]
+name = "oxiphysics-fem"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Finite element method for the OxiPhysics engine"
+categories = ["science", "simulation", "mathematics"]
+keywords = ["fem", "finite-element", "structural-analysis", "physics", "simulation"]
+
+[dependencies]
+thiserror = { workspace = true }
+oxiphysics-core = { workspace = true }
+oxiphysics-materials = { workspace = true }
+rand = { workspace = true }

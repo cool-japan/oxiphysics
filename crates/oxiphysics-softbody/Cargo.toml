@@ -1,0 +1,14 @@
+[package]
+name = "oxiphysics-softbody"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Soft body simulation for the OxiPhysics engine"
+categories = ["science", "simulation", "game-engines"]
+keywords = ["soft-body", "physics", "deformable", "biomechanics", "simulation"]
+
+[dependencies]
+rand = { workspace = true }
+thiserror = { workspace = true }
+oxiphysics-core = { workspace = true }
+oxiphysics-geometry = { workspace = true }

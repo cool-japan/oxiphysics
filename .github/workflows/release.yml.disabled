@@ -1,0 +1,13 @@
+name: Release Check
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo publish --dry-run -p oxiphysics-core

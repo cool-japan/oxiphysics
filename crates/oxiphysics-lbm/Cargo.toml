@@ -1,0 +1,13 @@
+[package]
+name = "oxiphysics-lbm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lattice Boltzmann method for the OxiPhysics engine"
+categories = ["science", "simulation"]
+keywords = ["lattice-boltzmann", "fluid-dynamics", "cfd", "physics", "simulation"]
+
+[dependencies]
+rand = { workspace = true }
+thiserror = { workspace = true }
+oxiphysics-core = { workspace = true }

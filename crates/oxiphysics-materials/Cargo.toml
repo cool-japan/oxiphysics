@@ -1,0 +1,16 @@
+[package]
+name = "oxiphysics-materials"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Material properties and material library for the OxiPhysics engine"
+categories = ["science", "simulation"]
+keywords = ["materials", "physics", "constitutive", "plasticity", "simulation"]
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }

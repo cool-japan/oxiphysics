@@ -1,0 +1,15 @@
+[package]
+name = "oxiphysics-python"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Python bindings for the OxiPhysics engine"
+categories = ["science", "simulation"]
+keywords = ["physics", "python", "bindings", "pyo3", "simulation"]
+
+[dependencies]
+thiserror = { workspace = true }
+oxiphysics-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+nalgebra = { workspace = true }
