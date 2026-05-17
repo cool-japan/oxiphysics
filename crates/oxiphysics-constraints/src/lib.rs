@@ -61,6 +61,19 @@ pub use motor_constraints::{
 pub mod six_dof_constraint;
 pub use six_dof_constraint::{AxisConfig, MotorConfig, SixDofConstraint, compute_jacobian_6dof};
 
+pub mod simd_pgs;
+pub use simd_pgs::{BatchPgsSolver, SoaConstraints, SoaContactBuilder};
+
+pub mod deformable_coupling;
+pub use deformable_coupling::{
+    CoupledSimulation, CouplingKind, DeformableBodyState, DeformableNodeId, RigidDeformableCoupling,
+};
+
+pub mod gpu_constraint_solver;
+pub use gpu_constraint_solver::{
+    CpuConstraintData, GpuConstraint, GpuConstraintSolver, GpuSolverConfig, SolveResult,
+};
+
 // ── Constraint utility functions ────────────────────────────────────────────
 
 /// Compute the Baumgarte bias velocity for a positional error.

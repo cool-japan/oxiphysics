@@ -42,10 +42,12 @@ pub fn mesh_intersection(a: &ProcessMesh, b: &ProcessMesh) -> BooleanResult {
         .collect();
     let mut faces = faces_a;
     faces.extend(faces_b);
-    BooleanResult {
+    let mut result = BooleanResult {
         mesh: ProcessMesh::new(verts, faces),
         is_exact: false,
-    }
+    };
+    result.is_exact = result.is_topologically_exact();
+    result
 }
 /// Boolean difference A − B.
 ///
@@ -80,10 +82,12 @@ pub fn mesh_difference(a: &ProcessMesh, b: &ProcessMesh) -> BooleanResult {
         .collect();
     let mut faces = faces_a;
     faces.extend(faces_b);
-    BooleanResult {
+    let mut result = BooleanResult {
         mesh: ProcessMesh::new(verts, faces),
         is_exact: false,
-    }
+    };
+    result.is_exact = result.is_topologically_exact();
+    result
 }
 /// Build a simple unit tetrahedron mesh.
 pub fn make_tetrahedron() -> ProcessMesh {
@@ -539,5 +543,54 @@ mod tests {
         let b = [2.0, 2.0, 2.0];
         let m = vec3_lerp(a, b, 0.5);
         assert!((m[0] - 1.0).abs() < 1e-12);
+    }
+
+    // ── LSCM UV parameterization ──────────────────────────────────────────────
+
+    #[test]
+    fn test_lscm_flat_square_uv_in_range() {
+        let mesh = make_quad();
+        let param = lscm_parameterize(&mesh);
+        assert_eq!(param.uvs.len(), mesh.verts.len());
+        for &[u, v] in &param.uvs {
+            assert!(
+                u.is_finite() && v.is_finite(),
+                "UV must be finite: ({u}, {v})"
+            );
+            assert!((0.0..=1.0).contains(&u), "u={u} must be in [0,1]");
+            assert!((0.0..=1.0).contains(&v), "v={v} must be in [0,1]");
+        }
+    }
+
+    #[test]
+    fn test_lscm_flat_square_pin_vertices() {
+        // Vertex 0 must map to (0,0) and vertex 1 to (1,0)
+        let mesh = make_quad();
+        let param = lscm_parameterize(&mesh);
+        let uv0 = param.uvs[0];
+        let uv1 = param.uvs[1];
+        assert!(
+            (uv0[0]).abs() < 1e-6 && (uv0[1]).abs() < 1e-6,
+            "vertex 0 must be pinned to (0,0): got {:?}",
+            uv0
+        );
+        assert!(
+            (uv1[0] - 1.0).abs() < 1e-6 && (uv1[1]).abs() < 1e-6,
+            "vertex 1 must be pinned to (1,0): got {:?}",
+            uv1
+        );
+    }
+
+    #[test]
+    fn test_lscm_icosphere_all_finite() {
+        let mesh = make_icosphere(2);
+        let param = lscm_parameterize(&mesh);
+        assert_eq!(param.uvs.len(), mesh.verts.len());
+        for (i, &[u, v]) in param.uvs.iter().enumerate() {
+            assert!(
+                u.is_finite() && v.is_finite(),
+                "vertex {i} UV ({u}, {v}) must be finite"
+            );
+        }
     }
 }

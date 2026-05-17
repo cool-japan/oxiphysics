@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,9 +7,8 @@
 //! tire models (Pacejka/Fiala), drivetrain, suspension, stability control,
 //! telemetry, and racing line optimization.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
+use pyo3::prelude::*;
+use pyo3::types::PyModuleMethods;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -27,6 +25,7 @@ use serde::{Deserialize, Serialize};
 /// - `e` — curvature factor
 ///
 /// Returns the lateral force as a fraction of normal load (Fy / Fz).
+#[pyfunction]
 pub fn pacejka_fy(alpha: f64, b: f64, c: f64, d: f64, e: f64) -> f64 {
     let x = alpha.to_degrees(); // Pacejka often uses degrees internally
     let phi = (1.0 - e) * x + (e / b) * (b * x).atan();
@@ -40,6 +39,7 @@ pub fn pacejka_fy(alpha: f64, b: f64, c: f64, d: f64, e: f64) -> f64 {
 /// - `c` — shape factor
 /// - `d` — peak value
 /// - `e` — curvature factor
+#[pyfunction]
 pub fn pacejka_fx(kappa: f64, b: f64, c: f64, d: f64, e: f64) -> f64 {
     let x = kappa * 100.0; // Pacejka often uses percent slip
     let phi = (1.0 - e) * x + (e / b) * (b * x).atan();
@@ -52,6 +52,7 @@ pub fn pacejka_fx(kappa: f64, b: f64, c: f64, d: f64, e: f64) -> f64 {
 /// - `vx` — longitudinal velocity component (m/s)
 ///
 /// Returns slip angle in radians.
+#[pyfunction]
 pub fn compute_slip_angle(vy: f64, vx: f64) -> f64 {
     if vx.abs() < 1e-4 {
         return 0.0;
@@ -65,6 +66,7 @@ pub fn compute_slip_angle(vy: f64, vx: f64) -> f64 {
 /// - `vehicle_speed` — forward speed of the vehicle (m/s)
 ///
 /// Returns slip ratio (dimensionless, positive = drive slip, negative = brake slip).
+#[pyfunction]
 pub fn compute_slip_ratio(wheel_speed: f64, vehicle_speed: f64) -> f64 {
     let v_ref = vehicle_speed.abs().max(wheel_speed.abs()).max(1e-4);
     (wheel_speed - vehicle_speed) / v_ref
@@ -77,6 +79,7 @@ pub fn compute_slip_ratio(wheel_speed: f64, vehicle_speed: f64) -> f64 {
 /// - `track_width` — distance between left and right wheels (m)
 ///
 /// Returns `(angle_inner, angle_outer)` in radians.
+#[pyfunction]
 pub fn ackermann_angles(steer_angle: f64, wheelbase: f64, track_width: f64) -> (f64, f64) {
     if steer_angle.abs() < 1e-9 {
         return (0.0, 0.0);
@@ -97,6 +100,7 @@ pub fn ackermann_angles(steer_angle: f64, wheelbase: f64, track_width: f64) -> (
 // ---------------------------------------------------------------------------
 
 /// Pacejka magic formula tire coefficients.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PacejkaCoeffs {
     /// Stiffness factor B.
@@ -109,8 +113,16 @@ pub struct PacejkaCoeffs {
     pub e: f64,
 }
 
+#[pymethods]
 impl PacejkaCoeffs {
+    /// Create a new set of Pacejka coefficients.
+    #[new]
+    pub fn new(b: f64, c: f64, d: f64, e: f64) -> Self {
+        Self { b, c, d, e }
+    }
+
     /// Typical road tire lateral coefficients.
+    #[staticmethod]
     pub fn road_lateral() -> Self {
         Self {
             b: 10.0,
@@ -121,6 +133,7 @@ impl PacejkaCoeffs {
     }
 
     /// Typical road tire longitudinal coefficients.
+    #[staticmethod]
     pub fn road_longitudinal() -> Self {
         Self {
             b: 11.0,
@@ -131,6 +144,7 @@ impl PacejkaCoeffs {
     }
 
     /// Slick racing tire coefficients.
+    #[staticmethod]
     pub fn slick_lateral() -> Self {
         Self {
             b: 12.0,
@@ -142,6 +156,7 @@ impl PacejkaCoeffs {
 }
 
 /// Fiala tire model parameters.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FialaParams {
     /// Cornering stiffness (N/rad).
@@ -150,8 +165,10 @@ pub struct FialaParams {
     pub mu: f64,
 }
 
+#[pymethods]
 impl FialaParams {
     /// Create default Fiala parameters.
+    #[new]
     pub fn new(cornering_stiffness: f64, mu: f64) -> Self {
         Self {
             cornering_stiffness,
@@ -172,6 +189,7 @@ impl FialaParams {
 }
 
 /// Tire model selection.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TireModelKind {
     /// Pacejka magic formula.
@@ -189,20 +207,26 @@ pub enum TireModelKind {
 }
 
 /// Tire model for force computation.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyTireModel {
     /// Tire model type.
     pub kind: TireModelKind,
     /// Tire rolling radius (m).
+    #[pyo3(get, set)]
     pub radius: f64,
     /// Tire width (m).
+    #[pyo3(get, set)]
     pub width: f64,
     /// Unloaded tire radius (m).
+    #[pyo3(get, set)]
     pub unloaded_radius: f64,
 }
 
+#[pymethods]
 impl PyTireModel {
     /// Create a Pacejka tire model for a road car.
+    #[staticmethod]
     pub fn road_pacejka(radius: f64) -> Self {
         Self {
             kind: TireModelKind::Pacejka {
@@ -216,6 +240,7 @@ impl PyTireModel {
     }
 
     /// Create a racing slick tire model.
+    #[staticmethod]
     pub fn slick_pacejka(radius: f64) -> Self {
         Self {
             kind: TireModelKind::Pacejka {
@@ -269,6 +294,7 @@ impl PyTireModel {
 // ---------------------------------------------------------------------------
 
 /// Three-layer tire thermal model (surface / bulk / carcass).
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyTireThermal {
     /// Surface temperature (°C).
@@ -291,8 +317,10 @@ pub struct PyTireThermal {
     pub optimal_window: f64,
 }
 
+#[pymethods]
 impl PyTireThermal {
     /// Create a default tire thermal model.
+    #[new]
     pub fn new() -> Self {
         Self {
             surface_temp: 25.0,
@@ -346,6 +374,7 @@ impl Default for PyTireThermal {
 // ---------------------------------------------------------------------------
 
 /// Engine torque curve defined by RPM breakpoints and torque values.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineCurve {
     /// RPM breakpoints (sorted ascending).
@@ -353,13 +382,52 @@ pub struct EngineCurve {
     /// Torque at each breakpoint (N·m).
     pub torque: Vec<f64>,
     /// Maximum RPM (redline).
+    #[pyo3(get, set)]
     pub redline: f64,
     /// Idle RPM.
+    #[pyo3(get, set)]
     pub idle: f64,
 }
 
+#[pymethods]
 impl EngineCurve {
+    /// Create a new engine torque curve.
+    #[new]
+    pub fn new(rpm: Vec<f64>, torque: Vec<f64>, redline: f64, idle: f64) -> Self {
+        Self {
+            rpm,
+            torque,
+            redline,
+            idle,
+        }
+    }
+
+    /// Get the RPM breakpoints.
+    #[getter]
+    pub fn rpm(&self) -> Vec<f64> {
+        self.rpm.clone()
+    }
+
+    /// Set the RPM breakpoints.
+    #[setter]
+    pub fn set_rpm(&mut self, rpm: Vec<f64>) {
+        self.rpm = rpm;
+    }
+
+    /// Get the torque values.
+    #[getter]
+    pub fn torque(&self) -> Vec<f64> {
+        self.torque.clone()
+    }
+
+    /// Set the torque values.
+    #[setter]
+    pub fn set_torque(&mut self, torque: Vec<f64>) {
+        self.torque = torque;
+    }
+
     /// Create a simple flat torque curve.
+    #[staticmethod]
     pub fn flat(peak_torque: f64, redline: f64) -> Self {
         Self {
             rpm: vec![0.0, redline * 0.3, redline * 0.7, redline],
@@ -397,6 +465,7 @@ impl EngineCurve {
 }
 
 /// Differential type.
+#[pyclass(eq, eq_int, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DiffType {
     /// Open differential (no torque biasing).
@@ -408,6 +477,7 @@ pub enum DiffType {
 }
 
 /// Drivetrain configuration.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyDrivetrain {
     /// Engine torque curve.
@@ -415,21 +485,53 @@ pub struct PyDrivetrain {
     /// Gear ratios (index 0 = first gear).
     pub gear_ratios: Vec<f64>,
     /// Final drive ratio.
+    #[pyo3(get, set)]
     pub final_drive: f64,
     /// Current gear (0-indexed).
+    #[pyo3(get, set)]
     pub current_gear: usize,
     /// Differential type.
+    #[pyo3(get, set)]
     pub diff_type: DiffType,
     /// Clutch engagement factor (0 = fully open, 1 = fully engaged).
+    #[pyo3(get, set)]
     pub clutch: f64,
     /// Current engine RPM.
+    #[pyo3(get, set)]
     pub engine_rpm: f64,
     /// Engine inertia (kg·m²).
+    #[pyo3(get, set)]
     pub engine_inertia: f64,
 }
 
+#[pymethods]
 impl PyDrivetrain {
+    /// Get the engine torque curve.
+    #[getter]
+    pub fn engine_curve(&self) -> EngineCurve {
+        self.engine_curve.clone()
+    }
+
+    /// Set the engine torque curve.
+    #[setter]
+    pub fn set_engine_curve(&mut self, curve: EngineCurve) {
+        self.engine_curve = curve;
+    }
+
+    /// Get the gear ratios.
+    #[getter]
+    pub fn gear_ratios(&self) -> Vec<f64> {
+        self.gear_ratios.clone()
+    }
+
+    /// Set the gear ratios.
+    #[setter]
+    pub fn set_gear_ratios(&mut self, ratios: Vec<f64>) {
+        self.gear_ratios = ratios;
+    }
+
     /// Create a default 6-speed drivetrain.
+    #[staticmethod]
     pub fn six_speed(peak_torque: f64) -> Self {
         Self {
             engine_curve: EngineCurve::flat(peak_torque, 7000.0),
@@ -490,6 +592,7 @@ impl PyDrivetrain {
 // ---------------------------------------------------------------------------
 
 /// Steering system with Ackermann geometry and 4WS option.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PySteering {
     /// Steering rack ratio (radians of wheel turn per radian of steering input).
@@ -510,8 +613,10 @@ pub struct PySteering {
     pub input: f64,
 }
 
+#[pymethods]
 impl PySteering {
     /// Create a default front-wheel-steering system.
+    #[new]
     pub fn new(wheelbase: f64, track_width: f64) -> Self {
         Self {
             rack_ratio: 0.15,
@@ -546,6 +651,7 @@ impl PySteering {
 // ---------------------------------------------------------------------------
 
 /// Traction control system (TCS) state.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TcsState {
     /// Whether TCS is active this frame.
@@ -556,8 +662,10 @@ pub struct TcsState {
     pub throttle_reduction: f64,
 }
 
+#[pymethods]
 impl TcsState {
     /// Create default TCS state.
+    #[new]
     pub fn new() -> Self {
         Self {
             active: false,
@@ -567,7 +675,7 @@ impl TcsState {
     }
 
     /// Update TCS given current drive slip ratios.
-    pub fn update(&mut self, slip_ratios: &[f64]) -> f64 {
+    pub fn update(&mut self, slip_ratios: Vec<f64>) -> f64 {
         let max_slip = slip_ratios.iter().cloned().fold(0.0_f64, f64::max);
         if max_slip > self.slip_threshold {
             self.active = true;
@@ -588,6 +696,7 @@ impl Default for TcsState {
 }
 
 /// ABS (anti-lock braking system) state.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AbsState {
     /// Whether ABS is active this frame.
@@ -600,8 +709,10 @@ pub struct AbsState {
     pub phase: u8,
 }
 
+#[pymethods]
 impl AbsState {
     /// Create default ABS state.
+    #[new]
     pub fn new() -> Self {
         Self {
             active: false,
@@ -612,7 +723,7 @@ impl AbsState {
     }
 
     /// Update ABS given current brake slip ratios.
-    pub fn update(&mut self, slip_ratios: &[f64]) -> f64 {
+    pub fn update(&mut self, slip_ratios: Vec<f64>) -> f64 {
         let min_slip = slip_ratios.iter().cloned().fold(0.0_f64, f64::min);
         if min_slip < self.slip_threshold {
             self.active = true;
@@ -635,6 +746,7 @@ impl Default for AbsState {
 }
 
 /// Electronic stability control (ESC) state.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EscState {
     /// Whether ESC is active this frame.
@@ -647,8 +759,10 @@ pub struct EscState {
     pub yaw_error: f64,
 }
 
+#[pymethods]
 impl EscState {
     /// Create default ESC state.
+    #[new]
     pub fn new() -> Self {
         Self {
             active: false,
@@ -678,20 +792,27 @@ impl Default for EscState {
 }
 
 /// Vehicle stability control system combining TCS, ABS, and ESC.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyStabilityControl {
     /// Traction control.
+    #[pyo3(get, set)]
     pub tcs: TcsState,
     /// Anti-lock braking.
+    #[pyo3(get, set)]
     pub abs: AbsState,
     /// Electronic stability control.
+    #[pyo3(get, set)]
     pub esc: EscState,
     /// Whether the whole system is enabled.
+    #[pyo3(get, set)]
     pub enabled: bool,
 }
 
+#[pymethods]
 impl PyStabilityControl {
     /// Create a default stability control system.
+    #[new]
     pub fn new() -> Self {
         Self {
             tcs: TcsState::new(),
@@ -702,11 +823,16 @@ impl PyStabilityControl {
     }
 
     /// Compute throttle scale, brake modulation, and yaw correction.
-    pub fn update(&mut self, slip_ratios: &[f64], desired_yaw: f64, actual_yaw: f64) -> (f64, f64) {
+    pub fn update(
+        &mut self,
+        slip_ratios: Vec<f64>,
+        desired_yaw: f64,
+        actual_yaw: f64,
+    ) -> (f64, f64) {
         if !self.enabled {
             return (1.0, 1.0);
         }
-        let throttle_scale = self.tcs.update(slip_ratios);
+        let throttle_scale = self.tcs.update(slip_ratios.clone());
         let brake_scale = self.abs.update(slip_ratios);
         self.esc.update(desired_yaw, actual_yaw);
         (throttle_scale, brake_scale)
@@ -724,6 +850,7 @@ impl Default for PyStabilityControl {
 // ---------------------------------------------------------------------------
 
 /// Suspension geometry type.
+#[pyclass(eq, eq_int, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SuspensionKind {
     /// MacPherson strut (front).
@@ -737,6 +864,7 @@ pub enum SuspensionKind {
 }
 
 /// One corner suspension.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PySuspension {
     /// Suspension geometry type.
@@ -763,8 +891,10 @@ pub struct PySuspension {
     pub max_droop: f64,
 }
 
+#[pymethods]
 impl PySuspension {
     /// Create a default double wishbone suspension.
+    #[staticmethod]
     pub fn double_wishbone() -> Self {
         Self {
             kind: SuspensionKind::DoubleWishbone,
@@ -782,6 +912,7 @@ impl PySuspension {
     }
 
     /// Create a MacPherson strut suspension.
+    #[staticmethod]
     pub fn macpherson() -> Self {
         Self {
             kind: SuspensionKind::MacPherson,
@@ -828,6 +959,7 @@ impl PySuspension {
 // ---------------------------------------------------------------------------
 
 /// State and forces at a single wheel.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyWheelDynamics {
     /// Wheel angular velocity (rad/s).
@@ -854,8 +986,10 @@ pub struct PyWheelDynamics {
     pub grounded: bool,
 }
 
+#[pymethods]
 impl PyWheelDynamics {
     /// Create a new wheel with given inertia and radius.
+    #[new]
     pub fn new(inertia: f64, radius: f64) -> Self {
         Self {
             omega: 0.0,
@@ -895,13 +1029,16 @@ impl PyWheelDynamics {
 // ---------------------------------------------------------------------------
 
 /// Full vehicle state.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyVehicle {
     /// Chassis mass (kg).
+    #[pyo3(get, set)]
     pub mass: f64,
     /// Inertia tensor diagonal \[Ixx, Iyy, Izz\] (kg·m²).
     pub inertia: [f64; 3],
     /// Center of mass height (m).
+    #[pyo3(get, set)]
     pub cog_height: f64,
     /// World position of chassis center \[x, y, z\].
     pub position: [f64; 3],
@@ -920,17 +1057,23 @@ pub struct PyVehicle {
     /// Tire models \[FL, FR, RL, RR\].
     pub tires: [PyTireModel; 4],
     /// Drivetrain.
+    #[pyo3(get, set)]
     pub drivetrain: PyDrivetrain,
     /// Steering system.
+    #[pyo3(get, set)]
     pub steering: PySteering,
     /// Stability control.
+    #[pyo3(get, set)]
     pub stability: PyStabilityControl,
     /// Current gear as display number (1-indexed).
+    #[pyo3(get, set)]
     pub gear_display: u32,
 }
 
+#[pymethods]
 impl PyVehicle {
     /// Create a default sedan-like vehicle.
+    #[staticmethod]
     pub fn sedan() -> Self {
         let wheel = PyWheelDynamics::new(1.5, 0.32);
         let suspension = PySuspension::macpherson();
@@ -965,6 +1108,7 @@ impl PyVehicle {
     }
 
     /// Create a racing car vehicle.
+    #[staticmethod]
     pub fn racing_car() -> Self {
         let wheel = PyWheelDynamics::new(1.0, 0.30);
         let suspension = PySuspension::double_wishbone();
@@ -1028,7 +1172,7 @@ impl PyVehicle {
         let desired_yaw = v / 2.6 * front_angle;
         let actual_yaw = self.angular_velocity[1];
         let (throttle_scale, brake_scale) =
-            self.stability.update(&slip_ratios, desired_yaw, actual_yaw);
+            self.stability.update(slip_ratios, desired_yaw, actual_yaw);
         let effective_throttle = throttle * throttle_scale;
         let effective_brake = brake * brake_scale;
 
@@ -1087,6 +1231,149 @@ impl PyVehicle {
         self.drivetrain.update_rpm(avg_rear_omega);
         self.gear_display = (self.drivetrain.current_gear + 1) as u32;
     }
+
+    /// Inertia tensor diagonal as `[Ixx, Iyy, Izz]`.
+    #[getter]
+    pub fn inertia(&self) -> Vec<f64> {
+        self.inertia.to_vec()
+    }
+
+    /// Set the inertia tensor diagonal (must have length 3).
+    #[setter]
+    pub fn set_inertia(&mut self, inertia: Vec<f64>) -> PyResult<()> {
+        if inertia.len() != 3 {
+            return Err(crate::Error::wrong_len(3, inertia.len()).into());
+        }
+        self.inertia = [inertia[0], inertia[1], inertia[2]];
+        Ok(())
+    }
+
+    /// World position of chassis center as `[x, y, z]`.
+    #[getter]
+    pub fn position(&self) -> Vec<f64> {
+        self.position.to_vec()
+    }
+
+    /// Set the chassis position (must have length 3).
+    #[setter]
+    pub fn set_position(&mut self, position: Vec<f64>) -> PyResult<()> {
+        if position.len() != 3 {
+            return Err(crate::Error::wrong_len(3, position.len()).into());
+        }
+        self.position = [position[0], position[1], position[2]];
+        Ok(())
+    }
+
+    /// Linear velocity as `[vx, vy, vz]`.
+    #[getter]
+    pub fn velocity(&self) -> Vec<f64> {
+        self.velocity.to_vec()
+    }
+
+    /// Set the linear velocity (must have length 3).
+    #[setter]
+    pub fn set_velocity(&mut self, velocity: Vec<f64>) -> PyResult<()> {
+        if velocity.len() != 3 {
+            return Err(crate::Error::wrong_len(3, velocity.len()).into());
+        }
+        self.velocity = [velocity[0], velocity[1], velocity[2]];
+        Ok(())
+    }
+
+    /// Euler orientation as `[roll, pitch, yaw]` in radians.
+    #[getter]
+    pub fn orientation(&self) -> Vec<f64> {
+        self.orientation.to_vec()
+    }
+
+    /// Set the orientation (must have length 3).
+    #[setter]
+    pub fn set_orientation(&mut self, orientation: Vec<f64>) -> PyResult<()> {
+        if orientation.len() != 3 {
+            return Err(crate::Error::wrong_len(3, orientation.len()).into());
+        }
+        self.orientation = [orientation[0], orientation[1], orientation[2]];
+        Ok(())
+    }
+
+    /// Angular velocity as `[wx, wy, wz]`.
+    #[getter]
+    pub fn angular_velocity(&self) -> Vec<f64> {
+        self.angular_velocity.to_vec()
+    }
+
+    /// Set the angular velocity (must have length 3).
+    #[setter]
+    pub fn set_angular_velocity(&mut self, angular_velocity: Vec<f64>) -> PyResult<()> {
+        if angular_velocity.len() != 3 {
+            return Err(crate::Error::wrong_len(3, angular_velocity.len()).into());
+        }
+        self.angular_velocity = [
+            angular_velocity[0],
+            angular_velocity[1],
+            angular_velocity[2],
+        ];
+        Ok(())
+    }
+
+    /// Get wheel `i` (0=FL, 1=FR, 2=RL, 3=RR), or `None` if out of range.
+    pub fn wheel(&self, i: usize) -> Option<PyWheelDynamics> {
+        self.wheels.get(i).cloned()
+    }
+
+    /// Set wheel `i`.
+    pub fn set_wheel(&mut self, i: usize, wheel: PyWheelDynamics) -> PyResult<()> {
+        if i >= self.wheels.len() {
+            return Err(crate::Error::wrong_len(self.wheels.len(), i).into());
+        }
+        self.wheels[i] = wheel;
+        Ok(())
+    }
+
+    /// Get the local position of wheel `i` as `[x, y, z]`.
+    pub fn wheel_position(&self, i: usize) -> Option<Vec<f64>> {
+        self.wheel_positions.get(i).map(|p| p.to_vec())
+    }
+
+    /// Set the local position of wheel `i` (must have length 3).
+    pub fn set_wheel_position(&mut self, i: usize, position: Vec<f64>) -> PyResult<()> {
+        if i >= self.wheel_positions.len() {
+            return Err(crate::Error::wrong_len(self.wheel_positions.len(), i).into());
+        }
+        if position.len() != 3 {
+            return Err(crate::Error::wrong_len(3, position.len()).into());
+        }
+        self.wheel_positions[i] = [position[0], position[1], position[2]];
+        Ok(())
+    }
+
+    /// Get suspension `i`.
+    pub fn suspension(&self, i: usize) -> Option<PySuspension> {
+        self.suspensions.get(i).cloned()
+    }
+
+    /// Set suspension `i`.
+    pub fn set_suspension(&mut self, i: usize, suspension: PySuspension) -> PyResult<()> {
+        if i >= self.suspensions.len() {
+            return Err(crate::Error::wrong_len(self.suspensions.len(), i).into());
+        }
+        self.suspensions[i] = suspension;
+        Ok(())
+    }
+
+    /// Get tire model `i`.
+    pub fn tire(&self, i: usize) -> Option<PyTireModel> {
+        self.tires.get(i).cloned()
+    }
+
+    /// Set tire model `i`.
+    pub fn set_tire(&mut self, i: usize, tire: PyTireModel) -> PyResult<()> {
+        if i >= self.tires.len() {
+            return Err(crate::Error::wrong_len(self.tires.len(), i).into());
+        }
+        self.tires[i] = tire;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1094,33 +1381,99 @@ impl PyVehicle {
 // ---------------------------------------------------------------------------
 
 /// A single telemetry sample.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetrySample {
     /// Simulation time (s).
+    #[pyo3(get, set)]
     pub time: f64,
     /// Vehicle speed (m/s).
+    #[pyo3(get, set)]
     pub speed: f64,
     /// Longitudinal G-force.
+    #[pyo3(get, set)]
     pub g_lon: f64,
     /// Lateral G-force.
+    #[pyo3(get, set)]
     pub g_lat: f64,
     /// Slip angles \[FL, FR, RL, RR\] (rad).
     pub slip_angles: [f64; 4],
     /// Tire temperatures \[FL, FR, RL, RR\] (°C, surface).
     pub tire_temps: [f64; 4],
     /// Current gear.
+    #[pyo3(get, set)]
     pub gear: u32,
     /// Engine RPM.
+    #[pyo3(get, set)]
     pub rpm: f64,
     /// Throttle (0-1).
+    #[pyo3(get, set)]
     pub throttle: f64,
     /// Brake (0-1).
+    #[pyo3(get, set)]
     pub brake: f64,
     /// Steering angle (rad).
+    #[pyo3(get, set)]
     pub steer: f64,
 }
 
+#[pymethods]
+impl TelemetrySample {
+    /// Create a new telemetry sample at the given time, with all telemetry channels at zero.
+    ///
+    /// Use the property setters to populate the remaining fields.
+    #[new]
+    pub fn new(time: f64) -> Self {
+        Self {
+            time,
+            speed: 0.0,
+            g_lon: 0.0,
+            g_lat: 0.0,
+            slip_angles: [0.0; 4],
+            tire_temps: [0.0; 4],
+            gear: 0,
+            rpm: 0.0,
+            throttle: 0.0,
+            brake: 0.0,
+            steer: 0.0,
+        }
+    }
+
+    /// Slip angles `[FL, FR, RL, RR]` in radians.
+    #[getter]
+    pub fn slip_angles(&self) -> Vec<f64> {
+        self.slip_angles.to_vec()
+    }
+
+    /// Set slip angles (must have length 4).
+    #[setter]
+    pub fn set_slip_angles(&mut self, values: Vec<f64>) -> PyResult<()> {
+        if values.len() != 4 {
+            return Err(crate::Error::wrong_len(4, values.len()).into());
+        }
+        self.slip_angles = [values[0], values[1], values[2], values[3]];
+        Ok(())
+    }
+
+    /// Tire temperatures `[FL, FR, RL, RR]` in °C (surface layer).
+    #[getter]
+    pub fn tire_temps(&self) -> Vec<f64> {
+        self.tire_temps.to_vec()
+    }
+
+    /// Set tire temperatures (must have length 4).
+    #[setter]
+    pub fn set_tire_temps(&mut self, values: Vec<f64>) -> PyResult<()> {
+        if values.len() != 4 {
+            return Err(crate::Error::wrong_len(4, values.len()).into());
+        }
+        self.tire_temps = [values[0], values[1], values[2], values[3]];
+        Ok(())
+    }
+}
+
 /// Lap statistics derived from telemetry.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LapStats {
     /// Lap time (s).
@@ -1140,18 +1493,23 @@ pub struct LapStats {
 }
 
 /// Vehicle telemetry recorder.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyTelemetry {
     /// Recorded samples.
     pub samples: Vec<TelemetrySample>,
     /// Maximum number of samples to retain.
+    #[pyo3(get, set)]
     pub max_samples: usize,
     /// Whether recording is active.
+    #[pyo3(get, set)]
     pub recording: bool,
 }
 
+#[pymethods]
 impl PyTelemetry {
     /// Create a new telemetry recorder.
+    #[new]
     pub fn new(max_samples: usize) -> Self {
         Self {
             samples: Vec::new(),
@@ -1173,16 +1531,10 @@ impl PyTelemetry {
 
     /// Compute lap statistics from all recorded samples.
     pub fn lap_stats(&self) -> Option<LapStats> {
-        if self.samples.is_empty() {
-            return None;
-        }
+        let last = self.samples.last()?;
+        let first = self.samples.first()?;
         let n = self.samples.len();
-        let total_time = self
-            .samples
-            .last()
-            .expect("collection should not be empty")
-            .time
-            - self.samples[0].time;
+        let total_time = last.time - first.time;
         let max_speed = self.samples.iter().map(|s| s.speed).fold(0.0_f64, f64::max);
         let avg_speed = self.samples.iter().map(|s| s.speed).sum::<f64>() / n as f64;
         let max_g_lat = self
@@ -1215,6 +1567,21 @@ impl PyTelemetry {
     pub fn clear(&mut self) {
         self.samples.clear();
     }
+
+    /// Number of recorded samples.
+    pub fn sample_count(&self) -> usize {
+        self.samples.len()
+    }
+
+    /// Get the recorded sample at index `i`, or `None` if out of range.
+    pub fn sample(&self, i: usize) -> Option<TelemetrySample> {
+        self.samples.get(i).cloned()
+    }
+
+    /// Get all recorded samples as a list.
+    pub fn samples(&self) -> Vec<TelemetrySample> {
+        self.samples.clone()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1222,6 +1589,7 @@ impl PyTelemetry {
 // ---------------------------------------------------------------------------
 
 /// A 2D point on the track.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackPoint {
     /// X coordinate (m).
@@ -1232,14 +1600,17 @@ pub struct TrackPoint {
     pub half_width: f64,
 }
 
+#[pymethods]
 impl TrackPoint {
     /// Create a new track point.
+    #[new]
     pub fn new(x: f64, y: f64, half_width: f64) -> Self {
         Self { x, y, half_width }
     }
 }
 
 /// Racing line optimizer and analyzer.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyRacingLine {
     /// Track centerline points.
@@ -1251,11 +1622,26 @@ pub struct PyRacingLine {
     /// Sector times (s) from the last lap simulation.
     pub sector_times: Vec<f64>,
     /// Total track length (m).
+    #[pyo3(get, set)]
     pub track_length: f64,
 }
 
 impl PyRacingLine {
+    fn compute_length(pts: &[TrackPoint]) -> f64 {
+        pts.windows(2)
+            .map(|win| {
+                let dx = win[1].x - win[0].x;
+                let dy = win[1].y - win[0].y;
+                (dx * dx + dy * dy).sqrt()
+            })
+            .sum()
+    }
+}
+
+#[pymethods]
+impl PyRacingLine {
     /// Create a racing line optimizer from a centerline.
+    #[new]
     pub fn new(centerline: Vec<TrackPoint>) -> Self {
         let n = centerline.len();
         // Initialize racing line to centerline
@@ -1274,14 +1660,40 @@ impl PyRacingLine {
         }
     }
 
-    fn compute_length(pts: &[TrackPoint]) -> f64 {
-        let mut len = 0.0;
-        for i in 1..pts.len() {
-            let dx = pts[i].x - pts[i - 1].x;
-            let dy = pts[i].y - pts[i - 1].y;
-            len += (dx * dx + dy * dy).sqrt();
-        }
-        len
+    /// Get the track centerline.
+    #[getter]
+    pub fn centerline(&self) -> Vec<TrackPoint> {
+        self.centerline.clone()
+    }
+
+    /// Get the optimized racing line as a flat list of `[x, y]` pairs.
+    #[getter]
+    pub fn racing_line(&self) -> Vec<Vec<f64>> {
+        self.racing_line.iter().map(|p| p.to_vec()).collect()
+    }
+
+    /// Get the sector boundary indices.
+    #[getter]
+    pub fn sector_boundaries(&self) -> Vec<usize> {
+        self.sector_boundaries.clone()
+    }
+
+    /// Set the sector boundary indices.
+    #[setter]
+    pub fn set_sector_boundaries(&mut self, boundaries: Vec<usize>) {
+        self.sector_boundaries = boundaries;
+    }
+
+    /// Get the sector times from the last simulated lap.
+    #[getter]
+    pub fn sector_times(&self) -> Vec<f64> {
+        self.sector_times.clone()
+    }
+
+    /// Set the sector times.
+    #[setter]
+    pub fn set_sector_times(&mut self, times: Vec<f64>) {
+        self.sector_times = times;
     }
 
     /// Compute local curvature at point i (using finite differences).
@@ -1312,7 +1724,8 @@ impl PyRacingLine {
             return;
         }
         let mut new_line = self.racing_line.clone();
-        for i in 1..n - 1 {
+        let interior = new_line.iter_mut().enumerate().take(n - 1).skip(1);
+        for (i, slot) in interior {
             let p0 = self.racing_line[i - 1];
             let p1 = self.racing_line[i];
             let p2 = self.racing_line[i + 1];
@@ -1326,9 +1739,9 @@ impl PyRacingLine {
             let dy = new_y - cl.y;
             let dist = (dx * dx + dy * dy).sqrt();
             if dist <= cl.half_width {
-                new_line[i] = [new_x, new_y];
+                *slot = [new_x, new_y];
             } else if dist > 1e-12 {
-                new_line[i] = [
+                *slot = [
                     cl.x + dx / dist * cl.half_width,
                     cl.y + dy / dist * cl.half_width,
                 ];
@@ -1346,274 +1759,58 @@ impl PyRacingLine {
 
     /// Compute the total curvature of the current racing line.
     pub fn total_curvature(&self) -> f64 {
-        (1..self.racing_line.len() - 1)
-            .map(|i| self.curvature_at(i))
-            .sum()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_pacejka_fy_zero_slip() {
-        let fy = pacejka_fy(0.0, 10.0, 1.9, 1.0, 0.97);
-        assert!(fy.abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_pacejka_fy_nonzero() {
-        let fy = pacejka_fy(0.1, 10.0, 1.9, 1.0, 0.97);
-        assert!(fy.abs() > 0.0);
-    }
-
-    #[test]
-    fn test_pacejka_fx_peak() {
-        let fx = pacejka_fx(0.2, 11.0, 1.65, 1.0, 0.0);
-        assert!(fx.abs() > 0.0);
-    }
-
-    #[test]
-    fn test_compute_slip_angle() {
-        let alpha = compute_slip_angle(1.0, 10.0);
-        assert!(alpha.abs() < 0.2);
-    }
-
-    #[test]
-    fn test_compute_slip_ratio_no_slip() {
-        let kappa = compute_slip_ratio(10.0, 10.0);
-        assert!(kappa.abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_compute_slip_ratio_drive_slip() {
-        let kappa = compute_slip_ratio(12.0, 10.0);
-        assert!(kappa > 0.0);
-    }
-
-    #[test]
-    fn test_ackermann_straight() {
-        let (a, b) = ackermann_angles(0.0, 2.5, 1.5);
-        assert!(a.abs() < 1e-9);
-        assert!(b.abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_ackermann_turn() {
-        let (inner, outer) = ackermann_angles(0.3, 2.5, 1.5);
-        assert!(inner.abs() > outer.abs());
-    }
-
-    #[test]
-    fn test_tire_model_forces() {
-        let tm = PyTireModel::road_pacejka(0.32);
-        let (fx, fy) = tm.compute_forces(0.1, 0.05, 3000.0);
-        let _ = fx;
-        assert!(fy.abs() > 0.0);
-    }
-
-    #[test]
-    fn test_tire_thermal_update() {
-        let mut tt = PyTireThermal::new();
-        let grip0 = tt.grip_scale();
-        tt.update(5000.0, 10.0);
-        assert!(tt.surface_temp > 25.0);
-        // Check grip scale is valid
-        assert!(tt.grip_scale() >= 0.0 && tt.grip_scale() <= 1.0);
-        let _ = grip0;
-    }
-
-    #[test]
-    fn test_tire_thermal_optimal() {
-        let mut tt = PyTireThermal::new();
-        tt.surface_temp = 90.0;
-        assert!((tt.grip_scale() - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_engine_curve_flat() {
-        let ec = EngineCurve::flat(300.0, 7000.0);
-        let t = ec.torque_at(3500.0);
-        assert!(t > 0.0);
-        assert!(t <= 300.0 * 1.01);
-    }
-
-    #[test]
-    fn test_drivetrain_upshift() {
-        let mut dt = PyDrivetrain::six_speed(300.0);
-        dt.upshift();
-        assert_eq!(dt.current_gear, 2);
-    }
-
-    #[test]
-    fn test_drivetrain_downshift() {
-        let mut dt = PyDrivetrain::six_speed(300.0);
-        dt.downshift();
-        assert_eq!(dt.current_gear, 0);
-    }
-
-    #[test]
-    fn test_drivetrain_wheel_torque() {
-        let dt = PyDrivetrain::six_speed(300.0);
-        let t = dt.wheel_torque(1.0);
-        assert!(t > 0.0);
-    }
-
-    #[test]
-    fn test_steering_angles() {
-        let mut steer = PySteering::new(2.6, 1.5);
-        steer.input = 1.0;
-        let fa = steer.front_angle();
-        assert!(fa > 0.0);
-        assert!(fa <= steer.max_wheel_angle);
-    }
-
-    #[test]
-    fn test_stability_tcs() {
-        let mut sc = PyStabilityControl::new();
-        let (ts, _) = sc.update(&[0.5, 0.5, 0.5, 0.5], 0.0, 0.0);
-        assert!(ts < 1.0);
-    }
-
-    #[test]
-    fn test_stability_disabled() {
-        let mut sc = PyStabilityControl::new();
-        sc.enabled = false;
-        let (ts, bs) = sc.update(&[2.0, 2.0, 2.0, 2.0], 0.0, 0.0);
-        assert!((ts - 1.0).abs() < 1e-9);
-        assert!((bs - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_suspension_force() {
-        let mut s = PySuspension::double_wishbone();
-        s.step(0.03, 0.01);
-        let f = s.force();
-        assert!(f < 0.0); // spring pushes back
-    }
-
-    #[test]
-    fn test_suspension_bump_stop() {
-        let mut s = PySuspension::double_wishbone();
-        s.step(s.max_compression, 0.01);
-        let f = s.force();
-        assert!(f < 0.0);
-    }
-
-    #[test]
-    fn test_wheel_dynamics_step() {
-        let mut w = PyWheelDynamics::new(1.5, 0.32);
-        w.fx = 100.0;
-        w.grounded = true;
-        w.step_omega(200.0, 0.0, 0.01);
-        assert!(w.omega > 0.0);
-    }
-
-    #[test]
-    fn test_vehicle_sedan_step() {
-        let mut v = PyVehicle::sedan();
-        v.step(0.016, 0.5, 0.0, 0.0);
-        // Vehicle should have moved or velocity changed
-        let speed = v.forward_speed();
-        let _ = speed;
-        assert!(v.drivetrain.engine_rpm > 0.0);
-    }
-
-    #[test]
-    fn test_vehicle_racing_step() {
-        let mut v = PyVehicle::racing_car();
-        v.step(0.016, 1.0, 0.0, 0.1);
-        assert!(v.gear_display >= 1);
-    }
-
-    #[test]
-    fn test_telemetry_record() {
-        let mut tel = PyTelemetry::new(100);
-        let sample = TelemetrySample {
-            time: 0.0,
-            speed: 50.0,
-            g_lon: 0.5,
-            g_lat: 0.3,
-            slip_angles: [0.0; 4],
-            tire_temps: [80.0; 4],
-            gear: 3,
-            rpm: 4000.0,
-            throttle: 0.8,
-            brake: 0.0,
-            steer: 0.1,
-        };
-        tel.record(sample);
-        assert_eq!(tel.samples.len(), 1);
-    }
-
-    #[test]
-    fn test_telemetry_lap_stats() {
-        let mut tel = PyTelemetry::new(100);
-        for i in 0..10 {
-            let sample = TelemetrySample {
-                time: i as f64 * 0.1,
-                speed: 50.0 + i as f64,
-                g_lon: 0.1,
-                g_lat: 0.2,
-                slip_angles: [0.0; 4],
-                tire_temps: [80.0; 4],
-                gear: 3,
-                rpm: 4000.0,
-                throttle: 0.8,
-                brake: 0.0,
-                steer: 0.0,
-            };
-            tel.record(sample);
+        let n = self.racing_line.len();
+        if n < 3 {
+            return 0.0;
         }
-        let stats = tel.lap_stats().unwrap();
-        assert!(stats.max_speed > 50.0);
-        assert!(stats.sample_count == 10);
-    }
-
-    #[test]
-    fn test_racing_line_curvature() {
-        let pts: Vec<TrackPoint> = (0..10)
-            .map(|i| TrackPoint::new(i as f64, 0.0, 3.0))
-            .collect();
-        let rl = PyRacingLine::new(pts);
-        // Straight line should have near-zero curvature
-        let k = rl.curvature_at(5);
-        assert!(k < 1e-9);
-    }
-
-    #[test]
-    fn test_racing_line_optimize() {
-        let pts: Vec<TrackPoint> = (0..20)
-            .map(|i| {
-                let t = i as f64 / 20.0 * 2.0 * std::f64::consts::PI;
-                TrackPoint::new(t.cos() * 10.0, t.sin() * 10.0, 2.0)
-            })
-            .collect();
-        let mut rl = PyRacingLine::new(pts);
-        let k0 = rl.total_curvature();
-        rl.optimize(10, 0.1);
-        let k1 = rl.total_curvature();
-        // After optimization curvature should not increase dramatically
-        assert!(k1 <= k0 * 1.5 + 0.1);
-    }
-
-    #[test]
-    fn test_fiala_tire_linear() {
-        let fp = FialaParams::new(50000.0, 1.0);
-        let fy = fp.lateral_force(0.05, 4000.0);
-        let expected = -50000.0 * 0.05;
-        assert!((fy - expected).abs() < 1.0);
-    }
-
-    #[test]
-    fn test_fiala_tire_saturated() {
-        let fp = FialaParams::new(50000.0, 1.0);
-        let fy = fp.lateral_force(1.0, 4000.0);
-        assert!(fy.abs() <= 4000.0 + 1.0);
+        (1..n - 1).map(|i| self.curvature_at(i)).sum()
     }
 }
+
+/// Register all `vehicle` classes into a Python sub-module.
+///
+/// Called from the top-level `#[pymodule]` in `lib.rs`.
+pub fn register_vehicle_module(parent: &Bound<'_, PyModule>) -> PyResult<()> {
+    let child = PyModule::new(parent.py(), "vehicle")?;
+    // Tire models
+    child.add_class::<PacejkaCoeffs>()?;
+    child.add_class::<FialaParams>()?;
+    child.add_class::<TireModelKind>()?;
+    child.add_class::<PyTireModel>()?;
+    child.add_class::<PyTireThermal>()?;
+    // Drivetrain
+    child.add_class::<EngineCurve>()?;
+    child.add_class::<DiffType>()?;
+    child.add_class::<PyDrivetrain>()?;
+    // Steering
+    child.add_class::<PySteering>()?;
+    // Stability control
+    child.add_class::<TcsState>()?;
+    child.add_class::<AbsState>()?;
+    child.add_class::<EscState>()?;
+    child.add_class::<PyStabilityControl>()?;
+    // Suspension and wheels
+    child.add_class::<SuspensionKind>()?;
+    child.add_class::<PySuspension>()?;
+    child.add_class::<PyWheelDynamics>()?;
+    // Vehicle
+    child.add_class::<PyVehicle>()?;
+    // Telemetry
+    child.add_class::<TelemetrySample>()?;
+    child.add_class::<LapStats>()?;
+    child.add_class::<PyTelemetry>()?;
+    // Racing line
+    child.add_class::<TrackPoint>()?;
+    child.add_class::<PyRacingLine>()?;
+    // Free functions
+    child.add_function(wrap_pyfunction!(pacejka_fy, &child)?)?;
+    child.add_function(wrap_pyfunction!(pacejka_fx, &child)?)?;
+    child.add_function(wrap_pyfunction!(compute_slip_angle, &child)?)?;
+    child.add_function(wrap_pyfunction!(compute_slip_ratio, &child)?)?;
+    child.add_function(wrap_pyfunction!(ackermann_angles, &child)?)?;
+    parent.add_submodule(&child)?;
+    Ok(())
+}
+
+// Tests live in `vehicle_api_tests.rs` (declared as a sibling module from
+// `lib.rs`) to keep this file under the 2000-line refactor budget.

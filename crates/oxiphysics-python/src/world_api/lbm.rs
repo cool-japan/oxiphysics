@@ -3,28 +3,34 @@
 
 //! LBM (Lattice Boltzmann Method) Simulation.
 
-#![allow(missing_docs)]
+use pyo3::prelude::*;
 
 // ===========================================================================
 // LBM (Lattice Boltzmann Method) Simulation
 // ===========================================================================
 
 /// Configuration for a 2-D D2Q9 Lattice-Boltzmann simulation.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PyLbmConfig {
     /// Grid width (number of cells in X direction).
+    #[pyo3(get, set)]
     pub width: usize,
     /// Grid height (number of cells in Y direction).
+    #[pyo3(get, set)]
     pub height: usize,
     /// Kinematic viscosity (nu). Controls the relaxation rate.
+    #[pyo3(get, set)]
     pub viscosity: f64,
     /// External body-force acceleration `[fx, fy]` applied to the fluid.
+    #[pyo3(get, set)]
     pub body_force: [f64; 2],
 }
 
+#[pymethods]
 impl PyLbmConfig {
     /// Create a new LBM configuration.
+    #[new]
     pub fn new(width: usize, height: usize, viscosity: f64) -> Self {
         Self {
             width,
@@ -35,6 +41,7 @@ impl PyLbmConfig {
     }
 
     /// Create a default lid-driven cavity configuration (64×64).
+    #[staticmethod]
     pub fn lid_driven_cavity() -> Self {
         Self::new(64, 64, 0.01)
     }
@@ -51,8 +58,8 @@ impl PyLbmConfig {
 ///
 /// Stores distribution functions for all 9 velocity directions at every cell.
 /// Uses the BGK collision operator with a single relaxation time.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PyLbmGrid {
     /// Number of cells in X.
     width: usize,
@@ -86,9 +93,11 @@ const D2Q9_W: [f64; 9] = [
 const D2Q9_EX: [f64; 9] = [0.0, 1.0, 0.0, -1.0, 0.0, 1.0, -1.0, -1.0, 1.0];
 const D2Q9_EY: [f64; 9] = [0.0, 0.0, 1.0, 0.0, -1.0, 1.0, 1.0, -1.0, -1.0];
 
+#[pymethods]
 impl PyLbmGrid {
     /// Create a new LBM grid from configuration. All cells initialised to
     /// equilibrium with unit density and zero velocity.
+    #[new]
     pub fn new(config: &PyLbmConfig) -> Self {
         let n = config.width * config.height;
         let mut f = vec![0.0f64; n * 9];

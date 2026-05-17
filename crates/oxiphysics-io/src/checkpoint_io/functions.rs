@@ -719,4 +719,67 @@ mod tests {
         assert!(reader.read_and_validate().is_err());
         let _ = fs::remove_dir_all(&dir);
     }
+
+    // ── G2: Checkpoint compression ────────────────────────────────────────────
+
+    #[test]
+    fn compressed_checkpoint_roundtrip() {
+        let path = tmp_path("compress_rt");
+        let _ = fs::remove_file(&path);
+        let meta = CheckpointMetadata::new(42, 0.042, 2, [0, 0, 0], "compress_test");
+        let writer = CheckpointWriter::new(&path).with_compress(true);
+        writer.write_header(&meta).unwrap();
+        writer
+            .write_positions(&[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+            .unwrap();
+        writer.write_scalars("energy", &[-7.5, -8.0]).unwrap();
+        writer.finalize().unwrap();
+
+        // File must start with zstd magic bytes after finalize with compress=true
+        let raw = fs::read(&path).unwrap();
+        assert_eq!(
+            &raw[..4],
+            &[0x28, 0xB5, 0x2F, 0xFD],
+            "compressed file must start with zstd magic"
+        );
+
+        // Reader must transparently decompress and round-trip all data
+        let reader = CheckpointReader::new(&path);
+        let loaded_meta = reader.read_metadata().unwrap();
+        assert_eq!(loaded_meta.step, 42);
+        let positions = reader.read_positions().unwrap();
+        assert_eq!(positions.len(), 2);
+        assert!((positions[0][0] - 1.0).abs() < 1e-12);
+        let energy = reader.read_scalars("energy").unwrap();
+        assert_eq!(energy.len(), 2);
+        assert!((energy[0] - (-7.5)).abs() < 1e-12);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn uncompressed_checkpoint_still_readable() {
+        let path = tmp_path("no_compress_rt");
+        let _ = fs::remove_file(&path);
+        let meta = CheckpointMetadata::new(7, 0.007, 1, [0, 0, 0], "no_compress");
+        let writer = CheckpointWriter::new(&path); // compress = false by default
+        writer.write_header(&meta).unwrap();
+        writer.write_positions(&[[0.0, 1.0, 0.0]]).unwrap();
+        writer.finalize().unwrap();
+
+        // Uncompressed file must NOT start with zstd magic
+        let raw = fs::read(&path).unwrap();
+        assert_ne!(
+            &raw[..4],
+            &[0x28, 0xB5, 0x2F, 0xFD],
+            "uncompressed file must not start with zstd magic"
+        );
+
+        // Reader must still work correctly
+        let reader = CheckpointReader::new(&path);
+        let loaded_meta = reader.read_metadata().unwrap();
+        assert_eq!(loaded_meta.step, 7);
+        let positions = reader.read_positions().unwrap();
+        assert_eq!(positions.len(), 1);
+        let _ = fs::remove_file(&path);
+    }
 }

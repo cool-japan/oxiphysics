@@ -1,6 +1,6 @@
 # oxiphysics-vehicle
 
-**Status:** Alpha | **Version:** 0.1.0 | **Tests:** 2,669
+**Status:** Alpha | **Version:** 0.1.1 | **Tests:** 2,669
 
 Full-featured vehicle dynamics simulation for the [OxiPhysics](https://github.com/cool-japan/oxiphysics) engine.
 
@@ -62,4 +62,4 @@ use oxiphysics_vehicle::{
 
 ## License
 
-MIT OR Apache-2.0 — Copyright © COOLJAPAN OU (Team Kitasan)
+Apache-2.0 — Copyright © COOLJAPAN OU (Team Kitasan)

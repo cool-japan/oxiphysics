@@ -381,7 +381,7 @@ impl BehlerParrinelloDescriptor {
 }
 
 // ---------------------------------------------------------------------------
-// Activation functions
+// Activation functions and their derivatives
 // ---------------------------------------------------------------------------
 
 /// Hyperbolic tangent activation.
@@ -390,16 +390,50 @@ pub fn tanh_activation(x: f64) -> f64 {
     x.tanh()
 }
 
+/// Derivative of the hyperbolic tangent: 1 - tanh(x)².
+#[allow(dead_code)]
+pub fn tanh_derivative(x: f64) -> f64 {
+    let t = x.tanh();
+    1.0 - t * t
+}
+
 /// Rectified linear unit activation.
 #[allow(dead_code)]
 pub fn relu_activation(x: f64) -> f64 {
     x.max(0.0)
 }
 
+/// Derivative of the ReLU: 1 if x > 0, else 0.
+#[allow(dead_code)]
+pub fn relu_derivative(x: f64) -> f64 {
+    if x > 0.0 { 1.0 } else { 0.0 }
+}
+
 /// Identity (linear) activation.
 #[allow(dead_code)]
 pub fn identity_activation(x: f64) -> f64 {
     x
+}
+
+/// Derivative of the identity activation: always 1.
+#[allow(dead_code)]
+pub fn identity_derivative(_x: f64) -> f64 {
+    1.0
+}
+
+/// Automatically derive the analytical derivative for a known activation
+/// function pointer. Falls back to `identity_derivative` for unknown functions.
+fn derive_activation_for(f: fn(f64) -> f64) -> fn(f64) -> f64 {
+    // Cast through raw pointer to avoid the `function_casts_as_integer` lint.
+    let f_addr = f as *const () as usize;
+    if f_addr == tanh_activation as *const () as usize {
+        tanh_derivative
+    } else if f_addr == relu_activation as *const () as usize {
+        relu_derivative
+    } else {
+        // Handles identity_activation and any unknown function.
+        identity_derivative
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -418,16 +452,39 @@ pub struct NeuralNetworkLayer {
     pub biases: Vec<f64>,
     /// Activation function.
     pub activation: fn(f64) -> f64,
+    /// Derivative of the activation function.
+    pub dactivation: fn(f64) -> f64,
 }
 
 impl NeuralNetworkLayer {
-    /// Create a new layer.
+    /// Create a new layer. The derivative is auto-detected from the activation
+    /// function pointer for the three built-in activations (tanh, relu, identity).
+    /// Unknown activation functions fall back to `identity_derivative`.
     #[allow(dead_code)]
     pub fn new(weights: Vec<Vec<f64>>, biases: Vec<f64>, activation: fn(f64) -> f64) -> Self {
+        let dactivation = derive_activation_for(activation);
         Self {
             weights,
             biases,
             activation,
+            dactivation,
+        }
+    }
+
+    /// Create a new layer with an explicitly provided derivative function.
+    /// Use this for custom activation functions not in the built-in set.
+    #[allow(dead_code)]
+    pub fn with_explicit_derivative(
+        weights: Vec<Vec<f64>>,
+        biases: Vec<f64>,
+        activation: fn(f64) -> f64,
+        dactivation: fn(f64) -> f64,
+    ) -> Self {
+        Self {
+            weights,
+            biases,
+            activation,
+            dactivation,
         }
     }
 

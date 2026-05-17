@@ -263,8 +263,8 @@ fn test_float64view_basic() {
     let v = Float64View::from_vec(vec![1.0, 2.0, 3.0]);
     assert_eq!(v.len(), 3);
     assert!(!v.is_empty());
-    assert_eq!(v.get(1), Some(2.0));
-    assert_eq!(v.get(99), None);
+    assert_eq!(v.get(1), 2.0);
+    assert!(v.get(99).is_nan());
 }
 
 #[test]
@@ -283,7 +283,7 @@ fn test_float64view_into_vec() {
 
 #[test]
 fn test_lbm_creation() {
-    let cfg = WasmLbmConfig {
+    let cfg = EngineWasmLbmConfig {
         width: 4,
         height: 4,
         viscosity: 0.1,
@@ -291,12 +291,12 @@ fn test_lbm_creation() {
     let sim = WasmLbmSim::new(&cfg);
     assert_eq!(sim.width(), 4);
     assert_eq!(sim.height(), 4);
-    assert_eq!(sim.step_count(), 0);
+    assert_eq!(sim.step_count(), 0.0);
 }
 
 #[test]
 fn test_lbm_initial_density() {
-    let cfg = WasmLbmConfig {
+    let cfg = EngineWasmLbmConfig {
         width: 4,
         height: 4,
         viscosity: 0.1,
@@ -308,7 +308,7 @@ fn test_lbm_initial_density() {
 
 #[test]
 fn test_lbm_step_increments_count() {
-    let cfg = WasmLbmConfig {
+    let cfg = EngineWasmLbmConfig {
         width: 4,
         height: 4,
         viscosity: 0.1,
@@ -316,12 +316,12 @@ fn test_lbm_step_increments_count() {
     let mut sim = WasmLbmSim::new(&cfg);
     sim.step();
     sim.step();
-    assert_eq!(sim.step_count(), 2);
+    assert_eq!(sim.step_count(), 2.0);
 }
 
 #[test]
 fn test_lbm_velocity_field_size() {
-    let cfg = WasmLbmConfig {
+    let cfg = EngineWasmLbmConfig {
         width: 8,
         height: 6,
         viscosity: 0.05,
@@ -333,7 +333,7 @@ fn test_lbm_velocity_field_size() {
 
 #[test]
 fn test_lbm_density_field_size() {
-    let cfg = WasmLbmConfig {
+    let cfg = EngineWasmLbmConfig {
         width: 8,
         height: 6,
         viscosity: 0.05,
@@ -447,14 +447,14 @@ fn test_vehicle_time_advances() {
 
 #[test]
 fn test_constraint_solver_creation() {
-    let solver = WasmConstraintSolver::new();
+    let solver = EngineConstraintSolver::new();
     assert_eq!(solver.contact_count(), 0);
     assert_eq!(solver.constraint_count(), 0);
 }
 
 #[test]
 fn test_constraint_solver_add_contact() {
-    let mut solver = WasmConstraintSolver::new();
+    let mut solver = EngineConstraintSolver::new();
     solver.add_contact(0, 1, 0.0, 1.0, 0.0, 0.05, 0.3);
     assert_eq!(solver.contact_count(), 1);
     solver.clear_contacts();
@@ -463,7 +463,7 @@ fn test_constraint_solver_add_contact() {
 
 #[test]
 fn test_constraint_solver_add_constraint() {
-    let mut solver = WasmConstraintSolver::new();
+    let mut solver = EngineConstraintSolver::new();
     solver.add_constraint(0, 1, 0.0, 1.0, 0.0, 0.0);
     assert_eq!(solver.constraint_count(), 1);
     solver.clear_constraints();
@@ -476,7 +476,7 @@ fn test_constraint_solver_solve() {
     let b0 = engine.add_dynamic_body(1.0, 0.0, 0.0, 0.0);
     let b1 = engine.add_dynamic_body(1.0, 0.1, 0.0, 0.0);
 
-    let mut solver = WasmConstraintSolver::new();
+    let mut solver = EngineConstraintSolver::new();
     // Contact: bodies overlapping at depth 0.05
     solver.add_contact(b0, b1, -1.0, 0.0, 0.0, 0.05, 0.0);
     let rows = solver.solve(&mut engine, 1.0 / 60.0);
@@ -485,7 +485,7 @@ fn test_constraint_solver_solve() {
 
 #[test]
 fn test_constraint_solver_iterations() {
-    let mut solver = WasmConstraintSolver::new();
+    let mut solver = EngineConstraintSolver::new();
     solver.set_iterations(20);
     assert_eq!(solver.iterations, 20);
     solver.set_iterations(0); // clamped to 1
@@ -651,7 +651,7 @@ fn test_wasm_transform_position_array() {
 #[test]
 fn test_error_to_js_string() {
     use crate::error::Error;
-    let s = error_to_js_string(&Error::InvalidHandle(99));
+    let s = error_to_js_string(&format!("{}", Error::InvalidHandle(99)));
     assert!(s.contains("InvalidHandle") || s.contains("error"));
 }
 
@@ -662,6 +662,11 @@ fn test_result_to_js_ok() {
     assert_eq!(js, std::result::Result::Ok(42));
 }
 
+// Gated to wasm32 only: under host (non-wasm32) builds, wasm-bindgen 0.2.120's
+// `JsValue::from_str` invokes the `__wbindgen_describe` machinery, which aborts
+// the process when no wasm runtime is present. The Ok branch is exercised by
+// `test_result_to_js_ok`; for the Err branch we only need the wasm32 path.
+#[cfg(target_arch = "wasm32")]
 #[test]
 fn test_result_to_js_err() {
     let r: crate::error::Result<u32> = Err(Error::InvalidHandle(7));
@@ -984,7 +989,7 @@ fn test_wasm_bindings_get_contacts_structured() {
     api.add_collider_sphere(b1, 1.0);
     api.step(1.0 / 60.0);
     let clist = api.get_contacts_structured();
-    for i in 0..clist.len() {
+    for i in 0..clist.len() as usize {
         let entry = clist.get(i).expect("should have entry");
         assert!(entry.depth >= 0.0);
     }

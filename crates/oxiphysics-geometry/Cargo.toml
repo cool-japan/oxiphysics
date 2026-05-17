@@ -3,14 +3,19 @@ name = "oxiphysics-geometry"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
 description = "Geometric shape types for the OxiPhysics engine"
+readme = "README.md"
 categories = ["science", "mathematics", "algorithms"]
 keywords = ["geometry", "mesh", "b-spline", "physics", "shapes"]
 
 [dependencies]
 thiserror = { workspace = true }
 oxiphysics-core = { workspace = true }
+oxiphysics-fem = { workspace = true }
 rand = { workspace = true }
+bitvec = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -787,16 +787,23 @@ mod tests_new_parallel {
     fn test_work_stealing_simulation() {
         let shared = Arc::new(Mutex::new(WorkStealingDeque::<i32>::new()));
         for i in 0..10 {
-            shared.lock().unwrap().push_bottom(i);
+            shared
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_bottom(i);
         }
         let mut stolen = Vec::new();
         for _ in 0..3 {
-            if let Some(v) = shared.lock().unwrap().steal_top() {
+            if let Some(v) = shared.lock().unwrap_or_else(|e| e.into_inner()).steal_top() {
                 stolen.push(v);
             }
         }
         assert_eq!(stolen.len(), 3);
         assert_eq!(stolen, vec![0, 1, 2], "steals should come from top (FIFO)");
-        assert_eq!(shared.lock().unwrap().len(), 7, "7 items should remain");
+        assert_eq!(
+            shared.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            7,
+            "7 items should remain"
+        );
     }
 }

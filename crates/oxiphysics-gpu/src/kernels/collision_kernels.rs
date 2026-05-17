@@ -456,10 +456,10 @@ impl GjkKernel {
         if len3(dir) < 1e-15 { dir = [1.0,0.0,0.0]; }
 
         let sup_a = |d: [f64;3]| -> [f64;3] {
-            *verts_a.iter().max_by(|&&x,&&y| dot3(x,d).partial_cmp(&dot3(y,d)).unwrap_or(std::cmp::Ordering::Equal)).unwrap()
+            *verts_a.iter().max_by(|&&x,&&y| dot3(x,d).partial_cmp(&dot3(y,d)).unwrap_or(std::cmp::Ordering::Equal)).expect("verts_a non-empty guard")
         };
         let sup_b = |d: [f64;3]| -> [f64;3] {
-            *verts_b.iter().max_by(|&&x,&&y| dot3(x,d).partial_cmp(&dot3(y,d)).unwrap_or(std::cmp::Ordering::Equal)).unwrap()
+            *verts_b.iter().max_by(|&&x,&&y| dot3(x,d).partial_cmp(&dot3(y,d)).unwrap_or(std::cmp::Ordering::Equal)).expect("verts_b non-empty guard")
         };
 
         let mut simplex_pts: Vec<[f64;3]> = Vec::new();
@@ -492,7 +492,7 @@ impl GjkKernel {
         // Brute force: project origin onto the simplex (simplified)
         *pts.iter().min_by(|&&a, &&b| {
             len3(a).partial_cmp(&len3(b)).unwrap_or(std::cmp::Ordering::Equal)
-        }).unwrap()
+        }).expect("pts has at least 2 elements after guards")
     }
 }
 

@@ -1,6 +1,6 @@
 # oxiphysics-materials TODO
 
-Last updated: 2026-04-06 / v0.1.0
+Last updated: 2026-05-17 / v0.1.1
 
 ## Phase 1: Foundation
 - [x] Define core types and traits
@@ -26,6 +26,6 @@ Last updated: 2026-04-06 / v0.1.0
 
 ## Phase 3: Polish
 - [x] Documentation (rustdoc on all public items)
-- [ ] Extended examples (additional usage examples)
-- [ ] Benchmark suite expansion
-- [ ] Further optimization (SIMD acceleration paths)
+- [x] Extended examples (additional usage examples) — see `materials_bench` module
+- [x] Benchmark suite expansion (`materials_bench` — `MatBenchHarness`, elastic/neo-Hookean/viscoplastic/fatigue/thermal batch kernel timing)
+- [x] SIMD acceleration paths (`simd_paths` — SoA layout, elastic/neo-Hookean/viscoplastic/fatigue/return-mapping batch kernels)

@@ -3,7 +3,10 @@ name = "oxiphysics-lbm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
 description = "Lattice Boltzmann method for the OxiPhysics engine"
+readme = "README.md"
 categories = ["science", "simulation"]
 keywords = ["lattice-boltzmann", "fluid-dynamics", "cfd", "physics", "simulation"]
 

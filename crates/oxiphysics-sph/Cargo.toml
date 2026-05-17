@@ -3,7 +3,10 @@ name = "oxiphysics-sph"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
 description = "Smoothed-particle hydrodynamics for the OxiPhysics engine"
+readme = "README.md"
 categories = ["science", "simulation"]
 keywords = ["sph", "fluid-dynamics", "smoothed-particle", "physics", "simulation"]
 

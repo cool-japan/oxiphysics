@@ -18,8 +18,10 @@ pub mod cell_list;
 pub mod compute;
 pub mod compute_pipeline;
 pub mod flux_compute;
+pub mod gpu_bench;
 pub mod grid_reduce;
 pub mod kernels;
+pub mod lbm_gpu;
 pub mod neural_compute;
 pub mod parallel;
 pub mod parallel_sort;
@@ -29,6 +31,7 @@ pub mod sdf_compute;
 pub mod shader_registry;
 pub mod shaders;
 pub mod sparse_gpu;
+pub mod sph_gpu;
 
 pub use compute::{BufferHandle, ComputeBackend, ComputeKernel, CpuBackend};
 pub use neural_compute::*;

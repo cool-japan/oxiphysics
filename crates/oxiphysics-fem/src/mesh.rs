@@ -65,7 +65,9 @@ impl TetrahedralMesh {
     ///
     /// The beam extends from (0,0,0) to (length, width, height) and is
     /// subdivided into `nx * ny * nz` hexahedral cells, each split into
-    /// 6 tetrahedra.
+    /// 5 tetrahedra using a diagonal-alternating split that tiles the
+    /// hex exactly (signed volumes sum to the hex volume, no overlap,
+    /// no inversions) with face-compatible interfaces between cells.
     ///
     /// # Panics
     ///
@@ -99,9 +101,18 @@ impl TetrahedralMesh {
             iz * (ny + 1) * (nx + 1) + iy * (nx + 1) + ix
         };
 
-        // Split each hexahedral cell into 6 tetrahedra using the
-        // Freudenthal decomposition with alternating parity to ensure
-        // face-compatible meshes between adjacent cells.
+        // Split each hexahedral cell into 5 tetrahedra using the standard
+        // diagonal-alternating decomposition. The parity 0 split uses the
+        // (n0, n6) body-diagonal; parity 1 uses the conjugate (n1, n7)
+        // diagonal. Adjacent cells carry opposite parities so shared
+        // faces are cut along the same diagonal from both sides, keeping
+        // the global mesh face-compatible (watertight, conforming).
+        //
+        // Every tet below is written with a positively-oriented vertex
+        // order: the signed volume `det([v1-v0, v2-v0, v3-v0]) / 6` is
+        // strictly positive. For a unit hex the four corner tets each
+        // contribute 1/6 and the central "core" tet contributes 2/6, so
+        // the five signed volumes sum exactly to 1 = hex volume.
         let mut elements = Vec::new();
         for iz in 0..nz {
             for iy in 0..ny {
@@ -120,20 +131,24 @@ impl TetrahedralMesh {
                     let n6 = node_idx(ix + 1, iy + 1, iz + 1);
                     let n7 = node_idx(ix, iy + 1, iz + 1);
 
-                    // Alternating parity ensures compatible faces
+                    // Alternating parity ensures compatible shared faces.
                     let parity = (ix + iy + iz) % 2;
                     if parity == 0 {
-                        elements.push([n0, n1, n3, n4]);
-                        elements.push([n1, n2, n3, n6]);
-                        elements.push([n4, n5, n1, n6]);
-                        elements.push([n4, n7, n3, n6]);
-                        elements.push([n1, n4, n3, n6]);
+                        // Diagonal n0–n6 split: four corner tets around
+                        // n1, n2 (via the opposite corner n7), n5, n7,
+                        // plus a positively-oriented central tet.
+                        elements.push([n0, n1, n3, n4]); // V = +1/6
+                        elements.push([n2, n1, n6, n3]); // V = +1/6
+                        elements.push([n5, n1, n4, n6]); // V = +1/6
+                        elements.push([n7, n3, n6, n4]); // V = +1/6
+                        elements.push([n1, n3, n4, n6]); // V = +2/6 (core)
                     } else {
-                        elements.push([n0, n1, n2, n5]);
-                        elements.push([n0, n2, n3, n7]);
-                        elements.push([n0, n4, n5, n7]);
-                        elements.push([n2, n5, n6, n7]);
-                        elements.push([n0, n2, n5, n7]);
+                        // Conjugate diagonal n1–n7 split.
+                        elements.push([n0, n1, n2, n5]); // V = +1/6
+                        elements.push([n0, n2, n3, n7]); // V = +1/6
+                        elements.push([n0, n4, n5, n7]); // V = +1/6
+                        elements.push([n2, n5, n6, n7]); // V = +1/6
+                        elements.push([n0, n5, n2, n7]); // V = +2/6 (core)
                     }
                 }
             }

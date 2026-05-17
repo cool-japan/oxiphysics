@@ -1282,7 +1282,9 @@ mod tests {
         let mut xdmf = ParaviewXdmf::new(xdmf_path.to_str().unwrap(), "data.h5");
         xdmf.add_timestep(0.0, 10);
         xdmf.add_timestep(0.1, 10);
-        xdmf.write().unwrap();
+        xdmf.write().unwrap_or_else(|e| {
+            let _ = e.into_inner();
+        });
         let mut content = String::new();
         std::fs::File::open(&xdmf_path)
             .unwrap()

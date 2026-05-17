@@ -1,6 +1,6 @@
 # oxiphysics-softbody
 
-**Status: Alpha** | Version 0.1.0 | Part of [OxiPhysics](https://github.com/cool-japan/oxiphysics)
+**Status: Alpha** | Version 0.1.1 | Part of [OxiPhysics](https://github.com/cool-japan/oxiphysics)
 
 Soft body simulation for the OxiPhysics engine — Pure Rust, no C/Fortran dependencies.
 

@@ -1,6 +1,6 @@
 # oxiphysics-rigid TODO
 
-Last updated: 2026-04-06 | Version: 0.1.0
+Last updated: 2026-05-17 | Version: 0.1.1
 
 ## Phase 1: Foundation
 - [x] Define core types and traits

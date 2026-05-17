@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/oxiphysics?label=oxiphysics&color=orange)](https://crates.io/crates/oxiphysics)
 [![docs.rs](https://img.shields.io/docsrs/oxiphysics)](https://docs.rs/oxiphysics)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0-green.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.1-green.svg)](CHANGELOG.md)
 
 OxiPhysics is a unified, pure-Rust physics engine targeting the same problem
 domains as **Bullet** (rigid body), **OpenFOAM** (CFD), **LAMMPS** (molecular
@@ -12,27 +12,27 @@ dynamics), and **CalculiX** (FEM) — with no C or Fortran dependencies, no
 
 ---
 
-## Implementation Status — v0.1.0 (2026-04-06)
+## Implementation Status — v0.1.1 (2026-05-17)
 
 | Crate | Status | Tests | Domain summary |
 |---|---|---|---|
-| `oxiphysics-core` | **Alpha** | 5,348 | Math, numerics, ODE, stochastic, tensors, signal processing, 80+ modules |
-| `oxiphysics-geometry` | **Alpha** | 3,089 | Shapes, meshes, computational geometry, NURBS, CSG, 57+ modules |
-| `oxiphysics-collision` | **Alpha** | 2,439 | GJK/EPA, SAP, BVH, CCD, ray casting, contact graphs |
-| `oxiphysics-materials` | **Alpha** | 4,486 | Material models, hyperelastic, composites, biomaterials, smart materials |
-| `oxiphysics-fem` | **Alpha** | 4,561 | Linear+nonlinear FEM, XFEM, spectral, stochastic FEM, 124 source files |
-| `oxiphysics-gpu` | **Alpha** | 2,740 | CPU-fallback compute backend, ParticleSystem, parallel sort |
-| `oxiphysics-io` | **Alpha** | 4,849 | VTK, PDB, LAMMPS, OpenFOAM, GLTF, HDF5, 80+ format modules |
-| `oxiphysics-lbm` | **Alpha** | 5,313 | LBM D3Q19/D3Q27, MRT, multiphase, MHD, biofluid, traffic |
-| `oxiphysics-md` | **Alpha** | 5,139 | MD forcefield, QM/MM, REMD, free energy, LAMMPS/AMBER compat |
-| `oxiphysics-sph` | **Alpha** | 4,367 | WCSPH, IISPH, DFSPH, PCISPH, free surface, multiphase SPH |
-| `oxiphysics-rigid` | **Alpha** | 3,810 | Rigid body dynamics, aerospace, spacecraft, marine, swarm |
-| `oxiphysics-softbody` | **Alpha** | 3,469 | PBD, XPBD, cloth, hair, ropes, Cosserat rods, surgical sim |
-| `oxiphysics-constraints` | **Alpha** | 2,173 | PGS/TGS solvers, joints, motors, islands, trajectory opt |
-| `oxiphysics-vehicle` | **Alpha** | 2,669 | Vehicle dynamics, Pacejka tires, EV, autonomous driving |
-| `oxiphysics-viz` | **Alpha** | 4,072 | CPU software renderer, scientific plotting, volume rendering, VR |
-| `oxiphysics-python` | **Partial** | 788 | JSON/serde bridge API (no PyO3 FFI dep yet) |
-| `oxiphysics-wasm` | **Partial** | 826 | JSON/serde bridge API (no wasm-bindgen dep yet) |
+| `oxiphysics-core` | **Stable** | 5,348 | Math, numerics, ODE, stochastic, tensors, signal processing, 80+ modules |
+| `oxiphysics-geometry` | **Stable** | 3,089 | Shapes, meshes, computational geometry, NURBS, CSG, 57+ modules |
+| `oxiphysics-collision` | **Stable** | 2,439 | GJK/EPA, SAP, BVH, CCD, ray casting, contact graphs |
+| `oxiphysics-materials` | **Stable** | 4,486 | Material models, hyperelastic, composites, biomaterials, smart materials |
+| `oxiphysics-fem` | **Stable** | 4,561 | Linear+nonlinear FEM, XFEM, spectral, stochastic FEM, 124 source files |
+| `oxiphysics-gpu` | **Alpha** | 2,811 | CPU-fallback compute backend, ParticleSystem, parallel sort |
+| `oxiphysics-io` | **Stable** | 4,849 | VTK, PDB, LAMMPS, OpenFOAM, GLTF, HDF5, 80+ format modules |
+| `oxiphysics-lbm` | **Stable** | 5,313 | LBM D3Q19/D3Q27, MRT, multiphase, MHD, biofluid, traffic |
+| `oxiphysics-md` | **Stable** | 5,139 | MD forcefield, QM/MM, REMD, free energy, LAMMPS/AMBER compat |
+| `oxiphysics-sph` | **Stable** | 4,367 | WCSPH, IISPH, DFSPH, PCISPH, free surface, multiphase SPH |
+| `oxiphysics-rigid` | **Stable** | 3,810 | Rigid body dynamics, aerospace, spacecraft, marine, swarm |
+| `oxiphysics-softbody` | **Stable** | 3,469 | PBD, XPBD, cloth, hair, ropes, Cosserat rods, surgical sim |
+| `oxiphysics-constraints` | **Stable** | 2,173 | PGS/TGS solvers, joints, motors, islands, trajectory opt |
+| `oxiphysics-vehicle` | **Stable** | 2,669 | Vehicle dynamics, Pacejka tires, EV, autonomous driving |
+| `oxiphysics-viz` | **Stable** | 4,072 | CPU software renderer, scientific plotting, volume rendering, VR |
+| `oxiphysics-python` | **Stable** | 25,257 | PyO3 0.28 bindings — 210 `#[pyclass]` across 14 domain modules |
+| `oxiphysics-wasm` | **Stable** | 27,215 | wasm-bindgen 0.2 bindings — 929 `#[wasm_bindgen]` across 27+ bridge files |
 | `oxiphysics` | top-level re-exports | — | Single-crate entry point for all modules |
 
 ---
@@ -40,7 +40,7 @@ dynamics), and **CalculiX** (FEM) — with no C or Fortran dependencies, no
 ## Highlights
 
 - **Zero stubs** — no `todo!()` or `unimplemented!()` calls anywhere in the workspace.
-- **~60,189 tests** across 17 crates, all passing under `cargo nextest`.
+- **~60,087 tests** across 17 crates, all passing under `cargo nextest`.
 - **Strict docs** — `RUSTDOCFLAGS='-D warnings' cargo doc` passes with no missing-docs warnings.
 - **Pure Rust** — zero C/Fortran build-time dependencies; default features are 100% Rust.
 - **`cargo publish --dry-run` passes** for the top-level `oxiphysics` crate.
@@ -88,8 +88,8 @@ What is already implemented in each domain:
 | `oxiphysics-geometry` | 3,245 | Shape and mesh primitives |
 | `oxiphysics-gpu` | 2,748 | Compute backend |
 | `oxiphysics-collision` | 2,625 | Collision detection |
-| `oxiphysics-wasm` | 1,276 | WASM bridge API |
-| `oxiphysics-python` | 1,200 | Python bridge API |
+| `oxiphysics-wasm` | 27,215 | wasm-bindgen 0.2 bindings — 929 `#[wasm_bindgen]` annotations |
+| `oxiphysics-python` | 25,257 | PyO3 0.28 bindings — 210 `#[pyclass]` types, 14 domain modules |
 
 ---
 
@@ -99,16 +99,16 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxiphysics = "0.1.0"
+oxiphysics = "0.1.1"
 ```
 
 Or use individual sub-crates for smaller build graphs, e.g.:
 
 ```toml
 [dependencies]
-oxiphysics-core = "0.1.0"
-oxiphysics-collision = "0.1.0"
-oxiphysics-rigid = "0.1.0"
+oxiphysics-core = "0.1.1"
+oxiphysics-collision = "0.1.1"
+oxiphysics-rigid = "0.1.1"
 ```
 
 ---

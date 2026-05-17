@@ -236,14 +236,15 @@ impl RveAnalysis {
         (sum - 1.0).abs() < 1e-6
     }
 
-    /// Effective density via rule of mixtures: ρ_eff = Σ V_i ρ_i.
+    /// Effective density via rule of mixtures: ρ_eff = Σ V_i ρ_i  \[kg/m³\].
     ///
-    /// Note: density is encoded as `youngs_modulus` field used as placeholder here;
-    /// call this only when phases carry density values.
+    /// Requires that each `Phase` was created with a `density` value (via
+    /// `Phase::with_density`). Phases with `density == 0.0` (the default)
+    /// contribute zero to the sum.
     pub fn effective_density(&self) -> f64 {
         self.phases
             .iter()
-            .map(|p| p.volume_fraction * p.youngs_modulus)
+            .map(|p| p.volume_fraction * p.density)
             .sum()
     }
 
@@ -927,6 +928,20 @@ mod tests {
             (e_check - ph.youngs_modulus).abs() / ph.youngs_modulus < 1e-10,
             "E from K,G should match: {e_check:.3e} vs {:.3e}",
             ph.youngs_modulus
+        );
+    }
+
+    #[test]
+    fn test_effective_density_two_phase_composite() {
+        // 50% steel (7850 kg/m³) + 50% aluminium (2700 kg/m³) → ≈ 5275 kg/m³
+        let mut rve = RveAnalysis::new(1e-3);
+        rve.add_phase(Phase::new("steel", 0.5, 210e9, 0.3).with_density(7850.0));
+        rve.add_phase(Phase::new("aluminium", 0.5, 70e9, 0.33).with_density(2700.0));
+        let rho_eff = rve.effective_density();
+        let expected = 5275.0_f64;
+        assert!(
+            (rho_eff - expected).abs() < 1.0,
+            "effective density = {rho_eff:.1} kg/m³, expected ≈ {expected} kg/m³"
         );
     }
 }

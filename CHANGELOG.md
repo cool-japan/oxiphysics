@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-05-17
+
+### Changed
+- Feature-gated Python bindings (`oxiphysics-python`) for optional PyO3 dependency
+- Version bump for internal crate consistency across workspace
+- Continued Pure Rust implementation (100% C/Fortran-free)
+
 ## [0.1.0] - 2026-04-06
 
 ### Added
@@ -27,4 +34,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `oxiphysics-python`: Python bindings via PyO3
 - `oxiphysics-wasm`: WebAssembly bindings
 
+[0.1.1]: https://github.com/cool-japan/oxiphysics/releases/tag/v0.1.1
 [0.1.0]: https://github.com/cool-japan/oxiphysics/releases/tag/v0.1.0

@@ -741,16 +741,32 @@ impl ScientificPlot {
                         svg.push('\n');
                     }
                 }
-                PlotType::Contour | PlotType::Surface | PlotType::VectorField => {
-                    // For complex plot types, emit a placeholder text annotation.
-                    svg.push_str(&format!(
-                        "<text x=\"{:.1}\" y=\"{:.1}\" font-size=\"10\" fill=\"#888\">[{:?} data, n={}]</text>",
-                        m.left + 5.0,
-                        m.top + 14.0 * (idx as f64 + 1.0),
-                        series.plot_type,
-                        series.data.len()
+                PlotType::Contour => {
+                    svg.push_str(&render_contour(
+                        &series.data,
+                        &color,
+                        map_x,
+                        map_y,
+                        xlo,
+                        xhi,
+                        ylo,
+                        yhi,
                     ));
-                    svg.push('\n');
+                }
+                PlotType::Surface => {
+                    svg.push_str(&render_surface(
+                        &series.data,
+                        &color,
+                        map_x,
+                        map_y,
+                        xlo,
+                        xhi,
+                        ylo,
+                        yhi,
+                    ));
+                }
+                PlotType::VectorField => {
+                    svg.push_str(&render_vector_field(&series.data, &color, map_x, map_y));
                 }
             }
 
@@ -813,6 +829,229 @@ impl ScientificPlot {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Render a contour (iso-line) plot for a 2D scalar field.
+///
+/// `data` is treated as a row-major `n×n` grid where `data[row*n+col].y` is
+/// the scalar value at grid cell `(row, col)`.  Marching-squares detects
+/// iso-level crossings; each crossing segment is emitted as a `<polyline>`.
+#[allow(clippy::too_many_arguments)]
+fn render_contour(
+    data: &[DataPoint2D],
+    color: &str,
+    map_x: impl Fn(f64) -> f64,
+    map_y: impl Fn(f64) -> f64,
+    xlo: f64,
+    xhi: f64,
+    ylo: f64,
+    yhi: f64,
+) -> String {
+    let n = (data.len() as f64).sqrt() as usize;
+    if n < 2 || data.len() < n * n {
+        return String::new();
+    }
+    let val = |row: usize, col: usize| -> f64 { data[row * n + col].y };
+    let v_min = data.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
+    let v_max = data.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max);
+    if (v_max - v_min).abs() < 1e-15 {
+        return String::new();
+    }
+    const N_LEVELS: usize = 5;
+    let levels: Vec<f64> = (1..=N_LEVELS)
+        .map(|i| v_min + (v_max - v_min) * (i as f64) / (N_LEVELS as f64 + 1.0))
+        .collect();
+    let x_range = (xhi - xlo).max(1e-15);
+    let y_range = (yhi - ylo).max(1e-15);
+    let px = |col: usize, frac: f64| -> f64 {
+        map_x(xlo + (col as f64 + frac) / (n as f64 - 1.0) * x_range)
+    };
+    let py = |row: usize, frac: f64| -> f64 {
+        map_y(ylo + (row as f64 + frac) / (n as f64 - 1.0) * y_range)
+    };
+    let mut svg = String::new();
+    for &level in &levels {
+        let lerp = |a: f64, b: f64| -> f64 {
+            if (b - a).abs() < 1e-15 {
+                0.5
+            } else {
+                (level - a) / (b - a)
+            }
+        };
+        for row in 0..(n - 1) {
+            for col in 0..(n - 1) {
+                let tl = val(row, col);
+                let tr = val(row, col + 1);
+                let bl = val(row + 1, col);
+                let br = val(row + 1, col + 1);
+                let mut case = 0u8;
+                if tl > level {
+                    case |= 1;
+                }
+                if tr > level {
+                    case |= 2;
+                }
+                if br > level {
+                    case |= 4;
+                }
+                if bl > level {
+                    case |= 8;
+                }
+                let top = || [px(col, lerp(tl, tr)), py(row, 0.0)];
+                let right = || [px(col + 1, 0.0), py(row, lerp(tr, br))];
+                let bot = || [px(col, lerp(bl, br)), py(row + 1, 0.0)];
+                let left = || [px(col, 0.0), py(row, lerp(tl, bl))];
+                let mut emit = |a: [f64; 2], b: [f64; 2]| {
+                    svg.push_str(&format!(
+                        r#"<polyline points="{:.1},{:.1} {:.1},{:.1}" fill="none" stroke="{color}" stroke-width="1.2" opacity="0.85"/>"#,
+                        a[0], a[1], b[0], b[1]
+                    ));
+                    svg.push('\n');
+                };
+                match case {
+                    0 | 15 => {}
+                    1 | 14 => emit(top(), left()),
+                    2 | 13 => emit(top(), right()),
+                    3 | 12 => emit(left(), right()),
+                    4 | 11 => emit(right(), bot()),
+                    5 => {
+                        emit(top(), right());
+                        emit(bot(), left());
+                    }
+                    6 | 9 => emit(top(), bot()),
+                    7 | 8 => emit(bot(), left()),
+                    10 => {
+                        emit(top(), left());
+                        emit(right(), bot());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    svg
+}
+
+/// Render a 2.5-D surface plot using an isometric projection.
+///
+/// Same grid convention as [`render_contour`].  Cells are projected with
+/// `(col - row*0.5, row*0.5 + value*scale)` and emitted as `<polygon>`
+/// elements, sorted back-to-front (painter's algorithm).
+#[allow(clippy::too_many_arguments)]
+fn render_surface(
+    data: &[DataPoint2D],
+    color: &str,
+    map_x: impl Fn(f64) -> f64,
+    map_y: impl Fn(f64) -> f64,
+    xlo: f64,
+    xhi: f64,
+    ylo: f64,
+    yhi: f64,
+) -> String {
+    let n = (data.len() as f64).sqrt() as usize;
+    if n < 2 || data.len() < n * n {
+        return String::new();
+    }
+    let val = |row: usize, col: usize| -> f64 { data[row * n + col].y };
+    let v_min = data.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
+    let v_max = data.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max);
+    let v_range = (v_max - v_min).max(1e-15);
+    let x_range = (xhi - xlo).max(1e-15);
+    let y_range = (yhi - ylo).max(1e-15);
+    let project = |row: usize, col: usize| -> (f64, f64) {
+        let gx = xlo + col as f64 / (n as f64 - 1.0) * x_range;
+        let gy = ylo + row as f64 / (n as f64 - 1.0) * y_range;
+        let v = val(row, col);
+        let lift = (v - v_min) / v_range * y_range * 0.3;
+        (map_x(gx), map_y(gy + lift))
+    };
+    let base_rgb = parse_hex_color(color).unwrap_or([0x1f, 0x77, 0xb4]);
+    let mut faces: Vec<(usize, usize)> = (0..(n - 1))
+        .flat_map(|r| (0..(n - 1)).map(move |c| (r, c)))
+        .collect();
+    faces.sort_by_key(|&(r, c)| std::cmp::Reverse(r + c));
+    let mut svg = String::new();
+    for (row, col) in faces {
+        let (x0, y0) = project(row, col);
+        let (x1, y1) = project(row, col + 1);
+        let (x2, y2) = project(row + 1, col + 1);
+        let (x3, y3) = project(row + 1, col);
+        let dx1 = x2 - x0;
+        let dy1 = y2 - y0;
+        let dx2 = x1 - x3;
+        let dy2 = y1 - y3;
+        let cross_z = dx1 * dy2 - dy1 * dx2;
+        let brightness =
+            (0.4 + 0.6 * (cross_z / (x_range * y_range * 0.01 + 1.0)).tanh().abs()).clamp(0.1, 1.0);
+        let r = (base_rgb[0] as f64 * brightness).clamp(0.0, 255.0) as u8;
+        let g = (base_rgb[1] as f64 * brightness).clamp(0.0, 255.0) as u8;
+        let b = (base_rgb[2] as f64 * brightness).clamp(0.0, 255.0) as u8;
+        let fc = format!("rgb({r},{g},{b})");
+        svg.push_str(&format!(
+            r#"<polygon points="{x0:.1},{y0:.1} {x1:.1},{y1:.1} {x2:.1},{y2:.1} {x3:.1},{y3:.1}" fill="{fc}" stroke="{color}" stroke-width="0.3" opacity="0.85"/>"#
+        ));
+        svg.push('\n');
+    }
+    svg
+}
+
+/// Parse a `#rrggbb` hex colour string into `[r, g, b]` bytes.
+fn parse_hex_color(s: &str) -> Option<[u8; 3]> {
+    let s = s.trim_start_matches('#');
+    if s.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    Some([r, g, b])
+}
+
+/// Render a vector / quiver field plot.
+///
+/// `data` is consumed in consecutive pairs: even index is the arrow tail,
+/// odd index is the arrow tip.  Each pair produces a `<line>` shaft and a
+/// `<polygon>` arrowhead.
+fn render_vector_field(
+    data: &[DataPoint2D],
+    color: &str,
+    map_x: impl Fn(f64) -> f64,
+    map_y: impl Fn(f64) -> f64,
+) -> String {
+    let mut svg = String::new();
+    let pairs = data.len() / 2;
+    for k in 0..pairs {
+        let tail = &data[2 * k];
+        let tip = &data[2 * k + 1];
+        let tx = map_x(tail.x);
+        let ty = map_y(tail.y);
+        let hx = map_x(tip.x);
+        let hy = map_y(tip.y);
+        svg.push_str(&format!(
+            r#"<line x1="{tx:.1}" y1="{ty:.1}" x2="{hx:.1}" y2="{hy:.1}" stroke="{color}" stroke-width="1.5"/>"#
+        ));
+        svg.push('\n');
+        let dx = hx - tx;
+        let dy = hy - ty;
+        let len = (dx * dx + dy * dy).sqrt().max(1e-9);
+        let ux = dx / len;
+        let uy = dy / len;
+        let px = -uy;
+        let py = ux;
+        let al = 8.0_f64;
+        let aw = 4.0_f64;
+        let p0x = hx;
+        let p0y = hy;
+        let p1x = hx - al * ux + aw * px;
+        let p1y = hy - al * uy + aw * py;
+        let p2x = hx - al * ux - aw * px;
+        let p2y = hy - al * uy - aw * py;
+        svg.push_str(&format!(
+            r#"<polygon points="{p0x:.1},{p0y:.1} {p1x:.1},{p1y:.1} {p2x:.1},{p2y:.1}" fill="{color}"/>"#
+        ));
+        svg.push('\n');
+    }
+    svg
+}
 
 /// Render an SVG shape for a data-point marker.
 fn render_marker(shape: MarkerShape, cx: f64, cy: f64, r: f64, color: &str) -> String {
@@ -1275,5 +1514,62 @@ mod tests {
     fn test_render_marker_cross_lines() {
         let s = render_marker(MarkerShape::Cross, 10.0, 10.0, 4.0, "green");
         assert!(s.contains("<line"));
+    }
+
+    // ── F1: Contour, Surface, VectorField ─────────────────────────────────────
+
+    fn saddle_grid(n: usize) -> Vec<DataPoint2D> {
+        let mut data = Vec::with_capacity(n * n);
+        for row in 0..n {
+            for col in 0..n {
+                let x = -1.0 + 2.0 * col as f64 / (n as f64 - 1.0);
+                let y = -1.0 + 2.0 * row as f64 / (n as f64 - 1.0);
+                data.push(DataPoint2D::new(x, x * x - y * y));
+            }
+        }
+        data
+    }
+
+    #[test]
+    fn test_contour_svg_contains_polyline() {
+        let mut plot = ScientificPlot::new("", 640.0, 480.0);
+        plot.add_series(PlotSeries::new("saddle", saddle_grid(8), PlotType::Contour));
+        let svg = plot.to_svg_string();
+        assert!(
+            svg.contains("<polyline"),
+            "contour SVG should contain <polyline elements"
+        );
+    }
+
+    #[test]
+    fn test_surface_svg_contains_polygon() {
+        let mut plot = ScientificPlot::new("", 640.0, 480.0);
+        plot.add_series(PlotSeries::new("surf", saddle_grid(6), PlotType::Surface));
+        let svg = plot.to_svg_string();
+        assert!(
+            svg.contains("<polygon"),
+            "surface SVG should contain <polygon elements"
+        );
+    }
+
+    #[test]
+    fn test_vector_field_svg_contains_line() {
+        let data: Vec<DataPoint2D> = (0..4)
+            .flat_map(|i| {
+                let x = i as f64 * 0.25;
+                [DataPoint2D::new(x, 0.5), DataPoint2D::new(x + 0.1, 0.6)]
+            })
+            .collect();
+        let mut plot = ScientificPlot::new("", 640.0, 480.0);
+        plot.add_series(PlotSeries::new("vf", data, PlotType::VectorField));
+        let svg = plot.to_svg_string();
+        assert!(
+            svg.contains("<line"),
+            "vector field SVG should contain <line elements"
+        );
+        assert!(
+            svg.contains("<polygon"),
+            "vector field SVG should contain arrowhead <polygon elements"
+        );
     }
 }

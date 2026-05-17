@@ -512,6 +512,94 @@ f 2 4 3
         assert!(s.contains("usemtl Mat1"));
         assert!(s.contains("usemtl Mat2"));
     }
+
+    // ── G4: QEM decimation tests ──────────────────────────────────────────────
+
+    /// Build a UV-sphere-like triangulated mesh with `n_lat` latitude bands and
+    /// `n_lon` longitude bands.  Returns an [`ObjMesh`].
+    fn make_sphere_mesh(n_lat: usize, n_lon: usize) -> ObjMesh {
+        use std::f64::consts::PI;
+        let mut vertices: Vec<[f64; 3]> = Vec::new();
+        // Stack of latitude rings (poles included via degenerate rings).
+        for lat in 0..=n_lat {
+            let theta = PI * lat as f64 / n_lat as f64;
+            for lon in 0..n_lon {
+                let phi = 2.0 * PI * lon as f64 / n_lon as f64;
+                vertices.push([
+                    theta.sin() * phi.cos(),
+                    theta.cos(),
+                    theta.sin() * phi.sin(),
+                ]);
+            }
+        }
+        let mut faces: Vec<ObjFace> = Vec::new();
+        let idx = |lat: usize, lon: usize| lat * n_lon + (lon % n_lon);
+        for lat in 0..n_lat {
+            for lon in 0..n_lon {
+                let a = idx(lat, lon);
+                let b = idx(lat + 1, lon);
+                let c = idx(lat + 1, lon + 1);
+                let d = idx(lat, lon + 1);
+                faces.push(ObjFace {
+                    vertex_indices: vec![a, b, c],
+                    normal_indices: None,
+                    uv_indices: None,
+                    smoothing_group: 0,
+                    material: None,
+                });
+                faces.push(ObjFace {
+                    vertex_indices: vec![a, c, d],
+                    normal_indices: None,
+                    uv_indices: None,
+                    smoothing_group: 0,
+                    material: None,
+                });
+            }
+        }
+        ObjMesh {
+            vertices,
+            normals: Vec::new(),
+            uvs: Vec::new(),
+            faces,
+            groups: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_decimate_below_target_returns_clone() {
+        let mesh = make_sphere_mesh(4, 8); // 64 faces
+        let result = ObjLod::decimate(&mesh, 200);
+        assert_eq!(result.faces.len(), mesh.faces.len());
+    }
+
+    #[test]
+    fn test_decimate_qem_reduces_face_count() {
+        let mesh = make_sphere_mesh(8, 16); // 256 faces
+        let target = 64;
+        let result = ObjLod::decimate(&mesh, target);
+        assert!(
+            result.faces.len() <= target,
+            "expected ≤{target} faces, got {}",
+            result.faces.len()
+        );
+        assert!(
+            !result.faces.is_empty(),
+            "decimated mesh must have at least one face"
+        );
+    }
+
+    #[test]
+    fn test_decimate_vertex_count_decreases() {
+        let mesh = make_sphere_mesh(8, 16); // 256 faces, (8+1)*16=144 vertices
+        let original_verts = mesh.vertices.len();
+        let result = ObjLod::decimate(&mesh, 32);
+        assert!(
+            result.vertices.len() < original_verts,
+            "QEM should reduce vertex count ({} vs {})",
+            result.vertices.len(),
+            original_verts
+        );
+    }
 }
 /// Instantiate `mesh` with a given transform, returning a new transformed `ObjMesh`.
 #[allow(dead_code)]

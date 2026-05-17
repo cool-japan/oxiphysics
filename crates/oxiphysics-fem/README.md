@@ -1,6 +1,6 @@
 # oxiphysics-fem
 
-**Status: [Alpha]** — v0.1.0 (2026-04-06)
+**Status: [Alpha]** — v0.1.1 (2026-05-17)
 
 [![Tests](https://img.shields.io/badge/tests-4561-brightgreen)](https://github.com/cool-japan/oxiphysics)
 [![docs.rs](https://img.shields.io/docsrs/oxiphysics-fem)](https://docs.rs/oxiphysics-fem)

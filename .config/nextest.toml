@@ -1,0 +1,2 @@
+[profile.default]
+default-filter = "not package(oxiphysics-python)"

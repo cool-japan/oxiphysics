@@ -4,10 +4,9 @@
 //! PyO3-style binding wrappers for MD, LBM, FEM, SPH simulations
 //! and material query helpers.
 
-#![allow(missing_docs)]
-
 use super::lbm::{PyLbmConfig, PyLbmGrid};
 use super::sph::{PySphConfig, PySphSim};
+use pyo3::prelude::*;
 
 // ===========================================================================
 // MD Simulation Bindings (PyO3-style API wrappers)
@@ -21,18 +20,20 @@ use crate::md_api::{PyMdConfig, PyMdSimulation};
 /// `#[pymethods]` surface that would be used with the real PyO3 macro
 /// expansion.  All methods take and return primitive Rust types so that
 /// future `#[pyfunction]` / `#[pymethods]` annotations require no changes.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PyMdBinding {
     sim: PyMdSimulation,
 }
 
+#[pymethods]
 impl PyMdBinding {
     // ------------------------------------------------------------------
     // Construction
     // ------------------------------------------------------------------
 
     /// Create a new MD binding with the default (argon-reduced) configuration.
+    #[staticmethod]
     pub fn new_default() -> Self {
         Self {
             sim: PyMdSimulation::new(PyMdConfig::default()),
@@ -40,6 +41,7 @@ impl PyMdBinding {
     }
 
     /// Create from explicit configuration.
+    #[new]
     pub fn new(config: PyMdConfig) -> Self {
         Self {
             sim: PyMdSimulation::new(config),
@@ -64,8 +66,8 @@ impl PyMdBinding {
         vz: f64,
         atom_type: u32,
     ) -> usize {
-        let idx = self.sim.add_atom([x, y, z], atom_type);
-        self.sim.set_velocity(idx, [vx, vy, vz]);
+        let idx = self.sim.add_atom(vec![x, y, z], atom_type);
+        self.sim.set_velocity(idx, vec![vx, vy, vz]);
         idx
     }
 
@@ -148,18 +150,20 @@ impl PyMdBinding {
 /// PyO3-style binding handle for a 2-D LBM simulation.
 ///
 /// Uses the `PyLbmGrid` type (D2Q9 BGK) defined earlier in this file.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PyLbmBinding {
     grid: PyLbmGrid,
 }
 
+#[pymethods]
 impl PyLbmBinding {
     // ------------------------------------------------------------------
     // Construction
     // ------------------------------------------------------------------
 
     /// Create a new LBM binding with the given grid dimensions and viscosity.
+    #[new]
     pub fn new(width: usize, height: usize, viscosity: f64) -> Self {
         let config = PyLbmConfig::new(width, height, viscosity);
         Self {
@@ -168,6 +172,7 @@ impl PyLbmBinding {
     }
 
     /// Create from an explicit `PyLbmConfig`.
+    #[staticmethod]
     pub fn from_config(config: PyLbmConfig) -> Self {
         Self {
             grid: PyLbmGrid::new(&config),
@@ -265,20 +270,22 @@ use crate::fem_api::{PyFemDirichletBC, PyFemMaterial, PyFemMesh, PyFemSolveResul
 ///
 /// Wraps `PyFemSolver` and `PyFemMesh` and exposes helpers suitable for
 /// future `#[pymethods]` annotation.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PyFemBinding {
     mesh: PyFemMesh,
     solver: PyFemSolver,
     last_result: Option<PyFemSolveResult>,
 }
 
+#[pymethods]
 impl PyFemBinding {
     // ------------------------------------------------------------------
     // Construction
     // ------------------------------------------------------------------
 
     /// Create a new FEM binding with an empty mesh.
+    #[new]
     pub fn new() -> Self {
         Self {
             mesh: PyFemMesh::new(),
@@ -415,18 +422,20 @@ impl Default for PyFemBinding {
 /// PyO3-style binding handle for a 3-D SPH simulation.
 ///
 /// Uses the `PySphSim` type (WCSPH) defined earlier in this file.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PySphBinding {
     sim: PySphSim,
 }
 
+#[pymethods]
 impl PySphBinding {
     // ------------------------------------------------------------------
     // Construction
     // ------------------------------------------------------------------
 
     /// Create a new SPH binding with the water-like default configuration.
+    #[staticmethod]
     pub fn new_water() -> Self {
         Self {
             sim: PySphSim::new(PySphConfig::water()),
@@ -434,6 +443,7 @@ impl PySphBinding {
     }
 
     /// Create from an explicit `PySphConfig`.
+    #[staticmethod]
     pub fn from_config(config: PySphConfig) -> Self {
         Self {
             sim: PySphSim::new(config),
@@ -570,27 +580,36 @@ impl PySphBinding {
 // ===========================================================================
 
 /// Material property record returned by query functions.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct MaterialProperties {
     /// Material name.
+    #[pyo3(get, set)]
     pub name: String,
     /// Density in kg/m³.
+    #[pyo3(get, set)]
     pub density: f64,
     /// Young's modulus in Pa.
+    #[pyo3(get, set)]
     pub youngs_modulus: f64,
     /// Poisson's ratio (dimensionless).
+    #[pyo3(get, set)]
     pub poisson_ratio: f64,
     /// Ultimate tensile strength in Pa.
+    #[pyo3(get, set)]
     pub tensile_strength: f64,
     /// Dynamic viscosity in Pa·s (0 for solids).
+    #[pyo3(get, set)]
     pub viscosity: f64,
     /// Yield strength in Pa (0 if not applicable).
+    #[pyo3(get, set)]
     pub yield_strength: f64,
 }
 
+#[pymethods]
 impl MaterialProperties {
     /// Steel (structural grade).
+    #[staticmethod]
     pub fn steel() -> Self {
         Self {
             name: "steel".into(),
@@ -604,6 +623,7 @@ impl MaterialProperties {
     }
 
     /// Aluminium alloy 6061-T6.
+    #[staticmethod]
     pub fn aluminium() -> Self {
         Self {
             name: "aluminium".into(),
@@ -617,6 +637,7 @@ impl MaterialProperties {
     }
 
     /// Concrete (typical structural).
+    #[staticmethod]
     pub fn concrete() -> Self {
         Self {
             name: "concrete".into(),
@@ -630,6 +651,7 @@ impl MaterialProperties {
     }
 
     /// Natural rubber.
+    #[staticmethod]
     pub fn rubber() -> Self {
         Self {
             name: "rubber".into(),
@@ -643,6 +665,7 @@ impl MaterialProperties {
     }
 
     /// Water at 20 °C.
+    #[staticmethod]
     pub fn water() -> Self {
         Self {
             name: "water".into(),
@@ -656,6 +679,7 @@ impl MaterialProperties {
     }
 
     /// Air at 20 °C, 1 atm.
+    #[staticmethod]
     pub fn air() -> Self {
         Self {
             name: "air".into(),
@@ -669,6 +693,7 @@ impl MaterialProperties {
     }
 
     /// Titanium Ti-6Al-4V.
+    #[staticmethod]
     pub fn titanium() -> Self {
         Self {
             name: "titanium".into(),
@@ -684,6 +709,7 @@ impl MaterialProperties {
     /// Lookup a material by name (case-insensitive).
     ///
     /// Returns `None` if the name is unknown.
+    #[staticmethod]
     pub fn lookup(name: &str) -> Option<Self> {
         match name.to_lowercase().as_str() {
             "steel" => Some(Self::steel()),
@@ -731,7 +757,7 @@ impl MaterialProperties {
 
 /// PyO3-callable: look up a material and return `[density, E, nu, UTS, visc, yield]`
 /// or an empty vec if the name is unknown.
-#[allow(dead_code)]
+#[pyfunction]
 pub fn py_query_material(name: &str) -> Vec<f64> {
     match MaterialProperties::lookup(name) {
         Some(m) => vec![
@@ -747,7 +773,7 @@ pub fn py_query_material(name: &str) -> Vec<f64> {
 }
 
 /// PyO3-callable: return P-wave speed for a named material, or `0.0`.
-#[allow(dead_code)]
+#[pyfunction]
 pub fn py_p_wave_speed(name: &str) -> f64 {
     MaterialProperties::lookup(name)
         .and_then(|m| m.p_wave_speed())
@@ -755,7 +781,7 @@ pub fn py_p_wave_speed(name: &str) -> f64 {
 }
 
 /// PyO3-callable: return S-wave speed for a named material, or `0.0`.
-#[allow(dead_code)]
+#[pyfunction]
 pub fn py_s_wave_speed(name: &str) -> f64 {
     MaterialProperties::lookup(name)
         .and_then(|m| m.s_wave_speed())

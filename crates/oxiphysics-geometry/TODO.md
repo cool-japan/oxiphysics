@@ -1,6 +1,6 @@
 # oxiphysics-geometry TODO
 
-**Version:** 0.1.0 | **Updated:** 2026-04-06 | **Status:** ✅ COMPLETE
+**Version:** 0.1.1 | **Updated:** 2026-05-17 | **Status:** ✅ COMPLETE
 
 ## Milestone 1: Primitive Shapes — ✅ COMPLETE
 - [x] Define shape trait hierarchy (`shape`)

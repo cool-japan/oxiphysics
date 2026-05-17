@@ -98,8 +98,10 @@ pub fn compute_color_function(particles: &[MultiphaseParticle], h: f64) -> Vec<f
         }
         colors[i] = if w_sum > 1e-14 {
             wc_sum / w_sum
+        } else if particles[i].phase_id == 0 {
+            1.0
         } else {
-            if particles[i].phase_id == 0 { 1.0 } else { 0.0 }
+            0.0
         };
     }
     colors

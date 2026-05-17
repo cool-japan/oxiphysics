@@ -380,10 +380,64 @@ impl NewmarkBetaSim {
                 }
             }
         }
-        // Rayleigh stiffness-proportional damping: applied implicitly via force
-        // Here we do an approximation: subtract beta_r * K * v via elastic forces
-        // with a perturbed velocity step (not implemented for full implicit;
-        // zero contribution when rayleigh_beta = 0).
+        // Rayleigh stiffness-proportional damping: F_d = -β_r * K * v.
+        // Approximated via a finite-difference perturbation on elastic forces:
+        //   K * v ≈ (F_elastic(x + ε*v) - F_elastic(x)) / ε
+        if self.rayleigh_beta.abs() > 1e-30 {
+            let eps = 1e-7_f64;
+            // Capture elastic forces at the current (unperturbed) positions.
+            let f_elastic_orig: Vec<[f64; 3]> = {
+                let mut f_el = vec![[0.0_f64; 3]; n];
+                for tet in &self.tets {
+                    let fs = tet.compute_elastic_forces(&self.nodes, self.mu, self.lambda);
+                    for k in 0..4 {
+                        let idx = tet.node_indices[k];
+                        for d in 0..3 {
+                            f_el[idx][d] += fs[k][d];
+                        }
+                    }
+                }
+                f_el
+            };
+            // Temporarily perturb positions by ε*v and compute elastic forces there.
+            let saved: Vec<[f64; 3]> = self.nodes.iter().map(|nd| nd.position).collect();
+            for i in 0..n {
+                if self.pinned[i] {
+                    continue;
+                }
+                let v = self.nodes[i].velocity;
+                for d in 0..3 {
+                    self.nodes[i].position[d] += eps * v[d];
+                }
+            }
+            let f_elastic_perturbed: Vec<[f64; 3]> = {
+                let mut f_el = vec![[0.0_f64; 3]; n];
+                for tet in &self.tets {
+                    let fs = tet.compute_elastic_forces(&self.nodes, self.mu, self.lambda);
+                    for k in 0..4 {
+                        let idx = tet.node_indices[k];
+                        for d in 0..3 {
+                            f_el[idx][d] += fs[k][d];
+                        }
+                    }
+                }
+                f_el
+            };
+            // Restore positions.
+            for i in 0..n {
+                self.nodes[i].position = saved[i];
+            }
+            // Subtract β_r * K * v approximation from the already-accumulated forces.
+            for i in 0..n {
+                if self.pinned[i] {
+                    continue;
+                }
+                for d in 0..3 {
+                    let kv_d = (f_elastic_perturbed[i][d] - f_elastic_orig[i][d]) / eps;
+                    self.nodes[i].force[d] -= self.rayleigh_beta * kv_d;
+                }
+            }
+        }
     }
 
     /// Advance the simulation by one time step using the explicit Newmark-beta scheme.
@@ -526,6 +580,16 @@ impl NewmarkBetaSim {
                 self.nodes[idx].velocity[d] += impulse[d] * inv_m;
             }
         }
+    }
+
+    /// Set Rayleigh damping coefficients as a builder-pattern modifier.
+    ///
+    /// `alpha` is the mass-proportional coefficient (adds `α*M` to damping).
+    /// `beta` is the stiffness-proportional coefficient (adds `β*K` to damping).
+    pub fn with_rayleigh_damping(mut self, alpha: f64, beta: f64) -> Self {
+        self.rayleigh_alpha = alpha;
+        self.rayleigh_beta = beta;
+        self
     }
 
     /// Number of active (non-pinned) nodes.
@@ -828,5 +892,84 @@ impl HighLevelFemBody {
             energy += elem.V0 * (self.mu * frob_sq + 0.5 * self.lambda * trace * trace);
         }
         energy
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal single-tet NewmarkBetaSim with one fixed node.
+    fn minimal_sim(rayleigh_alpha: f64, rayleigh_beta: f64) -> NewmarkBetaSim {
+        // Regular tetrahedron-ish nodes
+        let nodes = vec![
+            CorotFemNode {
+                position: [0.0, 0.0, 0.0],
+                velocity: [1.0, 0.0, 0.0], // initial velocity for damping test
+                force: [0.0; 3],
+                mass: 1.0,
+            },
+            CorotFemNode {
+                position: [1.0, 0.0, 0.0],
+                velocity: [0.0, 0.0, 0.0],
+                force: [0.0; 3],
+                mass: 1.0,
+            },
+            CorotFemNode {
+                position: [0.0, 1.0, 0.0],
+                velocity: [0.0, 0.0, 0.0],
+                force: [0.0; 3],
+                mass: 1.0,
+            },
+            CorotFemNode {
+                position: [0.0, 0.0, 1.0],
+                velocity: [0.0, 0.0, 0.0],
+                force: [0.0; 3],
+                mass: 1.0,
+            },
+        ];
+        let tets = vec![CorotFemTet::new([0, 1, 2, 3], &nodes)];
+        let sim = NewmarkBetaSim::new(nodes, tets, 1e3, 1e3, 1e-4);
+        sim.with_rayleigh_damping(rayleigh_alpha, rayleigh_beta)
+    }
+
+    #[test]
+    fn rayleigh_damping_builder_stores_coefficients() {
+        let sim = minimal_sim(0.5, 0.01);
+        assert!((sim.rayleigh_alpha - 0.5).abs() < 1e-15);
+        assert!((sim.rayleigh_beta - 0.01).abs() < 1e-15);
+    }
+
+    #[test]
+    fn rayleigh_damping_beta_reduces_high_freq_residual() {
+        // Verify that stiffness-proportional Rayleigh damping actually applies
+        // a non-zero damping force when velocity is non-zero.
+        //
+        // Strategy: run one step of `accumulate_forces` on an undamped and a
+        // damped simulation from identical initial conditions.  The net force
+        // on the moving node should differ.
+        let mut undamped = minimal_sim(0.0, 0.0);
+        let mut damped = minimal_sim(0.0, 0.1);
+
+        undamped.accumulate_forces();
+        damped.accumulate_forces();
+
+        // Node 0 has velocity [1,0,0].  With β > 0 and non-zero stiffness,
+        // the stiffness-proportional term -(β * K * v) should change the force.
+        let f_undamped = undamped.nodes[0].force;
+        let f_damped = damped.nodes[0].force;
+
+        let diff = (f_undamped[0] - f_damped[0]).abs()
+            + (f_undamped[1] - f_damped[1]).abs()
+            + (f_undamped[2] - f_damped[2]).abs();
+
+        assert!(
+            diff > 1e-12,
+            "damping force should differ from undamped: diff={diff}"
+        );
     }
 }

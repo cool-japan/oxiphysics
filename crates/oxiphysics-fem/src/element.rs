@@ -54,7 +54,10 @@ impl LinearTetrahedron {
         let vol = det_j / 6.0;
         let inv_6v = 1.0 / det_j; // = 1 / (6V)
 
-        // Cofactors for inverse of Jacobian matrix
+        // Cofactors of J (columns = [x10, x20, x30]).
+        //   a_ij = cof(J)[i-1, j-1] = (-1)^(i+j) * det( minor removing row i-1,
+        //   col j-1 ).
+        // Note the natural-number 1-based indexing: `a11` is the (1,1) entry.
         let a11 = x20.y * x30.z - x20.z * x30.y;
         let a12 = -(x20.x * x30.z - x20.z * x30.x);
         let a13 = x20.x * x30.y - x20.y * x30.x;
@@ -67,17 +70,25 @@ impl LinearTetrahedron {
         let a32 = -(x10.x * x20.z - x10.z * x20.x);
         let a33 = x10.x * x20.y - x10.y * x20.x;
 
-        // dN/dx for nodes 1,2,3
+        // Shape-function gradients: dN_k/dx_l = J^{-1}[k-1, l-1]
+        //   J^{-1} = adj(J) / det(J) = cof(J)^T / det(J),
+        // so dN_k/dx_l = a_{l,k} / det(J). The `a_ij` variable naming above
+        // follows matrix convention cof(J)[i-1, j-1]; transposing gives
+        // J^{-1}[k-1, l-1] = a_{l,k}/det, i.e. the ROW of J^{-1} for node k
+        // is `(a_{1,k}, a_{2,k}, a_{3,k}) / det`. For a symmetric Jacobian
+        // (e.g. the axis-aligned unit tet) adj(J) = cof(J) and the
+        // transpose is silent, which is why this bug stayed hidden on
+        // axis-aligned test cases until diagnosed on a sheared tet.
         let dn1dx = a11 * inv_6v;
-        let dn1dy = a21 * inv_6v;
-        let dn1dz = a31 * inv_6v;
+        let dn1dy = a12 * inv_6v;
+        let dn1dz = a13 * inv_6v;
 
-        let dn2dx = a12 * inv_6v;
+        let dn2dx = a21 * inv_6v;
         let dn2dy = a22 * inv_6v;
-        let dn2dz = a32 * inv_6v;
+        let dn2dz = a23 * inv_6v;
 
-        let dn3dx = a13 * inv_6v;
-        let dn3dy = a23 * inv_6v;
+        let dn3dx = a31 * inv_6v;
+        let dn3dy = a32 * inv_6v;
         let dn3dz = a33 * inv_6v;
 
         // dN0/dx = -(dN1/dx + dN2/dx + dN3/dx)

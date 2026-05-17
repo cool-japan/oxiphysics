@@ -644,12 +644,10 @@ impl LevelSetField {
                     } else {
                         0.0
                     }
+                } else if col + 1 < nx {
+                    (self.phi[row * nx + col + 1] - self.phi[idx]) / dx
                 } else {
-                    if col + 1 < nx {
-                        (self.phi[row * nx + col + 1] - self.phi[idx]) / dx
-                    } else {
-                        0.0
-                    }
+                    0.0
                 };
                 let dphidy = if vn >= 0.0 {
                     if row > 0 {
@@ -657,12 +655,10 @@ impl LevelSetField {
                     } else {
                         0.0
                     }
+                } else if row + 1 < ny {
+                    (self.phi[(row + 1) * nx + col] - self.phi[idx]) / dy
                 } else {
-                    if row + 1 < ny {
-                        (self.phi[(row + 1) * nx + col] - self.phi[idx]) / dy
-                    } else {
-                        0.0
-                    }
+                    0.0
                 };
                 let grad_phi = (dphidx * dphidx + dphidy * dphidy).sqrt();
                 phi_new[idx] = self.phi[idx] - dt * vn * grad_phi;

@@ -76,6 +76,14 @@ pub mod additive_manufacturing_materials;
 pub mod foam_materials;
 pub mod magnetocaloric_materials;
 
+pub mod materials_bench;
+pub mod simd_paths;
+pub use simd_paths::{
+    MaterialBatchStats, SoaMaterialPoints, elastic_stress_batch, elastic_stress_batch_x4, lame,
+    miner_damage_batch, neo_hookean_stress_batch, return_mapping_batch,
+    thermal_expansion_stress_batch, viscoplastic_rate_batch, von_mises_yield_batch,
+};
+
 pub use combination::{
     ContactMaterialPair, FrictionCombineRule, ModulusCombineRule, RestitutionCombineRule,
     ThermalContactResistance, combine_friction, combine_modulus, combine_restitution,

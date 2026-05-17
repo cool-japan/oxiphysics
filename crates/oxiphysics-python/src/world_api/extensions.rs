@@ -3,42 +3,50 @@
 
 //! Energy, Gravity Field, Contact List, and Inertia Extensions.
 
-#![allow(missing_docs)]
-
 use super::PyPhysicsWorld;
+use pyo3::prelude::*;
 
 // ===========================================================================
 // Energy, Gravity Field, Contact List, and Inertia Extensions
 // ===========================================================================
 
 /// Contact pair returned by `get_contact_list`.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct ContactPair {
     /// Handle of body A.
+    #[pyo3(get, set)]
     pub body_a: u32,
     /// Handle of body B.
+    #[pyo3(get, set)]
     pub body_b: u32,
     /// World-space contact point.
+    #[pyo3(get, set)]
     pub contact_point: [f64; 3],
     /// Contact normal (from B toward A).
+    #[pyo3(get, set)]
     pub normal: [f64; 3],
     /// Penetration depth.
+    #[pyo3(get, set)]
     pub depth: f64,
     /// Impulse magnitude applied.
+    #[pyo3(get, set)]
     pub impulse: f64,
 }
 
 /// Inertia tensor (3×3 matrix stored as 9 elements, row-major).
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct InertiaTensor {
     /// Row-major 3×3 inertia tensor elements.
+    #[pyo3(get, set)]
     pub elements: [f64; 9],
 }
 
+#[pymethods]
 impl InertiaTensor {
     /// Create from diagonal elements (assumes principal axes aligned).
+    #[staticmethod]
     pub fn from_diagonal(ix: f64, iy: f64, iz: f64) -> Self {
         #[allow(clippy::zero_prefixed_literal)]
         let elements = [ix, 0.0, 0.0, 0.0, iy, 0.0, 0.0, 0.0, iz];
@@ -58,16 +66,20 @@ impl InertiaTensor {
 
 /// `PyRigidBody` is a lightweight handle-based wrapper that exposes
 /// body-level computations (moment of inertia, etc.) without owning state.
-#[allow(dead_code)]
+#[pyclass]
 pub struct PyRigidBody {
     /// Mass of the body (kg).
+    #[pyo3(get, set)]
     pub mass: f64,
     /// Half-extents `[hx, hy, hz]` for box-shaped bodies.
+    #[pyo3(get, set)]
     pub half_extents: [f64; 3],
 }
 
+#[pymethods]
 impl PyRigidBody {
     /// Create a new `PyRigidBody` with the given mass and box half-extents.
+    #[new]
     pub fn new(mass: f64, half_extents: [f64; 3]) -> Self {
         Self { mass, half_extents }
     }

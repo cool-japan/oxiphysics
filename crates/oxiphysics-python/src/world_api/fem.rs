@@ -3,21 +3,24 @@
 
 //! FEM (Finite Element Method) Assembly and Solver.
 
-#![allow(missing_docs)]
+use pyo3::prelude::*;
 
 // ===========================================================================
 // FEM (Finite Element Method) Assembly and Solver
 // ===========================================================================
 
 /// A single 2-node bar (truss) element for FEM assembly.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FemBarElement {
     /// Global indices of the two end nodes.
+    #[pyo3(get, set)]
     pub nodes: [usize; 2],
     /// Young's modulus times cross-sectional area (EA).
+    #[pyo3(get, set)]
     pub ea: f64,
     /// Undeformed length of the element.
+    #[pyo3(get, set)]
     pub length: f64,
 }
 
@@ -26,10 +29,11 @@ pub struct FemBarElement {
 /// Assembles a global stiffness matrix from bar elements, applies boundary
 /// conditions, and solves with a direct (dense) solver suitable for
 /// demonstration/testing with small meshes.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PyFemAssembly {
     /// Number of degrees of freedom (nodes × 3 for 3-D).
+    #[pyo3(get)]
     pub n_dofs: usize,
     /// Bar elements.
     elements: Vec<FemBarElement>,
@@ -45,8 +49,10 @@ pub struct PyFemAssembly {
     assembled: bool,
 }
 
+#[pymethods]
 impl PyFemAssembly {
     /// Create a new FEM assembly with `n_nodes` 3-D nodes.
+    #[new]
     pub fn new(n_nodes: usize) -> Self {
         let n_dofs = n_nodes * 3;
         Self {
@@ -207,9 +213,9 @@ impl PyFemAssembly {
         self.displacements.get(dof).copied().unwrap_or(0.0)
     }
 
-    /// Get all displacements as a slice.
-    pub fn displacements(&self) -> &[f64] {
-        &self.displacements
+    /// Get all displacements as an owned `Vec<f64>`.
+    pub fn all_displacements(&self) -> Vec<f64> {
+        self.displacements.clone()
     }
 
     /// Compute the axial force in element `elem_idx`.

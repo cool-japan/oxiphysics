@@ -797,10 +797,12 @@ pub struct WingedEdgeMesh {
     pub edges: Vec<WingedEdge>,
     /// All vertices.
     pub vertices: Vec<[f64; 3]>,
-    /// Face → one edge index.
+    /// Face → one representative edge index.
     pub face_edge: Vec<usize>,
-    /// Vertex → one edge index.
+    /// Vertex → one incident edge index.
     pub vertex_edge: Vec<usize>,
+    /// Per-face ordered `(edge_idx, forward)` lists.
+    pub face_edges: Vec<Vec<(usize, bool)>>,
 }
 impl WingedEdgeMesh {
     /// Create an empty winged-edge mesh.
@@ -810,6 +812,7 @@ impl WingedEdgeMesh {
             vertices: Vec::new(),
             face_edge: Vec::new(),
             vertex_edge: Vec::new(),
+            face_edges: Vec::new(),
         }
     }
     /// Add a vertex.
@@ -819,7 +822,7 @@ impl WingedEdgeMesh {
         self.vertex_edge.push(usize::MAX);
         idx
     }
-    /// Add an edge (placeholder connectivity).
+    /// Add an edge.
     pub fn add_edge(&mut self, v_start: usize, v_end: usize) -> usize {
         let idx = self.edges.len();
         self.edges.push(WingedEdge {
@@ -840,9 +843,196 @@ impl WingedEdgeMesh {
         }
         idx
     }
+    /// Add a face with explicit `(edge_idx, forward)` orientation pairs.
+    ///
+    /// `forward = true` means the edge is traversed v_start → v_end on this face.
+    pub fn add_face_oriented(&mut self, oriented: &[(usize, bool)]) -> usize {
+        let fi = self.face_edge.len();
+        self.face_edge
+            .push(oriented.first().map(|&(ei, _)| ei).unwrap_or(usize::MAX));
+        self.face_edges.push(oriented.to_vec());
+        fi
+    }
+    /// Add a face by edge indices, inferring orientations from vertex connectivity.
+    pub fn add_face(&mut self, edges: &[usize]) -> usize {
+        let fi = self.face_edge.len();
+        if edges.is_empty() {
+            self.face_edge.push(usize::MAX);
+            self.face_edges.push(vec![]);
+            return fi;
+        }
+        self.face_edge.push(edges[0]);
+        let mut oriented = Vec::with_capacity(edges.len());
+        oriented.push((edges[0], true));
+        let mut prev_end = self.edges[edges[0]].v_end;
+        for &ei in &edges[1..] {
+            let e = &self.edges[ei];
+            if e.v_start == prev_end {
+                oriented.push((ei, true));
+                prev_end = e.v_end;
+            } else {
+                oriented.push((ei, false));
+                prev_end = e.v_start;
+            }
+        }
+        self.face_edges.push(oriented);
+        fi
+    }
+    /// Build winged-edge adjacency pointers after all faces are registered.
+    ///
+    /// Sets `face_left`, `face_right`, and the four wing pointers on every edge.
+    ///
+    /// For edge `e` going v_start → v_end:
+    /// - `face_left`      = face traversing `e` forward.
+    /// - `face_right`     = face traversing `e` backward.
+    /// - `ccw_start_left` = predecessor of `e` in the CCW cycle on face_left.
+    /// - `cw_end_left`    = successor   of `e` in the CCW cycle on face_left.
+    /// - `cw_start_right` = successor   in face_right's cycle (backward side).
+    /// - `ccw_end_right`  = predecessor in face_right's cycle (backward side).
+    pub fn build_adjacency(&mut self) {
+        // Pass 1: face_left / face_right.
+        for fi in 0..self.face_edges.len() {
+            let oriented = self.face_edges[fi].clone();
+            for &(ei, fwd) in &oriented {
+                if fwd {
+                    self.edges[ei].face_left = fi;
+                } else {
+                    self.edges[ei].face_right = fi;
+                }
+            }
+        }
+        // Pass 2: wing pointers.
+        for fi in 0..self.face_edges.len() {
+            let oriented = self.face_edges[fi].clone();
+            let n = oriented.len();
+            if n == 0 {
+                continue;
+            }
+            for k in 0..n {
+                let (ei, fwd) = oriented[k];
+                let prev = oriented[(k + n - 1) % n].0;
+                let next = oriented[(k + 1) % n].0;
+                if fwd {
+                    self.edges[ei].ccw_start_left = prev;
+                    self.edges[ei].cw_end_left = next;
+                } else {
+                    self.edges[ei].cw_start_right = next;
+                    self.edges[ei].ccw_end_right = prev;
+                }
+            }
+        }
+    }
     /// Number of edges.
     pub fn num_edges(&self) -> usize {
         self.edges.len()
+    }
+    /// Number of faces.
+    pub fn num_faces(&self) -> usize {
+        self.face_edge.len()
+    }
+}
+
+#[cfg(test)]
+mod winged_edge_tests {
+    use super::WingedEdgeMesh;
+
+    fn make_cube() -> WingedEdgeMesh {
+        let mut m = WingedEdgeMesh::new();
+        for p in &[
+            [0.0f64, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ] {
+            m.add_vertex(*p);
+        }
+        let e0 = m.add_edge(0, 1);
+        let e1 = m.add_edge(1, 2);
+        let e2 = m.add_edge(2, 3);
+        let e3 = m.add_edge(3, 0);
+        let e4 = m.add_edge(4, 5);
+        let e5 = m.add_edge(5, 6);
+        let e6 = m.add_edge(6, 7);
+        let e7 = m.add_edge(7, 4);
+        let e8 = m.add_edge(0, 4);
+        let e9 = m.add_edge(1, 5);
+        let e10 = m.add_edge(2, 6);
+        let e11 = m.add_edge(3, 7);
+        // Each edge: once forward (face_left), once backward (face_right).
+        m.add_face_oriented(&[(e3, false), (e2, false), (e1, false), (e0, false)]); // bottom
+        m.add_face_oriented(&[(e4, true), (e5, true), (e6, true), (e7, true)]); // top
+        m.add_face_oriented(&[(e0, true), (e9, true), (e4, false), (e8, false)]); // front
+        m.add_face_oriented(&[(e2, true), (e11, true), (e6, false), (e10, false)]); // back
+        m.add_face_oriented(&[(e1, true), (e10, true), (e5, false), (e9, false)]); // right
+        m.add_face_oriented(&[(e8, true), (e7, false), (e11, false), (e3, true)]); // left
+        m.build_adjacency();
+        m
+    }
+
+    #[test]
+    fn test_cube_counts() {
+        let m = make_cube();
+        assert_eq!(m.num_edges(), 12);
+        assert_eq!(m.num_faces(), 6);
+        assert_eq!(m.vertices.len(), 8);
+    }
+
+    #[test]
+    fn test_face_references_assigned() {
+        let m = make_cube();
+        for (i, e) in m.edges.iter().enumerate() {
+            assert_ne!(e.face_left, usize::MAX, "edge {} face_left unset", i);
+            assert_ne!(e.face_right, usize::MAX, "edge {} face_right unset", i);
+        }
+    }
+
+    #[test]
+    fn test_wing_pointers_set() {
+        let m = make_cube();
+        for (i, e) in m.edges.iter().enumerate() {
+            assert_ne!(
+                e.ccw_start_left,
+                usize::MAX,
+                "edge {} ccw_start_left unset",
+                i
+            );
+            assert_ne!(
+                e.cw_start_right,
+                usize::MAX,
+                "edge {} cw_start_right unset",
+                i
+            );
+            assert_ne!(
+                e.ccw_end_right,
+                usize::MAX,
+                "edge {} ccw_end_right unset",
+                i
+            );
+            assert_ne!(e.cw_end_left, usize::MAX, "edge {} cw_end_left unset", i);
+        }
+    }
+
+    #[test]
+    fn test_ccw_cycle_closes() {
+        let m = make_cube();
+        // Following ccw_start_left forms a closed cycle for each edge.
+        for start in 0..m.num_edges() {
+            let mut cur = m.edges[start].ccw_start_left;
+            let mut steps = 1usize;
+            while cur != start {
+                cur = m.edges[cur].ccw_start_left;
+                steps += 1;
+                assert!(
+                    steps <= 12,
+                    "ccw_start_left loop for edge {} did not close",
+                    start
+                );
+            }
+        }
     }
 }
 /// Non-manifold edge: an edge shared by more than 2 faces.

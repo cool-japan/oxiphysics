@@ -11,6 +11,7 @@
 #![allow(missing_docs)]
 #![allow(dead_code)]
 
+use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize};
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A snapshot of global physics state at one time step.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PySnapshot {
     /// Simulation time (seconds).
@@ -59,7 +61,14 @@ impl Default for PySnapshot {
     }
 }
 
+#[pymethods]
 impl PySnapshot {
+    /// Create a default PySnapshot.
+    #[new]
+    pub fn new_default() -> Self {
+        Self::default()
+    }
+
     /// Compute the total energy.
     pub fn compute_total(&mut self) {
         self.total_energy = self.kinetic_energy + self.potential_energy;
@@ -73,6 +82,7 @@ impl PySnapshot {
 /// Master analytics object for a simulation.
 ///
 /// Holds snapshot history and delegates to sub-trackers.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PyPhysicsAnalytics {
     /// All recorded snapshots.
@@ -83,8 +93,10 @@ pub struct PyPhysicsAnalytics {
     pub step: u64,
 }
 
+#[pymethods]
 impl PyPhysicsAnalytics {
     /// Create analytics with a given history capacity.
+    #[new]
     pub fn new(max_snapshots: usize) -> Self {
         Self {
             snapshots: Vec::new(),
@@ -103,7 +115,7 @@ impl PyPhysicsAnalytics {
     }
 
     /// Advance step counter.
-    pub fn step(&mut self) {
+    pub fn advance_step(&mut self) {
         self.step += 1;
     }
 
@@ -147,18 +159,55 @@ impl PyPhysicsAnalytics {
         }
     }
 
-    /// Most recent snapshot.
-    pub fn latest(&self) -> Option<&PySnapshot> {
-        self.snapshots.last()
+    /// Most recent snapshot (cloned).
+    pub fn latest(&self) -> Option<PySnapshot> {
+        self.snapshots.last().cloned()
     }
 
     /// True if no snapshots recorded.
     pub fn is_empty(&self) -> bool {
         self.snapshots.is_empty()
     }
+
+    /// Get snapshots.
+    #[getter]
+    pub fn get_snapshots(&self) -> Vec<PySnapshot> {
+        self.snapshots.clone()
+    }
+
+    /// Set snapshots.
+    #[setter]
+    pub fn set_snapshots(&mut self, v: Vec<PySnapshot>) {
+        self.snapshots = v;
+    }
+
+    /// Get max_snapshots.
+    #[getter]
+    pub fn get_max_snapshots(&self) -> usize {
+        self.max_snapshots
+    }
+
+    /// Set max_snapshots.
+    #[setter]
+    pub fn set_max_snapshots(&mut self, v: usize) {
+        self.max_snapshots = v;
+    }
+
+    /// Get step.
+    #[getter]
+    pub fn get_step(&self) -> u64 {
+        self.step
+    }
+
+    /// Set step.
+    #[setter]
+    pub fn set_step(&mut self, v: u64) {
+        self.step = v;
+    }
 }
 
 /// Aggregate metrics derived from snapshot history.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PyAggregateMetrics {
     /// Mean kinetic energy.
@@ -177,11 +226,21 @@ pub struct PyAggregateMetrics {
     pub sample_count: usize,
 }
 
+#[pymethods]
+impl PyAggregateMetrics {
+    /// Create a default PyAggregateMetrics.
+    #[new]
+    pub fn new_default() -> Self {
+        Self::default()
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PyEnergyTracker
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Tracks kinetic, potential, and total energy over time.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PyEnergyTracker {
     /// Time series of (time, KE, PE, total).
@@ -194,8 +253,10 @@ pub struct PyEnergyTracker {
     pub anomalies: Vec<(usize, f64)>,
 }
 
+#[pymethods]
 impl PyEnergyTracker {
     /// Create a new tracker.
+    #[new]
     pub fn new(capacity: usize, anomaly_threshold: f64) -> Self {
         Self {
             history: Vec::new(),
@@ -252,6 +313,30 @@ impl PyEnergyTracker {
     pub fn has_anomalies(&self) -> bool {
         !self.anomalies.is_empty()
     }
+
+    /// Get history as list of (time, ke, pe, total) tuples.
+    #[getter]
+    pub fn get_history(&self) -> Vec<(f64, f64, f64, f64)> {
+        self.history.clone()
+    }
+
+    /// Get anomalies as list of (step_index, delta_energy) tuples.
+    #[getter]
+    pub fn get_anomalies(&self) -> Vec<(usize, f64)> {
+        self.anomalies.clone()
+    }
+
+    /// Get capacity.
+    #[getter]
+    pub fn get_capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Get anomaly_threshold.
+    #[getter]
+    pub fn get_anomaly_threshold(&self) -> f64 {
+        self.anomaly_threshold
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -259,6 +344,7 @@ impl PyEnergyTracker {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Tracks linear and angular momentum conservation.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PyMomentumTracker {
     /// History of `(time, lin_mom_mag, ang_mom_mag)`.
@@ -271,8 +357,10 @@ pub struct PyMomentumTracker {
     pub tolerance: f64,
 }
 
+#[pymethods]
 impl PyMomentumTracker {
     /// Create with default tolerance.
+    #[new]
     pub fn new(tolerance: f64) -> Self {
         Self {
             tolerance,
@@ -316,6 +404,30 @@ impl PyMomentumTracker {
             .map(|&(_, lm, _)| (lm - self.initial_linear).abs())
             .fold(0.0_f64, f64::max)
     }
+
+    /// Get history as list of (time, lin_mom, ang_mom) tuples.
+    #[getter]
+    pub fn get_history(&self) -> Vec<(f64, f64, f64)> {
+        self.history.clone()
+    }
+
+    /// Get initial_linear.
+    #[getter]
+    pub fn get_initial_linear(&self) -> f64 {
+        self.initial_linear
+    }
+
+    /// Get initial_angular.
+    #[getter]
+    pub fn get_initial_angular(&self) -> f64 {
+        self.initial_angular
+    }
+
+    /// Get tolerance.
+    #[getter]
+    pub fn get_tolerance(&self) -> f64 {
+        self.tolerance
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -323,6 +435,7 @@ impl PyMomentumTracker {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Statistics about collisions over the simulation.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PyCollisionStats {
     /// Total collision count.
@@ -343,8 +456,10 @@ pub struct PyCollisionStats {
     depth_count: u64,
 }
 
+#[pymethods]
 impl PyCollisionStats {
     /// Create with given histogram resolution.
+    #[new]
     pub fn new(n_bins: usize, max_impulse: f64) -> Self {
         Self {
             max_impulse,
@@ -404,6 +519,48 @@ impl PyCollisionStats {
     pub fn most_collided_pair(&self) -> Option<(u32, u32, u64)> {
         self.pair_counts.iter().max_by_key(|&&(_, _, c)| c).copied()
     }
+
+    /// Get total_collisions.
+    #[getter]
+    pub fn get_total_collisions(&self) -> u64 {
+        self.total_collisions
+    }
+
+    /// Get pair_counts.
+    #[getter]
+    pub fn get_pair_counts(&self) -> Vec<(u32, u32, u64)> {
+        self.pair_counts.clone()
+    }
+
+    /// Get impulse_histogram.
+    #[getter]
+    pub fn get_impulse_histogram(&self) -> Vec<u64> {
+        self.impulse_histogram.clone()
+    }
+
+    /// Get max_impulse.
+    #[getter]
+    pub fn get_max_impulse(&self) -> f64 {
+        self.max_impulse
+    }
+
+    /// Get depth_min.
+    #[getter]
+    pub fn get_depth_min(&self) -> f64 {
+        self.depth_min
+    }
+
+    /// Get depth_max.
+    #[getter]
+    pub fn get_depth_max(&self) -> f64 {
+        self.depth_max
+    }
+
+    /// Get depth_mean.
+    #[getter]
+    pub fn get_depth_mean(&self) -> f64 {
+        self.depth_mean
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -411,6 +568,7 @@ impl PyCollisionStats {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Statistics about body sleep/wake behaviour.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PySleepStats {
     /// Total wake events observed.
@@ -423,8 +581,10 @@ pub struct PySleepStats {
     pub capacity: usize,
 }
 
+#[pymethods]
 impl PySleepStats {
     /// Create with history capacity.
+    #[new]
     pub fn new(capacity: usize) -> Self {
         Self {
             capacity,
@@ -458,6 +618,30 @@ impl PySleepStats {
             .sum::<f64>()
             / self.sleeping_fraction_history.len() as f64
     }
+
+    /// Get total_wake_events.
+    #[getter]
+    pub fn get_total_wake_events(&self) -> u64 {
+        self.total_wake_events
+    }
+
+    /// Get total_sleep_events.
+    #[getter]
+    pub fn get_total_sleep_events(&self) -> u64 {
+        self.total_sleep_events
+    }
+
+    /// Get sleeping_fraction_history as list of (time, fraction) tuples.
+    #[getter]
+    pub fn get_sleeping_fraction_history(&self) -> Vec<(f64, f64)> {
+        self.sleeping_fraction_history.clone()
+    }
+
+    /// Get capacity.
+    #[getter]
+    pub fn get_capacity(&self) -> usize {
+        self.capacity
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -465,6 +649,7 @@ impl PySleepStats {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Solver and constraint quality statistics.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PyConstraintStats {
     /// Mean solver residual per step.
@@ -481,8 +666,10 @@ pub struct PyConstraintStats {
     iterations_sum: f64,
 }
 
+#[pymethods]
 impl PyConstraintStats {
     /// Create empty stats.
+    #[new]
     pub fn new() -> Self {
         Self::default()
     }
@@ -504,6 +691,30 @@ impl PyConstraintStats {
     pub fn is_converging(&self, threshold: f64) -> bool {
         self.mean_residual < threshold
     }
+
+    /// Get mean_residual.
+    #[getter]
+    pub fn get_mean_residual(&self) -> f64 {
+        self.mean_residual
+    }
+
+    /// Get max_residual.
+    #[getter]
+    pub fn get_max_residual(&self) -> f64 {
+        self.max_residual
+    }
+
+    /// Get mean_iterations.
+    #[getter]
+    pub fn get_mean_iterations(&self) -> f64 {
+        self.mean_iterations
+    }
+
+    /// Get warm_start_rate.
+    #[getter]
+    pub fn get_warm_start_rate(&self) -> f64 {
+        self.warm_start_rate
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -511,6 +722,7 @@ impl PyConstraintStats {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Breakdown of time spent per pipeline phase (milliseconds).
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PyStepTimings {
     /// Broadphase collision detection (ms).
@@ -525,7 +737,14 @@ pub struct PyStepTimings {
     pub total_ms: f64,
 }
 
+#[pymethods]
 impl PyStepTimings {
+    /// Create a default PyStepTimings.
+    #[new]
+    pub fn new_default() -> Self {
+        Self::default()
+    }
+
     /// Compute total as sum of phases.
     pub fn compute_total(&mut self) {
         self.total_ms = self.broad_ms + self.narrow_ms + self.solver_ms + self.integration_ms;
@@ -533,6 +752,7 @@ impl PyStepTimings {
 }
 
 /// Tracks per-step performance timings.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PyPerformanceTracker {
     /// History of per-step timings.
@@ -541,8 +761,10 @@ pub struct PyPerformanceTracker {
     pub capacity: usize,
 }
 
+#[pymethods]
 impl PyPerformanceTracker {
     /// Create with capacity.
+    #[new]
     pub fn new(capacity: usize) -> Self {
         Self {
             capacity,
@@ -586,6 +808,24 @@ impl PyPerformanceTracker {
         }
         out
     }
+
+    /// Get history as list of PyStepTimings.
+    #[getter]
+    pub fn get_history(&self) -> Vec<PyStepTimings> {
+        self.history.clone()
+    }
+
+    /// Set history.
+    #[setter]
+    pub fn set_history(&mut self, v: Vec<PyStepTimings>) {
+        self.history = v;
+    }
+
+    /// Get capacity.
+    #[getter]
+    pub fn get_capacity(&self) -> usize {
+        self.capacity
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -593,6 +833,7 @@ impl PyPerformanceTracker {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A full simulation quality report.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PySimulationReport {
     /// Total steps simulated.
@@ -615,8 +856,10 @@ pub struct PySimulationReport {
     pub anomaly_list: Vec<String>,
 }
 
+#[pymethods]
 impl PySimulationReport {
     /// Create a new report.
+    #[new]
     pub fn new() -> Self {
         Self {
             energy: PyEnergyTracker::new(1000, 0.5),
@@ -630,33 +873,144 @@ impl PySimulationReport {
     }
 
     /// Serialise report to JSON string.
-    pub fn as_json(&self) -> Result<String, serde_json::Error> {
+    pub fn as_json(&self) -> PyResult<String> {
         serde_json::to_string_pretty(self)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
     /// Append an anomaly message.
-    pub fn flag_anomaly(&mut self, msg: impl Into<String>) {
-        self.anomaly_list.push(msg.into());
+    pub fn flag_anomaly(&mut self, msg: String) {
+        self.anomaly_list.push(msg);
     }
 
     /// Run a check and flag if energy anomalies exist.
     pub fn check_energy(&mut self) {
         if self.energy.has_anomalies() {
-            self.flag_anomaly(format!(
+            let msg = format!(
                 "Energy anomalies detected: {} jumps",
                 self.energy.anomalies.len()
-            ));
+            );
+            self.anomaly_list.push(msg);
         }
     }
 
     /// Run a check and flag if momentum is not conserved.
     pub fn check_momentum(&mut self) {
         if !self.momentum.linear_conserved() {
-            self.flag_anomaly(format!(
+            let msg = format!(
                 "Linear momentum not conserved; max deviation = {:.4}",
                 self.momentum.max_linear_deviation()
-            ));
+            );
+            self.anomaly_list.push(msg);
         }
+    }
+
+    /// Get total_steps.
+    #[getter]
+    pub fn get_total_steps(&self) -> u64 {
+        self.total_steps
+    }
+
+    /// Set total_steps.
+    #[setter]
+    pub fn set_total_steps(&mut self, v: u64) {
+        self.total_steps = v;
+    }
+
+    /// Get total_time.
+    #[getter]
+    pub fn get_total_time(&self) -> f64 {
+        self.total_time
+    }
+
+    /// Set total_time.
+    #[setter]
+    pub fn set_total_time(&mut self, v: f64) {
+        self.total_time = v;
+    }
+
+    /// Get energy tracker (cloned).
+    #[getter]
+    pub fn get_energy(&self) -> PyEnergyTracker {
+        self.energy.clone()
+    }
+
+    /// Set energy tracker.
+    #[setter]
+    pub fn set_energy(&mut self, v: PyEnergyTracker) {
+        self.energy = v;
+    }
+
+    /// Get momentum tracker (cloned).
+    #[getter]
+    pub fn get_momentum(&self) -> PyMomentumTracker {
+        self.momentum.clone()
+    }
+
+    /// Set momentum tracker.
+    #[setter]
+    pub fn set_momentum(&mut self, v: PyMomentumTracker) {
+        self.momentum = v;
+    }
+
+    /// Get collision stats (cloned).
+    #[getter]
+    pub fn get_collision(&self) -> PyCollisionStats {
+        self.collision.clone()
+    }
+
+    /// Set collision stats.
+    #[setter]
+    pub fn set_collision(&mut self, v: PyCollisionStats) {
+        self.collision = v;
+    }
+
+    /// Get sleep stats (cloned).
+    #[getter]
+    pub fn get_sleep(&self) -> PySleepStats {
+        self.sleep.clone()
+    }
+
+    /// Set sleep stats.
+    #[setter]
+    pub fn set_sleep(&mut self, v: PySleepStats) {
+        self.sleep = v;
+    }
+
+    /// Get constraint stats (cloned).
+    #[getter]
+    pub fn get_constraint(&self) -> PyConstraintStats {
+        self.constraint.clone()
+    }
+
+    /// Set constraint stats.
+    #[setter]
+    pub fn set_constraint(&mut self, v: PyConstraintStats) {
+        self.constraint = v;
+    }
+
+    /// Get performance tracker (cloned).
+    #[getter]
+    pub fn get_performance(&self) -> PyPerformanceTracker {
+        self.performance.clone()
+    }
+
+    /// Set performance tracker.
+    #[setter]
+    pub fn set_performance(&mut self, v: PyPerformanceTracker) {
+        self.performance = v;
+    }
+
+    /// Get anomaly_list.
+    #[getter]
+    pub fn get_anomaly_list(&self) -> Vec<String> {
+        self.anomaly_list.clone()
+    }
+
+    /// Set anomaly_list.
+    #[setter]
+    pub fn set_anomaly_list(&mut self, v: Vec<String>) {
+        self.anomaly_list = v;
     }
 }
 
@@ -665,6 +1019,7 @@ impl PySimulationReport {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Benchmarks a physics simulation over N steps.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PyBenchmark {
     /// Number of steps run.
@@ -679,8 +1034,10 @@ pub struct PyBenchmark {
     pub constraint_count: usize,
 }
 
+#[pymethods]
 impl PyBenchmark {
     /// Create a benchmark for the given body and constraint counts.
+    #[new]
     pub fn new(body_count: usize, constraint_count: usize) -> Self {
         Self {
             body_count,
@@ -711,20 +1068,22 @@ impl PyBenchmark {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Exports simulation state to CSV or JSON.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PyDataExporter {
     /// Recorded rows: (time, body_id, px, py, pz, vx, vy, vz, ke).
     rows: Vec<(f64, u32, f64, f64, f64, f64, f64, f64, f64)>,
 }
 
+#[pymethods]
 impl PyDataExporter {
     /// Create an empty exporter.
+    #[new]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Record a body state.
-    #[allow(clippy::too_many_arguments)]
     pub fn record(
         &mut self,
         time: f64,
@@ -758,8 +1117,9 @@ impl PyDataExporter {
     }
 
     /// Export all rows to JSON.
-    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+    pub fn to_json(&self) -> PyResult<String> {
         serde_json::to_string_pretty(&self.rows)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
     /// Number of recorded rows.
@@ -771,6 +1131,38 @@ impl PyDataExporter {
     pub fn clear(&mut self) {
         self.rows.clear();
     }
+
+    /// Get all rows as list of tuples.
+    #[getter]
+    pub fn get_rows(&self) -> Vec<(f64, u32, f64, f64, f64, f64, f64, f64, f64)> {
+        self.rows.clone()
+    }
+}
+
+/// Register all `analytics` classes into a Python sub-module.
+///
+/// Called from the top-level `#[pymodule]` in `lib.rs`.
+pub fn register_analytics_module(
+    parent: &pyo3::Bound<'_, pyo3::types::PyModule>,
+) -> pyo3::PyResult<()> {
+    use pyo3::prelude::PyModule;
+    use pyo3::types::PyModuleMethods;
+    let child = PyModule::new(parent.py(), "analytics")?;
+    child.add_class::<PySnapshot>()?;
+    child.add_class::<PyPhysicsAnalytics>()?;
+    child.add_class::<PyAggregateMetrics>()?;
+    child.add_class::<PyEnergyTracker>()?;
+    child.add_class::<PyMomentumTracker>()?;
+    child.add_class::<PyCollisionStats>()?;
+    child.add_class::<PySleepStats>()?;
+    child.add_class::<PyConstraintStats>()?;
+    child.add_class::<PyStepTimings>()?;
+    child.add_class::<PyPerformanceTracker>()?;
+    child.add_class::<PySimulationReport>()?;
+    child.add_class::<PyBenchmark>()?;
+    child.add_class::<PyDataExporter>()?;
+    parent.add_submodule(&child)?;
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

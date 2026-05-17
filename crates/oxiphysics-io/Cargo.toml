@@ -3,7 +3,10 @@ name = "oxiphysics-io"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
 description = "File I/O and serialization for the OxiPhysics engine"
+readme = "README.md"
 categories = ["science", "filesystem"]
 keywords = ["physics", "io", "vtk", "hdf5", "serialization"]
 
@@ -12,6 +15,8 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 oxiphysics-core = { workspace = true }
 rand = { workspace = true }
+oxiarc-zstd = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
+oxiarc-zstd = { workspace = true }

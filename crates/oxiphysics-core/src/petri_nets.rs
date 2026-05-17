@@ -673,16 +673,311 @@ impl Default for ColoredPetriNet {
 }
 
 // ---------------------------------------------------------------------------
-// PNML stub
+// PNML parser (hand-rolled, no external XML crate dependencies)
 // ---------------------------------------------------------------------------
 
-/// Stub for parsing Petri Net Markup Language (PNML) XML files.
+/// Extract the value of a named attribute from an XML tag string.
 ///
-/// Returns an empty `PetriNet` – full XML parsing is outside the scope of this
-/// crate (no external crate dependencies allowed).
-pub fn parse_pnml(_input: &str) -> PetriNet {
-    // In a full implementation this would parse the PNML XML format.
-    PetriNet::new()
+/// Finds `attr="..."` patterns within a raw tag slice and returns the value.
+fn xml_attr_value<'a>(tag: &'a str, attr: &str) -> Option<&'a str> {
+    let needle = format!("{}=\"", attr);
+    tag.find(needle.as_str()).and_then(|start| {
+        let value_start = start + needle.len();
+        tag[value_start..]
+            .find('"')
+            .map(|end| &tag[value_start..value_start + end])
+    })
+}
+
+/// Extract text content from a `<text>N</text>` block appearing anywhere in `src`.
+fn xml_text_content(src: &str) -> Option<&str> {
+    let open = src.find("<text>")?;
+    let content_start = open + "<text>".len();
+    let close = src[content_start..].find("</text>")?;
+    Some(src[content_start..content_start + close].trim())
+}
+
+/// Parse Petri Net Markup Language (PNML) XML and return a `PetriNet`.
+///
+/// Implements a forward tag scanner with a small context stack.  It handles
+/// `<place>`, `<transition>`, and `<arc>` elements, extracting `id`, `name`,
+/// `source`, `target` attributes.  Initial markings come from
+/// `<initialMarking><text>N</text></initialMarking>` nested inside `<place>`.
+/// Arc weights come from `<inscription><text>W</text></inscription>` nested
+/// inside `<arc>`.  Unknown wrapper elements (e.g. `<pnml>`, `<net>`,
+/// `<page>`) are traversed transparently.
+///
+/// On malformed or unrecognised input the parser returns whatever portion of
+/// the net has been constructed so far (best-effort).
+pub fn parse_pnml(input: &str) -> PetriNet {
+    let mut net = PetriNet::new();
+
+    // Maps PNML id strings → internal place/transition indices.
+    let mut place_id_map: HashMap<String, usize> = HashMap::new();
+    let mut trans_id_map: HashMap<String, usize> = HashMap::new();
+
+    // A pending element accumulates attributes until its closing tag is seen.
+    #[derive(Clone)]
+    enum Pending {
+        Place {
+            id: String,
+            name: String,
+            tokens: usize,
+        },
+        Trans {
+            id: String,
+            name: String,
+        },
+        Arc {
+            source: String,
+            target: String,
+            weight: usize,
+        },
+    }
+
+    // Element kind we are currently nested inside (for <text> attribution).
+    #[derive(Clone, Copy, PartialEq)]
+    enum Context {
+        None,
+        InitMarking,
+        Inscription,
+    }
+
+    let mut stack: Vec<Pending> = Vec::new();
+    let mut context = Context::None;
+
+    let mut pos = 0;
+    while pos < input.len() {
+        // Find next '<'.
+        let Some(rel_open) = input[pos..].find('<') else {
+            break;
+        };
+        let tag_open = pos + rel_open;
+
+        // Skip XML comments.
+        if input[tag_open..].starts_with("<!--") {
+            pos = input[tag_open..]
+                .find("-->")
+                .map(|e| tag_open + e + 3)
+                .unwrap_or(input.len());
+            continue;
+        }
+        // Skip processing instructions.
+        if input[tag_open..].starts_with("<?") {
+            pos = input[tag_open..]
+                .find("?>")
+                .map(|e| tag_open + e + 2)
+                .unwrap_or(input.len());
+            continue;
+        }
+
+        // Find the '>' that closes this tag.
+        let Some(rel_close) = input[tag_open..].find('>') else {
+            break;
+        };
+        let tag_close = tag_open + rel_close + 1;
+        let raw_tag = &input[tag_open..tag_close];
+        pos = tag_close;
+
+        let is_closing = raw_tag.starts_with("</");
+        let is_self_closing = !is_closing
+            && (raw_tag.ends_with("/>") || raw_tag.trim_end_matches('>').trim().ends_with('/'));
+
+        if is_closing {
+            // Extract closing element name.
+            let rest = &raw_tag[2..];
+            let name_len = rest
+                .find(|c: char| c == '>' || c.is_whitespace())
+                .unwrap_or(rest.len());
+            let closing = rest[..name_len].trim_end_matches('>');
+
+            match closing {
+                "initialMarking" => {
+                    context = Context::None;
+                }
+                "inscription" => {
+                    context = Context::None;
+                }
+                "place" => {
+                    if let Some(pos_idx) = stack
+                        .iter()
+                        .rposition(|p| matches!(p, Pending::Place { .. }))
+                    {
+                        let pending = stack.remove(pos_idx);
+                        if let Pending::Place { id, name, tokens } = pending {
+                            let display = if name.is_empty() { &id } else { &name };
+                            let idx = net.add_place(Place::with_tokens(display, tokens));
+                            place_id_map.insert(id, idx);
+                        }
+                    }
+                }
+                "transition" => {
+                    if let Some(pos_idx) = stack
+                        .iter()
+                        .rposition(|p| matches!(p, Pending::Trans { .. }))
+                    {
+                        let pending = stack.remove(pos_idx);
+                        if let Pending::Trans { id, name } = pending {
+                            let display = if name.is_empty() { &id } else { &name };
+                            let idx = net.add_transition(Transition::new(display));
+                            trans_id_map.insert(id, idx);
+                        }
+                    }
+                }
+                "arc" => {
+                    if let Some(pos_idx) =
+                        stack.iter().rposition(|p| matches!(p, Pending::Arc { .. }))
+                    {
+                        let pending = stack.remove(pos_idx);
+                        if let Pending::Arc {
+                            source,
+                            target,
+                            weight,
+                        } = pending
+                        {
+                            add_pnml_arc(
+                                &mut net,
+                                &source,
+                                &target,
+                                weight,
+                                &place_id_map,
+                                &trans_id_map,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        // Open or self-closing tag — extract element name.
+        let interior = raw_tag
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .trim_end_matches('/')
+            .trim();
+        let name_len = interior
+            .find(|c: char| c.is_whitespace())
+            .unwrap_or(interior.len());
+        let elem_name = &interior[..name_len];
+
+        match elem_name {
+            "place" => {
+                let id = xml_attr_value(raw_tag, "id").unwrap_or("").to_owned();
+                let name = xml_attr_value(raw_tag, "name").unwrap_or("").to_owned();
+                if is_self_closing {
+                    let display = if name.is_empty() { &id } else { &name };
+                    let idx = net.add_place(Place::new(display));
+                    place_id_map.insert(id, idx);
+                } else {
+                    stack.push(Pending::Place {
+                        id,
+                        name,
+                        tokens: 0,
+                    });
+                }
+            }
+            "transition" => {
+                let id = xml_attr_value(raw_tag, "id").unwrap_or("").to_owned();
+                let name = xml_attr_value(raw_tag, "name").unwrap_or("").to_owned();
+                if is_self_closing {
+                    let display = if name.is_empty() { &id } else { &name };
+                    let idx = net.add_transition(Transition::new(display));
+                    trans_id_map.insert(id, idx);
+                } else {
+                    stack.push(Pending::Trans { id, name });
+                }
+            }
+            "arc" => {
+                let source = xml_attr_value(raw_tag, "source").unwrap_or("").to_owned();
+                let target = xml_attr_value(raw_tag, "target").unwrap_or("").to_owned();
+                let weight: usize = xml_attr_value(raw_tag, "weight")
+                    .and_then(|w| w.parse().ok())
+                    .unwrap_or(1);
+                if is_self_closing {
+                    add_pnml_arc(
+                        &mut net,
+                        &source,
+                        &target,
+                        weight,
+                        &place_id_map,
+                        &trans_id_map,
+                    );
+                } else {
+                    stack.push(Pending::Arc {
+                        source,
+                        target,
+                        weight,
+                    });
+                }
+            }
+            "initialMarking" if !is_self_closing => {
+                context = Context::InitMarking;
+            }
+            "inscription" if !is_self_closing => {
+                context = Context::Inscription;
+            }
+            "text" if !is_self_closing => {
+                // Consume text until </text>.
+                if let Some(end_rel) = input[pos..].find("</text>") {
+                    let text_val = input[pos..pos + end_rel].trim();
+                    pos += end_rel + "</text>".len();
+
+                    match context {
+                        Context::InitMarking => {
+                            if let (Ok(tok), Some(Pending::Place { tokens, .. })) = (
+                                text_val.parse::<usize>(),
+                                stack
+                                    .iter_mut()
+                                    .rfind(|p| matches!(p, Pending::Place { .. })),
+                            ) {
+                                *tokens = tok;
+                            }
+                        }
+                        Context::Inscription => {
+                            if let (Ok(w), Some(Pending::Arc { weight, .. })) = (
+                                text_val.parse::<usize>(),
+                                stack.iter_mut().rfind(|p| matches!(p, Pending::Arc { .. })),
+                            ) {
+                                *weight = w;
+                            }
+                        }
+                        Context::None => {}
+                    }
+                }
+            }
+            _ => {} // wrapper elements — traverse transparently
+        }
+    }
+
+    net
+}
+
+/// Helper: add an arc to the net given source and target PNML ids.
+///
+/// An arc from a place to a transition becomes an input arc (consumed tokens).
+/// An arc from a transition to a place becomes an output arc (produced tokens).
+fn add_pnml_arc(
+    net: &mut PetriNet,
+    src_id: &str,
+    tgt_id: &str,
+    weight: Weight,
+    place_id_map: &HashMap<String, usize>,
+    trans_id_map: &HashMap<String, usize>,
+) {
+    match (place_id_map.get(src_id), trans_id_map.get(tgt_id)) {
+        // Place → Transition: input arc (tokens consumed on fire).
+        (Some(&p_idx), Some(&t_idx)) => net.add_arc_in(t_idx, p_idx, weight),
+        _ => {
+            // Try Transition → Place: output arc (tokens produced on fire).
+            if let (Some(&t_idx), Some(&p_idx)) =
+                (trans_id_map.get(src_id), place_id_map.get(tgt_id))
+            {
+                net.add_arc_out(t_idx, p_idx, weight);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -872,6 +1167,192 @@ pub fn find_t_invariant(net: &PetriNet, max_count: usize) -> Option<Vec<i64>> {
     }
     let mut current = vec![0i64; nt];
     rec(&matrix, nt, np, max_count, 0, &mut current)
+}
+
+// ---------------------------------------------------------------------------
+// T-invariant computation via integer Gauss-Jordan null-space
+// ---------------------------------------------------------------------------
+
+/// Compute the GCD of two non-negative integers.
+fn gcd(mut a: i64, mut b: i64) -> i64 {
+    a = a.abs();
+    b = b.abs();
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a
+}
+
+/// Compute the LCM of two non-negative integers, returning `None` on overflow.
+fn lcm_checked(a: i64, b: i64) -> Option<i64> {
+    if a == 0 || b == 0 {
+        return Some(0);
+    }
+    let g = gcd(a, b);
+    // Use checked arithmetic to avoid overflow on pathological inputs.
+    (a / g).checked_mul(b)
+}
+
+/// Perform integer row-reduction (Hermite Normal Form style) on the augmented
+/// matrix `mat` whose first `n_c` columns form the coefficient part (C^T).
+///
+/// The remaining columns carry the accumulated row operations that map the
+/// original identity to the transformation; null-space vectors are extracted
+/// from those columns once the coefficient block is zeroed.
+///
+/// The elimination step for zeroing `mat[row][col]` given pivot at `mat[pivot_row][col]`:
+/// ```text
+/// g = gcd(|pivot_val|, |target|)
+/// new_row = row * (pivot_val/g) - pivot_row * (target/g)
+/// ```
+/// This guarantees `new_row[col] = target*(pivot_val/g) - pivot_val*(target/g) = 0`.
+fn integer_row_reduce(mat: &mut [Vec<i64>], n_c: usize) {
+    let n_rows = mat.len();
+    if n_rows == 0 || n_c == 0 {
+        return;
+    }
+    let n_cols = mat[0].len();
+    let mut pivot_row = 0usize;
+
+    for col in 0..n_c {
+        // Find a non-zero entry in this column at or below `pivot_row`.
+        let Some(found) = (pivot_row..n_rows).find(|&r| mat[r][col] != 0) else {
+            continue;
+        };
+        mat.swap(pivot_row, found);
+
+        // Eliminate all other rows using the pivot.
+        let pivot_val = mat[pivot_row][col];
+        for row in 0..n_rows {
+            if row == pivot_row {
+                continue;
+            }
+            let target = mat[row][col];
+            if target == 0 {
+                continue;
+            }
+            // new_row = row * (pivot_val/g) - pivot_row * (target/g)
+            // This yields new_row[col] = target*(pivot_val/g) - pivot_val*(target/g) = 0.
+            let g = gcd(pivot_val.abs(), target.abs());
+            let scale_row = pivot_val / g; // = pivot_val / gcd (signed)
+            let scale_pivot = target / g; // = target    / gcd (signed)
+
+            // Compute the updated row in-place.
+            // Use saturating arithmetic to guard against overflow on degenerate nets.
+            let updated: Vec<i64> = (0..n_cols)
+                .map(|c| {
+                    mat[row][c]
+                        .saturating_mul(scale_row)
+                        .saturating_sub(mat[pivot_row][c].saturating_mul(scale_pivot))
+                })
+                .collect();
+            mat[row] = updated;
+
+            // Reduce the row by its GCD to keep coefficients small.
+            let row_gcd = mat[row].iter().fold(0i64, |acc, &v| gcd(acc, v.abs()));
+            if row_gcd > 1 {
+                for c in 0..n_cols {
+                    mat[row][c] /= row_gcd;
+                }
+            }
+        }
+
+        pivot_row += 1;
+    }
+}
+
+/// Compute all minimal non-negative T-invariants of the Petri net using
+/// integer Gauss-Jordan null-space decomposition of the incidence matrix.
+///
+/// A T-invariant is a non-negative integer vector `x` with `C * x = 0`
+/// (the net returns to its original marking after firing each transition
+/// `x[t]` times).
+///
+/// The algorithm works by:
+/// 1. Building the augmented matrix `[C^T | I]` where `C^T` has one row per
+///    transition and one column per place.
+/// 2. Performing integer row reduction on the `C^T` block.
+/// 3. Extracting the identity-part rows where the `C^T` block is entirely zero;
+///    these rows are the null-space basis vectors.
+/// 4. Filtering to keep only non-trivial non-negative vectors.
+pub fn t_invariants(net: &PetriNet) -> Vec<Vec<i64>> {
+    let n_t = net.transitions.len();
+    let n_p = net.places.len();
+
+    if n_t == 0 || n_p == 0 {
+        return Vec::new();
+    }
+
+    // Build augmented matrix [C^T | I_{n_t}].
+    // Row t: C^T[t][p] = post(t,p) - pre(t,p), followed by identity columns.
+    let mut mat: Vec<Vec<i64>> = (0..n_t)
+        .map(|t| {
+            let mut row: Vec<i64> = (0..n_p)
+                .map(|p| {
+                    let post: i64 = net
+                        .arcs_out
+                        .iter()
+                        .filter(|&&(ti, pi, _)| ti == t && pi == p)
+                        .map(|&(_, _, w)| w as i64)
+                        .sum();
+                    let pre: i64 = net
+                        .arcs_in
+                        .iter()
+                        .filter(|&&(ti, pi, _)| ti == t && pi == p)
+                        .map(|&(_, _, w)| w as i64)
+                        .sum();
+                    post - pre
+                })
+                .collect();
+            // Append identity block.
+            for j in 0..n_t {
+                row.push(if j == t { 1 } else { 0 });
+            }
+            row
+        })
+        .collect();
+
+    // Row-reduce the C^T part (first n_p columns).
+    integer_row_reduce(&mut mat, n_p);
+
+    // Extract null-space vectors: rows where the C^T block is all-zero.
+    let mut invariants: Vec<Vec<i64>> = Vec::new();
+    for row in &mat {
+        let ct_all_zero = row[..n_p].iter().all(|&x| x == 0);
+        if !ct_all_zero {
+            continue;
+        }
+        let v: Vec<i64> = row[n_p..].to_vec();
+
+        // T-invariants require non-negative entries.  Due to the sign of the
+        // pivot chosen during row reduction the vector may come out all-negative;
+        // negate it to obtain the canonical non-negative representative.
+        let has_positive = v.iter().any(|&x| x > 0);
+        let has_negative = v.iter().any(|&x| x < 0);
+
+        let candidate: Vec<i64> = if has_positive && !has_negative {
+            // Already non-negative — use as-is.
+            v
+        } else if has_negative && !has_positive {
+            // All-negative — negate to get non-negative.
+            v.iter().map(|&x| -x).collect()
+        } else {
+            // Mixed signs — not a non-negative T-invariant.
+            continue;
+        };
+
+        // Normalise by GCD to obtain a minimal representative.
+        let g = candidate.iter().fold(0i64, |acc, &x| gcd(acc, x.abs()));
+        let normalised: Vec<i64> = if g > 1 {
+            candidate.iter().map(|&x| x / g).collect()
+        } else {
+            candidate
+        };
+        invariants.push(normalised);
+    }
+    invariants
 }
 
 // ---------------------------------------------------------------------------
@@ -1208,9 +1689,67 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_pnml_stub() {
+    fn test_parse_pnml_empty() {
         let net = parse_pnml("<pnml/>");
         assert!(net.places.is_empty());
+    }
+
+    #[test]
+    fn test_parse_pnml_places_and_transitions() {
+        let xml = r#"<pnml>
+  <net>
+    <place id="p1" name="Place1"><initialMarking><text>2</text></initialMarking></place>
+    <place id="p2" name="Place2"><initialMarking><text>0</text></initialMarking></place>
+    <transition id="t1" name="Trans1"/>
+    <arc id="a1" source="p1" target="t1"/>
+    <arc id="a2" source="t1" target="p2"/>
+  </net>
+</pnml>"#;
+        let net = parse_pnml(xml);
+        assert_eq!(net.places.len(), 2, "should have 2 places");
+        assert_eq!(net.transitions.len(), 1, "should have 1 transition");
+        assert_eq!(net.arcs_in.len(), 1, "should have 1 input arc");
+        assert_eq!(net.arcs_out.len(), 1, "should have 1 output arc");
+        // Check initial marking: Place1 has 2 tokens.
+        assert_eq!(net.places[0].tokens, 2, "Place1 should have 2 tokens");
+        assert_eq!(net.places[1].tokens, 0, "Place2 should have 0 tokens");
+    }
+
+    #[test]
+    fn test_parse_pnml_fire_sequence() {
+        // Build a net via PNML and verify it fires correctly.
+        let xml = r#"<pnml>
+  <net>
+    <place id="p0" name="p0"><initialMarking><text>1</text></initialMarking></place>
+    <place id="p1" name="p1"><initialMarking><text>0</text></initialMarking></place>
+    <transition id="t0" name="t0"/>
+    <arc id="a0" source="p0" target="t0"/>
+    <arc id="a1" source="t0" target="p1"/>
+  </net>
+</pnml>"#;
+        let mut net = parse_pnml(xml);
+        assert_eq!(net.marking(), vec![1, 0]);
+        net.fire(0).expect("t0 should be enabled");
+        assert_eq!(net.marking(), vec![0, 1]);
+    }
+
+    #[test]
+    fn test_parse_pnml_arc_weight() {
+        // Arc with explicit inscription weight.
+        let xml = r#"<pnml>
+  <net>
+    <place id="p0" name="p0"><initialMarking><text>3</text></initialMarking></place>
+    <place id="p1" name="p1"><initialMarking><text>0</text></initialMarking></place>
+    <transition id="t0" name="t0"/>
+    <arc id="a0" source="p0" target="t0"><inscription><text>2</text></inscription></arc>
+    <arc id="a1" source="t0" target="p1"><inscription><text>1</text></inscription></arc>
+  </net>
+</pnml>"#;
+        let mut net = parse_pnml(xml);
+        // arc weight 2: need at least 2 tokens in p0 to fire.
+        assert_eq!(net.marking(), vec![3, 0]);
+        net.fire(0).expect("t0 should be enabled (3 >= 2)");
+        assert_eq!(net.marking(), vec![1, 1]);
     }
 
     #[test]
@@ -1257,6 +1796,81 @@ mod tests {
         net.add_arc_out(t1, p0, 1);
         let inv = find_t_invariant(&net, 2);
         assert!(inv.is_some());
+    }
+
+    #[test]
+    fn test_t_invariants_loop_net() {
+        // Loop net t0: p0→p1, t1: p1→p0.  Null-space of C is spanned by [1,1].
+        let mut net = PetriNet::new();
+        let p0 = net.add_place(Place::with_tokens("p0", 1));
+        let p1 = net.add_place(Place::with_tokens("p1", 0));
+        let t0 = net.add_transition(Transition::new("t0"));
+        let t1 = net.add_transition(Transition::new("t1"));
+        net.add_arc_in(t0, p0, 1);
+        net.add_arc_out(t0, p1, 1);
+        net.add_arc_in(t1, p1, 1);
+        net.add_arc_out(t1, p0, 1);
+        let invs = t_invariants(&net);
+        assert!(
+            !invs.is_empty(),
+            "loop net must have at least one T-invariant"
+        );
+        // The canonical minimal invariant is [1,1].
+        assert!(
+            invs.iter().any(|v| v == &[1i64, 1]),
+            "expected [1,1] in invariants, got {:?}",
+            invs
+        );
+    }
+
+    #[test]
+    fn test_t_invariants_producer_consumer() {
+        // producer_consumer_net has two transitions; a valid T-invariant
+        // fires both equally so marking is restored.
+        let net = producer_consumer_net();
+        let invs = t_invariants(&net);
+        // There should be at least one non-trivial invariant.
+        assert!(
+            !invs.is_empty(),
+            "producer-consumer net should have T-invariants"
+        );
+        // Every invariant must satisfy C * x = 0.
+        let mat = incidence_matrix(&net);
+        for inv in &invs {
+            let n_p = net.places.len();
+            for p in 0..n_p {
+                let sum: i64 = mat.iter().zip(inv.iter()).map(|(row, &x)| row[p] * x).sum();
+                assert_eq!(
+                    sum, 0,
+                    "T-invariant {:?} must satisfy C*x=0, failed at place {}",
+                    inv, p
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_t_invariants_empty_net() {
+        let net = PetriNet::new();
+        let invs = t_invariants(&net);
+        assert!(invs.is_empty());
+    }
+
+    #[test]
+    fn test_t_invariants_no_cycle() {
+        // Simple net with a single transition and no cycles: C has no null-space
+        // vector with all non-negative entries (other than the zero vector).
+        let net = simple_net();
+        let invs = t_invariants(&net);
+        // A linear chain has no non-trivial non-negative T-invariants.
+        for inv in &invs {
+            let mat = incidence_matrix(&net);
+            let n_p = net.places.len();
+            for p in 0..n_p {
+                let sum: i64 = mat.iter().zip(inv.iter()).map(|(row, &x)| row[p] * x).sum();
+                assert_eq!(sum, 0, "Invariant {:?} must satisfy C*x=0", inv);
+            }
+        }
     }
 
     #[test]

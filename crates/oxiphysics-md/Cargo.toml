@@ -3,7 +3,10 @@ name = "oxiphysics-md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
 description = "Molecular dynamics simulation for the OxiPhysics engine"
+readme = "README.md"
 categories = ["science", "simulation"]
 keywords = ["molecular-dynamics", "physics", "atomistic", "force-field", "simulation"]
 
@@ -11,3 +14,4 @@ keywords = ["molecular-dynamics", "physics", "atomistic", "force-field", "simula
 thiserror = { workspace = true }
 oxiphysics-core = { workspace = true }
 rand = { workspace = true }
+oxifft = { workspace = true }

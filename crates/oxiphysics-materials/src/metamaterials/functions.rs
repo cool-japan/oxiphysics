@@ -86,10 +86,8 @@ pub fn topology_optimized_auxetic(target_poisson: f64, iterations: usize) -> Vec
                     if neighbors_solid == 2 && (h_solid || v_solid) {
                         grid[i][j] = false;
                     }
-                } else {
-                    if neighbors_solid < 2 {
-                        grid[i][j] = false;
-                    }
+                } else if neighbors_solid < 2 {
+                    grid[i][j] = false;
                 }
             }
         }

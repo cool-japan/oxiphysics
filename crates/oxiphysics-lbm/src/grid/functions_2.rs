@@ -312,4 +312,111 @@ mod extended_grid_tests {
         let g = CellularGrid3D::new(4, 4, 4, 1.5);
         assert!(g.max_speed() < 1e-14);
     }
+    #[test]
+    fn test_flagged_step_mass_conservation() {
+        use crate::grid::grid_extended::FlaggedGrid3D;
+        let nx = 6usize;
+        let ny = 6usize;
+        let nz = 6usize;
+        let omega = 1.0;
+        let rho0 = 1.0;
+        let mut g = FlaggedGrid3D::new(nx, ny, nz, omega, rho0);
+        // Perturb a few cells with a non-zero uniform velocity to create dynamics.
+        g.initialize_uniform(rho0, 0.05, 0.01, 0.0);
+        let mass_before: f64 = g.total_mass();
+        for _ in 0..10 {
+            g.step();
+        }
+        let mass_after: f64 = g.total_mass();
+        assert!(
+            (mass_before - mass_after).abs() < 1e-10,
+            "mass not conserved: before={mass_before}, after={mass_after}, diff={}",
+            (mass_before - mass_after).abs()
+        );
+    }
+    #[test]
+    fn test_flagged_step_solid_bounce_back() {
+        use crate::grid::grid_extended::{FlaggedGrid3D, NodeFlag};
+        use crate::lattice::D3Q19_VELOCITIES;
+        let nx = 6usize;
+        let ny = 4usize;
+        let nz = 4usize;
+        let omega = 1.0;
+        let rho0 = 1.0;
+        let mut g = FlaggedGrid3D::new(nx, ny, nz, omega, rho0);
+        // Add a solid wall layer at x=0.
+        for z in 0..nz {
+            for y in 0..ny {
+                g.set_wall(0, y, z);
+            }
+        }
+        // Drive flow in +x direction on fluid nodes only via initialize_uniform
+        // (it skips non-Fluid nodes).
+        g.initialize_uniform(rho0, 0.05, 0.0, 0.0);
+        // Run many steps so the wall bounce-back has fully acted.
+        for _ in 0..200 {
+            g.step();
+        }
+        // Verify that wall flags are preserved.
+        for z in 0..nz {
+            for y in 0..ny {
+                let widx = g.cell_idx(0, y, z);
+                assert_eq!(
+                    g.flags[widx],
+                    NodeFlag::Wall,
+                    "flag at wall (0,{y},{z}) changed"
+                );
+            }
+        }
+        // The net x-momentum stored at a wall node must be near zero because
+        // full-way bounce-back exactly reverses all x-velocity contributions.
+        // After streaming, opposite populations pair up so the sum of
+        // f[a] * cx[a] cancels to within floating-point noise.
+        for z in 0..nz {
+            for y in 0..ny {
+                let base = g.cell_idx(0, y, z) * 19;
+                let mut mx = 0.0_f64;
+                for a in 0..19 {
+                    mx += g.f[base + a] * D3Q19_VELOCITIES[a][0] as f64;
+                }
+                assert!(
+                    mx.abs() < 1e-6,
+                    "wall node (0,{y},{z}) net x-momentum = {mx}, expected ~0"
+                );
+            }
+        }
+    }
+    #[test]
+    fn test_flagged_step_reduces_to_full_grid() {
+        use crate::grid::grid_extended::{FlaggedGrid3D, FullGrid3D};
+        let nx = 4usize;
+        let ny = 4usize;
+        let nz = 4usize;
+        let omega = 1.2;
+        let rho0 = 1.0;
+        let ux0 = 0.05;
+        let uy0 = 0.02;
+        let uz0 = 0.0;
+        // Build both grids with same initial conditions.
+        let mut fg = FlaggedGrid3D::new(nx, ny, nz, omega, rho0);
+        fg.initialize_uniform(rho0, ux0, uy0, uz0);
+        let mut full = FullGrid3D::new(nx, ny, nz, omega, rho0);
+        full.initialize_uniform(rho0, ux0, uy0, uz0);
+        // Run 5 steps on each.
+        for _ in 0..5 {
+            fg.step();
+            full.step();
+        }
+        // Per-cell f values must agree within floating-point tolerance.
+        let n = nx * ny * nz * 19;
+        let max_diff =
+            fg.f.iter()
+                .zip(full.f.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f64, f64::max);
+        assert!(
+            max_diff < 1e-10,
+            "FlaggedGrid3D diverged from FullGrid3D: max_diff={max_diff} over {n} entries"
+        );
+    }
 }

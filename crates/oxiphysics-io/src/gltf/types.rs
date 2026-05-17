@@ -170,6 +170,8 @@ pub struct GltfPrimitive {
     pub positions: Vec<[f32; 3]>,
     /// Per-vertex normals.
     pub normals: Vec<[f32; 3]>,
+    /// Per-vertex UV texture coordinates (TEXCOORD_0).
+    pub texcoords: Vec<[f32; 2]>,
     /// Triangle indices.
     pub indices: Vec<u32>,
 }
@@ -970,11 +972,9 @@ impl GltfScene {
             out.push_str("      ]\n");
             out.push_str("    }\n");
             out.push_str("  }\n");
-        } else {
-            if out.ends_with(",\n") {
-                out.truncate(out.len() - 2);
-                out.push('\n');
-            }
+        } else if out.ends_with(",\n") {
+            out.truncate(out.len() - 2);
+            out.push('\n');
         }
         out.push('}');
         out
@@ -1258,7 +1258,10 @@ impl GlbWriter {
             include_empty_bin: false,
         }
     }
-    /// Serialise the scene into GLB bytes.
+
+    /// Serialise the scene into GLB bytes (JSON-only, no vertex binary data).
+    ///
+    /// For a full binary GLB with packed vertex data use [`write_glb`](Self::write_glb).
     pub fn write(&self, scene: &GltfScene) -> Vec<u8> {
         let json = scene.to_json();
         let json_bytes = json.as_bytes();
@@ -1292,4 +1295,302 @@ impl GlbWriter {
         }
         out
     }
+
+    /// Serialise the first mesh primitive in the scene as a proper glTF 2.0 Binary (GLB) file.
+    ///
+    /// GLB binary layout:
+    /// 1. **12-byte header**: magic `glTF`, version=2, total_length
+    /// 2. **JSON chunk**: chunk_length (u32 LE), chunk_type=`JSON` (0x4E4F534A), padded UTF-8 JSON
+    /// 3. **BIN chunk**: chunk_length (u32 LE), chunk_type=`BIN\0` (0x004E4942), vertex/index data
+    ///
+    /// Binary buffer layout (flat, tightly packed, index buffer 4-byte aligned):
+    /// - `positions` : `[f32; 3]` × n_vertices
+    /// - `normals`   : `[f32; 3]` × n_vertices
+    /// - `texcoords` : `[f32; 2]` × n_vertices (zero-filled if `primitive.texcoords` is empty)
+    /// - `indices`   : `u32` × n_indices (offset aligned to 4 bytes)
+    ///
+    /// Returns an empty `Vec<u8>` if the scene has no meshes.
+    pub fn write_glb(&self, scene: &GltfScene) -> Vec<u8> {
+        // Collect all primitives across all meshes.
+        let primitives: Vec<&GltfPrimitive> = scene
+            .meshes
+            .iter()
+            .flat_map(|m| m.primitives.iter())
+            .collect();
+
+        if primitives.is_empty() {
+            return Vec::new();
+        }
+
+        // Build flat binary buffer: positions | normals | texcoords | (align) | indices
+        let mut bin_buf: Vec<u8> = Vec::new();
+        let mut prim_meta: Vec<PrimMeta> = Vec::with_capacity(primitives.len());
+
+        for prim in &primitives {
+            let n_verts = prim.positions.len();
+            let n_indices = prim.indices.len();
+
+            // Compute bounding box for POSITION accessor.
+            let mut pos_min = [f32::INFINITY; 3];
+            let mut pos_max = [f32::NEG_INFINITY; 3];
+            for p in &prim.positions {
+                for i in 0..3 {
+                    if p[i] < pos_min[i] {
+                        pos_min[i] = p[i];
+                    }
+                    if p[i] > pos_max[i] {
+                        pos_max[i] = p[i];
+                    }
+                }
+            }
+            // Fallback for empty primitives.
+            if n_verts == 0 {
+                pos_min = [0.0; 3];
+                pos_max = [0.0; 3];
+            }
+
+            let pos_byte_offset = bin_buf.len();
+            for p in &prim.positions {
+                for &v in p {
+                    bin_buf.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+
+            let norm_byte_offset = bin_buf.len();
+            for n in &prim.normals {
+                for &v in n {
+                    bin_buf.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+            // Pad with zero normals if fewer normals than positions.
+            let norm_count = prim.normals.len();
+            for _ in norm_count..n_verts {
+                bin_buf.extend_from_slice(&[0u8; 12]);
+            }
+
+            let uv_byte_offset = bin_buf.len();
+            if prim.texcoords.is_empty() {
+                // Write zero UVs.
+                for _ in 0..n_verts {
+                    bin_buf.extend_from_slice(&[0u8; 8]);
+                }
+            } else {
+                for uv in &prim.texcoords {
+                    for &v in uv {
+                        bin_buf.extend_from_slice(&v.to_le_bytes());
+                    }
+                }
+                // Pad with zeros if fewer UVs than vertices.
+                let uv_count = prim.texcoords.len();
+                for _ in uv_count..n_verts {
+                    bin_buf.extend_from_slice(&[0u8; 8]);
+                }
+            }
+
+            // Align index buffer to 4-byte boundary.
+            let pad_to_align = (4 - bin_buf.len() % 4) % 4;
+            bin_buf.extend(std::iter::repeat_n(0u8, pad_to_align));
+            let idx_byte_offset = bin_buf.len();
+            for &idx in &prim.indices {
+                bin_buf.extend_from_slice(&idx.to_le_bytes());
+            }
+
+            prim_meta.push(PrimMeta {
+                n_verts,
+                n_indices,
+                pos_byte_offset,
+                norm_byte_offset,
+                uv_byte_offset,
+                idx_byte_offset,
+                pos_min,
+                pos_max,
+            });
+        }
+
+        // Pad binary buffer to 4-byte boundary.
+        let bin_tail_pad = (4 - bin_buf.len() % 4) % 4;
+        bin_buf.extend(std::iter::repeat_n(0u8, bin_tail_pad));
+        let total_bin_len = bin_buf.len();
+
+        // Build JSON.
+        let json = Self::build_glb_json(scene, &prim_meta, total_bin_len);
+        let json_bytes = json.as_bytes();
+        let json_raw_len = json_bytes.len();
+        let json_padded_len = (json_raw_len + 3) & !3;
+        let json_padding = json_padded_len - json_raw_len;
+
+        // GLB: 12-byte header + 8-byte JSON chunk header + JSON + 8-byte BIN chunk header + BIN
+        let total_len = 12 + 8 + json_padded_len + 8 + total_bin_len;
+
+        let mut out = Vec::with_capacity(total_len);
+        // Header
+        out.extend_from_slice(b"glTF");
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&(total_len as u32).to_le_bytes());
+        // JSON chunk: pad with spaces (0x20) per glTF spec
+        out.extend_from_slice(&(json_padded_len as u32).to_le_bytes());
+        out.extend_from_slice(&0x4E4F534Au32.to_le_bytes()); // "JSON"
+        out.extend_from_slice(json_bytes);
+        out.extend(std::iter::repeat_n(0x20u8, json_padding));
+        // BIN chunk
+        out.extend_from_slice(&(total_bin_len as u32).to_le_bytes());
+        out.extend_from_slice(&0x004E4942u32.to_le_bytes()); // "BIN\0"
+        out.extend_from_slice(&bin_buf);
+
+        out
+    }
+
+    /// Build the glTF JSON for a GLB with a binary buffer.
+    fn build_glb_json(scene: &GltfScene, prim_meta: &[PrimMeta], total_bin_len: usize) -> String {
+        use std::fmt::Write as FmtWrite;
+        let mut out = String::new();
+
+        let _ = writeln!(out, "{{");
+        let _ = writeln!(
+            out,
+            "  \"asset\": {{\"version\": \"2.0\", \"generator\": \"OxiPhysics glTF writer\"}},"
+        );
+        let _ = writeln!(out, "  \"scene\": 0,");
+
+        // Scenes
+        let node_indices: Vec<String> = (0..scene.nodes.len()).map(|i| i.to_string()).collect();
+        let _ = writeln!(
+            out,
+            "  \"scenes\": [{{\"nodes\": [{}]}}],",
+            node_indices.join(", ")
+        );
+
+        // Nodes
+        let _ = writeln!(out, "  \"nodes\": [");
+        for (i, node) in scene.nodes.iter().enumerate() {
+            let mesh_str = node
+                .mesh
+                .map(|m| format!(", \"mesh\": {m}"))
+                .unwrap_or_default();
+            let comma = if i + 1 < scene.nodes.len() { "," } else { "" };
+            let _ = writeln!(
+                out,
+                "    {{\"name\": \"{}\"{mesh_str}}}{comma}",
+                escape_json(&node.name)
+            );
+        }
+        let _ = writeln!(out, "  ],");
+
+        // Meshes
+        let _ = writeln!(out, "  \"meshes\": [");
+        let mut acc_idx = 0usize;
+        for (mi, mesh) in scene.meshes.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "    {{\"name\": \"{}\", \"primitives\": [",
+                escape_json(&mesh.name)
+            );
+            for (pi, _prim) in mesh.primitives.iter().enumerate() {
+                let pos_acc = acc_idx;
+                let nrm_acc = acc_idx + 1;
+                let uv_acc = acc_idx + 2;
+                let idx_acc = acc_idx + 3;
+                acc_idx += 4;
+                let prim_comma = if pi + 1 < mesh.primitives.len() {
+                    ","
+                } else {
+                    ""
+                };
+                let _ = writeln!(
+                    out,
+                    "      {{\"attributes\": {{\"POSITION\": {pos_acc}, \"NORMAL\": {nrm_acc}, \"TEXCOORD_0\": {uv_acc}}}, \"indices\": {idx_acc}}}{prim_comma}"
+                );
+            }
+            let mesh_comma = if mi + 1 < scene.meshes.len() { "," } else { "" };
+            let _ = writeln!(out, "    ]}}{mesh_comma}");
+        }
+        let _ = writeln!(out, "  ],");
+
+        // Buffers
+        let _ = writeln!(out, "  \"buffers\": [{{\"byteLength\": {total_bin_len}}}],");
+
+        // BufferViews: collect all as strings then join
+        let n_meta = prim_meta.len();
+        let total_bv = n_meta * 4;
+        let mut bv_entries: Vec<String> = Vec::with_capacity(total_bv);
+        for meta in prim_meta.iter() {
+            let pos_size = meta.n_verts * 12; // [f32;3] = 12 bytes
+            let norm_size = meta.n_verts * 12;
+            let uv_size = meta.n_verts * 8; // [f32;2] = 8 bytes
+            let idx_size = meta.n_indices * 4; // u32 = 4 bytes
+            bv_entries.push(format!(
+                "    {{\"buffer\": 0, \"byteOffset\": {}, \"byteLength\": {pos_size}, \"target\": 34962}}",
+                meta.pos_byte_offset
+            ));
+            bv_entries.push(format!(
+                "    {{\"buffer\": 0, \"byteOffset\": {}, \"byteLength\": {norm_size}, \"target\": 34962}}",
+                meta.norm_byte_offset
+            ));
+            bv_entries.push(format!(
+                "    {{\"buffer\": 0, \"byteOffset\": {}, \"byteLength\": {uv_size}, \"target\": 34962}}",
+                meta.uv_byte_offset
+            ));
+            bv_entries.push(format!(
+                "    {{\"buffer\": 0, \"byteOffset\": {}, \"byteLength\": {idx_size}, \"target\": 34963}}",
+                meta.idx_byte_offset
+            ));
+        }
+        let _ = writeln!(out, "  \"bufferViews\": [");
+        let _ = writeln!(out, "{}", bv_entries.join(",\n"));
+        let _ = writeln!(out, "  ],");
+
+        // Accessors: collect then join
+        let total_acc = n_meta * 4;
+        let mut acc_entries: Vec<String> = Vec::with_capacity(total_acc);
+        let mut bv_idx = 0usize;
+        for meta in prim_meta.iter() {
+            let pos_min = meta.pos_min;
+            let pos_max = meta.pos_max;
+            // POSITION accessor (with min/max bounds)
+            acc_entries.push(format!(
+                "    {{\"bufferView\": {bv_idx}, \"componentType\": 5126, \"count\": {}, \"type\": \"VEC3\", \
+\"min\": [{}, {}, {}], \"max\": [{}, {}, {}]}}",
+                meta.n_verts,
+                pos_min[0], pos_min[1], pos_min[2],
+                pos_max[0], pos_max[1], pos_max[2]
+            ));
+            bv_idx += 1;
+            // NORMAL accessor
+            acc_entries.push(format!(
+                "    {{\"bufferView\": {bv_idx}, \"componentType\": 5126, \"count\": {}, \"type\": \"VEC3\"}}",
+                meta.n_verts
+            ));
+            bv_idx += 1;
+            // TEXCOORD_0 accessor
+            acc_entries.push(format!(
+                "    {{\"bufferView\": {bv_idx}, \"componentType\": 5126, \"count\": {}, \"type\": \"VEC2\"}}",
+                meta.n_verts
+            ));
+            bv_idx += 1;
+            // INDEX accessor
+            acc_entries.push(format!(
+                "    {{\"bufferView\": {bv_idx}, \"componentType\": 5125, \"count\": {}, \"type\": \"SCALAR\"}}",
+                meta.n_indices
+            ));
+            bv_idx += 1;
+        }
+        let _ = writeln!(out, "  \"accessors\": [");
+        let _ = writeln!(out, "{}", acc_entries.join(",\n"));
+        let _ = writeln!(out, "  ]");
+
+        let _ = write!(out, "}}");
+        out
+    }
+}
+
+/// Metadata for a single primitive used during GLB JSON generation.
+struct PrimMeta {
+    n_verts: usize,
+    n_indices: usize,
+    pos_byte_offset: usize,
+    norm_byte_offset: usize,
+    uv_byte_offset: usize,
+    idx_byte_offset: usize,
+    pos_min: [f32; 3],
+    pos_max: [f32; 3],
 }

@@ -358,31 +358,21 @@ impl ObjLod {
     pub fn num_levels(&self) -> usize {
         self.levels.len()
     }
-    /// Simplify a mesh to approximately `target_faces` triangles by
-    /// removing every other face (simple decimation placeholder).
+    /// Simplify a mesh to approximately `target_faces` triangles using
+    /// Quadric Error Metric (QEM) edge-collapse.
+    ///
+    /// Implements the Garland–Heckbert (1997) algorithm:
+    /// 1. Compute per-face error quadrics from plane equations.
+    /// 2. Sum quadrics at each vertex.
+    /// 3. For every edge, compute the optimal collapse target position and
+    ///    its associated cost.
+    /// 4. Greedily collapse the minimum-cost edge until `target_faces` is
+    ///    reached, using a lazy-deletion min-heap.
     pub fn decimate(mesh: &ObjMesh, target_faces: usize) -> ObjMesh {
         if mesh.faces.len() <= target_faces {
             return mesh.clone();
         }
-        let keep_ratio = target_faces as f64 / mesh.faces.len() as f64;
-        let mut out = ObjMesh {
-            vertices: mesh.vertices.clone(),
-            normals: mesh.normals.clone(),
-            uvs: mesh.uvs.clone(),
-            ..Default::default()
-        };
-        let _total = mesh.faces.len();
-        let step = (1.0 / keep_ratio).round() as usize;
-        let step = step.max(2);
-        for (i, face) in mesh.faces.iter().enumerate() {
-            if i % step != 0 {
-                out.faces.push(face.clone());
-            }
-            if out.faces.len() >= target_faces {
-                break;
-            }
-        }
-        out
+        decimate_qem_impl(mesh, target_faces)
     }
 }
 /// A transform applied when instancing a mesh.
@@ -1024,5 +1014,335 @@ impl ObjVertexColorMesh {
             s.push('\n');
         }
         s
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QEM (Quadric Error Metric) mesh decimation — Garland & Heckbert 1997
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Symmetric 4×4 error quadric stored as the 10-element upper triangle.
+///
+/// Layout: `[a2, ab, ac, ad, b2, bc, bd, c2, cd, d2]` where the plane is
+/// `ax + by + cz + d = 0`.
+#[derive(Clone, Copy)]
+struct Quadric {
+    m: [f64; 10],
+}
+
+impl Quadric {
+    const ZERO: Self = Self { m: [0.0; 10] };
+
+    /// Build the fundamental-error quadric `K_p = pp^T` for plane `(a,b,c,d)`.
+    fn from_plane(a: f64, b: f64, c: f64, d: f64) -> Self {
+        Self {
+            m: [
+                a * a,
+                a * b,
+                a * c,
+                a * d,
+                b * b,
+                b * c,
+                b * d,
+                c * c,
+                c * d,
+                d * d,
+            ],
+        }
+    }
+
+    /// Add two quadrics (element-wise).
+    fn add(&self, other: &Self) -> Self {
+        let mut m = [0.0f64; 10];
+        for (i, val) in m.iter_mut().enumerate() {
+            *val = self.m[i] + other.m[i];
+        }
+        Self { m }
+    }
+
+    /// Evaluate the quadric error at position `p`.
+    fn eval(&self, p: [f64; 3]) -> f64 {
+        let [x, y, z] = p;
+        let m = &self.m;
+        m[0] * x * x
+            + 2.0 * m[1] * x * y
+            + 2.0 * m[2] * x * z
+            + 2.0 * m[3] * x
+            + m[4] * y * y
+            + 2.0 * m[5] * y * z
+            + 2.0 * m[6] * y
+            + m[7] * z * z
+            + 2.0 * m[8] * z
+            + m[9]
+    }
+
+    /// Solve for the optimal collapse position using Cramer's rule on the
+    /// upper-left 3×3 block.  Falls back to `midpoint` for singular systems.
+    fn optimal_pos(&self, midpoint: [f64; 3]) -> [f64; 3] {
+        let m = &self.m;
+        let a00 = m[0];
+        let a01 = m[1];
+        let a02 = m[2];
+        let a11 = m[4];
+        let a12 = m[5];
+        let a22 = m[7];
+        let bx = -m[3];
+        let by = -m[6];
+        let bz = -m[8];
+
+        let det = a00 * (a11 * a22 - a12 * a12) - a01 * (a01 * a22 - a12 * a02)
+            + a02 * (a01 * a12 - a11 * a02);
+
+        if det.abs() < 1.0e-12 {
+            return midpoint;
+        }
+        let inv = 1.0 / det;
+        let x = inv
+            * (bx * (a11 * a22 - a12 * a12) - a01 * (by * a22 - a12 * bz)
+                + a02 * (by * a12 - a11 * bz));
+        let y = inv
+            * (a00 * (by * a22 - a12 * bz) - bx * (a01 * a22 - a12 * a02)
+                + a02 * (a01 * bz - by * a02));
+        let z = inv
+            * (a00 * (a11 * bz - by * a12) - a01 * (a01 * bz - by * a02)
+                + bx * (a01 * a12 - a11 * a02));
+        [x, y, z]
+    }
+}
+
+/// Entry in the collapse priority queue.
+#[derive(Clone)]
+struct EdgeEntry {
+    cost: f64,
+    v0: usize,
+    v1: usize,
+    pos: [f64; 3],
+    /// Epoch stamp for lazy deletion: entry is stale when it no longer
+    /// matches `vertex_epochs[v0] ^ (vertex_epochs[v1] << 32)`.
+    epoch: u64,
+}
+
+impl PartialEq for EdgeEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.cost == other.cost
+    }
+}
+impl Eq for EdgeEntry {}
+impl PartialOrd for EdgeEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for EdgeEntry {
+    /// Reverse order so `BinaryHeap` acts as a min-heap.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .cost
+            .partial_cmp(&self.cost)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    }
+}
+
+/// Core QEM decimation implementation.
+fn decimate_qem_impl(mesh: &ObjMesh, target_faces: usize) -> ObjMesh {
+    use std::collections::{BinaryHeap, HashSet};
+
+    let nv = mesh.vertices.len();
+    if nv == 0 || mesh.faces.is_empty() {
+        return mesh.clone();
+    }
+
+    // ── 1. Collect triangles ─────────────────────────────────────────────────
+    let mut triangles: Vec<[usize; 3]> = Vec::new();
+    for face in &mesh.faces {
+        let vi = &face.vertex_indices;
+        if vi.len() < 3 {
+            continue;
+        }
+        for k in 1..(vi.len() - 1) {
+            if vi[0] < nv && vi[k] < nv && vi[k + 1] < nv {
+                triangles.push([vi[0], vi[k], vi[k + 1]]);
+            }
+        }
+    }
+    if triangles.is_empty() {
+        return mesh.clone();
+    }
+
+    // ── 2. Compute per-vertex quadrics ───────────────────────────────────────
+    let mut quadrics = vec![Quadric::ZERO; nv];
+    for &[i0, i1, i2] in &triangles {
+        let v0 = mesh.vertices[i0];
+        let v1 = mesh.vertices[i1];
+        let v2 = mesh.vertices[i2];
+        let ex = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+        let fy = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+        let nx = ex[1] * fy[2] - ex[2] * fy[1];
+        let ny = ex[2] * fy[0] - ex[0] * fy[2];
+        let nz = ex[0] * fy[1] - ex[1] * fy[0];
+        let len = (nx * nx + ny * ny + nz * nz).sqrt();
+        if len < 1.0e-15 {
+            continue;
+        }
+        let (a, b, c) = (nx / len, ny / len, nz / len);
+        let d = -(a * v0[0] + b * v0[1] + c * v0[2]);
+        let q = Quadric::from_plane(a, b, c, d);
+        quadrics[i0] = quadrics[i0].add(&q);
+        quadrics[i1] = quadrics[i1].add(&q);
+        quadrics[i2] = quadrics[i2].add(&q);
+    }
+
+    // ── 3. Collect unique undirected edges ───────────────────────────────────
+    let mut edge_set: HashSet<(usize, usize)> = HashSet::new();
+    for &[i0, i1, i2] in &triangles {
+        for (a, b) in [(i0, i1), (i1, i2), (i0, i2)] {
+            edge_set.insert((a.min(b), a.max(b)));
+        }
+    }
+
+    // ── 4. State arrays ──────────────────────────────────────────────────────
+    let mut vertices: Vec<Option<[f64; 3]>> = mesh.vertices.iter().map(|&v| Some(v)).collect();
+    let mut vertex_epochs: Vec<u64> = vec![0u64; nv];
+    let mut remap: Vec<usize> = (0..nv).collect();
+    let mut heap: BinaryHeap<EdgeEntry> = BinaryHeap::new();
+    let mut faces: Vec<Option<[usize; 3]>> = triangles.iter().map(|&t| Some(t)).collect();
+    let mut active_face_count = faces.len();
+
+    // ── Helper: resolve remap chain ──────────────────────────────────────────
+    fn resolve(remap: &[usize], mut v: usize) -> usize {
+        while remap[v] != v {
+            v = remap[v];
+        }
+        v
+    }
+
+    // ── Helper: push an edge into the heap ───────────────────────────────────
+    let push_edge = |heap: &mut BinaryHeap<EdgeEntry>,
+                     v0: usize,
+                     v1: usize,
+                     qv: &[Quadric],
+                     verts: &[Option<[f64; 3]>],
+                     ve: &[u64]| {
+        let Some(p0) = verts[v0] else { return };
+        let Some(p1) = verts[v1] else { return };
+        let combined = qv[v0].add(&qv[v1]);
+        let mid = [
+            (p0[0] + p1[0]) * 0.5,
+            (p0[1] + p1[1]) * 0.5,
+            (p0[2] + p1[2]) * 0.5,
+        ];
+        let pos = combined.optimal_pos(mid);
+        let cost = combined.eval(pos);
+        heap.push(EdgeEntry {
+            cost,
+            v0,
+            v1,
+            pos,
+            epoch: ve[v0] ^ (ve[v1] << 32),
+        });
+    };
+
+    for &(a, b) in &edge_set {
+        push_edge(&mut heap, a, b, &quadrics, &vertices, &vertex_epochs);
+    }
+
+    // ── 5. Greedy collapse loop ───────────────────────────────────────────────
+    while active_face_count > target_faces {
+        let entry = match heap.pop() {
+            Some(e) => e,
+            None => break,
+        };
+        let v0 = resolve(&remap, entry.v0);
+        let v1 = resolve(&remap, entry.v1);
+        if v0 == v1 {
+            continue;
+        }
+        if entry.epoch != vertex_epochs[v0] ^ (vertex_epochs[v1] << 32) {
+            continue;
+        }
+        if vertices[v0].is_none() || vertices[v1].is_none() {
+            continue;
+        }
+
+        // Collapse v1 into v0.
+        vertices[v0] = Some(entry.pos);
+        vertices[v1] = None;
+        quadrics[v0] = quadrics[v0].add(&quadrics[v1]);
+        remap[v1] = v0;
+        vertex_epochs[v0] += 1;
+        vertex_epochs[v1] += 1;
+
+        // Degenerate face removal.
+        for face in faces.iter_mut() {
+            let tri = match face {
+                Some(t) => t,
+                None => continue,
+            };
+            let mut changed = false;
+            for idx in tri.iter_mut() {
+                let r = resolve(&remap, *idx);
+                if r != *idx {
+                    *idx = r;
+                    changed = true;
+                }
+            }
+            if changed && (tri[0] == tri[1] || tri[1] == tri[2] || tri[0] == tri[2]) {
+                *face = None;
+                active_face_count -= 1;
+            }
+        }
+
+        // Re-queue edges incident to the surviving vertex.
+        for &(a, b) in &edge_set {
+            let ra = resolve(&remap, a);
+            let rb = resolve(&remap, b);
+            if ra == rb {
+                continue;
+            }
+            if ra == v0 || rb == v0 {
+                push_edge(&mut heap, ra, rb, &quadrics, &vertices, &vertex_epochs);
+            }
+        }
+    }
+
+    // ── 6. Rebuild ObjMesh ───────────────────────────────────────────────────
+    let mut new_vertices: Vec<[f64; 3]> = Vec::new();
+    let mut old_to_new: Vec<Option<usize>> = vec![None; nv];
+    for (i, v) in vertices.iter().enumerate() {
+        if let Some(pos) = v {
+            old_to_new[i] = Some(new_vertices.len());
+            new_vertices.push(*pos);
+        }
+    }
+
+    let mut new_faces: Vec<ObjFace> = Vec::new();
+    for face in faces.iter().flatten() {
+        let a = resolve(&remap, face[0]);
+        let b = resolve(&remap, face[1]);
+        let c = resolve(&remap, face[2]);
+        if a == b || b == c || a == c {
+            continue;
+        }
+        let Some(na) = old_to_new[a] else { continue };
+        let Some(nb) = old_to_new[b] else { continue };
+        let Some(nc) = old_to_new[c] else { continue };
+        new_faces.push(ObjFace {
+            vertex_indices: vec![na, nb, nc],
+            normal_indices: None,
+            uv_indices: None,
+            smoothing_group: 0,
+            material: None,
+        });
+        if new_faces.len() >= target_faces {
+            break;
+        }
+    }
+
+    ObjMesh {
+        vertices: new_vertices,
+        normals: Vec::new(),
+        uvs: Vec::new(),
+        faces: new_faces,
+        groups: Vec::new(),
     }
 }

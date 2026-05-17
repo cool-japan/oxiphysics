@@ -469,7 +469,7 @@ pub fn mock_compile_to_spirv(source: &str, entry_point: &str) -> Vec<u8> {
     out.extend_from_slice(&ep_hash.to_le_bytes());
     let bindings = source.matches("@binding(").count() as u32;
     out.extend_from_slice(&bindings.to_le_bytes());
-    while out.len() % 4 != 0 {
+    while !out.len().is_multiple_of(4) {
         out.push(0x00);
     }
     out

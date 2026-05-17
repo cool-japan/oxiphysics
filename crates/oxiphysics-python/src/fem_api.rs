@@ -1,4 +1,3 @@
-#![allow(clippy::too_many_arguments)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -12,9 +11,7 @@
 //! - Conjugate Gradient iterative solver
 //! - Displacement, stress, and strain output
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
+use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -22,18 +19,24 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Linear elastic isotropic material properties.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyFemMaterial {
     /// Young's modulus E (Pa).
+    #[pyo3(get, set)]
     pub young_modulus: f64,
     /// Poisson's ratio ν (dimensionless, 0..0.5).
+    #[pyo3(get, set)]
     pub poisson_ratio: f64,
     /// Mass density ρ (kg/m³).
+    #[pyo3(get, set)]
     pub density: f64,
 }
 
+#[pymethods]
 impl PyFemMaterial {
     /// Create a new material.
+    #[new]
     pub fn new(young_modulus: f64, poisson_ratio: f64, density: f64) -> Self {
         Self {
             young_modulus,
@@ -43,35 +46,37 @@ impl PyFemMaterial {
     }
 
     /// Steel-like material (E=200 GPa, ν=0.3, ρ=7850 kg/m³).
+    #[staticmethod]
     pub fn steel() -> Self {
         Self::new(200e9, 0.3, 7850.0)
     }
 
     /// Aluminum-like material (E=70 GPa, ν=0.33, ρ=2700 kg/m³).
+    #[staticmethod]
     pub fn aluminum() -> Self {
         Self::new(70e9, 0.33, 2700.0)
     }
 
     /// Rubber-like material (E=0.01 GPa, ν=0.49, ρ=1100 kg/m³).
+    #[staticmethod]
     pub fn rubber() -> Self {
         Self::new(10e6, 0.49, 1100.0)
     }
 
     /// Concrete-like material (E=30 GPa, ν=0.2, ρ=2400 kg/m³).
+    #[staticmethod]
     pub fn concrete() -> Self {
         Self::new(30e9, 0.2, 2400.0)
     }
 
-    /// Compute the plane-stress constitutive matrix D (3×3 as flat \[f64; 9\]).
+    /// Compute the plane-stress constitutive matrix D (3×3 as flat [f64; 9]).
     ///
-    /// Returns the D matrix that relates stress to strain:
-    /// σ = D ε
-    #[allow(non_snake_case)]
-    pub fn plane_stress_D(&self) -> [f64; 9] {
+    /// Returns the D matrix that relates stress to strain: σ = D ε
+    pub fn plane_stress_d(&self) -> Vec<f64> {
         let e = self.young_modulus;
         let nu = self.poisson_ratio;
         let c = e / (1.0 - nu * nu);
-        [
+        vec![
             c,
             c * nu,
             0.0,
@@ -96,16 +101,34 @@ impl Default for PyFemMaterial {
 // ---------------------------------------------------------------------------
 
 /// A single node in the FEM mesh.
+#[pyclass(skip_from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyFemNode {
-    /// Node coordinates \[x, y\].
+    /// Node coordinates [x, y].
     pub position: [f64; 2],
 }
 
+#[pymethods]
 impl PyFemNode {
     /// Create a new node at the given 2-D position.
+    #[new]
     pub fn new(x: f64, y: f64) -> Self {
         Self { position: [x, y] }
+    }
+
+    /// Get the x coordinate.
+    pub fn x(&self) -> f64 {
+        self.position[0]
+    }
+
+    /// Get the y coordinate.
+    pub fn y(&self) -> f64 {
+        self.position[1]
+    }
+
+    /// Get position as [x, y].
+    pub fn position(&self) -> Vec<f64> {
+        self.position.to_vec()
     }
 }
 
@@ -114,24 +137,34 @@ impl PyFemNode {
 // ---------------------------------------------------------------------------
 
 /// A triangular (CST) element defined by three node indices.
+#[pyclass(skip_from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyFemElement {
     /// Indices of the three corner nodes (counter-clockwise preferred).
     pub nodes: [usize; 3],
     /// Index into the material list.
+    #[pyo3(get, set)]
     pub material_id: usize,
     /// Element thickness t (for plane-stress, metres).
+    #[pyo3(get, set)]
     pub thickness: f64,
 }
 
+#[pymethods]
 impl PyFemElement {
     /// Create a new triangular element.
+    #[new]
     pub fn new(n0: usize, n1: usize, n2: usize, material_id: usize, thickness: f64) -> Self {
         Self {
             nodes: [n0, n1, n2],
             material_id,
             thickness,
         }
+    }
+
+    /// Get nodes as [n0, n1, n2].
+    pub fn nodes(&self) -> Vec<usize> {
+        self.nodes.to_vec()
     }
 }
 
@@ -140,18 +173,30 @@ impl PyFemElement {
 // ---------------------------------------------------------------------------
 
 /// A Dirichlet (fixed DOF) boundary condition.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyFemDirichletBC {
     /// Node index.
+    #[pyo3(get, set)]
     pub node: usize,
     /// DOF index within the node (0=x, 1=y).
+    #[pyo3(get, set)]
     pub dof: usize,
     /// Prescribed displacement value.
+    #[pyo3(get, set)]
     pub value: f64,
 }
 
+#[pymethods]
 impl PyFemDirichletBC {
+    /// Create a new Dirichlet BC.
+    #[new]
+    pub fn new(node: usize, dof: usize, value: f64) -> Self {
+        Self { node, dof, value }
+    }
+
     /// Fix the x-DOF of `node` to zero.
+    #[staticmethod]
     pub fn fix_x(node: usize) -> Self {
         Self {
             node,
@@ -161,6 +206,7 @@ impl PyFemDirichletBC {
     }
 
     /// Fix the y-DOF of `node` to zero.
+    #[staticmethod]
     pub fn fix_y(node: usize) -> Self {
         Self {
             node,
@@ -169,28 +215,38 @@ impl PyFemDirichletBC {
         }
     }
 
-    /// Fix both DOFs of `node` (fully pinned).
+    /// Fix both DOFs of `node` (fully pinned). Returns a list of two BCs.
+    #[staticmethod]
     pub fn pin(node: usize) -> Vec<Self> {
         vec![Self::fix_x(node), Self::fix_y(node)]
     }
 }
 
 /// A Neumann (nodal force) boundary condition.
+#[pyclass(skip_from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyFemNodalForce {
     /// Node index.
+    #[pyo3(get, set)]
     pub node: usize,
-    /// Force vector \[fx, fy\] in Newtons.
+    /// Force vector [fx, fy] in Newtons.
     pub force: [f64; 2],
 }
 
+#[pymethods]
 impl PyFemNodalForce {
     /// Apply force `[fx, fy]` to `node`.
+    #[new]
     pub fn new(node: usize, fx: f64, fy: f64) -> Self {
         Self {
             node,
             force: [fx, fy],
         }
+    }
+
+    /// Get force as [fx, fy].
+    pub fn force(&self) -> Vec<f64> {
+        self.force.to_vec()
     }
 }
 
@@ -199,6 +255,7 @@ impl PyFemNodalForce {
 // ---------------------------------------------------------------------------
 
 /// A 2-D FEM mesh with nodes, elements, materials, and boundary conditions.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyFemMesh {
     /// All nodes in the mesh.
@@ -213,8 +270,10 @@ pub struct PyFemMesh {
     pub nodal_forces: Vec<PyFemNodalForce>,
 }
 
+#[pymethods]
 impl PyFemMesh {
     /// Create an empty mesh.
+    #[new]
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
@@ -303,9 +362,123 @@ impl PyFemMesh {
     /// Build a simple structured rectangular mesh of triangles.
     ///
     /// Creates a `nx × ny` grid of quads, each quad split into 2 triangles.
-    /// Bottom-left corner at `(ox, oy)`, domain size `(lx, ly)`.
+    /// `domain` = `[ox, oy, lx, ly]` (origin + size); `grid` = `[nx, ny]`.
     /// Returns the number of nodes added.
     pub fn build_rectangle(
+        &mut self,
+        domain: Vec<f64>,
+        grid: Vec<usize>,
+        material_id: usize,
+        thickness: f64,
+    ) -> usize {
+        let (ox, oy, lx, ly) = if domain.len() >= 4 {
+            (domain[0], domain[1], domain[2], domain[3])
+        } else {
+            (0.0, 0.0, 1.0, 1.0)
+        };
+        let (nx, ny) = if grid.len() >= 2 {
+            (grid[0], grid[1])
+        } else {
+            (1, 1)
+        };
+        self.build_rectangle_impl(ox, oy, lx, ly, nx, ny, material_id, thickness)
+    }
+
+    /// Return the bounding box of all nodes as `[xmin, ymin, xmax, ymax]`.
+    pub fn bounding_box(&self) -> Option<Vec<f64>> {
+        if self.nodes.is_empty() {
+            return None;
+        }
+        let mut xmin = f64::INFINITY;
+        let mut ymin = f64::INFINITY;
+        let mut xmax = f64::NEG_INFINITY;
+        let mut ymax = f64::NEG_INFINITY;
+        for n in &self.nodes {
+            xmin = xmin.min(n.position[0]);
+            ymin = ymin.min(n.position[1]);
+            xmax = xmax.max(n.position[0]);
+            ymax = ymax.max(n.position[1]);
+        }
+        Some(vec![xmin, ymin, xmax, ymax])
+    }
+
+    /// Return the total area of all elements (sum of |area_i|).
+    pub fn total_area(&self) -> f64 {
+        (0..self.num_elements())
+            .map(|e| self.element_area(e).abs())
+            .sum()
+    }
+
+    /// Return the centroid of element `e` as `[cx, cy]`.
+    pub fn element_centroid(&self, e: usize) -> Option<Vec<f64>> {
+        if e >= self.elements.len() {
+            return None;
+        }
+        let [n0, n1, n2] = self.elements[e].nodes;
+        let [x0, y0] = self.nodes[n0].position;
+        let [x1, y1] = self.nodes[n1].position;
+        let [x2, y2] = self.nodes[n2].position;
+        Some(vec![(x0 + x1 + x2) / 3.0, (y0 + y1 + y2) / 3.0])
+    }
+
+    /// Find the node closest to position `(px, py)`.
+    pub fn closest_node(&self, px: f64, py: f64) -> Option<usize> {
+        if self.nodes.is_empty() {
+            return None;
+        }
+        let (idx, _) = self
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                let dx = n.position[0] - px;
+                let dy = n.position[1] - py;
+                (i, dx * dx + dy * dy)
+            })
+            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))?;
+        Some(idx)
+    }
+
+    /// Return nodes on the left boundary (x <= xmin + tol).
+    pub fn left_boundary_nodes(&self, tol: f64) -> Vec<usize> {
+        if let Some(bb) = self.bounding_box() {
+            self.nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.position[0] <= bb[0] + tol)
+                .map(|(i, _)| i)
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Return nodes on the right boundary (x >= xmax - tol).
+    pub fn right_boundary_nodes(&self, tol: f64) -> Vec<usize> {
+        if let Some(bb) = self.bounding_box() {
+            self.nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.position[0] >= bb[2] - tol)
+                .map(|(i, _)| i)
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Pin all nodes on the left boundary.
+    pub fn pin_left_boundary(&mut self, tol: f64) {
+        let nodes = self.left_boundary_nodes(tol);
+        for n in nodes {
+            self.pin_node(n);
+        }
+    }
+}
+
+impl PyFemMesh {
+    /// Internal helper for building a rectangular mesh with explicit coordinates.
+    pub fn build_rectangle_impl(
         &mut self,
         ox: f64,
         oy: f64,
@@ -355,26 +528,33 @@ impl Default for PyFemMesh {
 // ---------------------------------------------------------------------------
 
 /// Result of a FEM linear static solve.
+#[pyclass(skip_from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyFemSolveResult {
-    /// Nodal displacement vector (flat: \[ux0, uy0, ux1, uy1, ...\]).
+    /// Nodal displacement vector (flat: [ux0, uy0, ux1, uy1, ...]).
+    #[pyo3(get)]
     pub displacements: Vec<f64>,
     /// Von Mises stress per element.
+    #[pyo3(get)]
     pub von_mises_stress: Vec<f64>,
     /// Number of CG solver iterations used.
+    #[pyo3(get)]
     pub solver_iterations: usize,
     /// Residual norm at convergence.
+    #[pyo3(get)]
     pub residual_norm: f64,
     /// Whether the solver converged.
+    #[pyo3(get)]
     pub converged: bool,
 }
 
+#[pymethods]
 impl PyFemSolveResult {
     /// Displacement of node `i` as `[ux, uy]`.
-    pub fn node_displacement(&self, i: usize) -> Option<[f64; 2]> {
+    pub fn node_displacement(&self, i: usize) -> Option<Vec<f64>> {
         let base = i * 2;
         if base + 1 < self.displacements.len() {
-            Some([self.displacements[base], self.displacements[base + 1]])
+            Some(vec![self.displacements[base], self.displacements[base + 1]])
         } else {
             None
         }
@@ -395,6 +575,39 @@ impl PyFemSolveResult {
         }
         self.von_mises_stress.iter().sum::<f64>() / self.von_mises_stress.len() as f64
     }
+
+    /// Return the displacement field as a list of `[ux, uy]` pairs.
+    pub fn displacement_pairs(&self) -> Vec<Vec<f64>> {
+        self.displacements
+            .chunks_exact(2)
+            .map(|c| vec![c[0], c[1]])
+            .collect()
+    }
+
+    /// Maximum absolute displacement component.
+    pub fn max_displacement_magnitude(&self) -> f64 {
+        self.displacement_pairs()
+            .iter()
+            .map(|d| (d[0] * d[0] + d[1] * d[1]).sqrt())
+            .fold(0.0f64, f64::max)
+    }
+
+    /// Return all von Mises stresses as a sorted (ascending) copy.
+    pub fn sorted_von_mises(&self) -> Vec<f64> {
+        let mut v = self.von_mises_stress.clone();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        v
+    }
+
+    /// Return the `q`-th quantile of the von Mises stress distribution (q in `[0, 1]`).
+    pub fn von_mises_quantile(&self, q: f64) -> f64 {
+        if self.von_mises_stress.is_empty() {
+            return 0.0;
+        }
+        let sorted = self.sorted_von_mises();
+        let idx = ((q.clamp(0.0, 1.0)) * (sorted.len() - 1) as f64).round() as usize;
+        sorted[idx]
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -406,16 +619,21 @@ impl PyFemSolveResult {
 /// Assembles the global stiffness matrix K from CST elements, applies
 /// Dirichlet boundary conditions, builds the load vector f, and solves
 /// K u = f with a Conjugate Gradient (CG) iterative solver.
+#[pyclass(skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyFemSolver {
     /// Maximum CG iterations.
+    #[pyo3(get, set)]
     pub max_iterations: usize,
     /// CG convergence tolerance.
+    #[pyo3(get, set)]
     pub tolerance: f64,
 }
 
+#[pymethods]
 impl PyFemSolver {
     /// Create a solver with default settings.
+    #[new]
     pub fn new() -> Self {
         Self {
             max_iterations: 1000,
@@ -424,6 +642,7 @@ impl PyFemSolver {
     }
 
     /// Create a solver with custom settings.
+    #[staticmethod]
     pub fn with_settings(max_iterations: usize, tolerance: f64) -> Self {
         Self {
             max_iterations,
@@ -512,7 +731,9 @@ impl PyFemSolver {
             converged,
         })
     }
+}
 
+impl PyFemSolver {
     // -----------------------------------------------------------------------
     // Private: element stiffness matrix (6×6 flat)
     // -----------------------------------------------------------------------
@@ -549,8 +770,8 @@ impl PyFemSolver {
             b3x,
         ];
 
-        // D matrix (3×3)
-        let d = mat.plane_stress_D();
+        // D matrix (3×3) — use internal helper returning array
+        let d = mat_plane_stress_d(mat);
 
         // Ke = B^T D B * area * thickness
         let t = elem.thickness;
@@ -561,8 +782,8 @@ impl PyFemSolver {
         for i in 0..3 {
             for j in 0..6 {
                 let mut sum = 0.0;
-                for k in 0..3 {
-                    sum += d[i * 3 + k] * b_mat[k * 6 + j];
+                for kk in 0..3 {
+                    sum += d[i * 3 + kk] * b_mat[kk * 6 + j];
                 }
                 db[i * 6 + j] = sum;
             }
@@ -573,8 +794,8 @@ impl PyFemSolver {
         for i in 0..6 {
             for j in 0..6 {
                 let mut sum = 0.0;
-                for k in 0..3 {
-                    sum += b_mat[k * 6 + i] * db[k * 6 + j];
+                for kk in 0..3 {
+                    sum += b_mat[kk * 6 + i] * db[kk * 6 + j];
                 }
                 ke[i * 6 + j] = sum * factor;
             }
@@ -635,7 +856,7 @@ impl PyFemSolver {
         }
 
         // Stress σ = D ε
-        let d = mat.plane_stress_D();
+        let d = mat_plane_stress_d(mat);
         let mut stress = [0.0f64; 3];
         for i in 0..3 {
             for j in 0..3 {
@@ -650,6 +871,27 @@ impl Default for PyFemSolver {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Internal: plane stress D matrix returning fixed-size array
+// ---------------------------------------------------------------------------
+
+fn mat_plane_stress_d(mat: &PyFemMaterial) -> [f64; 9] {
+    let e = mat.young_modulus;
+    let nu = mat.poisson_ratio;
+    let c = e / (1.0 - nu * nu);
+    [
+        c,
+        c * nu,
+        0.0,
+        c * nu,
+        c,
+        0.0,
+        0.0,
+        0.0,
+        c * (1.0 - nu) * 0.5,
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -714,6 +956,173 @@ fn mat_vec_mul(a: &[f64], v: &[f64], n: usize) -> Vec<f64> {
     result
 }
 
+// ===========================================================================
+// Modal analysis (free-vibration eigenvalue problem)
+// ===========================================================================
+
+/// Result of a modal analysis.
+#[pyclass(skip_from_py_object)]
+#[derive(Debug, Clone)]
+pub struct ModalAnalysisResult {
+    /// Natural frequencies in rad/s (ascending order).
+    #[pyo3(get)]
+    pub natural_frequencies: Vec<f64>,
+    /// Mode shapes: each row is a normalised displacement eigenvector (flat).
+    pub mode_shapes: Vec<Vec<f64>>,
+    /// Number of modes extracted.
+    #[pyo3(get)]
+    pub num_modes: usize,
+}
+
+#[pymethods]
+impl ModalAnalysisResult {
+    /// Return the `i`-th natural frequency in Hz.
+    pub fn frequency_hz(&self, i: usize) -> Option<f64> {
+        self.natural_frequencies
+            .get(i)
+            .map(|&f| f / (2.0 * std::f64::consts::PI))
+    }
+
+    /// Return the period (in seconds) of the `i`-th mode.
+    pub fn period_s(&self, i: usize) -> Option<f64> {
+        self.frequency_hz(i).filter(|&f| f > 1e-15).map(|f| 1.0 / f)
+    }
+
+    /// Return the mode shape for mode `i` as a flat `Vec<f64>`.
+    pub fn mode_shape(&self, i: usize) -> Option<Vec<f64>> {
+        self.mode_shapes.get(i).cloned()
+    }
+}
+
+/// Simple power-iteration modal analyzer (extracts the dominant modes of K).
+///
+/// This is a proof-of-concept; it uses a deflated power iteration to
+/// approximate the lowest `num_modes` natural frequencies for undamped free
+/// vibration (K φ = ω² M φ, with M = I).
+#[pyclass(from_py_object)]
+#[derive(Debug, Clone)]
+pub struct ModalAnalyzer {
+    /// Number of modes to extract.
+    #[pyo3(get, set)]
+    pub num_modes: usize,
+    /// Maximum power-iteration steps per mode.
+    #[pyo3(get, set)]
+    pub max_iter: usize,
+    /// Convergence tolerance.
+    #[pyo3(get, set)]
+    pub tolerance: f64,
+}
+
+#[pymethods]
+impl ModalAnalyzer {
+    /// Create an analyzer that extracts up to `num_modes` modes.
+    #[new]
+    pub fn new(num_modes: usize) -> Self {
+        Self {
+            num_modes,
+            max_iter: 500,
+            tolerance: 1e-8,
+        }
+    }
+
+    /// Run modal analysis on the assembled mesh.
+    ///
+    /// Returns `None` if the mesh has no elements.
+    pub fn analyze(&self, mesh: &PyFemMesh) -> Option<ModalAnalysisResult> {
+        if mesh.num_nodes() == 0 || mesh.elements.is_empty() {
+            return None;
+        }
+        let solver = PyFemSolver::new();
+        let n_dofs = mesh.num_dofs();
+
+        // Assemble stiffness matrix (reuse solver's internal logic via a zero-load solve)
+        let mut k = vec![0.0f64; n_dofs * n_dofs];
+        for elem in &mesh.elements {
+            let mat = mesh
+                .materials
+                .get(elem.material_id)
+                .unwrap_or(&mesh.materials[0]);
+            let ke = solver.element_stiffness(mesh, elem, mat);
+            let dofs: [usize; 6] = [
+                elem.nodes[0] * 2,
+                elem.nodes[0] * 2 + 1,
+                elem.nodes[1] * 2,
+                elem.nodes[1] * 2 + 1,
+                elem.nodes[2] * 2,
+                elem.nodes[2] * 2 + 1,
+            ];
+            for (i, &gi) in dofs.iter().enumerate() {
+                for (j, &gj) in dofs.iter().enumerate() {
+                    k[gi * n_dofs + gj] += ke[i * 6 + j];
+                }
+            }
+        }
+
+        // Apply BCs: zero out rows/cols of constrained DOFs
+        for bc in &mesh.dirichlet_bcs {
+            if bc.node < mesh.num_nodes() {
+                let dof = bc.node * 2 + bc.dof;
+                for j in 0..n_dofs {
+                    k[dof * n_dofs + j] = 0.0;
+                    k[j * n_dofs + dof] = 0.0;
+                }
+                k[dof * n_dofs + dof] = 1.0;
+            }
+        }
+
+        let modes = self.num_modes.min(n_dofs);
+        let mut natural_frequencies = Vec::with_capacity(modes);
+        let mut mode_shapes = Vec::with_capacity(modes);
+
+        // Deflated inverse-free power iteration: approximate λ = ω²
+        let mut deflated_k = k.clone();
+
+        for _ in 0..modes {
+            let (lambda, phi) = power_iteration(&deflated_k, n_dofs, self.max_iter, self.tolerance);
+            if lambda.abs() < 1e-15 {
+                break;
+            }
+            let omega = lambda.abs().sqrt();
+            natural_frequencies.push(omega);
+            mode_shapes.push(phi.clone());
+
+            // Deflate: K ← K - λ φ φᵀ
+            for i in 0..n_dofs {
+                for j in 0..n_dofs {
+                    deflated_k[i * n_dofs + j] -= lambda * phi[i] * phi[j];
+                }
+            }
+        }
+
+        Some(ModalAnalysisResult {
+            num_modes: natural_frequencies.len(),
+            natural_frequencies,
+            mode_shapes,
+        })
+    }
+}
+
+/// Power iteration to find the dominant eigenvalue and eigenvector of a symmetric matrix.
+pub fn power_iteration(a: &[f64], n: usize, max_iter: usize, tol: f64) -> (f64, Vec<f64>) {
+    let mut v: Vec<f64> = (0..n).map(|i| if i == 0 { 1.0 } else { 0.0 }).collect();
+    let mut lambda = 0.0f64;
+    for _ in 0..max_iter {
+        let av = mat_vec_mul(a, &v, n);
+        let new_lambda: f64 = av.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
+        let norm: f64 = (av.iter().map(|x| x * x).sum::<f64>()).sqrt();
+        if norm < 1e-30 {
+            break;
+        }
+        v = av.iter().map(|x| x / norm).collect();
+        if (new_lambda - lambda).abs() < tol {
+            lambda = new_lambda;
+            break;
+        }
+        lambda = new_lambda;
+    }
+    (lambda, v)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -755,7 +1164,7 @@ mod tests {
     #[test]
     fn test_fem_material_d_matrix_symmetry() {
         let mat = PyFemMaterial::steel();
-        let d = mat.plane_stress_D();
+        let d = mat_plane_stress_d(&mat);
         // D[0][1] == D[1][0]
         assert!((d[1] - d[3]).abs() < 1.0, "D should be symmetric");
     }
@@ -888,7 +1297,7 @@ mod tests {
     #[test]
     fn test_fem_build_rectangle() {
         let mut mesh = PyFemMesh::new();
-        let n_nodes = mesh.build_rectangle(0.0, 0.0, 1.0, 1.0, 4, 4, 0, 1.0);
+        let n_nodes = mesh.build_rectangle(vec![0.0, 0.0, 1.0, 1.0], vec![4, 4], 0, 1.0);
         assert_eq!(n_nodes, 25); // 5×5 = 25 nodes
         assert_eq!(mesh.num_elements(), 32); // 4×4×2 = 32 triangles
     }
@@ -1012,296 +1421,6 @@ mod tests {
         assert_eq!(back.num_nodes(), 4);
         assert_eq!(back.dirichlet_bcs.len(), 2);
         assert_eq!(back.nodal_forces.len(), 1);
-    }
-}
-
-// ===========================================================================
-// Modal analysis (free-vibration eigenvalue problem)
-// ===========================================================================
-
-/// Result of a modal analysis.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct ModalAnalysisResult {
-    /// Natural frequencies in rad/s (ascending order).
-    pub natural_frequencies: Vec<f64>,
-    /// Mode shapes: each row is a normalised displacement eigenvector (flat).
-    pub mode_shapes: Vec<Vec<f64>>,
-    /// Number of modes extracted.
-    pub num_modes: usize,
-}
-
-impl ModalAnalysisResult {
-    /// Return the `i`-th natural frequency in Hz.
-    pub fn frequency_hz(&self, i: usize) -> Option<f64> {
-        self.natural_frequencies
-            .get(i)
-            .map(|&f| f / (2.0 * std::f64::consts::PI))
-    }
-
-    /// Return the period (in seconds) of the `i`-th mode.
-    pub fn period_s(&self, i: usize) -> Option<f64> {
-        self.frequency_hz(i).filter(|&f| f > 1e-15).map(|f| 1.0 / f)
-    }
-}
-
-/// Simple power-iteration modal analyzer (extracts the dominant modes of K).
-///
-/// This is a proof-of-concept; it uses a deflated power iteration to
-/// approximate the lowest `num_modes` natural frequencies for undamped free
-/// vibration (K φ = ω² M φ, with M = I).
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct ModalAnalyzer {
-    /// Number of modes to extract.
-    pub num_modes: usize,
-    /// Maximum power-iteration steps per mode.
-    pub max_iter: usize,
-    /// Convergence tolerance.
-    pub tolerance: f64,
-}
-
-impl ModalAnalyzer {
-    /// Create an analyzer that extracts up to `num_modes` modes.
-    pub fn new(num_modes: usize) -> Self {
-        Self {
-            num_modes,
-            max_iter: 500,
-            tolerance: 1e-8,
-        }
-    }
-
-    /// Run modal analysis on the assembled mesh.
-    ///
-    /// Returns `None` if the mesh has no elements.
-    pub fn analyze(&self, mesh: &PyFemMesh) -> Option<ModalAnalysisResult> {
-        if mesh.num_nodes() == 0 || mesh.elements.is_empty() {
-            return None;
-        }
-        let solver = PyFemSolver::new();
-        let n_dofs = mesh.num_dofs();
-
-        // Assemble stiffness matrix (reuse solver's internal logic via a zero-load solve)
-        let mut k = vec![0.0f64; n_dofs * n_dofs];
-        for elem in &mesh.elements {
-            let mat = mesh
-                .materials
-                .get(elem.material_id)
-                .unwrap_or(&mesh.materials[0]);
-            let ke = solver.element_stiffness(mesh, elem, mat);
-            let dofs: [usize; 6] = [
-                elem.nodes[0] * 2,
-                elem.nodes[0] * 2 + 1,
-                elem.nodes[1] * 2,
-                elem.nodes[1] * 2 + 1,
-                elem.nodes[2] * 2,
-                elem.nodes[2] * 2 + 1,
-            ];
-            for (i, &gi) in dofs.iter().enumerate() {
-                for (j, &gj) in dofs.iter().enumerate() {
-                    k[gi * n_dofs + gj] += ke[i * 6 + j];
-                }
-            }
-        }
-
-        // Apply BCs: zero out rows/cols of constrained DOFs
-        for bc in &mesh.dirichlet_bcs {
-            if bc.node < mesh.num_nodes() {
-                let dof = bc.node * 2 + bc.dof;
-                for j in 0..n_dofs {
-                    k[dof * n_dofs + j] = 0.0;
-                    k[j * n_dofs + dof] = 0.0;
-                }
-                k[dof * n_dofs + dof] = 1.0;
-            }
-        }
-
-        let modes = self.num_modes.min(n_dofs);
-        let mut natural_frequencies = Vec::with_capacity(modes);
-        let mut mode_shapes = Vec::with_capacity(modes);
-
-        // Deflated inverse-free power iteration: approximate λ = ω²
-        let mut deflated_k = k.clone();
-
-        for _ in 0..modes {
-            let (lambda, phi) = power_iteration(&deflated_k, n_dofs, self.max_iter, self.tolerance);
-            if lambda.abs() < 1e-15 {
-                break;
-            }
-            let omega = lambda.abs().sqrt();
-            natural_frequencies.push(omega);
-            mode_shapes.push(phi.clone());
-
-            // Deflate: K ← K - λ φ φᵀ
-            for i in 0..n_dofs {
-                for j in 0..n_dofs {
-                    deflated_k[i * n_dofs + j] -= lambda * phi[i] * phi[j];
-                }
-            }
-        }
-
-        Some(ModalAnalysisResult {
-            num_modes: natural_frequencies.len(),
-            natural_frequencies,
-            mode_shapes,
-        })
-    }
-}
-
-/// Power iteration to find the dominant eigenvalue and eigenvector of a symmetric matrix.
-fn power_iteration(a: &[f64], n: usize, max_iter: usize, tol: f64) -> (f64, Vec<f64>) {
-    let mut v: Vec<f64> = (0..n).map(|i| if i == 0 { 1.0 } else { 0.0 }).collect();
-    let mut lambda = 0.0f64;
-    for _ in 0..max_iter {
-        let av = mat_vec_mul(a, &v, n);
-        let new_lambda: f64 = av.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
-        let norm: f64 = (av.iter().map(|x| x * x).sum::<f64>()).sqrt();
-        if norm < 1e-30 {
-            break;
-        }
-        v = av.iter().map(|x| x / norm).collect();
-        if (new_lambda - lambda).abs() < tol {
-            lambda = new_lambda;
-            break;
-        }
-        lambda = new_lambda;
-    }
-    (lambda, v)
-}
-
-// ===========================================================================
-// Result extraction helpers
-// ===========================================================================
-
-impl PyFemSolveResult {
-    /// Return the displacement field as a list of `[ux, uy]` pairs.
-    pub fn displacement_pairs(&self) -> Vec<[f64; 2]> {
-        self.displacements
-            .chunks_exact(2)
-            .map(|c| [c[0], c[1]])
-            .collect()
-    }
-
-    /// Maximum absolute displacement component.
-    pub fn max_displacement_magnitude(&self) -> f64 {
-        self.displacement_pairs()
-            .iter()
-            .map(|[ux, uy]| (ux * ux + uy * uy).sqrt())
-            .fold(0.0f64, f64::max)
-    }
-
-    /// Return all von Mises stresses as a sorted (ascending) copy.
-    pub fn sorted_von_mises(&self) -> Vec<f64> {
-        let mut v = self.von_mises_stress.clone();
-        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        v
-    }
-
-    /// Return the `q`-th quantile of the von Mises stress distribution (q in \[0,1\]).
-    pub fn von_mises_quantile(&self, q: f64) -> f64 {
-        if self.von_mises_stress.is_empty() {
-            return 0.0;
-        }
-        let sorted = self.sorted_von_mises();
-        let idx = ((q.clamp(0.0, 1.0)) * (sorted.len() - 1) as f64).round() as usize;
-        sorted[idx]
-    }
-}
-
-// ===========================================================================
-// Mesh query helpers
-// ===========================================================================
-
-impl PyFemMesh {
-    /// Return the bounding box of all nodes as `[xmin, ymin, xmax, ymax]`.
-    pub fn bounding_box(&self) -> Option<[f64; 4]> {
-        if self.nodes.is_empty() {
-            return None;
-        }
-        let mut xmin = f64::INFINITY;
-        let mut ymin = f64::INFINITY;
-        let mut xmax = f64::NEG_INFINITY;
-        let mut ymax = f64::NEG_INFINITY;
-        for n in &self.nodes {
-            xmin = xmin.min(n.position[0]);
-            ymin = ymin.min(n.position[1]);
-            xmax = xmax.max(n.position[0]);
-            ymax = ymax.max(n.position[1]);
-        }
-        Some([xmin, ymin, xmax, ymax])
-    }
-
-    /// Return the total area of all elements (sum of |area_i|).
-    pub fn total_area(&self) -> f64 {
-        (0..self.num_elements())
-            .map(|e| self.element_area(e).abs())
-            .sum()
-    }
-
-    /// Return the centroid of element `e` as `[cx, cy]`.
-    pub fn element_centroid(&self, e: usize) -> Option<[f64; 2]> {
-        if e >= self.elements.len() {
-            return None;
-        }
-        let [n0, n1, n2] = self.elements[e].nodes;
-        let [x0, y0] = self.nodes[n0].position;
-        let [x1, y1] = self.nodes[n1].position;
-        let [x2, y2] = self.nodes[n2].position;
-        Some([(x0 + x1 + x2) / 3.0, (y0 + y1 + y2) / 3.0])
-    }
-
-    /// Find the node closest to position `(px, py)`.
-    pub fn closest_node(&self, px: f64, py: f64) -> Option<usize> {
-        if self.nodes.is_empty() {
-            return None;
-        }
-        let (idx, _) = self
-            .nodes
-            .iter()
-            .enumerate()
-            .map(|(i, n)| {
-                let dx = n.position[0] - px;
-                let dy = n.position[1] - py;
-                (i, dx * dx + dy * dy)
-            })
-            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))?;
-        Some(idx)
-    }
-
-    /// Return nodes on the left boundary (x <= xmin + tol).
-    pub fn left_boundary_nodes(&self, tol: f64) -> Vec<usize> {
-        if let Some(bb) = self.bounding_box() {
-            self.nodes
-                .iter()
-                .enumerate()
-                .filter(|(_, n)| n.position[0] <= bb[0] + tol)
-                .map(|(i, _)| i)
-                .collect()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Return nodes on the right boundary (x >= xmax - tol).
-    pub fn right_boundary_nodes(&self, tol: f64) -> Vec<usize> {
-        if let Some(bb) = self.bounding_box() {
-            self.nodes
-                .iter()
-                .enumerate()
-                .filter(|(_, n)| n.position[0] >= bb[2] - tol)
-                .map(|(i, _)| i)
-                .collect()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Pin all nodes on the left boundary.
-    pub fn pin_left_boundary(&mut self, tol: f64) {
-        let nodes = self.left_boundary_nodes(tol);
-        for n in nodes {
-            self.pin_node(n);
-        }
     }
 }
 
@@ -1531,7 +1650,7 @@ mod fem_ext_tests {
     #[test]
     fn test_fem_solve_with_large_mesh() {
         let mut mesh = PyFemMesh::new();
-        mesh.build_rectangle(0.0, 0.0, 1.0, 0.5, 4, 2, 0, 0.01);
+        mesh.build_rectangle(vec![0.0, 0.0, 1.0, 0.5], vec![4, 2], 0, 0.01);
         mesh.pin_left_boundary(1e-6);
         // Apply load on right boundary
         let right = mesh.right_boundary_nodes(1e-6);
@@ -1574,4 +1693,24 @@ mod fem_ext_tests {
         };
         assert!((result.max_displacement_magnitude()).abs() < 1e-15);
     }
+}
+
+/// Register all `fem` classes into a Python sub-module.
+///
+/// Called from the top-level `#[pymodule]` in `lib.rs`.
+pub fn register_fem_module(parent: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
+    use pyo3::types::PyModuleMethods;
+    let child = pyo3::types::PyModule::new(parent.py(), "fem")?;
+    child.add_class::<PyFemMaterial>()?;
+    child.add_class::<PyFemNode>()?;
+    child.add_class::<PyFemElement>()?;
+    child.add_class::<PyFemDirichletBC>()?;
+    child.add_class::<PyFemNodalForce>()?;
+    child.add_class::<PyFemMesh>()?;
+    child.add_class::<PyFemSolveResult>()?;
+    child.add_class::<PyFemSolver>()?;
+    child.add_class::<ModalAnalysisResult>()?;
+    child.add_class::<ModalAnalyzer>()?;
+    parent.add_submodule(&child)?;
+    Ok(())
 }

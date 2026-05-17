@@ -6,18 +6,18 @@
 //! Provides Python-friendly types for rendering, camera control, scene management,
 //! stress visualization, streamline tracing, and debug overlays.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
+use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
+// rasterizer is declared as a sibling module in lib.rs
+use crate::rasterizer;
+
 // Helper functions
-// ---------------------------------------------------------------------------
 
 /// Convert HSV color to RGB.
 ///
 /// All inputs and outputs are in \[0, 1\] range.
+#[pyfunction]
 pub fn hsv_to_rgb(h: f64, s: f64, v: f64) -> [f64; 3] {
     if s == 0.0 {
         return [v, v, v];
@@ -43,7 +43,8 @@ pub fn hsv_to_rgb(h: f64, s: f64, v: f64) -> [f64; 3] {
 /// `vertices` is a flat array of `[x, y, z]` values (length = 3 * num_vertices).
 /// `indices` is a flat array of triangle vertex indices (length = 3 * num_triangles).
 /// Returns a flat array of normals, same length as `vertices`.
-pub fn compute_normals_from_mesh(vertices: &[f64], indices: &[u32]) -> Vec<f64> {
+#[pyfunction]
+pub fn compute_normals_from_mesh(vertices: Vec<f64>, indices: Vec<u32>) -> Vec<f64> {
     let nv = vertices.len() / 3;
     let mut normals = vec![0.0f64; vertices.len()];
     let ntri = indices.len() / 3;
@@ -84,6 +85,7 @@ pub fn compute_normals_from_mesh(vertices: &[f64], indices: &[u32]) -> Vec<f64> 
 /// Generate a UV sphere mesh.
 ///
 /// Returns `(vertices, normals, indices)` as flat `f64`/`u32` arrays.
+#[pyfunction]
 pub fn generate_sphere_mesh(
     radius: f64,
     lat_segments: u32,
@@ -131,6 +133,7 @@ pub fn generate_sphere_mesh(
 ///
 /// `half_extents` = \[hx, hy, hz\].
 /// Returns `(vertices, normals, indices)`.
+#[pyfunction]
 pub fn generate_box_mesh(half_extents: [f64; 3]) -> (Vec<f64>, Vec<f64>, Vec<u32>) {
     let [hx, hy, hz] = half_extents;
     // 6 faces × 4 vertices = 24 vertices
@@ -177,11 +180,10 @@ pub fn generate_box_mesh(half_extents: [f64; 3]) -> (Vec<f64>, Vec<f64>, Vec<u32
     (verts, norms, idxs)
 }
 
-// ---------------------------------------------------------------------------
 // PyColormap
-// ---------------------------------------------------------------------------
 
 /// Named colormap for scalar field visualization.
+#[pyclass(eq, eq_int, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ColormapKind {
     /// Viridis perceptually uniform colormap.
@@ -209,6 +211,7 @@ pub enum ColormapKind {
 }
 
 /// A colormap that maps scalar values in \[0, 1\] to RGBA colors.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyColormap {
     /// The colormap kind.
@@ -221,8 +224,10 @@ pub struct PyColormap {
     pub alpha: f64,
 }
 
+#[pymethods]
 impl PyColormap {
     /// Create a new colormap with explicit range.
+    #[new]
     pub fn new(kind: ColormapKind, vmin: f64, vmax: f64) -> Self {
         Self {
             kind,
@@ -233,16 +238,19 @@ impl PyColormap {
     }
 
     /// Create a Viridis colormap over \[0, 1\].
+    #[staticmethod]
     pub fn viridis() -> Self {
         Self::new(ColormapKind::Viridis, 0.0, 1.0)
     }
 
     /// Create a Plasma colormap over \[0, 1\].
+    #[staticmethod]
     pub fn plasma() -> Self {
         Self::new(ColormapKind::Plasma, 0.0, 1.0)
     }
 
     /// Create a Jet colormap over \[0, 1\].
+    #[staticmethod]
     pub fn jet() -> Self {
         Self::new(ColormapKind::Jet, 0.0, 1.0)
     }
@@ -348,11 +356,10 @@ fn jet_sample(t: f64) -> [f64; 3] {
     hsv_to_rgb((1.0 - t) * 0.667, 1.0, 1.0)
 }
 
-// ---------------------------------------------------------------------------
 // PyCamera
-// ---------------------------------------------------------------------------
 
 /// 3D camera with orbit, pan, zoom controls.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyCamera {
     /// Camera position in world space.
@@ -371,8 +378,10 @@ pub struct PyCamera {
     pub aspect: f64,
 }
 
+#[pymethods]
 impl PyCamera {
     /// Create a default perspective camera.
+    #[new]
     pub fn new(position: [f64; 3], target: [f64; 3]) -> Self {
         Self {
             position,
@@ -386,6 +395,7 @@ impl PyCamera {
     }
 
     /// Default camera looking down the negative Z axis.
+    #[staticmethod]
     pub fn default_perspective() -> Self {
         Self::new([0.0, 5.0, 10.0], [0.0, 0.0, 0.0])
     }
@@ -451,11 +461,10 @@ impl PyCamera {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Material
-// ---------------------------------------------------------------------------
 
 /// Surface material properties for mesh rendering.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyMaterial {
     /// Base color RGBA.
@@ -472,8 +481,10 @@ pub struct PyMaterial {
     pub colormap: Option<PyColormap>,
 }
 
+#[pymethods]
 impl PyMaterial {
     /// Create a default PBR material.
+    #[new]
     pub fn new(base_color: [f64; 4]) -> Self {
         Self {
             base_color,
@@ -486,16 +497,19 @@ impl PyMaterial {
     }
 
     /// Red material.
+    #[staticmethod]
     pub fn red() -> Self {
         Self::new([1.0, 0.0, 0.0, 1.0])
     }
 
     /// Blue material.
+    #[staticmethod]
     pub fn blue() -> Self {
         Self::new([0.0, 0.3, 1.0, 1.0])
     }
 
     /// Metallic silver material.
+    #[staticmethod]
     pub fn silver() -> Self {
         Self {
             base_color: [0.8, 0.8, 0.8, 1.0],
@@ -508,11 +522,10 @@ impl PyMaterial {
     }
 }
 
-// ---------------------------------------------------------------------------
 // PyMeshRenderer
-// ---------------------------------------------------------------------------
 
 /// GPU-ready mesh data with material and optional per-vertex scalar field.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyMeshRenderer {
     /// Flat array of vertex positions: \[x0, y0, z0, x1, y1, z1, ...\].
@@ -527,10 +540,12 @@ pub struct PyMeshRenderer {
     pub scalars: Option<Vec<f64>>,
 }
 
+#[pymethods]
 impl PyMeshRenderer {
     /// Create a new mesh renderer from raw geometry.
+    #[new]
     pub fn new(vertices: Vec<f64>, indices: Vec<u32>, material: PyMaterial) -> Self {
-        let normals = compute_normals_from_mesh(&vertices, &indices);
+        let normals = compute_normals_from_mesh(vertices.clone(), indices.clone());
         Self {
             vertices,
             normals,
@@ -560,30 +575,65 @@ impl PyMeshRenderer {
 
     /// Recompute normals from current vertex/index data.
     pub fn recompute_normals(&mut self) {
-        self.normals = compute_normals_from_mesh(&self.vertices, &self.indices);
+        self.normals = compute_normals_from_mesh(self.vertices.clone(), self.indices.clone());
     }
 
-    /// Render to a flat RGBA pixel buffer (software rasterizer stub).
+    /// Render to a flat RGBA pixel buffer using a software scanline rasterizer.
     ///
-    /// Returns a buffer of `width * height * 4` bytes (u8), cleared to the background color.
+    /// Uses an orthographic projection auto-fitted to the mesh bounding box and
+    /// per-vertex Phong shading with a single directional light from `[1,1,1]`.
+    /// Returns a buffer of `width * height * 4` bytes (RGBA u8).
     pub fn render_to_buffer(&self, width: u32, height: u32, background: [u8; 4]) -> Vec<u8> {
-        let n = (width * height * 4) as usize;
-        let mut buf = vec![0u8; n];
-        for i in 0..(width * height) as usize {
-            buf[4 * i] = background[0];
-            buf[4 * i + 1] = background[1];
-            buf[4 * i + 2] = background[2];
-            buf[4 * i + 3] = background[3];
+        // Build diffuse color from material base_color (RGB channels).
+        let base_color = [
+            self.material.base_color[0],
+            self.material.base_color[1],
+            self.material.base_color[2],
+        ];
+
+        // If a colormap is present, build a mapping closure.
+        let scalars_ref = self.scalars.as_deref();
+        if let Some(colormap) = &self.material.colormap {
+            let cmap = colormap.clone();
+            let map_fn = move |sv: f64| {
+                let rgba = cmap.map_scalar(sv);
+                [rgba[0], rgba[1], rgba[2]]
+            };
+            rasterizer::render_mesh(
+                rasterizer::MeshRenderData {
+                    vertices: &self.vertices,
+                    normals: &self.normals,
+                    indices: &self.indices,
+                    base_color,
+                    scalars: scalars_ref,
+                    scalar_map_fn: Some(&map_fn),
+                },
+                width,
+                height,
+                background,
+            )
+        } else {
+            rasterizer::render_mesh(
+                rasterizer::MeshRenderData {
+                    vertices: &self.vertices,
+                    normals: &self.normals,
+                    indices: &self.indices,
+                    base_color,
+                    scalars: scalars_ref,
+                    scalar_map_fn: None,
+                },
+                width,
+                height,
+                background,
+            )
         }
-        buf
     }
 }
 
-// ---------------------------------------------------------------------------
 // PyParticleRenderer
-// ---------------------------------------------------------------------------
 
 /// Renderer for particle systems using billboard or instanced geometry.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyParticleRenderer {
     /// Flat array of particle positions: \[x0, y0, z0, x1, y1, z1, ...\].
@@ -600,8 +650,10 @@ pub struct PyParticleRenderer {
     pub colormap: Option<PyColormap>,
 }
 
+#[pymethods]
 impl PyParticleRenderer {
     /// Create a new particle renderer.
+    #[new]
     pub fn new(positions: Vec<f64>) -> Self {
         let n = positions.len() / 3;
         Self {
@@ -625,7 +677,7 @@ impl PyParticleRenderer {
     }
 
     /// Set per-particle colors from a colormap and scalar values.
-    pub fn set_colors_from_scalars(&mut self, scalars: &[f64], colormap: &PyColormap) {
+    pub fn set_colors_from_scalars(&mut self, scalars: Vec<f64>, colormap: PyColormap) {
         let n = self.positions.len() / 3;
         self.colors.clear();
         for i in 0..n {
@@ -633,7 +685,7 @@ impl PyParticleRenderer {
             let rgba = colormap.map_scalar(s);
             self.colors.extend_from_slice(&rgba);
         }
-        self.colormap = Some(colormap.clone());
+        self.colormap = Some(colormap);
     }
 
     /// Return the number of particles.
@@ -642,11 +694,10 @@ impl PyParticleRenderer {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Transfer function for volume rendering
-// ---------------------------------------------------------------------------
 
 /// A control point in a transfer function (scalar → RGBA).
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransferPoint {
     /// Scalar value in \[0, 1\].
@@ -656,14 +707,17 @@ pub struct TransferPoint {
 }
 
 /// Transfer function mapping scalar densities to RGBA for volume rendering.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyTransferFunction {
     /// Sorted control points.
     pub control_points: Vec<TransferPoint>,
 }
 
+#[pymethods]
 impl PyTransferFunction {
     /// Create a simple two-point transfer function.
+    #[staticmethod]
     pub fn simple(low_color: [f64; 4], high_color: [f64; 4]) -> Self {
         Self {
             control_points: vec![
@@ -714,9 +768,7 @@ impl PyTransferFunction {
     }
 }
 
-// ---------------------------------------------------------------------------
 // PyVolumeRenderer
-// ---------------------------------------------------------------------------
 
 /// Settings for ray-marching volume rendering.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -743,6 +795,7 @@ impl Default for RayMarchSettings {
 }
 
 /// Volume renderer for 3D scalar fields.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyVolumeRenderer {
     /// 3D scalar field stored in \[z\]\[y\]\[x\] order, flattened.
@@ -757,9 +810,10 @@ pub struct PyVolumeRenderer {
     pub ray_march: RayMarchSettings,
 }
 
+#[pymethods]
 impl PyVolumeRenderer {
     /// Create a volume renderer from a flat scalar field.
-    #[allow(clippy::too_many_arguments)]
+    #[new]
     pub fn new(
         data: Vec<f64>,
         dims: [u32; 3],
@@ -788,11 +842,10 @@ impl PyVolumeRenderer {
     }
 }
 
-// ---------------------------------------------------------------------------
 // PySceneGraph
-// ---------------------------------------------------------------------------
 
 /// A transform node in the scene hierarchy.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PySceneNode {
     /// Node identifier.
@@ -811,22 +864,25 @@ pub struct PySceneNode {
     pub visible: bool,
 }
 
+#[pymethods]
 impl PySceneNode {
     /// Create an identity transform node.
-    pub fn identity(id: u32, label: impl Into<String>) -> Self {
+    #[staticmethod]
+    pub fn identity(id: u32, label: String) -> Self {
         Self {
             id,
             parent: None,
             translation: [0.0; 3],
             rotation: [0.0, 0.0, 0.0, 1.0],
             scale: [1.0; 3],
-            label: label.into(),
+            label,
             visible: true,
         }
     }
 }
 
 /// A light source in the scene.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyLight {
     /// Light position \[x, y, z\].
@@ -843,8 +899,10 @@ pub struct PyLight {
     pub cone_angle: f64,
 }
 
+#[pymethods]
 impl PyLight {
     /// Create a point light.
+    #[staticmethod]
     pub fn point(position: [f64; 3], color: [f64; 3], intensity: f64) -> Self {
         Self {
             position,
@@ -857,6 +915,7 @@ impl PyLight {
     }
 
     /// Create a directional light (sun).
+    #[staticmethod]
     pub fn directional(direction: [f64; 3], color: [f64; 3], intensity: f64) -> Self {
         Self {
             position: [0.0; 3],
@@ -870,6 +929,7 @@ impl PyLight {
 }
 
 /// Hierarchical scene graph managing nodes, meshes, particles and lights.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PySceneGraph {
     /// All nodes in the scene.
@@ -884,8 +944,10 @@ pub struct PySceneGraph {
     next_id: u32,
 }
 
+#[pymethods]
 impl PySceneGraph {
     /// Create an empty scene graph.
+    #[new]
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
@@ -897,7 +959,7 @@ impl PySceneGraph {
     }
 
     /// Add a new node and return its id.
-    pub fn add_node(&mut self, label: impl Into<String>) -> u32 {
+    pub fn add_node(&mut self, label: String) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
         self.nodes.push(PySceneNode::identity(id, label));
@@ -954,9 +1016,7 @@ impl Default for PySceneGraph {
     }
 }
 
-// ---------------------------------------------------------------------------
 // PyPostProcessor
-// ---------------------------------------------------------------------------
 
 /// Screen-space ambient occlusion parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1004,6 +1064,7 @@ impl Default for BloomParams {
 }
 
 /// Tone mapping operator selection.
+#[pyclass(eq, eq_int, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ToneMapping {
     /// Reinhard global operator.
@@ -1017,6 +1078,7 @@ pub enum ToneMapping {
 }
 
 /// Post-processing pipeline configuration.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyPostProcessor {
     /// SSAO settings.
@@ -1033,8 +1095,10 @@ pub struct PyPostProcessor {
     pub exposure: f64,
 }
 
+#[pymethods]
 impl PyPostProcessor {
     /// Create a default post-processing pipeline.
+    #[new]
     pub fn new() -> Self {
         Self {
             ssao: Some(SsaoParams::default()),
@@ -1047,6 +1111,7 @@ impl PyPostProcessor {
     }
 
     /// Disable all effects (passthrough).
+    #[staticmethod]
     pub fn passthrough() -> Self {
         Self {
             ssao: None,
@@ -1087,19 +1152,20 @@ impl Default for PyPostProcessor {
     }
 }
 
-// ---------------------------------------------------------------------------
 // PyStressVisualizer
-// ---------------------------------------------------------------------------
 
 /// A 3×3 symmetric stress tensor stored as \[s11, s22, s33, s12, s13, s23\].
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StressTensor {
     /// Components \[σ₁₁, σ₂₂, σ₃₃, σ₁₂, σ₁₃, σ₂₃\].
     pub components: [f64; 6],
 }
 
+#[pymethods]
 impl StressTensor {
     /// Create a new stress tensor.
+    #[new]
     pub fn new(s11: f64, s22: f64, s33: f64, s12: f64, s13: f64, s23: f64) -> Self {
         Self {
             components: [s11, s22, s33, s12, s13, s23],
@@ -1128,6 +1194,7 @@ impl StressTensor {
 }
 
 /// Output from the stress visualizer for a single tensor.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StressVisOutput {
     /// Von Mises equivalent stress.
@@ -1143,6 +1210,7 @@ pub struct StressVisOutput {
 }
 
 /// Stress field visualizer providing principal direction glyphs and Mohr circle data.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyStressVisualizer {
     /// Input stress tensor field (one per element/node).
@@ -1153,8 +1221,10 @@ pub struct PyStressVisualizer {
     pub glyph_scale: f64,
 }
 
+#[pymethods]
 impl PyStressVisualizer {
     /// Create a new stress visualizer.
+    #[new]
     pub fn new(tensors: Vec<StressTensor>) -> Self {
         let mut cm = PyColormap::new(ColormapKind::Viridis, 0.0, 1.0);
         cm.vmax = tensors
@@ -1201,11 +1271,10 @@ impl PyStressVisualizer {
     }
 }
 
-// ---------------------------------------------------------------------------
 // PyStreamlineTracer
-// ---------------------------------------------------------------------------
 
 /// Result of streamline tracing.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Streamline {
     /// Flat array of 3D positions along the streamline.
@@ -1215,6 +1284,7 @@ pub struct Streamline {
 }
 
 /// Streamline tracer using RK4 integration through a 3D velocity field.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyStreamlineTracer {
     /// Flat velocity field \[vx0, vy0, vz0, vx1, ...\] on a uniform grid.
@@ -1231,8 +1301,10 @@ pub struct PyStreamlineTracer {
     pub tube_radius: f64,
 }
 
+#[pymethods]
 impl PyStreamlineTracer {
     /// Create a new streamline tracer.
+    #[new]
     pub fn new(velocity_field: Vec<f64>, dims: [u32; 3], bounds: [f64; 6]) -> Self {
         Self {
             velocity_field,
@@ -1320,14 +1392,12 @@ impl PyStreamlineTracer {
     }
 
     /// Trace streamlines from multiple seed points.
-    pub fn trace_multiple(&self, seeds: &[[f64; 3]]) -> Vec<Streamline> {
-        seeds.iter().map(|&s| self.trace(s)).collect()
+    pub fn trace_multiple(&self, seeds: Vec<[f64; 3]>) -> Vec<Streamline> {
+        seeds.into_iter().map(|s| self.trace(s)).collect()
     }
 }
 
-// ---------------------------------------------------------------------------
 // PyDebugOverlay
-// ---------------------------------------------------------------------------
 
 /// A single debug primitive drawn as an overlay.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1368,6 +1438,7 @@ pub enum DebugPrimitive {
 }
 
 /// Debug overlay manager for visualizing physics primitives.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyDebugOverlay {
     /// List of debug primitives to render.
@@ -1380,8 +1451,10 @@ pub struct PyDebugOverlay {
     pub persistent: bool,
 }
 
+#[pymethods]
 impl PyDebugOverlay {
     /// Create a new empty debug overlay.
+    #[new]
     pub fn new() -> Self {
         Self {
             primitives: Vec::new(),
@@ -1429,14 +1502,14 @@ impl PyDebugOverlay {
     pub fn draw_text_3d(
         &mut self,
         position: [f64; 3],
-        text: impl Into<String>,
+        text: String,
         color: Option<[f64; 4]>,
         size: f64,
     ) {
         let c = color.unwrap_or(self.default_color);
         self.primitives.push(DebugPrimitive::Text3D {
             position,
-            text: text.into(),
+            text,
             color: c,
             size,
         });
@@ -1476,9 +1549,42 @@ impl Default for PyDebugOverlay {
     }
 }
 
-// ---------------------------------------------------------------------------
+/// Register all `viz` classes into a Python sub-module.
+///
+/// Called from the top-level `#[pymodule]` in `lib.rs`.
+/// Wave-2 annotation pass fills in the `add_class` / `add_function` calls.
+pub fn register_viz_module(parent: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
+    use pyo3::types::PyModuleMethods;
+    let child = pyo3::types::PyModule::new(parent.py(), "viz")?;
+    child.add_class::<ColormapKind>()?;
+    child.add_class::<PyColormap>()?;
+    child.add_class::<PyCamera>()?;
+    child.add_class::<PyMaterial>()?;
+    child.add_class::<PyMeshRenderer>()?;
+    child.add_class::<PyParticleRenderer>()?;
+    child.add_class::<TransferPoint>()?;
+    child.add_class::<PyTransferFunction>()?;
+    child.add_class::<PyVolumeRenderer>()?;
+    child.add_class::<PySceneNode>()?;
+    child.add_class::<PyLight>()?;
+    child.add_class::<PySceneGraph>()?;
+    child.add_class::<ToneMapping>()?;
+    child.add_class::<PyPostProcessor>()?;
+    child.add_class::<StressTensor>()?;
+    child.add_class::<StressVisOutput>()?;
+    child.add_class::<PyStressVisualizer>()?;
+    child.add_class::<Streamline>()?;
+    child.add_class::<PyStreamlineTracer>()?;
+    child.add_class::<PyDebugOverlay>()?;
+    child.add_function(wrap_pyfunction!(hsv_to_rgb, &child)?)?;
+    child.add_function(wrap_pyfunction!(compute_normals_from_mesh, &child)?)?;
+    child.add_function(wrap_pyfunction!(generate_sphere_mesh, &child)?)?;
+    child.add_function(wrap_pyfunction!(generate_box_mesh, &child)?)?;
+    parent.add_submodule(&child)?;
+    Ok(())
+}
+
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -1588,7 +1694,7 @@ mod tests {
     fn test_compute_normals() {
         let verts = vec![0.0f64, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
         let idx = vec![0u32, 1, 2];
-        let n = compute_normals_from_mesh(&verts, &idx);
+        let n = compute_normals_from_mesh(verts, idx);
         assert_eq!(n.len(), 9);
         // Normal should point along +Z
         for i in 0..3 {
@@ -1643,7 +1749,7 @@ mod tests {
     fn test_particle_set_colors_from_scalars() {
         let pos = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
         let mut pr = PyParticleRenderer::new(pos);
-        pr.set_colors_from_scalars(&[0.0, 1.0], &PyColormap::viridis());
+        pr.set_colors_from_scalars(vec![0.0, 1.0], PyColormap::viridis());
         assert_eq!(pr.colors.len(), 8);
     }
 
@@ -1668,7 +1774,7 @@ mod tests {
     #[test]
     fn test_scene_graph_add_node() {
         let mut sg = PySceneGraph::new();
-        let id = sg.add_node("root");
+        let id = sg.add_node("root".to_string());
         assert_eq!(id, 0);
         assert_eq!(sg.node_count(), 1);
     }
@@ -1676,7 +1782,7 @@ mod tests {
     #[test]
     fn test_scene_graph_visibility() {
         let mut sg = PySceneGraph::new();
-        let id = sg.add_node("node");
+        let id = sg.add_node("node".to_string());
         sg.set_visible(id, false);
         assert_eq!(sg.traverse_visible().len(), 0);
         sg.set_visible(id, true);
@@ -1742,7 +1848,7 @@ mod tests {
         ov.draw_sphere([0.0, 0.0, 0.0], 1.0, None);
         ov.draw_box([0.0; 3], [1.0; 3], None);
         ov.draw_arrow([0.0; 3], [1.0, 0.0, 0.0], None, 0.05);
-        ov.draw_text_3d([0.0; 3], "hello", None, 0.1);
+        ov.draw_text_3d([0.0; 3], "hello".to_string(), None, 0.1);
         ov.draw_contact_point([0.0; 3], [0.0, 1.0, 0.0], 0.01, None);
         assert_eq!(ov.count(), 5);
         ov.clear();
@@ -1756,5 +1862,141 @@ mod tests {
         let mesh = PyMeshRenderer::new(v, i, mat);
         let buf = mesh.render_to_buffer(4, 4, [0, 0, 0, 255]);
         assert_eq!(buf.len(), 4 * 4 * 4);
+    }
+
+    // ── Software rasterizer integration tests ───────────────────────────────
+
+    /// Output has exactly `width * height * 4` bytes.
+    #[test]
+    fn test_render_returns_correct_size() {
+        let (v, _, i) = generate_box_mesh([1.0, 1.0, 1.0]);
+        let mat = PyMaterial::red();
+        let mesh = PyMeshRenderer::new(v, i, mat);
+        let (w, h) = (128u32, 96u32);
+        let buf = mesh.render_to_buffer(w, h, [0, 0, 0, 255]);
+        assert_eq!(buf.len(), (w * h * 4) as usize);
+    }
+
+    /// After adding a mesh, at least one pixel must differ from the background.
+    #[test]
+    fn test_render_not_all_background() {
+        let (v, _, i) = generate_box_mesh([1.0, 1.0, 1.0]);
+        let mat = PyMaterial::red();
+        let mesh = PyMeshRenderer::new(v, i, mat);
+        let bg = [20u8, 20, 20, 255];
+        let buf = mesh.render_to_buffer(128, 128, bg);
+        let differs = buf
+            .chunks(4)
+            .any(|px| px[0] != bg[0] || px[1] != bg[1] || px[2] != bg[2]);
+        assert!(
+            differs,
+            "render produced no pixels different from background"
+        );
+    }
+
+    /// Two overlapping triangles in one mesh: the one with smaller z (front) must win.
+    ///
+    /// This test exercises `PyMeshRenderer::render_to_buffer` end-to-end.  We build
+    /// a single mesh with 6 vertices: indices 0-2 form a red triangle at z=0 (front)
+    /// and indices 3-5 form a blue triangle at z=2 (back), both covering the same XY
+    /// region.  After rendering, every covered pixel must have red ≥ blue.
+    #[test]
+    fn test_render_depth_test_correct() {
+        let (w, h) = (64u32, 64u32);
+
+        // Vertices: first triangle at z=0 (front, red), second at z=2 (back, blue).
+        // Same XY footprint so they overlap completely.
+        let verts = vec![
+            // triangle 0 (front, z=0)
+            -0.5, -0.5, 0.0_f64, 0.5, -0.5, 0.0, 0.0, 0.5, 0.0, // triangle 1 (back, z=2)
+            -0.5, -0.5, 2.0, 0.5, -0.5, 2.0, 0.0, 0.5, 2.0,
+        ];
+        let indices = vec![0u32, 1, 2, 3, 4, 5];
+
+        // Red material for the whole mesh; we just want the red channel.
+        let mat = PyMaterial::new([1.0, 0.0, 0.0, 1.0]);
+        // Build red mesh (indices 0..2 front, 3..5 back — same material).
+        let mesh_red = PyMeshRenderer::new(verts.clone(), indices.clone(), mat);
+
+        // Also build a blue mesh at the back to compare.
+        let mat_blue = PyMaterial::new([0.0, 0.0, 1.0, 1.0]);
+        let mesh_blue = PyMeshRenderer::new(verts, indices, mat_blue);
+
+        let bg = [0u8, 0, 0, 255];
+        let buf_red = mesh_red.render_to_buffer(w, h, bg);
+        let buf_blue = mesh_blue.render_to_buffer(w, h, bg);
+
+        // Red mesh → red channel should dominate blue channel in covered pixels.
+        let pixel_count = (w * h) as usize;
+        let mut checked = false;
+        for i in 0..pixel_count {
+            let r = buf_red[4 * i];
+            let b = buf_red[4 * i + 2];
+            if r > 20 || b > 20 {
+                assert!(
+                    r >= b,
+                    "red mesh: blue channel wins at idx {i}: r={r} b={b}"
+                );
+                checked = true;
+            }
+        }
+        assert!(checked, "no non-background pixels found in red mesh render");
+
+        // Blue mesh → blue channel should dominate red channel.
+        let mut checked_blue = false;
+        for i in 0..pixel_count {
+            let r = buf_blue[4 * i];
+            let b = buf_blue[4 * i + 2];
+            if r > 20 || b > 20 {
+                assert!(
+                    b >= r,
+                    "blue mesh: red channel wins at idx {i}: r={r} b={b}"
+                );
+                checked_blue = true;
+            }
+        }
+        assert!(
+            checked_blue,
+            "no non-background pixels found in blue mesh render"
+        );
+    }
+
+    /// Normal aligned to light → higher brightness than perpendicular normal.
+    #[test]
+    fn test_render_phong_shade_diffuse_increases_with_alignment() {
+        use crate::rasterizer::{normalize3, phong_shade};
+        let light_dir = normalize3([0.0, 0.0, 1.0]);
+        let view_dir = [0.0, 0.0, 1.0_f64];
+        let white = [1.0, 1.0, 1.0];
+        let aligned = phong_shade([0.0, 0.0, 1.0], view_dir, light_dir, white, 0.0, 0.0, 1.0);
+        let perp = phong_shade([1.0, 0.0, 0.0], view_dir, light_dir, white, 0.0, 0.0, 1.0);
+        assert!(
+            aligned[0] > perp[0],
+            "aligned ({}) should be brighter than perpendicular ({})",
+            aligned[0],
+            perp[0]
+        );
+    }
+
+    /// A single back-placed triangle should still render (z_buffer init to MAX).
+    #[test]
+    fn test_render_z_buffer_initialized() {
+        // Build a mesh whose vertices are at z=100 (large depth).
+        // If z_buffer were pre-filled with 0 instead of MAX, this triangle
+        // would never pass the depth test and produce no visible pixels.
+        let verts = vec![-0.5f64, -0.5, 100.0, 0.5, -0.5, 100.0, 0.0, 0.5, 100.0];
+        let indices = vec![0u32, 1, 2];
+        let mat = PyMaterial::new([0.0, 1.0, 0.0, 1.0]);
+        let mut mesh = PyMeshRenderer::new(verts, indices, mat);
+        mesh.recompute_normals();
+        let bg = [0u8, 0, 0, 255];
+        let buf = mesh.render_to_buffer(64, 64, bg);
+        let has_green = buf
+            .chunks(4)
+            .any(|px| px[1] > 50 && px[0] < 50 && px[2] < 50);
+        assert!(
+            has_green,
+            "back triangle not visible – z_buffer may not have been initialized to MAX"
+        );
     }
 }

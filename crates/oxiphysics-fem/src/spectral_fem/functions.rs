@@ -34,10 +34,10 @@ pub fn legendre_evaluate(n: usize, x: f64) -> (f64, f64) {
         p_curr = p_next;
     }
     let dp = if (x * x - 1.0).abs() < 1e-14 {
-        let sign = if x > 0.0 {
+        let sign = if x > 0.0 || n.is_multiple_of(2) {
             1.0
         } else {
-            if n.is_multiple_of(2) { 1.0 } else { -1.0 }
+            -1.0
         };
         sign * (n as f64) * (n as f64 + 1.0) / 2.0
     } else {

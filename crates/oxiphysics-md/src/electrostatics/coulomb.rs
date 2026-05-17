@@ -4,6 +4,8 @@
 
 //! Core Coulomb interactions, electric field/potential, PME lattice, and dipole utilities.
 
+use oxifft;
+
 // ---------------------------------------------------------------------------
 // Physical constant
 // ---------------------------------------------------------------------------
@@ -162,16 +164,74 @@ impl PmeLattice {
         }
     }
 
-    /// Simplified reciprocal-space energy estimate (placeholder for full PME).
+    /// Reciprocal-space energy via full PME (B-spline order 4, OxiFFT 3D FFT).
     ///
-    /// Returns `sum(grid^2) * volume / N^2` as a rough proxy for the
-    /// structure factor contribution.
+    /// Delegates to [`crate::electrostatics::pme::pme_reciprocal_energy`] using
+    /// the charge grid that has already been spread onto this lattice.  The
+    /// positions/charges stored in this lattice are accessed via the backing
+    /// grid (already spread), so we perform a direct FFT of the pre-spread grid.
+    ///
+    /// The `alpha` parameter defaults to a sensible value based on box length.
+    ///
+    /// # Note
+    /// This method replaces the former proxy stub that returned
+    /// `sum(grid^2) * volume / N^2`.
     #[allow(dead_code)]
     pub fn reciprocal_energy_approx(&self) -> f64 {
+        let n_total = self.nx * self.ny * self.nz;
         let volume = self.box_lengths[0] * self.box_lengths[1] * self.box_lengths[2];
-        let n = (self.nx * self.ny * self.nz) as f64;
-        let sum_sq: f64 = self.grid.iter().map(|v| v * v).sum();
-        sum_sq * volume / (n * n)
+        // Default alpha: 5.0 / min(box_length) as a safe heuristic
+        let alpha = 5.0
+            / self.box_lengths[0]
+                .min(self.box_lengths[1])
+                .min(self.box_lengths[2]);
+        let four_alpha_sq = 4.0 * alpha * alpha;
+        let two_pi = 2.0 * std::f64::consts::PI;
+
+        // 3D FFT of the pre-spread charge grid
+        let rho_imag = vec![0.0f64; n_total];
+        let (rho_re, rho_im) =
+            oxifft::fft3d_split::<f64>(&self.grid, &rho_imag, self.nx, self.ny, self.nz);
+
+        let prefactor = COULOMB_K / (2.0 * volume);
+        let mut energy = 0.0f64;
+
+        for ix in 0..self.nx {
+            let nx = if ix <= self.nx / 2 {
+                ix as i64
+            } else {
+                ix as i64 - self.nx as i64
+            };
+            let kx = two_pi * nx as f64 / self.box_lengths[0];
+            for iy in 0..self.ny {
+                let ny = if iy <= self.ny / 2 {
+                    iy as i64
+                } else {
+                    iy as i64 - self.ny as i64
+                };
+                let ky = two_pi * ny as f64 / self.box_lengths[1];
+                for iz in 0..self.nz {
+                    if ix == 0 && iy == 0 && iz == 0 {
+                        continue;
+                    }
+                    let nz = if iz <= self.nz / 2 {
+                        iz as i64
+                    } else {
+                        iz as i64 - self.nz as i64
+                    };
+                    let kz = two_pi * nz as f64 / self.box_lengths[2];
+                    let k2 = kx * kx + ky * ky + kz * kz;
+                    if k2 < 1e-20 {
+                        continue;
+                    }
+                    let gaussian = (-k2 / four_alpha_sq).exp();
+                    let flat = ix * self.ny * self.nz + iy * self.nz + iz;
+                    let rho_sq = rho_re[flat] * rho_re[flat] + rho_im[flat] * rho_im[flat];
+                    energy += (4.0 * std::f64::consts::PI / k2) * gaussian * rho_sq;
+                }
+            }
+        }
+        prefactor * energy
     }
 
     /// Total charge on the grid.

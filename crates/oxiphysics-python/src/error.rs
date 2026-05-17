@@ -130,6 +130,12 @@ pub enum Error {
 /// Result type alias for `oxiphysics-python` operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
+impl From<Error> for pyo3::PyErr {
+    fn from(e: Error) -> pyo3::PyErr {
+        pyo3::exceptions::PyRuntimeError::new_err(e.to_string())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // impl Error
 // ---------------------------------------------------------------------------

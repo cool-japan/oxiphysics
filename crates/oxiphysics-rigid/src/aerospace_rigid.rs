@@ -1059,18 +1059,21 @@ pub fn rate_of_climb(thrust: f64, drag: f64, weight: f64, airspeed: f64) -> f64 
 
 /// Range using the Breguet range equation \[m\].
 ///
-/// * `ld_ratio` — lift-to-drag ratio.
-/// * `isp` — specific fuel consumption \[kg/(N*s)\].
-/// * `mass_initial` — initial mass \[kg\].
-/// * `mass_final` — final mass \[kg\].
-pub fn breguet_range(ld_ratio: f64, sfc: f64, mass_initial: f64, mass_final: f64) -> f64 {
-    if sfc <= 0.0 || mass_final <= 0.0 || mass_initial <= mass_final {
-        return 0.0;
-    }
-    (ld_ratio / (sfc * G0)) * (mass_initial / mass_final).ln() * (2.0 * G0 / ISA_RHO0).sqrt() * 0.0 // placeholder: use proper Breguet formulation
-    // Proper Breguet:
-    // R = (V / (SFC * g)) * (L/D) * ln(Wi/Wf)
-    // For simplicity, use L/D and mass ratio directly:
+/// `R = (V / (sfc · g)) · (L/D) · ln(W_i / W_f)`
+///
+/// * `airspeed`      — cruise velocity V \[m/s\].
+/// * `ld_ratio`      — lift-to-drag ratio L/D.
+/// * `sfc`           — specific fuel consumption c \[kg/(N·s)\].
+/// * `mass_initial`  — initial (take-off) mass W_i \[kg\].
+/// * `mass_final`    — final (landing) mass W_f \[kg\].
+pub fn breguet_range(
+    airspeed: f64,
+    ld_ratio: f64,
+    sfc: f64,
+    mass_initial: f64,
+    mass_final: f64,
+) -> f64 {
+    breguet_range_jet(airspeed, sfc, ld_ratio, mass_initial, mass_final)
 }
 
 /// Breguet range (simplified jet aircraft) \[m\].
@@ -1497,6 +1500,28 @@ mod tests {
     fn breguet_endurance_positive() {
         let e = breguet_endurance_jet(0.00005, 15.0, 30000.0, 25000.0);
         assert!(e > 0.0, "e={e}");
+    }
+
+    #[test]
+    fn breguet_range_standard_airliner() {
+        // V=250 m/s, sfc=1.5e-5 kg/(N·s), L/D=17, W_i/W_f=1.3
+        // R = (250 / (1.5e-5 * 9.80665)) * 17 * ln(1.3) ≈ 7 564 000 m ≈ 7500 km
+        let v = 250.0_f64;
+        let sfc = 1.5e-5_f64;
+        let ld = 17.0_f64;
+        let w_i = 1.3_f64;
+        let w_f = 1.0_f64;
+        let r = breguet_range(v, ld, sfc, w_i, w_f);
+        let r_expected = (v / (sfc * G0)) * ld * (w_i / w_f).ln();
+        assert!(
+            (r - r_expected).abs() < 1.0,
+            "breguet_range mismatch: {r:.0} vs {r_expected:.0}"
+        );
+        assert!(
+            r > 7_000_000.0 && r < 8_000_000.0,
+            "range out of expected band: {:.0} m",
+            r
+        );
     }
 
     // ── Pressure altitude ────────────────────────────────────────────────────

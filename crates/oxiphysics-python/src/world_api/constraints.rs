@@ -3,17 +3,16 @@
 
 //! Constraint builders and constraint resolution.
 
-#![allow(missing_docs)]
-
 use super::PyPhysicsWorld;
+use pyo3::prelude::*;
 
 // ===========================================================================
 // Constraint Builders
 // ===========================================================================
 
 /// Type of constraint between two bodies.
+#[pyclass(eq, eq_int, from_py_object)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum ConstraintType {
     /// Distance constraint: maintain a fixed distance between two anchor points.
     Distance,
@@ -29,8 +28,8 @@ pub enum ConstraintType {
 ///
 /// Constraints are stored in the world and resolved during each step.
 /// Currently implemented as soft position-level corrections.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PyConstraint {
     /// Unique handle.
     pub handle: u32,
@@ -54,8 +53,10 @@ pub struct PyConstraint {
     pub enabled: bool,
 }
 
+#[pymethods]
 impl PyConstraint {
     /// Create a distance constraint between two bodies.
+    #[staticmethod]
     pub fn distance(
         handle: u32,
         body_a: u32,
@@ -79,6 +80,7 @@ impl PyConstraint {
     }
 
     /// Create a point-to-point constraint (ball-socket joint).
+    #[staticmethod]
     pub fn point_to_point(handle: u32, body_a: u32, body_b: u32, pivot: [f64; 3]) -> Self {
         Self {
             handle,
@@ -95,6 +97,7 @@ impl PyConstraint {
     }
 
     /// Create a hinge constraint around `axis` at `pivot`.
+    #[staticmethod]
     pub fn hinge(handle: u32, body_a: u32, body_b: u32, pivot: [f64; 3], axis: [f64; 3]) -> Self {
         Self {
             handle,
@@ -110,15 +113,17 @@ impl PyConstraint {
         }
     }
 
-    /// Set constraint stiffness (builder pattern).
-    pub fn with_stiffness(mut self, s: f64) -> Self {
-        self.stiffness = s.clamp(0.0, 1.0);
-        self
-    }
-
     /// Enable or disable the constraint.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
+    }
+}
+
+impl PyConstraint {
+    /// Set constraint stiffness and return `self` (builder pattern, Rust-only).
+    pub fn with_stiffness(mut self, s: f64) -> Self {
+        self.stiffness = s.clamp(0.0, 1.0);
+        self
     }
 }
 

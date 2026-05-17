@@ -96,3 +96,19 @@ pub mod tire_wear;
 pub mod track_dynamics;
 pub mod vehicle_dynamics;
 pub mod wind_loading;
+
+pub mod hil;
+pub use hil::{
+    HilChannel, HilConfig, HilError, HilInterface, HilSignalLogger, HilTimingStats, SimHilBridge,
+};
+
+pub mod fem_chassis_cosim;
+pub use fem_chassis_cosim::{
+    ChassisAttachmentPoint, ChassisCosimBridge, CosimLogEntry, ModalChassisModel, bending_stress,
+    populate_beam_modes,
+};
+
+pub mod gpu_multi_vehicle;
+pub use gpu_multi_vehicle::{
+    BatchStats, MultiVehicleBatch, VehicleInput, VehicleParams, VehicleSoaState,
+};

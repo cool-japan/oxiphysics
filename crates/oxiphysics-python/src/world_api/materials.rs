@@ -3,15 +3,15 @@
 
 //! Materials Library.
 
-#![allow(missing_docs)]
+use pyo3::prelude::*;
 
 // ===========================================================================
 // Materials Library
 // ===========================================================================
 
 /// Classification of material behaviour.
+#[pyclass(eq, eq_int, from_py_object)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum MaterialClass {
     /// Linear-elastic (Hookean) material.
     Elastic,
@@ -22,29 +22,39 @@ pub enum MaterialClass {
 }
 
 /// A material definition holding both elastic and optional plastic properties.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PyMaterial {
     /// Human-readable name.
+    #[pyo3(get, set)]
     pub name: String,
     /// Classification.
+    #[pyo3(get, set)]
     pub class: MaterialClass,
     /// Young's modulus (Pa).
+    #[pyo3(get, set)]
     pub young_modulus: f64,
     /// Poisson's ratio (dimensionless, -1 < ν < 0.5).
+    #[pyo3(get, set)]
     pub poisson_ratio: f64,
     /// Mass density (kg/m^3).
+    #[pyo3(get, set)]
     pub density: f64,
     /// Yield stress for plastic materials (Pa); ignored for elastic.
+    #[pyo3(get, set)]
     pub yield_stress: Option<f64>,
     /// Isotropic hardening modulus (Pa); used after yield.
+    #[pyo3(get, set)]
     pub hardening_modulus: Option<f64>,
     /// Dynamic viscosity (Pa·s) for viscous fluids.
+    #[pyo3(get, set)]
     pub viscosity: Option<f64>,
 }
 
+#[pymethods]
 impl PyMaterial {
     /// Create a generic elastic material.
+    #[staticmethod]
     pub fn elastic(name: &str, young: f64, poisson: f64, density: f64) -> Self {
         Self {
             name: name.to_owned(),
@@ -59,6 +69,7 @@ impl PyMaterial {
     }
 
     /// Create an elasto-plastic material.
+    #[staticmethod]
     pub fn plastic(
         name: &str,
         young: f64,
@@ -80,6 +91,7 @@ impl PyMaterial {
     }
 
     /// Create a viscous fluid material.
+    #[staticmethod]
     pub fn viscous_fluid(name: &str, density: f64, viscosity: f64) -> Self {
         Self {
             name: name.to_owned(),
@@ -94,11 +106,13 @@ impl PyMaterial {
     }
 
     /// Return steel (structural carbon steel, approximate).
+    #[staticmethod]
     pub fn steel() -> Self {
         Self::elastic("Steel", 200.0e9, 0.3, 7850.0)
     }
 
     /// Return aluminium alloy 6061.
+    #[staticmethod]
     pub fn aluminium() -> Self {
         Self::elastic("Aluminium 6061", 69.0e9, 0.33, 2700.0)
     }
@@ -106,26 +120,31 @@ impl PyMaterial {
     /// Return natural rubber (vulcanised, approximate).
     ///
     /// Very low Young's modulus (~0.05 GPa) and near-incompressible (ν≈0.49).
+    #[staticmethod]
     pub fn rubber() -> Self {
         Self::elastic("Natural Rubber", 0.05e9, 0.49, 920.0)
     }
 
     /// Return concrete (normal-weight, approximate).
+    #[staticmethod]
     pub fn concrete() -> Self {
         Self::elastic("Concrete", 30.0e9, 0.2, 2400.0)
     }
 
     /// Return titanium alloy Ti-6Al-4V.
+    #[staticmethod]
     pub fn titanium() -> Self {
         Self::elastic("Titanium Ti-6Al-4V", 114.0e9, 0.34, 4430.0)
     }
 
     /// Return water at 20 °C.
+    #[staticmethod]
     pub fn water() -> Self {
         Self::viscous_fluid("Water (20°C)", 998.2, 1.002e-3)
     }
 
     /// Return air at standard conditions.
+    #[staticmethod]
     pub fn air() -> Self {
         Self::viscous_fluid("Air (20°C, 1 atm)", 1.204, 1.81e-5)
     }

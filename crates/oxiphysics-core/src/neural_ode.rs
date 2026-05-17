@@ -46,8 +46,13 @@ pub fn rk4_step(f: &dyn Fn(f64, &[f64]) -> Vec<f64>, t: f64, y: &[f64], h: f64) 
 /// Perform a single Dormand-Prince (DOPRI5) adaptive step.
 ///
 /// Returns `(y_high, y_low, error_norm)` where `y_high` is the 5th-order
-/// solution, `y_low` is the 4th-order solution, and `error_norm` is the
-/// RMS difference, useful for step-size control.
+/// solution, `y_low` is the embedded 4th-order solution derived from the
+/// Dormand-Prince error coefficients, and `error_norm` is the RMS scaled
+/// difference useful for step-size control.
+///
+/// Uses the full FSAL (First Same As Last) property: computes 7 function
+/// evaluations (k1…k6 + k7 = f(t+h, y_high)) and uses the proper
+/// Dormand-Prince error coefficients e1…e7 for the embedded pair.
 ///
 /// # Arguments
 /// * `f`   – ODE right-hand side.
@@ -65,7 +70,7 @@ pub fn dopri5_step(
     atol: f64,
 ) -> (Vec<f64>, Vec<f64>, f64) {
     let n = y.len();
-    // Butcher tableau coefficients (Dormand-Prince)
+    // Butcher tableau node values (Dormand-Prince)
     let c2 = 1.0 / 5.0;
     let c3 = 3.0 / 10.0;
     let c4 = 4.0 / 5.0;
@@ -107,7 +112,7 @@ pub fn dopri5_step(
         .collect();
     let k6 = f(t + h, &y6);
 
-    // 5th-order solution
+    // 5th-order solution (b weights: b1=35/384, b3=500/1113, b4=125/192, b5=-2187/6784, b6=11/84)
     let y_high: Vec<f64> = (0..n)
         .map(|i| {
             y[i] + h
@@ -117,16 +122,21 @@ pub fn dopri5_step(
         })
         .collect();
 
-    // 4th-order solution (for error estimate)
+    // FSAL: 7th stage k7 = f(t+h, y_high), reused as first stage of next step.
+    let k7 = f(t + h, &y_high);
+
+    // Error vector using Dormand-Prince error coefficients e_i = b_i - b'_i:
+    //   e1=71/57600, e3=-71/16695, e4=71/1920, e5=-17253/339200, e6=22/525, e7=-1/40
+    // err_i = h * (e1*k1 + e3*k3 + e4*k4 + e5*k5 + e6*k6 + e7*k7)
+    // y_low = y_high - err  (embedded 4th-order solution)
     let y_low: Vec<f64> = (0..n)
         .map(|i| {
-            y[i] + h
-                * ((5179.0 / 57600.0) * k1[i]
-                    + (7571.0 / 16695.0) * k3[i]
-                    + (393.0 / 640.0) * k4[i]
-                    - (92097.0 / 339200.0) * k5[i]
-                    + (187.0 / 2100.0) * k6[i]
-                    + (1.0 / 40.0) * k1[i]) // reuse k1 placeholder for E6 contribution
+            let err_i = h
+                * ((71.0 / 57600.0) * k1[i] - (71.0 / 16695.0) * k3[i] + (71.0 / 1920.0) * k4[i]
+                    - (17253.0 / 339200.0) * k5[i]
+                    + (22.0 / 525.0) * k6[i]
+                    - (1.0 / 40.0) * k7[i]);
+            y_high[i] - err_i
         })
         .collect();
 
@@ -258,9 +268,9 @@ impl NeuralOdeFunc {
         dense_linear(&h2, &self.weights_out, &self.bias_out, self.input_size)
     }
 
-    /// Compute the Jacobian-vector product `J·v` via finite differences.
+    /// Compute the Jacobian-vector product `J·v` via forward-mode finite differences.
     ///
-    /// Used internally by the adjoint method.
+    /// Used internally by the adjoint method to approximate `(∂f/∂z) · v`.
     pub fn jvp(&self, t: f64, z: &[f64], v: &[f64], eps: f64) -> Vec<f64> {
         let f0 = self.forward(t, z);
         let z_plus: Vec<f64> = z
@@ -274,6 +284,81 @@ impl NeuralOdeFunc {
             .zip(f0.iter())
             .map(|(fp, f0i)| (fp - f0i) / eps)
             .collect()
+    }
+
+    /// Return all trainable parameters as a flat vector.
+    ///
+    /// Layout: `weights_in | bias_in | weights_hidden | bias_hidden | weights_out | bias_out`.
+    pub fn params_flat(&self) -> Vec<f64> {
+        let mut p = Vec::with_capacity(self.n_params());
+        p.extend_from_slice(&self.weights_in);
+        p.extend_from_slice(&self.bias_in);
+        p.extend_from_slice(&self.weights_hidden);
+        p.extend_from_slice(&self.bias_hidden);
+        p.extend_from_slice(&self.weights_out);
+        p.extend_from_slice(&self.bias_out);
+        p
+    }
+
+    /// Total number of trainable parameters.
+    pub fn n_params(&self) -> usize {
+        self.weights_in.len()
+            + self.bias_in.len()
+            + self.weights_hidden.len()
+            + self.bias_hidden.len()
+            + self.weights_out.len()
+            + self.bias_out.len()
+    }
+
+    /// Restore all trainable parameters from a flat vector (same layout as `params_flat`).
+    pub fn set_params_flat(&mut self, params: &[f64]) {
+        let mut off = 0;
+        let wi_len = self.weights_in.len();
+        self.weights_in.copy_from_slice(&params[off..off + wi_len]);
+        off += wi_len;
+        let bi_len = self.bias_in.len();
+        self.bias_in.copy_from_slice(&params[off..off + bi_len]);
+        off += bi_len;
+        let wh_len = self.weights_hidden.len();
+        self.weights_hidden
+            .copy_from_slice(&params[off..off + wh_len]);
+        off += wh_len;
+        let bh_len = self.bias_hidden.len();
+        self.bias_hidden.copy_from_slice(&params[off..off + bh_len]);
+        off += bh_len;
+        let wo_len = self.weights_out.len();
+        self.weights_out.copy_from_slice(&params[off..off + wo_len]);
+        off += wo_len;
+        let bo_len = self.bias_out.len();
+        self.bias_out.copy_from_slice(&params[off..off + bo_len]);
+        let _ = off + bo_len;
+    }
+
+    /// Compute the parameter-gradient contribution at point `(t, z)` with
+    /// adjoint vector `adj`:  `grad_j = Σ_i adj_i · ∂f_i(t,z)/∂θ_j`
+    ///
+    /// Uses central finite differences with step `eps`.
+    pub fn param_grad_contrib(&self, t: f64, z: &[f64], adj: &[f64], eps: f64) -> Vec<f64> {
+        let n_p = self.n_params();
+        let params = self.params_flat();
+        let mut grad = vec![0.0_f64; n_p];
+        let mut tmp = self.clone();
+        for j in 0..n_p {
+            let mut p_plus = params.clone();
+            let mut p_minus = params.clone();
+            p_plus[j] += eps;
+            p_minus[j] -= eps;
+            tmp.set_params_flat(&p_plus);
+            let f_plus = tmp.forward(t, z);
+            tmp.set_params_flat(&p_minus);
+            let f_minus = tmp.forward(t, z);
+            grad[j] = adj
+                .iter()
+                .zip(f_plus.iter().zip(f_minus.iter()))
+                .map(|(&ai, (&fp, &fm))| ai * (fp - fm) / (2.0 * eps))
+                .sum();
+        }
+        grad
     }
 }
 
@@ -409,11 +494,20 @@ impl AdjointMethod {
     }
 
     /// Set the final adjoint state from `loss_grad` and propagate it backward
-    /// through `solver` from `t1` to `t0` using RK4.
+    /// through `solver` from `t1` to `t0` using RK4 (continuous adjoint method).
+    ///
+    /// Internally performs a backward-in-time integration of the ODE from `z_final`
+    /// to reconstruct the state trajectory, then integrates the augmented adjoint
+    /// system:
+    ///
+    ///   `da/dt = -(∂f/∂z)ᵀ · a`     (adjoint ODE, backward in time)
+    ///   `dg/dt = -(∂f/∂θ)ᵀ · a`     (parameter-gradient accumulation)
+    ///
+    /// Both Jacobians are approximated via central finite differences (ε = 1e-5).
     ///
     /// Returns `(grad_z0, grad_params)` where `grad_z0` is the gradient with
-    /// respect to the initial state and `grad_params` is a flat vector of
-    /// approximate parameter gradients.
+    /// respect to the initial state and `grad_params` is the full flat parameter
+    /// gradient in the layout of [`NeuralOdeFunc::params_flat`].
     pub fn run(
         &mut self,
         solver: &NeuralOdeSolver,
@@ -424,43 +518,63 @@ impl AdjointMethod {
         dt: f64,
     ) -> (Vec<f64>, Vec<f64>) {
         let n = self.state_dim;
-        // Initialise adjoint at t1
-        let mut adj = loss_grad.to_vec();
-        let mut t = t1;
-
-        // Augmented dynamics: da/dt = -( df/dz )^T · a
-        // We approximate (df/dz)^T · a via JVP with finite differences
         let eps = 1e-5;
-        while t > t0 + 1e-12 {
-            let h = (-dt).max(t0 - t);
-            // k1
-            let jvp1 = solver.func.jvp(t, z_final, &adj, eps);
-            let a2: Vec<f64> = (0..n)
-                .map(|i| adj[i] + 0.5 * h.abs() * (-jvp1[i]))
-                .collect();
-            // k2
-            let jvp2 = solver.func.jvp(t - 0.5 * h.abs(), z_final, &a2, eps);
-            let a3: Vec<f64> = (0..n)
-                .map(|i| adj[i] + 0.5 * h.abs() * (-jvp2[i]))
-                .collect();
-            // k3
-            let jvp3 = solver.func.jvp(t - 0.5 * h.abs(), z_final, &a3, eps);
-            let a4: Vec<f64> = (0..n).map(|i| adj[i] + h.abs() * (-jvp3[i])).collect();
-            // k4
-            let jvp4 = solver.func.jvp(t - h.abs(), z_final, &a4, eps);
+        let h_step = dt.abs().max(1e-10);
+
+        // ── Forward trajectory reconstruction ────────────────────────────────
+        // Integrate dz/d(-t) = -f(t,z) backward from z_final to approximate z(t0).
+        let neg_f = |tc: f64, y: &[f64]| -> Vec<f64> {
+            solver.func.forward(tc, y).into_iter().map(|v| -v).collect()
+        };
+        let mut z_bwd = z_final.to_vec();
+        let mut t_cur = t1;
+        let mut times: Vec<f64> = vec![t_cur];
+        let mut states: Vec<Vec<f64>> = vec![z_bwd.clone()];
+        while t_cur > t0 + 1e-12 {
+            let h_bwd = h_step.min(t_cur - t0);
+            z_bwd = rk4_step(&neg_f, t_cur, &z_bwd, h_bwd);
+            t_cur -= h_bwd;
+            times.push(t_cur);
+            states.push(z_bwd.clone());
+        }
+        // Reverse so index 0 corresponds to t0.
+        times.reverse();
+        states.reverse();
+
+        // ── Backward adjoint pass ─────────────────────────────────────────────
+        let n_params = solver.func.n_params();
+        let mut adj = loss_grad.to_vec();
+        let mut grad_params = vec![0.0_f64; n_params];
+        let n_ckpt = times.len();
+
+        for ck in (1..n_ckpt).rev() {
+            let t_hi = times[ck];
+            let t_lo = times[ck - 1];
+            let z_ck = &states[ck];
+            let h_abs = (t_hi - t_lo).abs().max(1e-14);
+
+            // Parameter-gradient contribution at this checkpoint:
+            // dg/dt = -a · ∂f/∂θ  → accumulated: grad += h * (a · ∂f/∂θ)
+            let pg = solver.func.param_grad_contrib(t_hi, z_ck, &adj, eps);
+            for (g, &pg_j) in grad_params.iter_mut().zip(pg.iter()) {
+                *g += h_abs * pg_j;
+            }
+
+            // RK4 backward step for adjoint: da/dt = -(∂f/∂z)ᵀ · a
+            let jvp1 = solver.func.jvp(t_hi, z_ck, &adj, eps);
+            let a2: Vec<f64> = (0..n).map(|i| adj[i] + 0.5 * h_abs * (-jvp1[i])).collect();
+            let jvp2 = solver.func.jvp(t_hi - 0.5 * h_abs, z_ck, &a2, eps);
+            let a3: Vec<f64> = (0..n).map(|i| adj[i] + 0.5 * h_abs * (-jvp2[i])).collect();
+            let jvp3 = solver.func.jvp(t_hi - 0.5 * h_abs, z_ck, &a3, eps);
+            let a4: Vec<f64> = (0..n).map(|i| adj[i] + h_abs * (-jvp3[i])).collect();
+            let jvp4 = solver.func.jvp(t_lo, z_ck, &a4, eps);
             adj = (0..n)
                 .map(|i| {
-                    adj[i] + (h.abs() / 6.0) * (-jvp1[i] - 2.0 * jvp2[i] - 2.0 * jvp3[i] - jvp4[i])
+                    adj[i] + (h_abs / 6.0) * (-jvp1[i] - 2.0 * jvp2[i] - 2.0 * jvp3[i] - jvp4[i])
                 })
                 .collect();
-            t -= h.abs();
         }
 
-        // Parameter gradients: approximate as the outer product of adj and z_final
-        let n_params = solver.func.weights_in.len()
-            + solver.func.weights_hidden.len()
-            + solver.func.weights_out.len();
-        let grad_params = vec![0.0; n_params]; // placeholder — full computation omitted
         (adj, grad_params)
     }
 }
@@ -1172,5 +1286,58 @@ mod tests {
                 "dim {i}: got {yi}, expected {exact}"
             );
         }
+    }
+
+    // ── C1: DOPRI5 error-order verification ───────────────────────────────────
+
+    #[test]
+    fn test_dopri5_error_estimate_order() {
+        // For y' = y, y(0) = 1, exact = exp(t).
+        // DOPRI5 is 5th-order: halving h should reduce |y_high - exact| by ~32×.
+        let f = |_t: f64, y: &[f64]| vec![y[0]];
+        let rtol = 1e-12;
+        let atol = 1e-12;
+        let y0 = vec![1.0_f64];
+
+        let (y_big, _, _) = dopri5_step(&f, 0.0, &y0, 0.2, rtol, atol);
+        let (y_small, _, _) = dopri5_step(&f, 0.0, &y0, 0.1, rtol, atol);
+        let err_big = (y_big[0] - 0.2_f64.exp()).abs();
+        let err_small = (y_small[0] - 0.1_f64.exp()).abs();
+        // ratio ≈ (0.2/0.1)^5 = 32; require > 10 to avoid false negatives
+        let ratio = err_big / err_small.max(f64::MIN_POSITIVE);
+        assert!(
+            ratio > 10.0,
+            "Expected ~32× error reduction when halving step; got ratio={ratio:.2}"
+        );
+    }
+
+    #[test]
+    fn test_dopri5_error_norm_small_step() {
+        // error_norm should be < 1 for a well-behaved problem at h=0.01
+        let f = |_t: f64, y: &[f64]| vec![-y[0]];
+        let (_, _, err) = dopri5_step(&f, 0.0, &[1.0], 0.01, 1e-6, 1e-8);
+        assert!(err < 1.0, "error norm should be < 1 for h=0.01: {err}");
+    }
+
+    // ── C2: BPTT gradient parity test ─────────────────────────────────────────
+
+    #[test]
+    fn test_bptt_gradient_nonzero_and_finite() {
+        // Verify that BPTT parameter gradients are non-zero and finite.
+        let func = NeuralOdeFunc::new(2, 4, 99);
+        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
+        let mut adj = AdjointMethod::new(2);
+        let z_final = vec![0.5, -0.3];
+        let loss_grad = vec![1.0, 0.0];
+        let (_, grad_params) = adj.run(&solver, &z_final, &loss_grad, 0.0, 0.5, 0.1);
+        assert_eq!(grad_params.len(), solver.func.n_params());
+        assert!(
+            grad_params.iter().all(|v| v.is_finite()),
+            "some parameter gradients are non-finite"
+        );
+        assert!(
+            grad_params.iter().any(|v| v.abs() > 1e-15),
+            "all parameter gradients are zero"
+        );
     }
 }

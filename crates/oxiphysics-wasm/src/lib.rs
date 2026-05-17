@@ -33,6 +33,13 @@
 #![allow(missing_docs)]
 #![allow(dead_code)]
 
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen(start)]
+pub fn wasm_main() {
+    console_error_panic_hook::set_once();
+}
+
 pub mod body_query;
 pub mod engine;
 pub mod error;
@@ -58,3 +65,37 @@ pub mod material_bridge;
 pub mod particle_system;
 pub mod sim_controls;
 pub mod simulation_api;
+
+pub mod web_worker;
+pub use web_worker::{SharedStateBuffer, SimCommand, SimResult, WorkerBridge, WorkerRuntime};
+
+pub mod wasm_bench;
+pub mod wasm_helpers;
+pub mod webgl_bridge;
+
+// Phase 20.4: WASM bindings for Phase 13-19 modules
+pub mod animation_bridge;
+pub mod character_bridge;
+pub mod navmesh_bridge;
+pub mod profiler_bridge;
+pub mod rollback_bridge;
+pub mod rope_bridge;
+pub mod telemetry_bridge;
+pub mod triggers_bridge;
+
+pub use animation_bridge::WasmAnimationPlayer;
+pub use character_bridge::WasmCharacterController;
+pub use navmesh_bridge::WasmNavMesh;
+pub use profiler_bridge::WasmProfilerSession;
+pub use rollback_bridge::WasmRollbackSession;
+pub use rope_bridge::WasmRope;
+pub use telemetry_bridge::WasmTelemetrySession;
+pub use triggers_bridge::WasmTriggerWorld;
+
+// WASM-bindgen JS wrappers for bridge types (Phase 7.5)
+pub mod character_wasm;
+pub mod navmesh_wasm;
+pub mod rope_wasm;
+pub use character_wasm::WasmCharacterControllerJs;
+pub use navmesh_wasm::WasmNavMeshJs;
+pub use rope_wasm::WasmRopeJs;

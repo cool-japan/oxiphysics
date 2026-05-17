@@ -3,64 +3,47 @@
 
 //! WebAssembly constraint system bridge.
 //!
-//! Provides pure-Rust wrappers around constraint/joint data structures
-//! intended for serialisation to and from JavaScript via wasm-bindgen.
-//! No wasm-bindgen annotations are placed here; the structs are plain Rust.
-
-#![allow(dead_code)]
+//! Provides Rust types for joints, contacts, motors, the constraint solver,
+//! islands, CCD, and ragdoll construction, fully exposed to JavaScript via
+//! wasm-bindgen.
 
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::*;
+
+use crate::wasm_helpers::{err_to_jsvalue, to_js_value};
 
 // ---------------------------------------------------------------------------
-// WasmJointHandle
+// WasmJointHandle (re-exported from simulation_api)
 // ---------------------------------------------------------------------------
 
-/// Opaque 64-bit handle identifying a joint in the constraint solver.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct WasmJointHandle(pub u64);
-
-impl WasmJointHandle {
-    /// Create a handle from a raw `u64`.
-    pub fn new(id: u64) -> Self {
-        WasmJointHandle(id)
-    }
-
-    /// Return the raw identifier.
-    pub fn raw(&self) -> u64 {
-        self.0
-    }
-
-    /// Sentinel representing an invalid/null handle.
-    pub fn invalid() -> Self {
-        WasmJointHandle(u64::MAX)
-    }
-
-    /// Returns `true` if this handle is the invalid sentinel.
-    pub fn is_invalid(&self) -> bool {
-        self.0 == u64::MAX
-    }
-}
+pub use crate::simulation_api::WasmJointHandle;
 
 // ---------------------------------------------------------------------------
 // WasmJointConfig
 // ---------------------------------------------------------------------------
 
 /// Configuration for a joint connecting two bodies.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmJointConfig {
     /// Joint type: `"revolute"`, `"prismatic"`, `"ball"`, `"fixed"`, or `"spring"`.
+    #[wasm_bindgen(skip)]
     pub joint_type: String,
     /// Identifier of body A (index or handle).
     pub body_a: u64,
     /// Identifier of body B (index or handle).
     pub body_b: u64,
     /// Anchor point on body A in local space \[x, y, z\].
+    #[wasm_bindgen(skip)]
     pub anchor_a: [f64; 3],
     /// Anchor point on body B in local space \[x, y, z\].
+    #[wasm_bindgen(skip)]
     pub anchor_b: [f64; 3],
     /// Joint axis in body A local space \[x, y, z\] (used by revolute/prismatic).
+    #[wasm_bindgen(skip)]
     pub axis_a: [f64; 3],
     /// Joint axis in body B local space \[x, y, z\].
+    #[wasm_bindgen(skip)]
     pub axis_b: [f64; 3],
     /// Lower limit (angle in radians for revolute, distance in metres for prismatic).
     pub lower_limit: f64,
@@ -176,11 +159,175 @@ impl WasmJointConfig {
     }
 }
 
+#[wasm_bindgen]
+impl WasmJointConfig {
+    /// Construct a default fixed joint between body 0 and body 1.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new() -> WasmJointConfig {
+        WasmJointConfig::default()
+    }
+
+    /// Joint type string getter.
+    #[wasm_bindgen(getter, js_name = "joint_type")]
+    pub fn joint_type_js(&self) -> String {
+        self.joint_type.clone()
+    }
+
+    /// Joint type string setter.
+    #[wasm_bindgen(setter, js_name = "joint_type")]
+    pub fn set_joint_type_js(&mut self, joint_type: String) {
+        self.joint_type = joint_type;
+    }
+
+    /// Anchor on body A as `[x, y, z]`.
+    #[wasm_bindgen(js_name = "get_anchor_a")]
+    pub fn get_anchor_a(&self) -> Vec<f64> {
+        self.anchor_a.to_vec()
+    }
+
+    /// Set anchor on body A.
+    #[wasm_bindgen(js_name = "set_anchor_a")]
+    pub fn set_anchor_a(&mut self, x: f64, y: f64, z: f64) {
+        self.anchor_a = [x, y, z];
+    }
+
+    /// Anchor on body B as `[x, y, z]`.
+    #[wasm_bindgen(js_name = "get_anchor_b")]
+    pub fn get_anchor_b(&self) -> Vec<f64> {
+        self.anchor_b.to_vec()
+    }
+
+    /// Set anchor on body B.
+    #[wasm_bindgen(js_name = "set_anchor_b")]
+    pub fn set_anchor_b(&mut self, x: f64, y: f64, z: f64) {
+        self.anchor_b = [x, y, z];
+    }
+
+    /// Axis on body A as `[x, y, z]`.
+    #[wasm_bindgen(js_name = "get_axis_a")]
+    pub fn get_axis_a(&self) -> Vec<f64> {
+        self.axis_a.to_vec()
+    }
+
+    /// Set axis on body A.
+    #[wasm_bindgen(js_name = "set_axis_a")]
+    pub fn set_axis_a(&mut self, x: f64, y: f64, z: f64) {
+        self.axis_a = [x, y, z];
+    }
+
+    /// Axis on body B as `[x, y, z]`.
+    #[wasm_bindgen(js_name = "get_axis_b")]
+    pub fn get_axis_b(&self) -> Vec<f64> {
+        self.axis_b.to_vec()
+    }
+
+    /// Set axis on body B.
+    #[wasm_bindgen(js_name = "set_axis_b")]
+    pub fn set_axis_b(&mut self, x: f64, y: f64, z: f64) {
+        self.axis_b = [x, y, z];
+    }
+
+    /// Returns `true` if the joint type string is recognised.
+    #[wasm_bindgen(js_name = "is_valid_type")]
+    pub fn is_valid_type_js(&self) -> bool {
+        self.is_valid_type()
+    }
+
+    /// Serialise to a JSON string for consumption in JavaScript.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self).map_err(err_to_jsvalue)
+    }
+
+    /// Serialise to a structured `JsValue` object.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
+/// Construct a revolute joint, returned as a structured `JsValue`.
+#[wasm_bindgen(js_name = "joint_config_revolute")]
+pub fn joint_config_revolute_js(
+    body_a: u64,
+    body_b: u64,
+    anchor_x: f64,
+    anchor_y: f64,
+    anchor_z: f64,
+    axis_x: f64,
+    axis_y: f64,
+    axis_z: f64,
+) -> WasmJointConfig {
+    WasmJointConfig::revolute(
+        body_a,
+        body_b,
+        [anchor_x, anchor_y, anchor_z],
+        [axis_x, axis_y, axis_z],
+    )
+}
+
+/// Construct a prismatic joint.
+#[wasm_bindgen(js_name = "joint_config_prismatic")]
+pub fn joint_config_prismatic_js(
+    body_a: u64,
+    body_b: u64,
+    anchor_x: f64,
+    anchor_y: f64,
+    anchor_z: f64,
+    axis_x: f64,
+    axis_y: f64,
+    axis_z: f64,
+) -> WasmJointConfig {
+    WasmJointConfig::prismatic(
+        body_a,
+        body_b,
+        [anchor_x, anchor_y, anchor_z],
+        [axis_x, axis_y, axis_z],
+    )
+}
+
+/// Construct a ball-and-socket joint.
+#[wasm_bindgen(js_name = "joint_config_ball")]
+pub fn joint_config_ball_js(
+    body_a: u64,
+    body_b: u64,
+    anchor_x: f64,
+    anchor_y: f64,
+    anchor_z: f64,
+) -> WasmJointConfig {
+    WasmJointConfig::ball(body_a, body_b, [anchor_x, anchor_y, anchor_z])
+}
+
+/// Construct a spring joint.
+#[wasm_bindgen(js_name = "joint_config_spring")]
+pub fn joint_config_spring_js(
+    body_a: u64,
+    body_b: u64,
+    anchor_a_x: f64,
+    anchor_a_y: f64,
+    anchor_a_z: f64,
+    anchor_b_x: f64,
+    anchor_b_y: f64,
+    anchor_b_z: f64,
+    stiffness: f64,
+    damping: f64,
+) -> WasmJointConfig {
+    WasmJointConfig::spring(
+        body_a,
+        body_b,
+        [anchor_a_x, anchor_a_y, anchor_a_z],
+        [anchor_b_x, anchor_b_y, anchor_b_z],
+        stiffness,
+        damping,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // WasmJointState
 // ---------------------------------------------------------------------------
 
 /// Runtime state of a joint queried from the solver.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WasmJointState {
     /// Current angle (revolute) or translation (prismatic) in rad or m.
@@ -211,11 +358,33 @@ impl WasmJointState {
     }
 }
 
+#[wasm_bindgen]
+impl WasmJointState {
+    /// Construct a zeroed joint state.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new() -> WasmJointState {
+        WasmJointState::default()
+    }
+
+    /// Returns `true` if constraint force exceeds `threshold`.
+    #[wasm_bindgen(js_name = "is_overloaded")]
+    pub fn is_overloaded_js(&self, threshold: f64) -> bool {
+        self.is_overloaded(threshold)
+    }
+
+    /// Serialise to a structured `JsValue` object.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WasmContactConfig
 // ---------------------------------------------------------------------------
 
 /// Per-contact material parameters.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmContactConfig {
     /// Coefficient of restitution \[0, 1\].
@@ -284,11 +453,51 @@ impl WasmContactConfig {
     }
 }
 
+#[wasm_bindgen]
+impl WasmContactConfig {
+    /// Construct a default contact configuration.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new() -> WasmContactConfig {
+        WasmContactConfig::default()
+    }
+
+    /// Construct a perfectly rigid, frictionless contact.
+    #[wasm_bindgen(js_name = "frictionless")]
+    pub fn frictionless_js() -> WasmContactConfig {
+        WasmContactConfig::frictionless()
+    }
+
+    /// Construct a high-friction rubber-like contact.
+    #[wasm_bindgen(js_name = "rubber")]
+    pub fn rubber_js() -> WasmContactConfig {
+        WasmContactConfig::rubber()
+    }
+
+    /// Validate the configuration; returns the empty string on success.
+    #[wasm_bindgen(js_name = "validate")]
+    pub fn validate_js(&self) -> String {
+        match self.validate() {
+            Ok(()) => String::new(),
+            Err(e) => e,
+        }
+    }
+
+    /// Serialise to a structured `JsValue` object.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WasmMotorTarget
 // ---------------------------------------------------------------------------
 
 /// Desired motor command for a joint.
+///
+/// This enum carries payload data and therefore cannot be exposed as a
+/// `#[wasm_bindgen]` enum directly. Use the helper free functions
+/// `motor_target_*` to build instances on the JavaScript side.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WasmMotorTarget {
     /// Drive to a target velocity (rad/s or m/s).
@@ -320,11 +529,51 @@ impl WasmMotorTarget {
     }
 }
 
+/// Build a `TargetVelocity` motor command as a structured `JsValue`.
+#[wasm_bindgen(js_name = "motor_target_velocity")]
+pub fn motor_target_velocity_js(value: f64) -> Result<JsValue, JsValue> {
+    to_js_value(&WasmMotorTarget::TargetVelocity(value))
+}
+
+/// Build a `TargetPosition` motor command as a structured `JsValue`.
+#[wasm_bindgen(js_name = "motor_target_position")]
+pub fn motor_target_position_js(value: f64) -> Result<JsValue, JsValue> {
+    to_js_value(&WasmMotorTarget::TargetPosition(value))
+}
+
+/// Build a `MaxTorque` motor command as a structured `JsValue`.
+#[wasm_bindgen(js_name = "motor_target_max_torque")]
+pub fn motor_target_max_torque_js(value: f64) -> Result<JsValue, JsValue> {
+    to_js_value(&WasmMotorTarget::MaxTorque(value))
+}
+
+/// Numeric value of a JSON-encoded `WasmMotorTarget`.
+#[wasm_bindgen(js_name = "motor_target_value")]
+pub fn motor_target_value_js(target_json: &str) -> Result<f64, JsValue> {
+    let target: WasmMotorTarget = serde_json::from_str(target_json).map_err(err_to_jsvalue)?;
+    Ok(target.value())
+}
+
+/// Returns `true` when the JSON-encoded `WasmMotorTarget` is a velocity command.
+#[wasm_bindgen(js_name = "motor_target_is_velocity")]
+pub fn motor_target_is_velocity_js(target_json: &str) -> Result<bool, JsValue> {
+    let target: WasmMotorTarget = serde_json::from_str(target_json).map_err(err_to_jsvalue)?;
+    Ok(target.is_velocity())
+}
+
+/// Returns `true` when the JSON-encoded `WasmMotorTarget` is a position command.
+#[wasm_bindgen(js_name = "motor_target_is_position")]
+pub fn motor_target_is_position_js(target_json: &str) -> Result<bool, JsValue> {
+    let target: WasmMotorTarget = serde_json::from_str(target_json).map_err(err_to_jsvalue)?;
+    Ok(target.is_position())
+}
+
 // ---------------------------------------------------------------------------
 // WasmConstraintSolver
 // ---------------------------------------------------------------------------
 
 /// Simple constraint solver managing a collection of joints.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmConstraintSolver {
     /// Solver iteration count per step.
@@ -332,11 +581,11 @@ pub struct WasmConstraintSolver {
     /// Whether to warm-start from the previous step's lambdas.
     pub warm_start: bool,
     /// All joints currently managed by this solver.
-    pub joints: Vec<(WasmJointHandle, WasmJointConfig)>,
+    pub(crate) joints: Vec<(WasmJointHandle, WasmJointConfig)>,
     /// Per-joint state from the last solve.
-    pub joint_states: Vec<WasmJointState>,
+    pub(crate) joint_states: Vec<WasmJointState>,
     /// Next handle to assign.
-    next_handle: u64,
+    next_handle: u32,
     /// Solver error from the last step.
     pub last_error: f64,
     /// Number of iterations actually used in the last solve.
@@ -377,14 +626,49 @@ impl WasmConstraintSolver {
         }
     }
 
-    /// Perform one solver pass (stub — updates violation bookkeeping).
+    /// Perform one Gauss-Seidel Baumgarte constraint solver pass.
+    ///
+    /// For each joint, computes a velocity correction impulse based on the
+    /// current velocity violation and positional bias (Baumgarte stabilisation),
+    /// clamps to the feasible impulse range, and applies the correction.
     pub fn solve(&mut self, dt: f64) {
         self.iterations_used = self.iterations;
         self.last_error = 0.0;
-        for state in &mut self.joint_states {
-            // Integrate position from velocity (stub).
-            state.position += state.velocity * dt;
-            state.violation = state.position.abs() * 0.001;
+        let safe_dt = dt.max(1e-12);
+        let beta = 0.1_f64;
+        let regularization = 1e-4_f64;
+        // Unit effective mass for the WASM bridge (no rigid-body state).
+        let effective_mass = 1.0_f64;
+        let inv_m = 1.0 / effective_mass;
+
+        for ((_handle, cfg), state) in self.joints.iter().zip(self.joint_states.iter_mut()) {
+            // Integrate position from velocity.
+            state.position += state.velocity * safe_dt;
+
+            // Velocity violation: motor joints drive toward target velocity,
+            // all other joint types drive velocity toward zero.
+            let v_err = if cfg.motor_enabled {
+                state.velocity - cfg.motor_target_velocity
+            } else {
+                state.velocity
+            };
+
+            // Baumgarte position stabilisation bias.
+            let bias = beta / safe_dt * state.violation;
+
+            // Constraint impulse increment.
+            let delta_lambda = -(v_err + bias) / (inv_m + regularization);
+
+            // Clamp to the feasible impulse range.
+            let max_force = cfg.motor_max_force.max(0.0);
+            let clamped = delta_lambda.clamp(-max_force, max_force);
+
+            // Apply correction.
+            state.velocity += clamped * inv_m;
+            state.motor_force = clamped;
+
+            // Update violation: reduce residual toward zero.
+            state.violation = (state.violation - clamped.abs() * safe_dt * 0.1).max(0.0);
             self.last_error += state.violation;
         }
     }
@@ -415,16 +699,119 @@ impl WasmConstraintSolver {
     }
 }
 
+#[wasm_bindgen]
+impl WasmConstraintSolver {
+    /// Construct a solver with the given iteration count and warm-start flag.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new(iterations: u32, warm_start: bool) -> WasmConstraintSolver {
+        WasmConstraintSolver::new(iterations, warm_start)
+    }
+
+    /// Add a joint and return the assigned raw handle id.
+    #[wasm_bindgen(js_name = "add_joint")]
+    pub fn add_joint_js(&mut self, config: WasmJointConfig) -> u32 {
+        self.add_joint(config).raw()
+    }
+
+    /// Remove a joint by raw handle id; returns `true` when removed.
+    #[wasm_bindgen(js_name = "remove_joint")]
+    pub fn remove_joint_js(&mut self, handle_raw: u32) -> bool {
+        self.remove_joint(WasmJointHandle::new(handle_raw))
+    }
+
+    /// Step the constraint solver forward by `dt` seconds.
+    #[wasm_bindgen(js_name = "solve")]
+    pub fn solve_js(&mut self, dt: f64) {
+        self.solve(dt);
+    }
+
+    /// Joint state for the given raw handle as a structured `JsValue`.
+    ///
+    /// Returns `JsValue::NULL` when the handle is unknown.
+    #[wasm_bindgen(js_name = "get_joint_state")]
+    pub fn get_joint_state_js(&self, handle_raw: u32) -> Result<JsValue, JsValue> {
+        match self.get_joint_state(WasmJointHandle::new(handle_raw)) {
+            Some(state) => to_js_value(state),
+            None => Ok(JsValue::NULL),
+        }
+    }
+
+    /// Set the motor target velocity for a joint by raw handle.
+    #[wasm_bindgen(js_name = "set_motor_target_velocity")]
+    pub fn set_motor_target_velocity_js(&mut self, handle_raw: u32, value: f64) {
+        self.set_motor_target(
+            WasmJointHandle::new(handle_raw),
+            WasmMotorTarget::TargetVelocity(value),
+        );
+    }
+
+    /// Set the motor target position for a joint by raw handle.
+    #[wasm_bindgen(js_name = "set_motor_target_position")]
+    pub fn set_motor_target_position_js(&mut self, handle_raw: u32, value: f64) {
+        self.set_motor_target(
+            WasmJointHandle::new(handle_raw),
+            WasmMotorTarget::TargetPosition(value),
+        );
+    }
+
+    /// Cap the motor torque/force for a joint by raw handle.
+    #[wasm_bindgen(js_name = "set_motor_max_torque")]
+    pub fn set_motor_max_torque_js(&mut self, handle_raw: u32, value: f64) {
+        self.set_motor_target(
+            WasmJointHandle::new(handle_raw),
+            WasmMotorTarget::MaxTorque(value),
+        );
+    }
+
+    /// Number of joints currently managed.
+    #[wasm_bindgen(js_name = "joint_count")]
+    pub fn joint_count_js(&self) -> usize {
+        self.joint_count()
+    }
+
+    /// Number of (handle, config) pairs currently stored — JS-friendly count.
+    #[wasm_bindgen(js_name = "joints_count")]
+    pub fn joints_count(&self) -> usize {
+        self.joints.len()
+    }
+
+    /// Raw handle id of the joint at index `i`, if any.
+    #[wasm_bindgen(js_name = "joint_handle_at")]
+    pub fn joint_handle_at(&self, i: usize) -> Option<u32> {
+        self.joints.get(i).map(|(h, _)| h.raw())
+    }
+
+    /// Cloned configuration of the joint at index `i`, if any.
+    #[wasm_bindgen(js_name = "joint_config_at")]
+    pub fn joint_config_at(&self, i: usize) -> Option<WasmJointConfig> {
+        self.joints.get(i).map(|(_, cfg)| cfg.clone())
+    }
+
+    /// Cloned state of the joint at index `i`, if any.
+    #[wasm_bindgen(js_name = "joint_state_at")]
+    pub fn joint_state_at(&self, i: usize) -> Option<WasmJointState> {
+        self.joint_states.get(i).cloned()
+    }
+
+    /// Serialise the entire solver state to a JSON string.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self).map_err(err_to_jsvalue)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WasmConstraintDebug
 // ---------------------------------------------------------------------------
 
 /// Debug information for a single constraint.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WasmConstraintDebug {
     /// Handle of the joint.
     pub handle: u64,
     /// Constraint impulse (lambda) values from last step.
+    #[wasm_bindgen(skip)]
     pub lambdas: Vec<f64>,
     /// Constraint force vector magnitude.
     pub force_magnitude: f64,
@@ -447,16 +834,51 @@ impl WasmConstraintDebug {
     }
 }
 
+#[wasm_bindgen]
+impl WasmConstraintDebug {
+    /// Construct debug info for a joint handle.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new(handle: u64) -> WasmConstraintDebug {
+        WasmConstraintDebug::new(handle)
+    }
+
+    /// Lambda values from the last solve.
+    #[wasm_bindgen(js_name = "get_lambdas")]
+    pub fn get_lambdas(&self) -> Vec<f64> {
+        self.lambdas.clone()
+    }
+
+    /// Replace the lambda values.
+    #[wasm_bindgen(js_name = "set_lambdas")]
+    pub fn set_lambdas(&mut self, lambdas: Vec<f64>) {
+        self.lambdas = lambdas;
+    }
+
+    /// Number of stored lambda values.
+    #[wasm_bindgen(js_name = "lambdas_count")]
+    pub fn lambdas_count(&self) -> usize {
+        self.lambdas.len()
+    }
+
+    /// Serialise to a structured `JsValue` object.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WasmIslandManager
 // ---------------------------------------------------------------------------
 
 /// Statistics and configuration for the simulation island manager.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WasmIslandManager {
     /// Number of active simulation islands.
     pub island_count: u32,
     /// Number of bodies per island (sorted by size descending).
+    #[wasm_bindgen(skip)]
     pub bodies_per_island: Vec<u32>,
     /// Linear velocity threshold for sleeping (m/s).
     pub sleep_threshold_linear: f64,
@@ -465,8 +887,10 @@ pub struct WasmIslandManager {
     /// Number of consecutive frames below threshold before sleeping.
     pub sleep_delay_frames: u32,
     /// Log of recent wake events (island indices).
+    #[wasm_bindgen(skip)]
     pub wake_events: Vec<u32>,
     /// Log of recent sleep events (island indices).
+    #[wasm_bindgen(skip)]
     pub sleep_events: Vec<u32>,
 }
 
@@ -508,11 +932,81 @@ impl WasmIslandManager {
     }
 }
 
+#[wasm_bindgen]
+impl WasmIslandManager {
+    /// Construct a manager with default sleep thresholds.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new() -> WasmIslandManager {
+        WasmIslandManager::new()
+    }
+
+    /// Record a wake event for the given island id.
+    #[wasm_bindgen(js_name = "record_wake")]
+    pub fn record_wake_js(&mut self, island_id: u32) {
+        self.record_wake(island_id);
+    }
+
+    /// Record a sleep event for the given island id.
+    #[wasm_bindgen(js_name = "record_sleep")]
+    pub fn record_sleep_js(&mut self, island_id: u32) {
+        self.record_sleep(island_id);
+    }
+
+    /// Total bodies across all islands.
+    #[wasm_bindgen(js_name = "total_bodies")]
+    pub fn total_bodies_js(&self) -> u32 {
+        self.total_bodies()
+    }
+
+    /// Largest island body count.
+    #[wasm_bindgen(js_name = "largest_island")]
+    pub fn largest_island_js(&self) -> u32 {
+        self.largest_island()
+    }
+
+    /// Clear event logs.
+    #[wasm_bindgen(js_name = "flush_events")]
+    pub fn flush_events_js(&mut self) {
+        self.flush_events();
+    }
+
+    /// Snapshot of the bodies-per-island vector.
+    #[wasm_bindgen(js_name = "get_bodies_per_island")]
+    pub fn get_bodies_per_island(&self) -> Vec<u32> {
+        self.bodies_per_island.clone()
+    }
+
+    /// Replace the bodies-per-island counts.
+    #[wasm_bindgen(js_name = "set_bodies_per_island")]
+    pub fn set_bodies_per_island(&mut self, counts: Vec<u32>) {
+        self.bodies_per_island = counts;
+    }
+
+    /// Snapshot of pending wake events.
+    #[wasm_bindgen(js_name = "get_wake_events")]
+    pub fn get_wake_events(&self) -> Vec<u32> {
+        self.wake_events.clone()
+    }
+
+    /// Snapshot of pending sleep events.
+    #[wasm_bindgen(js_name = "get_sleep_events")]
+    pub fn get_sleep_events(&self) -> Vec<u32> {
+        self.sleep_events.clone()
+    }
+
+    /// Serialise to a structured `JsValue` object.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WasmCcdConfig
 // ---------------------------------------------------------------------------
 
 /// Continuous collision detection configuration.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmCcdConfig {
     /// Whether CCD is globally enabled.
@@ -563,14 +1057,46 @@ impl WasmCcdConfig {
     }
 }
 
+#[wasm_bindgen]
+impl WasmCcdConfig {
+    /// Construct a default (disabled) CCD configuration.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new() -> WasmCcdConfig {
+        WasmCcdConfig::default()
+    }
+
+    /// Construct an enabled CCD configuration with default parameters.
+    #[wasm_bindgen(js_name = "create_enabled")]
+    pub fn create_enabled() -> WasmCcdConfig {
+        WasmCcdConfig::enabled()
+    }
+
+    /// Validate the configuration; returns the empty string on success.
+    #[wasm_bindgen(js_name = "validate")]
+    pub fn validate_js(&self) -> String {
+        match self.validate() {
+            Ok(()) => String::new(),
+            Err(e) => e,
+        }
+    }
+
+    /// Serialise to a structured `JsValue` object.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WasmRagdollBuilder
 // ---------------------------------------------------------------------------
 
 /// Description of a single bone in a ragdoll.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmBone {
     /// Unique name for this bone.
+    #[wasm_bindgen(skip)]
     pub name: String,
     /// Bone length in metres.
     pub length: f64,
@@ -581,14 +1107,15 @@ pub struct WasmBone {
     /// Index of the parent bone (-1 for root).
     pub parent_index: i32,
     /// Joint connecting this bone to its parent.
+    #[wasm_bindgen(skip)]
     pub joint: Option<WasmJointConfig>,
 }
 
 impl WasmBone {
     /// Create a new bone.
-    pub fn new(name: impl Into<String>, length: f64, mass: f64) -> Self {
+    pub fn new(name: String, length: f64, mass: f64) -> Self {
         WasmBone {
-            name: name.into(),
+            name,
             length,
             mass,
             radius: length * 0.1,
@@ -598,11 +1125,63 @@ impl WasmBone {
     }
 }
 
+#[wasm_bindgen]
+impl WasmBone {
+    /// Construct a new bone with the given name, length (m) and mass (kg).
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new(name: String, length: f64, mass: f64) -> WasmBone {
+        WasmBone::new(name, length, mass)
+    }
+
+    /// Bone name.
+    #[wasm_bindgen(getter)]
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    /// Set the bone name.
+    #[wasm_bindgen(setter)]
+    pub fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
+
+    /// Returns `true` when this bone has a joint connecting it to its parent.
+    #[wasm_bindgen(js_name = "has_joint")]
+    pub fn has_joint(&self) -> bool {
+        self.joint.is_some()
+    }
+
+    /// Cloned joint configuration, if any.
+    #[wasm_bindgen(js_name = "get_joint")]
+    pub fn get_joint(&self) -> Option<WasmJointConfig> {
+        self.joint.clone()
+    }
+
+    /// Replace the joint configuration. Pass `None` to clear (use
+    /// `clear_joint` from JS).
+    pub fn set_joint(&mut self, joint: WasmJointConfig) {
+        self.joint = Some(joint);
+    }
+
+    /// Remove the joint configuration.
+    #[wasm_bindgen(js_name = "clear_joint")]
+    pub fn clear_joint(&mut self) {
+        self.joint = None;
+    }
+
+    /// Serialise to a structured `JsValue` object.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
 /// Builder for constructing a ragdoll hierarchy.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WasmRagdollBuilder {
     /// Bones added so far.
-    pub bones: Vec<WasmBone>,
+    pub(crate) bones: Vec<WasmBone>,
 }
 
 impl WasmRagdollBuilder {
@@ -612,7 +1191,7 @@ impl WasmRagdollBuilder {
     }
 
     /// Add a bone and return its index.
-    pub fn add_bone(&mut self, name: impl Into<String>, length: f64, mass: f64) -> usize {
+    pub fn add_bone(&mut self, name: String, length: f64, mass: f64) -> usize {
         let idx = self.bones.len();
         self.bones.push(WasmBone::new(name, length, mass));
         idx
@@ -647,7 +1226,7 @@ impl WasmRagdollBuilder {
             .enumerate()
             .filter_map(|(i, bone)| {
                 if bone.joint.is_some() {
-                    Some(WasmJointHandle::new(i as u64 + 1))
+                    Some(WasmJointHandle::new(i as u32 + 1))
                 } else {
                     None
                 }
@@ -663,6 +1242,73 @@ impl WasmRagdollBuilder {
     /// Find a bone by name.
     pub fn find_bone(&self, name: &str) -> Option<usize> {
         self.bones.iter().position(|b| b.name == name)
+    }
+}
+
+#[wasm_bindgen]
+impl WasmRagdollBuilder {
+    /// Construct an empty ragdoll builder.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new() -> WasmRagdollBuilder {
+        WasmRagdollBuilder::new()
+    }
+
+    /// Add a bone and return its index.
+    #[wasm_bindgen(js_name = "add_bone")]
+    pub fn add_bone_js(&mut self, name: String, length: f64, mass: f64) -> usize {
+        self.add_bone(name, length, mass)
+    }
+
+    /// Connect bone `child_index` to bone `parent_index` with the given joint.
+    ///
+    /// Returns the empty string on success, or the error message on failure.
+    #[wasm_bindgen(js_name = "connect_joint")]
+    pub fn connect_joint_js(
+        &mut self,
+        child_index: usize,
+        parent_index: usize,
+        joint: WasmJointConfig,
+    ) -> String {
+        match self.connect_joint(child_index, parent_index, joint) {
+            Ok(()) => String::new(),
+            Err(e) => e,
+        }
+    }
+
+    /// Build the ragdoll, returning the raw handle id for every bone joint.
+    #[wasm_bindgen(js_name = "build")]
+    pub fn build_js(&self) -> Vec<u32> {
+        self.build().into_iter().map(|h| h.raw()).collect()
+    }
+
+    /// Number of bones.
+    #[wasm_bindgen(js_name = "bone_count")]
+    pub fn bone_count_js(&self) -> usize {
+        self.bone_count()
+    }
+
+    /// Find a bone by name; returns the index or `usize::MAX` if not found.
+    #[wasm_bindgen(js_name = "find_bone")]
+    pub fn find_bone_js(&self, name: &str) -> Option<usize> {
+        self.find_bone(name)
+    }
+
+    /// Cloned bone at index `i`, if any.
+    #[wasm_bindgen(js_name = "bone_at")]
+    pub fn bone_at(&self, i: usize) -> Option<WasmBone> {
+        self.bones.get(i).cloned()
+    }
+
+    /// Number of bones (synonym of `bone_count`).
+    #[wasm_bindgen(js_name = "bones_count")]
+    pub fn bones_count(&self) -> usize {
+        self.bones.len()
+    }
+
+    /// Serialise the entire builder state to a JSON string.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self).map_err(err_to_jsvalue)
     }
 }
 
@@ -737,8 +1383,8 @@ mod tests {
     #[test]
     fn test_joint_config_serialization() {
         let cfg = WasmJointConfig::revolute(0, 1, [0.0; 3], [0.0, 1.0, 0.0]);
-        let json = serde_json::to_string(&cfg).unwrap();
-        let cfg2: WasmJointConfig = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&cfg).expect("serialize joint config");
+        let cfg2: WasmJointConfig = serde_json::from_str(&json).expect("deserialize joint config");
         assert_eq!(cfg2.joint_type, "revolute");
     }
 
@@ -839,7 +1485,9 @@ mod tests {
             solver.joint_states[pos].velocity = 1.0;
         }
         solver.solve(0.1);
-        let state = solver.get_joint_state(h).unwrap();
+        let state = solver
+            .get_joint_state(h)
+            .expect("joint state must exist after add_joint");
         assert!((state.position - 0.1).abs() < 1e-10);
     }
 
@@ -848,7 +1496,11 @@ mod tests {
         let mut solver = WasmConstraintSolver::new(10, true);
         let h = solver.add_joint(WasmJointConfig::default());
         solver.set_motor_target(h, WasmMotorTarget::TargetVelocity(2.0));
-        let (_, cfg) = solver.joints.iter().find(|(hh, _)| *hh == h).unwrap();
+        let (_, cfg) = solver
+            .joints
+            .iter()
+            .find(|(hh, _)| *hh == h)
+            .expect("joint must exist after add_joint");
         assert!((cfg.motor_target_velocity - 2.0).abs() < 1e-10);
     }
 
@@ -912,16 +1564,16 @@ mod tests {
     #[test]
     fn test_ragdoll_add_bones() {
         let mut rb = WasmRagdollBuilder::new();
-        let _torso = rb.add_bone("torso", 0.5, 10.0);
-        let _head = rb.add_bone("head", 0.25, 3.0);
+        let _torso = rb.add_bone("torso".to_string(), 0.5, 10.0);
+        let _head = rb.add_bone("head".to_string(), 0.25, 3.0);
         assert_eq!(rb.bone_count(), 2);
     }
 
     #[test]
     fn test_ragdoll_connect_joint() {
         let mut rb = WasmRagdollBuilder::new();
-        let torso = rb.add_bone("torso", 0.5, 10.0);
-        let head = rb.add_bone("head", 0.25, 3.0);
+        let torso = rb.add_bone("torso".to_string(), 0.5, 10.0);
+        let head = rb.add_bone("head".to_string(), 0.25, 3.0);
         let joint = WasmJointConfig::ball(torso as u64, head as u64, [0.0, 0.25, 0.0]);
         assert!(rb.connect_joint(head, torso, joint).is_ok());
         assert_eq!(rb.bones[head].parent_index, torso as i32);
@@ -930,7 +1582,7 @@ mod tests {
     #[test]
     fn test_ragdoll_connect_out_of_bounds() {
         let mut rb = WasmRagdollBuilder::new();
-        let _ = rb.add_bone("root", 1.0, 5.0);
+        let _ = rb.add_bone("root".to_string(), 1.0, 5.0);
         let joint = WasmJointConfig::default();
         assert!(rb.connect_joint(99, 0, joint).is_err());
     }
@@ -938,10 +1590,11 @@ mod tests {
     #[test]
     fn test_ragdoll_build_returns_handles() {
         let mut rb = WasmRagdollBuilder::new();
-        let torso = rb.add_bone("torso", 0.5, 10.0);
-        let head = rb.add_bone("head", 0.25, 3.0);
+        let torso = rb.add_bone("torso".to_string(), 0.5, 10.0);
+        let head = rb.add_bone("head".to_string(), 0.25, 3.0);
         let joint = WasmJointConfig::ball(torso as u64, head as u64, [0.0, 0.25, 0.0]);
-        rb.connect_joint(head, torso, joint).unwrap();
+        rb.connect_joint(head, torso, joint)
+            .expect("connect_joint must succeed for valid indices");
         let handles = rb.build();
         assert_eq!(handles.len(), 1);
     }
@@ -949,7 +1602,7 @@ mod tests {
     #[test]
     fn test_ragdoll_find_bone() {
         let mut rb = WasmRagdollBuilder::new();
-        rb.add_bone("spine", 0.4, 8.0);
+        rb.add_bone("spine".to_string(), 0.4, 8.0);
         assert_eq!(rb.find_bone("spine"), Some(0));
         assert!(rb.find_bone("missing").is_none());
     }
@@ -966,8 +1619,37 @@ mod tests {
     #[test]
     fn test_constraint_debug_serialization() {
         let dbg = WasmConstraintDebug::new(3);
-        let json = serde_json::to_string(&dbg).unwrap();
-        let dbg2: WasmConstraintDebug = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&dbg).expect("serialize constraint debug");
+        let dbg2: WasmConstraintDebug =
+            serde_json::from_str(&json).expect("deserialize constraint debug");
         assert_eq!(dbg2.handle, 3);
+    }
+
+    // --- H5: Gauss-Seidel Baumgarte solver ---
+
+    #[test]
+    fn solver_reduces_violation() {
+        let mut solver = WasmConstraintSolver::new(1, false);
+        let cfg = WasmJointConfig {
+            motor_enabled: false,
+            motor_max_force: 1000.0,
+            ..Default::default()
+        };
+        let h = solver.add_joint(cfg);
+
+        // Manually set a non-zero violation.
+        if let Some(pos) = solver.joints.iter().position(|(hh, _)| *hh == h) {
+            solver.joint_states[pos].violation = 0.5;
+            solver.joint_states[pos].velocity = 1.0;
+        }
+
+        solver.solve(0.01);
+
+        // After the corrective pass, last_error must be less than the initial violation.
+        assert!(
+            solver.last_error < 0.5,
+            "last_error ({}) should be less than initial violation 0.5",
+            solver.last_error
+        );
     }
 }

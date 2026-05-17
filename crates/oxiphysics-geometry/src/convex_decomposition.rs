@@ -353,15 +353,24 @@ pub struct ConvexPart {
     pub vertices: Vec<Vec3>,
     /// Concavity of this part (0 = perfectly convex)
     pub concavity: f64,
+    /// Triangular face indices into `vertices` (V-HACD: populated; HACD: empty).
+    pub indices: Vec<[u32; 3]>,
+    /// Approximate volume of this part (V-HACD: hull volume; HACD: 0.0).
+    pub volume: f64,
+    /// Centroid of this part.
+    pub centroid: Vec3,
 }
 
 impl ConvexPart {
-    /// Create a ConvexPart from vertices.
+    /// Create a ConvexPart from vertices (HACD path; indices/volume/centroid default).
     pub fn new(vertices: Vec<Vec3>) -> Self {
         let concavity = 0.0;
         Self {
             vertices,
             concavity,
+            indices: Vec::new(),
+            volume: 0.0,
+            centroid: [0.0; 3],
         }
     }
 

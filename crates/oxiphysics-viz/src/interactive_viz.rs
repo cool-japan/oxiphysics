@@ -348,6 +348,35 @@ impl InteractiveCamera {
 }
 
 // ---------------------------------------------------------------------------
+// AnimationEntry
+// ---------------------------------------------------------------------------
+
+/// A tracked animation clip together with its current elapsed playback time.
+///
+/// Call [`InteractiveScene::add_animation`] to register a clip; the scene's
+/// [`update`](InteractiveScene::update) method advances `elapsed` each frame.
+#[derive(Debug, Clone)]
+pub struct AnimationEntry {
+    /// The animation clip data (duration, looping flag, keyframes).
+    pub clip: crate::animation_system::AnimationClip,
+    /// Current playback cursor in seconds.
+    pub elapsed: f64,
+    /// Whether the clip is actively advancing.
+    pub playing: bool,
+}
+
+impl AnimationEntry {
+    /// Wrap `clip` in a new entry, starting at time 0 and auto-playing.
+    pub fn new(clip: crate::animation_system::AnimationClip) -> Self {
+        Self {
+            clip,
+            elapsed: 0.0,
+            playing: true,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // InteractiveScene
 // ---------------------------------------------------------------------------
 
@@ -360,6 +389,8 @@ pub struct InteractiveScene {
     pub objects: Vec<SceneObject>,
     /// Index of the currently selected object, if any.
     pub selection: Option<usize>,
+    /// Active animation clips with per-clip playback cursors.
+    pub animations: Vec<AnimationEntry>,
 }
 
 impl InteractiveScene {
@@ -369,7 +400,15 @@ impl InteractiveScene {
             camera: InteractiveCamera::new(),
             objects: Vec::new(),
             selection: None,
+            animations: Vec::new(),
         }
+    }
+
+    /// Register an animation clip for playback; returns its index.
+    pub fn add_animation(&mut self, clip: crate::animation_system::AnimationClip) -> usize {
+        let idx = self.animations.len();
+        self.animations.push(AnimationEntry::new(clip));
+        idx
     }
 
     /// Add an object and return its assigned id.
@@ -415,9 +454,24 @@ impl InteractiveScene {
         nearest_idx
     }
 
-    /// Advance the scene by `_dt` seconds (reserved for future animation logic).
-    pub fn update(&mut self, _dt: f64) {
-        // placeholder — individual objects may animate in future
+    /// Advance the scene by `dt` seconds, stepping every registered animation clip.
+    ///
+    /// * Looping clips wrap their elapsed time back to zero using `rem_euclid`.
+    /// * Non-looping clips clamp at their duration and set `playing = false`.
+    pub fn update(&mut self, dt: f64) {
+        for entry in &mut self.animations {
+            if !entry.playing {
+                continue;
+            }
+            entry.elapsed += dt;
+            if entry.clip.looping {
+                let dur = entry.clip.duration.max(1e-15);
+                entry.elapsed = entry.elapsed.rem_euclid(dur);
+            } else if entry.elapsed >= entry.clip.duration {
+                entry.elapsed = entry.clip.duration;
+                entry.playing = false;
+            }
+        }
     }
 
     /// Produce the list of render commands for the current frame.
@@ -947,5 +1001,54 @@ mod tests {
                 assert!((result[i][j] - eye[i][j]).abs() < 1e-9);
             }
         }
+    }
+
+    // --- Animation update (F2) ---
+
+    fn make_clip(duration: f64, looping: bool) -> crate::animation_system::AnimationClip {
+        crate::animation_system::AnimationClip::new("test", duration, 24.0, looping)
+    }
+
+    #[test]
+    fn test_update_advances_clip_elapsed() {
+        let mut scene = InteractiveScene::new();
+        let idx = scene.add_animation(make_clip(2.0, false));
+        scene.update(0.5);
+        assert!((scene.animations[idx].elapsed - 0.5).abs() < 1e-12);
+        scene.update(0.3);
+        assert!((scene.animations[idx].elapsed - 0.8).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_update_looping_clip_wraps() {
+        let mut scene = InteractiveScene::new();
+        let idx = scene.add_animation(make_clip(1.0, true));
+        // advance past the full duration
+        scene.update(1.5);
+        // elapsed should wrap: 1.5 rem_euclid 1.0 == 0.5
+        assert!(
+            (scene.animations[idx].elapsed - 0.5).abs() < 1e-12,
+            "looping elapsed = {}",
+            scene.animations[idx].elapsed
+        );
+        assert!(
+            scene.animations[idx].playing,
+            "looping clip must remain playing"
+        );
+    }
+
+    #[test]
+    fn test_update_nonlooping_clip_stops() {
+        let mut scene = InteractiveScene::new();
+        let idx = scene.add_animation(make_clip(1.0, false));
+        scene.update(2.0);
+        assert!(
+            (scene.animations[idx].elapsed - 1.0).abs() < 1e-12,
+            "non-looping elapsed clamped to duration"
+        );
+        assert!(!scene.animations[idx].playing, "non-looping clip must stop");
+        // further updates should not change elapsed
+        scene.update(1.0);
+        assert!((scene.animations[idx].elapsed - 1.0).abs() < 1e-12);
     }
 }

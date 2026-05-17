@@ -1,0 +1,6 @@
+{
+  "name": "rigid_bounce_height_2",
+  "expected": 0.25,
+  "tolerance_abs": 0.0,
+  "tolerance_rel": 0.08
+}

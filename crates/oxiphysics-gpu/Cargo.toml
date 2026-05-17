@@ -3,13 +3,46 @@ name = "oxiphysics-gpu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
 description = "GPU acceleration backends for the OxiPhysics engine"
+readme = "README.md"
 categories = ["science", "simulation"]
 keywords = ["gpu", "physics", "acceleration", "parallel", "simulation"]
+
+[features]
+# wgpu-backend is enabled by default on desktop targets.
+# To opt out (e.g. for WASM or minimal builds) use --no-default-features
+# or set default-features = false in the dependent crate's Cargo.toml.
+default = ["wgpu-backend"]
+wgpu-backend = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
+headless-ci = []
+# Explicit opt-out: use --no-default-features or cpu-only to disable wgpu
+cpu-only = []
+# CUDA backend via cudarc — optional, not in default features (Pure Rust default).
+# Requires CUDA Toolkit ≥ 12.0 installed on the host at *runtime* only
+# (cudarc uses dynamic-loading so no link-time CUDA dependency).
+cuda-backend = ["dep:cudarc"]
 
 [dependencies]
 rand = { workspace = true }
 thiserror = { workspace = true }
 oxiphysics-core = { workspace = true }
-rayon = "1"
+rayon = { workspace = true }
+wgpu = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
+bytemuck = { workspace = true, optional = true }
+cudarc = { workspace = true, optional = true }
+
+[[test]]
+name = "wgpu_kernels"
+path = "tests/wgpu_kernels.rs"
+
+[[test]]
+name = "lbm_kernels"
+path = "tests/lbm_kernels.rs"
+
+[[test]]
+name = "cuda_backend_tests"
+path = "tests/cuda_backend_tests.rs"
 

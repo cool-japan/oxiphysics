@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +7,7 @@
 //! solver with poly6/spiky kernels, pressure and viscosity forces, configurable
 //! gravity, and query helpers.
 
-#![allow(missing_docs)]
-
+use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -17,6 +15,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Configuration for the SPH simulation.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PySphConfig {
     /// Smoothing length (kernel radius h).
@@ -39,8 +38,10 @@ pub struct PySphConfig {
     pub floor_restitution: f64,
 }
 
+#[pymethods]
 impl PySphConfig {
     /// Water-like default configuration.
+    #[staticmethod]
     pub fn water() -> Self {
         Self {
             h: 0.1,
@@ -56,6 +57,7 @@ impl PySphConfig {
     }
 
     /// Gas-like configuration with low density and stiffness.
+    #[staticmethod]
     pub fn gas() -> Self {
         Self {
             h: 0.2,
@@ -86,6 +88,7 @@ impl Default for PySphConfig {
 /// Particles are integrated with forward Euler and use Tait's equation of
 /// state (p = k * (ρ/ρ₀ - 1)) for pressure. Supports an optional flat floor
 /// boundary.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PySphSimulation {
     /// Particle positions `[x, y, z]`.
@@ -104,8 +107,10 @@ pub struct PySphSimulation {
     step_count: u64,
 }
 
+#[pymethods]
 impl PySphSimulation {
     /// Create an empty SPH simulation with the given configuration.
+    #[new]
     pub fn new(config: PySphConfig) -> Self {
         Self {
             positions: Vec::new(),
@@ -270,7 +275,7 @@ impl PySphSimulation {
 
         // -- Forces --
         let mut forces = vec![[0.0f64; 3]; n];
-        for i in 0..n {
+        for (i, force_i) in forces.iter_mut().enumerate() {
             let mut fp = [0.0f64; 3];
             let mut fv = [0.0f64; 3];
             for j in 0..n {
@@ -301,16 +306,16 @@ impl PySphSimulation {
                 fv[2] += vf * (self.velocities[j][2] - self.velocities[i][2]);
             }
             let rho_i = self.densities[i];
-            forces[i][0] = (fp[0] + fv[0]) / rho_i + g[0];
-            forces[i][1] = (fp[1] + fv[1]) / rho_i + g[1];
-            forces[i][2] = (fp[2] + fv[2]) / rho_i + g[2];
+            force_i[0] = (fp[0] + fv[0]) / rho_i + g[0];
+            force_i[1] = (fp[1] + fv[1]) / rho_i + g[1];
+            force_i[2] = (fp[2] + fv[2]) / rho_i + g[2];
         }
 
         // -- Euler integration --
-        for i in 0..n {
-            self.velocities[i][0] += forces[i][0] * dt;
-            self.velocities[i][1] += forces[i][1] * dt;
-            self.velocities[i][2] += forces[i][2] * dt;
+        for (i, force_i) in forces.iter().enumerate() {
+            self.velocities[i][0] += force_i[0] * dt;
+            self.velocities[i][1] += force_i[1] * dt;
+            self.velocities[i][2] += force_i[2] * dt;
             self.positions[i][0] += self.velocities[i][0] * dt;
             self.positions[i][1] += self.velocities[i][1] * dt;
             self.positions[i][2] += self.velocities[i][2] * dt;
@@ -485,6 +490,7 @@ mod tests {
 // Neighbor query API
 // ---------------------------------------------------------------------------
 
+#[pymethods]
 impl PySphSimulation {
     /// Return the indices of all particles within distance `r` of particle `i`.
     ///
@@ -640,7 +646,6 @@ impl PySphSimulation {
 
 /// Per-step statistics for a WCSPH simulation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SphStats {
     /// Number of particles.
     pub particle_count: usize,
@@ -846,6 +851,7 @@ mod sph_ext_tests {
 // Adaptive smoothing length
 // ===========================================================================
 
+#[pymethods]
 impl PySphSimulation {
     /// Estimate an adaptive smoothing length for particle `i` based on the
     /// distance to its k-th nearest neighbor (default k=8).
@@ -893,6 +899,7 @@ impl PySphSimulation {
 // Surface detection
 // ===========================================================================
 
+#[pymethods]
 impl PySphSimulation {
     /// Detect surface particles using the color-field divergence method.
     ///
@@ -933,7 +940,6 @@ pub enum SphVariant {
 }
 
 /// Wrapper that holds a `PySphSimulation` along with a solver variant.
-#[allow(dead_code)]
 pub struct SphSolver {
     /// The underlying SPH simulation.
     pub sim: PySphSimulation,
@@ -1006,7 +1012,6 @@ impl SphSolver {
 // ===========================================================================
 
 /// A named particle set for managing groups of particles.
-#[allow(dead_code)]
 pub struct SphParticleSet {
     /// Debug name for this set.
     pub name: String,
@@ -1039,14 +1044,15 @@ impl SphParticleSet {
     }
 }
 
+#[pymethods]
 impl PySphSimulation {
-    /// Bulk-add a list of positions, returning the range of newly added indices.
-    pub fn add_particles(&mut self, positions: &[[f64; 3]]) -> std::ops::Range<usize> {
+    /// Bulk-add a list of positions, returning `(start_index, end_index)`.
+    pub fn add_particles(&mut self, positions: Vec<[f64; 3]>) -> (usize, usize) {
         let start = self.positions.len();
-        for &pos in positions {
+        for pos in positions {
             self.add_particle(pos);
         }
-        start..self.positions.len()
+        (start, self.positions.len())
     }
 
     /// Set velocity of particle `i`. No-op if out of bounds.
@@ -1246,8 +1252,8 @@ mod sph_new_tests {
     fn test_add_particles_bulk() {
         let mut sim = water_sim();
         let positions = vec![[0.0; 3], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
-        let range = sim.add_particles(&positions);
-        assert_eq!(range.len(), 3);
+        let (start, end) = sim.add_particles(positions);
+        assert_eq!(end - start, 3);
         assert_eq!(sim.particle_count(), 3);
     }
 
@@ -1333,9 +1339,9 @@ mod sph_new_tests {
         let mut sim = water_sim();
         sim.add_particle([0.0; 3]); // index 0
         let positions = vec![[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
-        let range = sim.add_particles(&positions);
-        assert_eq!(range.start, 1);
-        assert_eq!(range.end, 3);
+        let (start, end) = sim.add_particles(positions);
+        assert_eq!(start, 1);
+        assert_eq!(end, 3);
     }
 
     #[test]
@@ -1354,4 +1360,17 @@ mod sph_new_tests {
         let v = sim.velocity(0).unwrap();
         assert!((v[0] - 1.0).abs() < 1e-14);
     }
+}
+
+/// Register all `sph` classes into a Python sub-module.
+///
+/// Called from the top-level `#[pymodule]` in `lib.rs`.
+/// Wave-2 annotation pass fills in the `add_class` / `add_function` calls.
+pub fn register_sph_module(parent: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
+    use pyo3::types::PyModuleMethods;
+    let child = pyo3::types::PyModule::new(parent.py(), "sph")?;
+    child.add_class::<PySphConfig>()?;
+    child.add_class::<PySphSimulation>()?;
+    parent.add_submodule(&child)?;
+    Ok(())
 }

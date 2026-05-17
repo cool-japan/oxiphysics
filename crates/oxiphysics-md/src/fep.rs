@@ -68,6 +68,8 @@ pub struct ThermodynamicIntegration {
     pub lambda_windows: Vec<f64>,
     /// Running sum of dU/dλ samples at each window (for computing the mean).
     du_dlambda_sum: Vec<f64>,
+    /// Running sum of (dU/dλ)² samples at each window (for Bessel-corrected variance).
+    du_dlambda_sq_sum: Vec<f64>,
     /// Number of samples accumulated at each window.
     sample_counts: Vec<usize>,
     /// Cached ⟨dU/dλ⟩ at each window (updated on each `add_sample` call).
@@ -81,6 +83,7 @@ impl ThermodynamicIntegration {
         Self {
             lambda_windows: lambdas,
             du_dlambda_sum: vec![0.0; n],
+            du_dlambda_sq_sum: vec![0.0; n],
             sample_counts: vec![0; n],
             du_dlambda_averages: vec![0.0; n],
         }
@@ -89,9 +92,26 @@ impl ThermodynamicIntegration {
     /// Accumulate a dU/dλ sample at the given window index for running average.
     pub fn add_sample(&mut self, lambda_idx: usize, du_dl: f64) {
         self.du_dlambda_sum[lambda_idx] += du_dl;
+        self.du_dlambda_sq_sum[lambda_idx] += du_dl * du_dl;
         self.sample_counts[lambda_idx] += 1;
         self.du_dlambda_averages[lambda_idx] =
             self.du_dlambda_sum[lambda_idx] / self.sample_counts[lambda_idx] as f64;
+    }
+
+    /// Bessel-corrected sample variance at window `idx`.
+    ///
+    /// Uses the computational formula: `(Σx² − (Σx)²/N) / (N−1)`.
+    /// Returns 0.0 when N ≤ 1 (variance undefined with a single sample).
+    fn window_variance(&self, idx: usize) -> f64 {
+        let n = self.sample_counts[idx];
+        if n <= 1 {
+            return 0.0;
+        }
+        let sum = self.du_dlambda_sum[idx];
+        let sq_sum = self.du_dlambda_sq_sum[idx];
+        let nf = n as f64;
+        let variance = (sq_sum - sum * sum / nf) / (nf - 1.0);
+        variance.max(0.0)
     }
 
     /// Integrate ⟨dU/dλ⟩ over λ via the trapezoidal rule.
@@ -113,19 +133,33 @@ impl ThermodynamicIntegration {
 
     /// Statistical uncertainty estimate for the TI integral (standard error propagation).
     ///
-    /// Approximated as the trapezoidal integral of the standard error of the mean at each
-    /// window.  Returns 0 when fewer than 2 samples per window exist.
+    /// Computed as the trapezoidal integral of σ_i / √N_i at each window, where σ_i is
+    /// the Bessel-corrected sample standard deviation.  Returns 0 when fewer than 2
+    /// windows are available or all windows have ≤ 1 sample.
     pub fn uncertainty(&self) -> f64 {
         let n = self.lambda_windows.len();
         if n < 2 {
             return 0.0;
         }
-        // Variance of the mean at each window: σ²/N
-        // We approximate σ² from running sum and count using the sample variance.
-        // Without raw squares we return a placeholder of 0 (no variance info stored).
-        // The caller should treat this as an order-of-magnitude estimate only.
-        let _ = n; // used above
-        0.0
+        // Standard error of mean at each window: SEM_i = sqrt(variance_i / N_i)
+        let sem: Vec<f64> = (0..n)
+            .map(|i| {
+                let ni = self.sample_counts[i];
+                if ni <= 1 {
+                    0.0
+                } else {
+                    (self.window_variance(i) / ni as f64).sqrt()
+                }
+            })
+            .collect();
+        // Trapezoidal integration of SEM over λ
+        let mut integral = 0.0;
+        for i in 0..n - 1 {
+            let dlambda = self.lambda_windows[i + 1] - self.lambda_windows[i];
+            let avg_sem = 0.5 * (sem[i] + sem[i + 1]);
+            integral += avg_sem * dlambda;
+        }
+        integral
     }
 }
 
@@ -1389,5 +1423,68 @@ mod tests {
         for (i, &u) in unc.iter().enumerate() {
             assert!(u >= 0.0, "Uncertainty[{i}] should be non-negative, got {u}");
         }
+    }
+
+    // ── B5: ThermodynamicIntegration variance / uncertainty tests ─────────────
+
+    #[test]
+    fn test_ti_variance_non_negative() {
+        let mut ti = ThermodynamicIntegration::new(vec![0.0, 0.5, 1.0]);
+        ti.add_sample(0, 1.0);
+        ti.add_sample(0, 3.0);
+        ti.add_sample(1, -2.0);
+        ti.add_sample(1, 4.0);
+        ti.add_sample(2, 0.5);
+        ti.add_sample(2, 1.5);
+        assert!(
+            ti.uncertainty() >= 0.0,
+            "uncertainty() must be non-negative, got {}",
+            ti.uncertainty()
+        );
+    }
+
+    #[test]
+    fn test_ti_variance_known_value() {
+        // Five samples [1,2,3,4,5] → sample variance = 2.5, mean = 3
+        let mut ti = ThermodynamicIntegration::new(vec![0.0, 1.0]);
+        for v in [1.0_f64, 2.0, 3.0, 4.0, 5.0] {
+            ti.add_sample(0, v);
+            ti.add_sample(1, v);
+        }
+        // window_variance(0) should equal 2.5
+        let var0 = ti.window_variance(0);
+        let diff = (var0 - 2.5).abs();
+        assert!(
+            diff < 1e-10,
+            "Expected variance 2.5, got {var0} (diff={diff})"
+        );
+    }
+
+    #[test]
+    fn test_ti_single_sample_variance_zero() {
+        let mut ti = ThermodynamicIntegration::new(vec![0.0, 0.5, 1.0]);
+        ti.add_sample(0, 42.0);
+        // Single sample → variance must be 0
+        let var0 = ti.window_variance(0);
+        assert_eq!(var0, 0.0, "Single sample variance must be 0, got {var0}");
+        // No samples at window 1 → variance must be 0
+        let var1 = ti.window_variance(1);
+        assert_eq!(var1, 0.0, "Zero-sample variance must be 0, got {var1}");
+    }
+
+    #[test]
+    fn test_ti_constant_samples_uncertainty_zero() {
+        // All identical samples → variance = 0 → uncertainty = 0
+        let mut ti = ThermodynamicIntegration::new(vec![0.0, 0.5, 1.0]);
+        for _ in 0..10 {
+            ti.add_sample(0, 5.0);
+            ti.add_sample(1, 5.0);
+            ti.add_sample(2, 5.0);
+        }
+        let unc = ti.uncertainty();
+        assert!(
+            unc.abs() < 1e-12,
+            "Constant samples → uncertainty must be 0, got {unc}"
+        );
     }
 }

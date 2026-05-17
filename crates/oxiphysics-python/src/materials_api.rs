@@ -4,12 +4,10 @@
 //! Materials API for Python interop.
 //!
 //! Provides a comprehensive set of material models for structural, thermal,
-//! acoustic, and fatigue analysis. All types use plain `f64` and `Vec`f64`
+//! acoustic, and fatigue analysis. All types use plain `f64` and `Vec<f64>`
 //! — no nalgebra — for easy FFI transmission.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
+use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -17,18 +15,24 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Linear elastic isotropic material.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyElasticMaterial {
     /// Young's modulus E (Pa).
+    #[pyo3(get, set)]
     pub youngs_modulus: f64,
     /// Poisson's ratio ν (dimensionless, 0..0.5).
+    #[pyo3(get, set)]
     pub poisson_ratio: f64,
     /// Mass density ρ (kg/m³).
+    #[pyo3(get, set)]
     pub density: f64,
 }
 
+#[pymethods]
 impl PyElasticMaterial {
     /// Create a new linear elastic material.
+    #[new]
     pub fn new(youngs_modulus: f64, poisson_ratio: f64, density: f64) -> Self {
         Self {
             youngs_modulus,
@@ -37,24 +41,30 @@ impl PyElasticMaterial {
         }
     }
 
-    /// Compute the Cauchy stress vector `\[σxx, σyy, τxy\]` from the
-    /// engineering strain vector `\[εxx, εyy, γxy\]` using plane-stress
+    /// Compute the Cauchy stress vector `[σxx, σyy, τxy]` from the
+    /// engineering strain vector `[εxx, εyy, γxy]` using plane-stress
     /// constitutive relations.
-    pub fn stress_from_strain(&self, strain: [f64; 3]) -> [f64; 3] {
+    pub fn stress_from_strain(&self, strain: Vec<f64>) -> Vec<f64> {
         let e = self.youngs_modulus;
         let nu = self.poisson_ratio;
         let c = e / (1.0 - nu * nu);
-        [
-            c * (strain[0] + nu * strain[1]),
-            c * (nu * strain[0] + strain[1]),
-            c * (1.0 - nu) * 0.5 * strain[2],
+        let exx = strain.first().copied().unwrap_or(0.0);
+        let eyy = strain.get(1).copied().unwrap_or(0.0);
+        let gxy = strain.get(2).copied().unwrap_or(0.0);
+        vec![
+            c * (exx + nu * eyy),
+            c * (nu * exx + eyy),
+            c * (1.0 - nu) * 0.5 * gxy,
         ]
     }
 
     /// Compute the elastic strain energy density (J/m³) given a strain vector.
-    pub fn strain_energy_density(&self, strain: [f64; 3]) -> f64 {
-        let stress = self.stress_from_strain(strain);
-        0.5 * (stress[0] * strain[0] + stress[1] * strain[1] + stress[2] * strain[2])
+    pub fn strain_energy_density(&self, strain: Vec<f64>) -> f64 {
+        let stress = self.stress_from_strain(strain.clone());
+        let exx = strain.first().copied().unwrap_or(0.0);
+        let eyy = strain.get(1).copied().unwrap_or(0.0);
+        let gxy = strain.get(2).copied().unwrap_or(0.0);
+        0.5 * (stress[0] * exx + stress[1] * eyy + stress[2] * gxy)
     }
 
     /// Shear modulus G derived from E and ν.
@@ -80,18 +90,24 @@ impl Default for PyElasticMaterial {
 // ---------------------------------------------------------------------------
 
 /// Hyperelastic material supporting NeoHookean and Mooney–Rivlin models.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyHyperelasticMaterial {
     /// First Mooney–Rivlin constant C₁ (also the NeoHookean shear parameter).
+    #[pyo3(get, set)]
     pub c1: f64,
     /// Second Mooney–Rivlin constant C₂.
+    #[pyo3(get, set)]
     pub c2: f64,
     /// Bulk modulus κ (Pa).
+    #[pyo3(get, set)]
     pub bulk_modulus: f64,
 }
 
+#[pymethods]
 impl PyHyperelasticMaterial {
     /// Create a new hyperelastic material.
+    #[new]
     pub fn new(c1: f64, c2: f64, bulk_modulus: f64) -> Self {
         Self {
             c1,
@@ -136,18 +152,24 @@ impl Default for PyHyperelasticMaterial {
 // ---------------------------------------------------------------------------
 
 /// Elastoplastic material with linear isotropic hardening (von Mises).
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyPlasticMaterial {
     /// Initial yield stress σ_y (Pa).
+    #[pyo3(get, set)]
     pub yield_stress: f64,
     /// Isotropic hardening modulus H (Pa).
+    #[pyo3(get, set)]
     pub hardening_modulus: f64,
     /// Young's modulus E (Pa) — needed for elastic predictor.
+    #[pyo3(get, set)]
     pub youngs_modulus: f64,
 }
 
+#[pymethods]
 impl PyPlasticMaterial {
     /// Create a new plastic material.
+    #[new]
     pub fn new(yield_stress: f64, hardening_modulus: f64, youngs_modulus: f64) -> Self {
         Self {
             yield_stress,
@@ -182,18 +204,24 @@ impl Default for PyPlasticMaterial {
 // ---------------------------------------------------------------------------
 
 /// Fatigue material described by the Basquin (S–N) power law.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyFatigueMaterial {
     /// Basquin coefficient A (stress intercept at N = 1).
+    #[pyo3(get, set)]
     pub basquin_coefficient: f64,
     /// Basquin exponent b (negative slope of the S–N curve).
+    #[pyo3(get, set)]
     pub basquin_exponent: f64,
     /// Endurance limit σ_e (Pa).  Below this stress fatigue life is infinite.
+    #[pyo3(get, set)]
     pub endurance_limit: f64,
 }
 
+#[pymethods]
 impl PyFatigueMaterial {
     /// Create a new fatigue material.
+    #[new]
     pub fn new(basquin_coefficient: f64, basquin_exponent: f64, endurance_limit: f64) -> Self {
         Self {
             basquin_coefficient,
@@ -233,18 +261,24 @@ impl Default for PyFatigueMaterial {
 // ---------------------------------------------------------------------------
 
 /// Isotropic thermal material.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyThermalMaterial {
     /// Thermal conductivity λ (W/m·K).
+    #[pyo3(get, set)]
     pub conductivity: f64,
     /// Specific heat capacity c_p (J/kg·K).
+    #[pyo3(get, set)]
     pub specific_heat: f64,
     /// Mass density ρ (kg/m³).
+    #[pyo3(get, set)]
     pub density: f64,
 }
 
+#[pymethods]
 impl PyThermalMaterial {
     /// Create a new thermal material.
+    #[new]
     pub fn new(conductivity: f64, specific_heat: f64, density: f64) -> Self {
         Self {
             conductivity,
@@ -276,20 +310,26 @@ impl Default for PyThermalMaterial {
 // ---------------------------------------------------------------------------
 
 /// Viscoelastic material described by a generalised Maxwell (Prony series) model.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyViscoelasticMaterial {
     /// Long-term (equilibrium) modulus E∞ (Pa).
+    #[pyo3(get, set)]
     pub equilibrium_modulus: f64,
     /// Prony series amplitudes (modulus contributions E_i).
+    #[pyo3(get, set)]
     pub prony_moduli: Vec<f64>,
     /// Prony series relaxation times τ_i (s).
+    #[pyo3(get, set)]
     pub prony_times: Vec<f64>,
 }
 
+#[pymethods]
 impl PyViscoelasticMaterial {
     /// Create a new viscoelastic material.
     ///
     /// `prony_moduli` and `prony_times` must have equal length.
+    #[new]
     pub fn new(equilibrium_modulus: f64, prony_moduli: Vec<f64>, prony_times: Vec<f64>) -> Self {
         Self {
             equilibrium_modulus,
@@ -326,18 +366,24 @@ impl Default for PyViscoelasticMaterial {
 // ---------------------------------------------------------------------------
 
 /// Continuum damage mechanics material (isotropic scalar damage).
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyDamageMaterial {
     /// Critical strain energy release rate G_c (J/m³).
+    #[pyo3(get, set)]
     pub critical_energy_release: f64,
     /// Softening slope (negative, in Pa per unit damage).
+    #[pyo3(get, set)]
     pub softening_slope: f64,
     /// Undamaged Young's modulus E₀ (Pa).
+    #[pyo3(get, set)]
     pub undamaged_modulus: f64,
 }
 
+#[pymethods]
 impl PyDamageMaterial {
     /// Create a new damage material.
+    #[new]
     pub fn new(critical_energy_release: f64, softening_slope: f64, undamaged_modulus: f64) -> Self {
         Self {
             critical_energy_release,
@@ -376,18 +422,24 @@ impl Default for PyDamageMaterial {
 // ---------------------------------------------------------------------------
 
 /// Creep material described by Norton's power-law creep model.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyCreepMaterial {
     /// Norton creep coefficient A (1/s · Pa^{-n}).
+    #[pyo3(get, set)]
     pub norton_coefficient: f64,
     /// Norton creep exponent n (dimensionless).
+    #[pyo3(get, set)]
     pub norton_exponent: f64,
     /// Activation energy Q divided by universal gas constant R (K).
+    #[pyo3(get, set)]
     pub activation_temperature: f64,
 }
 
+#[pymethods]
 impl PyCreepMaterial {
     /// Create a new creep material.
+    #[new]
     pub fn new(norton_coefficient: f64, norton_exponent: f64, activation_temperature: f64) -> Self {
         Self {
             norton_coefficient,
@@ -422,16 +474,21 @@ impl Default for PyCreepMaterial {
 // ---------------------------------------------------------------------------
 
 /// Acoustic (fluid) material.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyAcousticMaterial {
     /// Bulk modulus κ (Pa).
+    #[pyo3(get, set)]
     pub bulk_modulus: f64,
     /// Mass density ρ (kg/m³).
+    #[pyo3(get, set)]
     pub density: f64,
 }
 
+#[pymethods]
 impl PyAcousticMaterial {
     /// Create a new acoustic material.
+    #[new]
     pub fn new(bulk_modulus: f64, density: f64) -> Self {
         Self {
             bulk_modulus,
@@ -450,7 +507,7 @@ impl PyAcousticMaterial {
     }
 
     /// Reflection coefficient at an interface with another acoustic material.
-    pub fn reflection_coefficient(&self, other: &PyAcousticMaterial) -> f64 {
+    pub fn reflection_coefficient(&self, other: PyAcousticMaterial) -> f64 {
         let z1 = self.impedance();
         let z2 = other.impedance();
         (z2 - z1) / (z2 + z1)
@@ -469,18 +526,24 @@ impl Default for PyAcousticMaterial {
 // ---------------------------------------------------------------------------
 
 /// Composite material with Voigt, Reuss, and Hill mixture rules.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyCompositeMaterial {
     /// Modulus of phase 1 (matrix) E₁ (Pa).
+    #[pyo3(get, set)]
     pub modulus1: f64,
     /// Modulus of phase 2 (fiber/particle) E₂ (Pa).
+    #[pyo3(get, set)]
     pub modulus2: f64,
     /// Volume fraction of phase 1 (0..1).
+    #[pyo3(get, set)]
     pub volume_fraction1: f64,
 }
 
+#[pymethods]
 impl PyCompositeMaterial {
     /// Create a new composite material.
+    #[new]
     pub fn new(modulus1: f64, modulus2: f64, volume_fraction1: f64) -> Self {
         Self {
             modulus1,
@@ -530,13 +593,24 @@ impl Default for PyCompositeMaterial {
 // Registration helper
 // ---------------------------------------------------------------------------
 
-/// Register all material classes into a Python sub-module named `"materials"`.
+/// Register all `materials` classes into a Python sub-module.
 ///
-/// This is a no-op placeholder that documents the intended PyO3 registration
-/// point. When PyO3 is enabled as a dependency the body should call
-/// `m.add_class::`PyElasticMaterial`()` etc.
-pub fn register_materials_module(_m: &str) {
-    // Placeholder: actual PyO3 registration would happen here.
+/// Called from the top-level `#[pymodule]` in `lib.rs`.
+pub fn register_materials_module(parent: &Bound<'_, PyModule>) -> PyResult<()> {
+    use pyo3::types::PyModuleMethods;
+    let child = PyModule::new(parent.py(), "materials")?;
+    child.add_class::<PyElasticMaterial>()?;
+    child.add_class::<PyHyperelasticMaterial>()?;
+    child.add_class::<PyPlasticMaterial>()?;
+    child.add_class::<PyFatigueMaterial>()?;
+    child.add_class::<PyThermalMaterial>()?;
+    child.add_class::<PyViscoelasticMaterial>()?;
+    child.add_class::<PyDamageMaterial>()?;
+    child.add_class::<PyCreepMaterial>()?;
+    child.add_class::<PyAcousticMaterial>()?;
+    child.add_class::<PyCompositeMaterial>()?;
+    parent.add_submodule(&child)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -582,7 +656,7 @@ mod tests {
     #[test]
     fn test_elastic_stress_from_strain_uniaxial() {
         let mat = PyElasticMaterial::new(200e9, 0.3, 7850.0);
-        let strain = [1e-3, 0.0, 0.0];
+        let strain = vec![1e-3, 0.0, 0.0];
         let stress = mat.stress_from_strain(strain);
         // σxx = E/(1-nu²) * εxx ≈ 219.78 MPa
         assert!(stress[0] > 0.0);
@@ -592,15 +666,15 @@ mod tests {
     #[test]
     fn test_elastic_strain_energy_positive() {
         let mat = PyElasticMaterial::new(200e9, 0.3, 7850.0);
-        let e = mat.strain_energy_density([1e-3, 0.0, 0.0]);
+        let e = mat.strain_energy_density(vec![1e-3, 0.0, 0.0]);
         assert!(e > 0.0);
     }
 
     #[test]
     fn test_elastic_zero_strain_zero_stress() {
         let mat = PyElasticMaterial::default();
-        let s = mat.stress_from_strain([0.0, 0.0, 0.0]);
-        assert_eq!(s, [0.0, 0.0, 0.0]);
+        let s = mat.stress_from_strain(vec![0.0, 0.0, 0.0]);
+        assert_eq!(s, vec![0.0, 0.0, 0.0]);
     }
 
     // --- PyHyperelasticMaterial ---
@@ -895,7 +969,7 @@ mod tests {
     #[test]
     fn test_acoustic_reflection_same_material() {
         let mat = PyAcousticMaterial::default();
-        let r = mat.reflection_coefficient(&mat.clone());
+        let r = mat.reflection_coefficient(mat.clone());
         assert!(r.abs() < 1e-10);
     }
 
@@ -964,10 +1038,5 @@ mod tests {
         assert!(mat.modulus1 > 0.0 && mat.modulus2 > 0.0);
     }
 
-    // --- register helper ---
-
-    #[test]
-    fn test_register_materials_module_no_panic() {
-        register_materials_module("materials");
-    }
+    // --- register_materials_module is tested at the lib.rs integration level ---
 }

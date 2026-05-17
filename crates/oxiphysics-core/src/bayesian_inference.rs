@@ -1160,12 +1160,10 @@ fn cholesky(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
             if i == j {
                 let val = a[i][i] - sum;
                 l[i][j] = if val > 0.0 { val.sqrt() } else { 1e-10 };
+            } else if l[j][j].abs() < 1e-30 {
+                l[i][j] = 0.0;
             } else {
-                if l[j][j].abs() < 1e-30 {
-                    l[i][j] = 0.0;
-                } else {
-                    l[i][j] = (a[i][j] - sum) / l[j][j];
-                }
+                l[i][j] = (a[i][j] - sum) / l[j][j];
             }
         }
     }

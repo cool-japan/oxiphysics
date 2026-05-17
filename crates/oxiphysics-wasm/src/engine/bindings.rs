@@ -3,10 +3,10 @@
 
 //! `WasmBindings` — flat wasm-bindgen-style API wrapper + `WasmContactList`.
 
-#![allow(missing_docs)]
+use wasm_bindgen::prelude::*;
 
 use super::WasmPhysicsEngine;
-use super::wasm_types::{WasmTransform, WasmVec3};
+use super::wasm_types::WasmTransform;
 
 // ===========================================================================
 // WasmBindings — flat wasm-bindgen-style API wrapper
@@ -14,11 +14,9 @@ use super::wasm_types::{WasmTransform, WasmVec3};
 
 /// A flat, JS-idiomatic wrapper around [`WasmPhysicsEngine`].
 ///
-/// All method signatures use primitive types and `Vec`f64` / `Vec`u32`
+/// All method signatures use primitive types and `Vec<f64>` / `Vec<u32>`
 /// instead of Rust structs, making them trivially mappable to wasm-bindgen
-/// exported functions.  In a real WASM build each method would be annotated
-/// with `#[wasm_bindgen]` and return types converted to `JsValue` / typed
-/// arrays.
+/// exported functions.
 ///
 /// # Example
 ///
@@ -37,12 +35,13 @@ use super::wasm_types::{WasmTransform, WasmVec3};
 /// assert!(pos[1] < 10.0, "body should fall");
 /// assert_eq!(api.body_count(), 1);
 /// ```
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[wasm_bindgen]
+#[derive(Debug)]
 pub struct WasmBindings {
     engine: WasmPhysicsEngine,
 }
 
+#[wasm_bindgen]
 impl WasmBindings {
     // -----------------------------------------------------------------------
     // Construction
@@ -79,7 +78,7 @@ impl WasmBindings {
         let _ = self.engine.set_velocity(id, vx, vy, vz);
     }
 
-    /// Get position of body `id` as a flat `[x, y, z]` `Vec`f64`.
+    /// Get position of body `id` as a flat `[x, y, z]` `Vec<f64>`.
     ///
     /// In a wasm-bindgen build this would return a `Float64Array` view.
     pub fn get_position(&self, id: u32) -> Vec<f64> {
@@ -91,7 +90,7 @@ impl WasmBindings {
         self.engine.step(dt);
     }
 
-    /// Return all active body positions as a flat `Vec`f64`:
+    /// Return all active body positions as a flat `Vec<f64>`:
     /// `[x0, y0, z0, x1, y1, z1, ...]`.
     ///
     /// Suitable for wrapping in a `Float64Array` on the JS side.
@@ -123,7 +122,6 @@ impl WasmBindings {
     /// Add a box collider to `body_id` with half-extents `(hx, hy, hz)`.
     ///
     /// Returns the collider handle.
-    #[allow(clippy::too_many_arguments)]
     pub fn add_collider_box(&mut self, body_id: u32, hx: f64, hy: f64, hz: f64) -> u32 {
         self.engine.add_box_collider(body_id, hx, hy, hz)
     }
@@ -132,10 +130,10 @@ impl WasmBindings {
     // Contacts
     // -----------------------------------------------------------------------
 
-    /// Return all contacts from the last `step()` call as a flat `Vec`f64`.
+    /// Return all contacts from the last `step()` call as a flat `Vec<f64>`.
     ///
     /// Each contact is encoded as 12 consecutive floats:
-    /// `\[body_a, body_b, nx, ny, nz, depth, rel_vel, impulse, is_new,
+    /// `[body_a, body_b, nx, ny, nz, depth, rel_vel, impulse, is_new,
     ///   friction_impulse, point_ax, point_ay]`
     ///
     /// (body handles are transmitted as `f64` for uniformity.)
@@ -186,11 +184,6 @@ impl WasmBindings {
 
     /// WebGPU compute shader placeholder.
     ///
-    /// In a production build this would dispatch a WGSL compute shader
-    /// operating on body data stored in GPU buffers.  Here we return a mock
-    /// result buffer of `workgroup_size` zeroes so downstream code can be
-    /// written and tested without a GPU.
-    ///
     /// The mock result contains:
     /// - slot 0: body count (as f64)
     /// - slot 1: simulation time
@@ -209,8 +202,8 @@ impl WasmBindings {
     /// assert_eq!(result.len(), 64);
     /// assert!((result[0] - 1.0).abs() < 1e-10); // body count
     /// ```
-    pub fn webgpu_compute_placeholder(&self, workgroup_size: usize) -> Vec<f64> {
-        let n = workgroup_size.max(2);
+    pub fn webgpu_compute_placeholder(&self, workgroup_size: u32) -> Vec<f64> {
+        let n = (workgroup_size as usize).max(2);
         let mut out = vec![0.0f64; n];
         out[0] = self.engine.get_body_count() as f64;
         out[1] = self.engine.time();
@@ -227,10 +220,10 @@ impl WasmBindings {
     pub fn get_transform(&self, id: u32) -> WasmTransform {
         let pos = self.engine.get_position(id);
         let rot = self.engine.get_rotation(id);
-        WasmTransform::new(WasmVec3::from_array(pos), rot)
+        WasmTransform::new(pos[0], pos[1], pos[2], rot[0], rot[1], rot[2], rot[3])
     }
 
-    /// Get all transforms as a flat `Vec`f64` of 7-element blocks
+    /// Get all transforms as a flat `Vec<f64>` of 7-element blocks
     /// `[px, py, pz, qx, qy, qz, qw, ...]`.
     pub fn get_all_transforms_flat(&self) -> Vec<f64> {
         self.engine.get_all_transforms()
@@ -240,7 +233,7 @@ impl WasmBindings {
     // Gravity query
     // -----------------------------------------------------------------------
 
-    /// Return the current gravity as `[gx, gy, gz]`.
+    /// Return the current gravity as `Vec<f64>` of `[gx, gy, gz]`.
     pub fn gravity(&self) -> Vec<f64> {
         self.engine.gravity().to_vec()
     }
@@ -250,9 +243,6 @@ impl WasmBindings {
     // -----------------------------------------------------------------------
 
     /// Serialize the current simulation state to a compact JSON string.
-    ///
-    /// The JSON can be sent over a web-worker `postMessage` channel and
-    /// used to reconstruct the engine state on the other side.
     pub fn state_to_json(&self) -> String {
         let bodies = self.engine.get_all_body_handles();
         let mut entries = Vec::with_capacity(bodies.len());
@@ -293,7 +283,20 @@ impl WasmBindings {
         let _ = self.engine.apply_impulse(id, ix, iy, iz);
     }
 
-    /// Return contacts as a `WasmContactList`.
+    /// Return contacts as flat data: 8 floats per contact
+    /// `[body_a, body_b, nx, ny, nz, depth, impulse, is_new]`.
+    pub fn get_contacts_structured_flat(&self) -> Vec<f64> {
+        WasmContactList::from_contacts(self.engine.get_contacts()).to_flat()
+    }
+
+    /// Return contacts as a JSON array string.
+    pub fn get_contacts_structured_json(&self) -> String {
+        WasmContactList::from_contacts(self.engine.get_contacts()).to_json()
+    }
+}
+
+impl WasmBindings {
+    /// Return contacts as a `WasmContactList` (Rust-only).
     pub fn get_contacts_structured(&self) -> WasmContactList {
         WasmContactList::from_contacts(self.engine.get_contacts())
     }
@@ -306,15 +309,14 @@ impl WasmBindings {
 /// A structured list of contact results from a simulation step.
 ///
 /// Provides both array-indexed access and JSON serialization.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[wasm_bindgen]
+#[derive(Debug)]
 pub struct WasmContactList {
     items: Vec<ContactInfoEntry>,
 }
 
 /// A single contact event returned from `WasmBindings::get_contacts_structured`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ContactInfoEntry {
     /// Handle of body A.
     pub body_a: u32,
@@ -347,8 +349,76 @@ impl ContactInfoEntry {
     }
 }
 
+#[wasm_bindgen]
 impl WasmContactList {
-    /// Build from the raw `ContactResult` slice from the engine.
+    /// Number of contacts.
+    pub fn len(&self) -> u32 {
+        self.items.len() as u32
+    }
+
+    /// Whether the list is empty.
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// Get body A handle for contact at index `i` (returns `u32::MAX` if out of bounds).
+    pub fn get_body_a(&self, i: u32) -> u32 {
+        self.items.get(i as usize).map_or(u32::MAX, |c| c.body_a)
+    }
+
+    /// Get body B handle for contact at index `i` (returns `u32::MAX` if out of bounds).
+    pub fn get_body_b(&self, i: u32) -> u32 {
+        self.items.get(i as usize).map_or(u32::MAX, |c| c.body_b)
+    }
+
+    /// Get contact normal as `Vec<f64>` of `[nx, ny, nz]` for contact `i`.
+    pub fn get_normal(&self, i: u32) -> Vec<f64> {
+        self.items
+            .get(i as usize)
+            .map_or_else(|| vec![0.0; 3], |c| c.normal.to_vec())
+    }
+
+    /// Get penetration depth for contact `i` (returns `0.0` if out of bounds).
+    pub fn get_depth(&self, i: u32) -> f64 {
+        self.items.get(i as usize).map_or(0.0, |c| c.depth)
+    }
+
+    /// Get impulse magnitude for contact `i`.
+    pub fn get_impulse(&self, i: u32) -> f64 {
+        self.items.get(i as usize).map_or(0.0, |c| c.impulse)
+    }
+
+    /// Whether contact `i` is new.
+    pub fn get_is_new(&self, i: u32) -> bool {
+        self.items.get(i as usize).is_some_and(|c| c.is_new)
+    }
+
+    /// Serialize the whole list to a JSON array string.
+    pub fn to_json(&self) -> String {
+        let entries: Vec<String> = self.items.iter().map(|c| c.to_json()).collect();
+        format!("[{}]", entries.join(","))
+    }
+
+    /// Flatten to a `Vec<f64>` with 8 floats per contact:
+    /// `[body_a, body_b, nx, ny, nz, depth, impulse, is_new]`.
+    pub fn to_flat(&self) -> Vec<f64> {
+        let mut out = Vec::with_capacity(self.items.len() * 8);
+        for c in &self.items {
+            out.push(c.body_a as f64);
+            out.push(c.body_b as f64);
+            out.push(c.normal[0]);
+            out.push(c.normal[1]);
+            out.push(c.normal[2]);
+            out.push(c.depth);
+            out.push(c.impulse);
+            out.push(if c.is_new { 1.0 } else { 0.0 });
+        }
+        out
+    }
+}
+
+impl WasmContactList {
+    /// Build from the raw `ContactResult` slice from the engine (Rust-only).
     pub fn from_contacts(contacts: &[crate::types::ContactResult]) -> Self {
         let items = contacts
             .iter()
@@ -364,41 +434,8 @@ impl WasmContactList {
         Self { items }
     }
 
-    /// Number of contacts.
-    pub fn len(&self) -> usize {
-        self.items.len()
-    }
-
-    /// Whether the list is empty.
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
-    /// Get contact at index `i`.
+    /// Get contact at index `i` (Rust-only; use per-field getters from JS).
     pub fn get(&self, i: usize) -> Option<&ContactInfoEntry> {
         self.items.get(i)
-    }
-
-    /// Serialize the whole list to a JSON array string.
-    pub fn to_json(&self) -> String {
-        let entries: Vec<String> = self.items.iter().map(|c| c.to_json()).collect();
-        format!("[{}]", entries.join(","))
-    }
-
-    /// Flatten to a `Vec`f64` with 8 floats per contact:
-    /// `\[body_a, body_b, nx, ny, nz, depth, impulse, is_new\]`.
-    pub fn to_flat(&self) -> Vec<f64> {
-        let mut out = Vec::with_capacity(self.items.len() * 8);
-        for c in &self.items {
-            out.push(c.body_a as f64);
-            out.push(c.body_b as f64);
-            out.push(c.normal[0]);
-            out.push(c.normal[1]);
-            out.push(c.normal[2]);
-            out.push(c.depth);
-            out.push(c.impulse);
-            out.push(if c.is_new { 1.0 } else { 0.0 });
-        }
-        out
     }
 }

@@ -3,11 +3,13 @@
 
 //! `WasmVehicleSim` — simple arcade-style vehicle simulation.
 
-#![allow(missing_docs)]
+use wasm_bindgen::prelude::*;
 
 /// State snapshot of the vehicle.
+///
+/// Exposed to JavaScript via individual getter methods on `WasmVehicleSim`;
+/// the raw `[f64; 3]` arrays are not directly wasm-bindgen compatible.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct VehicleState {
     /// Position `[x, y, z]`.
     pub position: [f64; 3],
@@ -27,8 +29,8 @@ pub struct VehicleState {
 ///
 /// Models: engine torque → wheel force → linear acceleration.
 /// Uses a simple Euler integrator. Suspension and tyre slip are abstracted.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[wasm_bindgen]
+#[derive(Debug)]
 pub struct WasmVehicleSim {
     position: [f64; 3],
     velocity: [f64; 3],
@@ -59,6 +61,7 @@ pub struct WasmVehicleSim {
     time: f64,
 }
 
+#[wasm_bindgen]
 impl WasmVehicleSim {
     /// Create a car-like vehicle with sensible defaults.
     pub fn new() -> Self {
@@ -106,34 +109,54 @@ impl WasmVehicleSim {
         self.position = [x, y, z];
     }
 
-    /// Get the current state snapshot.
-    pub fn get_state(&self) -> VehicleState {
-        let vx = self.velocity[0];
-        let vz = self.velocity[2];
-        let speed = (vx * vx + vz * vz).sqrt();
-        VehicleState {
-            position: self.position,
-            velocity: self.velocity,
-            heading: self.heading,
-            speed,
-            gear: self.gear,
-            rpm: self.rpm,
-        }
-    }
-
-    /// Get position as `[x, y, z]`.
-    pub fn get_position(&self) -> [f64; 3] {
-        self.position
-    }
-
-    /// Get velocity as `[vx, vy, vz]`.
-    pub fn get_velocity(&self) -> [f64; 3] {
-        self.velocity
-    }
-
     /// Get heading in radians.
     pub fn heading(&self) -> f64 {
         self.heading
+    }
+
+    /// Get current gear.
+    pub fn gear(&self) -> u32 {
+        self.gear
+    }
+
+    /// Get engine RPM.
+    pub fn rpm(&self) -> f64 {
+        self.rpm
+    }
+
+    /// Get forward speed (m/s).
+    pub fn speed(&self) -> f64 {
+        let vx = self.velocity[0];
+        let vz = self.velocity[2];
+        (vx * vx + vz * vz).sqrt()
+    }
+
+    /// Get position as `Vec<f64>` of `[x, y, z]` (JS-compatible wrapper).
+    pub fn get_position_js(&self) -> Vec<f64> {
+        self.position.to_vec()
+    }
+
+    /// Get velocity as `Vec<f64>` of `[vx, vy, vz]` (JS-compatible wrapper).
+    pub fn get_velocity_js(&self) -> Vec<f64> {
+        self.velocity.to_vec()
+    }
+
+    /// Get full state as a flat `Vec<f64>`:
+    /// `[px, py, pz, vx, vy, vz, heading, speed, gear_as_f64, rpm]`.
+    pub fn get_state_flat(&self) -> Vec<f64> {
+        let speed = self.speed();
+        vec![
+            self.position[0],
+            self.position[1],
+            self.position[2],
+            self.velocity[0],
+            self.velocity[1],
+            self.velocity[2],
+            self.heading,
+            speed,
+            f64::from(self.gear),
+            self.rpm,
+        ]
     }
 
     /// Advance the simulation by `dt` seconds.
@@ -198,6 +221,33 @@ impl WasmVehicleSim {
     /// Accumulated simulation time.
     pub fn time(&self) -> f64 {
         self.time
+    }
+}
+
+impl WasmVehicleSim {
+    /// Get the current state snapshot (Rust-only; use `get_state_flat` from JS).
+    pub fn get_state(&self) -> VehicleState {
+        let vx = self.velocity[0];
+        let vz = self.velocity[2];
+        let speed = (vx * vx + vz * vz).sqrt();
+        VehicleState {
+            position: self.position,
+            velocity: self.velocity,
+            heading: self.heading,
+            speed,
+            gear: self.gear,
+            rpm: self.rpm,
+        }
+    }
+
+    /// Get position as `[x, y, z]` (Rust-only).
+    pub fn get_position(&self) -> [f64; 3] {
+        self.position
+    }
+
+    /// Get velocity as `[vx, vy, vz]` (Rust-only).
+    pub fn get_velocity(&self) -> [f64; 3] {
+        self.velocity
     }
 }
 

@@ -9,7 +9,7 @@
 //!
 //! ## Architecture
 //!
-//! - [`PhysicsEvent`] — enum describing every possible event type.
+//! - [`PhysicsEvent`] — struct describing every possible event type.
 //! - [`EventQueue`] — fixed-capacity ring buffer of pending events.
 //! - [`EventFilter`] — bitmask for selecting which event types to listen for.
 //! - [`EventSnapshot`] — serializable batch of events for `postMessage`.
@@ -25,16 +25,15 @@
 //! assert_eq!(events.len(), 1);
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::*;
 
 // ---------------------------------------------------------------------------
 // PhysicsEvent
 // ---------------------------------------------------------------------------
 
 /// The type of a physics event.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum EventKind {
@@ -64,10 +63,14 @@ pub enum EventKind {
 ///
 /// Events are immutable once created; the engine writes them to an [`EventQueue`]
 /// and they are drained by the JavaScript side each frame.
+///
+/// Note: `kind` is exposed as `kind_u8()` getter from JavaScript (not a public field)
+/// because wasm-bindgen structs cannot have public fields of other wasm-bindgen types.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PhysicsEvent {
-    /// Type of the event.
-    pub kind: EventKind,
+    /// Type of the event (private for wasm-bindgen compatibility; use `kind_u8()` from JS).
+    kind: EventKind,
     /// Primary body handle (always valid).
     pub body_a: u32,
     /// Secondary body handle (0xFFFF_FFFF if not applicable).
@@ -76,6 +79,14 @@ pub struct PhysicsEvent {
     pub time: f64,
     /// Auxiliary payload (e.g. impulse for `CollisionStart`, constraint id for `ConstraintBroken`).
     pub data: f64,
+}
+
+#[wasm_bindgen]
+impl PhysicsEvent {
+    /// Return the event kind discriminant as `u8` (JS-compatible).
+    pub fn kind_u8(&self) -> u8 {
+        self.kind as u8
+    }
 }
 
 impl PhysicsEvent {
@@ -223,6 +234,7 @@ impl PhysicsEvent {
 /// assert!(filter.allows(EventKind::CollisionStart));
 /// assert!(!filter.allows(EventKind::BodyWake));
 /// ```
+#[wasm_bindgen]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventFilter(u16);
 
@@ -259,6 +271,38 @@ impl Default for EventFilter {
     }
 }
 
+#[wasm_bindgen]
+impl EventFilter {
+    #[wasm_bindgen(constructor)]
+    pub fn new_none() -> Self {
+        Self(0)
+    }
+
+    pub fn none_js() -> EventFilter {
+        EventFilter(0)
+    }
+
+    pub fn all_js() -> EventFilter {
+        EventFilter(0xFFFF)
+    }
+
+    pub fn with_kind(&self, kind_u8: u8) -> Self {
+        Self(self.0 | (1u16 << kind_u8))
+    }
+
+    pub fn without_kind(&self, kind_u8: u8) -> Self {
+        Self(self.0 & !(1u16 << kind_u8))
+    }
+
+    pub fn allows_u8(&self, kind_u8: u8) -> bool {
+        (self.0 & (1u16 << kind_u8)) != 0
+    }
+
+    pub fn mask(&self) -> u32 {
+        self.0 as u32
+    }
+}
+
 // ---------------------------------------------------------------------------
 // EventQueue
 // ---------------------------------------------------------------------------
@@ -280,7 +324,8 @@ impl Default for EventFilter {
 /// assert_eq!(events.len(), 1);
 /// assert!(q.is_empty());
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[wasm_bindgen]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct EventQueue {
     events: Vec<PhysicsEvent>,
     /// Maximum number of events before eviction.
@@ -366,11 +411,6 @@ impl EventQueue {
         self.events.len()
     }
 
-    /// Returns `true` if the queue contains no events.
-    pub fn is_empty(&self) -> bool {
-        self.events.is_empty()
-    }
-
     /// Capacity of the queue.
     pub fn capacity(&self) -> usize {
         self.capacity
@@ -385,8 +425,44 @@ impl EventQueue {
     pub fn total_dropped(&self) -> u64 {
         self.total_dropped
     }
+}
 
-    /// Clear all pending events.
+#[wasm_bindgen]
+impl EventQueue {
+    #[wasm_bindgen(constructor)]
+    pub fn new_js(capacity: u32) -> EventQueue {
+        EventQueue::new(capacity as usize)
+    }
+
+    pub fn len_js(&self) -> u32 {
+        self.events.len() as u32
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    pub fn capacity_js(&self) -> u32 {
+        self.capacity as u32
+    }
+
+    pub fn total_pushed_f64(&self) -> f64 {
+        self.total_pushed as f64
+    }
+
+    pub fn total_dropped_f64(&self) -> f64 {
+        self.total_dropped as f64
+    }
+
+    pub fn drain_all_json(&mut self) -> String {
+        let events = self.drain_all();
+        serde_json::to_string(&events).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    pub fn peek_all_json(&self) -> String {
+        serde_json::to_string(&self.events).unwrap_or_else(|_| "[]".to_string())
+    }
+
     pub fn clear(&mut self) {
         self.events.clear();
     }
@@ -399,16 +475,18 @@ impl EventQueue {
 /// A serializable snapshot of physics events for transfer to JavaScript.
 ///
 /// Produced by `EventQueue::drain_all` and can be sent via `postMessage`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[wasm_bindgen]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct EventSnapshot {
     /// Events in chronological order.
+    #[wasm_bindgen(skip)]
     pub events: Vec<PhysicsEvent>,
     /// Simulation time of the snapshot.
     pub sim_time: f64,
     /// Total events pushed since the queue was created.
-    pub total_pushed: u64,
+    total_pushed: u64,
     /// Total events dropped since the queue was created.
-    pub total_dropped: u64,
+    total_dropped: u64,
 }
 
 impl EventSnapshot {
@@ -437,11 +515,6 @@ impl EventSnapshot {
         }
     }
 
-    /// Serialize to JSON.
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
-    }
-
     /// Deserialize from JSON.
     pub fn from_json(json: &str) -> Option<Self> {
         serde_json::from_str(json).ok()
@@ -462,6 +535,56 @@ impl EventSnapshot {
             .filter(|e| e.kind == EventKind::BodySleep || e.kind == EventKind::BodyWake)
             .collect()
     }
+}
+
+#[wasm_bindgen]
+impl EventSnapshot {
+    pub fn event_count(&self) -> u32 {
+        self.events.len() as u32
+    }
+
+    pub fn get_event_kind(&self, idx: u32) -> u8 {
+        self.events
+            .get(idx as usize)
+            .map(|e| e.kind as u8)
+            .unwrap_or(0xFF)
+    }
+
+    pub fn get_event_body_a(&self, idx: u32) -> u32 {
+        self.events
+            .get(idx as usize)
+            .map(|e| e.body_a)
+            .unwrap_or(u32::MAX)
+    }
+
+    pub fn get_event_body_b(&self, idx: u32) -> u32 {
+        self.events
+            .get(idx as usize)
+            .map(|e| e.body_b)
+            .unwrap_or(u32::MAX)
+    }
+
+    pub fn get_event_time(&self, idx: u32) -> f64 {
+        self.events
+            .get(idx as usize)
+            .map(|e| e.time)
+            .unwrap_or(f64::NAN)
+    }
+
+    pub fn get_event_data(&self, idx: u32) -> f64 {
+        self.events
+            .get(idx as usize)
+            .map(|e| e.data)
+            .unwrap_or(f64::NAN)
+    }
+
+    pub fn total_pushed_f64(&self) -> f64 {
+        self.total_pushed as f64
+    }
+
+    pub fn total_dropped_f64(&self) -> f64 {
+        self.total_dropped as f64
+    }
 
     /// Encode as a flat array of `[kind_u8, body_a, body_b, time, data, ...]` f64 values.
     ///
@@ -477,6 +600,11 @@ impl EventSnapshot {
         }
         out
     }
+
+    /// Serialize to JSON.
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -488,14 +616,15 @@ impl EventSnapshot {
 /// Records which body pairs were in contact last frame to emit
 /// `CollisionStart` / `CollisionEnd` events, and tracks per-body sleeping state
 /// to emit `BodySleep` / `BodyWake` events.
-#[derive(Debug, Clone)]
+#[wasm_bindgen]
+#[derive(Debug)]
 pub struct PhysicsEventEngine {
     /// Previously active contact pairs `(body_a, body_b)` (sorted).
     prev_contacts: Vec<(u32, u32)>,
     /// Previous sleeping state per body handle.
     prev_sleeping: Vec<(u32, bool)>,
     /// Pending events.
-    pub queue: EventQueue,
+    queue: EventQueue,
 }
 
 impl PhysicsEventEngine {
@@ -576,6 +705,27 @@ impl PhysicsEventEngine {
     }
 }
 
+#[wasm_bindgen]
+impl PhysicsEventEngine {
+    #[wasm_bindgen(constructor)]
+    pub fn new_js(capacity: u32) -> Self {
+        PhysicsEventEngine::new(capacity as usize)
+    }
+
+    pub fn queue_len(&self) -> u32 {
+        self.queue.len() as u32
+    }
+
+    pub fn drain_snapshot_json(&mut self, sim_time: f64) -> String {
+        let snap = self.drain_snapshot(sim_time);
+        serde_json::to_string(&snap).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    pub fn clear_queue(&mut self) {
+        self.queue.clear();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -596,7 +746,7 @@ mod tests {
     #[test]
     fn test_physics_event_collision_start() {
         let e = PhysicsEvent::collision_start(0, 1, 1.5);
-        assert_eq!(e.kind, EventKind::CollisionStart);
+        assert_eq!(e.kind_u8(), EventKind::CollisionStart as u8);
         assert_eq!(e.body_a, 0);
         assert_eq!(e.body_b, 1);
         assert!((e.time - 1.5).abs() < 1e-10);
@@ -605,7 +755,7 @@ mod tests {
     #[test]
     fn test_physics_event_body_sleep() {
         let e = PhysicsEvent::body_sleep(42, 2.0);
-        assert_eq!(e.kind, EventKind::BodySleep);
+        assert_eq!(e.kind_u8(), EventKind::BodySleep as u8);
         assert_eq!(e.body_a, 42);
         assert_eq!(e.body_b, u32::MAX);
     }
@@ -680,7 +830,8 @@ mod tests {
         q.push(PhysicsEvent::body_sleep(2, 0.5));
         q.push(PhysicsEvent::collision_end(0, 1, 1.0));
         let collisions = q.drain_matching(|e| {
-            e.kind == EventKind::CollisionStart || e.kind == EventKind::CollisionEnd
+            e.kind_u8() == EventKind::CollisionStart as u8
+                || e.kind_u8() == EventKind::CollisionEnd as u8
         });
         assert_eq!(collisions.len(), 2);
         assert_eq!(q.len(), 1); // only BodySleep remains
@@ -758,7 +909,7 @@ mod tests {
             let starts: Vec<_> = snap
                 .events
                 .iter()
-                .filter(|e| e.kind == EventKind::CollisionStart)
+                .filter(|e| e.kind_u8() == EventKind::CollisionStart as u8)
                 .collect();
             assert!(!starts.is_empty(), "expected CollisionStart event");
         }
@@ -789,7 +940,7 @@ mod tests {
         let ends: Vec<_> = snap
             .events
             .iter()
-            .filter(|e| e.kind == EventKind::CollisionEnd)
+            .filter(|e| e.kind_u8() == EventKind::CollisionEnd as u8)
             .collect();
         // CollisionEnd should be emitted when prev had contacts and current doesn't
         let _ = ends; // presence depends on whether first step actually had contact
@@ -798,7 +949,7 @@ mod tests {
     #[test]
     fn test_physics_event_body_wake_trigger() {
         let e = PhysicsEvent::body_wake(5, 3.0);
-        assert_eq!(e.kind, EventKind::BodyWake);
+        assert_eq!(e.kind_u8(), EventKind::BodyWake as u8);
         assert_eq!(e.body_a, 5);
         assert!((e.time - 3.0).abs() < 1e-10);
     }
@@ -815,7 +966,7 @@ mod tests {
     #[test]
     fn test_constraint_broken_event() {
         let e = PhysicsEvent::constraint_broken(7, 2.5, 100.0);
-        assert_eq!(e.kind, EventKind::ConstraintBroken);
+        assert_eq!(e.kind_u8(), EventKind::ConstraintBroken as u8);
         assert_eq!(e.body_a, 7);
         assert!((e.data - 100.0).abs() < 1e-10);
     }
@@ -824,8 +975,8 @@ mod tests {
     fn test_trigger_enter_exit_events() {
         let enter = PhysicsEvent::trigger_enter(0, 1, 0.1);
         let exit = PhysicsEvent::trigger_exit(0, 1, 0.5);
-        assert_eq!(enter.kind, EventKind::TriggerEnter);
-        assert_eq!(exit.kind, EventKind::TriggerExit);
+        assert_eq!(enter.kind_u8(), EventKind::TriggerEnter as u8);
+        assert_eq!(exit.kind_u8(), EventKind::TriggerExit as u8);
         assert!(enter.involves(1));
         assert!(exit.involves(0));
     }

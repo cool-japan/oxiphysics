@@ -73,24 +73,64 @@ impl TopOptProblem {
         emin + x.powf(self.penal) * (e0 - emin)
     }
 
+    /// Build the element-to-DOF map for the structured Q4 mesh.
+    ///
+    /// For an `nelx × nely` mesh the nodes are numbered row-major from the
+    /// bottom-left corner.  Each Q4 element has 4 corner nodes ordered
+    /// counter-clockwise; each node contributes 2 DOFs (x and y displacement).
+    ///
+    /// The returned `Vec` has one entry per element (row-major, y-outer x-inner),
+    /// and each entry is the ordered list of 8 global DOF indices for that element.
+    pub fn build_element_dof_map(&self) -> Vec<Vec<usize>> {
+        let nelx = self.nelx;
+        let nely = self.nely;
+        let n_nodes_per_row = nelx + 1;
+        let n_elem = nelx * nely;
+        let mut map = Vec::with_capacity(n_elem);
+        for ey in 0..nely {
+            for ex in 0..nelx {
+                // CCW node numbering for Q4:
+                //   n0 = bottom-left,  n1 = bottom-right,
+                //   n2 = top-right,    n3 = top-left
+                let n0 = ey * n_nodes_per_row + ex;
+                let n1 = ey * n_nodes_per_row + (ex + 1);
+                let n2 = (ey + 1) * n_nodes_per_row + (ex + 1);
+                let n3 = (ey + 1) * n_nodes_per_row + ex;
+                let dofs = vec![
+                    2 * n0,
+                    2 * n0 + 1,
+                    2 * n1,
+                    2 * n1 + 1,
+                    2 * n2,
+                    2 * n2 + 1,
+                    2 * n3,
+                    2 * n3 + 1,
+                ];
+                map.push(dofs);
+            }
+        }
+        map
+    }
+
     /// Compute structural compliance (objective) from displacement vector and
     /// element stiffness matrices.
     ///
-    /// Compliance = uᵀ K u (sum over elements).
+    /// Compliance = uᵀ K u (sum over elements), using the proper Q4 mesh
+    /// connectivity from `build_element_dof_map()`.
     pub fn compute_objective(&self, u: &[f64], ke: &[Vec<f64>]) -> f64 {
         let dof_per_elem = 8_usize; // 4-node quadrilateral in 2-D: 8 DOFs
         let mut compliance = 0.0_f64;
         let n_elem = self.nelx * self.nely;
+        let dof_map = self.build_element_dof_map();
+        let n_dof = u.len();
         for e in 0..n_elem {
             if e >= ke.len() {
                 break;
             }
-            // Element DOF indices (placeholder: consecutive)
-            let dof_start = e * dof_per_elem;
-            let n_dof = u.len();
+            let edofs = &dof_map[e];
             let mut ue = vec![0.0_f64; dof_per_elem];
             for i in 0..dof_per_elem {
-                let idx = dof_start + i;
+                let idx = edofs[i];
                 if idx < n_dof {
                     ue[i] = u[idx];
                 }
@@ -98,16 +138,10 @@ impl TopOptProblem {
             // uᵢ kᵢⱼ uⱼ
             for i in 0..dof_per_elem {
                 for j in 0..dof_per_elem {
-                    let kij = if i < ke[e].len() && j < ke[e].len() {
-                        // ke stored as row-major 8×8
+                    let kij = {
                         let row_len = dof_per_elem;
-                        if i * row_len + j < ke[e].len() {
-                            ke[e][i * row_len + j]
-                        } else {
-                            0.0
-                        }
-                    } else {
-                        0.0
+                        let flat = i * row_len + j;
+                        if flat < ke[e].len() { ke[e][flat] } else { 0.0 }
                     };
                     compliance += ue[i] * kij * ue[j];
                 }
@@ -863,5 +897,73 @@ mod tests {
         let f = ManufacturabilityFilter::new(2.0);
         let out = f.apply(&[]);
         assert!(out.is_empty());
+    }
+
+    // ── B1: build_element_dof_map tests ────────────────────────────────────
+
+    #[test]
+    fn test_dof_map_size() {
+        let p = TopOptProblem::new(4, 3, 0.5, 3.0, 1.5);
+        let map = p.build_element_dof_map();
+        assert_eq!(map.len(), 4 * 3, "must have nelx*nely entries");
+        for (i, dofs) in map.iter().enumerate() {
+            assert_eq!(dofs.len(), 8, "element {i} must have 8 DOFs");
+        }
+    }
+
+    #[test]
+    fn test_dof_map_covers_all_dofs() {
+        // For a 2×2 mesh: (2+1)*(2+1) = 9 nodes → 18 DOFs (0..17)
+        let p = TopOptProblem::new(2, 2, 0.5, 3.0, 1.5);
+        let map = p.build_element_dof_map();
+        let mut seen = std::collections::HashSet::new();
+        for dofs in &map {
+            for &d in dofs {
+                seen.insert(d);
+            }
+        }
+        // All DOFs 0..17 must appear
+        let n_nodes = (p.nelx + 1) * (p.nely + 1);
+        for d in 0..2 * n_nodes {
+            assert!(seen.contains(&d), "DOF {d} not covered by any element");
+        }
+    }
+
+    #[test]
+    fn test_dof_map_first_element_nelx3() {
+        // nelx=3, nely=2 → n_nodes_per_row=4
+        // Element 0 (ey=0, ex=0): n0=0, n1=1, n2=5, n3=4
+        // DOFs: [0,1, 2,3, 10,11, 8,9]
+        let p = TopOptProblem::new(3, 2, 0.5, 3.0, 1.5);
+        let map = p.build_element_dof_map();
+        let expected = vec![0usize, 1, 2, 3, 10, 11, 8, 9];
+        assert_eq!(
+            map[0], expected,
+            "First element DOF map mismatch: got {:?}, want {:?}",
+            map[0], expected
+        );
+    }
+
+    #[test]
+    fn test_dof_map_compliance_identity_k() {
+        // 1×1 mesh, identity K, u=[1,0, 2,0, 3,0, 4,0] (x-displacements at nodes)
+        // Compliance should equal Σ ue_i^2 for the identity (diagonal K)
+        let p = TopOptProblem::new(1, 1, 0.5, 3.0, 1.5);
+        // 1×1 mesh → 4 nodes, 8 DOFs, 1 element
+        let u: Vec<f64> = vec![1.0, 0.0, 2.0, 0.0, 3.0, 0.0, 4.0, 0.0];
+        // Identity K (8×8)
+        let mut k_identity = vec![0.0_f64; 64];
+        for i in 0..8 {
+            k_identity[i * 8 + i] = 1.0;
+        }
+        let ke = vec![k_identity];
+        let c = p.compute_objective(&u, &ke);
+        // With identity K, compliance = Σ ue_i^2 = 1+0+4+0+9+0+16+0 = 30
+        let expected = 1.0_f64 + 0.0 + 4.0 + 0.0 + 9.0 + 0.0 + 16.0 + 0.0;
+        let diff = (c - expected).abs();
+        assert!(
+            diff < 1e-10,
+            "Compliance with identity K: expected {expected}, got {c}"
+        );
     }
 }

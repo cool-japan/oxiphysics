@@ -537,12 +537,10 @@ pub fn modal_superposition(
     for step in 0..n_steps {
         let dt = if step > 0 {
             force_history[step].0 - force_history[step - 1].0
+        } else if n_steps > 1 {
+            force_history[1].0 - force_history[0].0
         } else {
-            if n_steps > 1 {
-                force_history[1].0 - force_history[0].0
-            } else {
-                0.001
-            }
+            0.001
         };
 
         let force = &force_history[step].1;

@@ -681,6 +681,10 @@ pub struct BatteryFem {
     pub phi_solid: Vec<Vec<f64>>,
     /// Electrolyte potential along x (V).
     pub phi_electrolyte: Vec<f64>,
+    /// Internal (ohmic) resistance of the cell (Ω).
+    ///
+    /// Terminal voltage = OCV − `internal_resistance` × `applied_current`.
+    pub internal_resistance: f64,
     /// Current time (s).
     pub time: f64,
     /// Time step (s).
@@ -713,6 +717,7 @@ impl BatteryFem {
             c_electrolyte: vec![1000.0; n_total],
             phi_solid: vec![vec![0.0; 10], vec![4.2; 10]],
             phi_electrolyte: vec![0.0; n_total],
+            internal_resistance: 0.0,
             time: 0.0,
             dt,
         }
@@ -745,13 +750,14 @@ impl BatteryFem {
 
     /// Compute cell terminal voltage (V).
     ///
-    /// V_cell = φ_s,pos(x=L) − φ_s,neg(x=0)
+    /// V_cell = OCP_pos − OCP_neg − I·R_int
+    ///
+    /// where `I` = `applied_current` (A) and `R_int` = `internal_resistance` (Ω).
     pub fn terminal_voltage(&self) -> f64 {
-        let v_pos = self.phi_solid[1].last().copied().unwrap_or(4.2);
-        let v_neg = self.phi_solid[0].first().copied().unwrap_or(0.0);
         let ocp_pos = ButlerVolmerFem::ocp_licoo2(self.soc_positive());
         let ocp_neg = ButlerVolmerFem::ocp_graphite(self.soc_negative());
-        ocp_pos - ocp_neg - 0.01 * self.applied_current.abs() + (v_pos - v_neg) * 0.0 // placeholder for IR drop
+        let ir_drop = self.applied_current * self.internal_resistance;
+        ocp_pos - ocp_neg - ir_drop
     }
 
     /// Advance solid-phase diffusion in spherical particles by one time step.
@@ -1589,6 +1595,28 @@ mod tests {
         let bat = BatteryFem::new(1.0, 298.15, 1.0);
         let v = bat.terminal_voltage();
         assert!(v > 2.0 && v < 5.0, "V_cell = {v}");
+    }
+
+    #[test]
+    fn test_battery_ir_drop_terminal_voltage() {
+        // R_int=0.05 Ω, I=2 A → IR drop = 0.1 V; terminal voltage must drop by exactly 0.1 V
+        let mut bat = BatteryFem::new(2.0, 298.15, 1.0);
+        bat.internal_resistance = 0.05;
+        let v_no_r = {
+            let mut b2 = bat.clone();
+            b2.internal_resistance = 0.0;
+            b2.terminal_voltage()
+        };
+        let v_with_r = bat.terminal_voltage();
+        assert!(
+            v_with_r < v_no_r,
+            "IR drop not applied: v_with_r={v_with_r}, v_no_r={v_no_r}"
+        );
+        assert!(
+            (v_no_r - v_with_r - 0.1).abs() < 1e-10,
+            "expected IR drop of 0.1 V, got {:.6}",
+            v_no_r - v_with_r
+        );
     }
 
     #[test]

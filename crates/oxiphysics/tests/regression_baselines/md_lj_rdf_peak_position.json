@@ -1,0 +1,6 @@
+{
+  "name": "md_lj_rdf_peak_position",
+  "expected": 1.10,
+  "tolerance_abs": 0.05,
+  "tolerance_rel": 0.0
+}

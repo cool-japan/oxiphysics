@@ -1,26 +1,63 @@
 # oxiphysics-wasm
 
-**Status: Partial** — engine logic and web-friendly API complete; wasm-bindgen not yet linked.
+## Status: Stable (v0.1.1)
+
+Full wasm-bindgen 0.2 bindings: 929 `#[wasm_bindgen]` annotations across
+27 bridge files exposing the entire physics surface to JavaScript.
+Build via `cargo build --target wasm32-unknown-unknown -p oxiphysics-wasm`,
+then run `wasm-bindgen` / `wasm-pack` over the resulting artifact for
+JS glue generation.
 
 WebAssembly frontend layer for the [OxiPhysics](https://github.com/cool-japan/oxiphysics) engine.  
-Version: **0.1.0** | Updated: **2026-04-06**
+Version: **0.1.1** | Updated: **2026-05-06**
 
 ---
 
 ## Architecture
 
-This crate provides a **self-contained physics engine** with a web-oriented API surface.  
-It does **not** depend on any other `oxiphysics-*` crate — all engine logic is embedded here.  
-`wasm-bindgen` is **not** a current dependency; `.wasm` + JS glue generation is planned for 0.2.0.
+This crate provides a **self-contained physics engine** annotated with
+`#[wasm_bindgen]` for direct JavaScript interop. It does **not** depend
+on any other `oxiphysics-*` crate — all engine logic is embedded here.
+The crate compiles cleanly to `wasm32-unknown-unknown` and exposes a
+flat, JS-friendly API surface (primitive arguments, flat-array returns,
+no Rust references across the boundary).
 
-> **Note:** WASM API and physics engine logic are complete.  
-> wasm-bindgen integration is planned for **0.2.0**.
+---
+
+## Quick start (JavaScript)
+
+```javascript
+import init, {
+    WasmPhysicsEngine,
+    WasmDebugDraw,
+    WasmWorld,
+} from "./pkg/oxiphysics_wasm.js";
+
+await init();
+
+// Create an engine with Earth gravity.
+const engine = new WasmPhysicsEngine(0.0, -9.81, 0.0);
+
+// Add a 1 kg sphere at height 10 m.
+const ball = engine.add_dynamic_body(1.0, 0.0, 10.0, 0.0);
+engine.add_sphere_collider(ball, 0.5);
+
+// Add a static ground plane at y=0.
+const ground = engine.add_static_body(0.0, 0.0, 0.0);
+engine.add_plane_collider(ground, 0.0, 1.0, 0.0, 0.0);
+
+// Simulate for one second (with internal substeps).
+engine.step(1.0);
+
+const [x, y, z] = engine.get_position(ball);
+console.log(`Ball fell to y=${y.toFixed(3)}`);
+```
 
 ---
 
 ## Public API Surface
 
-1,276 public items · 826 tests · 0 stubs
+929 `#[wasm_bindgen]` annotations · ~27k Rust SLoC · 922 host tests · 0 stubs
 
 ### Modules
 
@@ -59,7 +96,7 @@ It does **not** depend on any other `oxiphysics-*` crate — all engine logic is
 | Milestone | Target |
 |---|---|
 | Self-contained engine + web API complete | ✅ 0.1.0 |
-| wasm-bindgen `#[wasm_bindgen]` annotation pass | 🔲 0.2.0 |
+| wasm-bindgen `#[wasm_bindgen]` annotation pass | ✅ 0.1.1 |
 | wasm-pack / wasm-bindgen-cli build pipeline | 🔲 0.2.0 |
 | npm package publish | 🔲 0.2.0 |
 | WGPU/WebGL render integration | 🔲 0.3.0 |

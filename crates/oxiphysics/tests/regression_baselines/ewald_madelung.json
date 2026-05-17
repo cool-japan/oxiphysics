@@ -1,0 +1,6 @@
+{
+  "name": "ewald_madelung",
+  "expected": -1.7475645946,
+  "tolerance_abs": 5.0e-3,
+  "tolerance_rel": 0.0
+}

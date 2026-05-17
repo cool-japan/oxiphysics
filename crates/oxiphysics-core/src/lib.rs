@@ -124,3 +124,6 @@ pub mod uncertainty_quantification;
 pub mod unit_conversion;
 pub mod wavelet_transform;
 pub mod wavelets;
+
+#[cfg(feature = "scirs2")]
+pub mod scirs2_integrator;

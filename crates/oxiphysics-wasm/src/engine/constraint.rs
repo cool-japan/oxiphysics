@@ -1,7 +1,7 @@
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
-//! `WasmConstraintSolver` — iterative constraint solver for the WASM engine.
+//! `EngineConstraintSolver` — iterative constraint solver for the WASM engine.
 
 #![allow(missing_docs)]
 
@@ -46,7 +46,7 @@ pub struct ContactData {
 /// building constraint rows, and iterating to convergence.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-pub struct WasmConstraintSolver {
+pub struct EngineConstraintSolver {
     constraints: Vec<WasmConstraint>,
     contacts: Vec<ContactData>,
     /// Number of Gauss-Seidel iterations per solve call.
@@ -59,7 +59,7 @@ pub struct WasmConstraintSolver {
     velocity_corrections: std::collections::HashMap<u32, [f64; 3]>,
 }
 
-impl WasmConstraintSolver {
+impl EngineConstraintSolver {
     /// Create a new constraint solver.
     pub fn new() -> Self {
         Self {
@@ -221,7 +221,7 @@ impl WasmConstraintSolver {
     }
 }
 
-impl Default for WasmConstraintSolver {
+impl Default for EngineConstraintSolver {
     fn default() -> Self {
         Self::new()
     }

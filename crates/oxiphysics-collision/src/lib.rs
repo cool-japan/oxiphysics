@@ -185,6 +185,9 @@ mod prop_tests {
         }
     }
 }
+pub mod recast;
+pub use recast::{RecastBuilder, RecastConfig, RecastError};
+
 pub mod compound_shapes;
 pub mod contact_generation;
 pub mod contact_manifold;

@@ -843,12 +843,221 @@ pub fn tutte_parameterize(mesh: &ProcessMesh, iters: usize) -> UvParameterizatio
     out.uvs = Some(uv.clone());
     UvParameterization { mesh: out, uvs: uv }
 }
-/// Least-Squares Conformal Map (LSCM) parameterization stub.
+/// Least-Squares Conformal Maps (LSCM) UV parameterization.
 ///
-/// For production use, replace with a sparse linear solver.  This stub
-/// initialises the UVs via the Tutte method and returns them.
+/// Minimises the conformal (angle-preserving) energy over all triangles by solving
+/// the Lévy 2002 sparse linear system.  Two vertices are pinned to break the
+/// rotation/translation ambiguity:
+/// - vertex 0 → UV (0, 0)
+/// - vertex 1 → UV (1, 0)
+///
+/// The free-vertex system `A_free^T A_free x = A_free^T b` is solved with the
+/// [`oxiphysics_fem::parallel_solver::ParallelPcgSolver`].
+///
+/// # Returns
+/// A [`UvParameterization`] with UV coordinates clamped to \[0, 1\] per axis.
 pub fn lscm_parameterize(mesh: &ProcessMesh) -> UvParameterization {
-    tutte_parameterize(mesh, 200)
+    use oxiphysics_fem::parallel_solver::{CsrMatrix, ParallelPcgSolver};
+    use std::collections::BTreeMap;
+
+    let nv = mesh.verts.len();
+    let nf = mesh.faces.len();
+
+    // Degenerate cases: fall back to Tutte
+    if nv < 3 || nf == 0 {
+        return tutte_parameterize(mesh, 200);
+    }
+
+    // Each triangle contributes 2 rows (Re and Im of the conformal constraint)
+    // acting on 6 unknowns [u_i, v_i, u_j, v_j, u_k, v_k].
+    // Total rows = 2 * nf, total columns = 2 * nv (u and v interleaved per vertex).
+    //
+    // The DOF ordering: column index = 2*vertex + 0 for u, 2*vertex + 1 for v.
+    //
+    // Two pinned DOFs (columns 0,1 for vertex 0 and columns 2,3 for vertex 1)
+    // are removed from the system and their contributions moved to the RHS.
+    // The pinned values are: u0=0,v0=0, u1=1,v1=0.
+
+    // Pinned vertex indices and values
+    let pin_col = [0usize, 1, 2, 3]; // u0, v0, u1, v1
+    let pin_val = [0.0_f64, 0.0, 1.0, 0.0];
+
+    // Map from original column (0..2*nv) to free column (0..2*(nv-2))
+    let mut col_map = vec![usize::MAX; 2 * nv];
+    let mut free_col = 0usize;
+    for (c, slot) in col_map.iter_mut().enumerate() {
+        if pin_col.contains(&c) {
+            continue;
+        }
+        *slot = free_col;
+        free_col += 1;
+    }
+    let n_free = free_col; // = 2*(nv-2)
+
+    // Accumulate A matrix (as triplets) and rhs b
+    // A is (2*nf) × n_free, but we only need A^T A and A^T b for PCG.
+    // We'll build it row-by-row and form the normal equations.
+
+    // Triplets for A_free: (row, free_col, value)
+    let mut a_triplets: Vec<(usize, usize, f64)> = Vec::with_capacity(12 * nf);
+    // rhs[row] accumulates b = -A_pinned * x_pinned
+    let mut b_full = vec![0.0_f64; 2 * nf];
+
+    for (fi, &[vi, vj, vk]) in mesh.faces.iter().enumerate() {
+        let pi = mesh.verts[vi];
+        let pj = mesh.verts[vj];
+        let pk = mesh.verts[vk];
+
+        // Local 2-D frame for the triangle
+        let d1 = vec3_sub(pj, pi); // p_j - p_i
+        let d2 = vec3_sub(pk, pi); // p_k - p_i
+
+        let x1 = vec3_len(d1); // |d1|
+        if x1 < 1e-14 {
+            continue; // degenerate triangle
+        }
+        let e1 = vec3_scale(d1, 1.0 / x1); // unit edge direction
+        let n_hat = vec3_normalize(vec3_cross(d1, d2));
+        let e2 = vec3_cross(n_hat, e1);
+
+        let x2 = vec3_dot(d2, e1);
+        let y2 = vec3_dot(d2, e2);
+        if y2.abs() < 1e-14 {
+            continue; // degenerate triangle
+        }
+
+        // Per Lévy 2002, the two LSCM constraint rows for this triangle
+        // acting on [u_i, v_i, u_j, v_j, u_k, v_k] are:
+        //   Row Re: [x2 - x1, -y2, -x2, y2,  x1,  0 ] / y2
+        //   Row Im: [y2, x2 - x1, -y2, -x2,   0, x1 ] / y2
+        // (The factor 1/y2 normalises by the triangle "height" in local coords.)
+
+        let inv_y2 = 1.0 / y2;
+        let row_re = 2 * fi;
+        let row_im = 2 * fi + 1;
+
+        // Local coefficient vectors for each DOF index in the 6-vector
+        // local_dofs[0] = global col for u_i, [1] = v_i, [2] = u_j, etc.
+        let local_dofs = [2 * vi, 2 * vi + 1, 2 * vj, 2 * vj + 1, 2 * vk, 2 * vk + 1];
+        let re_coeffs = [
+            (x2 - x1) * inv_y2,
+            -1.0,
+            -x2 * inv_y2,
+            1.0,
+            x1 * inv_y2,
+            0.0,
+        ];
+        let im_coeffs = [
+            1.0,
+            (x2 - x1) * inv_y2,
+            -1.0,
+            -x2 * inv_y2,
+            0.0,
+            x1 * inv_y2,
+        ];
+
+        for k in 0..6 {
+            let gc = local_dofs[k];
+            if let Some(pin_pos) = pin_col.iter().position(|&p| p == gc) {
+                // Pinned DOF: move to RHS
+                b_full[row_re] -= re_coeffs[k] * pin_val[pin_pos];
+                b_full[row_im] -= im_coeffs[k] * pin_val[pin_pos];
+            } else {
+                let fc = col_map[gc];
+                a_triplets.push((row_re, fc, re_coeffs[k]));
+                a_triplets.push((row_im, fc, im_coeffs[k]));
+            }
+        }
+    }
+
+    if n_free == 0 {
+        return tutte_parameterize(mesh, 200);
+    }
+
+    // Build the normal equations A^T A x = A^T b
+    // A^T A is n_free × n_free symmetric positive semi-definite.
+    // Accumulate into a BTreeMap for sparse assembly.
+    let mut ata_map: BTreeMap<(usize, usize), f64> = BTreeMap::new();
+    let mut atb = vec![0.0_f64; n_free];
+
+    for &(row, fc, val) in &a_triplets {
+        atb[fc] += val * b_full[row];
+    }
+
+    // Group triplets by row for efficient A^T A accumulation
+    // For each pair of nonzeros in the same row: (fc_a, val_a) and (fc_b, val_b)
+    // contributes val_a * val_b to ATA[fc_a, fc_b].
+    let mut row_entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); 2 * nf];
+    for &(row, fc, val) in &a_triplets {
+        row_entries[row].push((fc, val));
+    }
+    for entries in &row_entries {
+        for &(fc_a, val_a) in entries {
+            for &(fc_b, val_b) in entries {
+                *ata_map.entry((fc_a, fc_b)).or_insert(0.0) += val_a * val_b;
+            }
+        }
+    }
+
+    // Convert BTreeMap to CSR
+    let mut row_offsets = vec![0usize; n_free + 1];
+    for &(r, _) in ata_map.keys() {
+        row_offsets[r + 1] += 1;
+    }
+    for i in 0..n_free {
+        row_offsets[i + 1] += row_offsets[i];
+    }
+    let nnz = ata_map.len();
+    let mut col_indices_csr = vec![0usize; nnz];
+    let mut values_csr = vec![0.0_f64; nnz];
+    let mut row_fill = vec![0usize; n_free];
+    for (&(r, c), &v) in &ata_map {
+        let pos = row_offsets[r] + row_fill[r];
+        col_indices_csr[pos] = c;
+        values_csr[pos] = v;
+        row_fill[r] += 1;
+    }
+
+    let ata = CsrMatrix {
+        nrows: n_free,
+        ncols: n_free,
+        row_offsets,
+        col_indices: col_indices_csr,
+        values: values_csr,
+    };
+
+    // Solve A^T A x = A^T b  using parallel PCG
+    let solver = ParallelPcgSolver::new(2000, 1e-8);
+    let mut x_free = vec![0.0_f64; n_free];
+    let _stats = solver.solve(&ata, &atb, &mut x_free);
+
+    // Reconstruct full UV array
+    let mut uv = vec![[0.0_f64; 2]; nv];
+    // Pinned vertices
+    uv[0] = [0.0, 0.0];
+    uv[1] = [1.0, 0.0];
+    // Free vertices
+    for (v, uv_v) in uv.iter_mut().enumerate() {
+        let cu = 2 * v;
+        let cv = 2 * v + 1;
+        let u_val = if pin_col.contains(&cu) {
+            let pos = pin_col.iter().position(|&p| p == cu).unwrap_or(0);
+            pin_val[pos]
+        } else {
+            x_free[col_map[cu]]
+        };
+        let v_val = if pin_col.contains(&cv) {
+            let pos = pin_col.iter().position(|&p| p == cv).unwrap_or(1);
+            pin_val[pos]
+        } else {
+            x_free[col_map[cv]]
+        };
+        *uv_v = [u_val.clamp(0.0, 1.0), v_val.clamp(0.0, 1.0)];
+    }
+
+    let mut out = mesh.clone();
+    out.uvs = Some(uv.clone());
+    UvParameterization { mesh: out, uvs: uv }
 }
 /// Generate a simple texture atlas by partitioning the mesh into connected
 /// components and packing their UV patches into a square atlas.
@@ -961,8 +1170,10 @@ pub fn mesh_union(a: &ProcessMesh, b: &ProcessMesh) -> BooleanResult {
         .collect();
     let mut faces = faces_a;
     faces.extend(faces_b);
-    BooleanResult {
+    let mut result = BooleanResult {
         mesh: ProcessMesh::new(verts, faces),
         is_exact: false,
-    }
+    };
+    result.is_exact = result.is_topologically_exact();
+    result
 }

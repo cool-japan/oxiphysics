@@ -315,6 +315,7 @@ mod tests {
         let prim = GltfPrimitive {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             normals: vec![[0.0, 0.0, 1.0]; 3],
+            texcoords: vec![],
             indices: vec![0, 1, 2],
         };
         scene.add_mesh(GltfMesh {
@@ -386,6 +387,7 @@ mod tests {
         let prim = GltfPrimitive {
             positions: vec![[-1.0, -2.0, -3.0], [4.0, 5.0, 6.0], [0.0, 0.0, 0.0]],
             normals: vec![[0.0, 0.0, 1.0]; 3],
+            texcoords: vec![],
             indices: vec![0, 1, 2],
         };
         let (min, max) = prim.bounding_box();
@@ -401,6 +403,7 @@ mod tests {
         let prim = GltfPrimitive {
             positions: vec![[0.0; 3]; 6],
             normals: vec![[0.0, 0.0, 1.0]; 6],
+            texcoords: vec![],
             indices: vec![0, 1, 2, 3, 4, 5],
         };
         assert_eq!(prim.triangle_count(), 2);
@@ -411,6 +414,7 @@ mod tests {
         let prim = GltfPrimitive {
             positions: vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             normals: vec![[0.0, 0.0, 1.0]; 3],
+            texcoords: vec![],
             indices: vec![0, 1, 2],
         };
         let tris = prim.extract_triangles();
@@ -427,11 +431,13 @@ mod tests {
                 GltfPrimitive {
                     positions: vec![[0.0; 3]; 3],
                     normals: vec![[0.0, 0.0, 1.0]; 3],
+                    texcoords: vec![],
                     indices: vec![0, 1, 2],
                 },
                 GltfPrimitive {
                     positions: vec![[0.0; 3]; 4],
                     normals: vec![[0.0, 0.0, 1.0]; 4],
+                    texcoords: vec![],
                     indices: vec![0, 1, 2, 1, 2, 3],
                 },
             ],
@@ -620,6 +626,7 @@ mod tests {
             primitives: vec![GltfPrimitive {
                 positions: vec![[0.0; 3]; 3],
                 normals: vec![[0.0, 0.0, 1.0]; 3],
+                texcoords: vec![],
                 indices: vec![0, 1, 2],
             }],
         });
@@ -666,6 +673,7 @@ mod tests {
             primitives: vec![GltfPrimitive {
                 positions: vec![[0.0; 3]; 4],
                 normals: vec![[0.0, 0.0, 1.0]; 4],
+                texcoords: vec![],
                 indices: vec![0, 1, 2, 1, 2, 3],
             }],
         });
@@ -766,6 +774,7 @@ mod tests {
             base: GltfPrimitive {
                 positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 normals: vec![[0.0, 0.0, 1.0]; 3],
+                texcoords: vec![],
                 indices: vec![0, 1, 2],
             },
             targets: vec![
@@ -885,6 +894,7 @@ mod tests {
             primitives: vec![GltfPrimitive {
                 positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 normals: vec![[0.0, 0.0, 1.0]; 3],
+                texcoords: vec![],
                 indices: vec![0, 1, 2],
             }],
         });
@@ -989,6 +999,7 @@ mod tests {
             primitives: vec![GltfPrimitive {
                 positions: vec![],
                 normals: vec![],
+                texcoords: vec![],
                 indices: vec![],
             }],
         });
@@ -1007,6 +1018,7 @@ mod tests {
                 primitives: vec![GltfPrimitive {
                     positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
                     normals: vec![[0.0, 0.0, 1.0]; 2],
+                    texcoords: vec![],
                     indices: vec![0, 1, 5],
                 }],
             }],
@@ -1169,16 +1181,12 @@ mod tests_gltf_additions {
     use super::*;
     use crate::gltf::AccessorType;
     use crate::gltf::AnimationChannelBuilder;
-
     use crate::gltf::ComponentType;
-
+    use crate::gltf::GlbWriter;
     use crate::gltf::GltfMesh;
-
     use crate::gltf::GltfPrimitive;
     use crate::gltf::Interpolation;
-
     use crate::gltf::PbrMaterialBuilder;
-
     use crate::gltf::TypedAccessor;
 
     #[test]
@@ -1390,6 +1398,7 @@ mod tests_gltf_additions {
             primitives: vec![GltfPrimitive {
                 positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 normals: vec![[0.0, 0.0, 1.0]; 3],
+                texcoords: vec![],
                 indices: vec![0, 1, 2],
             }],
         });
@@ -1406,6 +1415,7 @@ mod tests_gltf_additions {
             primitives: vec![GltfPrimitive {
                 positions: vec![[0.0, 0.0, 0.0]],
                 normals: vec![[0.0, 1.0, 0.0]],
+                texcoords: vec![],
                 indices: vec![0],
             }],
         });
@@ -1413,6 +1423,240 @@ mod tests_gltf_additions {
         assert!(
             json.contains("data:application/octet-stream;base64,"),
             "embedded buffer should use data URI"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // J1: glTF 2.0 Binary (GLB) buffer-packing tests
+    // -----------------------------------------------------------------------
+
+    /// Build a minimal scene with one triangle mesh for GLB tests.
+    fn make_triangle_scene() -> GltfScene {
+        let mut scene = GltfScene::new();
+        let mesh_idx = scene.add_mesh(GltfMesh {
+            name: "triangle".into(),
+            primitives: vec![GltfPrimitive {
+                positions: vec![[0.0_f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                normals: vec![[0.0_f32, 0.0, 1.0]; 3],
+                texcoords: vec![[0.0_f32, 0.0], [1.0, 0.0], [0.0, 1.0]],
+                indices: vec![0u32, 1, 2],
+            }],
+        });
+        scene.add_node(crate::gltf::GltfNode {
+            name: "node0".into(),
+            mesh: Some(mesh_idx),
+            ..crate::gltf::GltfNode::default()
+        });
+        scene
+    }
+
+    #[test]
+    fn test_write_glb_header_magic() {
+        let scene = make_triangle_scene();
+        let writer = GlbWriter::new();
+        let bytes = writer.write_glb(&scene);
+        assert!(bytes.len() >= 12, "GLB must have at least a 12-byte header");
+        assert_eq!(&bytes[0..4], b"glTF", "magic bytes must be 'glTF'");
+        let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        assert_eq!(version, 2, "GLB version must be 2");
+    }
+
+    #[test]
+    fn test_write_glb_total_length_consistent() {
+        let scene = make_triangle_scene();
+        let writer = GlbWriter::new();
+        let bytes = writer.write_glb(&scene);
+        let total_len = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+        assert_eq!(
+            total_len as usize,
+            bytes.len(),
+            "total_length field must match actual byte length"
+        );
+    }
+
+    #[test]
+    fn test_write_glb_chunk_types() {
+        let scene = make_triangle_scene();
+        let writer = GlbWriter::new();
+        let bytes = writer.write_glb(&scene);
+        // JSON chunk starts at byte 12
+        let json_type = u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+        assert_eq!(
+            json_type, 0x4E4F534A,
+            "first chunk must be JSON (0x4E4F534A)"
+        );
+        // JSON chunk length
+        let json_chunk_len =
+            u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
+        // BIN chunk starts after header(12) + json_chunk_header(8) + json_data
+        let bin_start = 12 + 8 + json_chunk_len;
+        assert!(
+            bin_start + 8 <= bytes.len(),
+            "must have room for BIN chunk header"
+        );
+        let bin_type = u32::from_le_bytes([
+            bytes[bin_start + 4],
+            bytes[bin_start + 5],
+            bytes[bin_start + 6],
+            bytes[bin_start + 7],
+        ]);
+        assert_eq!(
+            bin_type, 0x004E4942,
+            "second chunk must be BIN\\0 (0x004E4942)"
+        );
+    }
+
+    #[test]
+    fn test_write_glb_vertex_positions_roundtrip() {
+        let expected_positions: [[f32; 3]; 3] = [
+            [0.0_f32, 0.0, 0.0],
+            [1.0_f32, 0.0, 0.0],
+            [0.0_f32, 1.0, 0.0],
+        ];
+        let scene = make_triangle_scene();
+        let writer = GlbWriter::new();
+        let bytes = writer.write_glb(&scene);
+
+        // Extract BIN chunk offset and data.
+        let json_chunk_len =
+            u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
+        let bin_start = 12 + 8 + json_chunk_len;
+        let bin_chunk_len = u32::from_le_bytes([
+            bytes[bin_start],
+            bytes[bin_start + 1],
+            bytes[bin_start + 2],
+            bytes[bin_start + 3],
+        ]) as usize;
+        let bin_data = &bytes[bin_start + 8..bin_start + 8 + bin_chunk_len];
+
+        // Position data starts at byteOffset=0 in the BIN chunk.
+        let n_verts = expected_positions.len();
+        let pos_size = n_verts * 12; // 3 × f32 × 4 bytes
+        assert!(
+            bin_data.len() >= pos_size,
+            "BIN buffer must be large enough for position data"
+        );
+
+        for (i, expected) in expected_positions.iter().enumerate() {
+            let off = i * 12;
+            let x = f32::from_le_bytes([
+                bin_data[off],
+                bin_data[off + 1],
+                bin_data[off + 2],
+                bin_data[off + 3],
+            ]);
+            let y = f32::from_le_bytes([
+                bin_data[off + 4],
+                bin_data[off + 5],
+                bin_data[off + 6],
+                bin_data[off + 7],
+            ]);
+            let z = f32::from_le_bytes([
+                bin_data[off + 8],
+                bin_data[off + 9],
+                bin_data[off + 10],
+                bin_data[off + 11],
+            ]);
+            assert!(
+                (x - expected[0]).abs() < f32::EPSILON,
+                "position[{i}].x mismatch: {x} vs {}",
+                expected[0]
+            );
+            assert!(
+                (y - expected[1]).abs() < f32::EPSILON,
+                "position[{i}].y mismatch: {y} vs {}",
+                expected[1]
+            );
+            assert!(
+                (z - expected[2]).abs() < f32::EPSILON,
+                "position[{i}].z mismatch: {z} vs {}",
+                expected[2]
+            );
+        }
+    }
+
+    #[test]
+    fn test_write_glb_bufferview_offsets_layout() {
+        // Verify that the JSON contains the expected bufferView byteOffset sequence.
+        // For a triangle (3 verts, 3 indices):
+        //   pos_size  = 3 * 12 = 36 bytes  → byteOffset=0
+        //   norm_size = 3 * 12 = 36 bytes  → byteOffset=36
+        //   uv_size   = 3 * 8  = 24 bytes  → byteOffset=72
+        //   idx starts at 96 (96 is already 4-byte aligned)
+        let scene = make_triangle_scene();
+        let writer = GlbWriter::new();
+        let bytes = writer.write_glb(&scene);
+
+        // Extract JSON chunk string.
+        let json_chunk_len =
+            u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
+        let json_bytes = &bytes[20..20 + json_chunk_len];
+        // trim trailing spaces (padding)
+        let json_str = std::str::from_utf8(json_bytes)
+            .expect("valid UTF-8")
+            .trim_end();
+
+        // Check expected offsets appear in the JSON.
+        assert!(
+            json_str.contains("\"byteOffset\": 0"),
+            "position bufferView byteOffset must be 0"
+        );
+        assert!(
+            json_str.contains("\"byteOffset\": 36"),
+            "normal bufferView byteOffset must be 36"
+        );
+        assert!(
+            json_str.contains("\"byteOffset\": 72"),
+            "uv bufferView byteOffset must be 72"
+        );
+        assert!(
+            json_str.contains("\"byteOffset\": 96"),
+            "index bufferView byteOffset must be 96"
+        );
+    }
+
+    #[test]
+    fn test_write_glb_json_contains_accessors() {
+        let scene = make_triangle_scene();
+        let writer = GlbWriter::new();
+        let bytes = writer.write_glb(&scene);
+        let json_chunk_len =
+            u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
+        let json_str = std::str::from_utf8(&bytes[20..20 + json_chunk_len])
+            .expect("UTF-8")
+            .trim_end();
+        assert!(
+            json_str.contains("\"accessors\""),
+            "JSON must contain accessors array"
+        );
+        assert!(
+            json_str.contains("\"bufferViews\""),
+            "JSON must contain bufferViews array"
+        );
+        assert!(
+            json_str.contains("\"buffers\""),
+            "JSON must contain buffers array"
+        );
+        assert!(
+            json_str.contains("VEC3"),
+            "accessors must include VEC3 type"
+        );
+        assert!(
+            json_str.contains("VEC2"),
+            "accessors must include VEC2 type for UV"
+        );
+        assert!(
+            json_str.contains("SCALAR"),
+            "accessors must include SCALAR type for indices"
+        );
+        // POSITION accessor must have min/max bounds
+        assert!(
+            json_str.contains("\"min\""),
+            "POSITION accessor must have min bounds"
+        );
+        assert!(
+            json_str.contains("\"max\""),
+            "POSITION accessor must have max bounds"
         );
     }
 }

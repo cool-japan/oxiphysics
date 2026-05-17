@@ -786,11 +786,35 @@ impl CoboundaryOperator {
         rank_of_matrix(&mat)
     }
 
-    /// Cup product coefficient (simplified): returns 1 if cocycle `a` on
-    /// dimension p and cocycle `b` on dimension q are compatible, else 0.
-    /// This is a placeholder for the full cup product structure.
-    pub fn cup_product_is_compatible(_p: usize, _q: usize, _a_idx: usize, _b_idx: usize) -> bool {
-        true
+    /// Cup product compatibility: returns `true` if `α ∪ β` (a `(p+q)`-cochain)
+    /// can be consistently defined, i.e. all structural conditions hold:
+    /// 1. `a_idx < rank(p)` and `b_idx < rank(q)`.
+    /// 2. `rank(p+q) > 0` (there are `(p+q)`-cells to assign values to).
+    /// 3. `p + q <= max_dim` of the chain complex.
+    pub fn cup_product_is_compatible(
+        &self,
+        p: usize,
+        q: usize,
+        a_idx: usize,
+        b_idx: usize,
+    ) -> bool {
+        let max_dim = self.chain.ranks.len().saturating_sub(1);
+        let pq = match p.checked_add(q) {
+            Some(v) => v,
+            None => return false,
+        };
+        if pq > max_dim {
+            return false;
+        }
+        let rank_p = self.chain.rank(p);
+        if rank_p == 0 || a_idx >= rank_p {
+            return false;
+        }
+        let rank_q = self.chain.rank(q);
+        if rank_q == 0 || b_idx >= rank_q {
+            return false;
+        }
+        self.chain.rank(pq) > 0
     }
 }
 
@@ -1399,5 +1423,35 @@ mod tests {
         assert_eq!(binomial(4, 0), 1);
         assert_eq!(binomial(4, 4), 1);
         assert_eq!(binomial(0, 1), 0);
+    }
+
+    fn torus_op() -> CoboundaryOperator {
+        let cw = CwComplex::standard_torus();
+        CoboundaryOperator::new(ChainComplex::from_cw_complex(&cw))
+    }
+
+    #[test]
+    fn test_cup_product_1_1_torus_valid() {
+        let op = torus_op();
+        assert!(op.cup_product_is_compatible(1, 1, 0, 0));
+        assert!(op.cup_product_is_compatible(1, 1, 1, 1));
+    }
+
+    #[test]
+    fn test_cup_product_out_of_range_invalid() {
+        let op = torus_op();
+        assert!(!op.cup_product_is_compatible(1, 1, 2, 0));
+    }
+
+    #[test]
+    fn test_cup_product_exceeds_max_dim_invalid() {
+        let op = torus_op();
+        assert!(!op.cup_product_is_compatible(2, 1, 0, 0));
+    }
+
+    #[test]
+    fn test_cup_product_empty_complex_invalid() {
+        let op = CoboundaryOperator::new(ChainComplex::from_cw_complex(&CwComplex::new()));
+        assert!(!op.cup_product_is_compatible(0, 0, 0, 0));
     }
 }

@@ -11,6 +11,7 @@
 #![allow(missing_docs)]
 #![allow(dead_code)]
 
+use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -48,6 +49,22 @@ pub fn solve_pgs_iteration(
     residual.sqrt()
 }
 
+/// Python-exposed wrapper for PGS iteration.
+///
+/// Takes lambda as a Vec (returns modified vec) and all other slices as Vec.
+/// Returns `(updated_lambda, residual)`.
+#[pyfunction]
+pub fn py_solve_pgs_iteration(
+    mut lambda: Vec<f64>,
+    rhs: Vec<f64>,
+    diag: Vec<f64>,
+    lo: Vec<f64>,
+    hi: Vec<f64>,
+) -> (Vec<f64>, f64) {
+    let residual = solve_pgs_iteration(&mut lambda, &rhs, &diag, &lo, &hi);
+    (lambda, residual)
+}
+
 /// Compute the Jacobian row for a distance constraint between two bodies.
 ///
 /// `r_a` — vector from body A's center to the contact point.
@@ -55,6 +72,7 @@ pub fn solve_pgs_iteration(
 /// `n`   — constraint normal direction (unit vector).
 ///
 /// Returns \[J_lin_a (3), J_ang_a (3), J_lin_b (3), J_ang_b (3)\] = 12 values.
+#[pyfunction]
 pub fn compute_jacobian(r_a: [f64; 3], r_b: [f64; 3], n: [f64; 3]) -> [f64; 12] {
     // J_lin_a = n, J_ang_a = r_a × n, J_lin_b = -n, J_ang_b = -r_b × n
     let ang_a = cross(r_a, n);
@@ -80,6 +98,7 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// `j` — Jacobian row (12 values from `compute_jacobian`).
 ///
 /// Returns the effective mass = 1 / (J M⁻¹ Jᵀ).
+#[pyfunction]
 pub fn compute_effective_mass(
     inv_mass_a: f64,
     inv_mass_b: f64,
@@ -111,6 +130,7 @@ pub fn compute_effective_mass(
 /// `mu`       — friction coefficient.
 ///
 /// Returns the clamped tangential impulse.
+#[pyfunction]
 pub fn clamp_impulse(lambda_n: f64, lambda_t: [f64; 2], mu: f64) -> [f64; 2] {
     let max_t = mu * lambda_n.max(0.0);
     let mag = (lambda_t[0] * lambda_t[0] + lambda_t[1] * lambda_t[1]).sqrt();
@@ -126,6 +146,7 @@ pub fn clamp_impulse(lambda_n: f64, lambda_t: [f64; 2], mu: f64) -> [f64; 2] {
 // ---------------------------------------------------------------------------
 
 /// Constraint solver algorithm selection.
+#[pyclass(eq, eq_int, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SolverType {
     /// Projected Gauss-Seidel.
@@ -137,6 +158,7 @@ pub enum SolverType {
 }
 
 /// Main constraint solver configuration.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyConstraintSolver {
     /// Solver algorithm.
@@ -155,8 +177,10 @@ pub struct PyConstraintSolver {
     pub slop: f64,
 }
 
+#[pymethods]
 impl PyConstraintSolver {
     /// Create a default PGS solver.
+    #[staticmethod]
     pub fn default_pgs() -> Self {
         Self {
             solver_type: SolverType::Pgs,
@@ -170,6 +194,7 @@ impl PyConstraintSolver {
     }
 
     /// Create a TGS solver (fewer iterations needed).
+    #[staticmethod]
     pub fn default_tgs() -> Self {
         Self {
             solver_type: SolverType::Tgs,
@@ -185,11 +210,11 @@ impl PyConstraintSolver {
     /// Solve a simple set of constraints given accumulated lambdas, RHS and diagonal effective masses.
     ///
     /// Returns the final accumulated impulse array.
-    pub fn solve(&self, rhs: &[f64], diag: &[f64], lo: &[f64], hi: &[f64]) -> Vec<f64> {
+    pub fn solve(&self, rhs: Vec<f64>, diag: Vec<f64>, lo: Vec<f64>, hi: Vec<f64>) -> Vec<f64> {
         let n = rhs.len();
         let mut lambda = vec![0.0f64; n];
         for _ in 0..self.velocity_iterations {
-            let res = solve_pgs_iteration(&mut lambda, rhs, diag, lo, hi);
+            let res = solve_pgs_iteration(&mut lambda, &rhs, &diag, &lo, &hi);
             if res < self.tolerance {
                 break;
             }
@@ -203,6 +228,7 @@ impl PyConstraintSolver {
 // ---------------------------------------------------------------------------
 
 /// Joint axis and limit specification.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AxisLimits {
     /// Axis direction (unit vector).
@@ -215,8 +241,10 @@ pub struct AxisLimits {
     pub enabled: bool,
 }
 
+#[pymethods]
 impl AxisLimits {
     /// Unlimited joint along an axis.
+    #[staticmethod]
     pub fn unlimited(axis: [f64; 3]) -> Self {
         Self {
             axis,
@@ -227,6 +255,7 @@ impl AxisLimits {
     }
 
     /// Limited joint.
+    #[staticmethod]
     pub fn limited(axis: [f64; 3], lower: f64, upper: f64) -> Self {
         Self {
             axis,
@@ -257,6 +286,7 @@ pub enum JointKind {
 }
 
 /// A joint connecting two rigid bodies.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyJoint {
     /// Unique joint identifier.
@@ -277,8 +307,10 @@ pub struct PyJoint {
     pub break_force: f64,
 }
 
+#[pymethods]
 impl PyJoint {
     /// Create a fixed joint between two bodies.
+    #[staticmethod]
     pub fn fixed(
         id: u32,
         body_a: u32,
@@ -299,6 +331,7 @@ impl PyJoint {
     }
 
     /// Create a revolute joint.
+    #[staticmethod]
     pub fn revolute(id: u32, body_a: u32, body_b: u32, anchor: [f64; 3], axis: [f64; 3]) -> Self {
         Self {
             id,
@@ -313,7 +346,7 @@ impl PyJoint {
     }
 
     /// Create a spring joint.
-    #[allow(clippy::too_many_arguments)]
+    #[staticmethod]
     pub fn spring(
         id: u32,
         body_a: u32,
@@ -344,6 +377,60 @@ impl PyJoint {
     pub fn is_breakable(&self) -> bool {
         self.break_force.is_finite()
     }
+
+    /// Get id.
+    #[getter]
+    pub fn get_id(&self) -> u32 {
+        self.id
+    }
+
+    /// Get body_a.
+    #[getter]
+    pub fn get_body_a(&self) -> u32 {
+        self.body_a
+    }
+
+    /// Get body_b.
+    #[getter]
+    pub fn get_body_b(&self) -> u32 {
+        self.body_b
+    }
+
+    /// Get anchor_a.
+    #[getter]
+    pub fn get_anchor_a(&self) -> [f64; 3] {
+        self.anchor_a
+    }
+
+    /// Get anchor_b.
+    #[getter]
+    pub fn get_anchor_b(&self) -> [f64; 3] {
+        self.anchor_b
+    }
+
+    /// Get enabled.
+    #[getter]
+    pub fn get_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Set enabled.
+    #[setter]
+    pub fn set_enabled(&mut self, v: bool) {
+        self.enabled = v;
+    }
+
+    /// Get break_force.
+    #[getter]
+    pub fn get_break_force(&self) -> f64 {
+        self.break_force
+    }
+
+    /// Set break_force.
+    #[setter]
+    pub fn set_break_force(&mut self, v: f64) {
+        self.break_force = v;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -351,6 +438,7 @@ impl PyJoint {
 // ---------------------------------------------------------------------------
 
 /// A single contact point constraint between two bodies.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyContactConstraint {
     /// Body A handle.
@@ -375,9 +463,10 @@ pub struct PyContactConstraint {
     pub friction: f64,
 }
 
+#[pymethods]
 impl PyContactConstraint {
     /// Create a new contact constraint.
-    #[allow(clippy::too_many_arguments)]
+    #[new]
     pub fn new(
         body_a: u32,
         body_b: u32,
@@ -444,6 +533,7 @@ impl PyContactConstraint {
 // ---------------------------------------------------------------------------
 
 /// PID controller for motor target tracking.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PidGains {
     /// Proportional gain.
@@ -458,8 +548,10 @@ pub struct PidGains {
     pub prev_error: f64,
 }
 
+#[pymethods]
 impl PidGains {
     /// Create new PID gains.
+    #[new]
     pub fn new(kp: f64, ki: f64, kd: f64) -> Self {
         Self {
             kp,
@@ -490,6 +582,7 @@ impl PidGains {
 }
 
 /// Motor thermal model to cap torque under sustained load.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MotorThermal {
     /// Current motor temperature (°C).
@@ -508,8 +601,10 @@ pub struct MotorThermal {
     pub max_temperature: f64,
 }
 
+#[pymethods]
 impl MotorThermal {
     /// Create a default thermal model.
+    #[new]
     pub fn new() -> Self {
         Self {
             temperature: 25.0,
@@ -551,6 +646,7 @@ impl Default for MotorThermal {
 }
 
 /// A motor/actuator constraint driving a joint.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyMotorConstraint {
     /// Target angular velocity (rad/s). Used in velocity mode.
@@ -569,8 +665,10 @@ pub struct PyMotorConstraint {
     pub thermal: MotorThermal,
 }
 
+#[pymethods]
 impl PyMotorConstraint {
     /// Create a velocity-mode motor.
+    #[staticmethod]
     pub fn velocity_mode(target_velocity: f64, max_torque: f64, kp: f64) -> Self {
         Self {
             target_velocity,
@@ -584,6 +682,7 @@ impl PyMotorConstraint {
     }
 
     /// Create a position-mode motor with PID gains.
+    #[staticmethod]
     pub fn position_mode(target_position: f64, max_torque: f64, pid: PidGains) -> Self {
         Self {
             target_velocity: 0.0,
@@ -611,6 +710,72 @@ impl PyMotorConstraint {
         self.applied_torque = torque;
         torque
     }
+
+    /// Get target_velocity.
+    #[getter]
+    pub fn get_target_velocity(&self) -> f64 {
+        self.target_velocity
+    }
+
+    /// Set target_velocity.
+    #[setter]
+    pub fn set_target_velocity(&mut self, v: f64) {
+        self.target_velocity = v;
+    }
+
+    /// Get target_position.
+    #[getter]
+    pub fn get_target_position(&self) -> f64 {
+        self.target_position
+    }
+
+    /// Set target_position.
+    #[setter]
+    pub fn set_target_position(&mut self, v: f64) {
+        self.target_position = v;
+    }
+
+    /// Get max_torque.
+    #[getter]
+    pub fn get_max_torque(&self) -> f64 {
+        self.max_torque
+    }
+
+    /// Get pid (cloned).
+    #[getter]
+    pub fn get_pid(&self) -> PidGains {
+        self.pid.clone()
+    }
+
+    /// Set pid.
+    #[setter]
+    pub fn set_pid(&mut self, v: PidGains) {
+        self.pid = v;
+    }
+
+    /// Get position_mode.
+    #[getter]
+    pub fn get_position_mode(&self) -> bool {
+        self.position_mode
+    }
+
+    /// Get applied_torque.
+    #[getter]
+    pub fn get_applied_torque(&self) -> f64 {
+        self.applied_torque
+    }
+
+    /// Get thermal model (cloned).
+    #[getter]
+    pub fn get_thermal(&self) -> MotorThermal {
+        self.thermal.clone()
+    }
+
+    /// Set thermal model.
+    #[setter]
+    pub fn set_thermal(&mut self, v: MotorThermal) {
+        self.thermal = v;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -618,6 +783,7 @@ impl PyMotorConstraint {
 // ---------------------------------------------------------------------------
 
 /// Sleeping state of an island.
+#[pyclass(eq, eq_int, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum IslandSleepState {
     /// Island is awake and being simulated.
@@ -629,6 +795,7 @@ pub enum IslandSleepState {
 }
 
 /// An island groups bodies and constraints that can interact.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyIsland {
     /// Unique island id.
@@ -647,8 +814,10 @@ pub struct PyIsland {
     pub sleep_frames: u32,
 }
 
+#[pymethods]
 impl PyIsland {
     /// Create a new island.
+    #[new]
     pub fn new(id: u32) -> Self {
         Self {
             id,
@@ -717,6 +886,72 @@ impl PyIsland {
     pub fn is_active(&self) -> bool {
         self.sleep_state != IslandSleepState::Sleeping
     }
+
+    /// Get id.
+    #[getter]
+    pub fn get_id(&self) -> u32 {
+        self.id
+    }
+
+    /// Get bodies.
+    #[getter]
+    pub fn get_bodies(&self) -> Vec<u32> {
+        self.bodies.clone()
+    }
+
+    /// Set bodies.
+    #[setter]
+    pub fn set_bodies(&mut self, v: Vec<u32>) {
+        self.bodies = v;
+    }
+
+    /// Get constraints.
+    #[getter]
+    pub fn get_constraints(&self) -> Vec<u32> {
+        self.constraints.clone()
+    }
+
+    /// Set constraints.
+    #[setter]
+    pub fn set_constraints(&mut self, v: Vec<u32>) {
+        self.constraints = v;
+    }
+
+    /// Get sleep_state.
+    #[getter]
+    pub fn get_sleep_state(&self) -> IslandSleepState {
+        self.sleep_state.clone()
+    }
+
+    /// Set sleep_state.
+    #[setter]
+    pub fn set_sleep_state(&mut self, v: IslandSleepState) {
+        self.sleep_state = v;
+    }
+
+    /// Get quiet_frames.
+    #[getter]
+    pub fn get_quiet_frames(&self) -> u32 {
+        self.quiet_frames
+    }
+
+    /// Get sleep_threshold.
+    #[getter]
+    pub fn get_sleep_threshold(&self) -> f64 {
+        self.sleep_threshold
+    }
+
+    /// Set sleep_threshold.
+    #[setter]
+    pub fn set_sleep_threshold(&mut self, v: f64) {
+        self.sleep_threshold = v;
+    }
+
+    /// Get sleep_frames.
+    #[getter]
+    pub fn get_sleep_frames(&self) -> u32 {
+        self.sleep_frames
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -724,6 +959,7 @@ impl PyIsland {
 // ---------------------------------------------------------------------------
 
 /// Result of a continuous collision detection (CCD) query.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyCCDResult {
     /// Whether a collision was detected.
@@ -742,8 +978,10 @@ pub struct PyCCDResult {
     pub body_b: u32,
 }
 
+#[pymethods]
 impl PyCCDResult {
     /// No collision result.
+    #[staticmethod]
     pub fn miss(body_a: u32, body_b: u32) -> Self {
         Self {
             hit: false,
@@ -757,7 +995,7 @@ impl PyCCDResult {
     }
 
     /// Collision result at a given time of impact.
-    #[allow(clippy::too_many_arguments)]
+    #[staticmethod]
     pub fn hit(
         body_a: u32,
         body_b: u32,
@@ -783,6 +1021,48 @@ impl PyCCDResult {
         let dy = self.witness_a[1] - self.witness_b[1];
         let dz = self.witness_a[2] - self.witness_b[2];
         (dx * dx + dy * dy + dz * dz).sqrt()
+    }
+
+    /// Get hit.
+    #[getter]
+    pub fn get_hit(&self) -> bool {
+        self.hit
+    }
+
+    /// Get toi.
+    #[getter]
+    pub fn get_toi(&self) -> f64 {
+        self.toi
+    }
+
+    /// Get normal.
+    #[getter]
+    pub fn get_normal(&self) -> [f64; 3] {
+        self.normal
+    }
+
+    /// Get witness_a.
+    #[getter]
+    pub fn get_witness_a(&self) -> [f64; 3] {
+        self.witness_a
+    }
+
+    /// Get witness_b.
+    #[getter]
+    pub fn get_witness_b(&self) -> [f64; 3] {
+        self.witness_b
+    }
+
+    /// Get body_a.
+    #[getter]
+    pub fn get_body_a(&self) -> u32 {
+        self.body_a
+    }
+
+    /// Get body_b.
+    #[getter]
+    pub fn get_body_b(&self) -> u32 {
+        self.body_b
     }
 }
 
@@ -815,6 +1095,7 @@ pub struct PbdConstraint {
 }
 
 /// Position-based dynamics (XPBD) solver.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyPbdSolver {
     /// Current particle positions (flat \[x0, y0, z0, x1, ...\]).
@@ -831,8 +1112,10 @@ pub struct PyPbdSolver {
     pub gravity: [f64; 3],
 }
 
+#[pymethods]
 impl PyPbdSolver {
     /// Create a new PBD solver.
+    #[new]
     pub fn new(positions: Vec<f64>, inv_masses: Vec<f64>) -> Self {
         let prev = positions.clone();
         Self {
@@ -949,6 +1232,60 @@ impl PyPbdSolver {
     pub fn particle_count(&self) -> usize {
         self.positions.len() / 3
     }
+
+    /// Get positions.
+    #[getter]
+    pub fn get_positions(&self) -> Vec<f64> {
+        self.positions.clone()
+    }
+
+    /// Set positions.
+    #[setter]
+    pub fn set_positions(&mut self, v: Vec<f64>) {
+        self.positions = v;
+    }
+
+    /// Get prev_positions.
+    #[getter]
+    pub fn get_prev_positions(&self) -> Vec<f64> {
+        self.prev_positions.clone()
+    }
+
+    /// Get inv_masses.
+    #[getter]
+    pub fn get_inv_masses(&self) -> Vec<f64> {
+        self.inv_masses.clone()
+    }
+
+    /// Set inv_masses.
+    #[setter]
+    pub fn set_inv_masses(&mut self, v: Vec<f64>) {
+        self.inv_masses = v;
+    }
+
+    /// Get substeps.
+    #[getter]
+    pub fn get_substeps(&self) -> u32 {
+        self.substeps
+    }
+
+    /// Set substeps.
+    #[setter]
+    pub fn set_substeps(&mut self, v: u32) {
+        self.substeps = v;
+    }
+
+    /// Get gravity.
+    #[getter]
+    pub fn get_gravity(&self) -> [f64; 3] {
+        self.gravity
+    }
+
+    /// Set gravity.
+    #[setter]
+    pub fn set_gravity(&mut self, v: [f64; 3]) {
+        self.gravity = v;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -956,6 +1293,7 @@ impl PyPbdSolver {
 // ---------------------------------------------------------------------------
 
 /// A simple state-space system: dx/dt = A x + B u, y = C x + D u.
+#[pyclass(get_all, set_all, from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyControlSystem {
     /// System order (n).
@@ -976,8 +1314,10 @@ pub struct PyControlSystem {
     pub state: Vec<f64>,
 }
 
+#[pymethods]
 impl PyControlSystem {
     /// Create a first-order lag system: dx/dt = -x/tau + u/tau.
+    #[staticmethod]
     pub fn first_order_lag(tau: f64) -> Self {
         Self {
             order: 1,
@@ -992,7 +1332,7 @@ impl PyControlSystem {
     }
 
     /// Step the system using Euler integration.
-    pub fn step_euler(&mut self, u: &[f64], dt: f64) -> Vec<f64> {
+    pub fn step_euler(&mut self, u: Vec<f64>, dt: f64) -> Vec<f64> {
         let n = self.order;
         let m = self.num_inputs;
         let p = self.num_outputs;
@@ -1027,7 +1367,7 @@ impl PyControlSystem {
         self.state = vec![0.0; self.order];
         let mut out = Vec::with_capacity(n_steps);
         for _ in 0..n_steps {
-            let y = self.step_euler(&[1.0], dt);
+            let y = self.step_euler(vec![1.0], dt);
             out.push(y[0]);
         }
         out
@@ -1071,6 +1411,7 @@ pub enum FrictionModelKind {
 }
 
 /// Friction model for contact resolution.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyFrictionModel {
     /// Friction model type.
@@ -1081,8 +1422,10 @@ pub struct PyFrictionModel {
     pub epsilon: f64,
 }
 
+#[pymethods]
 impl PyFrictionModel {
     /// Standard Coulomb friction.
+    #[staticmethod]
     pub fn coulomb(mu: f64) -> Self {
         Self {
             kind: FrictionModelKind::Coulomb,
@@ -1092,6 +1435,7 @@ impl PyFrictionModel {
     }
 
     /// Anisotropic friction.
+    #[staticmethod]
     pub fn anisotropic(mu_u: f64, mu_v: f64) -> Self {
         Self {
             kind: FrictionModelKind::Anisotropic { mu_u, mu_v },
@@ -1101,6 +1445,7 @@ impl PyFrictionModel {
     }
 
     /// Velocity-dependent (Stribeck) friction.
+    #[staticmethod]
     pub fn stribeck(mu_static: f64, mu_kinetic: f64, stribeck_velocity: f64) -> Self {
         Self {
             kind: FrictionModelKind::VelocityDependent {
@@ -1130,6 +1475,18 @@ impl PyFrictionModel {
         };
         mu * normal_force.max(0.0)
     }
+
+    /// Get mu.
+    #[getter]
+    pub fn get_mu(&self) -> f64 {
+        self.mu
+    }
+
+    /// Get epsilon.
+    #[getter]
+    pub fn get_epsilon(&self) -> f64 {
+        self.epsilon
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1137,6 +1494,7 @@ impl PyFrictionModel {
 // ---------------------------------------------------------------------------
 
 /// Cached impulse from the previous frame for warm starting.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedImpulse {
     /// Body pair key (body_a, body_b).
@@ -1149,7 +1507,35 @@ pub struct CachedImpulse {
     pub age: u32,
 }
 
+#[pymethods]
+impl CachedImpulse {
+    /// Get key as (body_a, body_b).
+    #[getter]
+    pub fn get_key(&self) -> (u32, u32) {
+        self.key
+    }
+
+    /// Get lambda_n.
+    #[getter]
+    pub fn get_lambda_n(&self) -> f64 {
+        self.lambda_n
+    }
+
+    /// Get lambda_t.
+    #[getter]
+    pub fn get_lambda_t(&self) -> [f64; 2] {
+        self.lambda_t
+    }
+
+    /// Get age.
+    #[getter]
+    pub fn get_age(&self) -> u32 {
+        self.age
+    }
+}
+
 /// Warm start cache for constraint impulses.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyWarmStart {
     /// Cached impulses from the previous solve.
@@ -1162,8 +1548,10 @@ pub struct PyWarmStart {
     pub max_age: u32,
 }
 
+#[pymethods]
 impl PyWarmStart {
     /// Create a new warm-start cache.
+    #[new]
     pub fn new() -> Self {
         Self {
             cache: Vec::new(),
@@ -1214,12 +1602,78 @@ impl PyWarmStart {
     pub fn clear(&mut self) {
         self.cache.clear();
     }
+
+    /// Get cache.
+    #[getter]
+    pub fn get_cache(&self) -> Vec<CachedImpulse> {
+        self.cache.clone()
+    }
+
+    /// Get aging_factor.
+    #[getter]
+    pub fn get_aging_factor(&self) -> f64 {
+        self.aging_factor
+    }
+
+    /// Set aging_factor.
+    #[setter]
+    pub fn set_aging_factor(&mut self, v: f64) {
+        self.aging_factor = v;
+    }
+
+    /// Get quality_threshold.
+    #[getter]
+    pub fn get_quality_threshold(&self) -> f64 {
+        self.quality_threshold
+    }
+
+    /// Get max_age.
+    #[getter]
+    pub fn get_max_age(&self) -> u32 {
+        self.max_age
+    }
 }
 
 impl Default for PyWarmStart {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Register all `constraints` classes into a Python sub-module.
+///
+/// Called from the top-level `#[pymodule]` in `lib.rs`.
+pub fn register_constraints_module(
+    parent: &pyo3::Bound<'_, pyo3::types::PyModule>,
+) -> pyo3::PyResult<()> {
+    use pyo3::prelude::PyModule;
+    use pyo3::types::PyModuleMethods;
+    let child = PyModule::new(parent.py(), "constraints")?;
+    // Enums
+    child.add_class::<SolverType>()?;
+    child.add_class::<IslandSleepState>()?;
+    // Structs
+    child.add_class::<AxisLimits>()?;
+    child.add_class::<PyConstraintSolver>()?;
+    child.add_class::<PyJoint>()?;
+    child.add_class::<PyContactConstraint>()?;
+    child.add_class::<PidGains>()?;
+    child.add_class::<MotorThermal>()?;
+    child.add_class::<PyMotorConstraint>()?;
+    child.add_class::<PyIsland>()?;
+    child.add_class::<PyCCDResult>()?;
+    child.add_class::<PyPbdSolver>()?;
+    child.add_class::<PyControlSystem>()?;
+    child.add_class::<PyFrictionModel>()?;
+    child.add_class::<CachedImpulse>()?;
+    child.add_class::<PyWarmStart>()?;
+    // Free functions (Python wrappers)
+    child.add_function(pyo3::wrap_pyfunction!(py_solve_pgs_iteration, &child)?)?;
+    child.add_function(pyo3::wrap_pyfunction!(compute_jacobian, &child)?)?;
+    child.add_function(pyo3::wrap_pyfunction!(compute_effective_mass, &child)?)?;
+    child.add_function(pyo3::wrap_pyfunction!(clamp_impulse, &child)?)?;
+    parent.add_submodule(&child)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1286,7 +1740,12 @@ mod tests {
     fn test_constraint_solver_pgs() {
         let solver = PyConstraintSolver::default_pgs();
         assert_eq!(solver.solver_type, SolverType::Pgs);
-        let lambda = solver.solve(&[1.0, 1.0], &[2.0, 2.0], &[0.0, 0.0], &[10.0, 10.0]);
+        let lambda = solver.solve(
+            vec![1.0, 1.0],
+            vec![2.0, 2.0],
+            vec![0.0, 0.0],
+            vec![10.0, 10.0],
+        );
         assert_eq!(lambda.len(), 2);
         assert!(lambda[0] >= 0.0);
     }

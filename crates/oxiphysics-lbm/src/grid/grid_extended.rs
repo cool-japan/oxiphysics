@@ -501,9 +501,10 @@ impl LbmGrid2D {
         self.rho.iter().sum()
     }
 }
-/// A stub for a 3D LBM grid with per-node flags.
+/// A 3D LBM grid (D3Q19) with per-node flags, BGK collision and streaming.
 ///
-/// Currently a placeholder; the `step` method is a no-op.
+/// Supports `Fluid`, `Wall` (bounce-back), `Inlet`, `Outlet`, and `Symmetry` nodes.
+/// Distribution layout: flat `f[cell_idx * 19 + alpha]`.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FlaggedGrid3D {
@@ -513,16 +514,16 @@ pub struct FlaggedGrid3D {
     pub ny: usize,
     /// Number of cells in z-direction.
     pub nz: usize,
-    /// Relaxation frequency.
+    /// Relaxation frequency omega = 1/tau.
     pub omega: f64,
-    /// Distribution functions (flat).
+    /// Distribution functions (flat): `f[cell_idx * 19 + alpha]`.
     pub f: Vec<f64>,
     /// Per-node flags.
     pub flags: Vec<NodeFlag>,
 }
 #[allow(dead_code)]
 impl FlaggedGrid3D {
-    /// Create a new stub 3D grid (D3Q19) initialised to equilibrium at rest.
+    /// Create a new 3D grid (D3Q19) initialised to equilibrium at rest.
     pub fn new(nx: usize, ny: usize, nz: usize, omega: f64, rho0: f64) -> Self {
         let n = nx * ny * nz;
         let w19 = crate::lattice::D3Q19_WEIGHTS;
@@ -541,8 +542,213 @@ impl FlaggedGrid3D {
             flags: vec![NodeFlag::Fluid; n],
         }
     }
-    /// Placeholder step — currently a no-op.
-    pub fn step(&mut self) {}
+    /// Linear index for cell (x, y, z).
+    #[inline]
+    pub fn cell_idx(&self, x: usize, y: usize, z: usize) -> usize {
+        z * self.ny * self.nx + y * self.nx + x
+    }
+    /// Mark a cell as a solid wall (bounce-back).
+    pub fn set_wall(&mut self, x: usize, y: usize, z: usize) {
+        let idx = self.cell_idx(x, y, z);
+        self.flags[idx] = NodeFlag::Wall;
+    }
+    /// Set a cell as an inlet with prescribed macroscopic values.
+    pub fn set_inlet(&mut self, x: usize, y: usize, z: usize, rho: f64, ux: f64, uy: f64) {
+        let idx = self.cell_idx(x, y, z);
+        self.flags[idx] = NodeFlag::Inlet {
+            rho: rho.to_bits(),
+            ux_bits: ux.to_bits(),
+            uy_bits: uy.to_bits(),
+        };
+        let base = idx * 19;
+        for a in 0..19 {
+            self.f[base + a] = equilibrium_3d(
+                W19[a],
+                rho,
+                ux,
+                uy,
+                0.0,
+                C19[a][0] as f64,
+                C19[a][1] as f64,
+                C19[a][2] as f64,
+            );
+        }
+    }
+    /// Return the macroscopic density at cell (x, y, z).
+    pub fn density_at(&self, x: usize, y: usize, z: usize) -> f64 {
+        let base = self.cell_idx(x, y, z) * 19;
+        (0..19).map(|a| self.f[base + a]).sum()
+    }
+    /// Return the macroscopic velocity at cell (x, y, z).
+    pub fn velocity_at(&self, x: usize, y: usize, z: usize) -> [f64; 3] {
+        let base = self.cell_idx(x, y, z) * 19;
+        let mut rho = 0.0_f64;
+        let mut mx = 0.0_f64;
+        let mut my = 0.0_f64;
+        let mut mz = 0.0_f64;
+        for a in 0..19 {
+            let fi = self.f[base + a];
+            rho += fi;
+            mx += fi * C19[a][0] as f64;
+            my += fi * C19[a][1] as f64;
+            mz += fi * C19[a][2] as f64;
+        }
+        if rho.abs() > 1e-15 {
+            [mx / rho, my / rho, mz / rho]
+        } else {
+            [0.0; 3]
+        }
+    }
+    /// Total mass across all cells.
+    pub fn total_mass(&self) -> f64 {
+        self.f.iter().sum()
+    }
+    /// Initialize all fluid cells to equilibrium at uniform (rho0, ux0, uy0, uz0).
+    pub fn initialize_uniform(&mut self, rho0: f64, ux0: f64, uy0: f64, uz0: f64) {
+        let n = self.nx * self.ny * self.nz;
+        for idx in 0..n {
+            if self.flags[idx] == NodeFlag::Fluid || self.flags[idx] == NodeFlag::Symmetry {
+                let base = idx * 19;
+                for a in 0..19 {
+                    self.f[base + a] = equilibrium_3d(
+                        W19[a],
+                        rho0,
+                        ux0,
+                        uy0,
+                        uz0,
+                        C19[a][0] as f64,
+                        C19[a][1] as f64,
+                        C19[a][2] as f64,
+                    );
+                }
+            }
+        }
+    }
+    /// Perform one full BGK collide → stream → boundary-condition step.
+    ///
+    /// - `Fluid` / `Symmetry`: standard BGK collision then pull-scheme streaming.
+    /// - `Wall`: no-slip full-way bounce-back (populations reflected in place,
+    ///   then overwritten by streaming so the net effect is opposite-direction
+    ///   reflection at solid nodes).
+    /// - `Inlet`: BGK collision during collision pass; overwritten with
+    ///   equilibrium at prescribed density/velocity after streaming.
+    /// - `Outlet`: BGK collision during collision pass; overwritten with
+    ///   zero-gradient (upstream copy) after streaming.
+    pub fn step(&mut self) {
+        let omega = self.omega;
+        let nx = self.nx;
+        let ny = self.ny;
+        let nz = self.nz;
+        let n = nx * ny * nz;
+
+        // --- Collision pass ---
+        // For fluid/symmetry/inlet/outlet: BGK.
+        // For wall: in-place full-way bounce-back (swap opposite populations).
+        let mut f_coll = self.f.clone();
+        for idx in 0..n {
+            let base = idx * 19;
+            match self.flags[idx] {
+                NodeFlag::Fluid
+                | NodeFlag::Symmetry
+                | NodeFlag::Inlet { .. }
+                | NodeFlag::Outlet => {
+                    let mut rho = 0.0_f64;
+                    let mut mx = 0.0_f64;
+                    let mut my = 0.0_f64;
+                    let mut mz = 0.0_f64;
+                    for a in 0..19 {
+                        let fi = self.f[base + a];
+                        rho += fi;
+                        mx += fi * C19[a][0] as f64;
+                        my += fi * C19[a][1] as f64;
+                        mz += fi * C19[a][2] as f64;
+                    }
+                    let (ux, uy, uz) = if rho.abs() > 1e-15 {
+                        (mx / rho, my / rho, mz / rho)
+                    } else {
+                        (0.0, 0.0, 0.0)
+                    };
+                    for a in 0..19 {
+                        let feq = equilibrium_3d(
+                            W19[a],
+                            rho,
+                            ux,
+                            uy,
+                            uz,
+                            C19[a][0] as f64,
+                            C19[a][1] as f64,
+                            C19[a][2] as f64,
+                        );
+                        f_coll[base + a] = self.f[base + a] - omega * (self.f[base + a] - feq);
+                    }
+                }
+                NodeFlag::Wall => {
+                    // Full-way bounce-back: reflect all populations.
+                    let mut tmp = [0.0_f64; 19];
+                    tmp.copy_from_slice(&self.f[base..base + 19]);
+                    for a in 0..19 {
+                        f_coll[base + a] = tmp[OPP19[a]];
+                    }
+                }
+            }
+        }
+
+        // --- Streaming pass (pull scheme) ---
+        for z in 0..nz {
+            for y in 0..ny {
+                for x in 0..nx {
+                    let dst = (z * ny * nx + y * nx + x) * 19;
+                    for a in 0..19 {
+                        let sx = (x as isize - C19[a][0] as isize).rem_euclid(nx as isize) as usize;
+                        let sy = (y as isize - C19[a][1] as isize).rem_euclid(ny as isize) as usize;
+                        let sz = (z as isize - C19[a][2] as isize).rem_euclid(nz as isize) as usize;
+                        let src = (sz * ny * nx + sy * nx + sx) * 19 + a;
+                        self.f[dst + a] = f_coll[src];
+                    }
+                }
+            }
+        }
+
+        // --- Boundary condition enforcement ---
+        for idx in 0..n {
+            match self.flags[idx] {
+                NodeFlag::Fluid | NodeFlag::Symmetry | NodeFlag::Wall => {}
+                NodeFlag::Inlet {
+                    rho,
+                    ux_bits,
+                    uy_bits,
+                } => {
+                    let r = f64::from_bits(rho);
+                    let ux = f64::from_bits(ux_bits);
+                    let uy = f64::from_bits(uy_bits);
+                    let base = idx * 19;
+                    for a in 0..19 {
+                        self.f[base + a] = equilibrium_3d(
+                            W19[a],
+                            r,
+                            ux,
+                            uy,
+                            0.0,
+                            C19[a][0] as f64,
+                            C19[a][1] as f64,
+                            C19[a][2] as f64,
+                        );
+                    }
+                }
+                NodeFlag::Outlet => {
+                    // Zero-gradient: copy from upstream neighbor (idx - nx, same
+                    // convention as FullGrid3D::apply_bcs).
+                    let upstream_nx = self.nx;
+                    if idx >= upstream_nx {
+                        let src_idx = idx - upstream_nx;
+                        for a in 0..19 {
+                            self.f[idx * 19 + a] = self.f[src_idx * 19 + a];
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 /// A full 3D LBM grid with BGK collision, streaming, and per-node BCs.
 ///

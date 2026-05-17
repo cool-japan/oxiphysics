@@ -188,6 +188,12 @@ pub enum Error {
 /// Result type alias for `oxiphysics-wasm` operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
+impl From<Error> for wasm_bindgen::JsValue {
+    fn from(e: Error) -> wasm_bindgen::JsValue {
+        wasm_bindgen::JsValue::from_str(&e.to_string())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Core impl
 // ---------------------------------------------------------------------------

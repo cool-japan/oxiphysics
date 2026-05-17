@@ -16,7 +16,7 @@
 
 #![allow(dead_code)]
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -942,7 +942,7 @@ fn parse_gro_frame<R: BufRead>(r: &mut R) -> io::Result<ParticleFrame> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DcdReader (stub)
+// DcdReader / DcdWriter
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Header information parsed from a DCD file.
@@ -1078,6 +1078,157 @@ fn parse_dcd_frame<R: Read>(r: &mut R, n_atoms: usize, step: u64) -> io::Result<
         velocities: None,
         types,
     })
+}
+
+/// Write a slice of `f32` values as a Fortran-style binary record.
+///
+/// The record is bracketed by a leading and trailing 4-byte little-endian
+/// integer whose value equals `data.len() * 4` (the byte count of the payload).
+fn write_f32_fortran_block<W: Write>(w: &mut W, data: &[f32]) -> io::Result<()> {
+    let byte_len = (data.len() * 4) as u32;
+    w.write_all(&byte_len.to_le_bytes())?;
+    for &v in data {
+        w.write_all(&v.to_le_bytes())?;
+    }
+    w.write_all(&byte_len.to_le_bytes())?;
+    Ok(())
+}
+
+/// DCD trajectory writer — produces files in the standard CHARMM/NAMD binary
+/// DCD format that can be read by [`DcdReader`] and common molecular dynamics
+/// visualisation tools (VMD, NAMD, etc.).
+///
+/// # Usage
+///
+/// ```rust,no_run
+/// use oxiphysics_io::DcdWriter;
+///
+/// let mut w = DcdWriter::new("/tmp/traj.dcd", 10, 2.0e-3).unwrap();
+/// // write frames …
+/// w.finalize().unwrap();  // patches the frame count in the header
+/// ```
+#[derive(Debug)]
+pub struct DcdWriter {
+    /// Output path.
+    pub path: std::path::PathBuf,
+    /// Number of atoms per frame.
+    pub n_atoms: u32,
+    /// Integration time-step (ps).
+    pub delta: f32,
+    frames_written: u32,
+}
+
+impl DcdWriter {
+    /// Create a new `DcdWriter`, truncating / creating the output file and
+    /// writing an initial DCD header.
+    pub fn new(path: impl Into<std::path::PathBuf>, n_atoms: u32, delta: f32) -> io::Result<Self> {
+        let path = path.into();
+        let mut writer = Self {
+            path,
+            n_atoms,
+            delta,
+            frames_written: 0,
+        };
+        writer.write_header(0)?;
+        Ok(writer)
+    }
+
+    /// Append one coordinate frame to the DCD file.
+    ///
+    /// The frame must contain at least `n_atoms` positions; extra positions are
+    /// silently ignored, missing ones are padded with `0.0`.
+    pub fn write_frame(&mut self, frame: &ParticleFrame) -> io::Result<()> {
+        use std::io::Write as _;
+        let n = self.n_atoms as usize;
+
+        let mut xs = Vec::with_capacity(n);
+        let mut ys = Vec::with_capacity(n);
+        let mut zs = Vec::with_capacity(n);
+        for i in 0..n {
+            if i < frame.positions.len() {
+                xs.push(frame.positions[i][0]);
+                ys.push(frame.positions[i][1]);
+                zs.push(frame.positions[i][2]);
+            } else {
+                xs.push(0.0_f32);
+                ys.push(0.0_f32);
+                zs.push(0.0_f32);
+            }
+        }
+
+        let file = OpenOptions::new().append(true).open(&self.path)?;
+        let mut w = BufWriter::new(file);
+        write_f32_fortran_block(&mut w, &xs)?;
+        write_f32_fortran_block(&mut w, &ys)?;
+        write_f32_fortran_block(&mut w, &zs)?;
+        w.flush()?;
+        self.frames_written += 1;
+        Ok(())
+    }
+
+    /// Patch the frame count stored in the DCD header (byte offset 8) with the
+    /// actual number of frames written, then flush the file.
+    ///
+    /// Call this once after all frames have been written.
+    pub fn finalize(&self) -> io::Result<()> {
+        use std::io::{Seek, SeekFrom, Write as _};
+        let mut file = OpenOptions::new().write(true).open(&self.path)?;
+        // The frame count is stored at byte 8 (after the 4-byte Fortran record
+        // length and the 4-byte "CORD" magic).
+        file.seek(SeekFrom::Start(8))?;
+        file.write_all(&self.frames_written.to_le_bytes())?;
+        file.flush()
+    }
+
+    /// Write the DCD file header.
+    ///
+    /// `n_frames` is the preliminary frame count; it is updated by
+    /// [`finalize`](DcdWriter::finalize).
+    fn write_header(&mut self, n_frames: u32) -> io::Result<()> {
+        use std::io::Write as _;
+        let mut f = BufWriter::new(File::create(&self.path)?);
+
+        // ── Block 1 (84 bytes payload) ────────────────────────────────────────
+        // Fortran record: 84 bytes.
+        let block1_payload: u32 = 84;
+        f.write_all(&block1_payload.to_le_bytes())?; // leading sentinel
+        f.write_all(b"CORD")?; // magic
+        f.write_all(&n_frames.to_le_bytes())?; // nframes  (offset 8)
+        f.write_all(&0u32.to_le_bytes())?; // first step
+        f.write_all(&1u32.to_le_bytes())?; // step interval
+        f.write_all(&0u32.to_le_bytes())?; // last step (unknown)
+        f.write_all(&0u32.to_le_bytes())?; // reserved
+        f.write_all(&0u32.to_le_bytes())?; // reserved
+        f.write_all(&0u32.to_le_bytes())?; // reserved
+        f.write_all(&0u32.to_le_bytes())?; // n_free_atoms
+        f.write_all(&self.delta.to_le_bytes())?; // timestep (f32)
+        // 10 padding integers (unit-cell flag + 9 zeros)
+        for _ in 0..10u32 {
+            f.write_all(&0u32.to_le_bytes())?;
+        }
+        // 4-byte CHARMM version word
+        f.write_all(&0u32.to_le_bytes())?;
+        f.write_all(&block1_payload.to_le_bytes())?; // trailing sentinel
+
+        // ── Block 2: title block ──────────────────────────────────────────────
+        // 1 title of 80 bytes.
+        let title_payload: u32 = 4 + 80; // n_titles (u32) + 1 × 80-byte title
+        f.write_all(&title_payload.to_le_bytes())?;
+        f.write_all(&1u32.to_le_bytes())?; // n_titles = 1
+        let mut title_buf = [b' '; 80];
+        let label = b"Created by oxiphysics DcdWriter";
+        let copy_len = label.len().min(80);
+        title_buf[..copy_len].copy_from_slice(&label[..copy_len]);
+        f.write_all(&title_buf)?;
+        f.write_all(&title_payload.to_le_bytes())?;
+
+        // ── Block 3: n_atoms ─────────────────────────────────────────────────
+        f.write_all(&4u32.to_le_bytes())?; // payload = 4 bytes
+        f.write_all(&self.n_atoms.to_le_bytes())?;
+        f.write_all(&4u32.to_le_bytes())?;
+
+        f.flush()
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1475,6 +1626,66 @@ ITEM: ATOMS id type x y z\n\
         assert_eq!(loaded.n_particles, 2);
         // GRO uses %.3f precision for coordinates
         assert!((loaded.positions[0][0] - 1.5).abs() < 0.01);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── DcdWriter / DcdReader round-trip tests ────────────────────────────────
+
+    #[test]
+    fn test_dcd_writer_creates_file() {
+        let path = std::env::temp_dir().join("oxiphysics_pf_dcd_create.dcd");
+        let _ = std::fs::remove_file(&path);
+        let mut w = DcdWriter::new(&path, 3, 2.0e-3_f32).unwrap();
+        let frame = make_frame(3);
+        w.write_frame(&frame).unwrap();
+        w.finalize().unwrap();
+        assert!(path.exists());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_dcd_roundtrip_single_frame() {
+        let path = std::env::temp_dir().join("oxiphysics_pf_dcd_rt1.dcd");
+        let _ = std::fs::remove_file(&path);
+        let frame = make_frame(4);
+        let mut w = DcdWriter::new(&path, 4, 1.0e-3_f32).unwrap();
+        w.write_frame(&frame).unwrap();
+        w.finalize().unwrap();
+
+        let (header, frames) = DcdReader::new(&path).read_all().unwrap();
+        assert_eq!(header.n_frames, 1);
+        assert_eq!(header.n_atoms, 4);
+        assert_eq!(frames.len(), 1);
+        for i in 0..4 {
+            assert!(
+                (frames[0].positions[i][0] - i as f32).abs() < 1e-5,
+                "position mismatch at atom {i}"
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_dcd_roundtrip_multi_frame() {
+        let path = std::env::temp_dir().join("oxiphysics_pf_dcd_rt3.dcd");
+        let _ = std::fs::remove_file(&path);
+        let n_atoms = 5u32;
+        let mut w = DcdWriter::new(&path, n_atoms, 2.0e-3_f32).unwrap();
+        for ts in 0..3u64 {
+            let pos: Vec<[f32; 3]> = (0..n_atoms as usize)
+                .map(|i| [ts as f32 + i as f32, 0.0, 0.0])
+                .collect();
+            let types = vec![0u8; n_atoms as usize];
+            let frame = ParticleFrame::new(ts, pos, types);
+            w.write_frame(&frame).unwrap();
+        }
+        w.finalize().unwrap();
+
+        let (header, frames) = DcdReader::new(&path).read_all().unwrap();
+        assert_eq!(header.n_frames, 3);
+        assert_eq!(frames.len(), 3);
+        // Verify frame 2, atom 0: x == 2.0
+        assert!((frames[2].positions[0][0] - 2.0).abs() < 1e-5);
         let _ = std::fs::remove_file(&path);
     }
 }

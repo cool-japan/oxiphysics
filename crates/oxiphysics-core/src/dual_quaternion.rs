@@ -365,47 +365,44 @@ impl DualQuaternion {
     /// Constructs a dual quaternion from a general screw motion.
     ///
     /// # Parameters
-    /// * `axis`  – unit direction of the screw axis.
+    /// * `axis`  – unit direction of the screw axis (must be unit length).
     /// * `angle` – rotation angle in radians.
-    /// * `pitch` – translation per radian.
+    /// * `pitch` – translation per radian along the axis.
     /// * `point` – a point on the screw axis.
+    ///
+    /// The resulting dual quaternion encodes the rigid body transformation:
+    /// rotate by `angle` around the axis through `point`, then translate
+    /// `pitch * angle` along the axis.
+    ///
+    /// Dual part formula: `q_d = 0.5 * pure_quat(full_translation) * q_r`
+    /// where `full_translation = d * axis + (I - R) * point` and `d = pitch * angle`.
     pub fn from_twist(axis: [f64; 3], angle: f64, pitch: f64, point: [f64; 3]) -> DualQuaternion {
-        let translation = pitch * angle;
-        // Pure rotation about `axis` through origin.
+        // Rotation quaternion for the given axis and angle.
         let q_rot = Quaternion::from_axis_angle(axis, angle);
-        // Translation along axis plus moment contribution.
-        let d = translation;
-        let t = [
-            axis[0] * d
-                + (point[1] * axis[2] - point[2] * axis[1])
-                    * 2.0
-                    * (angle * 0.5).sin()
-                    * (angle * 0.5).sin()
-                    * 0.0, // moment term placeholder — see full formula below
-            axis[1] * d,
-            axis[2] * d,
-        ];
-        // Full screw: translation along axis = d * axis_dir,
-        // plus a rotation of `point` around the axis.
-        let q_t = Quaternion::from_axis_angle(axis, angle);
-        // Translate to origin, rotate, translate back.
-        let t_to_origin = [
-            -point[0] + point[0],
-            -point[1] + point[1],
-            -point[2] + point[2],
-        ];
-        // The proper way: DQ(rotation) composed with DQ(translation along axis).
+
+        // Scalar translation along the screw axis.
+        let d = pitch * angle;
+
+        // Translation component from screw (along axis).
         let t_vec = [axis[0] * d, axis[1] * d, axis[2] * d];
-        // Apply point-on-axis shift.
-        let moment_rotated = q_rot.rotate_vector(point);
-        let full_t = [
-            t_vec[0] + (point[0] - moment_rotated[0]),
-            t_vec[1] + (point[1] - moment_rotated[1]),
-            t_vec[2] + (point[2] - moment_rotated[2]),
+
+        // Point-on-axis correction: (I - R) * point.
+        // The rotation moves `point` to `q_rot.rotate_vector(point)`, so the
+        // net translation required to keep the axis in place is `point - R*point`.
+        let rotated_point = q_rot.rotate_vector(point);
+        let correction = [
+            point[0] - rotated_point[0],
+            point[1] - rotated_point[1],
+            point[2] - rotated_point[2],
         ];
-        let _ = t;
-        let _ = t_to_origin;
-        let _ = q_t;
+
+        // Total translation vector: screw advance plus off-origin-axis correction.
+        let full_t = [
+            t_vec[0] + correction[0],
+            t_vec[1] + correction[1],
+            t_vec[2] + correction[2],
+        ];
+
         DualQuaternion::from_rotation_translation(q_rot, full_t)
     }
 
@@ -1531,6 +1528,74 @@ mod tests {
             (angle - PI / 2.0).abs() < 1e-10,
             "4x rotation angle={}",
             angle
+        );
+    }
+
+    // ── from_twist tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_from_twist_pure_rotation_origin() {
+        // Rotation of PI/2 around z-axis through origin, no pitch, no translation.
+        // Point [1,0,0] should map to [0,1,0].
+        let dq = DualQuaternion::from_twist([0.0, 0.0, 1.0], PI / 2.0, 0.0, [0.0, 0.0, 0.0]);
+        let result = dq.transform_point([1.0, 0.0, 0.0]);
+        assert!(
+            vec3_approx_eq(result, [0.0, 1.0, 0.0], 1e-10),
+            "got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_from_twist_pure_translation_z() {
+        // Zero rotation, pitch=1.0, angle=2.0 → translate 2 along z.
+        let dq = DualQuaternion::from_twist([0.0, 0.0, 1.0], 0.0, 1.0, [0.0, 0.0, 0.0]);
+        let result = dq.transform_point([0.0, 0.0, 0.0]);
+        // pitch * angle = 0 → no translation; just identity.
+        assert!(vec3_approx_eq(result, [0.0, 0.0, 0.0], 1e-10));
+    }
+
+    #[test]
+    fn test_from_twist_screw_with_pitch() {
+        // Rotation PI/2 around z with pitch=1.0 → translate 1*(PI/2) along z.
+        let dq = DualQuaternion::from_twist([0.0, 0.0, 1.0], PI / 2.0, 1.0, [0.0, 0.0, 0.0]);
+        let t = dq.to_translation();
+        // Translation along z should be pitch * angle = PI/2.
+        assert!((t[2] - PI / 2.0).abs() < 1e-10, "t_z={}", t[2]);
+        // XY components of translation should be near zero.
+        assert!(t[0].abs() < 1e-10 && t[1].abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_from_twist_off_origin_axis() {
+        // Rotation of PI/2 around the z-axis through point [1,0,0].
+        // The origin [0,0,0] is rotated 90° around z through [1,0,0]:
+        // translate to origin: [-1,0,0], rotate: [0,-1,0], translate back: [1,-1,0].
+        let dq = DualQuaternion::from_twist([0.0, 0.0, 1.0], PI / 2.0, 0.0, [1.0, 0.0, 0.0]);
+        let result = dq.transform_point([0.0, 0.0, 0.0]);
+        assert!(
+            vec3_approx_eq(result, [1.0, -1.0, 0.0], 1e-10),
+            "got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_from_twist_transform_point_roundtrip() {
+        // axis=[0,0,1], angle=PI/2, pure translation=[1,0,0] via point on axis.
+        // Rotation around z through origin, no pitch, then manually verify:
+        // transforming [0,0,0] with rotation only gives [0,0,0].
+        // With pitch=0 and point=[0,0,0], this is just rotation.
+        let dq = DualQuaternion::from_twist([0.0, 0.0, 1.0], PI / 2.0, 0.0, [0.0, 0.0, 0.0]);
+        // [1,0,0] rotated 90° around z → [0,1,0]
+        let p = dq.transform_point([1.0, 0.0, 0.0]);
+        assert!(vec3_approx_eq(p, [0.0, 1.0, 0.0], 1e-10), "got {:?}", p);
+        // [0,1,0] rotated 90° around z → [-1,0,0]
+        let q_pt = dq.transform_point([0.0, 1.0, 0.0]);
+        assert!(
+            vec3_approx_eq(q_pt, [-1.0, 0.0, 0.0], 1e-10),
+            "got {:?}",
+            q_pt
         );
     }
 }

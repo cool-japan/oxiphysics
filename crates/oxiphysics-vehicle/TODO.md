@@ -1,6 +1,6 @@
 # oxiphysics-vehicle TODO
 
-Last updated: 2026-04-06 | Version: 0.1.0
+Last updated: 2026-05-17 | Version: 0.1.1
 
 ## Phase 1: Foundation
 - [x] Define core types and traits
@@ -34,6 +34,6 @@ Last updated: 2026-04-06 | Version: 0.1.0
 - [x] Telemetry
 
 ## Future / Post-0.1
-- [ ] Real-time hardware-in-the-loop (HiL) interfaces
-- [ ] Co-simulation with FEM chassis deformation
-- [ ] GPU-parallel multi-vehicle batch simulation
+- [x] Real-time hardware-in-the-loop (HiL) interfaces (`hil` — `HilInterface` trait, `SimHilBridge`, `HilSignalLogger`)
+- [x] Co-simulation with FEM chassis deformation (`fem_chassis_cosim` — Craig-Bampton modal reduction, Newmark-β integration, coupling bridge)
+- [x] GPU-parallel multi-vehicle batch simulation (`gpu_multi_vehicle` — SoA state, `MultiVehicleBatch`, `VehicleParams`, Rayon parallel step kernel)

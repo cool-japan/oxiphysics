@@ -1,6 +1,6 @@
 # oxiphysics-io
 
-**Status: Alpha** | Version 0.1.0 | 2026-04-06
+**Status: Alpha** | Version 0.1.1 | 2026-05-17
 
 Multi-format file I/O and serialization for the OxiPhysics engine. Pure Rust with zero unsafe code.
 

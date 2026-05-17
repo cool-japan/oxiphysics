@@ -82,6 +82,19 @@ pub mod viscoelastic_fem;
 pub mod wave_propagation;
 pub mod xfem;
 
+pub mod parallel_solver;
+pub use parallel_solver::{
+    CsrMatrix as ParCsrMatrix, GmresWithAmg, ParallelAssembler, ParallelGmresSolver,
+    ParallelPcgSolver, PcgWithAmg, PcgWithPrecond,
+};
+
+pub mod perf_bench;
+pub use perf_bench::{
+    BenchHarness, BenchReport, BenchResult, SuiteConfig, banded_csr, bench_assembly,
+    bench_element_stiffness, bench_gmres, bench_pcg, bench_spmv, bench_spmv_parallel,
+    run_full_suite, run_suite, tridiagonal_csr,
+};
+
 pub use damage::*;
 pub use electromechanics::*;
 pub use error::*;

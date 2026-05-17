@@ -1083,6 +1083,117 @@ impl SedimentSphSolver {
 }
 
 // ---------------------------------------------------------------------------
+// Exner equation grid (flux divergence form)
+// ---------------------------------------------------------------------------
+
+/// A regular 2-D Cartesian grid for solving the Exner bed-change equation.
+///
+/// The Exner equation in flux-divergence form is:
+/// ```text
+/// (1 - λ_p) ∂η/∂t + ∇·q_b = 0
+/// ```
+/// where `η` is the bed elevation, `λ_p` is the bed porosity, and `q_b` is
+/// the bed-load flux vector.  Forward finite differences are used.
+#[derive(Debug, Clone)]
+pub struct ExnerGrid {
+    /// Number of cells in the x-direction.
+    pub grid_nx: usize,
+    /// Number of cells in the y-direction.
+    pub grid_ny: usize,
+    /// Cell size in x (m).
+    pub dx: f64,
+    /// Cell size in y (m).
+    pub dy: f64,
+    /// Bed porosity λ_p (0..1).
+    pub porosity: f64,
+    /// Bed elevation η (m), stored in row-major order `[j * grid_nx + i]`.
+    pub bed_elevation: Vec<f64>,
+    /// x-component of bed-load flux q_bx at cell centres, row-major.
+    pub flux_x: Vec<f64>,
+    /// y-component of bed-load flux q_by at cell centres, row-major.
+    pub flux_y: Vec<f64>,
+}
+
+impl ExnerGrid {
+    /// Create a new flat Exner grid with zero fluxes.
+    ///
+    /// * `grid_nx`, `grid_ny` — number of cells in each direction.
+    /// * `dx`, `dy` — cell dimensions (m).
+    /// * `porosity` — bed porosity (typical ~0.4).
+    /// * `initial_elevation` — uniform initial bed elevation (m).
+    pub fn new(
+        grid_nx: usize,
+        grid_ny: usize,
+        dx: f64,
+        dy: f64,
+        porosity: f64,
+        initial_elevation: f64,
+    ) -> Self {
+        let n = grid_nx * grid_ny;
+        Self {
+            grid_nx,
+            grid_ny,
+            dx,
+            dy,
+            porosity,
+            bed_elevation: vec![initial_elevation; n],
+            flux_x: vec![0.0_f64; n],
+            flux_y: vec![0.0_f64; n],
+        }
+    }
+
+    /// Advance bed elevation by `dt` seconds using the Exner equation.
+    ///
+    /// Uses forward finite differences for the flux divergence.  At domain
+    /// boundaries a backward difference is used to maintain a one-sided stencil.
+    ///
+    /// `∂η/∂t = -(∇·q_b) / (1 - λ_p)`
+    pub fn compute_bed_change(&mut self, dt: f64) {
+        let nx = self.grid_nx;
+        let ny = self.grid_ny;
+        let dx = self.dx;
+        let dy = self.dy;
+        let lambda_p = 1.0 - self.porosity;
+        let lambda_p_safe = if lambda_p.abs() > 1e-30 {
+            lambda_p
+        } else {
+            1.0
+        };
+
+        let mut deta = vec![0.0_f64; nx * ny];
+
+        for j in 0..ny {
+            for i in 0..nx {
+                // Forward difference in x
+                let dqbx_dx = if i + 1 < nx {
+                    (self.flux_x[j * nx + i + 1] - self.flux_x[j * nx + i]) / dx
+                } else {
+                    // Backward difference at x-boundary
+                    let i_prev = i.saturating_sub(1);
+                    (self.flux_x[j * nx + i] - self.flux_x[j * nx + i_prev]) / dx
+                };
+
+                // Forward difference in y
+                let dqby_dy = if j + 1 < ny {
+                    (self.flux_y[(j + 1) * nx + i] - self.flux_y[j * nx + i]) / dy
+                } else {
+                    // Backward difference at y-boundary
+                    let j_prev = j.saturating_sub(1);
+                    (self.flux_y[j * nx + i] - self.flux_y[j_prev * nx + i]) / dy
+                };
+
+                let div_qb = dqbx_dx + dqby_dy;
+                deta[j * nx + i] = -dt * div_qb / lambda_p_safe;
+            }
+        }
+
+        for (eta, d) in self.bed_elevation.iter_mut().zip(deta.iter()) {
+            *eta += d;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Avalanche / angle of repose
 // ---------------------------------------------------------------------------
 
@@ -1803,5 +1914,81 @@ mod tests {
         assert!(qt.is_finite());
         // Zero velocity => zero transport
         assert!((transport_capacity_eh(0.0, 0.5e-3, 2650.0, 1000.0, 0.003)).abs() < TOL);
+    }
+
+    // ── Exner grid mass conservation (E5) ────────────────────────────────────
+
+    #[test]
+    fn test_exner_grid_mass_conservation() {
+        // 4×4 grid with uniform outward flux: sum of bed elevation changes
+        // should match -sum(outflux * dt) / (1 - porosity) within 1%.
+        let nx = 4_usize;
+        let ny = 4_usize;
+        let dx = 1.0_f64;
+        let dy = 1.0_f64;
+        let porosity = 0.4_f64;
+        let dt = 0.1_f64;
+
+        let mut grid = ExnerGrid::new(nx, ny, dx, dy, porosity, 0.0);
+
+        // Set a constant x-flux of 0.01 m²/s everywhere and zero y-flux
+        let q_val = 0.01_f64;
+        for v in &mut grid.flux_x {
+            *v = q_val;
+        }
+
+        let eta_before: f64 = grid.bed_elevation.iter().sum();
+        grid.compute_bed_change(dt);
+        let eta_after: f64 = grid.bed_elevation.iter().sum();
+
+        let total_change = eta_after - eta_before; // Σ dη
+
+        // For a uniform flux q_val in x, the interior divergence ∂q_x/∂x = 0
+        // (forward difference of equal values).  At x-boundaries (i = nx-1),
+        // the backward difference is also 0.  So the bed should not change.
+        // This validates the finite-difference scheme is consistent.
+        assert!(
+            total_change.abs() < 1e-12,
+            "uniform flux should give zero divergence: total_change={total_change}"
+        );
+    }
+
+    #[test]
+    fn test_exner_grid_nonzero_flux_divergence() {
+        // A linearly increasing flux qx[j*nx+i] = (i+1) * 0.001 gives
+        // ∂qx/∂x = 0.001/dx everywhere.  The bed should erode uniformly.
+        let nx = 5_usize;
+        let ny = 3_usize;
+        let dx = 1.0_f64;
+        let dy = 1.0_f64;
+        let porosity = 0.4_f64;
+        let dt = 1.0_f64;
+        let lambda_p = 1.0 - porosity;
+
+        let mut grid = ExnerGrid::new(nx, ny, dx, dy, porosity, 0.0);
+
+        let q_slope = 0.001_f64;
+        for j in 0..ny {
+            for i in 0..nx {
+                grid.flux_x[j * nx + i] = (i + 1) as f64 * q_slope;
+            }
+        }
+
+        let eta_before: Vec<f64> = grid.bed_elevation.clone();
+        grid.compute_bed_change(dt);
+
+        // Interior cells (i < nx-1): forward diff = q_slope/dx
+        // Exner: dη = -dt * q_slope / (dx * (1-λ_p))
+        let expected_deta_interior = -dt * q_slope / (dx * lambda_p);
+
+        for j in 0..ny {
+            for i in 0..nx - 1 {
+                let deta = grid.bed_elevation[j * nx + i] - eta_before[j * nx + i];
+                assert!(
+                    (deta - expected_deta_interior).abs() < 1e-12,
+                    "interior cell ({i},{j}): deta={deta}, expected={expected_deta_interior}"
+                );
+            }
+        }
     }
 }

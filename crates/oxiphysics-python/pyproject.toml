@@ -1,0 +1,44 @@
+[build-system]
+requires = ["maturin>=1.8,<3.0"]
+build-backend = "maturin"
+
+[project]
+name = "oxiphysics"
+version = "0.1.1"
+description = "Python bindings for the OxiPhysics engine"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+authors = [{ name = "COOLJAPAN OU (Team Kitasan)" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+keywords = ["physics", "simulation", "rust", "pyo3"]
+
+[project.urls]
+Homepage = "https://github.com/cool-japan/oxiphysics"
+Repository = "https://github.com/cool-japan/oxiphysics"
+Documentation = "https://docs.rs/oxiphysics"
+
+[tool.maturin]
+bindings = "pyo3"
+features = ["pyo3/extension-module"]
+module-name = "oxiphysics"
+manifest-path = "Cargo.toml"
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests", "tests"]
+addopts = "-v"
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "numpy>=1.24"]

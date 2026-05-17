@@ -3,13 +3,18 @@ name = "oxiphysics-constraints"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
 description = "Constraint solvers for the OxiPhysics engine"
+readme = "README.md"
 categories = ["science", "simulation", "algorithms"]
 keywords = ["physics", "constraints", "solver", "robotics", "simulation"]
 
 [dependencies]
 rand = { workspace = true }
 thiserror = { workspace = true }
+rayon = { workspace = true }
 oxiphysics-core = { workspace = true }
 oxiphysics-collision = { workspace = true }
 oxiphysics-rigid = { workspace = true }
+oxiphysics-gpu = { workspace = true }

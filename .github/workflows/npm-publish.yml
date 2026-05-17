@@ -108,6 +108,12 @@ jobs:
           name: npm-pkg-node
           path: crates/oxiphysics-wasm/pkg-node/
 
+      - name: Upload demos artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-demos
+          path: crates/oxiphysics-wasm/web-demos/
+
   publish:
     name: Publish to npm
     runs-on: ubuntu-latest

@@ -661,6 +661,8 @@ pub struct IonTransportLBM {
     pub valence: i32,
     /// Temperature (K) for drift term scaling.
     pub temperature: f64,
+    /// Ion diffusion coefficient D (m²/s) — used in Nernst-Einstein mobility.
+    pub diffusivity: f64,
 }
 
 impl IonTransportLBM {
@@ -675,6 +677,9 @@ impl IonTransportLBM {
         let n = nx * ny;
         // Equilibrium: f_i^eq = w_i * c
         let f = Self::WEIGHTS.iter().map(|&w| vec![w * c0; n]).collect();
+        // Default diffusivity from Einstein relation: D = cs² * (τ - 0.5)
+        // with cs²=1/3 (lattice units). User may override with a physical value.
+        let diffusivity = (1.0 / 3.0) * (tau - 0.5);
         Self {
             nx,
             ny,
@@ -682,7 +687,15 @@ impl IonTransportLBM {
             tau,
             valence,
             temperature,
+            diffusivity,
         }
+    }
+
+    /// Electrochemical mobility via Nernst-Einstein relation: μ = z·e·D / (k_B·T).
+    ///
+    /// Returns mobility in SI units (m²·V⁻¹·s⁻¹).
+    pub fn mobility(&self) -> f64 {
+        self.valence as f64 * E_CHARGE * self.diffusivity / (K_B * self.temperature)
     }
 
     /// Macroscopic concentration c(x) = Σᵢ fᵢ.
@@ -733,7 +746,8 @@ impl IonTransportLBM {
                 } else {
                     0.0
                 };
-                let mob = z_e_over_kbt * self.f[0][0] / (self.f[0][0] + 1e-30); // placeholder scale
+                // Nernst-Einstein mobility μ = z·e·D / (k_B·T)
+                let mob = z_e_over_kbt * self.diffusivity;
                 let u_drift = [ux[idx] + mob * ex_lat, uy[idx] + mob * ey_lat];
                 for i in 0..5 {
                     let feq = Self::equilibrium(c[idx], u_drift, i);
@@ -1194,5 +1208,22 @@ mod tests {
             let feq = IonTransportLBM::equilibrium(c, u_drift, i);
             assert!((feq - IonTransportLBM::WEIGHTS[i]).abs() < 1e-14);
         }
+    }
+
+    #[test]
+    fn test_nernst_einstein_mobility() {
+        // z=1, D=1e-9 m²/s, T=298 K → μ ≈ 3.91e-8 m²/(V·s)
+        let mut lbm = IonTransportLBM::new(4, 4, 1.0, 1, 298.0, 1.0);
+        lbm.diffusivity = 1e-9;
+        let mu = lbm.mobility();
+        let expected = 1.0_f64 * E_CHARGE * 1e-9 / (K_B * 298.0);
+        assert!(
+            (mu - expected).abs() / expected < 1e-6,
+            "mobility = {mu:.4e}, expected ≈ {expected:.4e}"
+        );
+        assert!(
+            (mu - 3.91e-8).abs() < 0.05e-8,
+            "mobility {mu:.4e} not near 3.91e-8"
+        );
     }
 }

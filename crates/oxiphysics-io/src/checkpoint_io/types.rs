@@ -7,6 +7,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+/// Zstandard frame magic bytes used to detect compressed checkpoint files.
+const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+
 #[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{
@@ -512,7 +515,7 @@ impl RestartStrategy {
 pub struct CheckpointWriter {
     /// Destination file path.
     pub path: PathBuf,
-    /// Whether to compress the output (currently a no-op placeholder).
+    /// Whether to Zstandard-compress the file after [`finalize`](CheckpointWriter::finalize).
     pub compress: bool,
 }
 impl CheckpointWriter {
@@ -523,7 +526,7 @@ impl CheckpointWriter {
             compress: false,
         }
     }
-    /// Enable or disable compression (placeholder for future extension).
+    /// Enable or disable Zstandard compression of the finalised file.
     pub fn with_compress(mut self, compress: bool) -> Self {
         self.compress = compress;
         self
@@ -573,17 +576,29 @@ impl CheckpointWriter {
         }
         f.flush()
     }
-    /// Write the footer record containing the file checksum.
+    /// Write the footer record containing the file checksum, then optionally
+    /// compress the entire file in-place with Zstandard.
     ///
     /// Reads back the entire file written so far, computes the checksum, and
-    /// appends a footer tag followed by the 4-byte checksum.
+    /// appends a footer tag followed by the 4-byte checksum.  If
+    /// [`with_compress`](CheckpointWriter::with_compress) was set to `true`,
+    /// the finalized file is replaced with its Zstandard-compressed equivalent.
     pub fn finalize(&self) -> io::Result<()> {
         let existing = fs::read(&self.path)?;
         let csum = compute_checksum(&existing);
-        let mut f = self.open_append()?;
-        f.write_all(&[TAG_FOOTER])?;
-        f.write_all(&csum.to_le_bytes())?;
-        f.flush()
+        {
+            let mut f = self.open_append()?;
+            f.write_all(&[TAG_FOOTER])?;
+            f.write_all(&csum.to_le_bytes())?;
+            f.flush()?;
+        }
+        if self.compress {
+            let raw = fs::read(&self.path)?;
+            let compressed = oxiarc_zstd::compress_with_level(&raw, 3)
+                .map_err(|e| io::Error::other(format!("zstd compress: {e}")))?;
+            fs::write(&self.path, &compressed)?;
+        }
+        Ok(())
     }
     fn open_append(&self) -> io::Result<BufWriter<File>> {
         Ok(BufWriter::new(
@@ -1192,9 +1207,23 @@ impl CheckpointReader {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
+
+    /// Read the raw bytes from the file, transparently decompressing Zstandard
+    /// frames if the file starts with the zstd magic bytes.
+    fn read_raw_bytes(&self) -> io::Result<Vec<u8>> {
+        let raw = fs::read(&self.path)?;
+        if raw.starts_with(&ZSTD_MAGIC) {
+            oxiarc_zstd::decompress(&raw).map_err(|e| {
+                io::Error::new(io::ErrorKind::InvalidData, format!("zstd decompress: {e}"))
+            })
+        } else {
+            Ok(raw)
+        }
+    }
+
     /// Read and return the checkpoint metadata from the file header.
     pub fn read_metadata(&self) -> io::Result<CheckpointMetadata> {
-        let data = fs::read(&self.path)?;
+        let data = self.read_raw_bytes()?;
         let mut cursor = 0usize;
         let magic = read_u32(&data, &mut cursor)?;
         if magic != MAGIC {
@@ -1223,7 +1252,7 @@ impl CheckpointReader {
     }
     /// Read and return the named scalar array from the file.
     pub fn read_scalars(&self, name: &str) -> io::Result<Vec<f64>> {
-        let data = fs::read(&self.path)?;
+        let data = self.read_raw_bytes()?;
         let mut cursor = self.skip_header(&data)?;
         while cursor < data.len() {
             let tag = data[cursor];
@@ -1274,7 +1303,7 @@ impl CheckpointReader {
         Ok(cursor)
     }
     fn read_vec3_block(&self, target_tag: u8) -> io::Result<Vec<[f64; 3]>> {
-        let data = fs::read(&self.path)?;
+        let data = self.read_raw_bytes()?;
         let mut cursor = self.skip_header(&data)?;
         while cursor < data.len() {
             let tag = data[cursor];

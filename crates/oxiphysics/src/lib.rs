@@ -22,27 +22,54 @@
 //!
 //! | Module | Description |
 //! |--------|-------------|
-//! | [`core`] | Math types, traits, ODE solvers, stochastic processes |
-//! | [`geometry`] | Shape primitives and mesh utilities |
-//! | [`collision`] | Broad-phase and narrow-phase collision detection |
-//! | [`rigid`] | Rigid body dynamics |
-//! | [`constraints`] | Constraint / joint solvers |
-//! | [`vehicle`] | Vehicle dynamics simulation |
-//! | [`sph`] | Smoothed-particle hydrodynamics |
-//! | [`lbm`] | Lattice Boltzmann method |
-//! | [`fem`] | Finite element method |
-//! | [`md`] | Molecular dynamics |
-//! | [`softbody`] | Soft body / cloth simulation |
-//! | [`materials`] | Material property database |
-//! | [`gpu`] | GPU acceleration backends |
-//! | [`viz`] | Visualization helpers |
-//! | [`io`] | File I/O and serialization |
-//! | [`pipeline`] | Full simulation pipeline |
+//! | `core` | Math types, traits, ODE solvers, stochastic processes |
+//! | `geometry` | Shape primitives and mesh utilities |
+//! | `collision` | Broad-phase and narrow-phase collision detection |
+//! | `rigid` | Rigid body dynamics |
+//! | `articulated` | Featherstone articulated-body dynamics (RNEA + ABA) |
+//! | `constraints` | Constraint / joint solvers |
+//! | `vehicle` | Vehicle dynamics simulation |
+//! | `sph` | Smoothed-particle hydrodynamics |
+//! | `lbm` | Lattice Boltzmann method |
+//! | `fem` | Finite element method |
+//! | `md` | Molecular dynamics |
+//! | `softbody` | Soft body / cloth simulation |
+//! | `materials` | Material property database |
+//! | `gpu` | GPU acceleration backends |
+//! | `viz` | Visualization helpers |
+//! | `io` | File I/O and serialization |
+//! | `pipeline` | Full simulation pipeline |
+//! | `force_field` | Spatial force fields (gravity wells, vortex, explosion) |
+//! | `event_bus` | Physics event publish/subscribe system |
+//! | `replay` | Deterministic simulation replay (record → replay) |
+//! | `query` | Spatial queries — raycasting, sphere sweeps, overlaps |
+//! | `scene` | Declarative scene description with JSON round-trip |
+//! | `snapshot` | World-state snapshots with delta tracking |
+//! | `trigger` | Trigger/sensor volumes — enter/exit/stay events |
+//! | `animation` | Keyframe animation tracks (Vec3 + quaternion SLERP) |
+//! | `material_table` | Runtime material interaction table with combine rules |
+//! | `debug_draw` | Renderer-agnostic debug draw command buffer |
+//! | `contact_cache` | Persistent contact pair cache with warm-start impulses |
+//! | `buoyancy` | Archimedes buoyancy and drag forces for fluid volumes |
+//! | `scheduler` | Priority-based physics step budget allocation per island |
+//! | `spatial_grid` | Uniform spatial hash grid for fast neighbourhood queries |
+//! | `lod` | Level-of-Detail simulation tier management |
+//! | `noise` | Procedural 3D value noise and fractal Brownian motion |
+//! | `interpolator` | Smooth damp, exp decay, spring followers, lerp utilities |
+//! | `telemetry` | Per-step physics stats, rolling averages, CSV export |
+//! | `character` | Kinematic capsule character controller with sweep-and-slide, step-up, and slope handling |
+//! | `rope` | Rope / chain distance constraints with Verlet integration and Gauss-Seidel projection |
+//! | `xpbd` | Extended Position-Based Dynamics integrator with compliance and Lagrange multipliers |
+//! | `ik` | Inverse kinematics — FABRIK and 2-bone analytic IK with joint cone limits |
+//! | `profiler` | Hierarchical scoped profiler with RAII guards, frame reports, and flamegraph export |
+//! | `aero` | Aerodynamics — velocity-squared drag and airfoil lift/drag forces |
+//! | `navmesh` | Navigation mesh with A* pathfinding and funnel-algorithm path smoothing |
+//! | `rollback` | Snapshot-based rollback and deterministic lockstep input buffer |
 //!
 //! ## Stability Policy
 //!
 //! Every public API is annotated with a stability level. See
-//! [`core::stability`] for details and the [`core::stability::HasStability`]
+//! `core::stability` for details and the `core::stability::HasStability`
 //! trait for programmatic queries. Stable APIs follow semver; unstable and
 //! experimental APIs may change across minor releases.
 #![warn(missing_docs)]
@@ -58,6 +85,9 @@ pub use oxiphysics_collision as collision;
 
 /// Rigid body dynamics.
 pub use oxiphysics_rigid as rigid;
+
+/// Featherstone articulated-body dynamics (RNEA + ABA).
+pub use oxiphysics_articulated as articulated;
 
 /// Constraint solvers.
 pub use oxiphysics_constraints as constraints;
@@ -92,9 +122,6 @@ pub use oxiphysics_viz as viz;
 /// File I/O and serialization.
 pub use oxiphysics_io as io;
 
-/// Python bindings.
-pub use oxiphysics_python as python;
-
 /// WebAssembly bindings.
 pub use oxiphysics_wasm as wasm;
 
@@ -103,6 +130,99 @@ pub mod pipeline;
 
 /// Performance regression testing infrastructure.
 pub mod perf_regression;
+
+/// Spatial force fields (gravity wells, vortex, wind, explosion).
+pub mod force_field;
+
+/// Physics event publish/subscribe system.
+pub mod event_bus;
+
+/// Deterministic simulation replay (record → serialise → replay).
+pub mod replay;
+
+/// Spatial query API — ray casting, sphere sweeps, and overlap tests.
+pub mod query;
+
+/// Declarative scene description with JSON round-trip and fluent builder.
+pub mod scene;
+
+/// World-state snapshots with delta tracking and ring-buffer history.
+pub mod snapshot;
+
+/// Trigger/sensor volumes — detect body enter/exit/stay without contact forces.
+pub mod trigger;
+
+/// Keyframe animation tracks (Vec3 lerp + quaternion SLERP) for scripted motion.
+pub mod animation;
+
+/// Runtime material interaction table with combine rules and per-pair overrides.
+pub mod material_table;
+
+/// Renderer-agnostic debug draw command buffer for visualising physics state.
+pub mod debug_draw;
+
+/// Persistent contact pair cache with warm-start impulse data.
+pub mod contact_cache;
+
+/// Archimedes buoyancy and viscous drag for bodies in fluid volumes.
+pub mod buoyancy;
+
+/// Priority-based physics step budget allocation per simulation island.
+pub mod scheduler;
+
+/// Uniform spatial hash grid for fast neighbourhood queries.
+pub mod spatial_grid;
+
+/// Level-of-Detail simulation tier management.
+pub mod lod;
+
+/// Procedural 3D value noise and fractal Brownian motion (fBm).
+pub mod noise;
+
+/// Motion interpolation — smooth damp, exponential decay, spring followers.
+pub mod interpolator;
+
+/// Per-step physics telemetry, rolling averages, and CSV export.
+pub mod telemetry;
+
+/// Rope / chain distance constraints with Verlet integration and Gauss-Seidel projection.
+pub mod rope;
+
+/// Extended Position-Based Dynamics integrator with compliance and Lagrange multipliers.
+pub mod xpbd;
+
+/// Kinematic capsule character controller with sweep-and-slide, step-up, and slope handling.
+pub mod character;
+
+/// Inverse kinematics — FABRIK and 2-bone analytic IK with joint cone limits.
+pub mod ik;
+
+/// Hierarchical scoped profiler with RAII guards, frame reports, and flamegraph export.
+pub mod profiler;
+
+/// Aerodynamics — velocity-squared drag and airfoil lift/drag forces.
+pub mod aero;
+
+/// Navigation mesh with A* pathfinding and funnel-algorithm path smoothing.
+pub mod navmesh;
+
+/// Snapshot-based rollback and deterministic lockstep input buffer.
+pub mod rollback;
+
+/// Cross-domain auto-coupling runtime (OxiCAR — Blueprint KF-1).
+///
+/// Provides a domain-agnostic [`coupling::DomainCoupler`] framework for
+/// linking FEM, SPH, LBM, and MD regions at shared interfaces.
+pub mod coupling;
+
+// Re-export the most commonly used coupling types at the crate root.
+#[doc(inline)]
+pub use coupling::{
+    CouplingDomain, CouplingReport, CouplingRuntime, DomainCoupler, DomainKind, InterfaceForce,
+    InterfaceForceVec, InterfaceSite, InterfaceState, InterfaceStateVec,
+    fem_sph::FemSphCoupler,
+    md_continuum_adapter::{MdContinuumAdapter, MockContinuumDomain, MockMdDomain},
+};
 
 #[cfg(test)]
 mod tests {

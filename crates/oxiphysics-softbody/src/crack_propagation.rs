@@ -770,27 +770,54 @@ impl CohesiveElement {
     }
 }
 
-/// Insert cohesive zone elements along the edges on both sides of a crack plane.
+/// Insert cohesive zone elements along a crack plane defined by `edge_indices`.
 ///
-/// For each edge in `edge_indices`, inserts a cohesive element whose top/bottom
-/// faces are the edge endpoints. Returns the newly created cohesive elements.
-#[allow(dead_code)]
+/// For each unique node that appears on at least one crack edge, a duplicate
+/// node is created (same position and mass).  Top-face elements keep the original
+/// node IDs; bottom-face elements use the new duplicate IDs.  Each crack edge
+/// therefore yields one [`CohesiveElement`] whose `top_nodes` ≠ `bottom_nodes`.
+///
+/// Newly created nodes are appended to `mesh.nodes`.
+///
+/// Returns the newly created cohesive elements.
 pub fn insert_cohesive_elements(
-    mesh: &SoftBodyMesh,
+    mesh: &mut SoftBodyMesh,
     edge_indices: &[usize],
     t_max: f64,
     delta_c: f64,
 ) -> Vec<CohesiveElement> {
+    use std::collections::HashMap;
+
+    // Collect all unique node IDs that lie on the specified crack edges.
+    let mut crack_nodes: Vec<usize> = edge_indices
+        .iter()
+        .filter_map(|&ei| mesh.edges.get(ei).copied())
+        .flat_map(|[a, b]| std::iter::once(a).chain(std::iter::once(b)))
+        .collect();
+    crack_nodes.sort_unstable();
+    crack_nodes.dedup();
+
+    // For each crack node, create a duplicate node (same position and mass) and
+    // record the mapping orig → duplicate.
+    let mut dup_map: HashMap<usize, usize> = HashMap::new();
+    for &orig in &crack_nodes {
+        if orig >= mesh.nodes.len() {
+            continue;
+        }
+        let pos = mesh.nodes[orig].position;
+        let mass = mesh.nodes[orig].mass;
+        let dup_id = mesh.add_node(pos, mass);
+        dup_map.insert(orig, dup_id);
+    }
+
+    // Build cohesive elements: top face uses original nodes, bottom face uses duplicates.
     edge_indices
         .iter()
         .filter_map(|&ei| {
-            if ei >= mesh.edges.len() {
-                return None;
-            }
-            let [a, b] = mesh.edges[ei];
-            // Create a degenerate cohesive element where top/bottom share the same two nodes
-            // (placeholder until full mesh duplication is implemented)
-            Some(CohesiveElement::new([a, b], [a, b], t_max, delta_c))
+            let [a, b] = *mesh.edges.get(ei)?;
+            let dup_a = *dup_map.get(&a)?;
+            let dup_b = *dup_map.get(&b)?;
+            Some(CohesiveElement::new([a, b], [dup_a, dup_b], t_max, delta_c))
         })
         .collect()
 }
@@ -1538,8 +1565,39 @@ mod tests {
         mesh.add_node([2.0, 0.0, 0.0], 1.0);
         mesh.add_edge(0, 1);
         mesh.add_edge(1, 2);
-        let cohesive = insert_cohesive_elements(&mesh, &[0, 1], 1e6, 1e-4);
+        let cohesive = insert_cohesive_elements(&mut mesh, &[0, 1], 1e6, 1e-4);
         assert_eq!(cohesive.len(), 2);
+    }
+
+    // E1. Cohesive element top/bottom nodes must be distinct (non-degenerate).
+    #[test]
+    fn test_insert_cohesive_elements_non_degenerate() {
+        let mut mesh = SoftBodyMesh::new();
+        mesh.add_node([0.0; 3], 1.0); // 0
+        mesh.add_node([1.0, 0.0, 0.0], 1.0); // 1
+        mesh.add_node([2.0, 0.0, 0.0], 1.0); // 2
+        mesh.add_edge(0, 1);
+        mesh.add_edge(1, 2);
+        let node_count_before = mesh.nodes.len();
+        let cohesive = insert_cohesive_elements(&mut mesh, &[0, 1], 1e6, 1e-4);
+
+        // New duplicate nodes should have been added.
+        assert!(
+            mesh.nodes.len() > node_count_before,
+            "duplicate nodes should be created"
+        );
+
+        // Every cohesive element must have top_nodes ≠ bottom_nodes (non-degenerate).
+        for (i, ce) in cohesive.iter().enumerate() {
+            assert_ne!(
+                ce.top_nodes[0], ce.bottom_nodes[0],
+                "element {i}: top_node[0] == bottom_node[0] (degenerate)"
+            );
+            assert_ne!(
+                ce.top_nodes[1], ce.bottom_nodes[1],
+                "element {i}: top_node[1] == bottom_node[1] (degenerate)"
+            );
+        }
     }
 
     // --- CrackFrontTracker ---

@@ -3,34 +3,40 @@
 
 //! Geometry Queries: AABB, Sphere, ConvexHull.
 
-#![allow(missing_docs)]
+use pyo3::prelude::*;
 
 // ===========================================================================
 // Geometry Queries
 // ===========================================================================
 
 /// Axis-aligned bounding box (AABB) in 3-D.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct PyAabb {
     /// Minimum corner `[xmin, ymin, zmin]`.
+    #[pyo3(get, set)]
     pub min: [f64; 3],
     /// Maximum corner `[xmax, ymax, zmax]`.
+    #[pyo3(get, set)]
     pub max: [f64; 3],
 }
 
+#[pymethods]
 impl PyAabb {
     /// Create from min/max corner points.
+    #[new]
     pub fn new(min: [f64; 3], max: [f64; 3]) -> Self {
         Self { min, max }
     }
 
     /// Create a unit cube centred at the origin.
+    #[staticmethod]
     pub fn unit() -> Self {
         Self::new([-0.5; 3], [0.5; 3])
     }
 
     /// Create from centre and half-extents.
+    #[staticmethod]
     pub fn from_center_half_extents(center: [f64; 3], he: [f64; 3]) -> Self {
         Self {
             min: [center[0] - he[0], center[1] - he[1], center[2] - he[2]],
@@ -110,17 +116,21 @@ impl PyAabb {
 }
 
 /// Sphere geometry query helper.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct PySphere {
     /// Centre of the sphere.
+    #[pyo3(get, set)]
     pub center: [f64; 3],
     /// Radius.
+    #[pyo3(get, set)]
     pub radius: f64,
 }
 
+#[pymethods]
 impl PySphere {
     /// Create a sphere from centre and radius.
+    #[new]
     pub fn new(center: [f64; 3], radius: f64) -> Self {
         Self {
             center,
@@ -129,6 +139,7 @@ impl PySphere {
     }
 
     /// Unit sphere at origin.
+    #[staticmethod]
     pub fn unit() -> Self {
         Self::new([0.0; 3], 1.0)
     }
@@ -181,20 +192,24 @@ impl PySphere {
 ///
 /// The hull is not computed internally; the caller is responsible for
 /// providing convex vertices. Methods here are geometry helpers.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PyConvexHull {
     /// Vertices of the convex hull.
+    #[pyo3(get, set)]
     pub vertices: Vec<[f64; 3]>,
 }
 
+#[pymethods]
 impl PyConvexHull {
     /// Create a convex hull from a list of vertices.
+    #[new]
     pub fn new(vertices: Vec<[f64; 3]>) -> Self {
         Self { vertices }
     }
 
     /// Create a convex hull approximating a unit cube.
+    #[staticmethod]
     pub fn unit_cube() -> Self {
         let verts: Vec<[f64; 3]> = [
             [-0.5, -0.5, -0.5],

@@ -1,6 +1,6 @@
 # oxiphysics-viz TODO
 
-Last updated: 2026-04-06 | Version: 0.1.0
+Last updated: 2026-05-17 | Version: 0.1.1
 
 ## Phase 1: Foundation
 - [x] Define core types and traits
@@ -39,7 +39,7 @@ Last updated: 2026-04-06 | Version: 0.1.0
 - [x] VR visualization pipeline
 
 ## Future / Post-0.1
-- [ ] GPU/wgpu backend (feature-gated)
-- [ ] WebAssembly canvas rendering path
-- [ ] Interactive picking / selection in rasterizer
-- [ ] HDR framebuffer and wider color spaces
+- [x] GPU/wgpu backend (feature-gated) — `wgpu_renderer` (`GpuRenderer`, Phong+particle+blit WGSL shaders, `GpuRenderTarget`, CPU fallback)
+- [x] WebAssembly canvas rendering path (`wasm_canvas` — `CanvasBuffer`, `CanvasRasterizer`, Porter-Duff blending)
+- [x] Interactive picking / selection in rasterizer (`picking` — `Picker`, Möller–Trumbore, `SelectionSet`)
+- [x] HDR framebuffer and wider color spaces (`hdr_framebuffer` — f32 RGBA, ACES/Reinhard/Filmic/AgX tone mapping)

@@ -20,7 +20,9 @@
 
 use crate::engine::WasmPhysicsEngine;
 use crate::types::{BodyState, ContactResult, DebugInfo};
+use crate::wasm_helpers::{err_to_jsvalue, to_js_value};
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::*;
 
 // ---------------------------------------------------------------------------
 // BodyAabb
@@ -30,13 +32,16 @@ use serde::{Deserialize, Serialize};
 ///
 /// Computed by the query layer from position + default radius (0.5 m).
 /// In a production engine, collider radii would be used.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BodyAabb {
     /// Body handle.
     pub handle: u32,
     /// Minimum corner `[min_x, min_y, min_z]`.
+    #[wasm_bindgen(skip)]
     pub min: [f64; 3],
     /// Maximum corner `[max_x, max_y, max_z]`.
+    #[wasm_bindgen(skip)]
     pub max: [f64; 3],
 }
 
@@ -108,21 +113,100 @@ impl BodyAabb {
 }
 
 // ---------------------------------------------------------------------------
+// BodyAabb — wasm-bindgen impl
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl BodyAabb {
+    /// Construct a `BodyAabb` from a body handle, sphere centre, and radius.
+    ///
+    /// `position_flat` must be `[x, y, z]`; missing components default to `0.0`.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new(handle: u32, position_flat: Vec<f64>, radius: f64) -> BodyAabb {
+        BodyAabb::from_sphere(handle, vec3_from_flat(&position_flat), radius)
+    }
+
+    /// Minimum corner `[min_x, min_y, min_z]` as a `Vec<f64>`.
+    #[wasm_bindgen(getter)]
+    pub fn min(&self) -> Vec<f64> {
+        self.min.to_vec()
+    }
+
+    /// Maximum corner `[max_x, max_y, max_z]` as a `Vec<f64>`.
+    #[wasm_bindgen(getter)]
+    pub fn max(&self) -> Vec<f64> {
+        self.max.to_vec()
+    }
+
+    /// Centre point of this AABB.
+    #[wasm_bindgen(js_name = "center")]
+    pub fn center_js(&self) -> Vec<f64> {
+        self.center().to_vec()
+    }
+
+    /// Half-extents of this AABB.
+    #[wasm_bindgen(js_name = "half_extents")]
+    pub fn half_extents_js(&self) -> Vec<f64> {
+        self.half_extents().to_vec()
+    }
+
+    /// Returns `true` when this AABB overlaps `other`.
+    #[wasm_bindgen(js_name = "overlaps")]
+    pub fn overlaps_js(&self, other: &BodyAabb) -> bool {
+        self.overlaps(other)
+    }
+
+    /// Returns `true` when this AABB overlaps the test box `[test_min, test_max]`.
+    ///
+    /// `test_min_flat` and `test_max_flat` must be 3-element arrays.
+    #[wasm_bindgen(js_name = "overlaps_box")]
+    pub fn overlaps_box_js(&self, test_min_flat: Vec<f64>, test_max_flat: Vec<f64>) -> bool {
+        self.overlaps_box(
+            vec3_from_flat(&test_min_flat),
+            vec3_from_flat(&test_max_flat),
+        )
+    }
+
+    /// Returns `true` when the point `[x, y, z]` is inside or on this AABB.
+    #[wasm_bindgen(js_name = "contains_point")]
+    pub fn contains_point_js(&self, point_flat: Vec<f64>) -> bool {
+        self.contains_point(vec3_from_flat(&point_flat))
+    }
+
+    /// Serialise to JSON.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self).map_err(err_to_jsvalue)
+    }
+
+    /// Serialise to a `JsValue`.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // BodyQueryResult
 // ---------------------------------------------------------------------------
 
 /// Full query result for a single body.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BodyQueryResult {
     /// Body handle.
     pub handle: u32,
     /// Current position `[x, y, z]`.
+    #[wasm_bindgen(skip)]
     pub position: [f64; 3],
     /// Current orientation quaternion `[x, y, z, w]`.
+    #[wasm_bindgen(skip)]
     pub rotation: [f64; 4],
     /// Current linear velocity `[vx, vy, vz]`.
+    #[wasm_bindgen(skip)]
     pub linear_velocity: [f64; 3],
     /// Current angular velocity `[wx, wy, wz]`.
+    #[wasm_bindgen(skip)]
     pub angular_velocity: [f64; 3],
     /// Whether the body is sleeping.
     pub is_sleeping: bool,
@@ -131,6 +215,7 @@ pub struct BodyQueryResult {
     /// Kinetic energy.
     pub kinetic_energy: f64,
     /// Axis-aligned bounding box (sphere approximation, radius=0.5).
+    #[wasm_bindgen(skip)]
     pub aabb: BodyAabb,
     /// Speed (magnitude of linear velocity).
     pub speed: f64,
@@ -161,19 +246,81 @@ impl BodyQueryResult {
 }
 
 // ---------------------------------------------------------------------------
+// BodyQueryResult — wasm-bindgen impl
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl BodyQueryResult {
+    /// Build from a live engine and a body handle.
+    ///
+    /// Returns `undefined` (i.e. `None`) when the handle does not refer to a body.
+    #[wasm_bindgen(js_name = "from_engine")]
+    pub fn from_engine_js(engine: &WasmPhysicsEngine, handle: u32) -> Option<BodyQueryResult> {
+        BodyQueryResult::from_engine(engine, handle)
+    }
+
+    /// Position `[x, y, z]` as a `Vec<f64>`.
+    #[wasm_bindgen(getter)]
+    pub fn position(&self) -> Vec<f64> {
+        self.position.to_vec()
+    }
+
+    /// Orientation quaternion `[x, y, z, w]` as a `Vec<f64>`.
+    #[wasm_bindgen(getter)]
+    pub fn rotation(&self) -> Vec<f64> {
+        self.rotation.to_vec()
+    }
+
+    /// Linear velocity `[vx, vy, vz]` as a `Vec<f64>`.
+    #[wasm_bindgen(getter)]
+    pub fn linear_velocity(&self) -> Vec<f64> {
+        self.linear_velocity.to_vec()
+    }
+
+    /// Angular velocity `[wx, wy, wz]` as a `Vec<f64>`.
+    #[wasm_bindgen(getter)]
+    pub fn angular_velocity(&self) -> Vec<f64> {
+        self.angular_velocity.to_vec()
+    }
+
+    /// Cached AABB (clone).
+    #[wasm_bindgen(getter)]
+    pub fn aabb(&self) -> BodyAabb {
+        self.aabb
+    }
+
+    /// Serialise to JSON.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self).map_err(err_to_jsvalue)
+    }
+
+    /// Serialise to a `JsValue`.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // BatchBodyQuery
 // ---------------------------------------------------------------------------
 
 /// Result of a batch body query (all active bodies in a single call).
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchBodyQuery {
     /// Individual body query results.
+    #[wasm_bindgen(skip)]
     pub bodies: Vec<BodyQueryResult>,
     /// Handles of all sleeping bodies.
+    #[wasm_bindgen(skip)]
     pub sleeping_handles: Vec<u32>,
     /// Handles of all static bodies.
+    #[wasm_bindgen(skip)]
     pub static_handles: Vec<u32>,
     /// Handles of all dynamic bodies.
+    #[wasm_bindgen(skip)]
     pub dynamic_handles: Vec<u32>,
     /// Simulation time at which this snapshot was taken.
     pub sim_time: f64,
@@ -286,6 +433,130 @@ impl BatchBodyQuery {
 }
 
 // ---------------------------------------------------------------------------
+// BatchBodyQuery — wasm-bindgen impl
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl BatchBodyQuery {
+    /// Collect a batch query from a live engine.
+    #[wasm_bindgen(js_name = "from_engine")]
+    pub fn from_engine_js(engine: &WasmPhysicsEngine) -> BatchBodyQuery {
+        BatchBodyQuery::from_engine(engine)
+    }
+
+    /// All sleeping body handles.
+    #[wasm_bindgen(getter)]
+    pub fn sleeping_handles(&self) -> Vec<u32> {
+        self.sleeping_handles.clone()
+    }
+
+    /// All static body handles.
+    #[wasm_bindgen(getter)]
+    pub fn static_handles(&self) -> Vec<u32> {
+        self.static_handles.clone()
+    }
+
+    /// All dynamic body handles.
+    #[wasm_bindgen(getter)]
+    pub fn dynamic_handles(&self) -> Vec<u32> {
+        self.dynamic_handles.clone()
+    }
+
+    /// Total number of bodies in this batch.
+    #[wasm_bindgen(js_name = "body_count")]
+    pub fn body_count_js(&self) -> usize {
+        self.bodies.len()
+    }
+
+    /// Bodies array as a serde-serialised `JsValue`.
+    #[wasm_bindgen(js_name = "bodies_js")]
+    pub fn bodies_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(&self.bodies)
+    }
+
+    /// Body at the given batch index (clones a `BodyQueryResult`).
+    #[wasm_bindgen(js_name = "body_at")]
+    pub fn body_at_js(&self, index: usize) -> Option<BodyQueryResult> {
+        self.bodies.get(index).cloned()
+    }
+
+    /// Find the body closest to `point` (returns its handle).
+    ///
+    /// Returns `None` when the batch is empty.
+    #[wasm_bindgen(js_name = "nearest_to_handle")]
+    pub fn nearest_to_handle_js(&self, point_flat: Vec<f64>) -> Option<u32> {
+        let p = vec3_from_flat(&point_flat);
+        self.nearest_to(p).map(|b| b.handle)
+    }
+
+    /// Body handles whose AABB overlaps the test box.
+    #[wasm_bindgen(js_name = "overlapping_box_handles")]
+    pub fn overlapping_box_handles_js(
+        &self,
+        test_min_flat: Vec<f64>,
+        test_max_flat: Vec<f64>,
+    ) -> Vec<u32> {
+        let lo = vec3_from_flat(&test_min_flat);
+        let hi = vec3_from_flat(&test_max_flat);
+        self.overlapping_box(lo, hi)
+            .into_iter()
+            .map(|b| b.handle)
+            .collect()
+    }
+
+    /// Body handles whose speed exceeds `threshold`.
+    #[wasm_bindgen(js_name = "fast_body_handles")]
+    pub fn fast_body_handles_js(&self, threshold: f64) -> Vec<u32> {
+        self.fast_bodies(threshold)
+            .into_iter()
+            .map(|b| b.handle)
+            .collect()
+    }
+
+    /// Total kinetic energy across all bodies.
+    #[wasm_bindgen(js_name = "total_kinetic_energy")]
+    pub fn total_kinetic_energy_js(&self) -> f64 {
+        self.total_kinetic_energy()
+    }
+
+    /// Flat positions buffer `[x0, y0, z0, ...]`.
+    #[wasm_bindgen(js_name = "positions_flat")]
+    pub fn positions_flat_js(&self) -> Vec<f64> {
+        self.positions_flat()
+    }
+
+    /// Flat velocities buffer `[vx0, vy0, vz0, ...]`.
+    #[wasm_bindgen(js_name = "velocities_flat")]
+    pub fn velocities_flat_js(&self) -> Vec<f64> {
+        self.velocities_flat()
+    }
+
+    /// Flat transforms buffer `[px, py, pz, qx, qy, qz, qw, ...]`.
+    #[wasm_bindgen(js_name = "transforms_flat")]
+    pub fn transforms_flat_js(&self) -> Vec<f64> {
+        self.transforms_flat()
+    }
+
+    /// Flat AABB buffer `[handle, min_x, min_y, min_z, max_x, max_y, max_z, ...]`.
+    #[wasm_bindgen(js_name = "aabbs_flat")]
+    pub fn aabbs_flat_js(&self) -> Vec<f64> {
+        self.aabbs_flat()
+    }
+
+    /// Serialise to a JSON string.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> String {
+        self.to_json()
+    }
+
+    /// Serialise to a `JsValue`.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SimulationSnapshot
 // ---------------------------------------------------------------------------
 
@@ -293,17 +564,22 @@ impl BatchBodyQuery {
 ///
 /// Suitable for transferring via `postMessage`, saving to IndexedDB,
 /// or logging for replay.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationSnapshot {
     /// All body states.
+    #[wasm_bindgen(skip)]
     pub bodies: Vec<BodyState>,
     /// Contact results from the last step.
+    #[wasm_bindgen(skip)]
     pub contacts: Vec<ContactResult>,
     /// Debug/performance info.
+    #[wasm_bindgen(skip)]
     pub debug_info: DebugInfo,
     /// Simulation time (seconds).
     pub sim_time: f64,
     /// Gravity vector `[gx, gy, gz]`.
+    #[wasm_bindgen(skip)]
     pub gravity: [f64; 3],
     /// Total active bodies.
     pub active_body_count: u32,
@@ -380,6 +656,97 @@ impl SimulationSnapshot {
 }
 
 // ---------------------------------------------------------------------------
+// SimulationSnapshot — wasm-bindgen impl
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl SimulationSnapshot {
+    /// Collect a full snapshot from a live engine for the given frame number.
+    #[wasm_bindgen(js_name = "from_engine")]
+    pub fn from_engine_js(engine: &WasmPhysicsEngine, frame: u64) -> SimulationSnapshot {
+        SimulationSnapshot::from_engine(engine, frame)
+    }
+
+    /// Number of bodies in this snapshot.
+    #[wasm_bindgen(js_name = "body_count")]
+    pub fn body_count_js(&self) -> usize {
+        self.bodies.len()
+    }
+
+    /// Number of contacts in this snapshot.
+    #[wasm_bindgen(js_name = "contact_count_len")]
+    pub fn contact_count_len_js(&self) -> usize {
+        self.contacts.len()
+    }
+
+    /// Gravity vector `[gx, gy, gz]` as a `Vec<f64>`.
+    #[wasm_bindgen(getter)]
+    pub fn gravity(&self) -> Vec<f64> {
+        self.gravity.to_vec()
+    }
+
+    /// Bodies array as a serde-serialised `JsValue`.
+    #[wasm_bindgen(js_name = "bodies_js")]
+    pub fn bodies_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(&self.bodies)
+    }
+
+    /// Contacts array as a serde-serialised `JsValue`.
+    #[wasm_bindgen(js_name = "contacts_js")]
+    pub fn contacts_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(&self.contacts)
+    }
+
+    /// Debug info as a serde-serialised `JsValue`.
+    #[wasm_bindgen(js_name = "debug_info_js")]
+    pub fn debug_info_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(&self.debug_info)
+    }
+
+    /// Serialise to a compact JSON string.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> String {
+        self.to_json()
+    }
+
+    /// Deserialise from a JSON string. Returns `None` on parse failure.
+    #[wasm_bindgen(js_name = "from_json")]
+    pub fn from_json_js(json: String) -> Option<SimulationSnapshot> {
+        SimulationSnapshot::from_json(&json)
+    }
+
+    /// All positions as a flat `[x0, y0, z0, ...]` `Vec<f64>`.
+    #[wasm_bindgen(js_name = "positions_flat")]
+    pub fn positions_flat_js(&self) -> Vec<f64> {
+        self.positions_flat()
+    }
+
+    /// All transforms as a flat `[px, py, pz, qx, qy, qz, qw, ...]` `Vec<f64>`.
+    #[wasm_bindgen(js_name = "transforms_flat")]
+    pub fn transforms_flat_js(&self) -> Vec<f64> {
+        self.transforms_flat()
+    }
+
+    /// Sleeping body handles.
+    #[wasm_bindgen(js_name = "sleeping_handles")]
+    pub fn sleeping_handles_js(&self) -> Vec<u32> {
+        self.sleeping_handles()
+    }
+
+    /// Total kinetic energy across all bodies.
+    #[wasm_bindgen(js_name = "total_kinetic_energy")]
+    pub fn total_kinetic_energy_js(&self) -> f64 {
+        self.total_kinetic_energy()
+    }
+
+    /// Serialise to a `JsValue`.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ConstraintCountQuery
 // ---------------------------------------------------------------------------
 
@@ -387,6 +754,7 @@ impl SimulationSnapshot {
 ///
 /// In the current engine, this reports the number of active contacts
 /// (contact constraints). Future versions will include joint constraints.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ConstraintCountQuery {
     /// Number of contact constraints.
@@ -413,6 +781,31 @@ impl ConstraintCountQuery {
 }
 
 // ---------------------------------------------------------------------------
+// ConstraintCountQuery — wasm-bindgen impl
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl ConstraintCountQuery {
+    /// Query constraint counts from a live engine.
+    #[wasm_bindgen(js_name = "from_engine")]
+    pub fn from_engine_js(engine: &WasmPhysicsEngine) -> ConstraintCountQuery {
+        ConstraintCountQuery::from_engine(engine)
+    }
+
+    /// Serialise to JSON.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self).map_err(err_to_jsvalue)
+    }
+
+    /// Serialise to a `JsValue`.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ContactManifoldsExport
 // ---------------------------------------------------------------------------
 
@@ -420,9 +813,11 @@ impl ConstraintCountQuery {
 ///
 /// Provides both a structured `Vec<ContactResult>` and a flat `Float64Array`-
 /// compatible buffer for zero-copy transfer.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContactManifoldsExport {
     /// Structured contact results.
+    #[wasm_bindgen(skip)]
     pub contacts: Vec<ContactResult>,
     /// Number of contacts.
     pub count: u32,
@@ -470,6 +865,52 @@ impl ContactManifoldsExport {
 }
 
 // ---------------------------------------------------------------------------
+// ContactManifoldsExport — wasm-bindgen impl
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl ContactManifoldsExport {
+    /// Export the contact manifolds from a live engine.
+    #[wasm_bindgen(js_name = "from_engine")]
+    pub fn from_engine_js(engine: &WasmPhysicsEngine) -> ContactManifoldsExport {
+        ContactManifoldsExport::from_engine(engine)
+    }
+
+    /// Contacts array as a serde-serialised `JsValue`.
+    #[wasm_bindgen(js_name = "contacts_js")]
+    pub fn contacts_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(&self.contacts)
+    }
+
+    /// Flat `Float64Array`-compatible buffer.
+    ///
+    /// Layout per contact:
+    /// `[body_a, body_b, px, py, pz, nx, ny, nz, depth, impulse]`.
+    #[wasm_bindgen(js_name = "to_flat_f64")]
+    pub fn to_flat_f64_js(&self) -> Vec<f64> {
+        self.to_flat_f64()
+    }
+
+    /// `Uint32Array`-compatible buffer of `[body_a_0, body_b_0, ...]` pairs.
+    #[wasm_bindgen(js_name = "to_handle_pairs_u32")]
+    pub fn to_handle_pairs_u32_js(&self) -> Vec<u32> {
+        self.to_handle_pairs_u32()
+    }
+
+    /// Serialise to JSON.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self).map_err(err_to_jsvalue)
+    }
+
+    /// Serialise to a `JsValue`.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
 
@@ -478,6 +919,16 @@ fn dist_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
     let dy = a[1] - b[1];
     let dz = a[2] - b[2];
     dx * dx + dy * dy + dz * dz
+}
+
+fn vec3_from_flat(v: &[f64]) -> [f64; 3] {
+    let mut out = [0.0_f64; 3];
+    for (i, slot) in out.iter_mut().enumerate() {
+        if let Some(val) = v.get(i).copied() {
+            *slot = val;
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

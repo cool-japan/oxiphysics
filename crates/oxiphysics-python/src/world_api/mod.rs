@@ -8,8 +8,6 @@
 //! `u32` integers for easy FFI transmission. All state uses plain arrays and
 //! primitive types; no nalgebra types are exposed through the public API.
 
-#![allow(missing_docs)]
-
 // Sub-modules
 mod constraints;
 mod extensions;
@@ -44,9 +42,9 @@ pub use sph::{PySphConfig, PySphSim};
 pub use stats::SimStats;
 
 use crate::types::{
-    PyColliderDesc, PyColliderShape, PyContactResult, PyRigidBodyConfig, PyRigidBodyDesc,
-    PySimConfig, PyVec3,
+    PyColliderShape, PyContactResult, PyRigidBodyConfig, PyRigidBodyDesc, PySimConfig, PyVec3,
 };
+use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -162,6 +160,7 @@ impl Slot {
 /// Provides Python-friendly methods using integer handles (`u32`) and plain
 /// array types. Internally uses a slot-based arena with generation counters
 /// so that stale handles are detected as absent bodies.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyPhysicsWorld {
     /// Body storage slots.
@@ -178,87 +177,27 @@ pub struct PyPhysicsWorld {
     constraints: Vec<PyConstraint>,
 }
 
+#[pymethods]
 impl PyPhysicsWorld {
     // -----------------------------------------------------------------------
     // Construction
     // -----------------------------------------------------------------------
 
-    /// Create a new physics world with the given simulation config.
-    pub fn new(config: PySimConfig) -> Self {
-        Self {
-            slots: Vec::new(),
-            free_list: Vec::new(),
-            config,
-            time: 0.0,
-            contacts: Vec::new(),
-            constraints: Vec::new(),
-        }
+    /// Create a new physics world with the given gravity vector.
+    ///
+    /// By default uses Earth gravity `(0, -9.81, 0)`.
+    #[new]
+    #[pyo3(signature = (gx = 0.0, gy = -9.81, gz = 0.0))]
+    pub fn py_new(gx: f64, gy: f64, gz: f64) -> Self {
+        Self::new_with_config(PySimConfig {
+            gravity: [gx, gy, gz],
+            ..PySimConfig::default()
+        })
     }
 
     // -----------------------------------------------------------------------
     // Body management
     // -----------------------------------------------------------------------
-
-    /// Add a new rigid body described by `config`. Returns a u32 handle.
-    pub fn add_rigid_body(&mut self, config: PyRigidBodyConfig) -> u32 {
-        let body = InternalBody::from_config(&config);
-        if let Some(idx) = self.free_list.pop() {
-            let slot = &mut self.slots[idx as usize];
-            slot.body = Some(body);
-            // generation already bumped at removal time
-            idx
-        } else {
-            let idx = self.slots.len() as u32;
-            self.slots.push(Slot {
-                body: Some(body),
-                generation: 0,
-            });
-            idx
-        }
-    }
-
-    /// Add a rigid body using the legacy `PyRigidBodyDesc` interface.
-    pub fn add_body_legacy(&mut self, desc: &PyRigidBodyDesc) -> u32 {
-        let config = PyRigidBodyConfig {
-            mass: desc.mass,
-            position: [desc.position.x, desc.position.y, desc.position.z],
-            velocity: [0.0; 3],
-            orientation: [0.0, 0.0, 0.0, 1.0],
-            angular_velocity: [0.0; 3],
-            shapes: vec![],
-            friction: 0.5,
-            restitution: 0.3,
-            is_static: desc.is_static,
-            is_kinematic: false,
-            can_sleep: true,
-            linear_damping: 0.0,
-            angular_damping: 0.0,
-            tag: None,
-        };
-        self.add_rigid_body(config)
-    }
-
-    /// Add a collider shape to the body with the given handle.
-    ///
-    /// Does nothing if the handle is invalid.
-    pub fn add_collider(&mut self, handle: u32, desc: &PyColliderDesc) {
-        if let Some(body) = self.get_body_mut(handle) {
-            let shape = match desc.shape_type.as_str() {
-                "sphere" => {
-                    let r = desc.radius.unwrap_or(0.5);
-                    PyColliderShape::Sphere { radius: r }
-                }
-                "box" => {
-                    let he = desc.half_extents.unwrap_or(PyVec3::new(0.5, 0.5, 0.5));
-                    PyColliderShape::Box {
-                        half_extents: [he.x, he.y, he.z],
-                    }
-                }
-                _ => PyColliderShape::Sphere { radius: 0.5 },
-            };
-            body.shapes.push(shape);
-        }
-    }
 
     /// Remove a body by handle. Returns `true` if the body existed.
     pub fn remove_body(&mut self, handle: u32) -> bool {
@@ -460,9 +399,9 @@ impl PyPhysicsWorld {
         self.config.gravity
     }
 
-    /// Get the current simulation configuration.
-    pub fn config(&self) -> &PySimConfig {
-        &self.config
+    /// Get the gravity and key config values as `[gx, gy, gz]`.
+    pub fn gravity_vec(&self) -> [f64; 3] {
+        self.config.gravity
     }
 
     // -----------------------------------------------------------------------
@@ -488,9 +427,9 @@ impl PyPhysicsWorld {
         self.time
     }
 
-    /// Contacts from the most recent simulation step.
-    pub fn get_contacts(&self) -> Vec<PyContactResult> {
-        self.contacts.clone()
+    /// Total number of contacts from the most recent step.
+    pub fn get_contact_count(&self) -> usize {
+        self.contacts.len()
     }
 
     // -----------------------------------------------------------------------
@@ -642,7 +581,6 @@ impl PyPhysicsWorld {
     /// ```ignore
     /// world.step_substeps(1.0 / 60.0, 4); // 4 sub-steps of 1/240 s each
     /// ```
-    #[allow(clippy::too_many_arguments)]
     pub fn step_substeps(&mut self, dt: f64, substeps: u32) {
         let substeps = substeps.max(1);
         let sub_dt = dt / substeps as f64;
@@ -734,47 +672,85 @@ impl PyPhysicsWorld {
     pub fn contact_count(&self) -> usize {
         self.contacts.len()
     }
+}
 
-    // -----------------------------------------------------------------------
-    // Legacy compatibility helpers
-    // -----------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Private helpers and Rust-internal constructors (NOT exposed to Python)
+// ---------------------------------------------------------------------------
 
-    /// Legacy: get body position as `PyVec3`.
-    pub fn get_body_position(&self, handle: usize) -> Option<PyVec3> {
-        self.get_position(handle as u32).map(PyVec3::from_array)
+impl PyPhysicsWorld {
+    /// Create a world from an explicit `PySimConfig` (Rust-only constructor).
+    ///
+    /// Rust tests and the `py_new` Python constructor both delegate here.
+    pub fn new(config: PySimConfig) -> Self {
+        Self::new_with_config(config)
     }
 
-    /// Legacy: get body velocity as `PyVec3`.
-    pub fn get_body_velocity(&self, handle: usize) -> Option<PyVec3> {
-        self.get_velocity(handle as u32).map(PyVec3::from_array)
+    /// Get the current simulation configuration (Rust-only access).
+    pub fn config(&self) -> &PySimConfig {
+        &self.config
     }
 
-    /// Legacy: set body velocity from `PyVec3`.
-    pub fn set_body_velocity(&mut self, handle: usize, vel: PyVec3) {
-        self.set_velocity(handle as u32, vel.to_array());
+    /// Contacts from the most recent simulation step (Rust-only access).
+    pub fn get_contacts(&self) -> Vec<PyContactResult> {
+        self.contacts.clone()
     }
 
-    /// Legacy: return body count (same as `body_count`).
-    pub fn num_bodies(&self) -> usize {
-        self.body_count()
+    /// Add a body from a legacy `PyRigidBodyDesc` (Rust-only, for backward compat).
+    pub fn add_body_legacy(&mut self, desc: &PyRigidBodyDesc) -> u32 {
+        let config = if desc.is_static {
+            PyRigidBodyConfig::static_body([desc.position.x, desc.position.y, desc.position.z])
+        } else {
+            PyRigidBodyConfig::dynamic(
+                desc.mass,
+                [desc.position.x, desc.position.y, desc.position.z],
+            )
+        };
+        self.add_rigid_body(config)
     }
 
-    /// Legacy: return gravity as `PyVec3`.
-    pub fn gravity_vec3(&self) -> PyVec3 {
-        PyVec3::from_array(self.config.gravity)
+    /// Get the position of a body by slot index as `PyVec3`, or `None` if absent.
+    pub fn get_body_position(&self, idx: usize) -> Option<PyVec3> {
+        let body = self.slots.get(idx)?.body.as_ref()?;
+        Some(PyVec3::new(
+            body.position[0],
+            body.position[1],
+            body.position[2],
+        ))
     }
 
-    /// Legacy: return all positions as `Vec`PyVec3`.
-    pub fn all_positions_vec3(&self) -> Vec<PyVec3> {
-        self.all_positions()
-            .into_iter()
-            .map(PyVec3::from_array)
-            .collect()
+    /// Create a world from an explicit `PySimConfig`.
+    ///
+    /// This is a Rust-only constructor; Python uses the `#[new]` constructor
+    /// which takes primitive gravity components.
+    pub fn new_with_config(config: PySimConfig) -> Self {
+        Self {
+            slots: Vec::new(),
+            free_list: Vec::new(),
+            config,
+            time: 0.0,
+            contacts: Vec::new(),
+            constraints: Vec::new(),
+        }
     }
 
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
+    /// Add a body described by `config` and return its integer handle.
+    pub fn add_rigid_body(&mut self, config: PyRigidBodyConfig) -> u32 {
+        let body = InternalBody::from_config(&config);
+        if let Some(idx) = self.free_list.pop() {
+            let slot = &mut self.slots[idx as usize];
+            slot.body = Some(body);
+            slot.generation = slot.generation.wrapping_add(1);
+            idx
+        } else {
+            let idx = self.slots.len() as u32;
+            self.slots.push(Slot {
+                body: Some(body),
+                generation: 0,
+            });
+            idx
+        }
+    }
 
     fn get_body(&self, handle: u32) -> Option<&InternalBody> {
         self.slots.get(handle as usize)?.body.as_ref()
@@ -1054,4 +1030,90 @@ fn first_sphere_radius(shapes: &[PyColliderShape]) -> f64 {
         }
     }
     0.0
+}
+
+/// Register all `world_api` classes and functions into a Python sub-module named `"world"`.
+pub fn register_world_module(
+    parent: &pyo3::Bound<'_, pyo3::types::PyModule>,
+) -> pyo3::PyResult<()> {
+    use pyo3::types::PyModuleMethods;
+    let child = pyo3::types::PyModule::new(parent.py(), "world")?;
+
+    // Core world class
+    child.add_class::<PyPhysicsWorld>()?;
+
+    // Constraint types
+    child.add_class::<constraints::ConstraintType>()?;
+    child.add_class::<constraints::PyConstraint>()?;
+
+    // Extension types
+    child.add_class::<extensions::ContactPair>()?;
+    child.add_class::<extensions::InertiaTensor>()?;
+    child.add_class::<extensions::PyRigidBody>()?;
+
+    // Geometry types
+    child.add_class::<geometry::PyAabb>()?;
+    child.add_class::<geometry::PySphere>()?;
+    child.add_class::<geometry::PyConvexHull>()?;
+
+    // Material types
+    child.add_class::<materials::MaterialClass>()?;
+    child.add_class::<materials::PyMaterial>()?;
+
+    // LBM types
+    child.add_class::<lbm::PyLbmConfig>()?;
+    child.add_class::<lbm::PyLbmGrid>()?;
+
+    // SPH types
+    child.add_class::<sph::PySphConfig>()?;
+    child.add_class::<sph::PySphSim>()?;
+
+    // FEM types
+    child.add_class::<fem::FemBarElement>()?;
+    child.add_class::<fem::PyFemAssembly>()?;
+
+    // Binding wrappers
+    child.add_class::<py_bindings::PyMdBinding>()?;
+    child.add_class::<py_bindings::PyLbmBinding>()?;
+    child.add_class::<py_bindings::PyFemBinding>()?;
+    child.add_class::<py_bindings::PySphBinding>()?;
+    child.add_class::<py_bindings::MaterialProperties>()?;
+
+    // Statistics
+    child.add_class::<stats::SimStats>()?;
+
+    // PyFunctions
+    child.add_function(pyo3::wrap_pyfunction!(
+        py_bindings::py_query_material,
+        &child
+    )?)?;
+    child.add_function(pyo3::wrap_pyfunction!(
+        py_bindings::py_p_wave_speed,
+        &child
+    )?)?;
+    child.add_function(pyo3::wrap_pyfunction!(
+        py_bindings::py_s_wave_speed,
+        &child
+    )?)?;
+
+    child.add_function(pyo3::wrap_pyfunction!(
+        math_helpers::quat_normalize,
+        &child
+    )?)?;
+    child.add_function(pyo3::wrap_pyfunction!(math_helpers::quat_mul, &child)?)?;
+    child.add_function(pyo3::wrap_pyfunction!(
+        math_helpers::quat_conjugate,
+        &child
+    )?)?;
+    child.add_function(pyo3::wrap_pyfunction!(
+        math_helpers::quat_rotate_vec,
+        &child
+    )?)?;
+    child.add_function(pyo3::wrap_pyfunction!(
+        math_helpers::quat_from_axis_angle,
+        &child
+    )?)?;
+
+    parent.add_submodule(&child)?;
+    Ok(())
 }

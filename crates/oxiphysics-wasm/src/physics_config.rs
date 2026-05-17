@@ -25,7 +25,9 @@
 #![allow(dead_code)]
 
 use crate::types::SimulationConfig;
+use crate::wasm_helpers::{err_to_jsvalue, to_js_value};
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::*;
 
 // ---------------------------------------------------------------------------
 // BroadphaseType
@@ -35,6 +37,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// The broadphase reduces the number of narrowphase collision tests by
 /// quickly identifying pairs of bodies that *might* be colliding.
+///
+/// All variants are unit-only so this enum can be exposed directly to JS.
+#[wasm_bindgen(js_name = "PhysicsBroadphaseType")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum BroadphaseType {
     /// Brute-force O(n²) pair testing. Fine for small scenes (<50 bodies).
@@ -76,6 +81,9 @@ impl BroadphaseType {
 // ---------------------------------------------------------------------------
 
 /// Constraint / contact solver algorithm.
+///
+/// All variants are unit-only so this enum can be exposed directly to JS.
+#[wasm_bindgen(js_name = "PhysicsSolverType")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SolverType {
     /// Sequential impulses (default for real-time games).
@@ -94,6 +102,10 @@ pub enum SolverType {
 // ---------------------------------------------------------------------------
 
 /// Named gravity presets for common celestial bodies.
+///
+/// NOTE: This enum has a payload variant `Custom([f64; 3])` and therefore
+/// cannot be directly annotated with `#[wasm_bindgen]`. Use
+/// `PhysicsConfig::set_gravity_preset_js` or the JSON API to set custom gravity.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub enum GravityPreset {
     /// Earth surface gravity −9.81 m/s² (default).
@@ -140,7 +152,7 @@ impl GravityPreset {
 /// This type combines all settings from [`SimulationConfig`] with new
 /// broadphase, solver, and debugging options.
 ///
-/// Use \[`PhysicsConfig::builder()`\] to construct with method chaining.
+/// Use [`PhysicsConfig::builder()`] to construct with method chaining.
 ///
 /// # Example
 ///
@@ -154,9 +166,12 @@ impl GravityPreset {
 ///
 /// assert!((cfg.gravity[1] + 1.62).abs() < 1e-6);
 /// ```
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhysicsConfig {
     /// Gravity vector `[gx, gy, gz]` in m/s².
+    // `[f64; 3]` does not implement IntoWasmAbi — expose via JS getters.
+    #[wasm_bindgen(skip)]
     pub gravity: [f64; 3],
     /// Number of integration substeps per `step()` call.
     pub substeps: u32,
@@ -294,6 +309,76 @@ impl PhysicsConfig {
             warnings.push("target_fps must be >= 1".to_string());
         }
         warnings
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PhysicsConfig wasm_bindgen impl
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl PhysicsConfig {
+    /// Create a default `PhysicsConfig` (accessible from JavaScript).
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new() -> PhysicsConfig {
+        PhysicsConfig::default()
+    }
+
+    /// Gravity vector as `[gx, gy, gz]`.
+    #[wasm_bindgen(js_name = "get_gravity")]
+    pub fn get_gravity_js(&self) -> Vec<f64> {
+        self.gravity.to_vec()
+    }
+
+    /// Set gravity directly from three components.
+    #[wasm_bindgen(js_name = "set_gravity")]
+    pub fn set_gravity_js(&mut self, gx: f64, gy: f64, gz: f64) {
+        self.gravity = [gx, gy, gz];
+    }
+
+    /// Set gravity from a named preset string: `"Earth"`, `"Moon"`, `"Mars"`,
+    /// `"Jupiter"`, or `"Zero"`. For a custom vector, call `set_gravity` directly.
+    #[wasm_bindgen(js_name = "set_gravity_preset")]
+    pub fn set_gravity_preset_js(&mut self, preset_name: String) -> Result<(), JsValue> {
+        let preset: GravityPreset =
+            serde_json::from_str(&format!("\"{}\"", preset_name)).map_err(err_to_jsvalue)?;
+        self.gravity = preset.to_vec3();
+        Ok(())
+    }
+
+    /// Serialize this config to a JSON string.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> String {
+        self.to_json()
+    }
+
+    /// Deserialize a `PhysicsConfig` from a JSON string.
+    ///
+    /// Returns `null` on parse failure.
+    #[wasm_bindgen(js_name = "from_json")]
+    pub fn from_json_js(json: String) -> Option<PhysicsConfig> {
+        PhysicsConfig::from_json(&json)
+    }
+
+    /// Return the magnitude (scalar) of the gravity vector.
+    #[wasm_bindgen(js_name = "gravity_magnitude")]
+    pub fn gravity_magnitude_js(&self) -> f64 {
+        self.gravity_magnitude()
+    }
+
+    /// Validate the config and return a `JsValue` array of warning strings.
+    ///
+    /// Returns an empty array when the config is valid.
+    #[wasm_bindgen(js_name = "validate")]
+    pub fn validate_js(&self) -> Result<JsValue, JsValue> {
+        let warnings = self.validate();
+        to_js_value(&warnings)
+    }
+
+    /// Convert to a `SimulationConfig` and return as a `JsValue` object.
+    #[wasm_bindgen(js_name = "to_simulation_config")]
+    pub fn to_simulation_config_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(&self.to_simulation_config())
     }
 }
 
@@ -468,6 +553,28 @@ pub fn preset_topdown_2d() -> PhysicsConfig {
         .broadphase(BroadphaseType::UniformGrid)
         .sleeping(true)
         .build()
+}
+
+// ---------------------------------------------------------------------------
+// Free wasm_bindgen functions for preset access
+// ---------------------------------------------------------------------------
+
+/// Create a realtime-browser `PhysicsConfig` from JavaScript.
+#[wasm_bindgen(js_name = "physics_config_realtime_browser")]
+pub fn physics_config_realtime_browser_js() -> PhysicsConfig {
+    preset_realtime_browser()
+}
+
+/// Create a high-accuracy `PhysicsConfig` from JavaScript.
+#[wasm_bindgen(js_name = "physics_config_high_accuracy")]
+pub fn physics_config_high_accuracy_js() -> PhysicsConfig {
+    preset_high_accuracy()
+}
+
+/// Create a 2D top-down `PhysicsConfig` from JavaScript.
+#[wasm_bindgen(js_name = "physics_config_topdown_2d")]
+pub fn physics_config_topdown_2d_js() -> PhysicsConfig {
+    preset_topdown_2d()
 }
 
 // ---------------------------------------------------------------------------
@@ -675,5 +782,35 @@ mod tests {
     fn test_physics_config_builder_gravity_direct() {
         let cfg = PhysicsConfig::builder().gravity(0.0, -5.0, 0.0).build();
         assert!((cfg.gravity[1] + 5.0).abs() < 1e-10);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Integration tests (Slice W6)
+    // ---------------------------------------------------------------------------
+
+    /// Verify that the wasm_new constructor produces the same result as default().
+    #[test]
+    fn test_physics_config_wasm_new_equals_default() {
+        let a = PhysicsConfig::default();
+        let b = PhysicsConfig::wasm_new();
+        assert_eq!(a.substeps, b.substeps);
+        assert_eq!(a.target_fps, b.target_fps);
+        assert_eq!(a.solver, b.solver);
+        assert_eq!(a.broadphase, b.broadphase);
+        for i in 0..3 {
+            assert!((a.gravity[i] - b.gravity[i]).abs() < 1e-10);
+        }
+    }
+
+    /// Verify the get_gravity_js / set_gravity_js pair is consistent.
+    #[test]
+    fn test_get_set_gravity_js_roundtrip() {
+        let mut cfg = PhysicsConfig::default();
+        cfg.set_gravity_js(1.0, -2.0, 3.0);
+        let g = cfg.get_gravity_js();
+        assert_eq!(g.len(), 3);
+        assert!((g[0] - 1.0).abs() < 1e-10);
+        assert!((g[1] + 2.0).abs() < 1e-10);
+        assert!((g[2] - 3.0).abs() < 1e-10);
     }
 }

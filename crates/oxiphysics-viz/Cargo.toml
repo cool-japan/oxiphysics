@@ -3,7 +3,10 @@ name = "oxiphysics-viz"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
 description = "Visualization utilities for the OxiPhysics engine"
+readme = "README.md"
 categories = ["science", "visualization"]
 keywords = ["physics", "visualization", "rendering", "simulation", "graphics"]
 
@@ -11,4 +14,5 @@ keywords = ["physics", "visualization", "rendering", "simulation", "graphics"]
 rand = { workspace = true }
 thiserror = { workspace = true }
 oxiphysics-core = { workspace = true }
+oxiphysics-gpu = { workspace = true }
 

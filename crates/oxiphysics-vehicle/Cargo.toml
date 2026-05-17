@@ -3,7 +3,10 @@ name = "oxiphysics-vehicle"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
 description = "Vehicle dynamics simulation for the OxiPhysics engine"
+readme = "README.md"
 categories = ["science", "simulation", "game-engines"]
 keywords = ["vehicle-dynamics", "physics", "automotive", "simulation", "game-physics"]
 
@@ -12,4 +15,5 @@ thiserror = { workspace = true }
 oxiphysics-core = { workspace = true }
 oxiphysics-rigid = { workspace = true }
 oxiphysics-constraints = { workspace = true }
+oxiphysics-fem = { workspace = true }
 rand = { workspace = true }

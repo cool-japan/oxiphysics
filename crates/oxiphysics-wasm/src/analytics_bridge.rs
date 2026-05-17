@@ -11,12 +11,16 @@
 #![allow(clippy::too_many_arguments)]
 
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::*;
+
+use crate::wasm_helpers::{err_to_jsvalue, to_js_value};
 
 // ---------------------------------------------------------------------------
 // AnalyticsConfig
 // ---------------------------------------------------------------------------
 
 /// Configuration for the analytics subsystem.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalyticsConfig {
     /// Maximum number of history entries to retain.
@@ -24,6 +28,7 @@ pub struct AnalyticsConfig {
     /// Number of simulation steps between samples.
     pub sample_interval: usize,
     /// Export format string (e.g. "csv", "json").
+    #[wasm_bindgen(skip)]
     pub export_format: String,
 }
 
@@ -49,17 +54,68 @@ impl AnalyticsConfig {
 }
 
 // ---------------------------------------------------------------------------
+// AnalyticsConfig — wasm-bindgen impl
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl AnalyticsConfig {
+    /// Construct a new `AnalyticsConfig`.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new(
+        max_history: usize,
+        sample_interval: usize,
+        export_format: String,
+    ) -> AnalyticsConfig {
+        AnalyticsConfig::new(max_history, sample_interval, &export_format)
+    }
+
+    /// Default-constructed `AnalyticsConfig`.
+    #[wasm_bindgen(js_name = "default")]
+    pub fn default_js() -> AnalyticsConfig {
+        AnalyticsConfig::default()
+    }
+
+    /// Export-format string getter (`"csv"`, `"json"`, etc.).
+    #[wasm_bindgen(getter)]
+    pub fn export_format(&self) -> String {
+        self.export_format.clone()
+    }
+
+    /// Export-format string setter.
+    #[wasm_bindgen(setter)]
+    pub fn set_export_format(&mut self, fmt: String) {
+        self.export_format = fmt;
+    }
+
+    /// Serialise to a JSON string.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self).map_err(err_to_jsvalue)
+    }
+
+    /// Serialise to a `JsValue`.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TimeSeriesData
 // ---------------------------------------------------------------------------
 
 /// A labelled time-series of (timestamp, value) pairs.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimeSeriesData {
     /// Timestamps (seconds).
+    #[wasm_bindgen(skip)]
     pub timestamps: Vec<f64>,
     /// Scalar values corresponding to each timestamp.
+    #[wasm_bindgen(skip)]
     pub values: Vec<f64>,
     /// Human-readable label for this series.
+    #[wasm_bindgen(skip)]
     pub label: String,
 }
 
@@ -136,10 +192,108 @@ impl TimeSeriesData {
 }
 
 // ---------------------------------------------------------------------------
+// TimeSeriesData — wasm-bindgen impl
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl TimeSeriesData {
+    /// Construct an empty time-series with the given label.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new(label: String) -> TimeSeriesData {
+        TimeSeriesData::new(&label)
+    }
+
+    /// Append a `(timestamp, value)` pair.
+    #[wasm_bindgen(js_name = "push")]
+    pub fn push_js(&mut self, t: f64, v: f64) {
+        self.push(t, v);
+    }
+
+    /// Series label getter.
+    #[wasm_bindgen(getter)]
+    pub fn label(&self) -> String {
+        self.label.clone()
+    }
+
+    /// Series label setter.
+    #[wasm_bindgen(setter)]
+    pub fn set_label(&mut self, label: String) {
+        self.label = label;
+    }
+
+    /// Return all timestamps as a `Vec<f64>`.
+    #[wasm_bindgen(getter)]
+    pub fn timestamps(&self) -> Vec<f64> {
+        self.timestamps.clone()
+    }
+
+    /// Return all values as a `Vec<f64>`.
+    #[wasm_bindgen(getter)]
+    pub fn values(&self) -> Vec<f64> {
+        self.values.clone()
+    }
+
+    /// Mean of stored values.
+    #[wasm_bindgen(js_name = "mean")]
+    pub fn mean_js(&self) -> f64 {
+        self.mean()
+    }
+
+    /// Population variance of stored values.
+    #[wasm_bindgen(js_name = "variance")]
+    pub fn variance_js(&self) -> f64 {
+        self.variance()
+    }
+
+    /// Minimum stored value.
+    #[wasm_bindgen(js_name = "min")]
+    pub fn min_js(&self) -> f64 {
+        self.min()
+    }
+
+    /// Maximum stored value.
+    #[wasm_bindgen(js_name = "max")]
+    pub fn max_js(&self) -> f64 {
+        self.max()
+    }
+
+    /// Flat `[t0, v0, t1, v1, ...]` array suitable for `Float64Array`.
+    #[wasm_bindgen(js_name = "to_js_array")]
+    pub fn to_js_array_js(&self) -> Vec<f64> {
+        self.to_js_array()
+    }
+
+    /// Number of data points stored.
+    #[wasm_bindgen(js_name = "len")]
+    pub fn len_js(&self) -> usize {
+        self.len()
+    }
+
+    /// Returns `true` if no data points have been recorded.
+    #[wasm_bindgen(js_name = "is_empty")]
+    pub fn is_empty_js(&self) -> bool {
+        self.is_empty()
+    }
+
+    /// Serialise to JSON.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self).map_err(err_to_jsvalue)
+    }
+
+    /// Serialise to a `JsValue`.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PhysicsMetrics
 // ---------------------------------------------------------------------------
 
 /// A snapshot of key physics quantities at a single simulation step.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PhysicsMetrics {
     /// Kinetic energy (J).
@@ -149,8 +303,10 @@ pub struct PhysicsMetrics {
     /// Total mechanical energy (J).
     pub total_energy: f64,
     /// Linear momentum vector [px, py, pz] (kg·m/s).
+    #[wasm_bindgen(skip)]
     pub momentum: [f64; 3],
     /// Angular momentum vector [Lx, Ly, Lz] (kg·m²/s).
+    #[wasm_bindgen(skip)]
     pub angular_momentum: [f64; 3],
 }
 
@@ -173,13 +329,62 @@ impl PhysicsMetrics {
 }
 
 // ---------------------------------------------------------------------------
+// PhysicsMetrics — wasm-bindgen impl
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl PhysicsMetrics {
+    /// Construct from kinetic, potential, momentum and angular-momentum values.
+    ///
+    /// `momentum_flat` and `angular_flat` must each be 3-element arrays
+    /// `[x, y, z]`; missing components default to `0.0`.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new(
+        kinetic_energy: f64,
+        potential_energy: f64,
+        momentum_flat: Vec<f64>,
+        angular_flat: Vec<f64>,
+    ) -> PhysicsMetrics {
+        let momentum = vec3_from_flat(&momentum_flat);
+        let angular_momentum = vec3_from_flat(&angular_flat);
+        PhysicsMetrics::new(kinetic_energy, potential_energy, momentum, angular_momentum)
+    }
+
+    /// Linear momentum `[px, py, pz]` as a `Vec<f64>`.
+    #[wasm_bindgen(getter)]
+    pub fn momentum(&self) -> Vec<f64> {
+        self.momentum.to_vec()
+    }
+
+    /// Angular momentum `[Lx, Ly, Lz]` as a `Vec<f64>`.
+    #[wasm_bindgen(getter)]
+    pub fn angular_momentum(&self) -> Vec<f64> {
+        self.angular_momentum.to_vec()
+    }
+
+    /// Serialise to JSON.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self).map_err(err_to_jsvalue)
+    }
+
+    /// Serialise to a `JsValue`.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PerformanceTracker
 // ---------------------------------------------------------------------------
 
 /// Tracks per-frame timing to compute FPS and frame-time statistics.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerformanceTracker {
     /// Per-frame wall-clock durations in milliseconds.
+    #[wasm_bindgen(skip)]
     pub frame_times: Vec<f64>,
 }
 
@@ -235,13 +440,70 @@ impl Default for PerformanceTracker {
 }
 
 // ---------------------------------------------------------------------------
+// PerformanceTracker — wasm-bindgen impl
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl PerformanceTracker {
+    /// Construct a new empty `PerformanceTracker`.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new() -> PerformanceTracker {
+        PerformanceTracker::new()
+    }
+
+    /// Record a frame with duration `dt` in milliseconds.
+    #[wasm_bindgen(js_name = "push_frame")]
+    pub fn push_frame_js(&mut self, dt: f64) {
+        self.push_frame(dt);
+    }
+
+    /// Mean frames-per-second.
+    #[wasm_bindgen(js_name = "fps")]
+    pub fn fps_js(&self) -> f64 {
+        self.fps()
+    }
+
+    /// Mean frame duration in milliseconds.
+    #[wasm_bindgen(js_name = "avg_frame_ms")]
+    pub fn avg_frame_ms_js(&self) -> f64 {
+        self.avg_frame_ms()
+    }
+
+    /// Worst (maximum) frame duration in milliseconds.
+    #[wasm_bindgen(js_name = "worst_frame_ms")]
+    pub fn worst_frame_ms_js(&self) -> f64 {
+        self.worst_frame_ms()
+    }
+
+    /// All recorded frame durations in milliseconds.
+    #[wasm_bindgen(getter)]
+    pub fn frame_times(&self) -> Vec<f64> {
+        self.frame_times.clone()
+    }
+
+    /// Serialise to JSON.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self).map_err(err_to_jsvalue)
+    }
+
+    /// Serialise to a `JsValue`.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // EnergyTracker
 // ---------------------------------------------------------------------------
 
 /// Tracks a history of `PhysicsMetrics` to monitor energy conservation.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnergyTracker {
     /// Ordered list of recorded metrics snapshots.
+    #[wasm_bindgen(skip)]
     pub history: Vec<PhysicsMetrics>,
 }
 
@@ -305,10 +567,77 @@ impl Default for EnergyTracker {
 }
 
 // ---------------------------------------------------------------------------
+// EnergyTracker — wasm-bindgen impl
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl EnergyTracker {
+    /// Construct a new empty `EnergyTracker`.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new() -> EnergyTracker {
+        EnergyTracker::new()
+    }
+
+    /// Append a `PhysicsMetrics` snapshot.
+    #[wasm_bindgen(js_name = "push")]
+    pub fn push_js(&mut self, m: PhysicsMetrics) {
+        self.push(m);
+    }
+
+    /// Energy drift `(E_last - E_first) / |E_first|`.
+    #[wasm_bindgen(js_name = "energy_drift")]
+    pub fn energy_drift_js(&self) -> f64 {
+        self.energy_drift()
+    }
+
+    /// Maximum total energy across all snapshots.
+    #[wasm_bindgen(js_name = "max_energy")]
+    pub fn max_energy_js(&self) -> f64 {
+        self.max_energy()
+    }
+
+    /// Number of recorded snapshots.
+    #[wasm_bindgen(js_name = "len")]
+    pub fn len_js(&self) -> usize {
+        self.history.len()
+    }
+
+    /// Plot data as a flat `[index, total_energy, ...]` `Vec<f64>`.
+    #[wasm_bindgen(js_name = "plot_data_flat")]
+    pub fn plot_data_flat_js(&self) -> Vec<f64> {
+        let mut out = Vec::with_capacity(self.history.len() * 2);
+        for (i, m) in self.history.iter().enumerate() {
+            out.push(i as f64);
+            out.push(m.total_energy);
+        }
+        out
+    }
+
+    /// History as a serde-serialised `JsValue` (array of `PhysicsMetrics`).
+    #[wasm_bindgen(js_name = "history_js")]
+    pub fn history_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(&self.history)
+    }
+
+    /// Serialise to JSON.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self).map_err(err_to_jsvalue)
+    }
+
+    /// Serialise to a `JsValue`.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CollisionStats
 // ---------------------------------------------------------------------------
 
 /// Aggregated collision-detection statistics for a simulation step.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct CollisionStats {
     /// Number of broad-phase collision pairs.
@@ -344,13 +673,52 @@ impl CollisionStats {
 }
 
 // ---------------------------------------------------------------------------
+// CollisionStats — wasm-bindgen impl
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl CollisionStats {
+    /// Construct a new zeroed `CollisionStats`.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new() -> CollisionStats {
+        CollisionStats::new()
+    }
+
+    /// Update broad/narrow/contact counts in place.
+    #[wasm_bindgen(js_name = "update")]
+    pub fn update_js(&mut self, broad: usize, narrow: usize, contacts: usize) {
+        self.update(broad, narrow, contacts);
+    }
+
+    /// Narrow-phase / broad-phase efficiency ratio.
+    #[wasm_bindgen(js_name = "efficiency_ratio")]
+    pub fn efficiency_ratio_js(&self) -> f64 {
+        self.efficiency_ratio()
+    }
+
+    /// Serialise to JSON.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self).map_err(err_to_jsvalue)
+    }
+
+    /// Serialise to a `JsValue`.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ConstraintResiduals
 // ---------------------------------------------------------------------------
 
 /// Tracks per-iteration solver residuals to monitor convergence.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstraintResiduals {
     /// Residual value recorded at each solver iteration.
+    #[wasm_bindgen(skip)]
     pub residuals: Vec<f64>,
 }
 
@@ -395,25 +763,87 @@ impl Default for ConstraintResiduals {
 }
 
 // ---------------------------------------------------------------------------
+// ConstraintResiduals — wasm-bindgen impl
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl ConstraintResiduals {
+    /// Construct a new empty `ConstraintResiduals`.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new() -> ConstraintResiduals {
+        ConstraintResiduals::new()
+    }
+
+    /// Record the residual at solver iteration `iter`.
+    #[wasm_bindgen(js_name = "push_residual")]
+    pub fn push_residual_js(&mut self, iter: usize, residual: f64) {
+        self.push_residual(iter, residual);
+    }
+
+    /// Returns `true` when the last residual is below `tol`.
+    #[wasm_bindgen(js_name = "converged")]
+    pub fn converged_js(&self, tol: f64) -> bool {
+        self.converged(tol)
+    }
+
+    /// Full residual history as a `Vec<f64>`.
+    #[wasm_bindgen(js_name = "residual_history")]
+    pub fn residual_history_js(&self) -> Vec<f64> {
+        self.residual_history()
+    }
+
+    /// Clear all recorded residuals.
+    #[wasm_bindgen(js_name = "clear")]
+    pub fn clear_js(&mut self) {
+        self.clear();
+    }
+
+    /// Number of recorded residuals.
+    #[wasm_bindgen(js_name = "len")]
+    pub fn len_js(&self) -> usize {
+        self.residuals.len()
+    }
+
+    /// Serialise to JSON.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self).map_err(err_to_jsvalue)
+    }
+
+    /// Serialise to a `JsValue`.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AnalyticsDashboard
 // ---------------------------------------------------------------------------
 
 /// Top-level analytics dashboard aggregating all tracker sub-systems.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalyticsDashboard {
     /// Configuration governing sampling and export behaviour.
+    #[wasm_bindgen(skip)]
     pub config: AnalyticsConfig,
     /// Energy conservation tracker.
+    #[wasm_bindgen(skip)]
     pub energy: EnergyTracker,
     /// Frame-time performance tracker.
+    #[wasm_bindgen(skip)]
     pub performance: PerformanceTracker,
     /// Collision detection statistics.
     pub collisions: CollisionStats,
     /// Constraint solver residuals.
+    #[wasm_bindgen(skip)]
     pub residuals: ConstraintResiduals,
     /// Kinetic energy time series.
+    #[wasm_bindgen(skip)]
     pub ke_series: TimeSeriesData,
     /// Potential energy time series.
+    #[wasm_bindgen(skip)]
     pub pe_series: TimeSeriesData,
     /// Current simulation time (seconds).
     pub sim_time: f64,
@@ -465,6 +895,105 @@ impl Default for AnalyticsDashboard {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ---------------------------------------------------------------------------
+// AnalyticsDashboard — wasm-bindgen impl
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl AnalyticsDashboard {
+    /// Construct a default `AnalyticsDashboard`.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new() -> AnalyticsDashboard {
+        AnalyticsDashboard::new()
+    }
+
+    /// Record kinetic + potential energy at the current simulation time.
+    #[wasm_bindgen(js_name = "update_energy")]
+    pub fn update_energy_js(&mut self, ke: f64, pe: f64) {
+        self.update_energy(ke, pe);
+    }
+
+    /// Record a frame with wall-clock duration `dt` milliseconds.
+    #[wasm_bindgen(js_name = "update_performance")]
+    pub fn update_performance_js(&mut self, dt: f64) {
+        self.update_performance(dt);
+    }
+
+    /// Update collision statistics.
+    #[wasm_bindgen(js_name = "update_collisions")]
+    pub fn update_collisions_js(&mut self, b: usize, n: usize, c: usize) {
+        self.update_collisions(b, n, c);
+    }
+
+    /// Snapshot of the analytics configuration.
+    #[wasm_bindgen(getter)]
+    pub fn config(&self) -> AnalyticsConfig {
+        self.config.clone()
+    }
+
+    /// Snapshot of the energy tracker.
+    #[wasm_bindgen(getter)]
+    pub fn energy(&self) -> EnergyTracker {
+        self.energy.clone()
+    }
+
+    /// Snapshot of the performance tracker.
+    #[wasm_bindgen(getter)]
+    pub fn performance(&self) -> PerformanceTracker {
+        self.performance.clone()
+    }
+
+    /// Snapshot of the constraint residuals tracker.
+    #[wasm_bindgen(getter)]
+    pub fn residuals(&self) -> ConstraintResiduals {
+        self.residuals.clone()
+    }
+
+    /// Snapshot of the kinetic-energy time series.
+    #[wasm_bindgen(getter)]
+    pub fn ke_series(&self) -> TimeSeriesData {
+        self.ke_series.clone()
+    }
+
+    /// Snapshot of the potential-energy time series.
+    #[wasm_bindgen(getter)]
+    pub fn pe_series(&self) -> TimeSeriesData {
+        self.pe_series.clone()
+    }
+
+    /// Produce a JSON summary of the current dashboard state.
+    #[wasm_bindgen(js_name = "summary_json")]
+    pub fn summary_json_js(&self) -> String {
+        self.summary_json()
+    }
+
+    /// Serialise to JSON.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self).map_err(err_to_jsvalue)
+    }
+
+    /// Serialise to a `JsValue`.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn vec3_from_flat(v: &[f64]) -> [f64; 3] {
+    let mut out = [0.0_f64; 3];
+    for (i, slot) in out.iter_mut().enumerate() {
+        if let Some(val) = v.get(i).copied() {
+            *slot = val;
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # oxiphysics-viz
 
-**Status:** Alpha (CPU-only soft renderer) | **Version:** 0.1.0 | **Tests:** 4,072
+**Status:** Alpha (CPU-only soft renderer) | **Version:** 0.1.1 | **Tests:** 4,072
 
 Largest visualization crate in the OxiPhysics ecosystem — a pure-CPU software renderer with
 scientific, engineering, and physics-specific visualization tools.
@@ -72,4 +72,4 @@ use oxiphysics_viz::{
 
 ## License
 
-MIT OR Apache-2.0 — Copyright © COOLJAPAN OU (Team Kitasan)
+Apache-2.0 — Copyright © COOLJAPAN OU (Team Kitasan)

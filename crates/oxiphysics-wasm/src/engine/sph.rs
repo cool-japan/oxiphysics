@@ -3,13 +3,13 @@
 
 //! `WasmSphSim` — Smoothed Particle Hydrodynamics for the WASM boundary.
 
-#![allow(missing_docs)]
+use wasm_bindgen::prelude::*;
 
 use super::Float64View;
 
 /// Compact SPH particle data for the WASM boundary.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[wasm_bindgen]
+#[derive(Debug)]
 pub struct WasmSphSim {
     positions: Vec<[f64; 3]>,
     velocities: Vec<[f64; 3]>,
@@ -30,6 +30,7 @@ pub struct WasmSphSim {
     time: f64,
 }
 
+#[wasm_bindgen]
 impl WasmSphSim {
     /// Create a new SPH simulation with default water-like parameters.
     pub fn new() -> Self {
@@ -73,16 +74,20 @@ impl WasmSphSim {
         self.positions.len() as u32
     }
 
-    /// Get position of particle `i` as `[x, y, z]`.
-    ///
-    /// Returns `[0, 0, 0]` if index is out of bounds.
-    pub fn get_position(&self, i: u32) -> [f64; 3] {
-        self.positions.get(i as usize).copied().unwrap_or([0.0; 3])
+    /// Get position of particle `i` as `Vec<f64>` of `[x, y, z]` (JS-compatible).
+    pub fn get_position_js(&self, i: u32) -> Vec<f64> {
+        self.positions
+            .get(i as usize)
+            .map(|p| p.to_vec())
+            .unwrap_or_else(|| vec![0.0; 3])
     }
 
-    /// Get velocity of particle `i`.
-    pub fn get_velocity(&self, i: u32) -> [f64; 3] {
-        self.velocities.get(i as usize).copied().unwrap_or([0.0; 3])
+    /// Get velocity of particle `i` as `Vec<f64>` of `[vx, vy, vz]` (JS-compatible).
+    pub fn get_velocity_js(&self, i: u32) -> Vec<f64> {
+        self.velocities
+            .get(i as usize)
+            .map(|v| v.to_vec())
+            .unwrap_or_else(|| vec![0.0; 3])
     }
 
     /// Return all positions as a flat `Float64View` of `[x, y, z]` triples.
@@ -110,13 +115,27 @@ impl WasmSphSim {
         Float64View::from_vec(self.densities.clone())
     }
 
+    /// Return all positions as a `js_sys::Float64Array` (JS-typed-array, zero-copy-friendly).
+    pub fn all_positions_typed(&self) -> js_sys::Float64Array {
+        self.all_positions().to_typed_array()
+    }
+
+    /// Return all velocities as a `js_sys::Float64Array`.
+    pub fn all_velocities_typed(&self) -> js_sys::Float64Array {
+        self.all_velocities().to_typed_array()
+    }
+
+    /// Return all densities as a `js_sys::Float64Array`.
+    pub fn all_densities_typed(&self) -> js_sys::Float64Array {
+        self.all_densities().to_typed_array()
+    }
+
     /// Accumulated simulation time.
     pub fn time(&self) -> f64 {
         self.time
     }
 
     /// Advance the simulation by `dt` seconds using a simple WCSPH scheme.
-    #[allow(clippy::needless_range_loop)]
     pub fn step(&mut self, dt: f64) {
         let n = self.positions.len();
         if n == 0 {
@@ -130,7 +149,7 @@ impl WasmSphSim {
 
         // Density
         let mut rho = vec![0.0f64; n];
-        for i in 0..n {
+        for (i, rho_i) in rho.iter_mut().enumerate().take(n) {
             for j in 0..n {
                 let dx = self.positions[i][0] - self.positions[j][0];
                 let dy = self.positions[i][1] - self.positions[j][1];
@@ -138,10 +157,10 @@ impl WasmSphSim {
                 let r2 = dx * dx + dy * dy + dz * dz;
                 if r2 < h2 {
                     let d = h2 - r2;
-                    rho[i] += self.mass * poly6 * d * d * d;
+                    *rho_i += self.mass * poly6 * d * d * d;
                 }
             }
-            self.densities[i] = rho[i].max(1e-3);
+            self.densities[i] = rho_i.max(1e-3);
         }
 
         // Pressure = k * (rho - rho0)
@@ -189,14 +208,26 @@ impl WasmSphSim {
         }
 
         // Euler integration
-        for i in 0..n {
-            for k in 0..3 {
-                self.velocities[i][k] += forces[i][k] * dt;
+        for (i, force) in forces.iter().enumerate().take(n) {
+            for (k, &f) in force.iter().enumerate().take(3) {
+                self.velocities[i][k] += f * dt;
                 self.positions[i][k] += self.velocities[i][k] * dt;
             }
         }
 
         self.time += dt;
+    }
+}
+
+impl WasmSphSim {
+    /// Get position of particle `i` as `[x, y, z]` (Rust-only).
+    pub fn get_position(&self, i: u32) -> [f64; 3] {
+        self.positions.get(i as usize).copied().unwrap_or([0.0; 3])
+    }
+
+    /// Get velocity of particle `i` as `[vx, vy, vz]` (Rust-only).
+    pub fn get_velocity(&self, i: u32) -> [f64; 3] {
+        self.velocities.get(i as usize).copied().unwrap_or([0.0; 3])
     }
 }
 

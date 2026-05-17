@@ -348,9 +348,22 @@ impl RigidFlexiCoupling {
         let torque_participation = vec![0.0_f64; n_modes * 3];
         let mut natural_frequencies = vec![0.0_f64; n_modes];
         let damping_ratios = vec![0.05_f64; n_modes];
-        for i in 0..n_modes {
+        // Cantilever-beam series: ω_n = (β_n L)² × sqrt(EI/(ρAL⁴))
+        // Using unit EI/(ρAL⁴)=1. β_n L roots of cos(βL)cosh(βL)+1=0:
+        // 1.875, 4.694, 7.855, 10.996, 14.137, 17.279, ...
+        // Subsequent roots are approximately (n - 0.5)π for n ≥ 4.
+        let beta_l: Vec<f64> = (0..n_modes)
+            .map(|n| match n {
+                0 => 1.875_104_069,
+                1 => 4.694_091_133,
+                2 => 7.854_757_438,
+                3 => 10.995_540_734,
+                _ => (n as f64 + 0.5) * std::f64::consts::PI,
+            })
+            .collect();
+        for (i, bl) in beta_l.iter().enumerate() {
             force_participation[i * 3] = 1.0;
-            natural_frequencies[i] = 100.0 * (i + 1) as f64; // placeholder Hz
+            natural_frequencies[i] = bl * bl; // ω_n = (β_n L)² for unit beam
         }
         Self {
             n_modes,
@@ -359,6 +372,17 @@ impl RigidFlexiCoupling {
             natural_frequencies,
             damping_ratios,
         }
+    }
+
+    /// Override natural frequencies with user-supplied values.
+    ///
+    /// Only the first `min(freqs.len(), n_modes)` modes are overwritten.
+    /// Values must be positive (non-positive entries are clamped to 0).
+    pub fn with_natural_frequencies(mut self, freqs: Vec<f64>) -> Self {
+        for (i, &f) in freqs.iter().take(self.n_modes).enumerate() {
+            self.natural_frequencies[i] = f.max(0.0);
+        }
+        self
     }
 
     /// Compute the resultant force on the rigid body from modal amplitudes `q`.
@@ -1270,5 +1294,44 @@ mod tests {
             dot.abs() < 1e-10,
             "tangent1 should be perpendicular to normal, dot={dot}"
         );
+    }
+
+    // ── RigidFlexiCoupling natural frequencies ───────────────────────────────
+
+    #[test]
+    fn natural_frequencies_positive_and_increasing() {
+        let coupling = RigidFlexiCoupling::new(5);
+        let freqs = &coupling.natural_frequencies;
+        for (i, &f) in freqs.iter().enumerate() {
+            assert!(f > 0.0, "frequency[{i}] must be positive, got {f}");
+        }
+        for i in 1..freqs.len() {
+            assert!(
+                freqs[i] > freqs[i - 1],
+                "frequencies must be strictly increasing: freq[{i}]={} <= freq[{}]={}",
+                freqs[i],
+                i - 1,
+                freqs[i - 1]
+            );
+        }
+    }
+
+    #[test]
+    fn natural_frequencies_first_not_100() {
+        let coupling = RigidFlexiCoupling::new(3);
+        assert!(
+            (coupling.natural_frequencies[0] - 100.0).abs() > 1e-6,
+            "first frequency must not be the old placeholder 100.0, got {}",
+            coupling.natural_frequencies[0]
+        );
+    }
+
+    #[test]
+    fn with_natural_frequencies_overrides() {
+        let coupling =
+            RigidFlexiCoupling::new(3).with_natural_frequencies(vec![50.0, 200.0, 500.0]);
+        assert!((coupling.natural_frequencies[0] - 50.0).abs() < 1e-12);
+        assert!((coupling.natural_frequencies[1] - 200.0).abs() < 1e-12);
+        assert!((coupling.natural_frequencies[2] - 500.0).abs() < 1e-12);
     }
 }

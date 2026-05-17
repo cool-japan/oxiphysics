@@ -3,12 +3,15 @@ name = "oxiphysics"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
 description = "Unified physics engine - Bullet/OpenFOAM/LAMMPS/CalculiX replacement"
 categories = ["science", "simulation", "mathematics", "algorithms"]
 keywords = ["physics", "simulation", "rigid-body", "fluid-dynamics", "fem"]
 readme = "README.md"
 
 [dependencies]
+oxiphysics-articulated = { workspace = true }
 oxiphysics-core = { workspace = true }
 oxiphysics-geometry = { workspace = true }
 oxiphysics-collision = { workspace = true }
@@ -24,8 +27,12 @@ oxiphysics-materials = { workspace = true }
 oxiphysics-gpu = { workspace = true }
 oxiphysics-viz = { workspace = true }
 oxiphysics-io = { workspace = true }
-oxiphysics-python = { workspace = true }
 oxiphysics-wasm = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = []
 
 [dev-dependencies]
 criterion = { workspace = true }

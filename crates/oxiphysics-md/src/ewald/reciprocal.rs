@@ -4,6 +4,8 @@
 
 //! Ewald reciprocal space, B-splines, PME grid, structure factor, Madelung constants.
 
+use oxifft;
+
 use super::params::{COULOMB_K, EwaldParams, erfc_approx};
 use super::summation::EwaldSummation;
 
@@ -241,14 +243,68 @@ impl PmeGrid {
         self.grid.iter().filter(|&&v| v.abs() > 1e-20).count()
     }
 
-    /// Simplified reciprocal-space energy estimate (proxy for full PME).
+    /// Reciprocal-space energy via full FFT-based PME (replaces proxy stub).
     ///
-    /// Returns `sum(grid^2) * V / N^3` scaled by the Ewald Gaussian envelope.
+    /// Performs a 3D FFT of the pre-spread charge grid and accumulates the
+    /// standard Ewald reciprocal-space sum:
+    /// ```text
+    /// E_recip = (COULOMB_K / (2V)) * Σ_{k≠0} (4π/k²) * exp(-k²/(4α²)) * |ρ̂(k)|²
+    /// ```
+    /// Note: this method does **not** apply B-spline corrections because the
+    /// spreading method used by `PmeGrid::spread_charges` is NGP (nearest grid
+    /// point). For a full SPME implementation use
+    /// [`crate::electrostatics::pme::pme_reciprocal_energy`].
     pub fn reciprocal_energy_estimate(&self) -> f64 {
-        let n = self.grid_size as f64;
+        let ng = self.grid_size;
+        let n_total = ng * ng * ng;
         let volume = self.box_len * self.box_len * self.box_len;
-        let sum_sq: f64 = self.grid.iter().map(|v| v * v).sum();
-        COULOMB_K * sum_sq * volume / (n * n * n)
+        let alpha = self.alpha;
+        let four_alpha_sq = 4.0 * alpha * alpha;
+        let two_pi = 2.0 * std::f64::consts::PI;
+
+        // 3D FFT of the pre-spread charge grid
+        let rho_imag = vec![0.0f64; n_total];
+        let (rho_re, rho_im) = oxifft::fft3d_split::<f64>(&self.grid, &rho_imag, ng, ng, ng);
+
+        let prefactor = COULOMB_K / (2.0 * volume);
+        let mut energy = 0.0f64;
+
+        for ix in 0..ng {
+            let nx: i64 = if ix <= ng / 2 {
+                ix as i64
+            } else {
+                ix as i64 - ng as i64
+            };
+            let kx = two_pi * nx as f64 / self.box_len;
+            for iy in 0..ng {
+                let ny: i64 = if iy <= ng / 2 {
+                    iy as i64
+                } else {
+                    iy as i64 - ng as i64
+                };
+                let ky = two_pi * ny as f64 / self.box_len;
+                for iz in 0..ng {
+                    if ix == 0 && iy == 0 && iz == 0 {
+                        continue;
+                    }
+                    let nz: i64 = if iz <= ng / 2 {
+                        iz as i64
+                    } else {
+                        iz as i64 - ng as i64
+                    };
+                    let kz = two_pi * nz as f64 / self.box_len;
+                    let k2 = kx * kx + ky * ky + kz * kz;
+                    if k2 < 1e-20 {
+                        continue;
+                    }
+                    let gaussian = (-k2 / four_alpha_sq).exp();
+                    let flat = ix * ng * ng + iy * ng + iz;
+                    let rho_sq = rho_re[flat] * rho_re[flat] + rho_im[flat] * rho_im[flat];
+                    energy += (4.0 * std::f64::consts::PI / k2) * gaussian * rho_sq;
+                }
+            }
+        }
+        prefactor * energy
     }
 }
 

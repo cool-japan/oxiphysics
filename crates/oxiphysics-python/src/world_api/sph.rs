@@ -1,35 +1,42 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! SPH (Smoothed Particle Hydrodynamics) Simulation.
 
-#![allow(missing_docs)]
+use pyo3::prelude::*;
 
 // ===========================================================================
 // SPH (Smoothed Particle Hydrodynamics) Simulation
 // ===========================================================================
 
 /// Configuration for an SPH particle simulation.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PySphConfig {
     /// Smoothing length (kernel radius).
+    #[pyo3(get, set)]
     pub h: f64,
     /// Reference density (kg/m^3).
+    #[pyo3(get, set)]
     pub rest_density: f64,
     /// Pressure stiffness constant k.
+    #[pyo3(get, set)]
     pub stiffness: f64,
     /// Dynamic viscosity coefficient.
+    #[pyo3(get, set)]
     pub viscosity: f64,
     /// Gravity `[gx, gy, gz]`.
+    #[pyo3(get, set)]
     pub gravity: [f64; 3],
     /// Particle mass.
+    #[pyo3(get, set)]
     pub particle_mass: f64,
 }
 
+#[pymethods]
 impl PySphConfig {
     /// Create a default water-like SPH configuration.
+    #[staticmethod]
     pub fn water() -> Self {
         Self {
             h: 0.1,
@@ -49,8 +56,8 @@ impl Default for PySphConfig {
 }
 
 /// SPH particle simulation (simplified 3-D, poly6/spiky kernels).
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PySphSim {
     /// Particle positions `[x, y, z]` per particle.
     positions: Vec<[f64; 3]>,
@@ -66,8 +73,10 @@ pub struct PySphSim {
     time: f64,
 }
 
+#[pymethods]
 impl PySphSim {
     /// Create an empty SPH simulation.
+    #[new]
     pub fn new(config: PySphConfig) -> Self {
         Self {
             positions: Vec::new(),
@@ -134,11 +143,6 @@ impl PySphSim {
     /// Get the pressure of particle `i`, or `None` if out of bounds.
     pub fn pressure(&self, i: usize) -> Option<f64> {
         self.pressures.get(i).copied()
-    }
-
-    /// Mutable access to the velocity slice (for initial-condition setup).
-    pub fn velocities_mut(&mut self) -> &mut Vec<[f64; 3]> {
-        &mut self.velocities
     }
 
     /// Smoothing length `h`.
@@ -220,7 +224,7 @@ impl PySphSim {
         let visc_coeff = 45.0 / (std::f64::consts::PI * h.powi(6));
         let mut forces = vec![[0.0f64; 3]; n];
 
-        for i in 0..n {
+        for (i, force_i) in forces.iter_mut().enumerate() {
             let mut fp = [0.0f64; 3];
             let mut fv = [0.0f64; 3];
             for j in 0..n {
@@ -253,21 +257,28 @@ impl PySphSim {
             }
             // Gravity
             let rho_i = self.densities[i];
-            forces[i][0] = (fp[0] + fv[0]) / rho_i + g[0];
-            forces[i][1] = (fp[1] + fv[1]) / rho_i + g[1];
-            forces[i][2] = (fp[2] + fv[2]) / rho_i + g[2];
+            force_i[0] = (fp[0] + fv[0]) / rho_i + g[0];
+            force_i[1] = (fp[1] + fv[1]) / rho_i + g[1];
+            force_i[2] = (fp[2] + fv[2]) / rho_i + g[2];
         }
 
         // -- Integration (Euler) --
-        for i in 0..n {
-            self.velocities[i][0] += forces[i][0] * dt;
-            self.velocities[i][1] += forces[i][1] * dt;
-            self.velocities[i][2] += forces[i][2] * dt;
+        for (i, force_i) in forces.iter().enumerate() {
+            self.velocities[i][0] += force_i[0] * dt;
+            self.velocities[i][1] += force_i[1] * dt;
+            self.velocities[i][2] += force_i[2] * dt;
             self.positions[i][0] += self.velocities[i][0] * dt;
             self.positions[i][1] += self.velocities[i][1] * dt;
             self.positions[i][2] += self.velocities[i][2] * dt;
         }
 
         self.time += dt;
+    }
+}
+
+impl PySphSim {
+    /// Mutable access to the velocity slice (for initial-condition setup from Rust).
+    pub fn velocities_mut(&mut self) -> &mut Vec<[f64; 3]> {
+        &mut self.velocities
     }
 }

@@ -3,7 +3,10 @@ name = "oxiphysics-rigid"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
 description = "Rigid body dynamics for the OxiPhysics engine"
+readme = "README.md"
 categories = ["science", "simulation", "game-engines"]
 keywords = ["rigid-body", "physics", "dynamics", "simulation", "game-physics"]
 

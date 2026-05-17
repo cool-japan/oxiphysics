@@ -158,6 +158,26 @@ impl AnnotatedError {
 /// Result type alias
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// GPU operation error (used by `LbmGpuSolver`, `BvhGpuTraverser`, etc.).
+#[derive(Debug, Error)]
+pub enum GpuError {
+    /// GPU backend initialisation failed.
+    #[error("GPU backend init failed: {0}")]
+    BackendInit(String),
+
+    /// Shader dispatch / pipeline error.
+    #[error("shader dispatch error: {0}")]
+    ShaderDispatch(String),
+
+    /// Read-back from the GPU buffer failed.
+    #[error("GPU buffer read-back failed: {0}")]
+    ReadBack(String),
+
+    /// An invalid buffer handle was used.
+    #[error("invalid GPU buffer handle: {0}")]
+    InvalidHandle(usize),
+}
+
 impl Error {
     /// Construct a [`Error::General`] from any `Display`-able value.
     pub fn general(msg: impl std::fmt::Display) -> Self {

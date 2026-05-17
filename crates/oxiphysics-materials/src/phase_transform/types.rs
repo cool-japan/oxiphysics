@@ -1445,13 +1445,11 @@ impl AusteniteMartensiteKinetics {
             if km_frac > self.f_martensite {
                 self.f_martensite = km_frac;
             }
-        } else {
-            if t >= self.af_temp {
-                self.f_martensite = 0.0;
-            } else if t > self.as_temp {
-                let reverted = (t - self.as_temp) / (self.af_temp - self.as_temp);
-                self.f_martensite = (self.f_martensite * (1.0 - reverted)).max(0.0);
-            }
+        } else if t >= self.af_temp {
+            self.f_martensite = 0.0;
+        } else if t > self.as_temp {
+            let reverted = (t - self.as_temp) / (self.af_temp - self.as_temp);
+            self.f_martensite = (self.f_martensite * (1.0 - reverted)).max(0.0);
         }
     }
     /// Current austenite fraction.

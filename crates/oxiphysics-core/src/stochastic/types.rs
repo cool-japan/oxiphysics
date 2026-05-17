@@ -873,8 +873,10 @@ impl WienerProcess {
         for (i, &(ti, wi)) in free_path.iter().enumerate() {
             let frac = if total_t > 1e-15 {
                 (ti - t0) / total_t
+            } else if i == 0 {
+                0.0
             } else {
-                if i == 0 { 0.0 } else { 1.0 }
+                1.0
             };
             let bridge_val = wi - frac * w_free_end + w0 + frac * (w_end - w0);
             result.push((ti, bridge_val));

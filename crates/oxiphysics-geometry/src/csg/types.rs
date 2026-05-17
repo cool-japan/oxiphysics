@@ -204,25 +204,42 @@ impl SdfCapsule {
 ///
 /// The returned object implements `ImplicitSurface`.
 pub struct CsgOffsetSurface {
-    /// The original SDF tree (as an evaluated function table over a grid is
-    /// impractical, so we store the sampler function as a closure via callback).
-    pub(super) inner_sdf: f64,
+    /// The inner SDF function evaluated at any point.
+    inner_sdf: Box<dyn Fn([f64; 3]) -> f64 + Send + Sync>,
     /// Offset value (positive = expand outward, negative = shrink inward).
     pub offset: f64,
-    /// Bounding box for the original shape (used for gradient estimation).
-    pub bbox_min: [f64; 3],
-    /// Maximum bounding extent for gradient computation.
-    pub bbox_max: [f64; 3],
 }
 impl CsgOffsetSurface {
-    /// Create an offset wrapper (placeholder; use `csg_offset_sdf` for actual evaluation).
-    pub fn new(offset: f64, bbox_min: [f64; 3], bbox_max: [f64; 3]) -> Self {
+    /// Create an offset surface from a closure SDF and an offset distance.
+    pub fn new(sdf: Box<dyn Fn([f64; 3]) -> f64 + Send + Sync>, offset: f64) -> Self {
         Self {
-            inner_sdf: 0.0,
+            inner_sdf: sdf,
             offset,
-            bbox_min,
-            bbox_max,
         }
+    }
+    /// Evaluate the offset SDF: `inner_sdf(p) - offset`.
+    pub fn eval(&self, p: [f64; 3]) -> f64 {
+        (self.inner_sdf)(p) - self.offset
+    }
+    /// Gradient via central finite differences (eps = 1e-4).
+    pub fn finite_diff_gradient(&self, p: [f64; 3]) -> [f64; 3] {
+        const EPS: f64 = 1e-4;
+        [
+            (self.eval([p[0] + EPS, p[1], p[2]]) - self.eval([p[0] - EPS, p[1], p[2]]))
+                / (2.0 * EPS),
+            (self.eval([p[0], p[1] + EPS, p[2]]) - self.eval([p[0], p[1] - EPS, p[2]]))
+                / (2.0 * EPS),
+            (self.eval([p[0], p[1], p[2] + EPS]) - self.eval([p[0], p[1], p[2] - EPS]))
+                / (2.0 * EPS),
+        ]
+    }
+}
+impl ImplicitSurface for CsgOffsetSurface {
+    fn sdf(&self, p: [f64; 3]) -> f64 {
+        self.eval(p)
+    }
+    fn gradient(&self, p: [f64; 3]) -> [f64; 3] {
+        self.finite_diff_gradient(p)
     }
 }
 /// A cell in a marching-cubes grid.
@@ -424,5 +441,48 @@ impl SdfRoundedBox {
             half_extents,
             radius,
         }
+    }
+}
+
+#[cfg(test)]
+mod csg_offset_tests {
+    use super::super::functions::ImplicitSurface;
+    use super::CsgOffsetSurface;
+
+    fn unit_sphere_sdf(p: [f64; 3]) -> f64 {
+        (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() - 1.0
+    }
+
+    #[test]
+    fn test_offset_sphere_eval_inside() {
+        let s = CsgOffsetSurface::new(Box::new(unit_sphere_sdf), 1.0);
+        assert!(s.eval([1.5, 0.0, 0.0]) < 0.0);
+    }
+
+    #[test]
+    fn test_offset_sphere_eval_outside() {
+        let s = CsgOffsetSurface::new(Box::new(unit_sphere_sdf), 1.0);
+        assert!(s.eval([3.5, 0.0, 0.0]) > 0.0);
+    }
+
+    #[test]
+    fn test_offset_sphere_on_surface() {
+        let s = CsgOffsetSurface::new(Box::new(unit_sphere_sdf), 1.0);
+        assert!(s.eval([2.0, 0.0, 0.0]).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_offset_sphere_gradient_outward() {
+        let s = CsgOffsetSurface::new(Box::new(unit_sphere_sdf), 1.0);
+        let g = s.finite_diff_gradient([2.0, 0.0, 0.0]);
+        assert!(g[0] > 0.5 && g[1].abs() < 0.01 && g[2].abs() < 0.01);
+    }
+
+    #[test]
+    fn test_implicit_surface_trait() {
+        let s = CsgOffsetSurface::new(Box::new(unit_sphere_sdf), 1.0);
+        let t: &dyn ImplicitSurface = &s;
+        assert!(t.sdf([2.5, 0.0, 0.0]) > 0.0);
+        assert!(t.sdf([1.5, 0.0, 0.0]) < 0.0);
     }
 }

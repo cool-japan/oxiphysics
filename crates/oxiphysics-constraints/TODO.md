@@ -1,6 +1,6 @@
 # oxiphysics-constraints TODO
 
-Last updated: 2026-04-06 | Version: 0.1.0
+Last updated: 2026-05-17 | Version: 0.1.1
 
 ## Phase 1: Foundation
 - [x] Define core types and traits
@@ -33,6 +33,6 @@ Last updated: 2026-04-06 | Version: 0.1.0
 - [x] Game physics constraint sets
 
 ## Future / Post-0.1
-- [ ] GPU-accelerated constraint solving
-- [ ] SIMD-optimized PGS inner loops
-- [ ] Real-time deformable body coupling
+- [x] GPU-accelerated constraint solving (`gpu_constraint_solver` — WgpuBackend dispatch path + CPU fallback, WGSL block-PGS kernel)
+- [x] SIMD-optimized PGS inner loops (`simd_pgs` — SoA layout + auto-vectorized batch solver)
+- [x] Real-time deformable body coupling (`deformable_coupling` — `DeformableBodyState` trait + `RigidDeformableCoupling`)

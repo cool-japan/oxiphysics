@@ -16,12 +16,16 @@
 
 mod coulomb;
 mod multipole;
+pub mod pme;
 mod polarization;
 mod reaction_field;
 mod solvation;
 
 pub use coulomb::*;
 pub use multipole::*;
+pub use pme::{
+    ewald_real_space_energy, pme_reciprocal_energy, pme_reciprocal_forces, pme_self_energy,
+};
 pub use polarization::*;
 pub use reaction_field::*;
 pub use solvation::*;

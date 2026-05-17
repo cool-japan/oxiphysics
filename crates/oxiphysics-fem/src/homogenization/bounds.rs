@@ -23,6 +23,8 @@ pub struct Phase {
     pub youngs_modulus: f64,
     /// Poisson's ratio (dimensionless).
     pub poisson_ratio: f64,
+    /// Mass density (kg/m³). Defaults to 0.0 when not set.
+    pub density: f64,
 }
 
 impl Phase {
@@ -38,7 +40,14 @@ impl Phase {
             volume_fraction,
             youngs_modulus,
             poisson_ratio,
+            density: 0.0,
         }
+    }
+
+    /// Builder-style setter for mass density (kg/m³).
+    pub fn with_density(mut self, density: f64) -> Self {
+        self.density = density;
+        self
     }
 
     /// Bulk modulus K = E / (3(1 - 2ν)).

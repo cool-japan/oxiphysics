@@ -10,6 +10,19 @@
 
 pub mod animation_system;
 pub mod camera;
+pub mod picking;
+pub use picking::{
+    PickResult, PickScene, PickableObject, Picker, Ray, SelectionSet, moller_trumbore,
+};
+pub mod hdr_framebuffer;
+pub use hdr_framebuffer::{
+    HdrFramebuffer, HdrRasterizer, ToneMapMethod, ToneMapper, linear_to_srgb, srgb_to_linear,
+};
+pub mod wasm_canvas;
+pub use wasm_canvas::{CanvasBuffer, CanvasConfig, CanvasRasterizer};
+
+pub mod wgpu_renderer;
+pub use wgpu_renderer::{GpuLight, GpuMeshHandle, GpuRenderer, GpuRendererConfig};
 pub mod colormap;
 pub mod debug_overlay;
 mod error;

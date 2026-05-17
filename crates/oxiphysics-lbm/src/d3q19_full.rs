@@ -62,6 +62,7 @@ const CS2: f64 = 1.0 / 3.0;
 ///
 /// The simulation stores distribution functions in a flat `Vec`f64` with layout
 /// `f\[idx * 19 + dir\]` where `idx = x + y*nx + z*nx*ny`.
+#[derive(Debug, Clone)]
 pub struct D3q19Simulation {
     /// Number of cells in the x-direction.
     pub nx: usize,

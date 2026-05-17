@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,8 +8,7 @@
 //! All types are `no-lifetime`, serialization-friendly, and carry comprehensive
 //! tests.
 
-#![allow(missing_docs)]
-
+use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -18,26 +16,42 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Configuration for an MD simulation.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyMdConfig {
     /// Side length of the cubic simulation box.
+    #[pyo3(get, set)]
     pub box_size: f64,
     /// Lennard-Jones epsilon (energy well depth, J or reduced units).
+    #[pyo3(get, set)]
     pub lj_epsilon: f64,
     /// Lennard-Jones sigma (particle diameter in m or reduced units).
+    #[pyo3(get, set)]
     pub lj_sigma: f64,
     /// Cut-off radius for pair interactions (typically 2.5 * sigma).
+    #[pyo3(get, set)]
     pub cutoff: f64,
     /// Particle mass (kg or reduced units).
+    #[pyo3(get, set)]
     pub particle_mass: f64,
     /// Target temperature for thermostat (K or reduced units). `None` = NVE.
+    #[pyo3(get, set)]
     pub target_temperature: Option<f64>,
     /// Thermostat relaxation time (used by velocity rescaling).
+    #[pyo3(get, set)]
     pub thermostat_tau: f64,
 }
 
+#[pymethods]
 impl PyMdConfig {
+    /// Create an argon-like reduced-unit configuration (ε=1, σ=1, box=10σ).
+    #[new]
+    pub fn new() -> Self {
+        Self::argon_reduced()
+    }
+
     /// Argon-like reduced-unit configuration (ε=1, σ=1, box=10σ).
+    #[staticmethod]
     pub fn argon_reduced() -> Self {
         Self {
             box_size: 10.0,
@@ -62,23 +76,32 @@ impl Default for PyMdConfig {
 // ---------------------------------------------------------------------------
 
 /// A single atom in the MD simulation.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyMdAtom {
+    /// Atom type identifier (e.g. element number or user label).
+    #[pyo3(get, set)]
+    pub atom_type: u32,
     /// Position `[x, y, z]`.
     pub position: [f64; 3],
     /// Velocity `[vx, vy, vz]`.
     pub velocity: [f64; 3],
     /// Accumulated force `[fx, fy, fz]` (cleared each step).
     pub force: [f64; 3],
-    /// Atom type identifier (e.g. element number or user label).
-    pub atom_type: u32,
 }
 
+#[pymethods]
 impl PyMdAtom {
     /// Create a new atom at `position` with zero velocity.
-    pub fn new(position: [f64; 3], atom_type: u32) -> Self {
+    #[new]
+    pub fn new(position: Vec<f64>, atom_type: u32) -> Self {
+        let pos = if position.len() >= 3 {
+            [position[0], position[1], position[2]]
+        } else {
+            [0.0; 3]
+        };
         Self {
-            position,
+            position: pos,
             velocity: [0.0; 3],
             force: [0.0; 3],
             atom_type,
@@ -90,6 +113,40 @@ impl PyMdAtom {
         let v2 = self.velocity[0].powi(2) + self.velocity[1].powi(2) + self.velocity[2].powi(2);
         0.5 * mass * v2
     }
+
+    /// Position as `[x, y, z]`.
+    #[getter]
+    pub fn position(&self) -> Vec<f64> {
+        self.position.to_vec()
+    }
+
+    /// Set position from a `[x, y, z]` list.
+    #[setter]
+    pub fn set_position(&mut self, v: Vec<f64>) {
+        if v.len() >= 3 {
+            self.position = [v[0], v[1], v[2]];
+        }
+    }
+
+    /// Velocity as `[vx, vy, vz]`.
+    #[getter]
+    pub fn velocity(&self) -> Vec<f64> {
+        self.velocity.to_vec()
+    }
+
+    /// Set velocity from a `[vx, vy, vz]` list.
+    #[setter]
+    pub fn set_velocity(&mut self, v: Vec<f64>) {
+        if v.len() >= 3 {
+            self.velocity = [v[0], v[1], v[2]];
+        }
+    }
+
+    /// Force as `[fx, fy, fz]`.
+    #[getter]
+    pub fn force(&self) -> Vec<f64> {
+        self.force.to_vec()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -100,12 +157,13 @@ impl PyMdAtom {
 ///
 /// Uses a velocity-Verlet integrator and a truncated-shifted Lennard-Jones
 /// pair potential. Supports an optional velocity-rescaling thermostat.
+#[pyclass(skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyMdSimulation {
     /// All atoms.
-    atoms: Vec<PyMdAtom>,
+    pub(crate) atoms: Vec<PyMdAtom>,
     /// Simulation configuration.
-    config: PyMdConfig,
+    pub(crate) config: PyMdConfig,
     /// Total simulation time accumulated.
     time: f64,
     /// Number of completed steps.
@@ -116,8 +174,10 @@ pub struct PyMdSimulation {
     thermostat_active: bool,
 }
 
+#[pymethods]
 impl PyMdSimulation {
     /// Create a new empty MD simulation from the given configuration.
+    #[new]
     pub fn new(config: PyMdConfig) -> Self {
         Self {
             atoms: Vec::new(),
@@ -132,27 +192,39 @@ impl PyMdSimulation {
     /// Add an atom at `position` with the given type index.
     ///
     /// Returns the index of the newly added atom.
-    pub fn add_atom(&mut self, position: [f64; 3], atom_type: u32) -> usize {
+    pub fn add_atom(&mut self, position: Vec<f64>, atom_type: u32) -> usize {
         let idx = self.atoms.len();
-        self.atoms.push(PyMdAtom::new(position, atom_type));
+        let pos = if position.len() >= 3 {
+            [position[0], position[1], position[2]]
+        } else {
+            [0.0; 3]
+        };
+        self.atoms.push(PyMdAtom {
+            position: pos,
+            velocity: [0.0; 3],
+            force: [0.0; 3],
+            atom_type,
+        });
         idx
     }
 
     /// Set the velocity of atom `i`. No-op if `i` is out of bounds.
-    pub fn set_velocity(&mut self, i: usize, vel: [f64; 3]) {
-        if let Some(atom) = self.atoms.get_mut(i) {
-            atom.velocity = vel;
+    pub fn set_velocity(&mut self, i: usize, vel: Vec<f64>) {
+        if let Some(atom) = self.atoms.get_mut(i)
+            && vel.len() >= 3
+        {
+            atom.velocity = [vel[0], vel[1], vel[2]];
         }
     }
 
     /// Get the position of atom `i`, or `None` if out of bounds.
-    pub fn position(&self, i: usize) -> Option<[f64; 3]> {
-        self.atoms.get(i).map(|a| a.position)
+    pub fn position(&self, i: usize) -> Option<Vec<f64>> {
+        self.atoms.get(i).map(|a| a.position.to_vec())
     }
 
     /// Get the velocity of atom `i`, or `None` if out of bounds.
-    pub fn velocity(&self, i: usize) -> Option<[f64; 3]> {
-        self.atoms.get(i).map(|a| a.velocity)
+    pub fn velocity(&self, i: usize) -> Option<Vec<f64>> {
+        self.atoms.get(i).map(|a| a.velocity.to_vec())
     }
 
     /// Number of atoms in the simulation.
@@ -285,7 +357,7 @@ impl PyMdSimulation {
         }
     }
 
-    /// Return all atom positions as a flat `Vec`f64` of `\[x,y,z\]` triples.
+    /// Return all atom positions as a flat `Vec<f64>` of `[x,y,z]` triples.
     pub fn all_positions(&self) -> Vec<f64> {
         self.atoms
             .iter()
@@ -300,11 +372,9 @@ impl PyMdSimulation {
             .flat_map(|a| a.velocity.iter().copied())
             .collect()
     }
+}
 
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
-
+impl PyMdSimulation {
     /// Recompute all pair forces using the truncated-shifted Lennard-Jones potential.
     fn compute_forces(&mut self) {
         let n = self.atoms.len();
@@ -331,15 +401,19 @@ impl PyMdSimulation {
         for i in 0..n {
             for j in (i + 1)..n {
                 let mut dr = [0.0f64; 3];
-                for k in 0..3 {
-                    let mut d = positions[j][k] - positions[i][k];
+                for ((dr_k, &pj_k), &pi_k) in dr
+                    .iter_mut()
+                    .zip(positions[j].iter())
+                    .zip(positions[i].iter())
+                {
+                    let mut d = pj_k - pi_k;
                     // Minimum image convention
                     if d > 0.5 * box_size {
                         d -= box_size;
                     } else if d < -0.5 * box_size {
                         d += box_size;
                     }
-                    dr[k] = d;
+                    *dr_k = d;
                 }
                 let r2 = dr[0] * dr[0] + dr[1] * dr[1] + dr[2] * dr[2];
                 if r2 >= rc2 || r2 < 1e-20 {
@@ -350,8 +424,8 @@ impl PyMdSimulation {
                 let sig12_r12 = sig6_r6 * sig6_r6;
                 // Force magnitude: -dU/dr * (1/r)
                 let f_mag = 24.0 * eps / r2 * (2.0 * sig12_r12 - sig6_r6);
-                for k in 0..3 {
-                    let fk = f_mag * dr[k];
+                for (k, &dr_k) in dr.iter().enumerate() {
+                    let fk = f_mag * dr_k;
                     self.atoms[i].force[k] -= fk;
                     self.atoms[j].force[k] += fk;
                 }
@@ -396,10 +470,10 @@ mod tests {
     #[test]
     fn test_md_add_atom() {
         let mut sim = default_sim();
-        let idx = sim.add_atom([1.0, 2.0, 3.0], 0);
+        let idx = sim.add_atom(vec![1.0, 2.0, 3.0], 0);
         assert_eq!(idx, 0);
         assert_eq!(sim.atom_count(), 1);
-        let pos = sim.position(0).unwrap();
+        let pos = sim.position(0).expect("atom 0 must exist");
         assert!((pos[0] - 1.0).abs() < 1e-12);
         assert!((pos[1] - 2.0).abs() < 1e-12);
         assert!((pos[2] - 3.0).abs() < 1e-12);
@@ -408,18 +482,18 @@ mod tests {
     #[test]
     fn test_md_add_multiple_atoms() {
         let mut sim = default_sim();
-        sim.add_atom([0.0, 0.0, 0.0], 0);
-        sim.add_atom([1.0, 0.0, 0.0], 1);
-        sim.add_atom([2.0, 0.0, 0.0], 0);
+        sim.add_atom(vec![0.0, 0.0, 0.0], 0);
+        sim.add_atom(vec![1.0, 0.0, 0.0], 1);
+        sim.add_atom(vec![2.0, 0.0, 0.0], 0);
         assert_eq!(sim.atom_count(), 3);
     }
 
     #[test]
     fn test_md_set_velocity() {
         let mut sim = default_sim();
-        sim.add_atom([0.0; 3], 0);
-        sim.set_velocity(0, [1.0, 2.0, 3.0]);
-        let vel = sim.velocity(0).unwrap();
+        sim.add_atom(vec![0.0, 0.0, 0.0], 0);
+        sim.set_velocity(0, vec![1.0, 2.0, 3.0]);
+        let vel = sim.velocity(0).expect("atom 0 must exist");
         assert!((vel[0] - 1.0).abs() < 1e-12);
         assert!((vel[1] - 2.0).abs() < 1e-12);
     }
@@ -427,15 +501,15 @@ mod tests {
     #[test]
     fn test_md_kinetic_energy_zero_at_rest() {
         let mut sim = default_sim();
-        sim.add_atom([0.0; 3], 0);
+        sim.add_atom(vec![0.0, 0.0, 0.0], 0);
         assert!((sim.kinetic_energy()).abs() < 1e-15);
     }
 
     #[test]
     fn test_md_kinetic_energy_nonzero_with_velocity() {
         let mut sim = default_sim();
-        sim.add_atom([0.0; 3], 0);
-        sim.set_velocity(0, [1.0, 0.0, 0.0]);
+        sim.add_atom(vec![0.0, 0.0, 0.0], 0);
+        sim.set_velocity(0, vec![1.0, 0.0, 0.0]);
         // KE = 0.5 * 1.0 * 1.0^2 = 0.5
         assert!((sim.kinetic_energy() - 0.5).abs() < 1e-12);
     }
@@ -443,14 +517,14 @@ mod tests {
     #[test]
     fn test_md_temperature_zero_at_rest() {
         let mut sim = default_sim();
-        sim.add_atom([0.0; 3], 0);
+        sim.add_atom(vec![0.0, 0.0, 0.0], 0);
         assert!((sim.temperature()).abs() < 1e-12);
     }
 
     #[test]
     fn test_md_step_advances_time() {
         let mut sim = default_sim();
-        sim.add_atom([5.0, 5.0, 5.0], 0);
+        sim.add_atom(vec![5.0, 5.0, 5.0], 0);
         sim.step(0.01);
         assert!((sim.time() - 0.01).abs() < 1e-15);
         assert_eq!(sim.step_count(), 1);
@@ -481,10 +555,10 @@ mod tests {
         };
         let mut sim = PyMdSimulation::new(cfg);
         // Add atoms with velocity → high initial temperature
-        sim.add_atom([2.0, 2.0, 2.0], 0);
-        sim.add_atom([8.0, 8.0, 8.0], 0);
-        sim.set_velocity(0, [5.0, 0.0, 0.0]);
-        sim.set_velocity(1, [-5.0, 0.0, 0.0]);
+        sim.add_atom(vec![2.0, 2.0, 2.0], 0);
+        sim.add_atom(vec![8.0, 8.0, 8.0], 0);
+        sim.set_velocity(0, vec![5.0, 0.0, 0.0]);
+        sim.set_velocity(1, vec![-5.0, 0.0, 0.0]);
         // After step with thermostat, temperature should converge towards 1.2
         sim.step(0.001);
         let t = sim.temperature();
@@ -503,7 +577,7 @@ mod tests {
     #[test]
     fn test_md_run_multi_step() {
         let mut sim = default_sim();
-        sim.add_atom([5.0, 5.0, 5.0], 0);
+        sim.add_atom(vec![5.0, 5.0, 5.0], 0);
         sim.run(0.001, 10);
         assert_eq!(sim.step_count(), 10);
         assert!((sim.time() - 0.01).abs() < 1e-12);
@@ -512,16 +586,16 @@ mod tests {
     #[test]
     fn test_md_all_positions_length() {
         let mut sim = default_sim();
-        sim.add_atom([1.0, 0.0, 0.0], 0);
-        sim.add_atom([2.0, 0.0, 0.0], 0);
+        sim.add_atom(vec![1.0, 0.0, 0.0], 0);
+        sim.add_atom(vec![2.0, 0.0, 0.0], 0);
         assert_eq!(sim.all_positions().len(), 6);
     }
 
     #[test]
     fn test_md_all_velocities_length() {
         let mut sim = default_sim();
-        sim.add_atom([0.0; 3], 0);
-        sim.add_atom([1.0, 0.0, 0.0], 0);
+        sim.add_atom(vec![0.0, 0.0, 0.0], 0);
+        sim.add_atom(vec![1.0, 0.0, 0.0], 0);
         assert_eq!(sim.all_velocities().len(), 6);
     }
 
@@ -533,15 +607,15 @@ mod tests {
         };
         let mut sim = PyMdSimulation::new(cfg);
         // Place two atoms very close — LJ will repel them
-        sim.add_atom([5.0, 5.0, 5.0], 0);
-        sim.add_atom([5.1, 5.0, 5.0], 0); // 0.1σ apart — strong repulsion
-        let x0_0 = sim.position(0).unwrap()[0];
-        let x0_1 = sim.position(1).unwrap()[0];
+        sim.add_atom(vec![5.0, 5.0, 5.0], 0);
+        sim.add_atom(vec![5.1, 5.0, 5.0], 0); // 0.1σ apart — strong repulsion
+        let x0_0 = sim.position(0).expect("atom 0")[0];
+        let x0_1 = sim.position(1).expect("atom 1")[0];
         for _ in 0..5 {
             sim.step(0.0001);
         }
-        let x1_0 = sim.position(0).unwrap()[0];
-        let x1_1 = sim.position(1).unwrap()[0];
+        let x1_0 = sim.position(0).expect("atom 0")[0];
+        let x1_1 = sim.position(1).expect("atom 1")[0];
         // After repulsion atom 0 moves left and atom 1 moves right (approx)
         let sep0 = (x0_1 - x0_0).abs();
         let sep1 = (x1_1 - x1_0).abs();
@@ -564,7 +638,7 @@ mod tests {
         let mut sim = default_sim();
         sim.set_target_temperature(2.0);
         assert!(sim.config.target_temperature.is_some());
-        assert!((sim.config.target_temperature.unwrap() - 2.0).abs() < 1e-12);
+        assert!((sim.config.target_temperature.expect("target temp") - 2.0).abs() < 1e-12);
     }
 }
 
@@ -573,23 +647,42 @@ mod tests {
 // ---------------------------------------------------------------------------
 
 /// Atom type descriptor: element name, mass, charge.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct AtomTypeDesc {
     /// Element symbol or name (e.g. "Ar", "Na+").
+    #[pyo3(get, set)]
     pub name: String,
     /// Mass in reduced units (or amu).
+    #[pyo3(get, set)]
     pub mass: f64,
     /// Partial charge in reduced units (or elementary charge).
+    #[pyo3(get, set)]
     pub charge: f64,
     /// Lennard-Jones epsilon for this type.
+    #[pyo3(get, set)]
     pub lj_epsilon: f64,
     /// Lennard-Jones sigma for this type.
+    #[pyo3(get, set)]
     pub lj_sigma: f64,
 }
 
+#[pymethods]
 impl AtomTypeDesc {
+    /// Create a new atom type descriptor.
+    #[new]
+    pub fn new(name: String, mass: f64, charge: f64, lj_epsilon: f64, lj_sigma: f64) -> Self {
+        Self {
+            name,
+            mass,
+            charge,
+            lj_epsilon,
+            lj_sigma,
+        }
+    }
+
     /// Argon-like atom (ε=1, σ=1, neutral).
+    #[staticmethod]
     pub fn argon() -> Self {
         Self {
             name: "Ar".into(),
@@ -601,6 +694,7 @@ impl AtomTypeDesc {
     }
 
     /// Sodium ion (positive charge).
+    #[staticmethod]
     pub fn sodium_ion() -> Self {
         Self {
             name: "Na+".into(),
@@ -612,6 +706,7 @@ impl AtomTypeDesc {
     }
 
     /// Chloride ion (negative charge).
+    #[staticmethod]
     pub fn chloride_ion() -> Self {
         Self {
             name: "Cl-".into(),
@@ -627,8 +722,8 @@ impl AtomTypeDesc {
 ///
 /// Supports heterogeneous systems with multiple atom types, per-atom charges,
 /// and retrieval of all positions / velocities by type.
+#[pyclass(skip_from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct AtomSet {
     /// Registered atom type descriptors.
     pub atom_types: Vec<AtomTypeDesc>,
@@ -641,11 +736,14 @@ pub struct AtomSet {
     /// Per-atom type index (into `atom_types`).
     pub type_indices: Vec<usize>,
     /// Simulation box size (cubic).
+    #[pyo3(get, set)]
     pub box_size: f64,
 }
 
+#[pymethods]
 impl AtomSet {
     /// Create an empty `AtomSet` with the given box size.
+    #[new]
     pub fn new(box_size: f64) -> Self {
         Self {
             atom_types: Vec::new(),
@@ -665,9 +763,14 @@ impl AtomSet {
     }
 
     /// Add an atom at `position` with the given type index. Returns atom index.
-    pub fn add_atom(&mut self, position: [f64; 3], type_idx: usize) -> usize {
+    pub fn add_atom(&mut self, position: Vec<f64>, type_idx: usize) -> usize {
         let idx = self.positions.len();
-        self.positions.push(position);
+        let pos = if position.len() >= 3 {
+            [position[0], position[1], position[2]]
+        } else {
+            [0.0; 3]
+        };
+        self.positions.push(pos);
         self.velocities.push([0.0; 3]);
         self.forces.push([0.0; 3]);
         self.type_indices.push(type_idx);
@@ -702,13 +805,13 @@ impl AtomSet {
             .unwrap_or(0.0)
     }
 
-    /// Return all positions of atoms with type index `type_idx`.
-    pub fn positions_of_type(&self, type_idx: usize) -> Vec<[f64; 3]> {
+    /// Return all positions of atoms with type index `type_idx` as a flat list.
+    pub fn positions_of_type(&self, type_idx: usize) -> Vec<f64> {
         self.positions
             .iter()
             .zip(self.type_indices.iter())
             .filter(|(_, ti)| **ti == type_idx)
-            .map(|(&pos, _)| pos)
+            .flat_map(|(pos, _)| pos.iter().copied())
             .collect()
     }
 
@@ -736,6 +839,22 @@ impl AtomSet {
         }
         2.0 * self.kinetic_energy() / (3.0 * n as f64)
     }
+
+    /// All positions as a flat `Vec<f64>` of `[x,y,z]` triples.
+    pub fn all_positions(&self) -> Vec<f64> {
+        self.positions
+            .iter()
+            .flat_map(|p| p.iter().copied())
+            .collect()
+    }
+
+    /// All velocities as a flat `Vec<f64>` of `[vx,vy,vz]` triples.
+    pub fn all_velocities(&self) -> Vec<f64> {
+        self.velocities
+            .iter()
+            .flat_map(|v| v.iter().copied())
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -751,7 +870,7 @@ impl AtomSet {
 /// * `set` - the atom set with charges and positions
 /// * `alpha` - Ewald convergence parameter (larger α → more work in reciprocal space)
 /// * `r_cut` - real-space cutoff radius
-#[allow(dead_code)]
+#[pyfunction]
 pub fn ewald_real_space_energy(set: &AtomSet, alpha: f64, r_cut: f64) -> f64 {
     let n = set.len();
     let box_size = set.box_size;
@@ -770,14 +889,18 @@ pub fn ewald_real_space_energy(set: &AtomSet, alpha: f64, r_cut: f64) -> f64 {
             }
             // Minimum image
             let mut dr = [0.0f64; 3];
-            for k in 0..3 {
-                let mut d = set.positions[j][k] - set.positions[i][k];
+            for ((dr_k, &pj_k), &pi_k) in dr
+                .iter_mut()
+                .zip(set.positions[j].iter())
+                .zip(set.positions[i].iter())
+            {
+                let mut d = pj_k - pi_k;
                 if d > 0.5 * box_size {
                     d -= box_size;
                 } else if d < -0.5 * box_size {
                     d += box_size;
                 }
-                dr[k] = d;
+                *dr_k = d;
             }
             let r2 = dr[0] * dr[0] + dr[1] * dr[1] + dr[2] * dr[2];
             if r2 >= rc2 || r2 < 1e-20 {
@@ -813,25 +936,32 @@ fn erfc_approx(x: f64) -> f64 {
 /// The NH thermostat couples a fictitious degree of freedom `ξ` (the "bath")
 /// to the kinetic energy. This implementation uses a simplified single-chain
 /// version.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct NoseHooverThermostat {
     /// Target temperature T*.
+    #[pyo3(get, set)]
     pub target_temperature: f64,
     /// Thermostat mass Q (related to relaxation time τ as Q = N_f * kB * T * τ²).
+    #[pyo3(get, set)]
     pub thermostat_mass: f64,
     /// Thermostat momentum ξ (conjugate to fictitious coordinate).
+    #[pyo3(get, set)]
     pub xi: f64,
     /// Thermostat "position" η (not needed for velocity-Verlet but tracked).
+    #[pyo3(get, set)]
     pub eta: f64,
     /// Number of degrees of freedom (3N for monatomic system).
+    #[pyo3(get, set)]
     pub n_dof: usize,
 }
 
+#[pymethods]
 impl NoseHooverThermostat {
     /// Create a new Nosé-Hoover thermostat.
     ///
     /// `n_atoms` is the number of atoms; `tau` is the relaxation time.
+    #[new]
     pub fn new(target_temperature: f64, n_atoms: usize, tau: f64) -> Self {
         let n_dof = 3 * n_atoms;
         // Q = n_dof * kB * T * tau^2 (reduced units: kB=1); use 1.0 when n_dof=0 to avoid blow-up
@@ -876,8 +1006,8 @@ impl NoseHooverThermostat {
 /// NVT ensemble simulation using the Nosé-Hoover thermostat.
 ///
 /// Wraps a `PyMdSimulation` and applies Nosé-Hoover velocity scaling each step.
+#[pyclass(skip_from_py_object)]
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PyNvtSimulation {
     /// Underlying MD simulation.
     pub md: PyMdSimulation,
@@ -885,8 +1015,10 @@ pub struct PyNvtSimulation {
     pub thermostat: NoseHooverThermostat,
 }
 
+#[pymethods]
 impl PyNvtSimulation {
     /// Create an NVT simulation from an MD config with given thermostat time τ.
+    #[new]
     pub fn new(config: PyMdConfig, tau: f64) -> Self {
         let t_target = config.target_temperature.unwrap_or(1.2);
         let md = PyMdSimulation::new(config);
@@ -895,7 +1027,7 @@ impl PyNvtSimulation {
     }
 
     /// Add an atom. Returns atom index.
-    pub fn add_atom(&mut self, position: [f64; 3], atom_type: u32) -> usize {
+    pub fn add_atom(&mut self, position: Vec<f64>, atom_type: u32) -> usize {
         let idx = self.md.add_atom(position, atom_type);
         // Update thermostat DOF count
         self.thermostat.n_dof = 3 * self.md.atom_count();
@@ -927,6 +1059,16 @@ impl PyNvtSimulation {
     /// Step count.
     pub fn step_count(&self) -> u64 {
         self.md.step_count()
+    }
+
+    /// Atom count.
+    pub fn atom_count(&self) -> usize {
+        self.md.atom_count()
+    }
+
+    /// Total kinetic energy.
+    pub fn kinetic_energy(&self) -> f64 {
+        self.md.kinetic_energy()
     }
 }
 
@@ -965,8 +1107,8 @@ mod nvt_tests {
     fn test_atom_set_creation() {
         let mut set = AtomSet::new(10.0);
         let ti = set.register_type(AtomTypeDesc::argon());
-        set.add_atom([1.0, 2.0, 3.0], ti);
-        set.add_atom([4.0, 5.0, 6.0], ti);
+        set.add_atom(vec![1.0, 2.0, 3.0], ti);
+        set.add_atom(vec![4.0, 5.0, 6.0], ti);
         assert_eq!(set.len(), 2);
         assert!(!set.is_empty());
     }
@@ -975,7 +1117,7 @@ mod nvt_tests {
     fn test_atom_set_mass() {
         let mut set = AtomSet::new(10.0);
         let ti = set.register_type(AtomTypeDesc::argon());
-        set.add_atom([0.0; 3], ti);
+        set.add_atom(vec![0.0, 0.0, 0.0], ti);
         assert!((set.mass(0) - 1.0).abs() < 1e-12);
     }
 
@@ -984,8 +1126,8 @@ mod nvt_tests {
         let mut set = AtomSet::new(10.0);
         let ti_na = set.register_type(AtomTypeDesc::sodium_ion());
         let ti_cl = set.register_type(AtomTypeDesc::chloride_ion());
-        set.add_atom([0.0; 3], ti_na);
-        set.add_atom([5.0, 0.0, 0.0], ti_cl);
+        set.add_atom(vec![0.0, 0.0, 0.0], ti_na);
+        set.add_atom(vec![5.0, 0.0, 0.0], ti_cl);
         assert!((set.charge(0) - 1.0).abs() < 1e-12);
         assert!((set.charge(1) + 1.0).abs() < 1e-12);
     }
@@ -995,8 +1137,8 @@ mod nvt_tests {
         let mut set = AtomSet::new(10.0);
         let ti_na = set.register_type(AtomTypeDesc::sodium_ion());
         let ti_cl = set.register_type(AtomTypeDesc::chloride_ion());
-        set.add_atom([1.0, 0.0, 0.0], ti_na);
-        set.add_atom([5.0, 0.0, 0.0], ti_cl);
+        set.add_atom(vec![1.0, 0.0, 0.0], ti_na);
+        set.add_atom(vec![5.0, 0.0, 0.0], ti_cl);
         let q = set.net_charge();
         assert!(q.abs() < 1e-10, "net charge should be ~0: {}", q);
     }
@@ -1006,20 +1148,21 @@ mod nvt_tests {
         let mut set = AtomSet::new(10.0);
         let ti_a = set.register_type(AtomTypeDesc::argon());
         let ti_b = set.register_type(AtomTypeDesc::sodium_ion());
-        set.add_atom([1.0, 0.0, 0.0], ti_a);
-        set.add_atom([2.0, 0.0, 0.0], ti_a);
-        set.add_atom([3.0, 0.0, 0.0], ti_b);
+        set.add_atom(vec![1.0, 0.0, 0.0], ti_a);
+        set.add_atom(vec![2.0, 0.0, 0.0], ti_a);
+        set.add_atom(vec![3.0, 0.0, 0.0], ti_b);
         let pos_a = set.positions_of_type(ti_a);
-        assert_eq!(pos_a.len(), 2);
+        // 2 atoms * 3 coords = 6 floats
+        assert_eq!(pos_a.len(), 6);
         let pos_b = set.positions_of_type(ti_b);
-        assert_eq!(pos_b.len(), 1);
+        assert_eq!(pos_b.len(), 3);
     }
 
     #[test]
     fn test_atom_set_kinetic_energy_zero_at_rest() {
         let mut set = AtomSet::new(10.0);
         let ti = set.register_type(AtomTypeDesc::argon());
-        set.add_atom([0.0; 3], ti);
+        set.add_atom(vec![0.0, 0.0, 0.0], ti);
         assert!((set.kinetic_energy()).abs() < 1e-15);
     }
 
@@ -1027,7 +1170,7 @@ mod nvt_tests {
     fn test_atom_set_temperature_zero_at_rest() {
         let mut set = AtomSet::new(10.0);
         let ti = set.register_type(AtomTypeDesc::argon());
-        set.add_atom([0.0; 3], ti);
+        set.add_atom(vec![0.0, 0.0, 0.0], ti);
         assert!((set.temperature()).abs() < 1e-12);
     }
 
@@ -1036,8 +1179,8 @@ mod nvt_tests {
         let mut set = AtomSet::new(20.0);
         let ti_na = set.register_type(AtomTypeDesc::sodium_ion());
         let ti_cl = set.register_type(AtomTypeDesc::chloride_ion());
-        set.add_atom([5.0, 5.0, 5.0], ti_na);
-        set.add_atom([5.5, 5.0, 5.0], ti_cl);
+        set.add_atom(vec![5.0, 5.0, 5.0], ti_na);
+        set.add_atom(vec![5.5, 5.0, 5.0], ti_cl);
         let e = ewald_real_space_energy(&set, 0.5, 3.0);
         // Na+ and Cl- attract each other → negative energy
         assert!(
@@ -1051,8 +1194,8 @@ mod nvt_tests {
     fn test_ewald_no_energy_no_charges() {
         let mut set = AtomSet::new(10.0);
         let ti = set.register_type(AtomTypeDesc::argon()); // zero charge
-        set.add_atom([1.0, 0.0, 0.0], ti);
-        set.add_atom([2.0, 0.0, 0.0], ti);
+        set.add_atom(vec![1.0, 0.0, 0.0], ti);
+        set.add_atom(vec![2.0, 0.0, 0.0], ti);
         let e = ewald_real_space_energy(&set, 0.5, 3.0);
         assert!(e.abs() < 1e-15, "zero charges → zero Ewald energy");
     }
@@ -1106,7 +1249,7 @@ mod nvt_tests {
     #[test]
     fn test_nvt_sim_add_atom() {
         let mut sim = PyNvtSimulation::new(PyMdConfig::argon_reduced(), 0.1);
-        sim.add_atom([5.0, 5.0, 5.0], 0);
+        sim.add_atom(vec![5.0, 5.0, 5.0], 0);
         assert_eq!(sim.md.atom_count(), 1);
         assert_eq!(sim.thermostat.n_dof, 3);
     }
@@ -1114,10 +1257,10 @@ mod nvt_tests {
     #[test]
     fn test_nvt_sim_step() {
         let mut sim = PyNvtSimulation::new(PyMdConfig::argon_reduced(), 0.1);
-        sim.add_atom([5.0, 5.0, 5.0], 0);
-        sim.add_atom([6.0, 5.0, 5.0], 0);
-        sim.md.set_velocity(0, [1.0, 0.0, 0.0]);
-        sim.md.set_velocity(1, [-1.0, 0.0, 0.0]);
+        sim.add_atom(vec![5.0, 5.0, 5.0], 0);
+        sim.add_atom(vec![6.0, 5.0, 5.0], 0);
+        sim.md.set_velocity(0, vec![1.0, 0.0, 0.0]);
+        sim.md.set_velocity(1, vec![-1.0, 0.0, 0.0]);
         sim.step(0.001);
         assert_eq!(sim.step_count(), 1);
     }
@@ -1125,8 +1268,26 @@ mod nvt_tests {
     #[test]
     fn test_nvt_temperature_nonzero() {
         let mut sim = PyNvtSimulation::new(PyMdConfig::argon_reduced(), 0.1);
-        sim.add_atom([5.0, 5.0, 5.0], 0);
-        sim.md.set_velocity(0, [1.0, 1.0, 1.0]);
+        sim.add_atom(vec![5.0, 5.0, 5.0], 0);
+        sim.md.set_velocity(0, vec![1.0, 1.0, 1.0]);
         assert!(sim.temperature() > 0.0);
     }
+}
+
+/// Register all `md` classes into a Python sub-module.
+///
+/// Called from the top-level `#[pymodule]` in `lib.rs`.
+pub fn register_md_module(parent: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
+    use pyo3::types::PyModuleMethods;
+    let child = pyo3::types::PyModule::new(parent.py(), "md")?;
+    child.add_class::<PyMdConfig>()?;
+    child.add_class::<PyMdAtom>()?;
+    child.add_class::<PyMdSimulation>()?;
+    child.add_class::<AtomTypeDesc>()?;
+    child.add_class::<AtomSet>()?;
+    child.add_class::<NoseHooverThermostat>()?;
+    child.add_class::<PyNvtSimulation>()?;
+    child.add_function(pyo3::wrap_pyfunction!(ewald_real_space_energy, &child)?)?;
+    parent.add_submodule(&child)?;
+    Ok(())
 }

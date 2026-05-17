@@ -387,11 +387,9 @@ pub fn adaptive_refine_quadtree(node: &mut QuadTreeNode, threshold: f64, max_lev
         if node.error_indicator >= threshold {
             node.refine();
         }
-    } else {
-        if let Some(children) = node.children.as_mut() {
-            for child in children.iter_mut() {
-                adaptive_refine_quadtree(child, threshold, max_level);
-            }
+    } else if let Some(children) = node.children.as_mut() {
+        for child in children.iter_mut() {
+            adaptive_refine_quadtree(child, threshold, max_level);
         }
     }
 }

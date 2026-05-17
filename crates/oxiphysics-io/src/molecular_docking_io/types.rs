@@ -1189,15 +1189,112 @@ impl BindingAffinityScore {
     pub fn to_remark_block(&self) -> String {
         format!(
             "REMARK VINA RESULT:    {:.1}      {:.3}      {:.3}",
-            self.total,
-            self.rmsd_lb_placeholder(),
-            self.rmsd_ub_placeholder()
+            self.total, 0.0_f64, 0.0_f64
         )
     }
-    fn rmsd_lb_placeholder(&self) -> f64 {
-        0.0
+}
+
+/// Compute the pairwise RMSD lower and upper bounds across all pose pairs.
+///
+/// Iterates over all (i, j) pairs with i < j, computes RMSD for each pair
+/// (skipping pairs with different atom counts), and returns `(min_rmsd, max_rmsd)`.
+/// Returns `(0.0, 0.0)` when fewer than two poses are supplied.
+pub fn compute_pose_cluster_rmsd_bounds(poses: &[DockingPose]) -> (f64, f64) {
+    if poses.len() < 2 {
+        return (0.0, 0.0);
     }
-    fn rmsd_ub_placeholder(&self) -> f64 {
-        0.0
+    let mut lower = f64::INFINITY;
+    let mut upper = f64::NEG_INFINITY;
+    for i in 0..poses.len() {
+        for j in (i + 1)..poses.len() {
+            if let Some(d) = poses[i].rmsd_to(&poses[j]) {
+                if d < lower {
+                    lower = d;
+                }
+                if d > upper {
+                    upper = d;
+                }
+            }
+        }
+    }
+    if lower.is_infinite() {
+        return (0.0, 0.0);
+    }
+    (lower, upper)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_pose(positions: &[[f64; 3]]) -> DockingPose {
+        let mut pose = DockingPose::new(1, -7.0, 0.0, 0.0);
+        for (i, &pos) in positions.iter().enumerate() {
+            pose.add_atom(PdbqtAtom::new(
+                i as u32 + 1,
+                "C",
+                "LIG",
+                'A',
+                1,
+                pos,
+                1.0,
+                0.0,
+                0.0,
+                "C",
+            ));
+        }
+        pose
+    }
+
+    #[test]
+    fn test_rmsd_bounds_empty() {
+        let (lo, hi) = compute_pose_cluster_rmsd_bounds(&[]);
+        assert_eq!(lo, 0.0);
+        assert_eq!(hi, 0.0);
+    }
+
+    #[test]
+    fn test_rmsd_bounds_single_pose() {
+        let poses = vec![make_pose(&[[0.0, 0.0, 0.0]])];
+        let (lo, hi) = compute_pose_cluster_rmsd_bounds(&poses);
+        assert_eq!(lo, 0.0);
+        assert_eq!(hi, 0.0);
+    }
+
+    #[test]
+    fn test_rmsd_bounds_two_poses_known_distance() {
+        // 3 atoms shifted by (1,0,0) → RMSD = sqrt(3/3) = 1.0
+        let poses = vec![
+            make_pose(&[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
+            make_pose(&[[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+        ];
+        let (lo, hi) = compute_pose_cluster_rmsd_bounds(&poses);
+        assert!(
+            (lo - 1.0).abs() < 1e-10,
+            "lower bound should be 1.0, got {lo}"
+        );
+        assert!(
+            (hi - 1.0).abs() < 1e-10,
+            "upper bound should be 1.0, got {hi}"
+        );
+    }
+
+    #[test]
+    fn test_rmsd_bounds_three_poses() {
+        // d(0,1)=1, d(0,2)=2, d(1,2)=1 → lb=1, ub=2
+        let poses = vec![
+            make_pose(&[[0.0, 0.0, 0.0]]),
+            make_pose(&[[1.0, 0.0, 0.0]]),
+            make_pose(&[[2.0, 0.0, 0.0]]),
+        ];
+        let (lo, hi) = compute_pose_cluster_rmsd_bounds(&poses);
+        assert!(
+            (lo - 1.0).abs() < 1e-10,
+            "lower bound should be 1.0, got {lo}"
+        );
+        assert!(
+            (hi - 2.0).abs() < 1e-10,
+            "upper bound should be 2.0, got {hi}"
+        );
     }
 }

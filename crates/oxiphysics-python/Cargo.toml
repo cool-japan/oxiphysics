@@ -4,12 +4,27 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Python bindings for the OxiPhysics engine"
+readme = "README.md"
 categories = ["science", "simulation"]
 keywords = ["physics", "python", "bindings", "pyo3", "simulation"]
+publish = false
+
+[lib]
+name = "oxiphysics"
+crate-type = ["cdylib"]
+test = false
+doc = false
+
+[features]
+default = ["numpy-bridge"]
+numpy-bridge = ["dep:numpy"]
 
 [dependencies]
 thiserror = { workspace = true }
 oxiphysics-core = { workspace = true }
+oxiphysics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 nalgebra = { workspace = true }
+pyo3 = { workspace = true, features = ["extension-module", "multiple-pymethods"] }
+numpy = { workspace = true, optional = true }

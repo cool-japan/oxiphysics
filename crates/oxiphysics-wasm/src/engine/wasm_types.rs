@@ -4,7 +4,7 @@
 //! WASM boundary types: `WasmVec3`, `WasmTransform`, error helpers, memory
 //! helpers, and TypeScript type definition constants.
 
-#![allow(missing_docs)]
+use wasm_bindgen::prelude::*;
 
 // ===========================================================================
 // WasmVec3 — JS-facing 3D vector with named getters
@@ -13,9 +13,7 @@
 /// A lightweight, JS-friendly 3D vector type.
 ///
 /// Mirrors the structure of `Vec3Wasm` but is intended as the canonical
-/// "hand-off" type at the wasm-bindgen boundary.  In a real wasm-bindgen build
-/// this struct would carry `#[wasm_bindgen]`; here we keep it as plain Rust so
-/// that native tests work without a wasm toolchain.
+/// "hand-off" type at the wasm-bindgen boundary.
 ///
 /// # Example (native)
 ///
@@ -26,14 +24,15 @@
 /// assert!((v.x() - 1.0).abs() < 1e-12);
 /// assert!((v.length() - f64::sqrt(14.0)).abs() < 1e-10);
 /// ```
+#[wasm_bindgen]
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub struct WasmVec3 {
     x: f64,
     y: f64,
     z: f64,
 }
 
+#[wasm_bindgen]
 impl WasmVec3 {
     /// Construct from components.
     pub fn new(x: f64, y: f64, z: f64) -> Self {
@@ -49,48 +48,50 @@ impl WasmVec3 {
         }
     }
 
-    /// X component getter (mirrors wasm-bindgen `#[wasm_bindgen(getter)]`).
+    /// X component getter.
+    #[wasm_bindgen(getter)]
     pub fn x(&self) -> f64 {
         self.x
     }
 
     /// Y component getter.
+    #[wasm_bindgen(getter)]
     pub fn y(&self) -> f64 {
         self.y
     }
 
     /// Z component getter.
+    #[wasm_bindgen(getter)]
     pub fn z(&self) -> f64 {
         self.z
     }
 
     /// X component setter.
+    #[wasm_bindgen(setter)]
     pub fn set_x(&mut self, v: f64) {
         self.x = v;
     }
 
     /// Y component setter.
+    #[wasm_bindgen(setter)]
     pub fn set_y(&mut self, v: f64) {
         self.y = v;
     }
 
     /// Z component setter.
+    #[wasm_bindgen(setter)]
     pub fn set_z(&mut self, v: f64) {
         self.z = v;
     }
 
-    /// Return as flat `[x, y, z]` array.
-    pub fn to_array(&self) -> [f64; 3] {
-        [self.x, self.y, self.z]
+    /// Return as flat `Vec<f64>` of `[x, y, z]` (JS-compatible).
+    pub fn to_array_js(&self) -> Vec<f64> {
+        vec![self.x, self.y, self.z]
     }
 
-    /// Create from a flat `[f64; 3]` array.
-    pub fn from_array(a: [f64; 3]) -> Self {
-        Self {
-            x: a[0],
-            y: a[1],
-            z: a[2],
-        }
+    /// Return as `js_sys::Float64Array` (typed array, JS-compatible).
+    pub fn to_typed_array(&self) -> js_sys::Float64Array {
+        js_sys::Float64Array::from([self.x, self.y, self.z].as_slice())
     }
 
     /// Euclidean length.
@@ -112,7 +113,7 @@ impl WasmVec3 {
         }
     }
 
-    /// Dot product.
+    /// Dot product with another `WasmVec3`.
     pub fn dot(&self, other: &WasmVec3) -> f64 {
         self.x * other.x + self.y * other.y + self.z * other.z
     }
@@ -155,6 +156,22 @@ impl WasmVec3 {
     }
 }
 
+impl WasmVec3 {
+    /// Return as flat `[x, y, z]` array (Rust-only).
+    pub fn to_array(&self) -> [f64; 3] {
+        [self.x, self.y, self.z]
+    }
+
+    /// Create from a flat `[f64; 3]` array (Rust-only).
+    pub fn from_array(a: [f64; 3]) -> Self {
+        Self {
+            x: a[0],
+            y: a[1],
+            z: a[2],
+        }
+    }
+}
+
 impl Default for WasmVec3 {
     fn default() -> Self {
         Self::zero()
@@ -167,9 +184,9 @@ impl Default for WasmVec3 {
 
 /// A rigid-body transform exposed at the JS boundary.
 ///
-/// Position is a `WasmVec3` and rotation is a `[x, y, z, w]` unit quaternion.
-/// The whole transform can be flattened to a `[f64; 7]` for zero-copy
-/// `Float64Array` transfer.
+/// Position is stored as `(px, py, pz)` and rotation as a `[qx, qy, qz, qw]`
+/// unit quaternion. The whole transform can be flattened to a `Vec<f64>` of
+/// 7 elements for zero-copy `Float64Array` transfer.
 ///
 /// # Example
 ///
@@ -181,80 +198,114 @@ impl Default for WasmVec3 {
 /// assert_eq!(flat.len(), 7);
 /// assert!((flat[6] - 1.0).abs() < 1e-12); // w == 1 for identity
 /// ```
+#[wasm_bindgen]
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub struct WasmTransform {
-    /// Position.
-    position: WasmVec3,
-    /// Rotation quaternion `[x, y, z, w]`.
-    rotation: [f64; 4],
+    /// Position X.
+    pub px: f64,
+    /// Position Y.
+    pub py: f64,
+    /// Position Z.
+    pub pz: f64,
+    /// Rotation quaternion X.
+    pub qx: f64,
+    /// Rotation quaternion Y.
+    pub qy: f64,
+    /// Rotation quaternion Z.
+    pub qz: f64,
+    /// Rotation quaternion W.
+    pub qw: f64,
 }
 
+#[wasm_bindgen]
 impl WasmTransform {
-    /// Construct from position and rotation.
-    pub fn new(position: WasmVec3, rotation: [f64; 4]) -> Self {
-        Self { position, rotation }
+    /// Construct from position (px, py, pz) and quaternion (qx, qy, qz, qw).
+    pub fn new(px: f64, py: f64, pz: f64, qx: f64, qy: f64, qz: f64, qw: f64) -> Self {
+        Self {
+            px,
+            py,
+            pz,
+            qx,
+            qy,
+            qz,
+            qw,
+        }
     }
 
     /// Identity transform at origin.
     pub fn identity() -> Self {
         Self {
-            position: WasmVec3::zero(),
-            rotation: [0.0, 0.0, 0.0, 1.0],
+            px: 0.0,
+            py: 0.0,
+            pz: 0.0,
+            qx: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            qw: 1.0,
         }
     }
 
     /// Create from a position with identity rotation.
     pub fn from_position(x: f64, y: f64, z: f64) -> Self {
         Self {
-            position: WasmVec3::new(x, y, z),
-            rotation: [0.0, 0.0, 0.0, 1.0],
+            px: x,
+            py: y,
+            pz: z,
+            qx: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            qw: 1.0,
         }
     }
 
-    /// Position getter.
+    /// Get position as `WasmVec3`.
     pub fn position(&self) -> WasmVec3 {
-        self.position
+        WasmVec3::new(self.px, self.py, self.pz)
     }
 
-    /// Rotation quaternion getter `[qx, qy, qz, qw]`.
-    pub fn rotation(&self) -> [f64; 4] {
-        self.rotation
+    /// Get position as `Vec<f64>` of `[x, y, z]` (JS-compatible).
+    pub fn position_js(&self) -> Vec<f64> {
+        vec![self.px, self.py, self.pz]
     }
 
-    /// Return position as flat `[f64; 3]`.
-    pub fn position_array(&self) -> [f64; 3] {
-        self.position.to_array()
+    /// Get rotation quaternion as `Vec<f64>` of `[qx, qy, qz, qw]` (JS-compatible).
+    pub fn rotation_js(&self) -> Vec<f64> {
+        vec![self.qx, self.qy, self.qz, self.qw]
     }
 
-    /// Flatten to `[px, py, pz, qx, qy, qz, qw]` — a `Vec`f64` suitable
+    /// Flatten to `[px, py, pz, qx, qy, qz, qw]` — a `Vec<f64>` suitable
     /// for returning as a JS `Float64Array`.
     pub fn to_flat(&self) -> Vec<f64> {
-        let p = self.position.to_array();
-        let q = self.rotation;
-        vec![p[0], p[1], p[2], q[0], q[1], q[2], q[3]]
+        vec![
+            self.px, self.py, self.pz, self.qx, self.qy, self.qz, self.qw,
+        ]
     }
 
-    /// Reconstruct from a flat `\[px, py, pz, qx, qy, qz, qw\]` slice.
+    /// Reconstruct from a flat `[px, py, pz, qx, qy, qz, qw]` `Vec<f64>`.
     ///
-    /// Returns `None` if the slice has fewer than 7 elements.
-    pub fn from_flat(data: &[f64]) -> Option<Self> {
+    /// Returns identity if the slice has fewer than 7 elements.
+    pub fn from_flat_js(data: Vec<f64>) -> Self {
         if data.len() < 7 {
-            return None;
+            return Self::identity();
         }
-        Some(Self {
-            position: WasmVec3::new(data[0], data[1], data[2]),
-            rotation: [data[3], data[4], data[5], data[6]],
-        })
+        Self {
+            px: data[0],
+            py: data[1],
+            pz: data[2],
+            qx: data[3],
+            qy: data[4],
+            qz: data[5],
+            qw: data[6],
+        }
     }
 
-    /// Column-major 4×4 matrix representation (16 floats).
+    /// Column-major 4×4 matrix as `Vec<f64>` (16 elements).
     ///
     /// Compatible with WebGL `uniformMatrix4fv`.
-    pub fn to_matrix4(&self) -> [f64; 16] {
-        let [qx, qy, qz, qw] = self.rotation;
-        let [tx, ty, tz] = self.position.to_array();
-        [
+    pub fn to_matrix4_js(&self) -> Vec<f64> {
+        let (qx, qy, qz, qw) = (self.qx, self.qy, self.qz, self.qw);
+        let (tx, ty, tz) = (self.px, self.py, self.pz);
+        vec![
             1.0 - 2.0 * (qy * qy + qz * qz),
             2.0 * (qx * qy + qw * qz),
             2.0 * (qx * qz - qw * qy),
@@ -276,18 +327,67 @@ impl WasmTransform {
 
     /// Serialize to JSON string.
     pub fn to_json(&self) -> String {
-        let [qx, qy, qz, qw] = self.rotation;
-        let p = self.position;
         format!(
             r#"{{"position":{{"x":{},"y":{},"z":{}}},"rotation":{{"x":{},"y":{},"z":{},"w":{}}}}}"#,
-            p.x(),
-            p.y(),
-            p.z(),
-            qx,
-            qy,
-            qz,
-            qw
+            self.px, self.py, self.pz, self.qx, self.qy, self.qz, self.qw,
         )
+    }
+}
+
+impl WasmTransform {
+    /// Construct from a `WasmVec3` position and `[f64; 4]` quaternion (Rust-only).
+    pub fn from_vec3_rot(position: WasmVec3, rotation: [f64; 4]) -> Self {
+        Self {
+            px: position.x,
+            py: position.y,
+            pz: position.z,
+            qx: rotation[0],
+            qy: rotation[1],
+            qz: rotation[2],
+            qw: rotation[3],
+        }
+    }
+
+    /// Return position as `WasmVec3` (Rust-only alias).
+    pub fn position_vec3(&self) -> WasmVec3 {
+        WasmVec3::new(self.px, self.py, self.pz)
+    }
+
+    /// Return rotation as `[f64; 4]` (Rust-only).
+    pub fn rotation(&self) -> [f64; 4] {
+        [self.qx, self.qy, self.qz, self.qw]
+    }
+
+    /// Return position as `[f64; 3]` (Rust-only).
+    pub fn position_array(&self) -> [f64; 3] {
+        [self.px, self.py, self.pz]
+    }
+
+    /// Column-major 4×4 matrix as `[f64; 16]` (Rust-only).
+    pub fn to_matrix4(&self) -> [f64; 16] {
+        let m = self.to_matrix4_js();
+        [
+            m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13],
+            m[14], m[15],
+        ]
+    }
+
+    /// Reconstruct from a flat `[px, py, pz, qx, qy, qz, qw]` slice (Rust-only).
+    ///
+    /// Returns `None` if the slice has fewer than 7 elements.
+    pub fn from_flat(data: &[f64]) -> Option<Self> {
+        if data.len() < 7 {
+            return None;
+        }
+        Some(Self {
+            px: data[0],
+            py: data[1],
+            pz: data[2],
+            qx: data[3],
+            qy: data[4],
+            qz: data[5],
+            qw: data[6],
+        })
     }
 }
 
@@ -298,7 +398,7 @@ impl Default for WasmTransform {
 }
 
 // ===========================================================================
-// Error helpers — convert Rust errors to JS-friendly strings
+// Error helpers — convert Rust errors to JS-friendly strings / JsValue
 // ===========================================================================
 
 /// Convert a physics [`crate::error::Error`] to a JSON-encoded JS error object.
@@ -312,31 +412,32 @@ impl Default for WasmTransform {
 /// use oxiphysics_wasm::engine::error_to_js_string;
 /// use oxiphysics_wasm::error::Error;
 ///
-/// let s = error_to_js_string(&Error::InvalidHandle(42));
+/// let err = Error::InvalidHandle(42);
+/// let s = error_to_js_string(&format!("{}", err));
 /// assert!(s.contains("InvalidHandle"));
 /// assert!(s.contains("42"));
 /// ```
-#[allow(dead_code)]
-pub fn error_to_js_string(err: &crate::error::Error) -> String {
-    format!(r#"{{"error":"{}","detail":"{}"}}"#, err, err.to_json())
+#[wasm_bindgen]
+pub fn error_to_js_string(err_msg: &str) -> String {
+    format!(r#"{{"error":"{}"}}"#, err_msg)
 }
 
-/// Convert a `Result<T, Error>` to `Result<T, String>` for wasm-bindgen
-/// functions that return `Result<_, JsValue>`.  On the native side the
-/// `String` plays the role of `JsValue`.
-#[allow(dead_code)]
-pub fn result_to_js<T>(r: crate::error::Result<T>) -> std::result::Result<T, String> {
-    r.map_err(|e| error_to_js_string(&e))
+/// Convert a physics error to a `JsValue` for use in `Result<T, JsValue>`.
+pub fn err_to_jsvalue(err: &crate::error::Error) -> JsValue {
+    JsValue::from_str(&format!("{err}"))
+}
+
+/// Convert a `Result<T, Error>` to `Result<T, JsValue>` for wasm-bindgen
+/// functions that return `Result<_, JsValue>`.
+pub fn result_to_js<T>(r: crate::error::Result<T>) -> std::result::Result<T, JsValue> {
+    r.map_err(|e| err_to_jsvalue(&e))
 }
 
 // ===========================================================================
 // Memory management helpers — free allocated flat buffers
 // ===========================================================================
 
-/// Helper to drop (free) a heap-allocated `Vec`f64` from WASM.
-///
-/// In a true wasm-bindgen build the GC/FinalizationRegistry handles this;
-/// in native tests we just drop the vector explicitly.
+/// Helper to drop (free) a heap-allocated `Vec<f64>` from WASM.
 ///
 /// # Example
 ///
@@ -346,25 +447,24 @@ pub fn result_to_js<T>(r: crate::error::Result<T>) -> std::result::Result<T, Str
 /// let buf: Vec<f64> = vec![1.0, 2.0, 3.0];
 /// free_f64_buffer(buf); // drops the allocation
 /// ```
-#[allow(dead_code)]
+#[wasm_bindgen]
 pub fn free_f64_buffer(buf: Vec<f64>) {
     drop(buf);
 }
 
-/// Helper to drop a heap-allocated `Vec`u32`.
-#[allow(dead_code)]
+/// Helper to drop a heap-allocated `Vec<u32>`.
+#[wasm_bindgen]
 pub fn free_u32_buffer(buf: Vec<u32>) {
     drop(buf);
 }
 
-/// Helper to drop a heap-allocated `Vec`u8` (e.g. serialized JSON).
-#[allow(dead_code)]
+/// Helper to drop a heap-allocated `Vec<u8>` (e.g. serialized JSON).
+#[wasm_bindgen]
 pub fn free_u8_buffer(buf: Vec<u8>) {
     drop(buf);
 }
 
 /// Return the size of the WASM memory page in bytes (64 KiB per WebAssembly spec).
-#[allow(dead_code)]
 pub const WASM_PAGE_SIZE: usize = 65536;
 
 // ===========================================================================
@@ -496,7 +596,7 @@ export class WasmVec3 {
   length(): number;
   normalized(): WasmVec3;
   dot(other: WasmVec3): number;
-  toArray(): Float64Array;
+  toArrayJs(): Float64Array;
   toJson(): string;
 }
 
@@ -504,10 +604,11 @@ export class WasmVec3 {
 export class WasmTransform {
   static identity(): WasmTransform;
   static fromPosition(x: number, y: number, z: number): WasmTransform;
-  readonly position: WasmVec3;
-  readonly rotation: Float64Array;
+  position(): WasmVec3;
+  positionJs(): Float64Array;
+  rotationJs(): Float64Array;
   toFlat(): Float64Array;
-  toMatrix4(): Float64Array;
+  toMatrix4Js(): Float64Array;
   toJson(): string;
 }
 "#;
@@ -524,7 +625,7 @@ export interface Transform {
   position: { x: number; y: number; z: number };
   rotation: { x: number; y: number; z: number; w: number };
   toFlat(): Float64Array;
-  toMatrix4(): Float64Array;
+  toMatrix4Js(): Float64Array;
 }
 "#;
 

@@ -10,6 +10,7 @@
 #![allow(missing_docs)]
 
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::*;
 
 // ---------------------------------------------------------------------------
 // Minimal LCG RNG (no external crates)
@@ -95,18 +96,67 @@ fn normalize3(a: [f64; 3]) -> [f64; 3] {
 // ---------------------------------------------------------------------------
 
 /// Configuration for the particle system.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmParticleConfig {
     /// Maximum number of particles alive simultaneously.
+    #[wasm_bindgen(skip)]
     pub max_particles: usize,
     /// Gravity vector `[gx, gy, gz]`.
+    #[wasm_bindgen(skip)]
     pub gravity: [f64; 3],
     /// Velocity damping factor per second (0 = no damping, 1 = full stop).
     pub damping: f64,
     /// Radius used for inter-particle collision checks.
     pub collision_radius: f64,
     /// Minimum and maximum particle lifetime in seconds.
+    #[wasm_bindgen(skip)]
     pub lifetime_range: [f64; 2],
+}
+
+#[wasm_bindgen]
+impl WasmParticleConfig {
+    /// Create the default Earth-gravity config.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new() -> WasmParticleConfig {
+        WasmParticleConfig::default_earth()
+    }
+
+    /// Get `max_particles` as a JS-compatible `u32`.
+    #[wasm_bindgen(getter, js_name = "max_particles")]
+    pub fn max_particles_js(&self) -> u32 {
+        self.max_particles as u32
+    }
+
+    /// Set `max_particles` from a `u32`.
+    #[wasm_bindgen(setter, js_name = "max_particles")]
+    pub fn set_max_particles_js(&mut self, v: u32) {
+        self.max_particles = v as usize;
+    }
+
+    /// Get gravity as a flat `Vec<f64>` `[gx, gy, gz]`.
+    #[wasm_bindgen(js_name = "get_gravity")]
+    pub fn get_gravity_js(&self) -> Vec<f64> {
+        self.gravity.to_vec()
+    }
+
+    /// Set gravity from a flat slice `[gx, gy, gz]`.
+    #[wasm_bindgen(js_name = "set_gravity")]
+    pub fn set_gravity_js(&mut self, gx: f64, gy: f64, gz: f64) {
+        self.gravity = [gx, gy, gz];
+    }
+
+    /// Get lifetime range as `[min, max]`.
+    #[wasm_bindgen(js_name = "get_lifetime_range")]
+    pub fn get_lifetime_range_js(&self) -> Vec<f64> {
+        self.lifetime_range.to_vec()
+    }
+
+    /// Set lifetime range.
+    #[wasm_bindgen(js_name = "set_lifetime_range")]
+    pub fn set_lifetime_range_js(&mut self, min: f64, max: f64) {
+        self.lifetime_range = [min, max];
+    }
 }
 
 impl WasmParticleConfig {
@@ -133,17 +183,21 @@ impl Default for WasmParticleConfig {
 // ---------------------------------------------------------------------------
 
 /// A single particle in the system.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmParticle {
     /// World-space position.
+    #[wasm_bindgen(skip)]
     pub position: [f64; 3],
     /// Velocity in m/s.
+    #[wasm_bindgen(skip)]
     pub velocity: [f64; 3],
     /// Current age in seconds.
     pub age: f64,
     /// Lifetime in seconds (particle dies when age >= lifetime).
     pub lifetime: f64,
     /// RGBA color `[r, g, b, a]` in \[0, 1\].
+    #[wasm_bindgen(skip)]
     pub color: [f32; 4],
     /// Billboard size in world units.
     pub size: f64,
@@ -177,6 +231,53 @@ impl WasmParticle {
     /// True when particle has exceeded its lifetime.
     pub fn is_dead(&self) -> bool {
         self.age >= self.lifetime
+    }
+}
+
+#[wasm_bindgen]
+impl WasmParticle {
+    /// Construct a particle at `(px,py,pz)` with velocity `(vx,vy,vz)` and lifetime.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new(
+        px: f64,
+        py: f64,
+        pz: f64,
+        vx: f64,
+        vy: f64,
+        vz: f64,
+        lifetime: f64,
+    ) -> WasmParticle {
+        WasmParticle::new([px, py, pz], [vx, vy, vz], lifetime)
+    }
+
+    /// Get position as `[x, y, z]`.
+    #[wasm_bindgen(js_name = "get_position")]
+    pub fn get_position_js(&self) -> Vec<f64> {
+        self.position.to_vec()
+    }
+
+    /// Get velocity as `[vx, vy, vz]`.
+    #[wasm_bindgen(js_name = "get_velocity")]
+    pub fn get_velocity_js(&self) -> Vec<f64> {
+        self.velocity.to_vec()
+    }
+
+    /// Get color as `[r, g, b, a]` (f32 values).
+    #[wasm_bindgen(js_name = "get_color")]
+    pub fn get_color_js(&self) -> Vec<f32> {
+        self.color.to_vec()
+    }
+
+    /// Normalised age in `[0, 1]`.
+    #[wasm_bindgen(js_name = "normalized_age")]
+    pub fn normalized_age_js(&self) -> f64 {
+        self.normalized_age()
+    }
+
+    /// Whether this particle has exceeded its lifetime.
+    #[wasm_bindgen(js_name = "is_dead")]
+    pub fn is_dead_js(&self) -> bool {
+        self.is_dead()
     }
 }
 
@@ -235,17 +336,22 @@ impl WasmEmitterShape {
 // ---------------------------------------------------------------------------
 
 /// Controls where and how particles are spawned.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmEmitter {
     /// Shape from which particles emerge.
+    #[wasm_bindgen(skip)]
     pub shape: WasmEmitterShape,
     /// Particles per second emission rate.
     pub rate: f64,
     /// Number of particles to emit in a single burst (0 = continuous only).
+    #[wasm_bindgen(skip)]
     pub burst_count: usize,
     /// Min/max initial speed range.
+    #[wasm_bindgen(skip)]
     pub velocity_range: [f64; 2],
     /// Origin of the emitter in world space.
+    #[wasm_bindgen(skip)]
     pub origin: [f64; 3],
     /// Accumulated fractional particles not yet emitted.
     accumulator: f64,
@@ -279,6 +385,51 @@ impl WasmEmitter {
             out.push((pos, scale3(dir, speed)));
         }
         out
+    }
+}
+
+#[wasm_bindgen]
+impl WasmEmitter {
+    /// Create a point emitter at origin.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new(rate: f64, ox: f64, oy: f64, oz: f64) -> WasmEmitter {
+        WasmEmitter::new(WasmEmitterShape::Point, rate, [ox, oy, oz])
+    }
+
+    /// Create a sphere-shape emitter.
+    #[wasm_bindgen(js_name = "new_sphere")]
+    pub fn wasm_new_sphere(radius: f64, rate: f64, ox: f64, oy: f64, oz: f64) -> WasmEmitter {
+        WasmEmitter::new(WasmEmitterShape::Sphere(radius), rate, [ox, oy, oz])
+    }
+
+    /// Create a disc-shape emitter.
+    #[wasm_bindgen(js_name = "new_disc")]
+    pub fn wasm_new_disc(radius: f64, rate: f64, ox: f64, oy: f64, oz: f64) -> WasmEmitter {
+        WasmEmitter::new(WasmEmitterShape::Disc(radius), rate, [ox, oy, oz])
+    }
+
+    /// Set initial speed range `[min, max]`.
+    #[wasm_bindgen(js_name = "set_velocity_range")]
+    pub fn set_velocity_range_js(&mut self, min: f64, max: f64) {
+        self.velocity_range = [min, max];
+    }
+
+    /// Set burst count (particles to emit on next step).
+    #[wasm_bindgen(js_name = "set_burst")]
+    pub fn set_burst_js(&mut self, count: u32) {
+        self.burst_count = count as usize;
+    }
+
+    /// Get emitter origin as `[x, y, z]`.
+    #[wasm_bindgen(js_name = "get_origin")]
+    pub fn get_origin_js(&self) -> Vec<f64> {
+        self.origin.to_vec()
+    }
+
+    /// Set emitter origin.
+    #[wasm_bindgen(js_name = "set_origin")]
+    pub fn set_origin_js(&mut self, x: f64, y: f64, z: f64) {
+        self.origin = [x, y, z];
     }
 }
 
@@ -329,20 +480,21 @@ impl WasmParticleForce {
 // WasmParticleCollider
 // ---------------------------------------------------------------------------
 
-/// Collision shape for particles.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum WasmColliderShape {
-    /// Sphere collider at a position with a radius.
-    Sphere { center: [f64; 3], radius: f64 },
-    /// Infinite plane with normal and offset.
-    Plane { normal: [f64; 3], offset: f64 },
-}
+pub use crate::simulation_api::WasmColliderShape;
 
 /// Particle collider with restitution and friction.
+///
+/// For `WasmColliderShape::Sphere`, the `sphere_center` field specifies the
+/// world-space centre of the static spherical obstacle.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmParticleCollider {
     /// The collision shape.
+    #[wasm_bindgen(skip)]
     pub shape: WasmColliderShape,
+    /// World-space centre for sphere colliders (ignored for non-sphere shapes).
+    #[wasm_bindgen(skip)]
+    pub sphere_center: [f64; 3],
     /// Coefficient of restitution (0 = inelastic, 1 = elastic).
     pub restitution: f64,
     /// Friction coefficient.
@@ -357,15 +509,17 @@ impl WasmParticleCollider {
                 normal: normalize3(normal),
                 offset,
             },
+            sphere_center: [0.0; 3],
             restitution,
             friction: 0.1,
         }
     }
 
-    /// Create a sphere collider.
+    /// Create a sphere collider at `center` with the given `radius`.
     pub fn sphere(center: [f64; 3], radius: f64, restitution: f64) -> Self {
         Self {
-            shape: WasmColliderShape::Sphere { center, radius },
+            shape: WasmColliderShape::Sphere { radius },
+            sphere_center: center,
             restitution,
             friction: 0.1,
         }
@@ -395,8 +549,9 @@ impl WasmParticleCollider {
                     (pos, vel)
                 }
             }
-            WasmColliderShape::Sphere { center, radius } => {
-                let d = sub3(pos, *center);
+            WasmColliderShape::Sphere { radius } => {
+                let center = self.sphere_center;
+                let d = sub3(pos, center);
                 let dist = len3(d);
                 if dist < *radius {
                     let n = if dist > 1e-15 {
@@ -404,7 +559,7 @@ impl WasmParticleCollider {
                     } else {
                         [0.0, 1.0, 0.0]
                     };
-                    let new_pos = add3(*center, scale3(n, radius + 1e-5));
+                    let new_pos = add3(center, scale3(n, radius + 1e-5));
                     let vn = dot3(vel, n);
                     if vn < 0.0 {
                         let normal_v = scale3(n, vn);
@@ -421,7 +576,42 @@ impl WasmParticleCollider {
                     (pos, vel)
                 }
             }
+            // For shapes not used in particle collision, return unchanged state.
+            _ => (pos, vel),
         }
+    }
+}
+
+#[wasm_bindgen]
+impl WasmParticleCollider {
+    /// Create a plane collider.
+    #[wasm_bindgen(js_name = "new_plane")]
+    pub fn wasm_plane(
+        nx: f64,
+        ny: f64,
+        nz: f64,
+        offset: f64,
+        restitution: f64,
+    ) -> WasmParticleCollider {
+        WasmParticleCollider::plane([nx, ny, nz], offset, restitution)
+    }
+
+    /// Create a sphere collider.
+    #[wasm_bindgen(js_name = "new_sphere")]
+    pub fn wasm_sphere(
+        cx: f64,
+        cy: f64,
+        cz: f64,
+        radius: f64,
+        restitution: f64,
+    ) -> WasmParticleCollider {
+        WasmParticleCollider::sphere([cx, cy, cz], radius, restitution)
+    }
+
+    /// Get sphere center as `[x, y, z]`.
+    #[wasm_bindgen(js_name = "get_sphere_center")]
+    pub fn get_sphere_center_js(&self) -> Vec<f64> {
+        self.sphere_center.to_vec()
     }
 }
 
@@ -430,12 +620,23 @@ impl WasmParticleCollider {
 // ---------------------------------------------------------------------------
 
 /// Trail point: position + time stamp.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmTrailPoint {
     /// World position.
+    #[wasm_bindgen(skip)]
     pub position: [f64; 3],
     /// Time the trail point was recorded.
     pub time: f64,
+}
+
+#[wasm_bindgen]
+impl WasmTrailPoint {
+    /// Get position as `[x, y, z]`.
+    #[wasm_bindgen(js_name = "get_position")]
+    pub fn get_position_js(&self) -> Vec<f64> {
+        self.position.to_vec()
+    }
 }
 
 /// Per-particle trail data.

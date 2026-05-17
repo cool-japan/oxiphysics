@@ -202,6 +202,144 @@ pub struct AtlasPatch {
 pub struct BooleanResult {
     /// The combined / intersected / subtracted mesh.
     pub mesh: ProcessMesh,
-    /// Whether the operation was exact (currently always false for this stub).
+    /// Whether the operation produced a topologically exact result.
     pub is_exact: bool,
+}
+
+impl BooleanResult {
+    /// Determine whether the resulting mesh is topologically exact.
+    ///
+    /// Returns `true` when:
+    /// 1. Every edge is shared by exactly two faces (manifold, no boundary).
+    /// 2. No adjacent faces are nearly coplanar (dihedral > 1e-6 rad).
+    /// 3. No degenerate triangles (cross-product length > 1e-12).
+    pub fn is_topologically_exact(&self) -> bool {
+        let mesh = &self.mesh;
+        if mesh.faces.is_empty() {
+            return false;
+        }
+        let mut edge_count: std::collections::HashMap<(usize, usize), usize> =
+            std::collections::HashMap::new();
+        for &[a, b, c] in &mesh.faces {
+            for &(u, v) in &[
+                (a.min(b), a.max(b)),
+                (b.min(c), b.max(c)),
+                (a.min(c), a.max(c)),
+            ] {
+                *edge_count.entry((u, v)).or_insert(0) += 1;
+            }
+        }
+        if edge_count.values().any(|&cnt| cnt != 2) {
+            return false;
+        }
+        let normals: Vec<[f64; 3]> = mesh
+            .faces
+            .iter()
+            .map(|&[a, b, c]| {
+                let va = mesh.verts[a];
+                let vb = mesh.verts[b];
+                let vc = mesh.verts[c];
+                let ab = [vb[0] - va[0], vb[1] - va[1], vb[2] - va[2]];
+                let ac = [vc[0] - va[0], vc[1] - va[1], vc[2] - va[2]];
+                [
+                    ab[1] * ac[2] - ab[2] * ac[1],
+                    ab[2] * ac[0] - ab[0] * ac[2],
+                    ab[0] * ac[1] - ab[1] * ac[0],
+                ]
+            })
+            .collect();
+        for n in &normals {
+            if (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() < 1e-12 {
+                return false;
+            }
+        }
+        let mut face_of_edge: std::collections::HashMap<(usize, usize), Vec<usize>> =
+            std::collections::HashMap::new();
+        for (fi, &[a, b, c]) in mesh.faces.iter().enumerate() {
+            for &(u, v) in &[
+                (a.min(b), a.max(b)),
+                (b.min(c), b.max(c)),
+                (a.min(c), a.max(c)),
+            ] {
+                face_of_edge.entry((u, v)).or_default().push(fi);
+            }
+        }
+        const MIN_ANGLE: f64 = 1e-6;
+        for fs in face_of_edge.values() {
+            if fs.len() != 2 {
+                continue;
+            }
+            let n0 = normals[fs[0]];
+            let n1 = normals[fs[1]];
+            let l0 = (n0[0] * n0[0] + n0[1] * n0[1] + n0[2] * n0[2]).sqrt();
+            let l1 = (n1[0] * n1[0] + n1[1] * n1[1] + n1[2] * n1[2]).sqrt();
+            if l0 < 1e-30 || l1 < 1e-30 {
+                return false;
+            }
+            let dot = (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2]) / (l0 * l1);
+            if dot.abs().min(1.0).acos() < MIN_ANGLE {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod boolean_result_tests {
+    use super::{BooleanResult, ProcessMesh};
+
+    fn make_tetrahedron() -> ProcessMesh {
+        let verts = vec![
+            [0.0f64, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.5, 1.0, 0.0],
+            [0.5, 0.333, 0.816],
+        ];
+        ProcessMesh::new(verts, vec![[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]])
+    }
+
+    #[test]
+    fn test_closed_tetrahedron_is_exact() {
+        let r = BooleanResult {
+            mesh: make_tetrahedron(),
+            is_exact: false,
+        };
+        assert!(r.is_topologically_exact());
+    }
+
+    #[test]
+    fn test_coplanar_patch_not_exact() {
+        let verts = vec![
+            [0.0f64, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.5, 1.0, 0.0],
+            [0.5, -1.0, 0.0],
+        ];
+        let mesh = ProcessMesh::new(verts, vec![[0, 1, 2], [0, 3, 1]]);
+        let r = BooleanResult {
+            mesh,
+            is_exact: false,
+        };
+        assert!(!r.is_topologically_exact());
+    }
+
+    #[test]
+    fn test_empty_mesh_not_exact() {
+        let r = BooleanResult {
+            mesh: ProcessMesh::new(vec![], vec![]),
+            is_exact: false,
+        };
+        assert!(!r.is_topologically_exact());
+    }
+
+    #[test]
+    fn test_is_exact_flag_wired() {
+        let mut r = BooleanResult {
+            mesh: make_tetrahedron(),
+            is_exact: false,
+        };
+        r.is_exact = r.is_topologically_exact();
+        assert!(r.is_exact);
+    }
 }

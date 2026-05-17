@@ -1,13 +1,13 @@
 # oxiphysics-gpu
 
-**Status: [Partial]** — v0.1.0 (2026-04-06)
+**Status: [Partial]** — v0.1.1 (2026-05-17)
 
-[![Tests](https://img.shields.io/badge/tests-2740-yellow)](https://github.com/cool-japan/oxiphysics)
+[![Tests](https://img.shields.io/badge/tests-2811-yellow)](https://github.com/cool-japan/oxiphysics)
 [![docs.rs](https://img.shields.io/docsrs/oxiphysics-gpu)](https://docs.rs/oxiphysics-gpu)
 
 GPU-accelerated compute abstractions for the [OxiPhysics](https://github.com/cool-japan/oxiphysics) engine.
 
-> **Note:** v0.1.0 ships a **CPU backend only**. No wgpu or CUDA dependencies are present in this release.
+> **Note:** v0.1.1 ships a **CPU backend only**. No wgpu or CUDA dependencies are present in this release.
 > GPU dispatch (wgpu/CUDA) is planned for v0.2.0.
 
 ## Features
@@ -20,7 +20,7 @@ GPU-accelerated compute abstractions for the [OxiPhysics](https://github.com/coo
 - **Sparse GPU**: sparse matrix/vector operations on CPU (`sparse_gpu`)
 - **Pipeline**: compute pipeline management (`compute_pipeline`, `pipeline`), shader registry (`shader_registry`, `shaders`)
 - **Neural compute**: neural network forward-pass compute kernels (`neural_compute`)
-- 2,748 public API items, 2,740 tests — 0 stubs
+- 2,748 public API items, 2,811 tests — 0 stubs
 
 ## Key Exports
 

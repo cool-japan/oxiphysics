@@ -9,7 +9,7 @@ OxiPhysics is designed as a Rust-native replacement for libraries such as Bullet
 OpenFOAM, LAMMPS, and CalculiX — providing a single coherent API across multiple physics
 domains through one top-level dependency.
 
-Version: **0.1.0** | Updated: **2026-04-06**
+Version: **0.1.1** | Updated: **2026-05-17**
 
 ---
 
@@ -45,16 +45,16 @@ a named module, so users can access all of OxiPhysics through a single `Cargo.to
 
 ```toml
 [dependencies]
-oxiphysics = "0.1.0"
+oxiphysics = "0.1.1"
 ```
 
 For a lighter dependency footprint, use individual sub-crates:
 
 ```toml
 [dependencies]
-oxiphysics-core = "0.1.0"
-oxiphysics-rigid = "0.1.0"
-oxiphysics-collision = "0.1.0"
+oxiphysics-core = "0.1.1"
+oxiphysics-rigid = "0.1.1"
+oxiphysics-collision = "0.1.1"
 ```
 
 ---

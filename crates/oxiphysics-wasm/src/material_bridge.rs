@@ -11,15 +11,20 @@
 #![allow(clippy::too_many_arguments)]
 
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::*;
+
+use crate::wasm_helpers::{err_to_jsvalue, to_js_value};
 
 // ---------------------------------------------------------------------------
 // WasmMaterial
 // ---------------------------------------------------------------------------
 
 /// Isotropic linear elastic material with failure properties.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmMaterial {
     /// Human-readable material name.
+    #[wasm_bindgen(skip)]
     pub name: String,
     /// Mass density (kg/m³).
     pub density: f64,
@@ -85,7 +90,7 @@ impl WasmMaterial {
         e * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
     }
 
-    /// Wave speed c = √(E/ρ) (longitudinal, uniaxial approximation).
+    /// Wave speed c = sqrt(E/ρ) (longitudinal, uniaxial approximation).
     pub fn wave_speed(&self) -> f64 {
         (self.elastic_modulus / self.density).sqrt()
     }
@@ -111,10 +116,89 @@ impl WasmMaterial {
 }
 
 // ---------------------------------------------------------------------------
+// WasmMaterial — wasm-bindgen impl
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl WasmMaterial {
+    /// Construct a material with the given name and density.
+    ///
+    /// All other properties default to generic aluminium-like values.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new(name: String, density: f64) -> WasmMaterial {
+        WasmMaterial::new(name, density)
+    }
+
+    /// Name getter (String field requires explicit accessor).
+    #[wasm_bindgen(getter)]
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    /// Name setter.
+    #[wasm_bindgen(setter)]
+    pub fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
+
+    /// Shear modulus (Pa).
+    #[wasm_bindgen(js_name = "shear_modulus")]
+    pub fn shear_modulus_js(&self) -> f64 {
+        self.shear_modulus()
+    }
+
+    /// Bulk modulus (Pa).
+    #[wasm_bindgen(js_name = "bulk_modulus")]
+    pub fn bulk_modulus_js(&self) -> f64 {
+        self.bulk_modulus()
+    }
+
+    /// Lamé first parameter λ (Pa).
+    #[wasm_bindgen(js_name = "lame_lambda")]
+    pub fn lame_lambda_js(&self) -> f64 {
+        self.lame_lambda()
+    }
+
+    /// Longitudinal wave speed (m/s).
+    #[wasm_bindgen(js_name = "wave_speed")]
+    pub fn wave_speed_js(&self) -> f64 {
+        self.wave_speed()
+    }
+
+    /// Thermal diffusivity (m²/s).
+    #[wasm_bindgen(js_name = "thermal_diffusivity")]
+    pub fn thermal_diffusivity_js(&self) -> f64 {
+        self.thermal_diffusivity()
+    }
+
+    /// Validate properties; returns error string on failure, empty string on success.
+    #[wasm_bindgen(js_name = "validate")]
+    pub fn validate_js(&self) -> String {
+        match self.validate() {
+            Ok(()) => String::new(),
+            Err(e) => e,
+        }
+    }
+
+    /// Serialise to a JSON string for consumption in JavaScript.
+    #[wasm_bindgen(js_name = "to_json")]
+    pub fn to_json_js(&self) -> Result<String, JsValue> {
+        serde_json::to_string(self).map_err(err_to_jsvalue)
+    }
+
+    /// Serialise to a `JsValue` object.
+    #[wasm_bindgen(js_name = "to_js_value")]
+    pub fn to_js_value_js(&self) -> Result<JsValue, JsValue> {
+        to_js_value(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // WasmMaterialPreset
 // ---------------------------------------------------------------------------
 
 /// Factory for common engineering material presets.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WasmMaterialPreset {
     /// Structural steel (AISI 1020).
@@ -254,6 +338,28 @@ impl WasmMaterialPreset {
 }
 
 // ---------------------------------------------------------------------------
+// WasmMaterialPreset — wasm-bindgen free functions
+// ---------------------------------------------------------------------------
+
+/// Create a `WasmMaterial` from the named preset. Returns a `JsValue` object.
+///
+/// The `preset` argument is the JS enum value (integer discriminant).
+#[wasm_bindgen(js_name = "material_from_preset")]
+pub fn material_from_preset_js(preset: WasmMaterialPreset) -> Result<JsValue, JsValue> {
+    let mat = WasmMaterialPreset::from_preset(preset);
+    to_js_value(&mat)
+}
+
+/// Return all preset names as a JSON array of strings.
+#[wasm_bindgen(js_name = "material_preset_names")]
+pub fn material_preset_names_js() -> String {
+    let names: Vec<&str> = vec![
+        "Steel", "Aluminum", "Concrete", "Wood", "Rubber", "Glass", "Titanium", "Carbon",
+    ];
+    serde_json::to_string(&names).unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
 // WasmHyperelastic
 // ---------------------------------------------------------------------------
 
@@ -284,7 +390,11 @@ pub enum WasmHyperelastic {
 }
 
 impl WasmHyperelastic {
-    /// Strain energy for a uniaxial stretch λ (NeoHookean only, others return 0 as stub).
+    /// Strain energy for a uniaxial stretch λ.
+    ///
+    /// - **NeoHookean**: W = (μ/2)(I₁−3) − μ ln J + (λ/2)(ln J)²  (incompressible: J=1)
+    /// - **MooneyRivlin**: W = C₁₀(I₁−3) + C₀₁(I₂−3)
+    /// - **Ogden**: W = Σᵣ (μᵣ/αᵣ)(λ^αᵣ + 2λ̃^αᵣ − 3) where λ̃ = 1/sqrt(λ)
     pub fn strain_energy_uniaxial(&self, stretch: f64) -> f64 {
         match self {
             WasmHyperelastic::NeoHookean { mu, lambda } => {
@@ -316,6 +426,40 @@ impl WasmHyperelastic {
             WasmHyperelastic::Ogden { mus, .. } => mus.iter().sum::<f64>() / 2.0,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// WasmHyperelastic — wasm-bindgen free functions
+// (WasmHyperelastic has payload variants; cannot be #[wasm_bindgen] directly.
+//  Expose via serde-JSON free functions instead.)
+// ---------------------------------------------------------------------------
+
+/// Create a Neo-Hookean hyperelastic model as a `JsValue`.
+#[wasm_bindgen(js_name = "hyperelastic_neo_hookean")]
+pub fn hyperelastic_neo_hookean_js(mu: f64, lambda: f64) -> Result<JsValue, JsValue> {
+    let m = WasmHyperelastic::NeoHookean { mu, lambda };
+    to_js_value(&m)
+}
+
+/// Create a Mooney-Rivlin hyperelastic model as a `JsValue`.
+#[wasm_bindgen(js_name = "hyperelastic_mooney_rivlin")]
+pub fn hyperelastic_mooney_rivlin_js(c10: f64, c01: f64) -> Result<JsValue, JsValue> {
+    let m = WasmHyperelastic::MooneyRivlin { c10, c01 };
+    to_js_value(&m)
+}
+
+/// Strain energy at uniaxial stretch for a JSON-encoded `WasmHyperelastic`.
+#[wasm_bindgen(js_name = "hyperelastic_strain_energy")]
+pub fn hyperelastic_strain_energy_js(model_json: &str, stretch: f64) -> Result<f64, JsValue> {
+    let m: WasmHyperelastic = serde_json::from_str(model_json).map_err(err_to_jsvalue)?;
+    Ok(m.strain_energy_uniaxial(stretch))
+}
+
+/// Initial shear modulus for a JSON-encoded `WasmHyperelastic`.
+#[wasm_bindgen(js_name = "hyperelastic_shear_modulus")]
+pub fn hyperelastic_shear_modulus_js(model_json: &str) -> Result<f64, JsValue> {
+    let m: WasmHyperelastic = serde_json::from_str(model_json).map_err(err_to_jsvalue)?;
+    Ok(m.initial_shear_modulus())
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +514,43 @@ impl WasmPlasticModel {
             WasmPlasticModel::DruckerPrager { cohesion, .. } => *cohesion,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// WasmPlasticModel — wasm-bindgen free functions
+// (WasmPlasticModel has payload variants; cannot be #[wasm_bindgen] directly.)
+// ---------------------------------------------------------------------------
+
+/// Create a J2 plasticity model as a `JsValue`.
+#[wasm_bindgen(js_name = "plastic_j2")]
+pub fn plastic_j2_js(yield_stress: f64, hardening: f64) -> Result<JsValue, JsValue> {
+    let m = WasmPlasticModel::J2 {
+        yield_stress,
+        hardening,
+    };
+    to_js_value(&m)
+}
+
+/// Create a Drucker-Prager plasticity model as a `JsValue`.
+#[wasm_bindgen(js_name = "plastic_drucker_prager")]
+pub fn plastic_drucker_prager_js(cohesion: f64, friction_angle: f64) -> Result<JsValue, JsValue> {
+    let m = WasmPlasticModel::DruckerPrager {
+        cohesion,
+        friction_angle,
+    };
+    to_js_value(&m)
+}
+
+/// Check yielding for a JSON-encoded `WasmPlasticModel`.
+#[wasm_bindgen(js_name = "plastic_is_yielding")]
+pub fn plastic_is_yielding_js(
+    model_json: &str,
+    sigma_eq: f64,
+    eps_p: f64,
+    pressure: f64,
+) -> Result<bool, JsValue> {
+    let m: WasmPlasticModel = serde_json::from_str(model_json).map_err(err_to_jsvalue)?;
+    Ok(m.is_yielding(sigma_eq, eps_p, pressure))
 }
 
 // ---------------------------------------------------------------------------
@@ -435,10 +616,40 @@ impl WasmDamageModel {
 }
 
 // ---------------------------------------------------------------------------
+// WasmDamageModel — wasm-bindgen free functions
+// (WasmDamageModel has payload variants; cannot be #[wasm_bindgen] directly.)
+// ---------------------------------------------------------------------------
+
+/// Create a brittle damage model as a `JsValue`.
+#[wasm_bindgen(js_name = "damage_brittle")]
+pub fn damage_brittle_js(fracture_energy: f64, element_length: f64) -> Result<JsValue, JsValue> {
+    let m = WasmDamageModel::Brittle {
+        fracture_energy,
+        element_length,
+    };
+    to_js_value(&m)
+}
+
+/// Create a ductile damage model as a `JsValue`.
+#[wasm_bindgen(js_name = "damage_ductile")]
+pub fn damage_ductile_js(eps_f: f64, triaxiality: f64) -> Result<JsValue, JsValue> {
+    let m = WasmDamageModel::Ductile { eps_f, triaxiality };
+    to_js_value(&m)
+}
+
+/// Compute damage for a JSON-encoded `WasmDamageModel`.
+#[wasm_bindgen(js_name = "damage_compute")]
+pub fn damage_compute_js(model_json: &str, eps_eq: f64) -> Result<f64, JsValue> {
+    let m: WasmDamageModel = serde_json::from_str(model_json).map_err(err_to_jsvalue)?;
+    Ok(m.compute_damage(eps_eq))
+}
+
+// ---------------------------------------------------------------------------
 // WasmFatigue
 // ---------------------------------------------------------------------------
 
 /// Stress-life (S-N) Basquin model.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmBasquin {
     /// Fatigue strength coefficient σ'_f (Pa).
@@ -457,7 +668,23 @@ impl WasmBasquin {
     }
 }
 
+#[wasm_bindgen]
+impl WasmBasquin {
+    /// Construct a Basquin S-N model.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new(sigma_f: f64, b: f64) -> WasmBasquin {
+        WasmBasquin { sigma_f, b }
+    }
+
+    /// Cycles to failure for the given stress amplitude (Pa).
+    #[wasm_bindgen(js_name = "cycles_to_failure")]
+    pub fn cycles_to_failure_js(&self, sigma_a: f64) -> f64 {
+        self.cycles_to_failure(sigma_a)
+    }
+}
+
 /// Strain-life (ε-N) Coffin-Manson model.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmCoffinManson {
     /// Fatigue ductility coefficient ε'_f.
@@ -465,6 +692,8 @@ pub struct WasmCoffinManson {
     /// Fatigue ductility exponent c (negative).
     pub c: f64,
     /// Combined with Basquin for total strain amplitude.
+    /// Skipped because nested `#[wasm_bindgen]` structs cannot be pub fields.
+    #[wasm_bindgen(skip)]
     pub basquin: WasmBasquin,
     /// Young's modulus for elastic strain (Pa).
     pub elastic_modulus: f64,
@@ -480,7 +709,34 @@ impl WasmCoffinManson {
     }
 }
 
+#[wasm_bindgen]
+impl WasmCoffinManson {
+    /// Construct a Coffin-Manson model.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new(
+        eps_f: f64,
+        c: f64,
+        sigma_f: f64,
+        b: f64,
+        elastic_modulus: f64,
+    ) -> WasmCoffinManson {
+        WasmCoffinManson {
+            eps_f,
+            c,
+            basquin: WasmBasquin { sigma_f, b },
+            elastic_modulus,
+        }
+    }
+
+    /// Total strain amplitude for N cycles.
+    #[wasm_bindgen(js_name = "strain_amplitude")]
+    pub fn strain_amplitude_js(&self, n_cycles: f64) -> f64 {
+        self.strain_amplitude(n_cycles)
+    }
+}
+
 /// Simple rainflow cycle counter output.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WasmFatigue {
     /// Accumulated damage D ∈ \[0,1\] via Miner's rule.
@@ -488,10 +744,15 @@ pub struct WasmFatigue {
     /// Number of counted cycles.
     pub cycle_count: u64,
     /// History of stress amplitudes.
+    /// Skipped: `Vec<f64>` is not directly exposed as a pub field via wasm-bindgen.
+    #[wasm_bindgen(skip)]
     pub amplitudes: Vec<f64>,
     /// History of mean stresses.
+    #[wasm_bindgen(skip)]
     pub mean_stresses: Vec<f64>,
     /// Basquin model for life prediction.
+    /// Skipped: `Option<WasmBasquin>` is not wasm-bindgen-compatible as a pub field.
+    #[wasm_bindgen(skip)]
     pub basquin: Option<WasmBasquin>,
 }
 
@@ -528,6 +789,51 @@ impl WasmFatigue {
         self.cycle_count = 0;
         self.amplitudes.clear();
         self.mean_stresses.clear();
+    }
+}
+
+#[wasm_bindgen]
+impl WasmFatigue {
+    /// Construct a fatigue counter without a Basquin model.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new() -> WasmFatigue {
+        WasmFatigue::new(None)
+    }
+
+    /// Construct a fatigue counter with a Basquin S-N model.
+    #[wasm_bindgen(js_name = "with_basquin")]
+    pub fn wasm_with_basquin(sigma_f: f64, b: f64) -> WasmFatigue {
+        WasmFatigue::new(Some(WasmBasquin { sigma_f, b }))
+    }
+
+    /// Record one cycle with the given amplitude and mean stress.
+    #[wasm_bindgen(js_name = "record_cycle")]
+    pub fn record_cycle_js(&mut self, amplitude: f64, mean: f64) {
+        self.record_cycle(amplitude, mean);
+    }
+
+    /// Returns `true` if Miner's rule predicts failure (D ≥ 1).
+    #[wasm_bindgen(js_name = "is_failed")]
+    pub fn is_failed_js(&self) -> bool {
+        self.is_failed()
+    }
+
+    /// Reset all counters and history.
+    #[wasm_bindgen(js_name = "reset")]
+    pub fn reset_js(&mut self) {
+        self.reset();
+    }
+
+    /// Return amplitude history as a flat `Vec<f64>`.
+    #[wasm_bindgen(js_name = "get_amplitudes")]
+    pub fn get_amplitudes_js(&self) -> Vec<f64> {
+        self.amplitudes.clone()
+    }
+
+    /// Return mean stress history as a flat `Vec<f64>`.
+    #[wasm_bindgen(js_name = "get_mean_stresses")]
+    pub fn get_mean_stresses_js(&self) -> Vec<f64> {
+        self.mean_stresses.clone()
     }
 }
 
@@ -612,10 +918,44 @@ impl WasmViscoelastic {
 }
 
 // ---------------------------------------------------------------------------
+// WasmViscoelastic — wasm-bindgen free functions
+// (WasmViscoelastic has payload variants with Vec; cannot be #[wasm_bindgen] directly.)
+// ---------------------------------------------------------------------------
+
+/// Create a Maxwell viscoelastic model as a `JsValue`.
+#[wasm_bindgen(js_name = "visco_maxwell")]
+pub fn visco_maxwell_js(modulus: f64, eta: f64) -> Result<JsValue, JsValue> {
+    let m = WasmViscoelastic::Maxwell { modulus, eta };
+    to_js_value(&m)
+}
+
+/// Create a Kelvin-Voigt viscoelastic model as a `JsValue`.
+#[wasm_bindgen(js_name = "visco_kelvin")]
+pub fn visco_kelvin_js(modulus: f64, eta: f64) -> Result<JsValue, JsValue> {
+    let m = WasmViscoelastic::Kelvin { modulus, eta };
+    to_js_value(&m)
+}
+
+/// Relaxation modulus E(t) for a JSON-encoded `WasmViscoelastic`.
+#[wasm_bindgen(js_name = "visco_relaxation_modulus")]
+pub fn visco_relaxation_modulus_js(model_json: &str, t: f64) -> Result<f64, JsValue> {
+    let m: WasmViscoelastic = serde_json::from_str(model_json).map_err(err_to_jsvalue)?;
+    Ok(m.relaxation_modulus(t))
+}
+
+/// Creep compliance J(t) for a JSON-encoded `WasmViscoelastic`.
+#[wasm_bindgen(js_name = "visco_creep_compliance")]
+pub fn visco_creep_compliance_js(model_json: &str, t: f64) -> Result<f64, JsValue> {
+    let m: WasmViscoelastic = serde_json::from_str(model_json).map_err(err_to_jsvalue)?;
+    Ok(m.creep_compliance(t))
+}
+
+// ---------------------------------------------------------------------------
 // WasmThermalMaterial
 // ---------------------------------------------------------------------------
 
 /// Thermal material properties and simple heat-transfer utilities.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmThermalMaterial {
     /// Thermal conductivity k (W/m·K).
@@ -663,7 +1003,7 @@ impl WasmThermalMaterial {
         if alpha <= 0.0 || t <= 0.0 {
             return 0.0;
         }
-        // T(x,t) ≈ (2 q₀ / k) √(αt/π) exp(-x²/(4αt))
+        // T(x,t) ≈ (2 q₀ / k) sqrt(αt/π) exp(-x²/(4αt))
         let sqrt_at = (alpha * t / std::f64::consts::PI).sqrt();
         let exp_term = (-depth * depth / (4.0 * alpha * t)).exp();
         (2.0 * q0 / self.conductivity) * sqrt_at * exp_term
@@ -681,11 +1021,51 @@ impl WasmThermalMaterial {
     }
 }
 
+#[wasm_bindgen]
+impl WasmThermalMaterial {
+    /// Construct a thermal material with default aluminium-like properties.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new() -> WasmThermalMaterial {
+        WasmThermalMaterial::default()
+    }
+
+    /// Thermal diffusivity (m²/s).
+    #[wasm_bindgen(js_name = "diffusivity")]
+    pub fn diffusivity_js(&self) -> f64 {
+        self.diffusivity()
+    }
+
+    /// Steady-state 1-D heat flux (W/m²).
+    #[wasm_bindgen(js_name = "steady_state_flux")]
+    pub fn steady_state_flux_js(&self, delta_t: f64, length: f64) -> f64 {
+        self.steady_state_flux(delta_t, length)
+    }
+
+    /// Transient surface temperature rise (K).
+    #[wasm_bindgen(js_name = "transient_temperature_rise")]
+    pub fn transient_temperature_rise_js(&self, q0: f64, t: f64, depth: f64) -> f64 {
+        self.transient_temperature_rise(q0, t, depth)
+    }
+
+    /// Radiation heat flux (W/m²).
+    #[wasm_bindgen(js_name = "radiation_flux")]
+    pub fn radiation_flux_js(&self, surface_temp_k: f64, ambient_temp_k: f64) -> f64 {
+        self.radiation_flux(surface_temp_k, ambient_temp_k)
+    }
+
+    /// Thermal stress (Pa) for a constrained 1-D element.
+    #[wasm_bindgen(js_name = "thermal_stress")]
+    pub fn thermal_stress_js(&self, elastic_modulus: f64, delta_t: f64) -> f64 {
+        self.thermal_stress(elastic_modulus, delta_t)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WasmMaterialCombiner
 // ---------------------------------------------------------------------------
 
 /// Composite material averaging schemes.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AveragingScheme {
     /// Voigt (iso-strain) upper bound.
@@ -697,6 +1077,7 @@ pub enum AveragingScheme {
 }
 
 /// Utility for computing effective properties of composite materials.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WasmMaterialCombiner;
 
@@ -734,6 +1115,33 @@ impl WasmMaterialCombiner {
     pub fn hs_lower_bulk(&self, k1: f64, k2: f64, g1: f64, f1: f64) -> f64 {
         let f2 = 1.0 - f1;
         k1 + f2 / (1.0 / (k2 - k1).max(1e-30) + 3.0 * f1 / (3.0 * k1 + 4.0 * g1).max(1e-30))
+    }
+}
+
+#[wasm_bindgen]
+impl WasmMaterialCombiner {
+    /// Construct a material combiner.
+    #[wasm_bindgen(constructor)]
+    pub fn wasm_new() -> WasmMaterialCombiner {
+        WasmMaterialCombiner::new()
+    }
+
+    /// Effective modulus for a two-phase composite using the given averaging scheme.
+    #[wasm_bindgen(js_name = "composite_modulus")]
+    pub fn composite_modulus_js(&self, e1: f64, e2: f64, f1: f64, scheme: AveragingScheme) -> f64 {
+        self.composite_modulus(e1, e2, f1, scheme)
+    }
+
+    /// Effective density (rule of mixtures).
+    #[wasm_bindgen(js_name = "composite_density")]
+    pub fn composite_density_js(&self, rho1: f64, rho2: f64, f1: f64) -> f64 {
+        self.composite_density(rho1, rho2, f1)
+    }
+
+    /// Hashin-Shtrikman lower bound on bulk modulus.
+    #[wasm_bindgen(js_name = "hs_lower_bulk")]
+    pub fn hs_lower_bulk_js(&self, k1: f64, k2: f64, g1: f64, f1: f64) -> f64 {
+        self.hs_lower_bulk(k1, k2, g1, f1)
     }
 }
 
@@ -795,9 +1203,9 @@ impl WasmEOS {
                 gamma0,
             } => {
                 let mu = rho / rho0 - 1.0;
-                let p_h = rho0 * c0 * c0 * mu * (1.0 + (1.0 - gamma0 / 2.0) * mu)
-                    / (1.0 - (s - 1.0) * mu).powi(2).max(1e-30);
-                let e_h = 0.0; // reference Hugoniot energy (stub)
+                let denom = (1.0 - (s - 1.0) * mu).powi(2).max(1e-10);
+                let p_h = rho0 * c0 * c0 * mu * (1.0 + (1.0 - gamma0 / 2.0) * mu) / denom;
+                let e_h = p_h * mu / (2.0 * rho0 * (1.0 + mu)).max(1e-10);
                 p_h + gamma0 * rho * (e - e_h)
             }
             WasmEOS::Tillotson {
@@ -818,16 +1226,69 @@ impl WasmEOS {
         }
     }
 
-    /// Speed of sound c = √(∂P/∂ρ) for ideal gas (others return 0 as stub).
+    /// Speed of sound c = sqrt(∂P/∂ρ)|_s for each EOS model.
+    ///
+    /// - **IdealGas**: c = sqrt(γ P / ρ)
+    /// - **MieGruneisen**: isentropic linearization c = sqrt(K_s / ρ), K_s = ρ₀·c₀²·(1+2s·μ)
+    /// - **Tillotson**: cold-curve bulk modulus K = A + 2B·μ(1−μ), c = sqrt(K / ρ)
     pub fn sound_speed(&self, rho: f64, e: f64) -> f64 {
         match self {
             WasmEOS::IdealGas { gamma } => {
                 let p = self.compute_pressure(rho, e);
-                (gamma * p / rho.max(1e-30)).sqrt()
+                (gamma * p / rho.max(1e-30)).max(0.0).sqrt()
             }
-            _ => 0.0,
+            WasmEOS::MieGruneisen { rho0, c0, s, .. } => {
+                let mu = rho / rho0 - 1.0;
+                let k_s = rho0 * c0 * c0 * (1.0 + 2.0 * s * mu).max(0.0);
+                (k_s / rho.max(1e-30)).max(0.0).sqrt()
+            }
+            WasmEOS::Tillotson {
+                rho0, big_a, big_b, ..
+            } => {
+                let mu = rho / rho0 - 1.0;
+                let k = (big_a + 2.0 * big_b * mu * (1.0 - mu)).max(0.0);
+                (k / rho.max(1e-30)).max(0.0).sqrt()
+            }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// WasmEOS — wasm-bindgen free functions
+// (WasmEOS has payload variants; cannot be #[wasm_bindgen] directly.)
+// ---------------------------------------------------------------------------
+
+/// Create an ideal-gas EOS as a `JsValue`.
+#[wasm_bindgen(js_name = "eos_ideal_gas")]
+pub fn eos_ideal_gas_js(gamma: f64) -> Result<JsValue, JsValue> {
+    let m = WasmEOS::IdealGas { gamma };
+    to_js_value(&m)
+}
+
+/// Create a Mie-Grüneisen EOS as a `JsValue`.
+#[wasm_bindgen(js_name = "eos_mie_gruneisen")]
+pub fn eos_mie_gruneisen_js(rho0: f64, c0: f64, s: f64, gamma0: f64) -> Result<JsValue, JsValue> {
+    let m = WasmEOS::MieGruneisen {
+        rho0,
+        c0,
+        s,
+        gamma0,
+    };
+    to_js_value(&m)
+}
+
+/// Compute pressure (Pa) for a JSON-encoded `WasmEOS`.
+#[wasm_bindgen(js_name = "eos_compute_pressure")]
+pub fn eos_compute_pressure_js(model_json: &str, rho: f64, e: f64) -> Result<f64, JsValue> {
+    let m: WasmEOS = serde_json::from_str(model_json).map_err(err_to_jsvalue)?;
+    Ok(m.compute_pressure(rho, e))
+}
+
+/// Compute sound speed (m/s) for a JSON-encoded `WasmEOS`.
+#[wasm_bindgen(js_name = "eos_sound_speed")]
+pub fn eos_sound_speed_js(model_json: &str, rho: f64, e: f64) -> Result<f64, JsValue> {
+    let m: WasmEOS = serde_json::from_str(model_json).map_err(err_to_jsvalue)?;
+    Ok(m.sound_speed(rho, e))
 }
 
 // ---------------------------------------------------------------------------
@@ -1183,5 +1644,145 @@ mod tests {
         let p = eos.compute_pressure(2700.0, 0.0);
         // At reference density, mu=0, P_H = 0
         assert!(p.abs() < 1e3);
+    }
+
+    // --- H1: Hugoniot internal energy ---
+
+    #[test]
+    fn hugoniot_energy_zero_at_reference() {
+        // At rho == rho0, mu = 0, so p_H = 0 and e_H = 0.
+        let eos = WasmEOS::MieGruneisen {
+            rho0: 8930.0,
+            c0: 3940.0,
+            s: 1.489,
+            gamma0: 1.99,
+        };
+        let p = eos.compute_pressure(8930.0, 0.0);
+        // With e=0 and e_H=0, pressure should also be near zero.
+        assert!(p.abs() < 1.0, "pressure at reference should be ~0, got {p}");
+    }
+
+    #[test]
+    fn hugoniot_energy_positive_compression() {
+        // mu = rho/rho0 - 1 = 0.1 > 0 → e_H > 0 and p_H > 0.
+        let eos = WasmEOS::MieGruneisen {
+            rho0: 8930.0,
+            c0: 3940.0,
+            s: 1.489,
+            gamma0: 1.99,
+        };
+        let rho_compressed = 8930.0 * 1.1;
+        let p = eos.compute_pressure(rho_compressed, 0.0);
+        assert!(
+            p > 0.0,
+            "pressure under compression must be positive, got {p}"
+        );
+    }
+
+    // --- H2: Sound speed ---
+
+    #[test]
+    fn sound_speed_positive_all_materials() {
+        // IdealGas: air at roughly 300 K (e = c_v * T ≈ 716 * 300 = 214800 J/kg)
+        let air = WasmEOS::IdealGas { gamma: 1.4 };
+        let c_air = air.sound_speed(1.2, 214_800.0);
+        assert!(c_air > 0.0, "air sound speed must be positive");
+
+        // MieGruneisen: copper compressed 10%
+        let copper = WasmEOS::MieGruneisen {
+            rho0: 8930.0,
+            c0: 3940.0,
+            s: 1.489,
+            gamma0: 1.99,
+        };
+        let c_cu = copper.sound_speed(9823.0, 0.0);
+        assert!(c_cu > 0.0, "copper sound speed must be positive");
+
+        // Tillotson: aluminium-like parameters
+        let al = WasmEOS::Tillotson {
+            rho0: 2700.0,
+            a: 0.5,
+            b: 1.63,
+            e_sub: 3.4e8,
+            e0: 3.0e8,
+            big_a: 7.52e10,
+            big_b: 6.5e10,
+            alpha: 5.0,
+            beta: 5.0,
+        };
+        let c_al = al.sound_speed(2700.0, 0.0);
+        assert!(
+            c_al > 0.0,
+            "aluminium Tillotson sound speed must be positive"
+        );
+    }
+
+    #[test]
+    fn sound_speed_ideal_gas_air_at_300k() {
+        // e = c_v * T; for diatomic ideal gas c_v = R/(M*(γ-1)) where M=0.029 kg/mol
+        // c_v ≈ 8.314 / (0.029 * 0.4) ≈ 716 J/(kg·K)  → e ≈ 214800 J/kg
+        let air = WasmEOS::IdealGas { gamma: 1.4 };
+        let c = air.sound_speed(1.2, 214_800.0);
+        // Expected ≈ 347 m/s ± 5 m/s
+        assert!(
+            (c - 347.0).abs() < 5.0,
+            "air sound speed at 300K should be ~347 m/s, got {c}"
+        );
+    }
+
+    // --- H3: Mooney-Rivlin uniaxial stretch ---
+
+    #[test]
+    fn mooney_rivlin_uniaxial_stretch() {
+        let c10 = 0.5e6_f64;
+        let c01 = 0.1e6_f64;
+        let lambda = 2.0_f64;
+        let mr = WasmHyperelastic::MooneyRivlin { c10, c01 };
+        let w = mr.strain_energy_uniaxial(lambda);
+
+        // I₁ = λ² + 2/λ,  I₂ = 2λ + 1/λ²
+        let i1 = lambda * lambda + 2.0 / lambda;
+        let i2 = 2.0 * lambda + 1.0 / (lambda * lambda);
+        let expected = c10 * (i1 - 3.0) + c01 * (i2 - 3.0);
+
+        assert!(
+            (w - expected).abs() < 1.0,
+            "Mooney-Rivlin energy mismatch: got {w}, expected {expected}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests: wasm-bindgen JS surface (non-wasm32 serde round-trips)
+    // -----------------------------------------------------------------------
+
+    /// Verify that WasmMaterial serialises to JSON and the name field survives the
+    /// round-trip through the JS-surface getter pattern (name() accessor).
+    #[test]
+    fn integration_wasm_material_name_roundtrip() {
+        let m = WasmMaterial::wasm_new("test_steel".to_string(), 7850.0);
+        assert_eq!(m.name(), "test_steel");
+        let json = m.to_json_js().expect("serialise to JSON string");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse JSON");
+        assert_eq!(parsed["name"].as_str(), Some("test_steel"));
+        assert!((parsed["density"].as_f64().expect("density") - 7850.0).abs() < 1e-6);
+    }
+
+    /// Verify that the `hyperelastic_strain_energy_js` JSON path produces the
+    /// same result as calling the Rust method directly.
+    #[test]
+    fn integration_hyperelastic_json_path_matches_direct() {
+        let mu = 2.0e6_f64;
+        let lambda = 4.0e6_f64;
+        let stretch = 1.5_f64;
+        let nh = WasmHyperelastic::NeoHookean { mu, lambda };
+        let expected = nh.strain_energy_uniaxial(stretch);
+
+        let json = serde_json::to_string(&nh).expect("serialise");
+        let from_json = hyperelastic_strain_energy_js(&json, stretch)
+            .expect("hyperelastic_strain_energy_js should succeed");
+        assert!(
+            (from_json - expected).abs() < 1.0,
+            "JSON path strain energy {from_json} != direct {expected}"
+        );
     }
 }

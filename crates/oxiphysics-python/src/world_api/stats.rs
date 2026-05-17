@@ -3,9 +3,8 @@
 
 //! Simulation statistics.
 
-#![allow(missing_docs)]
-
 use super::PyPhysicsWorld;
+use pyo3::prelude::*;
 
 // ===========================================================================
 // Simulation Statistics
@@ -14,24 +13,32 @@ use super::PyPhysicsWorld;
 /// Per-step simulation performance and state statistics.
 ///
 /// Retrieved via `PyPhysicsWorld::stats()` after each `step()` call.
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct SimStats {
     /// Total number of active (non-removed) bodies.
+    #[pyo3(get, set)]
     pub body_count: usize,
     /// Number of bodies currently sleeping.
+    #[pyo3(get, set)]
     pub sleeping_count: usize,
     /// Number of bodies that are awake (body_count - sleeping_count).
+    #[pyo3(get, set)]
     pub awake_count: usize,
     /// Number of contacts detected in the most recent step.
+    #[pyo3(get, set)]
     pub contact_count: usize,
     /// Accumulated simulation time (seconds).
+    #[pyo3(get, set)]
     pub simulation_time: f64,
     /// Total kinetic energy summed over all dynamic bodies (½mv²).
+    #[pyo3(get, set)]
     pub total_kinetic_energy: f64,
     /// Largest linear speed among all dynamic bodies.
+    #[pyo3(get, set)]
     pub max_linear_speed: f64,
     /// Largest angular speed among all dynamic bodies.
+    #[pyo3(get, set)]
     pub max_angular_speed: f64,
 }
 

@@ -223,6 +223,10 @@ pub mod terrain_processing;
 
 pub mod cell_complex;
 pub mod convex_decomposition;
+pub mod voxel_grid;
+pub use voxel_grid::VoxelGrid;
+pub mod vhacd;
+pub use vhacd::{VHacdConfig, VHacdError, VHacdVoxel};
 pub mod geodesic_geometry;
 pub mod medial_axis;
 pub mod mesh_boolean;

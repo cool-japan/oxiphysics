@@ -1,0 +1,4 @@
+# Clippy configuration for OxiPhysics workspace.
+# WASM bridge functions routinely take coordinate triples (x,y,z) plus
+# additional parameters, making argument counts above 7 idiomatic.
+too-many-arguments-threshold = 10

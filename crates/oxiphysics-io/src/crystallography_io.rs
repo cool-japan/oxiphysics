@@ -530,8 +530,168 @@ pub fn write_cif(crystal: &CrystalStructure) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// VASP POSCAR reader (stub)
+// VASP POSCAR reader
 // ---------------------------------------------------------------------------
+
+/// A richer POSCAR structure that captures VASP-specific extensions.
+///
+/// Unlike [`CrystalStructure`] (which maps to CIF), this struct preserves
+/// VASP-specific fields: selective dynamics flags, per-atom magnetic moments,
+/// and ionic forces parsed from a companion OUTCAR file.
+#[derive(Debug, Clone)]
+pub struct PoscarStructure {
+    /// Comment line (first line of the POSCAR file).
+    pub comment: String,
+    /// Universal scale factor (already applied to `lattice`).
+    pub scale: f64,
+    /// Lattice vectors as row matrix (in Å after scale).
+    pub lattice: [[f64; 3]; 3],
+    /// Element symbols for each species (VASP5+ format; empty for VASP4).
+    pub species: Vec<String>,
+    /// Number of atoms per species.
+    pub counts: Vec<usize>,
+    /// Whether selective dynamics mode is active.
+    pub selective_dynamics: bool,
+    /// Coordinate mode: `true` = Direct (fractional), `false` = Cartesian.
+    pub is_direct: bool,
+    /// Atom fractional (or Cartesian) positions, in species order.
+    pub positions: Vec<[f64; 3]>,
+    /// Per-atom selective-dynamics flags `[x_free, y_free, z_free]`.
+    /// `None` if selective dynamics were not specified.
+    pub sd_flags: Option<Vec<[bool; 3]>>,
+    /// Per-atom magnetic moments parsed from `# MAGMOM = ...` annotation.
+    /// `None` if not present.
+    pub magmom: Option<Vec<f64>>,
+    /// Ionic forces in eV/Å parsed from a companion OUTCAR file.
+    /// `None` if not available.
+    pub forces: Option<Vec<[f64; 3]>>,
+}
+
+impl PoscarStructure {
+    /// Convert to a [`CrystalStructure`] (drops VASP-specific fields).
+    pub fn to_crystal_structure(&self) -> CrystalStructure {
+        let mut element_iter = self.species.iter();
+        let mut count_iter = self.counts.iter();
+        let mut atoms = Vec::with_capacity(self.positions.len());
+        let mut current_element = element_iter
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "X".to_string());
+        let mut remaining = count_iter.next().copied().unwrap_or(0);
+
+        for pos in &self.positions {
+            if remaining == 0 {
+                current_element = element_iter
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| "X".to_string());
+                remaining = count_iter.next().copied().unwrap_or(0);
+            }
+            atoms.push(CrystalAtom {
+                element: current_element.clone(),
+                fractional_pos: *pos,
+                occupancy: 1.0,
+                b_factor: 0.0,
+            });
+            remaining = remaining.saturating_sub(1);
+        }
+        CrystalStructure {
+            lattice: self.lattice,
+            atoms,
+            space_group: 1,
+        }
+    }
+
+    /// Write this structure to a POSCAR-formatted string.
+    pub fn to_poscar_string(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&self.comment);
+        out.push('\n');
+        out.push_str("1.0\n");
+        for row in &self.lattice {
+            out.push_str(&format!(
+                "  {:.10}  {:.10}  {:.10}\n",
+                row[0], row[1], row[2]
+            ));
+        }
+        if !self.species.is_empty() {
+            out.push_str(&self.species.join("  "));
+            out.push('\n');
+        }
+        let count_strs: Vec<String> = self.counts.iter().map(|c| c.to_string()).collect();
+        out.push_str(&count_strs.join("  "));
+        out.push('\n');
+        if self.selective_dynamics {
+            out.push_str("Selective dynamics\n");
+        }
+        if self.is_direct {
+            out.push_str("Direct\n");
+        } else {
+            out.push_str("Cartesian\n");
+        }
+        for (i, pos) in self.positions.iter().enumerate() {
+            if self.selective_dynamics {
+                let flags = self
+                    .sd_flags
+                    .as_ref()
+                    .and_then(|f| f.get(i))
+                    .copied()
+                    .unwrap_or([true, true, true]);
+                let fx = if flags[0] { "T" } else { "F" };
+                let fy = if flags[1] { "T" } else { "F" };
+                let fz = if flags[2] { "T" } else { "F" };
+                out.push_str(&format!(
+                    "  {:.10}  {:.10}  {:.10}  {fx}  {fy}  {fz}\n",
+                    pos[0], pos[1], pos[2]
+                ));
+            } else {
+                out.push_str(&format!(
+                    "  {:.10}  {:.10}  {:.10}\n",
+                    pos[0], pos[1], pos[2]
+                ));
+            }
+        }
+        if let Some(ref mm) = self.magmom {
+            let mm_strs: Vec<String> = mm.iter().map(|v| format!("{v:.4}")).collect();
+            out.push_str(&format!("# MAGMOM = {}\n", mm_strs.join(" ")));
+        }
+        out
+    }
+}
+
+/// Parse OUTCAR ionic forces from a VASP OUTCAR file.
+///
+/// Looks for the last `TOTAL-FORCE (eV/Angst)` block and reads the
+/// following `n_atoms` lines as `[fx, fy, fz]` force vectors.
+pub fn parse_outcar_forces(content: &str, n_atoms: usize) -> Option<Vec<[f64; 3]>> {
+    // Find the last occurrence of the TOTAL-FORCE block.
+    let marker = "TOTAL-FORCE (eV/Angst)";
+    let last_pos = content.rfind(marker)?;
+    let after = &content[last_pos..];
+    // Skip the header line and the dashed separator line.
+    let mut lines = after.lines().skip(1);
+    // Skip separator line (contains dashes)
+    let sep = lines.next()?;
+    if !sep.contains('-') {
+        return None;
+    }
+    let mut forces = Vec::with_capacity(n_atoms);
+    for line in lines.take(n_atoms) {
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        if toks.len() < 6 {
+            return None;
+        }
+        let fx: f64 = toks.get(3).and_then(|s| s.parse().ok())?;
+        let fy: f64 = toks.get(4).and_then(|s| s.parse().ok())?;
+        let fz: f64 = toks.get(5).and_then(|s| s.parse().ok())?;
+        forces.push([fx, fy, fz]);
+    }
+    if forces.len() == n_atoms {
+        Some(forces)
+    } else {
+        None
+    }
+}
 
 /// Reader for VASP POSCAR/CONTCAR format.
 #[derive(Debug, Default)]
@@ -545,13 +705,21 @@ impl VaspReader {
 
     /// Parse a POSCAR/CONTCAR file and return a [`CrystalStructure`].
     ///
-    /// Currently a stub — handles the header, scale, lattice vectors, and
-    /// Cartesian/Direct coordinate blocks.
+    /// Handles the header, scale, lattice vectors, optional selective dynamics
+    /// flags, and Cartesian/Direct coordinate blocks.
     pub fn parse_poscar(&self, content: &str) -> Result<CrystalStructure> {
+        let ps = self.parse_poscar_full(content)?;
+        Ok(ps.to_crystal_structure())
+    }
+
+    /// Parse a POSCAR/CONTCAR file and return a full [`PoscarStructure`],
+    /// preserving selective dynamics flags, magnetic moments, and other
+    /// VASP-specific information.
+    pub fn parse_poscar_full(&self, content: &str) -> Result<PoscarStructure> {
         let mut lines = content.lines().peekable();
 
         // Line 1: comment
-        let _comment = lines.next().unwrap_or("").trim().to_string();
+        let comment = lines.next().unwrap_or("").trim().to_string();
         // Line 2: scale factor
         let scale: f64 = lines
             .next()
@@ -580,7 +748,7 @@ impl VaspReader {
 
         // Line 6: element symbols (VASP5+) or direct species count
         let species_line = lines.next().unwrap_or("").trim().to_string();
-        let (elements, count_line) = if species_line
+        let (species, count_line) = if species_line
             .chars()
             .next()
             .map(|c| c.is_alphabetic())
@@ -593,7 +761,7 @@ impl VaspReader {
             let cl = lines.next().unwrap_or("").trim().to_string();
             (elems, cl)
         } else {
-            // VASP4: no element names
+            // VASP4: no element names — use placeholder
             (vec!["X".to_string()], species_line.clone())
         };
 
@@ -601,54 +769,121 @@ impl VaspReader {
             .split_whitespace()
             .filter_map(|s| s.parse().ok())
             .collect();
+        let n_atoms: usize = counts.iter().sum();
 
-        // Line 7: Selective dynamics or coordinate type
-        let coord_type_line = lines.next().unwrap_or("").trim().to_string();
-        let coord_type_line = if coord_type_line.to_lowercase().starts_with('s') {
-            lines.next().unwrap_or("").trim().to_string()
+        // Next line: optional "Selective dynamics", then coordinate mode
+        let next_line = lines.next().unwrap_or("").trim().to_string();
+        let (selective_dynamics, coord_type_line) = if next_line.to_lowercase().starts_with('s') {
+            let cl = lines.next().unwrap_or("").trim().to_string();
+            (true, cl)
         } else {
-            coord_type_line
+            (false, next_line)
         };
-        let is_cartesian = coord_type_line.to_lowercase().starts_with('c')
-            || coord_type_line.to_lowercase().starts_with('k');
 
-        // Atoms
-        let mut atoms = Vec::new();
-        for (ei, &count) in counts.iter().enumerate() {
-            let element = elements.get(ei).cloned().unwrap_or_else(|| "X".to_string());
-            for _ in 0..count {
-                let line = lines.next().unwrap_or("0 0 0");
-                let vals: Vec<f64> = line
-                    .split_whitespace()
-                    .take(3)
-                    .filter_map(|s| s.parse().ok())
-                    .collect();
-                let mut pos = [
-                    vals.first().copied().unwrap_or(0.0),
-                    vals.get(1).copied().unwrap_or(0.0),
-                    vals.get(2).copied().unwrap_or(0.0),
-                ];
-                if is_cartesian {
-                    // Convert Cartesian to fractional (simplified — assumes orthogonal)
-                    pos[0] /= lattice[0][0].abs().max(1e-12);
-                    pos[1] /= lattice[1][1].abs().max(1e-12);
-                    pos[2] /= lattice[2][2].abs().max(1e-12);
-                }
-                atoms.push(CrystalAtom {
-                    element: element.clone(),
-                    fractional_pos: pos,
-                    occupancy: 1.0,
-                    b_factor: 0.0,
-                });
+        let is_direct = !coord_type_line.to_lowercase().starts_with('c')
+            && !coord_type_line.to_lowercase().starts_with('k');
+
+        // Read atom positions (and optional selective dynamics flags)
+        let mut positions: Vec<[f64; 3]> = Vec::with_capacity(n_atoms);
+        let mut sd_flags: Vec<[bool; 3]> = Vec::with_capacity(n_atoms);
+        // Also capture any trailing lines for MAGMOM
+        let mut trailing: Vec<String> = Vec::new();
+
+        for _ in 0..n_atoms {
+            let line = lines.next().unwrap_or("0 0 0");
+            let toks: Vec<&str> = line.split_whitespace().collect();
+            let x: f64 = toks.first().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let y: f64 = toks.get(1).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let z: f64 = toks.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let mut pos = [x, y, z];
+            if !is_direct {
+                // Convert Cartesian → fractional (simplified: assumes orthogonal cell)
+                pos[0] /= lattice[0][0].abs().max(1e-12);
+                pos[1] /= lattice[1][1].abs().max(1e-12);
+                pos[2] /= lattice[2][2].abs().max(1e-12);
+            }
+            positions.push(pos);
+
+            if selective_dynamics && toks.len() >= 6 {
+                let fx = toks[3] == "T";
+                let fy = toks[4] == "T";
+                let fz = toks[5] == "T";
+                sd_flags.push([fx, fy, fz]);
+            } else {
+                sd_flags.push([true, true, true]);
             }
         }
 
-        Ok(CrystalStructure {
+        // Consume remaining lines to find MAGMOM annotations.
+        for line in lines {
+            trailing.push(line.trim().to_string());
+        }
+
+        // Parse MAGMOM from trailing comments: `# MAGMOM = 1.0 -1.0 ...`
+        let magmom = trailing
+            .iter()
+            .find(|l| {
+                let lower = l.to_lowercase();
+                lower.contains("magmom") && lower.contains('=')
+            })
+            .and_then(|l| {
+                // Strip leading `#` and everything up to and including `=`
+                let after_eq = l.split('=').nth(1)?;
+                let vals: Vec<f64> = after_eq
+                    .split_whitespace()
+                    .filter_map(|s| s.parse().ok())
+                    .collect();
+                if vals.is_empty() { None } else { Some(vals) }
+            });
+
+        let sd_opt = if selective_dynamics {
+            Some(sd_flags)
+        } else {
+            None
+        };
+
+        Ok(PoscarStructure {
+            comment,
+            scale,
             lattice,
-            atoms,
-            space_group: 1,
+            species,
+            counts,
+            selective_dynamics,
+            is_direct,
+            positions,
+            sd_flags: sd_opt,
+            magmom,
+            forces: None,
         })
     }
+}
+
+/// Parse a string containing one or more POSCAR images (e.g., VASP NEB chain).
+///
+/// Images are separated by double-newlines or a blank line followed by
+/// a new POSCAR header. Returns a `Vec<PoscarStructure>` with one entry per image.
+pub fn read_poscar_images(content: &str) -> Result<Vec<PoscarStructure>> {
+    // Split on blank lines (double newline) to find image boundaries.
+    // Each image starts with a non-empty comment line followed by scale etc.
+    let reader = VaspReader::new();
+
+    // Split the content on sequences of two or more consecutive newlines.
+    let blocks: Vec<&str> = content
+        .split("\n\n")
+        .map(|b| b.trim())
+        .filter(|b| !b.is_empty())
+        .collect();
+
+    if blocks.is_empty() {
+        return Err(Error::Parse("no POSCAR images found".into()));
+    }
+
+    let mut images = Vec::with_capacity(blocks.len());
+    for block in &blocks {
+        let ps = reader.parse_poscar_full(block)?;
+        images.push(ps);
+    }
+    Ok(images)
 }
 
 // ---------------------------------------------------------------------------
@@ -1111,5 +1346,220 @@ _symmetry_int_tables_number 225
         let parser = CifParser::new();
         let crystal = parser.parse("").unwrap();
         assert!((crystal.volume() - 1.0).abs() < 1e-10); // 1×1×1
+    }
+
+    // -----------------------------------------------------------------------
+    // J2: Extended POSCAR reader tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_poscar_selective_dynamics_flags_preserved() {
+        // POSCAR with selective dynamics: atom 0 is fully free, atom 1 has z fixed.
+        let poscar = concat!(
+            "BCC Fe\n",
+            "1.0\n",
+            "2.87 0.0 0.0\n",
+            "0.0 2.87 0.0\n",
+            "0.0 0.0 2.87\n",
+            "Fe\n",
+            "2\n",
+            "Selective dynamics\n",
+            "Direct\n",
+            "0.0 0.0 0.0 T T T\n",
+            "0.5 0.5 0.5 T T F\n",
+        );
+        let reader = VaspReader::new();
+        let ps = reader.parse_poscar_full(poscar).expect("parse failed");
+
+        assert!(ps.selective_dynamics, "selective_dynamics flag must be set");
+        let flags = ps.sd_flags.as_ref().expect("sd_flags must be Some");
+        assert_eq!(flags.len(), 2, "must have 2 flag entries");
+
+        // Atom 0: all free
+        assert!(flags[0][0], "atom0 x should be free (T)");
+        assert!(flags[0][1], "atom0 y should be free (T)");
+        assert!(flags[0][2], "atom0 z should be free (T)");
+
+        // Atom 1: z fixed
+        assert!(flags[1][0], "atom1 x should be free (T)");
+        assert!(flags[1][1], "atom1 y should be free (T)");
+        assert!(!flags[1][2], "atom1 z should be fixed (F)");
+    }
+
+    #[test]
+    fn test_poscar_without_selective_dynamics() {
+        let poscar = concat!(
+            "Simple\n",
+            "1.0\n",
+            "3.0 0.0 0.0\n",
+            "0.0 3.0 0.0\n",
+            "0.0 0.0 3.0\n",
+            "H\n",
+            "1\n",
+            "Direct\n",
+            "0.0 0.0 0.0\n",
+        );
+        let reader = VaspReader::new();
+        let ps = reader.parse_poscar_full(poscar).expect("parse failed");
+        assert!(!ps.selective_dynamics, "selective_dynamics must be false");
+        assert!(
+            ps.sd_flags.is_none(),
+            "sd_flags must be None when not specified"
+        );
+    }
+
+    #[test]
+    fn test_poscar_multi_image_vec_length() {
+        // Two POSCAR images separated by double newline.
+        let img1 = concat!(
+            "Image1\n",
+            "1.0\n",
+            "3.0 0.0 0.0\n",
+            "0.0 3.0 0.0\n",
+            "0.0 0.0 3.0\n",
+            "H\n",
+            "1\n",
+            "Direct\n",
+            "0.0 0.0 0.0\n",
+        );
+        let img2 = concat!(
+            "Image2\n",
+            "1.0\n",
+            "4.0 0.0 0.0\n",
+            "0.0 4.0 0.0\n",
+            "0.0 0.0 4.0\n",
+            "O\n",
+            "2\n",
+            "Direct\n",
+            "0.0 0.0 0.0\n",
+            "0.5 0.5 0.5\n",
+        );
+        let combined = format!("{img1}\n{img2}");
+        let images = read_poscar_images(&combined).expect("read_poscar_images failed");
+        assert_eq!(images.len(), 2, "must parse 2 images");
+        // First image has lattice 3.0, second 4.0
+        assert!(
+            (images[0].lattice[0][0] - 3.0).abs() < 1e-10,
+            "image0 lattice a=3"
+        );
+        assert!(
+            (images[1].lattice[0][0] - 4.0).abs() < 1e-10,
+            "image1 lattice a=4"
+        );
+        // Species and counts
+        assert_eq!(images[0].species[0], "H");
+        assert_eq!(images[1].species[0], "O");
+        assert_eq!(images[1].positions.len(), 2, "image1 should have 2 atoms");
+    }
+
+    #[test]
+    fn test_poscar_multi_image_different_lattices() {
+        // Verify fractional positions are preserved correctly across images.
+        let img1 = concat!(
+            "Img A\n",
+            "1.0\n",
+            "5.0 0.0 0.0\n",
+            "0.0 5.0 0.0\n",
+            "0.0 0.0 5.0\n",
+            "Al\n",
+            "1\n",
+            "Direct\n",
+            "0.25 0.25 0.25\n",
+        );
+        let img2 = concat!(
+            "Img B\n",
+            "1.0\n",
+            "6.0 0.0 0.0\n",
+            "0.0 6.0 0.0\n",
+            "0.0 0.0 6.0\n",
+            "Al\n",
+            "1\n",
+            "Direct\n",
+            "0.75 0.75 0.75\n",
+        );
+        let combined = format!("{img1}\n{img2}");
+        let images = read_poscar_images(&combined).expect("read_poscar_images failed");
+        assert_eq!(images.len(), 2);
+        assert!((images[0].positions[0][0] - 0.25).abs() < 1e-10);
+        assert!((images[1].positions[0][0] - 0.75).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_poscar_roundtrip_atom_positions() {
+        // Build a PoscarStructure, write it, read it back, compare positions.
+        let original = PoscarStructure {
+            comment: "Test roundtrip".into(),
+            scale: 1.0,
+            lattice: [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]],
+            species: vec!["Fe".into(), "O".into()],
+            counts: vec![1, 2],
+            selective_dynamics: false,
+            is_direct: true,
+            positions: vec![[0.0, 0.0, 0.0], [0.5, 0.5, 0.0], [0.5, 0.0, 0.5]],
+            sd_flags: None,
+            magmom: None,
+            forces: None,
+        };
+
+        let poscar_str = original.to_poscar_string();
+        let reader = VaspReader::new();
+        let recovered = reader
+            .parse_poscar_full(&poscar_str)
+            .expect("roundtrip parse failed");
+
+        assert_eq!(recovered.positions.len(), 3, "must recover 3 atoms");
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (recovered.positions[i][j] - original.positions[i][j]).abs() < 1e-8,
+                    "position[{i}][{j}] mismatch: {} vs {}",
+                    recovered.positions[i][j],
+                    original.positions[i][j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_poscar_magmom_parsing() {
+        let poscar = concat!(
+            "Fe NiO\n",
+            "1.0\n",
+            "4.2 0.0 0.0\n",
+            "0.0 4.2 0.0\n",
+            "0.0 0.0 4.2\n",
+            "Fe Ni\n",
+            "1 1\n",
+            "Direct\n",
+            "0.0 0.0 0.0\n",
+            "0.5 0.5 0.5\n",
+            "# MAGMOM = 4.0 -4.0\n",
+        );
+        let reader = VaspReader::new();
+        let ps = reader.parse_poscar_full(poscar).expect("parse failed");
+        let mm = ps.magmom.as_ref().expect("magmom must be Some");
+        assert_eq!(mm.len(), 2, "should have 2 magnetic moments");
+        assert!((mm[0] - 4.0).abs() < 1e-9, "mm[0] should be 4.0");
+        assert!((mm[1] - (-4.0)).abs() < 1e-9, "mm[1] should be -4.0");
+    }
+
+    #[test]
+    fn test_parse_outcar_forces_basic() {
+        // Simulate a minimal OUTCAR excerpt with force data.
+        let outcar = concat!(
+            " some header\n",
+            " TOTAL-FORCE (eV/Angst)\n",
+            " ---------------\n",
+            "  0.0  0.0  0.0  0.1  0.2  0.3\n",
+            "  0.5  0.5  0.5 -0.1 -0.2 -0.3\n",
+        );
+        let forces = parse_outcar_forces(outcar, 2).expect("parse_outcar_forces failed");
+        assert_eq!(forces.len(), 2, "must parse 2 force entries");
+        assert!((forces[0][0] - 0.1).abs() < 1e-10, "fx[0] mismatch");
+        assert!((forces[0][1] - 0.2).abs() < 1e-10, "fy[0] mismatch");
+        assert!((forces[0][2] - 0.3).abs() < 1e-10, "fz[0] mismatch");
+        assert!((forces[1][0] - (-0.1)).abs() < 1e-10, "fx[1] mismatch");
+        assert!((forces[1][1] - (-0.2)).abs() < 1e-10, "fy[1] mismatch");
+        assert!((forces[1][2] - (-0.3)).abs() < 1e-10, "fz[1] mismatch");
     }
 }

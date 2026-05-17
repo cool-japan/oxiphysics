@@ -6,10 +6,9 @@
 //! Provides types for exporting particle data, mesh geometry, state snapshots,
 //! trajectory buffers, and simulation configurations across the WASM boundary.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::collections::VecDeque;
+
+use wasm_bindgen::prelude::*;
 
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +17,8 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Enumeration of supported data-export formats.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[wasm_bindgen]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExportFormat {
     /// Comma-separated values.
     Csv,
@@ -50,6 +50,7 @@ struct ParticleRecord {
 // ---------------------------------------------------------------------------
 
 /// Collects particle data and exports it in various formats.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParticleExporter {
     /// The format that was chosen at construction time.
@@ -59,17 +60,39 @@ pub struct ParticleExporter {
 }
 
 impl ParticleExporter {
+    /// Append a particle with the given `pos`ition, `vel`ocity, and `mass`.
+    pub fn add_particle(&mut self, pos: [f64; 3], vel: [f64; 3], mass: f64) {
+        self.particles.push(ParticleRecord { pos, vel, mass });
+    }
+
+    /// Number of particles currently stored.
+    pub fn len(&self) -> usize {
+        self.particles.len()
+    }
+}
+
+#[wasm_bindgen]
+impl ParticleExporter {
     /// Create a new `ParticleExporter` targeting the given `format`.
-    pub fn new(format: ExportFormat) -> Self {
+    pub fn new(format: ExportFormat) -> ParticleExporter {
         ParticleExporter {
             format,
             particles: Vec::new(),
         }
     }
 
-    /// Append a particle with the given `pos`ition, `vel`ocity, and `mass`.
-    pub fn add_particle(&mut self, pos: [f64; 3], vel: [f64; 3], mass: f64) {
-        self.particles.push(ParticleRecord { pos, vel, mass });
+    /// Append a particle (JS-compatible; takes individual components).
+    pub fn add_particle_js(
+        &mut self,
+        px: f64,
+        py: f64,
+        pz: f64,
+        vx: f64,
+        vy: f64,
+        vz: f64,
+        mass: f64,
+    ) {
+        self.add_particle([px, py, pz], [vx, vy, vz], mass);
     }
 
     /// Export all particles as a CSV string.
@@ -91,8 +114,7 @@ impl ParticleExporter {
         serde_json::to_string(&self.particles).unwrap_or_else(|_| "[]".to_string())
     }
 
-    /// Export all particles in XYZ format (count line, comment line, then one
-    /// atom per line as `X px py pz`).
+    /// Export all particles in XYZ format.
     pub fn export_xyz(&self) -> String {
         let mut out = format!("{}\n", self.particles.len());
         out.push_str("OxiPhysics XYZ export\n");
@@ -102,9 +124,9 @@ impl ParticleExporter {
         out
     }
 
-    /// Number of particles currently stored.
-    pub fn len(&self) -> usize {
-        self.particles.len()
+    /// Number of particles as u32.
+    pub fn len_js(&self) -> u32 {
+        self.particles.len() as u32
     }
 
     /// Returns `true` if no particles have been added.
@@ -118,23 +140,18 @@ impl ParticleExporter {
 // ---------------------------------------------------------------------------
 
 /// Collects mesh vertices and triangular faces and exports them as OBJ or STL.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshExporter {
     /// Vertex positions.
+    #[wasm_bindgen(skip)]
     pub vertices: Vec<[f64; 3]>,
     /// Triangular face indices (zero-based).
+    #[wasm_bindgen(skip)]
     pub faces: Vec<[usize; 3]>,
 }
 
 impl MeshExporter {
-    /// Create a new empty `MeshExporter`.
-    pub fn new() -> Self {
-        MeshExporter {
-            vertices: Vec::new(),
-            faces: Vec::new(),
-        }
-    }
-
     /// Append a vertex at position `v`.
     pub fn add_vertex(&mut self, v: [f64; 3]) {
         self.vertices.push(v);
@@ -145,17 +162,44 @@ impl MeshExporter {
         self.faces.push(i);
     }
 
+    /// Number of vertices stored.
+    pub fn vertex_count(&self) -> usize {
+        self.vertices.len()
+    }
+
+    /// Number of faces stored.
+    pub fn face_count(&self) -> usize {
+        self.faces.len()
+    }
+}
+
+#[wasm_bindgen]
+impl MeshExporter {
+    /// Create a new empty `MeshExporter`.
+    pub fn new() -> MeshExporter {
+        MeshExporter {
+            vertices: Vec::new(),
+            faces: Vec::new(),
+        }
+    }
+
+    /// Append a vertex at (x, y, z) (JS-compatible).
+    pub fn add_vertex_js(&mut self, x: f64, y: f64, z: f64) {
+        self.add_vertex([x, y, z]);
+    }
+
+    /// Append a triangular face with zero-based indices (JS-compatible).
+    pub fn add_face_js(&mut self, a: u32, b: u32, c: u32) {
+        self.add_face([a as usize, b as usize, c as usize]);
+    }
+
     /// Export the mesh as a Wavefront OBJ string.
-    ///
-    /// Vertex indices in the OBJ file are one-based as per the format
-    /// specification.
     pub fn export_obj(&self) -> String {
         let mut out = String::from("# OxiPhysics OBJ export\n");
         for v in &self.vertices {
             out.push_str(&format!("v {} {} {}\n", v[0], v[1], v[2]));
         }
         for f in &self.faces {
-            // OBJ indices are 1-based
             out.push_str(&format!("f {} {} {}\n", f[0] + 1, f[1] + 1, f[2] + 1));
         }
         out
@@ -168,7 +212,6 @@ impl MeshExporter {
             let v0 = self.vertices[f[0]];
             let v1 = self.vertices[f[1]];
             let v2 = self.vertices[f[2]];
-            // Compute face normal via cross product
             let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
             let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
             let nx = e1[1] * e2[2] - e1[2] * e2[1];
@@ -191,14 +234,14 @@ impl MeshExporter {
         out
     }
 
-    /// Number of vertices stored.
-    pub fn vertex_count(&self) -> usize {
-        self.vertices.len()
+    /// Number of vertices as u32.
+    pub fn vertex_count_js(&self) -> u32 {
+        self.vertices.len() as u32
     }
 
-    /// Number of faces stored.
-    pub fn face_count(&self) -> usize {
-        self.faces.len()
+    /// Number of faces as u32.
+    pub fn face_count_js(&self) -> u32 {
+        self.faces.len() as u32
     }
 }
 
@@ -213,17 +256,20 @@ impl Default for MeshExporter {
 // ---------------------------------------------------------------------------
 
 /// A complete serialisable snapshot of simulation state at a single step.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateSnapshot {
-    /// Simulation step index.
-    pub step: u64,
+    /// Simulation step index — private; use get_step from JS.
+    step: u64,
     /// Simulation time (seconds).
     pub time: f64,
-    /// Number of rigid bodies in the snapshot.
-    pub n_bodies: usize,
+    /// Number of rigid bodies in the snapshot — private; use get_n_bodies from JS.
+    n_bodies: usize,
     /// Body positions `[x, y, z]` for each body.
+    #[wasm_bindgen(skip)]
     pub positions: Vec<[f64; 3]>,
     /// Body velocities `[vx, vy, vz]` for each body.
+    #[wasm_bindgen(skip)]
     pub velocities: Vec<[f64; 3]>,
 }
 
@@ -246,10 +292,79 @@ impl StateSnapshot {
     }
 
     /// Deserialise a `StateSnapshot` from a JSON string.
-    ///
-    /// Returns `None` if parsing fails.
     pub fn deserialize_json(s: &str) -> Option<Self> {
         serde_json::from_str(s).ok()
+    }
+}
+
+#[wasm_bindgen]
+impl StateSnapshot {
+    /// Create a new snapshot from flat position/velocity arrays (JS constructor).
+    ///
+    /// `step_f` is the step index as f64, `positions_flat` is [x0,y0,z0, ...],
+    /// `velocities_flat` is [vx0,vy0,vz0, ...].
+    pub fn create(
+        step_f: f64,
+        time: f64,
+        positions_flat: &[f64],
+        velocities_flat: &[f64],
+    ) -> StateSnapshot {
+        let n = positions_flat.len() / 3;
+        let positions: Vec<[f64; 3]> = (0..n)
+            .map(|i| {
+                [
+                    positions_flat[i * 3],
+                    positions_flat[i * 3 + 1],
+                    positions_flat[i * 3 + 2],
+                ]
+            })
+            .collect();
+        let velocities: Vec<[f64; 3]> = (0..n)
+            .map(|i| {
+                [
+                    velocities_flat[i * 3],
+                    velocities_flat[i * 3 + 1],
+                    velocities_flat[i * 3 + 2],
+                ]
+            })
+            .collect();
+        StateSnapshot::new(step_f as u64, time, positions, velocities)
+    }
+
+    /// Serialise to JSON string (JS-exposed).
+    pub fn serialize_json_js(&self) -> String {
+        self.serialize_json()
+    }
+
+    /// Deserialise from JSON string; returns None on failure.
+    pub fn deserialize_json_js(s: &str) -> Option<StateSnapshot> {
+        StateSnapshot::deserialize_json(s)
+    }
+
+    /// Step index as f64.
+    pub fn get_step(&self) -> f64 {
+        self.step as f64
+    }
+
+    /// Number of bodies as u32.
+    pub fn get_n_bodies(&self) -> u32 {
+        self.n_bodies as u32
+    }
+
+    /// Flat positions array [x0,y0,z0, ...].
+    pub fn get_positions_flat(&self) -> Vec<f64> {
+        self.positions
+            .iter()
+            .flat_map(|p| p.iter().copied())
+            .collect()
+    }
+
+    /// Flat velocities array [vx0,vy0,vz0, ...].
+    pub fn get_velocities_flat(&self) -> Vec<f64> {
+        self.velocities
+            .iter()
+            .flat_map(|v| v.iter().copied())
+            .collect()
     }
 }
 
@@ -258,11 +373,13 @@ impl StateSnapshot {
 // ---------------------------------------------------------------------------
 
 /// A bounded ring-buffer of `StateSnapshot` frames.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectoryBuffer {
-    /// Maximum number of frames to retain.
-    pub max_frames: usize,
+    /// Maximum number of frames to retain — private; use get_max_frames from JS.
+    max_frames: usize,
     /// Stored frames in insertion order.
+    #[wasm_bindgen(skip)]
     pub frames: VecDeque<StateSnapshot>,
 }
 
@@ -275,6 +392,24 @@ impl TrajectoryBuffer {
         }
     }
 
+    /// Return a reference to the frame at index `i`, or `None` if out of bounds.
+    pub fn get_frame(&self, i: usize) -> Option<&StateSnapshot> {
+        self.frames.get(i)
+    }
+
+    /// Number of frames currently stored.
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+}
+
+#[wasm_bindgen]
+impl TrajectoryBuffer {
+    /// Create a new `TrajectoryBuffer` (JS constructor).
+    pub fn create(max_frames: u32) -> TrajectoryBuffer {
+        TrajectoryBuffer::new(max_frames as usize)
+    }
+
     /// Push a new frame, evicting the oldest if the buffer is full.
     pub fn push_frame(&mut self, s: StateSnapshot) {
         if self.frames.len() >= self.max_frames {
@@ -283,10 +418,9 @@ impl TrajectoryBuffer {
         self.frames.push_back(s);
     }
 
-    /// Return a reference to the frame at index `i`, or `None` if out of
-    /// bounds.
-    pub fn get_frame(&self, i: usize) -> Option<&StateSnapshot> {
-        self.frames.get(i)
+    /// Return a clone of the frame at index `i` (JS-compatible).
+    pub fn get_frame_js(&self, i: u32) -> Option<StateSnapshot> {
+        self.frames.get(i as usize).cloned()
     }
 
     /// Export the full trajectory as a JSON string.
@@ -295,14 +429,19 @@ impl TrajectoryBuffer {
         serde_json::to_string(&frames).unwrap_or_else(|_| "[]".to_string())
     }
 
-    /// Number of frames currently stored.
-    pub fn len(&self) -> usize {
-        self.frames.len()
+    /// Number of frames as u32.
+    pub fn len_js(&self) -> u32 {
+        self.frames.len() as u32
     }
 
     /// Returns `true` if no frames have been stored.
     pub fn is_empty(&self) -> bool {
         self.frames.is_empty()
+    }
+
+    /// Maximum frame capacity as u32.
+    pub fn get_max_frames(&self) -> u32 {
+        self.max_frames as u32
     }
 }
 
@@ -310,17 +449,30 @@ impl TrajectoryBuffer {
 // ConfigSerializer
 // ---------------------------------------------------------------------------
 
-/// Serialises and deserialises arbitrary simulation configuration maps
-/// (key-value pairs of strings) to and from JSON.
+/// Serialises and deserialises arbitrary simulation configuration maps.
+#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigSerializer {
-    /// Internal key-value store for configuration entries.
-    pub entries: std::collections::HashMap<String, String>,
+    /// Internal key-value store — private; use set/get methods from JS.
+    entries: std::collections::HashMap<String, String>,
 }
 
 impl ConfigSerializer {
+    /// Retrieve a configuration value by key, or `None` if absent.
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.entries.get(key).map(String::as_str)
+    }
+
+    /// Number of configuration entries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+#[wasm_bindgen]
+impl ConfigSerializer {
     /// Create a new empty `ConfigSerializer`.
-    pub fn new() -> Self {
+    pub fn new() -> ConfigSerializer {
         ConfigSerializer {
             entries: std::collections::HashMap::new(),
         }
@@ -331,9 +483,9 @@ impl ConfigSerializer {
         self.entries.insert(key.to_string(), value.to_string());
     }
 
-    /// Retrieve a configuration value by key, or `None` if absent.
-    pub fn get(&self, key: &str) -> Option<&str> {
-        self.entries.get(key).map(String::as_str)
+    /// Retrieve a configuration value by key, or empty string if absent.
+    pub fn get_str(&self, key: &str) -> String {
+        self.entries.get(key).cloned().unwrap_or_default()
     }
 
     /// Serialise all configuration entries to a JSON string.
@@ -341,8 +493,7 @@ impl ConfigSerializer {
         serde_json::to_string(&self.entries).unwrap_or_else(|_| "{}".to_string())
     }
 
-    /// Deserialise configuration from a JSON string, replacing the current
-    /// entries.
+    /// Deserialise configuration from a JSON string, replacing the current entries.
     ///
     /// Returns `false` if parsing fails.
     pub fn deserialize_json(&mut self, s: &str) -> bool {
@@ -355,9 +506,9 @@ impl ConfigSerializer {
         }
     }
 
-    /// Number of configuration entries.
-    pub fn len(&self) -> usize {
-        self.entries.len()
+    /// Number of configuration entries as u32.
+    pub fn len_js(&self) -> u32 {
+        self.entries.len() as u32
     }
 
     /// Returns `true` if no entries are stored.
@@ -429,7 +580,7 @@ mod tests {
         pe.add_particle([1.0; 3], [1.0; 3], 2.0);
         let csv = pe.export_csv();
         let lines: Vec<&str> = csv.lines().collect();
-        assert_eq!(lines.len(), 3); // header + 2 data rows
+        assert_eq!(lines.len(), 3);
     }
 
     #[test]
@@ -598,7 +749,6 @@ mod tests {
             tb.push_frame(StateSnapshot::new(i, i as f64, vec![], vec![]));
         }
         assert_eq!(tb.len(), 3);
-        // Oldest remaining should be step 2
         assert_eq!(tb.get_frame(0).unwrap().step, 2);
     }
 
