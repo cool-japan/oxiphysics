@@ -13,7 +13,6 @@ keywords = ["physics", "mathematics", "numerics", "linear-algebra"]
 [dependencies]
 thiserror = { workspace = true }
 nalgebra = { workspace = true }
-serde = { workspace = true }
 rand = { workspace = true }
 scirs2-integrate = { workspace = true, optional = true }
 ndarray = { workspace = true, optional = true }

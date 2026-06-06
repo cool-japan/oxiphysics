@@ -1,4 +1,4 @@
-// Copyright (C) 2026 COOLJAPAN OU (Team Kitasan)
+// Copyright (C) 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! `#[wasm_bindgen]` wrapper for [`WasmNavMesh`] — exposes the A* navigation

@@ -1,4 +1,4 @@
-// Copyright (C) 2026 COOLJAPAN OU (Team Kitasan)
+// Copyright (C) 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 //
 // canvas-util.mjs — WebGL2 canvas setup and rendering helpers.

@@ -7,8 +7,8 @@
 
 OxiPhysics is a unified, pure-Rust physics engine targeting the same problem
 domains as **Bullet** (rigid body), **OpenFOAM** (CFD), **LAMMPS** (molecular
-dynamics), and **CalculiX** (FEM) — with no C or Fortran dependencies, no
-`unsafe` surprises, and strict Rustdoc enforcement.
+dynamics), and **CalculiX** (FEM) — with no C or Fortran dependencies,
+`unsafe` confined to the collision-dispatch and GPU-backend layers (each carrying a documented soundness contract), and strict Rustdoc enforcement.
 
 ---
 
@@ -129,6 +129,24 @@ let offset = Vec3::new(1.0, 2.0, 3.0);
 let world_pt = origin.transform_point(&offset);
 println!("world: {:?}", world_pt);
 ```
+
+---
+
+## Examples
+
+Runnable demos live in `crates/oxiphysics/examples/`:
+
+| Example | Domain | Run |
+|---|---|---|
+| `falling_boxes` | Rigid body | `cargo run -p oxiphysics --example falling_boxes` |
+| `dam_break` | SPH fluid | `cargo run -p oxiphysics --example dam_break` |
+| `cantilever` | FEM | `cargo run -p oxiphysics --example cantilever` |
+| `argon_md` | Molecular dynamics | `cargo run -p oxiphysics --example argon_md` |
+| `lbm_channel` | LBM CFD | `cargo run -p oxiphysics --example lbm_channel` |
+| `vehicle_dynamics` | Vehicle | `cargo run -p oxiphysics --example vehicle_dynamics` |
+| `cloth_simulation` | Soft-body cloth | `cargo run -p oxiphysics --example cloth_simulation` |
+| `coupled_fsi` | Fluid–structure interaction | `cargo run -p oxiphysics --example coupled_fsi` |
+| `benchmark_demo` | Benchmark | `cargo run -p oxiphysics --example benchmark_demo` |
 
 ---
 

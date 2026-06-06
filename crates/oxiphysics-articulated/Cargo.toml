@@ -5,9 +5,11 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+documentation.workspace = true
 keywords = ["articulated-body", "featherstone", "rigid-body", "dynamics", "robotics"]
 categories = ["science", "simulation"]
 description = "Featherstone articulated-body dynamics (RNEA + ABA) for OxiPhysics"
+readme = "README.md"
 
 [dependencies]
 

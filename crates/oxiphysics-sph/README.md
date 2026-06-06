@@ -44,5 +44,5 @@ use oxiphysics_sph::{adaptive_sph::*, free_surface::*, multiphase::*, turbulence
 
 ## License
 
-Apache-2.0 — Copyright COOLJAPAN OU (Team Kitasan)
+Apache-2.0 — Copyright COOLJAPAN OU (Team KitaSan)
 

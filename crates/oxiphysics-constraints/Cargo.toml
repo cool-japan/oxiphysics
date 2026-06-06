@@ -13,7 +13,6 @@ keywords = ["physics", "constraints", "solver", "robotics", "simulation"]
 [dependencies]
 rand = { workspace = true }
 thiserror = { workspace = true }
-rayon = { workspace = true }
 oxiphysics-core = { workspace = true }
 oxiphysics-collision = { workspace = true }
 oxiphysics-rigid = { workspace = true }

@@ -1,4 +1,4 @@
-// Copyright (C) 2026 COOLJAPAN OU (Team Kitasan)
+// Copyright (C) 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 //
 // NavMesh click-to-move demo — 10×10 grid navmesh with A* pathfinding.

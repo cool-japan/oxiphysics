@@ -60,5 +60,5 @@ println!("position after one step: {:?}", pos);
 
 ## License
 
-Apache-2.0 — Copyright 2026 COOLJAPAN OU (Team Kitasan)
+Apache-2.0 — Copyright 2026 COOLJAPAN OU (Team KitaSan)
 

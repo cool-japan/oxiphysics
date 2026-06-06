@@ -105,4 +105,4 @@ console.log(`Ball fell to y=${y.toFixed(3)}`);
 
 ## License
 
-Apache-2.0 — Copyright 2026 COOLJAPAN OU (Team Kitasan)
+Apache-2.0 — Copyright 2026 COOLJAPAN OU (Team KitaSan)

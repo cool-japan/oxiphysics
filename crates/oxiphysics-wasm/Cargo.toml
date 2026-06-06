@@ -19,7 +19,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
-web-sys = { workspace = true }
 console_error_panic_hook = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
 oxiphysics-lbm = { workspace = true }
@@ -29,3 +28,7 @@ getrandom = { workspace = true }
 
 [dev-dependencies]
 wasm-bindgen-test = { workspace = true }
+
+[package.metadata.docs.rs]
+default-target = "wasm32-unknown-unknown"
+rustdoc-args = ["--cfg", "docsrs"]

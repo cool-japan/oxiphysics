@@ -24,6 +24,10 @@ mod tests {
         let n = 64;
         let mut results = vec![0.0f64; n];
         let ptr = results.as_mut_ptr();
+        // SAFETY: `parallel_for` invokes the closure exactly once for each index
+        // `i` in `0..n`, so every write targets a distinct in-bounds slot of
+        // `results` (length `n`) — no aliasing and no out-of-bounds access. `ptr`
+        // stays valid because `results` outlives the `parallel_for` call.
         parallel_for(n, 8, |i| unsafe {
             *ptr.add(i) = (i as f64) * (i as f64);
         });

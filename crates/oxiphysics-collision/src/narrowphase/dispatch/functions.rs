@@ -57,6 +57,21 @@ pub(super) fn sphere_capsule_dispatch(
     pair: CollisionPair,
 ) -> NarrowPhaseResult {
     use oxiphysics_core::math::Vec3;
+    // SAFETY: this function is registered in the dispatch table under the
+    // (Sphere, Capsule) key, so the dispatcher only invokes it when `shape_a` is
+    // a concrete `Sphere` and `shape_b` a concrete `Capsule` — the caller pairs
+    // each shape with its matching `ShapeType`, and for this mixed pair the
+    // arguments arrive in the registered positional order (Sphere first, Capsule
+    // second). The reborrows keep the input lifetimes; both targets are plain
+    // structs with alignment no stricter than `dyn Shape`.
+    debug_assert!(
+        type_name(shape_a) == "Sphere",
+        "narrowphase dispatch: shape_a must be Sphere for sphere_capsule_dispatch (registration/order invariant)"
+    );
+    debug_assert!(
+        type_name(shape_b) == "Capsule",
+        "narrowphase dispatch: shape_b must be Capsule for sphere_capsule_dispatch (registration/order invariant)"
+    );
     let sphere = unsafe { &*(shape_a as *const dyn Shape as *const Sphere) };
     let capsule = unsafe { &*(shape_b as *const dyn Shape as *const Capsule) };
     let sphere_center = transform_a.position;
@@ -220,6 +235,10 @@ pub(super) fn as_sphere(shape: &dyn Shape) -> Option<&Sphere> {
     let radius = s.x;
     if radius > 0.0 {
         let ptr = shape as *const dyn Shape as *const Sphere;
+        // SAFETY: the sole caller, `try_specialized`, only reaches this branch
+        // after `type_name(shape)` reported "Sphere" (matched on the Debug
+        // representation), so `shape` is a concrete `Sphere`. The reborrow keeps
+        // `shape`'s lifetime and `Sphere` is no more aligned than `dyn Shape`.
         Some(unsafe { &*ptr })
     } else {
         None
@@ -227,10 +246,18 @@ pub(super) fn as_sphere(shape: &dyn Shape) -> Option<&Sphere> {
 }
 pub(super) fn as_box(shape: &dyn Shape) -> Option<&BoxShape> {
     let ptr = shape as *const dyn Shape as *const BoxShape;
+    // SAFETY: the sole caller, `try_specialized`, only invokes `as_box` after
+    // `type_name(shape)` reported "BoxShape" (matched on the Debug
+    // representation), so `shape` is a concrete `BoxShape`. The reborrow keeps
+    // `shape`'s lifetime and `BoxShape` is no more aligned than `dyn Shape`.
     Some(unsafe { &*ptr })
 }
 pub(super) fn as_capsule(shape: &dyn Shape) -> Option<&Capsule> {
     let ptr = shape as *const dyn Shape as *const Capsule;
+    // SAFETY: the sole caller, `try_specialized`, only invokes `as_capsule`
+    // after `type_name(shape)` reported "Capsule" (matched on the Debug
+    // representation), so `shape` is a concrete `Capsule`. The reborrow keeps
+    // `shape`'s lifetime and `Capsule` is no more aligned than `dyn Shape`.
     Some(unsafe { &*ptr })
 }
 /// Dispatch compound vs compound using O(n²) brute-force with optional AABB pruning.

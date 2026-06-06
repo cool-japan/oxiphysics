@@ -1,4 +1,4 @@
-// Copyright (C) 2026 COOLJAPAN OU (Team Kitasan)
+// Copyright (C) 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 //
 // SPH pool demo — fluid particles in a 2 m × 2 m × 1 m container.

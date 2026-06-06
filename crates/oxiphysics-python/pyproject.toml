@@ -9,7 +9,7 @@ description = "Python bindings for the OxiPhysics engine"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"
-authors = [{ name = "COOLJAPAN OU (Team Kitasan)" }]
+authors = [{ name = "COOLJAPAN OU (Team KitaSan)" }]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",

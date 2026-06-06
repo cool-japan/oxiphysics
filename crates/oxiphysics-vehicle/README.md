@@ -62,4 +62,4 @@ use oxiphysics_vehicle::{
 
 ## License
 
-Apache-2.0 — Copyright © COOLJAPAN OU (Team Kitasan)
+Apache-2.0 — Copyright © COOLJAPAN OU (Team KitaSan)

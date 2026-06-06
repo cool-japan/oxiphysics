@@ -39,4 +39,4 @@ use oxiphysics_materials::{
 
 ## License
 
-Apache-2.0 — Part of the [OxiPhysics](https://github.com/cool-japan/oxiphysics) project by COOLJAPAN OU (Team Kitasan)
+Apache-2.0 — Part of the [OxiPhysics](https://github.com/cool-japan/oxiphysics) project by COOLJAPAN OU (Team KitaSan)

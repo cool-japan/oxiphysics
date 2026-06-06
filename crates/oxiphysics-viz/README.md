@@ -72,4 +72,4 @@ use oxiphysics_viz::{
 
 ## License
 
-Apache-2.0 — Copyright © COOLJAPAN OU (Team Kitasan)
+Apache-2.0 — Copyright © COOLJAPAN OU (Team KitaSan)

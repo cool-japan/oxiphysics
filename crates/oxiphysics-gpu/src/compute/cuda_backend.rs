@@ -820,6 +820,13 @@ impl CudaBackend {
             for v in scalars_f64 {
                 builder.arg(v);
             }
+            // SAFETY: launching a CUDA kernel is unsafe because the driver trusts
+            // the supplied arguments. `func` was looked up by name from this
+            // context's loaded module, and every buffer argument (`buf0`/`buf1`)
+            // refers to a `real_buffers` slice that was validated above to be a
+            // live, in-range, non-aliasing device allocation; scalar args are
+            // passed by value. The caller is responsible for matching `name`'s
+            // kernel signature, which is the documented contract of this method.
             let _ = unsafe { builder.launch(cfg) };
             return;
         }
@@ -875,6 +882,8 @@ impl CudaBackend {
             let dev = result::device::get(ordinal as i32)
                 .map_err(|_| CudaInitError::DeviceOrdinalOutOfRange(ordinal))?;
             let name = result::device::get_name(dev).unwrap_or_else(|_| "unknown".to_owned());
+            // SAFETY: `dev` was just returned by `result::device::get(ordinal)`
+            // above, so it is a valid CUDA device handle as `total_mem` requires.
             let total_mem = unsafe { result::device::total_mem(dev) }.unwrap_or(0);
             Ok(CudaDeviceInfo {
                 ordinal,

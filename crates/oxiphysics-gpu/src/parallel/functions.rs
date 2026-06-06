@@ -272,6 +272,11 @@ pub fn parallel_exclusive_scan(data: &[f64]) -> Vec<f64> {
         let mut local_acc = offset;
         let result_ptr = result.as_ptr() as *mut f64;
         for (k, &v) in chunk.iter().enumerate() {
+            // SAFETY: `chunks` partitions `result`'s index range into disjoint,
+            // contiguous blocks (`chunks(chunk_size)`), and `base = ci * chunk_size`
+            // is exactly this chunk's start, so distinct rayon tasks write disjoint
+            // indices — no aliasing. `base + k < base + chunk.len() <= n`, so the
+            // write stays in bounds of `result`, which outlives the parallel region.
             unsafe {
                 *result_ptr.add(base + k) = local_acc;
             }
@@ -306,6 +311,11 @@ pub fn parallel_inclusive_scan(data: &[f64]) -> Vec<f64> {
         let result_ptr = result.as_ptr() as *mut f64;
         for (k, &v) in chunk.iter().enumerate() {
             local_acc += v;
+            // SAFETY: `chunks` partitions `result`'s index range into disjoint,
+            // contiguous blocks (`chunks(chunk_size)`), and `base = ci * chunk_size`
+            // is exactly this chunk's start, so distinct rayon tasks write disjoint
+            // indices — no aliasing. `base + k < base + chunk.len() <= n`, so the
+            // write stays in bounds of `result`, which outlives the parallel region.
             unsafe {
                 *result_ptr.add(base + k) = local_acc;
             }

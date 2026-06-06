@@ -54,5 +54,5 @@ use oxiphysics_softbody::{cloth::*, fracture_dynamics::*, inflatable::*, particl
 
 ## License
 
-Apache-2.0 — Copyright COOLJAPAN OU (Team Kitasan)
+Apache-2.0 — Copyright COOLJAPAN OU (Team KitaSan)
 

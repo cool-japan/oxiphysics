@@ -118,5 +118,5 @@ Source and issue tracker: [github.com/cool-japan/oxiphysics](https://github.com/
 
 ## License
 
-Apache-2.0 — Copyright 2026 COOLJAPAN OU (Team Kitasan)
+Apache-2.0 — Copyright 2026 COOLJAPAN OU (Team KitaSan)
 

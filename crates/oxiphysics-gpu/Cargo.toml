@@ -46,3 +46,6 @@ path = "tests/lbm_kernels.rs"
 name = "cuda_backend_tests"
 path = "tests/cuda_backend_tests.rs"
 
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+
