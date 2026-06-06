@@ -1,13 +1,13 @@
 # oxiphysics-gpu
 
-**Status: [Partial]** — v0.1.2 (2026-06-06)
+**Status: [Partial]** — v0.1.3 (2026-06-06)
 
 [![Tests](https://img.shields.io/badge/tests-2811-yellow)](https://github.com/cool-japan/oxiphysics)
 [![docs.rs](https://img.shields.io/docsrs/oxiphysics-gpu)](https://docs.rs/oxiphysics-gpu)
 
 GPU-accelerated compute abstractions for the [OxiPhysics](https://github.com/cool-japan/oxiphysics) engine.
 
-> **Note:** v0.1.2 ships a **CPU backend only**. No wgpu or CUDA dependencies are present in this release.
+> **Note:** v0.1.3 ships a **CPU backend only**. No wgpu or CUDA dependencies are present in this release.
 > GPU dispatch (wgpu/CUDA) is planned for v0.2.0.
 
 ## Features

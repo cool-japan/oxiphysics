@@ -1,6 +1,6 @@
 # oxiphysics-lbm TODO
 
-Last updated: 2026-06-01 / v0.1.2
+Last updated: 2026-06-06 / v0.1.3
 
 Lattice Boltzmann fluid-dynamics subcrate. All listed items are production code
 with unit tests in-tree. This document enumerates what actually ships; it is not

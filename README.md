@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/oxiphysics?label=oxiphysics&color=orange)](https://crates.io/crates/oxiphysics)
 [![docs.rs](https://img.shields.io/docsrs/oxiphysics)](https://docs.rs/oxiphysics)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.2-green.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.3-green.svg)](CHANGELOG.md)
 
 OxiPhysics is a unified, pure-Rust physics engine targeting the same problem
 domains as **Bullet** (rigid body), **OpenFOAM** (CFD), **LAMMPS** (molecular
@@ -12,7 +12,7 @@ dynamics), and **CalculiX** (FEM) — with no C or Fortran dependencies, no
 
 ---
 
-## Implementation Status — v0.1.2 (2026-06-06)
+## Implementation Status — v0.1.3 (2026-06-06)
 
 | Crate | Status | Tests | Domain summary |
 |---|---|---|---|
@@ -101,16 +101,16 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxiphysics = "0.1.2"
+oxiphysics = "0.1.3"
 ```
 
 Or use individual sub-crates for smaller build graphs, e.g.:
 
 ```toml
 [dependencies]
-oxiphysics-core = "0.1.2"
-oxiphysics-collision = "0.1.2"
-oxiphysics-rigid = "0.1.2"
+oxiphysics-core = "0.1.3"
+oxiphysics-collision = "0.1.3"
+oxiphysics-rigid = "0.1.3"
 ```
 
 ---

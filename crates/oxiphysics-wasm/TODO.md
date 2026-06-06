@@ -1,6 +1,6 @@
 # oxiphysics-wasm TODO
 
-Updated: 2026-06-06 | Version: 0.1.2
+Updated: 2026-06-06 | Version: 0.1.3
 
 ---
 

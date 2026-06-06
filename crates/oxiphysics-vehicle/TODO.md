@@ -1,6 +1,6 @@
 # oxiphysics-vehicle TODO
 
-Last updated: 2026-06-06 | Version: 0.1.2
+Last updated: 2026-06-06 | Version: 0.1.3
 
 ## Phase 1: Foundation
 - [x] Define core types and traits

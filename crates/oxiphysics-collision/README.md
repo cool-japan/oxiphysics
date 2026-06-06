@@ -4,7 +4,7 @@
 
 [![Tests](https://img.shields.io/badge/tests-2443-brightgreen)](https://github.com/cool-japan/oxiphysics)
 [![docs.rs](https://img.shields.io/docsrs/oxiphysics-collision)](https://docs.rs/oxiphysics_collision)
-[![version](https://img.shields.io/badge/version-0.1.2-blue)](https://crates.io/crates/oxiphysics-collision)
+[![version](https://img.shields.io/badge/version-0.1.3-blue)](https://crates.io/crates/oxiphysics-collision)
 
 Part of the [OxiPhysics](https://github.com/cool-japan/oxiphysics) project.
 

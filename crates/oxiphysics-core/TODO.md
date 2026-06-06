@@ -1,6 +1,6 @@
 # oxiphysics-core TODO
 
-**Version:** 0.1.2 | **Updated:** 2026-06-06 | **Status:** ✅ COMPLETE
+**Version:** 0.1.3 | **Updated:** 2026-06-06 | **Status:** ✅ COMPLETE
 
 ## Milestone 1: Foundation — ✅ COMPLETE
 - [x] Define core types and traits (`Vec3`, `Quat`, `Mat3`, `Transform`, `AABB`, `types`)

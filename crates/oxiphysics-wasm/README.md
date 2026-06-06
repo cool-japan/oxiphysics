@@ -1,6 +1,6 @@
 # oxiphysics-wasm
 
-## Status: Stable (v0.1.2)
+## Status: Stable (v0.1.3)
 
 Full wasm-bindgen 0.2 bindings: 929 `#[wasm_bindgen]` annotations across
 27 bridge files exposing the entire physics surface to JavaScript.
@@ -9,7 +9,7 @@ then run `wasm-bindgen` / `wasm-pack` over the resulting artifact for
 JS glue generation.
 
 WebAssembly frontend layer for the [OxiPhysics](https://github.com/cool-japan/oxiphysics) engine.  
-Version: **0.1.2** | Updated: **2026-06-06**
+Version: **0.1.3** | Updated: **2026-06-06**
 
 ---
 

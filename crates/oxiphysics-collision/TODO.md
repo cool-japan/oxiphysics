@@ -1,6 +1,6 @@
 # oxiphysics-collision TODO
 
-**Version:** 0.1.2 | **Updated:** 2026-06-06 | **Status:** ✅ COMPLETE
+**Version:** 0.1.3 | **Updated:** 2026-06-06 | **Status:** ✅ COMPLETE
 
 ## Milestone 1: Types & Foundation — ✅ COMPLETE
 - [x] Core collision types (`types`)

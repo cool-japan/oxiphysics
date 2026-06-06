@@ -1,6 +1,6 @@
 # oxiphysics-md TODO
 
-Last updated: 2026-06-06 / v0.1.2
+Last updated: 2026-06-06 / v0.1.3
 
 Molecular dynamics subcrate. All listed items are production code, tested. This document enumerates what exists; root `TODO.md` Phase 21.5 / 21.6 cover v0.2.0 validation targets.
 

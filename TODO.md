@@ -315,7 +315,7 @@ These items are **not** in scope for the current `/ultra` run. Surface for futur
 
 ---
 
-Last Updated: 2026-06-06 — version 0.1.2
+Last Updated: 2026-06-06 — version 0.1.3
 
 ## #[allow] Purge Campaign — Subsequent Passes
 

@@ -1,6 +1,6 @@
 # oxiphysics-constraints
 
-**Status:** Alpha | **Version:** 0.1.2 | **Tests:** 2,188
+**Status:** Alpha | **Version:** 0.1.3 | **Tests:** 2,188
 
 Comprehensive constraint solvers and joint systems for the [OxiPhysics](https://github.com/cool-japan/oxiphysics) engine.
 
