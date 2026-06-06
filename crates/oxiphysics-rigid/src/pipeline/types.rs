@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::ptr_arg)]
-#[allow(unused_imports)]
 use super::functions::*;
 use std::time::Instant;
 
@@ -39,7 +37,6 @@ impl BroadphaseDetector {
 /// between the previous and current physics state using the sub-step
 /// remainder `alpha ∈ [0, 1]`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SubStepInterpolator {
     /// Previous-frame body states.
     pub prev_states: Vec<BodySnapshot>,
@@ -127,7 +124,7 @@ impl ProfiledPipeline {
         }
     }
     /// Step the simulation, measuring per-phase time.
-    pub fn step(&mut self, bodies: &mut Vec<BodySnapshot>) -> StepReport {
+    pub fn step(&mut self, bodies: &mut [BodySnapshot]) -> StepReport {
         let step_start = Instant::now();
         let dt = self.config.dt / self.config.sub_steps as f64;
         self.sync_timers(bodies.len());
@@ -231,7 +228,6 @@ pub struct ConstantForceHook {
 /// non-penetration via normal impulse and Coulomb friction via tangent
 /// impulses.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct VelocityContactConstraint {
     /// Index of body A in the snapshot array.
     pub body_a: usize,
@@ -254,7 +250,6 @@ pub struct VelocityContactConstraint {
 }
 impl VelocityContactConstraint {
     /// Create a new velocity contact constraint.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         body_a: usize,
         body_b: usize,
@@ -345,7 +340,7 @@ impl PhysicsPipeline {
     ///
     /// # Arguments
     /// * `bodies` — slice of body snapshots (mutated in-place).
-    pub fn step(&mut self, bodies: &mut Vec<BodySnapshot>) -> StepReport {
+    pub fn step(&mut self, bodies: &mut [BodySnapshot]) -> StepReport {
         let start = Instant::now();
         let dt = self.config.dt / self.config.sub_steps as f64;
         self.sync_timers(bodies.len());
@@ -375,7 +370,7 @@ impl PhysicsPipeline {
     }
     /// Minimal CCD: find the earliest contact (by penetration depth) and apply
     /// a separating impulse before the solver runs.
-    fn handle_ccd(&self, bodies: &mut Vec<BodySnapshot>, contacts: &[Contact], _dt: f64) {
+    fn handle_ccd(&self, bodies: &mut [BodySnapshot], contacts: &[Contact], _dt: f64) {
         let deepest = contacts.iter().max_by(|a, b| {
             a.depth
                 .partial_cmp(&b.depth)
@@ -449,7 +444,6 @@ impl PipelineStep {
 }
 /// A contact manifold manages a set of [`VelocityContactConstraint`]s.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct ContactManifold {
     /// All contact constraints in this manifold.
     pub contacts: Vec<VelocityContactConstraint>,
@@ -504,7 +498,6 @@ pub struct IslandData {
 /// The cache is rebuilt each frame by matching current contacts against the
 /// previous frame's contact set.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct WarmStartCache {
     /// All cached entries from the previous frame.
     pub entries: Vec<WarmStartEntry>,
@@ -614,7 +607,7 @@ impl DeterministicStepper {
     pub fn advance(
         &mut self,
         render_dt: f64,
-        bodies: &mut Vec<BodySnapshot>,
+        bodies: &mut [BodySnapshot],
         pipeline: &mut PhysicsPipeline,
     ) -> (usize, f64) {
         self.accumulator += render_dt;
@@ -676,7 +669,6 @@ impl EnergyMonitorHook {
 /// initial guess, which reduces the number of solver iterations needed for
 /// convergence in stacked/persistent contacts.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WarmStartEntry {
     /// First body ID.
     pub body_a: u64,
@@ -991,7 +983,7 @@ impl EventAwarePipeline {
         }
     }
     /// Run one simulation step and collect events into `queue`.
-    pub fn step(&mut self, bodies: &mut Vec<BodySnapshot>, queue: &mut EventQueue) -> StepReport {
+    pub fn step(&mut self, bodies: &mut [BodySnapshot], queue: &mut EventQueue) -> StepReport {
         let start = Instant::now();
         let dt = self.config.dt / self.config.sub_steps as f64;
         self.sync_timers(bodies.len());

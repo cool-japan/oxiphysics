@@ -7,8 +7,6 @@
 //! avalanche detection, angle-of-repose pile geometry, and granular
 //! temperature / packing-fraction utilities.
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // Small math helpers
 // ---------------------------------------------------------------------------
@@ -31,11 +29,6 @@ fn scale3(v: [f64; 3], s: f64) -> [f64; 3] {
 #[inline]
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-#[inline]
-fn len3(v: [f64; 3]) -> f64 {
-    dot3(v, v).sqrt()
 }
 
 // ---------------------------------------------------------------------------
@@ -371,11 +364,9 @@ pub fn granular_temperature(particles: &[SandParticle]) -> f64 {
 /// completeness (it cancels out for uniform spheres).
 pub fn packing_fraction_random(_d_particle: f64) -> f64 {
     // Empirical random close-packing fraction for monodisperse spheres.
-    // Note: 0.6366 is coincidentally close to 2/π but represents a physical constant.
-    #[allow(clippy::approx_constant)]
-    {
-        0.6366
-    }
+    // The measured φ_RCP is conventionally reported as 0.6366; this is numerically
+    // equivalent to 2/π and we use the constant to make the intent explicit.
+    std::f64::consts::FRAC_2_PI
 }
 
 // ---------------------------------------------------------------------------

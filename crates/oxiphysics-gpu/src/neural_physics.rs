@@ -131,7 +131,6 @@ pub fn mse_loss(predicted: &[f32], target: &[f32]) -> f32 {
 /// For each atom, concatenates its position `[x, y, z]` with its type index,
 /// runs a forward pass, and interprets the first three output components as the
 /// predicted force `[fx, fy, fz]`.
-#[allow(clippy::too_many_arguments)]
 pub fn neural_force_prediction(
     net: &NeuralNet,
     positions: &[[f32; 3]],

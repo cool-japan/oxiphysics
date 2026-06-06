@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,9 +15,6 @@
 //! - [`BoundaryConditions`] – clamped, pinned, free ends, follower forces
 //! - [`StaticSolver`] – Newton-Raphson / shooting method for static equilibria
 //! - [`RodContact`] – rod-rod contact detection and friction/adhesion
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -74,20 +70,6 @@ fn vec3_normalize(a: Vec3) -> Vec3 {
     } else {
         vec3_scale(a, 1.0 / n)
     }
-}
-
-#[inline]
-fn mat3_mul_vec(m: Mat3, v: Vec3) -> Vec3 {
-    [
-        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
-        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
-        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
-    ]
-}
-
-#[inline]
-fn mat3_identity() -> Mat3 {
-    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 }
 
 /// Rotate vector `v` by angle `theta` around unit axis `k` (Rodrigues).
@@ -648,8 +630,7 @@ impl CosseratDynamics {
     pub fn step_euler(rod: &mut CosseratRod, dt: f64) {
         let accels = Self::accelerations(rod);
         let n = rod.n_nodes();
-        for i in 0..n {
-            let (acc, alpha) = accels[i];
+        for (i, &(acc, alpha)) in accels.iter().enumerate().take(n) {
             // Update velocities
             rod.nodes[i].velocity = vec3_add(rod.nodes[i].velocity, vec3_scale(acc, dt));
             rod.nodes[i].angular_velocity =

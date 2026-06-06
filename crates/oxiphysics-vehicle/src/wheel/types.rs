@@ -1,5 +1,3 @@
-#[allow(unused_imports)]
-use super::functions::*;
 // Auto-generated module
 //
 // 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
@@ -12,7 +10,6 @@ use oxiphysics_core::math::{Real, Vec3};
 /// by the cavity geometry.  This is a major source of road noise ("cavity boom").
 ///
 /// f_cavity ≈ c_sound / (π * D_rim)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TireAcousticResonance {
     /// Speed of sound in air (m/s). Default ≈ 343 m/s.
@@ -24,7 +21,6 @@ pub struct TireAcousticResonance {
     /// Excitation amplitude at current resonance.
     pub current_amplitude: f64,
 }
-#[allow(dead_code)]
 impl TireAcousticResonance {
     /// Create a cavity resonance model for a given rim.
     pub fn new(rim_diameter: f64, quality_factor: f64) -> Self {
@@ -67,7 +63,6 @@ impl TireAcousticResonance {
 }
 /// Simplified rim-bead interaction: checks if tire is seated correctly
 /// and estimates bead unseating risk.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RimBeadModel {
     /// Bead seating force required to keep tire on rim (N).
@@ -77,7 +72,6 @@ pub struct RimBeadModel {
     /// Minimum inflation pressure to maintain bead seating (Pa).
     pub min_inflation_pressure: f64,
 }
-#[allow(dead_code)]
 impl RimBeadModel {
     /// Create a new rim-bead model.
     pub fn new(bead_seating_force: f64, rim_diameter: f64, min_inflation_pressure: f64) -> Self {
@@ -98,7 +92,6 @@ impl RimBeadModel {
     }
 }
 /// Simplified brake disc temperature model.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BrakeDiscTemperature {
     /// Current disc temperature (C).
@@ -112,7 +105,6 @@ pub struct BrakeDiscTemperature {
     /// Ambient temperature (C).
     pub ambient: f64,
 }
-#[allow(dead_code)]
 impl BrakeDiscTemperature {
     /// Create a new brake disc temperature model.
     pub fn new(mass: f64, specific_heat: f64, cooling_coeff: f64, ambient: f64) -> Self {
@@ -157,7 +149,6 @@ impl BrakeDiscTemperature {
 /// maximum lateral force. The grip coefficient falls as load increases.
 ///
 /// mu_peak(Fz) = mu0 - k_deg * (Fz - Fz_nom) / Fz_nom
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LoadSensitivity {
     /// Peak friction at nominal load.
@@ -167,7 +158,6 @@ pub struct LoadSensitivity {
     /// Nominal vertical load (N).
     pub fz_nominal: f64,
 }
-#[allow(dead_code)]
 impl LoadSensitivity {
     /// Create a load sensitivity model.
     pub fn new(mu0: f64, k_deg: f64, fz_nominal: f64) -> Self {
@@ -204,7 +194,6 @@ impl LoadSensitivity {
     }
 }
 /// Wheel alignment parameters (camber, caster, toe).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WheelAlignment {
     /// Camber angle (radians). Negative = top of wheel tilted inward.
@@ -214,7 +203,6 @@ pub struct WheelAlignment {
     /// Toe angle (radians). Positive = toe-in (front of wheel points inward).
     pub toe: f64,
 }
-#[allow(dead_code)]
 impl WheelAlignment {
     /// Create a new alignment spec.
     pub fn new(camber: f64, caster: f64, toe: f64) -> Self {
@@ -259,14 +247,12 @@ impl WheelAlignment {
     }
 }
 /// Records a rolling window of wheel vertical loads for analysis.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WheelLoadHistory {
     pub(super) loads: Vec<f64>,
     pub(super) times: Vec<f64>,
     pub(super) max_samples: usize,
 }
-#[allow(dead_code)]
 impl WheelLoadHistory {
     /// Create a new load history with the given window size.
     pub fn new(max_samples: usize) -> Self {
@@ -323,7 +309,6 @@ impl WheelLoadHistory {
     }
 }
 /// Simple raycast wheel that tests against an infinite flat plane (y = 0).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RaycastWheel {
     /// World-space origin of the ray (suspension top).
@@ -335,7 +320,6 @@ pub struct RaycastWheel {
     /// Wheel radius (metres).
     pub radius: f64,
 }
-#[allow(dead_code)]
 impl RaycastWheel {
     /// Create a new raycast wheel.
     pub fn new(position: [f64; 3], direction: [f64; 3], max_length: f64, radius: f64) -> Self {
@@ -379,7 +363,6 @@ impl RaycastWheel {
 /// lateral force acts, creating a self-aligning torque.
 ///
 /// As slip angle increases, pneumatic trail decreases (tire saturates).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PneumaticTrail {
     /// Maximum pneumatic trail at small slip angles (m).
@@ -387,7 +370,6 @@ pub struct PneumaticTrail {
     /// Characteristic slip angle at which trail halves (rad).
     pub alpha_half: f64,
 }
-#[allow(dead_code)]
 impl PneumaticTrail {
     /// Create a pneumatic trail model.
     pub fn new(t_max: f64, alpha_half: f64) -> Self {
@@ -409,7 +391,6 @@ impl PneumaticTrail {
 ///
 /// The road PSD is modeled as: G_d(n) = G_d(n_0) * (n / n_0)^(-w)
 /// where n is spatial frequency (cycles/m) and w is the waviness exponent.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RoadTexturePSD {
     /// Reference PSD at n_0 = 0.1 cycles/m (m³/cycle).
@@ -419,7 +400,6 @@ pub struct RoadTexturePSD {
     /// Reference spatial frequency (cycles/m).
     pub n_ref: f64,
 }
-#[allow(dead_code)]
 impl RoadTexturePSD {
     /// ISO 8608 Class A road (very good).
     pub fn class_a() -> Self {
@@ -557,7 +537,6 @@ impl WheelState {
 ///
 /// Models the resistive force at the contact patch due to tire deformation.
 /// The effective coefficient is speed-dependent per ISO 8767.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RollingResistance {
     /// Base rolling resistance coefficient (dimensionless).
@@ -565,7 +544,6 @@ pub struct RollingResistance {
     /// Speed-dependent coefficient (1/(m/s)²).
     pub c_r1: f64,
 }
-#[allow(dead_code)]
 impl RollingResistance {
     /// Create a rolling resistance model.
     ///
@@ -610,7 +588,6 @@ impl RollingResistance {
     }
 }
 /// Combined tire and wheel assembly.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TireWheelAssembly {
     /// Wheel configuration.
@@ -622,7 +599,6 @@ pub struct TireWheelAssembly {
     /// Brake disc temperature.
     pub brake_temp: BrakeDiscTemperature,
 }
-#[allow(dead_code)]
 impl TireWheelAssembly {
     /// Create a new assembly with default components.
     pub fn new(wheel: Wheel, compound: TireCompound) -> Self {
@@ -655,7 +631,6 @@ impl TireWheelAssembly {
 /// and the precession axis.
 ///
 /// M = I × ω × Ω_prec
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GyroscopicPrecession {
     /// Spin moment of inertia about the axle (kg·m²).
@@ -663,7 +638,6 @@ pub struct GyroscopicPrecession {
     /// Current spin rate (rad/s).
     pub spin_rate: f64,
 }
-#[allow(dead_code)]
 impl GyroscopicPrecession {
     /// Create a new gyroscopic precession model.
     pub fn new(spin_inertia: f64) -> Self {
@@ -728,7 +702,6 @@ pub struct Wheel {
     pub axle_direction: Vec3,
 }
 /// Tire compound types.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TireCompound {
     /// Soft compound — high grip, fast wear.
@@ -741,7 +714,6 @@ pub enum TireCompound {
 /// 4-wheel layout configuration.
 ///
 /// Corner indices: 0 = front-left, 1 = front-right, 2 = rear-left, 3 = rear-right.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WheelSetConfig {
     /// World-space position of each corner's wheel centre at rest.
@@ -751,7 +723,6 @@ pub struct WheelSetConfig {
     /// Wheelbase (front–rear axle distance, m).
     pub wheelbase: f64,
 }
-#[allow(dead_code)]
 impl WheelSetConfig {
     /// Build a symmetric 4-wheel layout from wheelbase and track width.
     ///
@@ -780,7 +751,6 @@ impl WheelSetConfig {
 /// Tire contact patch geometry (elliptical approximation).
 ///
 /// Based on Hertz contact theory for a toroidal tire on a flat surface.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ContactPatch {
     /// Half-length of the contact patch in the rolling direction (m).
@@ -790,7 +760,6 @@ pub struct ContactPatch {
     /// Peak contact pressure (Pa).
     pub peak_pressure: f64,
 }
-#[allow(dead_code)]
 impl ContactPatch {
     /// Estimate the contact patch dimensions from tire and load parameters.
     ///
@@ -831,7 +800,6 @@ impl ContactPatch {
     }
 }
 /// Result of a wheel raycast contact query.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WheelContact {
     /// Whether the ray hit a surface.
@@ -846,7 +814,6 @@ pub struct WheelContact {
     pub body_idx: Option<usize>,
 }
 /// Advanced wheel spin dynamics with inertia and friction torque.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WheelSpinModel {
     /// Moment of inertia (kg*m^2).
@@ -856,7 +823,6 @@ pub struct WheelSpinModel {
     /// Wheel radius (m).
     pub radius: f64,
 }
-#[allow(dead_code)]
 impl WheelSpinModel {
     /// Create a new wheel spin model.
     pub fn new(mass: f64, radius: f64) -> Self {
@@ -900,7 +866,6 @@ impl WheelSpinModel {
 /// - Torsional (twist)
 ///
 /// These are modeled as independent second-order systems.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WheelWobbleModes {
     /// Lateral shimmy natural frequency (Hz).
@@ -922,7 +887,6 @@ pub struct WheelWobbleModes {
     /// Current torsional amplitude (rad).
     pub torsional_amplitude: f64,
 }
-#[allow(dead_code)]
 impl WheelWobbleModes {
     /// Typical passenger car wheel wobble modes.
     pub fn passenger_car() -> Self {
@@ -1074,7 +1038,6 @@ impl WheelConfig {
     }
 }
 /// Tire wear model: tracks cumulative wear and degrades grip.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TireWear {
     /// Tire compound.
@@ -1084,7 +1047,6 @@ pub struct TireWear {
     /// Current normalised wear (0.0 = new, 1.0 = fully worn).
     pub current_wear: f64,
 }
-#[allow(dead_code)]
 impl TireWear {
     /// Create a new tire wear tracker.
     pub fn new(compound: TireCompound, wear_rate_coeff: f64) -> Self {
@@ -1112,7 +1074,6 @@ impl TireWear {
     }
 }
 /// Linear spring-damper for wheel suspension.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WheelDamper {
     /// Spring stiffness (N/m).
@@ -1122,7 +1083,6 @@ pub struct WheelDamper {
     /// Rest (unloaded) length (m).
     pub rest_length: f64,
 }
-#[allow(dead_code)]
 impl WheelDamper {
     /// Create a new wheel damper.
     pub fn new(stiffness: f64, damping: f64, rest_length: f64) -> Self {
@@ -1147,7 +1107,6 @@ impl WheelDamper {
 /// Drumming noise is caused by tread block impact on the road surface.  The
 /// dominant frequencies are related to the tire rotation speed and the number
 /// of tread blocks (pitch sequence).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DrummingNoiseModel {
     /// Number of tread pitches around the circumference.
@@ -1159,7 +1118,6 @@ pub struct DrummingNoiseModel {
     /// Acoustic radiation efficiency.
     pub radiation_efficiency: f64,
 }
-#[allow(dead_code)]
 impl DrummingNoiseModel {
     /// Create a new drumming noise model.
     pub fn new(tread_pitches: usize, outer_radius: f64, gain: f64) -> Self {
@@ -1205,7 +1163,6 @@ impl DrummingNoiseModel {
 ///
 /// Inflation pressure affects rolling resistance, cornering stiffness,
 /// contact patch size, and carcass deflection.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct InflationPressureEffects {
     /// Nominal inflation pressure (Pa). Typically 2.0–2.5 bar.
@@ -1217,7 +1174,6 @@ pub struct InflationPressureEffects {
     /// Contact patch area at nominal pressure (m²).
     pub nominal_contact_area: f64,
 }
-#[allow(dead_code)]
 impl InflationPressureEffects {
     /// Create a model for a typical passenger car tire.
     pub fn passenger_car() -> Self {
@@ -1268,7 +1224,6 @@ impl InflationPressureEffects {
 ///
 /// The carcass behaves like a spring in both radial (vertical) and lateral
 /// directions; these stiffnesses couple into the effective contact mechanics.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CarcassStiffness {
     /// Radial stiffness (N/m) — resistance to vertical deflection.
@@ -1280,7 +1235,6 @@ pub struct CarcassStiffness {
     /// Inflation pressure (Pa).
     pub inflation_pressure: f64,
 }
-#[allow(dead_code)]
 impl CarcassStiffness {
     /// Typical stiffness for a 225/45R17 road tire at 2.2 bar.
     pub fn passenger_225_45_r17() -> Self {

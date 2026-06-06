@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,8 +5,6 @@
 //!
 //! Provides SDF primitives, smooth blending operations, voxel SDF grids,
 //! marching cubes isosurface extraction, dual contouring, and ray marching.
-
-#![allow(dead_code)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper functions
@@ -894,12 +891,9 @@ impl MarchingCubes {
                     }
 
                     // Compute case index
-                    let mut cube_idx = 0u8;
-                    for ci in 0..8 {
-                        if corner_vals[ci] < isovalue {
-                            cube_idx |= 1 << ci;
-                        }
-                    }
+                    let cube_idx: u8 = corner_vals.iter().enumerate().fold(0u8, |acc, (ci, &v)| {
+                        if v < isovalue { acc | (1 << ci) } else { acc }
+                    });
                     if MC_EDGE_TABLE[cube_idx as usize] == 0 {
                         continue;
                     }
@@ -1117,12 +1111,12 @@ impl MarchingTetrahedra {
     }
 
     fn process_tet(pos: &[[f64; 3]; 4], vals: &[f64; 4], iso: f64, mesh: &mut IsoMesh) {
-        let mut idx = 0u8;
-        for i in 0..4 {
-            if vals[i] < iso {
-                idx |= 1 << i;
-            }
-        }
+        let idx: u8 = vals.iter().enumerate().fold(
+            0u8,
+            |acc, (i, &v)| {
+                if v < iso { acc | (1 << i) } else { acc }
+            },
+        );
         // Tetrahedron case table: 16 cases, emit 0, 1, or 2 triangles
         let edges: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
         let tri_cases: [[i8; 7]; 16] = [

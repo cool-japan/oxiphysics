@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 /// Zstandard frame magic bytes used to detect compressed checkpoint files.
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{
     FORMAT_VERSION, MAGIC, TAG_FOOTER, TAG_INTEGERS, TAG_POSITIONS, TAG_SCALARS, TAG_VELOCITIES,
@@ -104,7 +103,6 @@ impl Checkpoint {
     }
 }
 /// Inspect checkpoint files in a directory without loading full particle data.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct CheckpointInspector {
     /// Directory to scan.
@@ -245,7 +243,6 @@ impl RestartFile {
     }
 }
 /// Supported checkpoint serialisation formats.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckpointFormat {
     /// Raw binary (little-endian f64 arrays).
@@ -273,7 +270,6 @@ impl CheckpointFormat {
     }
 }
 /// Header record written at the top of every checkpoint file.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckpointHeader {
     /// File format version `[major, minor, patch]`.
@@ -386,7 +382,6 @@ impl CheckpointFileWriter {
     }
 }
 /// Full simulation snapshot: positions, velocities, forces, and metadata.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SimulationState {
     /// Particle positions `[x, y, z]`.
@@ -472,7 +467,6 @@ impl SimulationState {
     }
 }
 /// Strategy for selecting which checkpoint to restart from.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum RestartStrategy {
     /// Restart from the most recent checkpoint.
@@ -618,7 +612,6 @@ impl CheckpointWriter {
     }
 }
 /// Delta checkpoint that records only particles that changed since a base state.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DeltaCheckpoint {
     /// Step number of the base state.
@@ -777,7 +770,6 @@ impl CheckpointMetadata {
 ///
 /// Each domain produces a `SimulationState` covering a contiguous range of
 /// particle indices.  `CheckpointMerger` concatenates the ranges in order.
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct CheckpointMerger {
     /// Partial states collected so far, each tagged with a domain index.

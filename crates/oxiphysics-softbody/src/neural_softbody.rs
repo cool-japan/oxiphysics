@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -18,18 +17,9 @@
 //! - **Latent space deformation**: encoder/decoder over vertex positions
 //! - **Real-time neural softbody**: low-latency inference loop
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Internal math helpers (no nalgebra)
 // ---------------------------------------------------------------------------
-
-/// Dot product of two equal-length slices.
-#[inline]
-fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
-}
 
 /// In-place vector addition: `a += b`.
 #[inline]
@@ -63,13 +53,6 @@ fn relu_grad(x: f64) -> f64 {
 #[inline]
 fn tanh_act(x: f64) -> f64 {
     x.tanh()
-}
-
-/// Derivative of tanh.
-#[inline]
-fn tanh_grad(x: f64) -> f64 {
-    let t = x.tanh();
-    1.0 - t * t
 }
 
 /// Dense forward pass: `y = W x + b` (row-major weights, size `n_out × n_in`).
@@ -663,7 +646,7 @@ impl InferenceTimeCorrector {
     /// function `kv(u) = K * u` and external force `f`.
     ///
     /// Returns the number of iterations performed.
-    pub fn correct(&self, u: &mut Vec<f64>, f: &[f64], kv: &dyn Fn(&[f64]) -> Vec<f64>) -> usize {
+    pub fn correct(&self, u: &mut [f64], f: &[f64], kv: &dyn Fn(&[f64]) -> Vec<f64>) -> usize {
         let n = u.len();
         for iter in 0..self.max_iters {
             let ku = kv(u);
@@ -977,8 +960,8 @@ impl RealTimeNeuralSoftBody {
                 continue;
             }
             let inv_m = 1.0 / v.mass;
-            for k in 0..3 {
-                let acc = forces[i][k] * inv_m - self.damping * v.velocity[k];
+            for (k, &fk) in forces[i].iter().enumerate() {
+                let acc = fk * inv_m - self.damping * v.velocity[k];
                 v.velocity[k] += dt * acc;
                 v.position[k] += dt * v.velocity[k];
             }

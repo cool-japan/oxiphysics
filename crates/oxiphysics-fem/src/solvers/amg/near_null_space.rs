@@ -3,8 +3,6 @@
 
 //! Near-null-space vectors (rigid body modes) for smoothed-aggregation AMG.
 
-#![allow(dead_code)]
-
 /// Compute rigid body modes for a 3D elasticity aggregate.
 ///
 /// For scalar problems (`n_dof_per_node = 1`), returns a single vector of ones.

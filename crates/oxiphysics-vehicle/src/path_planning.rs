@@ -6,8 +6,6 @@
 //! Implements A\*, RRT, and potential field planners on a discrete `GridMap`,
 //! together with Dubins-path generation and path smoothing utilities.
 
-#![allow(dead_code)]
-
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 

@@ -2,13 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+
     use crate::hyperelastic::*;
     pub(super) const TOL: f64 = 1e-10;
     pub(super) const TOL_LOOSE: f64 = 1e-5;
@@ -42,9 +38,9 @@ mod tests {
     fn test_mat3_transpose() {
         let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
         let t = mat3_transpose(a);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((t[i][j] - a[j][i]).abs() < TOL);
+        for (i, row) in t.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - a[j][i]).abs() < TOL);
             }
         }
     }
@@ -65,10 +61,10 @@ mod tests {
     #[test]
     fn test_mat3_inverse_identity() {
         let inv = mat3_inverse(mat3_identity()).unwrap();
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in inv.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((inv[i][j] - expected).abs() < TOL);
+                assert!((val - expected).abs() < TOL);
             }
         }
     }
@@ -77,10 +73,10 @@ mod tests {
         let a = [[2.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 2.0]];
         let inv = mat3_inverse(a).unwrap();
         let prod = mat3_mul(a, inv);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in prod.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((prod[i][j] - expected).abs() < 1e-12);
+                assert!((val - expected).abs() < 1e-12);
             }
         }
     }
@@ -92,20 +88,20 @@ mod tests {
     #[test]
     fn test_right_cauchy_green_identity() {
         let c = right_cauchy_green(identity_f());
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in c.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((c[i][j] - expected).abs() < TOL);
+                assert!((val - expected).abs() < TOL);
             }
         }
     }
     #[test]
     fn test_left_cauchy_green_identity() {
         let b = left_cauchy_green(identity_f());
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in b.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((b[i][j] - expected).abs() < TOL);
+                assert!((val - expected).abs() < TOL);
             }
         }
     }
@@ -163,9 +159,9 @@ mod tests {
         let _kappa_v = 1000.0 / (3.0 * (1.0 - 2.0 * 0.3));
         let nh = NeoHookean::new(_mu_v, _kappa_v);
         let p = nh.pk1_stress(identity_f());
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(p[i][j].abs() < TOL, "P[{i}][{j}] = {}", p[i][j]);
+        for (i, row) in p.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!(val.abs() < TOL, "P[{i}][{j}] = {}", val);
             }
         }
     }
@@ -175,9 +171,9 @@ mod tests {
         let _kappa_v = 1000.0 / (3.0 * (1.0 - 2.0 * 0.3));
         let nh = NeoHookean::new(_mu_v, _kappa_v);
         let sigma = nh.cauchy_stress(identity_f());
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(sigma[i][j].abs() < TOL, "sigma[{i}][{j}] = {}", sigma[i][j]);
+        for (i, row) in sigma.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!(val.abs() < TOL, "sigma[{i}][{j}] = {}", val);
             }
         }
     }
@@ -229,12 +225,12 @@ mod tests {
         };
         let f = [[1.2, 0.1, 0.0], [0.0, 0.9, 0.05], [0.05, 0.0, 1.1]];
         let s = mr.pk2_stress(f);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in s.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (s[i][j] - s[j][i]).abs() < 1e-4,
+                    (val - s[j][i]).abs() < 1e-4,
                     "S[{i}][{j}]={} vs S[{j}][{i}]={}",
-                    s[i][j],
+                    val,
                     s[j][i]
                 );
             }
@@ -511,9 +507,9 @@ mod tests {
         let f = identity_f();
         let p = nh.pk1_stress(f);
         let s = pk1_to_pk2(f, p);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(s[i][j].abs() < TOL, "S[{i}][{j}] = {}", s[i][j]);
+        for (i, row) in s.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!(val.abs() < TOL, "S[{i}][{j}] = {}", val);
             }
         }
     }
@@ -525,9 +521,9 @@ mod tests {
         let f = identity_f();
         let p = nh.pk1_stress(f);
         let sigma = pk1_to_cauchy(f, p);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(sigma[i][j].abs() < TOL, "sigma[{i}][{j}] = {}", sigma[i][j]);
+        for (i, row) in sigma.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!(val.abs() < TOL, "sigma[{i}][{j}] = {}", val);
             }
         }
     }
@@ -540,12 +536,12 @@ mod tests {
         let p = nh.pk1_stress(f);
         let sigma_direct = nh.cauchy_stress(f);
         let sigma_via_pk1 = pk1_to_cauchy(f, p);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in sigma_direct.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (sigma_direct[i][j] - sigma_via_pk1[i][j]).abs() < 1e-6,
+                    (val - sigma_via_pk1[i][j]).abs() < 1e-6,
                     "sigma[{i}][{j}]: direct={} vs via_pk1={}",
-                    sigma_direct[i][j],
+                    val,
                     sigma_via_pk1[i][j]
                 );
             }
@@ -589,9 +585,9 @@ mod tests {
         let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
         let b = [[9.0, 8.0, 7.0], [6.0, 5.0, 4.0], [3.0, 2.0, 1.0]];
         let c = mat3_add(a, b);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((c[i][j] - 10.0).abs() < TOL);
+        for row in &c {
+            for &val in row {
+                assert!((val - 10.0).abs() < TOL);
             }
         }
     }
@@ -604,9 +600,9 @@ mod tests {
     fn test_mat3_scale() {
         let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
         let b = mat3_scale(a, 2.0);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((b[i][j] - 2.0 * a[i][j]).abs() < TOL);
+        for (i, row) in b.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - 2.0 * a[i][j]).abs() < TOL);
             }
         }
     }
@@ -618,9 +614,9 @@ mod tests {
         let f = identity_f();
         let p = nh.pk1_stress(f);
         let s = pk1_to_pk2(f, p);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(s[i][j].abs() < TOL, "S[{i}][{j}] = {}", s[i][j]);
+        for (i, row) in s.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!(val.abs() < TOL, "S[{i}][{j}] = {}", val);
             }
         }
     }
@@ -800,9 +796,9 @@ mod tests {
             bulk_modulus: 1000.0,
         };
         let p = v.pk1_stress(mat3_identity());
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(p[i][j].abs() < TOL_LOOSE, "P[{i}][{j}]={}", p[i][j]);
+        for (i, row) in p.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!(val.abs() < TOL_LOOSE, "P[{i}][{j}]={}", val);
             }
         }
     }
@@ -965,9 +961,9 @@ mod tests {
         };
         let f = [[1.1, 0.01, 0.0], [0.0, 0.98, 0.0], [0.0, 0.0, 1.05]];
         let p = gent.pk1_stress(f);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(p[i][j].is_finite(), "P[{i}][{j}] should be finite");
+        for (i, row) in p.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!(val.is_finite(), "P[{i}][{j}] should be finite");
             }
         }
     }
@@ -1054,10 +1050,10 @@ mod tests {
         let f = mat3_identity();
         let sigma = [[100.0, 0.0, 0.0], [0.0, 50.0, 0.0], [0.0, 0.0, 30.0]];
         let s = pull_back_cauchy_to_pk2(f, sigma);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in s.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (s[i][j] - sigma[i][j]).abs() < TOL,
+                    (val - sigma[i][j]).abs() < TOL,
                     "pull-back with I: S should equal sigma"
                 );
             }
@@ -1066,9 +1062,9 @@ mod tests {
     #[test]
     fn test_green_lagrange_zero_at_identity() {
         let e = green_lagrange_strain(mat3_identity());
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(e[i][j].abs() < TOL, "GL strain at identity should be zero");
+        for row in &e {
+            for &val in row {
+                assert!(val.abs() < TOL, "GL strain at identity should be zero");
             }
         }
     }
@@ -1076,10 +1072,10 @@ mod tests {
     fn test_linearised_strain_symmetric() {
         let grad_u = [[0.01, 0.02, 0.0], [0.03, 0.02, 0.01], [0.0, 0.01, 0.02]];
         let eps = linearised_strain(grad_u);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in eps.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (eps[i][j] - eps[j][i]).abs() < TOL,
+                    (val - eps[j][i]).abs() < TOL,
                     "linearised strain should be symmetric"
                 );
             }

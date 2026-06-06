@@ -141,7 +141,6 @@ impl SoftTissue {
     ///
     /// `W_fiber = k1/(2k2) * Σ (exp(k2*(κ*I1 + (1-3κ)*I4 - 1)²) - 1)`
     /// Only contributes when fibers are under tension (I4 > 1).
-    #[allow(clippy::too_many_arguments)]
     pub fn hgo_fiber_energy(
         &self,
         stretch_circ: f64,
@@ -335,7 +334,6 @@ impl BloodRheology {
     }
 
     /// Construct with explicit parameters.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         eta_0: f64,
         eta_inf: f64,

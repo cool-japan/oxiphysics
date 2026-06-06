@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{compute_lj_force, erfc_approx};
 
 /// Mock GPU Ewald real-space short-range kernel.
@@ -388,8 +385,8 @@ impl VirialTensor {
     /// Add another virial tensor.
     pub fn add(&self, other: &VirialTensor) -> VirialTensor {
         let mut c = self.components;
-        for k in 0..6 {
-            c[k] += other.components[k];
+        for (ck, &ok) in c.iter_mut().zip(other.components.iter()) {
+            *ck += ok;
         }
         VirialTensor { components: c }
     }

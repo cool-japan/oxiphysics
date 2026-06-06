@@ -7,8 +7,6 @@
 //! together with Lorentz-Berthelot combining rules, force-field comparison,
 //! and validation routines.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------

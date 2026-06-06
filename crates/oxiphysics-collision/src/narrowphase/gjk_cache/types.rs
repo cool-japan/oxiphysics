@@ -2,16 +2,15 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions_2::*;
 use oxiphysics_core::math::Vec3;
 use std::collections::HashMap;
 
-#[allow(unused_imports)]
-use super::functions::*;
+use super::functions::{
+    cache_still_valid, closest_point_on_simplex_to_origin, do_simplex_cached, dot3_arr,
+    gjk_distance, gjk_proximity, len3_arr, negate3, scale3_arr, sub3_arr,
+};
 
 /// Result of a GJK distance query.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GjkDistanceResult {
     /// Signed distance between the shapes (negative = penetrating).
@@ -27,7 +26,6 @@ pub struct GjkDistanceResult {
     /// Whether the shapes are intersecting.
     pub intersecting: bool,
 }
-#[allow(dead_code)]
 impl GjkDistanceResult {
     /// Separation vector from B to A (pointing from B's closest point to A's).
     pub fn separation_vector(&self) -> [f64; 3] {
@@ -35,7 +33,6 @@ impl GjkDistanceResult {
     }
 }
 /// A GJK cache entry with a frame-access timestamp for eviction.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TimestampedCacheEntry {
     /// The underlying cache.
@@ -43,7 +40,6 @@ pub struct TimestampedCacheEntry {
     /// Frame number of last access.
     pub last_accessed: u32,
 }
-#[allow(dead_code)]
 impl TimestampedCacheEntry {
     /// Create a new entry for the current frame.
     pub fn new(frame: u32) -> Self {
@@ -58,7 +54,6 @@ impl TimestampedCacheEntry {
     }
 }
 /// A point in the Configuration Space Obstacle (Minkowski difference) of two shapes.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct CsoPoint {
     /// The Minkowski-difference point: `a_support - b_support`.
@@ -74,7 +69,6 @@ pub struct CsoPoint {
 /// This is the core of the GJK distance algorithm: given a simplex (up to 4
 /// vertices in the Minkowski difference), find the closest point to the origin
 /// and the corresponding barycentric weights.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct JohnsonSubResult {
     /// Closest point to origin on the simplex.
@@ -86,7 +80,6 @@ pub struct JohnsonSubResult {
     /// Whether the origin is inside the simplex (distance ≈ 0).
     pub origin_inside: bool,
 }
-#[allow(dead_code)]
 impl JohnsonSubResult {
     /// Distance from origin to the closest simplex point.
     pub fn distance(&self) -> f64 {
@@ -128,12 +121,10 @@ impl GjkStats {
 }
 /// A registry that associates (body_a_id, body_b_id) pairs with their own
 /// `GjkCache` instance for persistent warm starting across frames.
-#[allow(dead_code)]
 pub struct GjkCacheRegistry {
     pub(super) caches: HashMap<(u64, u64), GjkCache>,
     pub(super) termination: GjkTermination,
 }
-#[allow(dead_code)]
 impl GjkCacheRegistry {
     /// Create a new registry with default termination criteria.
     pub fn new() -> Self {
@@ -208,7 +199,6 @@ impl GjkCacheRegistry {
     }
 }
 /// Shape type tags used by the narrowphase dispatcher.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShapeType {
     /// Sphere defined by centre + radius.
@@ -222,7 +212,6 @@ pub enum ShapeType {
 }
 /// A support point record holding points from both shapes and the
 /// Minkowski-difference point.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct CachedSupport {
     /// Support point on shape A in world space.
@@ -232,7 +221,6 @@ pub struct CachedSupport {
     /// Minkowski-difference point: `point_a - point_b`.
     pub minkowski_point: [f64; 3],
 }
-#[allow(dead_code)]
 impl CachedSupport {
     /// Create a new cached support from raw arrays.
     pub fn new(point_a: [f64; 3], point_b: [f64; 3]) -> Self {
@@ -259,7 +247,6 @@ impl CachedSupport {
 ///
 /// Avoids redundant calls to expensive support functions by caching up to
 /// `CAP` direction→support mappings for a single shape.
-#[allow(dead_code)]
 pub struct SupportCache<const CAP: usize> {
     /// Cached directions (unit vectors).
     pub(super) directions: [[f64; 3]; CAP],
@@ -272,7 +259,6 @@ pub struct SupportCache<const CAP: usize> {
     /// Cache misses since last reset.
     pub(super) misses: u32,
 }
-#[allow(dead_code)]
 impl<const CAP: usize> SupportCache<CAP> {
     /// Create an empty support cache.
     pub fn new() -> Self {
@@ -343,7 +329,6 @@ impl<const CAP: usize> SupportCache<CAP> {
     }
 }
 /// Descriptor for a single collision shape with position info.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ShapeDesc {
     /// Unique body/shape id.
@@ -358,7 +343,6 @@ pub struct ShapeDesc {
     pub half_extents: [f64; 3],
 }
 /// Narrowphase dispatch result incorporating the GJK cache.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NarrowphaseResult {
     /// Whether the shapes are overlapping.
@@ -378,7 +362,6 @@ pub struct NarrowphaseResult {
 }
 impl NarrowphaseResult {
     /// Create a result indicating full separation without running GJK.
-    #[allow(dead_code)]
     pub fn separated(point_a: [f64; 3], point_b: [f64; 3], distance: f64) -> Self {
         let d = sub3_arr(point_a, point_b);
         let len = len3_arr(d);
@@ -399,13 +382,11 @@ impl NarrowphaseResult {
     }
 }
 /// A GJK cache registry with frame-based eviction.
-#[allow(dead_code)]
 pub struct TimestampedGjkRegistry {
     pub(super) entries: HashMap<(u64, u64), TimestampedCacheEntry>,
     pub(super) current_frame: u32,
     pub(super) policy: EvictionPolicy,
 }
-#[allow(dead_code)]
 impl TimestampedGjkRegistry {
     /// Create a new registry.
     pub fn new(policy: EvictionPolicy) -> Self {
@@ -454,7 +435,6 @@ impl TimestampedGjkRegistry {
     }
 }
 /// Result of a proximity query: distance and witness points (or overlap info).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ProximityResult {
     /// Distance between closest features (0 if overlapping).
@@ -469,7 +449,6 @@ pub struct ProximityResult {
     pub overlapping: bool,
 }
 /// Result of a batch proximity test.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BatchProximityEntry {
     /// Index of shape A in the batch.
@@ -484,7 +463,6 @@ pub struct BatchProximityEntry {
 /// GJK overlap tester that warm-starts from a per-pair `GjkPairCache`.
 ///
 /// Tracks `cache_hits` and `cache_misses` to expose a `hit_ratio`.
-#[allow(dead_code)]
 pub struct WarmStartedGjk {
     /// Per-pair cache.
     pub pair_cache: GjkPairCache,
@@ -493,7 +471,6 @@ pub struct WarmStartedGjk {
     /// Number of cold-start queries.
     pub cache_misses: u64,
 }
-#[allow(dead_code)]
 impl WarmStartedGjk {
     /// Create a new warm-started GJK with an empty cache.
     pub fn new() -> Self {
@@ -606,7 +583,6 @@ impl WarmStartedGjk {
 }
 /// A positioned GJK cache that stores body positions alongside the simplex,
 /// so validity can be checked automatically.
-#[allow(dead_code)]
 pub struct PositionedGjkCache {
     /// The GJK cache data.
     pub cache: GjkCache,
@@ -617,7 +593,6 @@ pub struct PositionedGjkCache {
     /// Whether the cache has been populated at least once.
     pub populated: bool,
 }
-#[allow(dead_code)]
 impl PositionedGjkCache {
     /// Create an empty positioned cache.
     pub fn new() -> Self {
@@ -646,7 +621,6 @@ impl PositionedGjkCache {
 }
 /// Cached state for a single GJK pair: last simplex (up to 4 vertices) and
 /// last search direction.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GjkPairCache {
     /// Last simplex: up to 4 CSO vertices.
@@ -658,7 +632,6 @@ pub struct GjkPairCache {
     /// Whether the last query detected overlap.
     pub hit: bool,
 }
-#[allow(dead_code)]
 impl GjkPairCache {
     /// Create an empty (invalid) cache.
     pub fn new() -> Self {
@@ -737,7 +710,6 @@ impl GjkWarmStart {
     }
 }
 /// Controls when the GJK distance iteration terminates.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GjkTermination {
     /// Absolute distance tolerance: stop when `|dist - prev_dist| < abs_tol`.
@@ -749,7 +721,6 @@ pub struct GjkTermination {
     /// Stop immediately if `dist < proximity_tol` (near-intersection).
     pub proximity_tol: f64,
 }
-#[allow(dead_code)]
 impl GjkTermination {
     /// Default conservative termination criteria.
     pub fn default_criteria() -> Self {
@@ -798,7 +769,6 @@ impl GjkTermination {
     }
 }
 /// Policy controlling when stale GJK cache entries are evicted.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EvictionPolicy {
     /// Maximum number of frames a cache entry can survive without being accessed.
@@ -806,7 +776,6 @@ pub struct EvictionPolicy {
     /// Maximum total entries allowed before evicting oldest.
     pub max_entries: usize,
 }
-#[allow(dead_code)]
 impl EvictionPolicy {
     /// Conservative policy: keep entries for 60 frames, cap at 1024.
     pub fn conservative() -> Self {
@@ -829,7 +798,6 @@ impl EvictionPolicy {
 }
 /// A raw-array GJK cache that stores simplex vertices and last search
 /// direction for warm-starting subsequent queries.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GjkCache {
     /// Cached simplex vertices from the previous query.
@@ -841,7 +809,6 @@ pub struct GjkCache {
     /// Accumulated performance statistics.
     pub stats: GjkCacheStats,
 }
-#[allow(dead_code)]
 impl GjkCache {
     /// Create a new cache with warm starting enabled.
     pub fn new() -> Self {
@@ -1011,7 +978,6 @@ impl SimplexCache {
     }
 }
 /// Performance statistics for cached GJK queries.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct GjkCacheStats {
     /// Total iterations across all queries.
@@ -1021,7 +987,6 @@ pub struct GjkCacheStats {
     /// Number of queries performed.
     pub queries: u64,
 }
-#[allow(dead_code)]
 impl GjkCacheStats {
     /// Create zeroed stats.
     pub fn new() -> Self {
@@ -1045,7 +1010,6 @@ impl GjkCacheStats {
     }
 }
 /// Extended hit-rate tracker that also monitors validity rejection rate.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct HitRateStats {
     /// Total warm-start attempts.
@@ -1057,7 +1021,6 @@ pub struct HitRateStats {
     /// Cold-start queries (no cache at all).
     pub cold_starts: u64,
 }
-#[allow(dead_code)]
 impl HitRateStats {
     /// Create zeroed stats.
     pub fn new() -> Self {
@@ -1097,7 +1060,6 @@ impl HitRateStats {
 /// Stateful incremental GJK contact detector for a persistent shape pair.
 ///
 /// Maintains warm-start data across multiple frames.
-#[allow(dead_code)]
 pub struct GjkContactPair {
     /// The underlying GJK cache.
     pub cache: GjkCache,
@@ -1110,7 +1072,6 @@ pub struct GjkContactPair {
     /// Last known distance (0 if intersecting).
     pub last_distance: f64,
 }
-#[allow(dead_code)]
 impl GjkContactPair {
     /// Create a new contact pair with default settings.
     pub fn new() -> Self {

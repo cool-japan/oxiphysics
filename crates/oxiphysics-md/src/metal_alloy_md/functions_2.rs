@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::functions::*;
     use crate::metal_alloy_md::AlloySystem;
     use crate::metal_alloy_md::DiffusionTracker;
     use crate::metal_alloy_md::EamParams;

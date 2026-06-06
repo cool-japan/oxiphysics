@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -22,8 +21,6 @@
 //! - St = ρ_p a² γ̇ / (9 μ)   (Stokes number)
 //! - Pe = 6π μ a³ γ̇ / (k_B T) (Péclet number)
 //! - φ                         (volume fraction)
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -377,7 +374,6 @@ pub struct ParticleAggregation {
 
 impl ParticleAggregation {
     /// Construct DLVO aggregation model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         radius: f64,
         hamaker: f64,
@@ -818,8 +814,8 @@ impl Flocculation {
                         .sum::<f64>();
             }
         }
-        for k in 0..m {
-            self.n[k] = (self.n[k] + dn[k] * dt).max(0.0);
+        for (n_k, &dn_k) in self.n.iter_mut().zip(dn.iter()) {
+            *n_k = (*n_k + dn_k * dt).max(0.0);
         }
     }
 

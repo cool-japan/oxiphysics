@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,7 +13,6 @@ use super::coulomb::{COULOMB_K, erfc_approx};
 ///
 /// Models the dielectric screening beyond the cutoff as a uniform continuum
 /// with relative permittivity `epsilon_rf`.
-#[allow(dead_code)]
 pub struct ReactionFieldElectrostatics {
     /// Relative permittivity of the reaction field (dimensionless).
     pub epsilon_rf: f64,
@@ -24,7 +22,6 @@ pub struct ReactionFieldElectrostatics {
 
 impl ReactionFieldElectrostatics {
     /// Create a new [`ReactionFieldElectrostatics`].
-    #[allow(dead_code)]
     pub fn new(epsilon_rf: f64, cutoff: f64) -> Self {
         Self { epsilon_rf, cutoff }
     }
@@ -34,7 +31,6 @@ impl ReactionFieldElectrostatics {
     /// ```text
     /// k_rf = (epsilon_rf - 1) / (2*epsilon_rf + 1) / cutoff^3
     /// ```
-    #[allow(dead_code)]
     pub fn krf(&self) -> f64 {
         (self.epsilon_rf - 1.0) / (2.0 * self.epsilon_rf + 1.0) / (self.cutoff.powi(3))
     }
@@ -44,7 +40,6 @@ impl ReactionFieldElectrostatics {
     /// ```text
     /// c_rf = 3*epsilon_rf / (2*epsilon_rf + 1) / cutoff
     /// ```
-    #[allow(dead_code)]
     pub fn crf(&self) -> f64 {
         3.0 * self.epsilon_rf / (2.0 * self.epsilon_rf + 1.0) / self.cutoff
     }
@@ -56,7 +51,6 @@ impl ReactionFieldElectrostatics {
     /// ```text
     /// E = K * q_i * q_j * (1/r + k_rf * r^2 - c_rf)
     /// ```
-    #[allow(dead_code)]
     pub fn energy(&self, q_i: f64, q_j: f64, r: f64) -> f64 {
         if r >= self.cutoff {
             return 0.0;
@@ -69,7 +63,6 @@ impl ReactionFieldElectrostatics {
     /// F = K * q_i * q_j * (1/r^2 - 2*k_rf*r)
     ///
     /// Positive -> repulsive. Returns 0 if r >= cutoff.
-    #[allow(dead_code)]
     pub fn force_magnitude(&self, q_i: f64, q_j: f64, r: f64) -> f64 {
         if r >= self.cutoff || r <= 0.0 {
             return 0.0;
@@ -90,7 +83,6 @@ impl ReactionFieldElectrostatics {
 /// ```
 /// where kappa is the inverse Debye length (angstrom^-1).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DebyeHuckelModel {
     /// Inverse Debye length kappa (angstrom^-1).
     pub kappa: f64,
@@ -98,21 +90,13 @@ pub struct DebyeHuckelModel {
     pub epsilon_r: f64,
 }
 
-/// Vacuum permittivity x Boltzmann constant product
-/// for Debye length computation (SI-derived constant in angstrom-based units).
-/// epsilon_0 k_B in (e^2*mol)/(kJ*angstrom) ~ 7.0835e-4.
-#[allow(dead_code)]
-const EPSILON0_KB: f64 = 7.0835e-4;
-
 impl DebyeHuckelModel {
     /// Create a new Debye-Huckel model.
-    #[allow(dead_code)]
     pub fn new(kappa: f64, epsilon_r: f64) -> Self {
         Self { kappa, epsilon_r }
     }
 
     /// Screened Coulomb potential (kJ mol^-1) at distance `r` (angstrom) for charge `q` (e).
-    #[allow(dead_code)]
     pub fn potential(&self, r: f64, q: f64) -> f64 {
         if r <= 0.0 {
             return 0.0;
@@ -124,7 +108,6 @@ impl DebyeHuckelModel {
     /// at displacement `r_vec` (angstrom).
     ///
     /// Returns force on particle 1 due to particle 2.
-    #[allow(dead_code)]
     pub fn force(&self, r_vec: [f64; 3], q1: f64, q2: f64) -> [f64; 3] {
         let r2 = r_vec[0] * r_vec[0] + r_vec[1] * r_vec[1] + r_vec[2] * r_vec[2];
         if r2 < 1e-20 {
@@ -145,7 +128,6 @@ impl DebyeHuckelModel {
     /// Compute the Debye screening length (angstrom) from ionic strength and temperature.
     ///
     /// `ionic_strength` is in mol/L, `temperature` in K.
-    #[allow(dead_code)]
     pub fn debye_length(ionic_strength: f64, temperature: f64, epsilon_r: f64) -> f64 {
         if ionic_strength <= 0.0 {
             return f64::INFINITY;
@@ -169,7 +151,6 @@ impl DebyeHuckelModel {
 ///
 /// This is equivalent to Debye-Huckel but framed as a PB linearization.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct LinearizedPoissonBoltzmann {
     /// Inverse Debye length kappa (angstrom^-1).
     pub kappa: f64,
@@ -179,7 +160,6 @@ pub struct LinearizedPoissonBoltzmann {
 
 impl LinearizedPoissonBoltzmann {
     /// Create from ionic strength (mol/L) and temperature (K).
-    #[allow(dead_code)]
     pub fn from_ionic_strength(ionic_strength: f64, temperature: f64, epsilon_r: f64) -> Self {
         let debye_length = DebyeHuckelModel::debye_length(ionic_strength, temperature, epsilon_r);
         Self {
@@ -189,7 +169,6 @@ impl LinearizedPoissonBoltzmann {
     }
 
     /// Create with explicit kappa.
-    #[allow(dead_code)]
     pub fn new(kappa: f64, epsilon_solvent: f64) -> Self {
         Self {
             kappa,
@@ -198,7 +177,6 @@ impl LinearizedPoissonBoltzmann {
     }
 
     /// Screened potential (kJ mol^-1) at distance r from charge q.
-    #[allow(dead_code)]
     pub fn potential(&self, r: f64, q: f64) -> f64 {
         if r <= 0.0 {
             return 0.0;
@@ -207,7 +185,6 @@ impl LinearizedPoissonBoltzmann {
     }
 
     /// Pair energy (kJ mol^-1) between two charges.
-    #[allow(dead_code)]
     pub fn pair_energy(&self, q_i: f64, q_j: f64, r: f64) -> f64 {
         if r <= 0.0 {
             return 0.0;
@@ -216,7 +193,6 @@ impl LinearizedPoissonBoltzmann {
     }
 
     /// Debye length (angstrom).
-    #[allow(dead_code)]
     pub fn debye_length(&self) -> f64 {
         if self.kappa <= 0.0 {
             return f64::INFINITY;
@@ -234,7 +210,6 @@ impl LinearizedPoissonBoltzmann {
 /// The group's center of charge is used for the cutoff distance check,
 /// and all atoms in the group are either all included or all excluded.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ChargeGroup {
     /// Atom indices belonging to this group.
     pub atom_indices: Vec<usize>,
@@ -244,7 +219,6 @@ pub struct ChargeGroup {
 
 impl ChargeGroup {
     /// Create a new charge group.
-    #[allow(dead_code)]
     pub fn new(atom_indices: Vec<usize>, charges: &[f64]) -> Self {
         let net = atom_indices.iter().map(|&i| charges[i]).sum();
         Self {
@@ -254,7 +228,6 @@ impl ChargeGroup {
     }
 
     /// Compute the center of charge for this group.
-    #[allow(dead_code)]
     pub fn center_of_charge(&self, positions: &[[f64; 3]], charges: &[f64]) -> [f64; 3] {
         let mut center = [0.0; 3];
         let mut total_q = 0.0;
@@ -266,15 +239,14 @@ impl ChargeGroup {
             total_q += q;
         }
         if total_q > 1e-20 {
-            for a in 0..3 {
-                center[a] /= total_q;
+            for v in &mut center {
+                *v /= total_q;
             }
         }
         center
     }
 
     /// Number of atoms in this group.
-    #[allow(dead_code)]
     pub fn size(&self) -> usize {
         self.atom_indices.len()
     }
@@ -283,7 +255,6 @@ impl ChargeGroup {
 /// Build charge groups from a list of group specifications.
 ///
 /// Each specification is a slice of atom indices.
-#[allow(dead_code)]
 pub fn build_charge_groups(group_specs: &[Vec<usize>], charges: &[f64]) -> Vec<ChargeGroup> {
     group_specs
         .iter()
@@ -304,7 +275,6 @@ pub fn build_charge_groups(group_specs: &[Vec<usize>], charges: &[f64]) -> Vec<C
 /// V(r) = K * q_i * q_j * [erfc(alpha*r)/r - erfc(alpha*rc)/rc]
 /// ```
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WolfSummation {
     /// Damping parameter alpha (angstrom^-1).
     pub alpha: f64,
@@ -316,7 +286,6 @@ pub struct WolfSummation {
 
 impl WolfSummation {
     /// Create a new Wolf summation.
-    #[allow(dead_code)]
     pub fn new(alpha: f64, cutoff: f64) -> Self {
         let shift = erfc_approx(alpha * cutoff) / cutoff;
         Self {
@@ -327,7 +296,6 @@ impl WolfSummation {
     }
 
     /// Wolf pair energy (kJ mol^-1).
-    #[allow(dead_code)]
     pub fn pair_energy(&self, q_i: f64, q_j: f64, r: f64) -> f64 {
         if r >= self.cutoff || r <= 0.0 {
             return 0.0;
@@ -340,7 +308,6 @@ impl WolfSummation {
     /// ```text
     /// E_self = -K * [alpha/sqrt(pi) + erfc(alpha*rc)/(2*rc)] * sum qi^2
     /// ```
-    #[allow(dead_code)]
     pub fn self_energy(&self, charges: &[f64]) -> f64 {
         let sum_q2: f64 = charges.iter().map(|q| q * q).sum();
         let factor = self.alpha / std::f64::consts::PI.sqrt() + self.shift / 2.0;
@@ -348,7 +315,6 @@ impl WolfSummation {
     }
 
     /// Total Wolf energy for a set of charges.
-    #[allow(dead_code)]
     pub fn total_energy(&self, positions: &[[f64; 3]], charges: &[f64]) -> f64 {
         let n = positions.len();
         let mut energy = 0.0;
@@ -380,7 +346,6 @@ impl WolfSummation {
 ///
 /// For use where the caller manages COULOMB_K scaling externally.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DebyeHuckel {
     /// Inverse Debye length (angstrom^-1).
     pub kappa: f64,
@@ -388,7 +353,6 @@ pub struct DebyeHuckel {
     pub epsilon_r: f64,
 }
 
-#[allow(dead_code)]
 impl DebyeHuckel {
     /// Create a new [`DebyeHuckel`].
     pub fn new(kappa: f64, epsilon_r: f64) -> Self {
@@ -431,7 +395,6 @@ impl DebyeHuckel {
 /// ```text
 /// V(r) = COULOMB_K * q1 * q2 * exp(-kappa * r) / r
 /// ```
-#[allow(dead_code)]
 pub fn debye_huckel_energy(q1: f64, q2: f64, r: f64, kappa: f64) -> f64 {
     if r <= 0.0 {
         return 0.0;
@@ -442,7 +405,6 @@ pub fn debye_huckel_energy(q1: f64, q2: f64, r: f64, kappa: f64) -> f64 {
 /// Force magnitude (kJ mol^-1 angstrom^-1) between two Debye-screened charges.
 ///
 /// F = -dV/dr = COULOMB_K * q1 * q2 * exp(-kappa*r) * (kappa + 1/r) / r
-#[allow(dead_code)]
 pub fn debye_huckel_force_magnitude(q1: f64, q2: f64, r: f64, kappa: f64) -> f64 {
     if r <= 0.0 {
         return 0.0;
@@ -450,7 +412,6 @@ pub fn debye_huckel_force_magnitude(q1: f64, q2: f64, r: f64, kappa: f64) -> f64
     COULOMB_K * q1 * q2 * (-kappa * r).exp() * (kappa + 1.0 / r) / r
 }
 
-#[allow(dead_code)]
 impl DebyeHuckel {
     /// Compute the screened electrostatic potential landscape (kJ mol^-1 e^-1)
     /// at a grid of evaluation points `eval_points` due to source charge `q_src`

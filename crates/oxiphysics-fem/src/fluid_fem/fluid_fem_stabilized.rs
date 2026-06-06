@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,8 +16,6 @@
 //! - [`AleFormulation`]: Arbitrary Lagrangian-Eulerian FEM
 //! - [`FluidThermalCoupling`]: Boussinesq natural convection
 //! - [`LevelSetFem`]: FEM level-set method with redistancing
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -90,7 +87,6 @@ impl StabilizedNS {
     /// Residual of the momentum equation at a Gauss point.
     ///
     /// R_mom = ρ(∂u/∂t + u·∇u) + ∇p - μ∇²u - f
-    #[allow(clippy::too_many_arguments)]
     pub fn momentum_residual(
         &self,
         du_dt: [f64; 3],
@@ -210,7 +206,6 @@ impl PspgStabilization {
     /// PSPG stabilization residual contribution.
     ///
     /// τ_PSPG / ρ * ∇q · (ρ Du/Dt + ∇p - μ∇²u - f)
-    #[allow(clippy::too_many_arguments)]
     pub fn residual_contribution(
         &self,
         tau: f64,
@@ -539,7 +534,6 @@ impl AleFormulation {
     /// ALE momentum equation residual.
     ///
     /// ρ(∂u/∂t|_χ + c·∇u) + ∇p - μ∇²u - f = 0  where c = u - w.
-    #[allow(clippy::too_many_arguments)]
     pub fn momentum_residual_ale(
         &self,
         du_dt_chi: [f64; 3],
@@ -604,7 +598,6 @@ pub struct FluidThermalCoupling {
 
 impl FluidThermalCoupling {
     /// Create a new fluid-thermal coupling model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         density_ref: f64,
         thermal_expansion: f64,

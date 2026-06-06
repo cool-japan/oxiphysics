@@ -11,8 +11,6 @@
 //! - AABB vs AABB (conservative)
 //! - Ray vs sphere, box, triangle
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // Math helpers
 // ---------------------------------------------------------------------------
@@ -589,7 +587,6 @@ pub fn swept_capsule_plane(
 /// `t_lo` and `t_hi` must bracket the contact: at `t_lo` the spheres are
 /// separated, at `t_hi` they overlap (or just touch).  Returns the refined
 /// TOI within `[t_lo, t_hi]`.
-#[allow(clippy::too_many_arguments)]
 pub fn refine_sphere_sphere_toi(
     c0_a: [f64; 3],
     vel_a: [f64; 3],
@@ -705,7 +702,6 @@ pub fn sweep_broadphase(spheres: &[SweptSphere]) -> Vec<(u32, u32)> {
 /// The TOI is remapped to `[t_start, t_end]` before evaluation.
 ///
 /// Returns the TOI in `[0, 1]` (fraction of the full interval) or `None`.
-#[allow(clippy::too_many_arguments)]
 pub fn swept_sphere_sphere_interval(
     c0_a: [f64; 3],
     vel_a: [f64; 3],
@@ -943,7 +939,6 @@ impl RotatingBodyState {
 /// motion bounds to ensure conservative (never-tunneling) steps.
 ///
 /// Returns the TOI in `[0, 1]` or `None` if the bodies never collide.
-#[allow(clippy::too_many_arguments)]
 pub fn conservative_advancement_rotating(
     a: &RotatingBodyState,
     b: &RotatingBodyState,

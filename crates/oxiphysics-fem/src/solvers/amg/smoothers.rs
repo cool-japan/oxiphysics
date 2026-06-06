@@ -3,8 +3,6 @@
 
 //! Gauss-Seidel smoothers for AMG cycles.
 
-#![allow(dead_code)]
-
 use crate::parallel_solver::CsrMatrix;
 
 /// Forward Gauss-Seidel: sweep rows 0..nrows in ascending order.

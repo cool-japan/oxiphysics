@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{GaussianHill, MetadynamicsState};
 
 /// Boltzmann constant in kJ/mol/K
@@ -29,7 +28,6 @@ pub trait CollectiveVariable {
 /// * `gamma`     – bias factor `(T + ΔT)/T` for well-tempered (use 1.0 for plain meta).
 ///
 /// Returns a vector of `(cv_value, fes_value)` pairs.
-#[allow(dead_code)]
 pub fn reconstruct_fes_1d(
     state: &MetadynamicsState,
     s_min: f64,
@@ -63,7 +61,6 @@ pub fn reconstruct_fes_1d(
 /// Splits the hill history into `n_blocks` equal blocks, estimates the FES
 /// from each block, and returns the maximum point-wise change between the
 /// last two blocks.  A value smaller than `tolerance` indicates convergence.
-#[allow(dead_code)]
 pub fn check_convergence(
     state: &MetadynamicsState,
     s_min: f64,
@@ -356,7 +353,6 @@ mod tests {
 /// * `cv_history` – Slice of recent CV vectors (each of length `n_dim`).
 /// * `scale`      – Scale factor (typically 1.0 to 2.0).
 /// * `min_width`  – Minimum width to avoid numerical issues.
-#[allow(dead_code)]
 pub fn adaptive_width_from_history(
     cv_history: &[Vec<f64>],
     scale: f64,
@@ -386,7 +382,6 @@ pub fn adaptive_width_from_history(
 /// # Arguments
 /// * `delta_u` – Energy differences U_1 - U_0 sampled from state 0.
 /// * `temperature` – Simulation temperature (K).
-#[allow(dead_code)]
 pub fn free_energy_perturbation(delta_u: &[f64], temperature: f64) -> f64 {
     if delta_u.is_empty() {
         return 0.0;
@@ -410,7 +405,6 @@ pub fn free_energy_perturbation(delta_u: &[f64], temperature: f64) -> f64 {
 /// * `du_rev` – U_0 - U_1 sampled from state 1.
 /// * `temperature` – Simulation temperature (K).
 /// * `c_guess` – Initial estimate of ΔF (kJ/mol).
-#[allow(dead_code)]
 pub fn bar_estimate(du_fwd: &[f64], du_rev: &[f64], temperature: f64, c_guess: f64) -> f64 {
     if du_fwd.is_empty() || du_rev.is_empty() {
         return c_guess;
@@ -701,7 +695,6 @@ mod tests_extended {
 ///
 /// When two kernels are closer than `compression_threshold * bandwidth`,
 /// they are merged into a single kernel with combined height.
-#[allow(dead_code)]
 pub fn compress_opes_kernels(kernels: &mut Vec<GaussianHill>, compression_threshold: f64) {
     if kernels.len() < 2 {
         return;
@@ -736,8 +729,8 @@ pub fn compress_opes_kernels(kernels: &mut Vec<GaussianHill>, compression_thresh
                     }
                     let dim = kernels[i].center.len();
                     let mut new_center = vec![0.0; dim];
-                    for d in 0..dim {
-                        new_center[d] = (kernels[i].height * kernels[i].center[d]
+                    for (d, nc) in new_center.iter_mut().enumerate() {
+                        *nc = (kernels[i].height * kernels[i].center[d]
                             + kernels[j].height * kernels[j].center[d])
                             / h_sum;
                     }
@@ -760,7 +753,6 @@ pub fn compress_opes_kernels(kernels: &mut Vec<GaussianHill>, compression_thresh
 /// OPES target distribution: log p_tgt(s) = -beta * F(s).
 ///
 /// Returns estimated free energy at each grid point using kernels.
-#[allow(dead_code)]
 pub fn opes_target_free_energy(
     kernels: &[GaussianHill],
     grid: &[f64],
@@ -792,7 +784,6 @@ pub fn opes_target_free_energy(
 /// Uses the relation: ΔF(A→B) = -kT * ln(∫_B exp(V_bias/kT) / ∫_A exp(V_bias/kT))
 ///
 /// Numerically evaluates the integrals on a 1D grid.
-#[allow(dead_code)]
 pub fn fep_from_metadynamics(
     state: &MetadynamicsState,
     s_min_a: f64,
@@ -830,7 +821,6 @@ pub fn fep_from_metadynamics(
 /// Build a histogram of CV values from a trajectory.
 ///
 /// Returns (bin_centers, counts).
-#[allow(dead_code)]
 pub fn build_cv_histogram(
     cv_trajectory: &[f64],
     s_min: f64,
@@ -858,7 +848,6 @@ pub fn build_cv_histogram(
 /// Free energy from histogram: F(s) = -kT * ln(P(s)).
 ///
 /// Returns free energy at each bin center, shifted so minimum is 0.
-#[allow(dead_code)]
 pub fn free_energy_from_histogram(counts: &[usize], temperature: f64) -> Vec<f64> {
     let n = counts.iter().sum::<usize>();
     if n == 0 {

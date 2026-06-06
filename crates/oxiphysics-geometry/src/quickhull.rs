@@ -7,8 +7,6 @@
 //! volume and surface area computation, point-in-hull test, hull merging,
 //! and support queries.
 
-#![allow(dead_code)]
-
 use oxiphysics_core::math::Vec3;
 
 /// 3D Convex Hull computed via QuickHull algorithm (nalgebra Vec3 variant).
@@ -516,85 +514,6 @@ fn farthest_point_excluding(
                 .expect("operation should succeed")
         })
         .map(|(i, _)| i)
-}
-
-/// QuickHull recursive step (kept for API compatibility).
-#[allow(dead_code)]
-fn quickhull_step(
-    hull_faces: &mut Vec<[usize; 3]>,
-    all_points: &[Vec3],
-    visible_points: &[usize],
-    face: [usize; 3],
-) {
-    if visible_points.is_empty() {
-        hull_faces.push(face);
-        return;
-    }
-
-    let (n, off) = plane_from_triangle(
-        all_points[face[0]],
-        all_points[face[1]],
-        all_points[face[2]],
-    );
-
-    let apex_idx = visible_points
-        .iter()
-        .copied()
-        .max_by(|&a, &b| {
-            point_plane_distance(all_points[a], n, off)
-                .partial_cmp(&point_plane_distance(all_points[b], n, off))
-                .expect("operation should succeed")
-        })
-        .expect("operation should succeed");
-
-    let new_faces = [
-        [face[0], face[1], apex_idx],
-        [face[1], face[2], apex_idx],
-        [face[2], face[0], apex_idx],
-    ];
-
-    for new_face in new_faces {
-        let (nn, noff) = plane_from_triangle(
-            all_points[new_face[0]],
-            all_points[new_face[1]],
-            all_points[new_face[2]],
-        );
-        if nn.norm() < 1e-12 {
-            continue;
-        }
-
-        let interior_ref = face
-            .iter()
-            .copied()
-            .find(|&v| v != new_face[0] && v != new_face[1] && v != new_face[2]);
-
-        let oriented_face = match interior_ref {
-            Some(ref_v) => {
-                if point_plane_distance(all_points[ref_v], nn, noff) > 0.0 {
-                    [new_face[0], new_face[2], new_face[1]]
-                } else {
-                    new_face
-                }
-            }
-            None => new_face,
-        };
-
-        let (on, ooff) = plane_from_triangle(
-            all_points[oriented_face[0]],
-            all_points[oriented_face[1]],
-            all_points[oriented_face[2]],
-        );
-
-        let sub_visible: Vec<usize> = visible_points
-            .iter()
-            .copied()
-            .filter(|&idx| {
-                idx != apex_idx && point_plane_distance(all_points[idx], on, ooff) > 1e-10
-            })
-            .collect();
-
-        quickhull_step(hull_faces, all_points, &sub_visible, oriented_face);
-    }
 }
 
 // ---------------------------------------------------------------------------

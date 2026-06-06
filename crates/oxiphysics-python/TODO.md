@@ -1,6 +1,6 @@
 # oxiphysics-python TODO
 
-Updated: 2026-05-17 | Version: 0.1.1
+Updated: 2026-06-06 | Version: 0.1.2
 
 ---
 
@@ -142,6 +142,10 @@ Updated: 2026-05-17 | Version: 0.1.1
   - **Files:** root `Cargo.toml`; `crates/oxiphysics-python/Cargo.toml`; `src/noise_api.rs`; `src/viz_api.rs`; `src/telemetry_api.rs`; `python/oxiphysics/__init__.pyi`; `python/tests/test_numpy_bridge.py`; `TODO.md`
   - **Tests:** `test_value_noise_to_numpy_shape_dtype`, `test_debug_draw_zero_copy_view`, `test_telemetry_time_series_length_match`
   - **Risk:** numpy crate version must match pyo3 version; `IntoPyArray` API may differ from 0.27; zero-copy semantics vs move semantics for `Vec<f64>::into_pyarray`.
+## v0.1.2 correctness fixes (2026-06-01)
+- [x] `PyCsg::union/intersection/subtraction` — replaced AABB-approximation stubs with delegation to `oxiphysics::geometry::mesh_boolean::mesh_boolean`; proper winding-number inside-outside classification + cleanup. 7 new integration tests in `tests/csg_imls_algorithms.rs`.
+- [x] `PyPointCloud::poisson_reconstruct` — replaced empty-mesh stub with real IMLS (Implicit Moving Least Squares) reconstruction: PCA normal estimation, Gaussian-weighted tangent-plane signed distance, marching-cubes isosurface via `signed_distance_field::MarchingCubes`.
+
 - [x] `.pyi` stubs extended to cover all Phase 6 classes
   - **Goal:** `python/oxiphysics/__init__.pyi` and root `oxiphysics.pyi` declare every Phase-6 class with full method/attribute signatures and return types.
   - **Design:**

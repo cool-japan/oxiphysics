@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_range_contains)]
 /// Apply window/level and rescale slope/intercept to a raw pixel buffer.
 ///
 /// Returns an 8-bit display image (0–255).
@@ -163,7 +162,7 @@ mod tests {
     fn test_dicom_image_data_window_level() {
         let img = DicomImageData::new(10, 10, 1);
         let wl = img.window_level(img.window_center);
-        assert!(wl >= 127 && wl <= 128);
+        assert!((127..=128).contains(&wl));
     }
     #[test]
     fn test_dicom_image_data_physical_size() {
@@ -361,7 +360,7 @@ mod tests {
         let mut dv = DoseVolume::new([2, 2, 1], [1.0; 3], 60.0);
         dv.dose = vec![10.0, 20.0, 30.0, 40.0];
         let d50 = dv.d_volume(0.5);
-        assert!(d50 >= 20.0 && d50 <= 30.0);
+        assert!((20.0..=30.0).contains(&d50));
     }
     #[test]
     fn test_dicom_vr_us() {

@@ -16,8 +16,6 @@
 //! - **Origami stiffness** (crease stiffness model)
 //! - **Self-folding actuation** (thermal / stimulus-driven fold angle evolution)
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -70,15 +68,6 @@ fn v3_normalize(a: [f64; 3]) -> [f64; 3] {
 /// Zero vector.
 fn v3_zero() -> [f64; 3] {
     [0.0, 0.0, 0.0]
-}
-
-/// Lerp between two vectors.
-fn v3_lerp(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
-    [
-        a[0] * (1.0 - t) + b[0] * t,
-        a[1] * (1.0 - t) + b[1] * t,
-        a[2] * (1.0 - t) + b[2] * t,
-    ]
 }
 
 /// Distance between two points.

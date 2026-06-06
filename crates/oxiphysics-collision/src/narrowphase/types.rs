@@ -2,14 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 pub use super::specialized::*;
 
+use super::functions::{add3, cross3, dot3, len3, normalize3, scale3, shape_shape_contact, sub3};
+
 /// Result of a ray cast against a shape.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RayCastResult {
     /// Whether the ray hit the shape.
@@ -22,7 +19,6 @@ pub struct RayCastResult {
     pub normal: [f64; 3],
 }
 /// A unified contact result produced by the routing layer.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NarrowPhaseContact {
     /// Contact normal pointing from shape A toward shape B (unit length).
@@ -36,7 +32,6 @@ pub struct NarrowPhaseContact {
 }
 impl NarrowPhaseContact {
     /// Return a copy with the normal flipped and witness points swapped.
-    #[allow(dead_code)]
     pub fn flipped(&self) -> Self {
         Self {
             normal: scale3(self.normal, -1.0),
@@ -46,13 +41,11 @@ impl NarrowPhaseContact {
         }
     }
     /// Midpoint between the two witness points.
-    #[allow(dead_code)]
     pub fn midpoint(&self) -> [f64; 3] {
         scale3(add3(self.point_a, self.point_b), 0.5)
     }
 }
 /// A compound shape: a collection of child shapes with local offsets.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompoundShape {
     /// Child shapes in world space (pre-transformed by the caller).
@@ -60,12 +53,10 @@ pub struct CompoundShape {
 }
 impl CompoundShape {
     /// Create a compound shape from world-space children.
-    #[allow(dead_code)]
     pub fn new(children: Vec<ShapeKind>) -> Self {
         CompoundShape { children }
     }
     /// Compute the AABB enclosing all children.
-    #[allow(dead_code)]
     pub fn aabb(&self) -> ([f64; 3], [f64; 3]) {
         let mut mn = [f64::INFINITY; 3];
         let mut mx = [f64::NEG_INFINITY; 3];
@@ -80,7 +71,6 @@ impl CompoundShape {
     }
 }
 /// Geometric feature that produced a contact (for incremental warm-starting).
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContactFeature {
     /// Contact between two faces.
@@ -116,7 +106,6 @@ pub enum ContactFeature {
 }
 /// Post-processing options applied to a [`NarrowPhaseContact`] after it is
 /// produced by the routing layer.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ContactFilter {
     /// Minimum depth to report a contact. Contacts shallower than this are
@@ -132,7 +121,6 @@ impl ContactFilter {
     /// Apply this filter to a contact result.
     ///
     /// Returns `None` if the contact should be discarded.
-    #[allow(dead_code)]
     pub fn apply(&self, mut c: NarrowPhaseContact) -> Option<NarrowPhaseContact> {
         if c.depth < self.min_depth {
             return None;
@@ -147,7 +135,6 @@ impl ContactFilter {
     }
 }
 /// A narrowphase contact enriched with feature information.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FeatureContact {
     /// Underlying geometry contact.
@@ -157,7 +144,6 @@ pub struct FeatureContact {
 }
 impl FeatureContact {
     /// Wrap a plain contact with an `Unknown` feature tag.
-    #[allow(dead_code)]
     pub fn from_plain(c: NarrowPhaseContact) -> Self {
         FeatureContact {
             contact: c,
@@ -170,7 +156,6 @@ impl FeatureContact {
 /// Pairs are described as indices into a shared slice of [`ShapeKind`] values.
 /// Results are returned in the same order as the input pairs; pairs that did
 /// not produce a contact get `None`.
-#[allow(dead_code)]
 #[derive(Default)]
 pub struct BatchNarrowPhase {
     /// Post-processing filter applied to every contact.
@@ -178,14 +163,12 @@ pub struct BatchNarrowPhase {
 }
 impl BatchNarrowPhase {
     /// Create a `BatchNarrowPhase` with default settings.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
     /// Run the narrow phase for all `pairs`.
     ///
     /// Returns one `Option<NarrowPhaseContact>` per input pair.
-    #[allow(dead_code)]
     pub fn run(
         &self,
         shapes: &[ShapeKind],
@@ -203,7 +186,6 @@ impl BatchNarrowPhase {
             .collect()
     }
     /// Run and collect only pairs that produced a contact.
-    #[allow(dead_code)]
     pub fn run_compact(
         &self,
         shapes: &[ShapeKind],
@@ -223,7 +205,6 @@ impl BatchNarrowPhase {
     }
 }
 /// Result of a point-in-shape query.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PointQueryResult {
     /// Whether the point is inside the shape.
@@ -238,7 +219,6 @@ pub struct PointQueryResult {
 /// A triangle mesh (concave shape) represented as a flat list of triangles.
 ///
 /// Each triangle is three consecutive vertices: `[v0, v1, v2]`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TriangleMesh {
     /// Flat list of triangle vertices; length must be a multiple of 3.
@@ -246,7 +226,6 @@ pub struct TriangleMesh {
 }
 impl TriangleMesh {
     /// Create a new triangle mesh.
-    #[allow(dead_code)]
     pub fn new(triangles: Vec<[f64; 3]>) -> Self {
         debug_assert!(
             triangles.len().is_multiple_of(3),
@@ -255,12 +234,10 @@ impl TriangleMesh {
         TriangleMesh { triangles }
     }
     /// Number of triangles.
-    #[allow(dead_code)]
     pub fn tri_count(&self) -> usize {
         self.triangles.len() / 3
     }
     /// Get the three vertices of triangle `i`.
-    #[allow(dead_code)]
     pub fn triangle(&self, i: usize) -> [[f64; 3]; 3] {
         let base = i * 3;
         [
@@ -270,7 +247,6 @@ impl TriangleMesh {
         ]
     }
     /// Compute the face normal for triangle `i` (not normalized).
-    #[allow(dead_code)]
     pub fn face_normal(&self, i: usize) -> [f64; 3] {
         let [v0, v1, v2] = self.triangle(i);
         let e0 = sub3(v1, v0);
@@ -282,7 +258,6 @@ impl TriangleMesh {
 ///
 /// All geometry is expressed in world space so no transform arithmetic is
 /// needed by the dispatcher.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum ShapeKind {
     /// A sphere with centre and radius.
@@ -323,7 +298,6 @@ pub enum ShapeKind {
 }
 impl ShapeKind {
     /// Returns an axis-aligned bounding box `(min, max)` for this shape.
-    #[allow(dead_code)]
     pub fn aabb(&self) -> ([f64; 3], [f64; 3]) {
         match self {
             ShapeKind::Sphere { center, radius } => (
@@ -367,7 +341,6 @@ impl ShapeKind {
         }
     }
     /// The largest sphere that bounds this shape (bounding sphere).
-    #[allow(dead_code)]
     pub fn bounding_radius(&self) -> f64 {
         match self {
             ShapeKind::Sphere { radius, .. } => *radius,
@@ -380,7 +353,6 @@ impl ShapeKind {
         }
     }
     /// Support function: point on the shape furthest in direction `dir`.
-    #[allow(dead_code)]
     pub fn support(&self, dir: [f64; 3]) -> [f64; 3] {
         match self {
             ShapeKind::Sphere { center, radius } => {
@@ -415,7 +387,6 @@ impl ShapeKind {
     }
 }
 /// Result of a segment cast against a shape.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SegmentCastResult {
     /// Whether the segment hit the shape.

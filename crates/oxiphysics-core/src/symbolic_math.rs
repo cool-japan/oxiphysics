@@ -91,8 +91,10 @@ impl Expr {
     }
 
     /// Negate `self`: `-self`.
-    #[allow(clippy::should_implement_trait)]
-    pub fn neg(self) -> Expr {
+    ///
+    /// Prefer using the unary `-` operator via `std::ops::Neg` instead of
+    /// calling this method directly.
+    fn neg_expr(self) -> Expr {
         Expr::Neg(Box::new(self))
     }
 
@@ -114,6 +116,13 @@ impl Expr {
     /// Apply the natural logarithm to `self`.
     pub fn ln(self) -> Expr {
         Expr::Ln(Box::new(self))
+    }
+}
+
+impl std::ops::Neg for Expr {
+    type Output = Expr;
+    fn neg(self) -> Expr {
+        self.neg_expr()
     }
 }
 
@@ -431,7 +440,7 @@ mod tests {
 
     #[test]
     fn eval_neg() {
-        let e = var("x").neg();
+        let e = -var("x");
         assert_eq!(eval(&e, &vars(&[("x", 7.0)])).unwrap(), -7.0);
     }
 
@@ -586,7 +595,7 @@ mod tests {
     #[test]
     fn diff_neg() {
         // d/dx (-x) = -1
-        let e = var("x").neg();
+        let e = -var("x");
         let d = simplify(&diff(&e, "x"));
         let got = eval(&d, &HashMap::new()).unwrap();
         assert!((got + 1.0).abs() < 1e-12);
@@ -644,7 +653,7 @@ mod tests {
 
     #[test]
     fn simplify_double_neg() {
-        let e = var("x").neg().neg();
+        let e = -(-var("x"));
         assert_eq!(simplify(&e), var("x"));
     }
 
@@ -725,7 +734,7 @@ mod tests {
 
     #[test]
     fn to_string_neg() {
-        let s = to_string(&var("x").neg());
+        let s = to_string(&(-var("x")));
         assert!(s.contains("x") && s.contains('-'));
     }
 

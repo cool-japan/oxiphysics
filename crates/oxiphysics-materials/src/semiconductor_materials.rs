@@ -10,9 +10,6 @@
 //!
 //! All quantities are in SI units unless otherwise noted.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -27,8 +24,6 @@ const Q_E: f64 = 1.602176634e-19;
 const M_E: f64 = 9.1093837015e-31;
 /// Planck constant (J·s).
 const H_PLANCK: f64 = 6.62607015e-34;
-/// Reduced Planck constant (J·s).
-const H_BAR: f64 = 1.054571817e-34;
 /// Vacuum permittivity (F/m).
 const EPSILON_0: f64 = 8.854187817e-12;
 /// Speed of light (m/s).

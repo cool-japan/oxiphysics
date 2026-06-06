@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_range_contains, clippy::needless_range_loop)]
 /// Boltzmann constant (J/K)
 pub const K_B: f64 = 1.380649e-23;
 /// Elementary charge (C)
@@ -590,7 +589,7 @@ mod tests_electrokinetic_extended {
         };
         let eta = mat.max_efficiency();
         assert!(
-            eta >= 0.0 && eta <= 1.0,
+            (0.0..=1.0).contains(&eta),
             "Efficiency should be in [0,1]: {eta}"
         );
     }
@@ -727,26 +726,23 @@ mod tests_electrokinetic_extended {
         }
     }
     #[test]
-    #[allow(non_snake_case)]
-    fn test_Re_proportional_to_velocity() {
-        let re1 = ElectrokineticNumbers::Re(1000.0, 1e-4, 1e-3, 1e-3);
-        let re2 = ElectrokineticNumbers::Re(1000.0, 2e-4, 1e-3, 1e-3);
+    fn test_re_proportional_to_velocity() {
+        let re1 = ElectrokineticNumbers::re(1000.0, 1e-4, 1e-3, 1e-3);
+        let re2 = ElectrokineticNumbers::re(1000.0, 2e-4, 1e-3, 1e-3);
         assert!(
             (re2 / re1 - 2.0).abs() < 1e-10,
             "Re should double with velocity"
         );
     }
     #[test]
-    #[allow(non_snake_case)]
-    fn test_Du_number_positive() {
-        let du = ElectrokineticNumbers::Du(1e-8, 0.1, 1e-6);
+    fn test_du_number_positive() {
+        let du = ElectrokineticNumbers::du(1e-8, 0.1, 1e-6);
         assert!(du > 0.0, "Dukhin number should be positive: {du}");
     }
     #[test]
-    #[allow(non_snake_case)]
-    fn test_kappa_L_scaling() {
-        let kl1 = ElectrokineticNumbers::kappa_L(10e-9, 1e-6);
-        let kl2 = ElectrokineticNumbers::kappa_L(10e-9, 2e-6);
+    fn test_kappa_l_scaling() {
+        let kl1 = ElectrokineticNumbers::kappa_l(10e-9, 1e-6);
+        let kl2 = ElectrokineticNumbers::kappa_l(10e-9, 2e-6);
         assert!(
             (kl2 / kl1 - 2.0).abs() < 1e-10,
             "kappa*L should scale with L"
@@ -825,12 +821,12 @@ mod tests_electrokinetic_extended {
         let dx = 0.01;
         let phi: Vec<f64> = (0..5).map(|i| a * i as f64 * dx).collect();
         let e = BoltzmannIonDistribution::electric_field_from_potential(&phi, dx);
-        for i in 1..4 {
+        for (i, &e_i) in e[1..4].iter().enumerate().map(|(i, v)| (i + 1, v)) {
             assert!(
-                (e[i] + a).abs() < 1e-6,
+                (e_i + a).abs() < 1e-6,
                 "E field at {i} should be ~{}, got {}",
                 -a,
-                e[i]
+                e_i
             );
         }
     }

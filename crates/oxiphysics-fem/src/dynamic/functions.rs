@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::useless_vec)]
 use super::types::{ModalSuperpositionResult, ResponseSpectrumInput};
 use crate::mesh::TetrahedralMesh;
 use crate::sparse::CsrMatrix;
@@ -16,7 +14,6 @@ use crate::sparse::CsrMatrix;
 /// `M_e = rho * V / 20 * [[2I, I, I, I\], [I, 2I, I, I], [I, I, 2I, I], [I, I, I, 2I]]`
 ///
 /// where `I` is the 3x3 identity matrix.
-#[allow(clippy::needless_range_loop)]
 pub fn element_mass_matrix(nodes: &[[f64; 3]; 4], density: f64) -> [[f64; 12]; 12] {
     let x10 = [
         nodes[1][0] - nodes[0][0],
@@ -50,7 +47,6 @@ pub fn element_mass_matrix(nodes: &[[f64; 3]; 4], density: f64) -> [[f64; 12]; 1
     me
 }
 /// Assemble the global consistent mass matrix from a tetrahedral mesh.
-#[allow(clippy::needless_range_loop)]
 pub fn assemble_mass_matrix(mesh: &TetrahedralMesh, density: f64) -> CsrMatrix {
     let ndof = mesh.num_nodes() * 3;
     let mut triplets: Vec<(usize, usize, f64)> = Vec::new();
@@ -99,16 +95,14 @@ pub fn assemble_mass_matrix(mesh: &TetrahedralMesh, density: f64) -> CsrMatrix {
 /// using row-sum lumping.
 ///
 /// Returns the diagonal as a `Vec`f64`.
-#[allow(dead_code)]
-#[allow(clippy::needless_range_loop)]
 pub fn lump_mass_row_sum(mass: &CsrMatrix) -> Vec<f64> {
     let n = mass.nrows;
     let mut diag = vec![0.0; n];
-    for row in 0..n {
+    for (row, diag_row) in diag.iter_mut().enumerate().take(n) {
         let start = mass.row_ptr[row];
         let end = mass.row_ptr[row + 1];
         for idx in start..end {
-            diag[row] += mass.values[idx];
+            *diag_row += mass.values[idx];
         }
     }
     diag
@@ -117,17 +111,15 @@ pub fn lump_mass_row_sum(mass: &CsrMatrix) -> Vec<f64> {
 ///
 /// The HRZ method scales the diagonal entries so that the total mass
 /// is preserved: `m_lumped\[i\] = m_diag\[i\] * (total_mass / sum_of_diag)`.
-#[allow(dead_code)]
-#[allow(clippy::needless_range_loop)]
 pub fn lump_mass_hrz(mass: &CsrMatrix) -> Vec<f64> {
     let n = mass.nrows;
     let mut diag = vec![0.0; n];
-    for row in 0..n {
+    for (row, diag_row) in diag.iter_mut().enumerate().take(n) {
         let start = mass.row_ptr[row];
         let end = mass.row_ptr[row + 1];
         for idx in start..end {
             if mass.col_indices[idx] == row {
-                diag[row] = mass.values[idx];
+                *diag_row = mass.values[idx];
             }
         }
     }
@@ -151,7 +143,6 @@ pub fn lump_mass_hrz(mass: &CsrMatrix) -> Vec<f64> {
 }
 /// Compute the inverse of a diagonal mass vector, setting zero masses
 /// to zero inverse (static DOFs).
-#[allow(dead_code)]
 pub fn invert_diagonal_mass(m_diag: &[f64]) -> Vec<f64> {
     m_diag
         .iter()
@@ -161,7 +152,6 @@ pub fn invert_diagonal_mass(m_diag: &[f64]) -> Vec<f64> {
 /// Compute the kinetic energy: `T = 0.5 * v^T * M * v`.
 ///
 /// Uses a diagonal mass for efficiency.
-#[allow(dead_code)]
 pub fn kinetic_energy_diagonal(v: &[f64], m_diag: &[f64]) -> f64 {
     let mut t = 0.0;
     for (vi, &mi) in v.iter().zip(m_diag.iter()) {
@@ -170,7 +160,6 @@ pub fn kinetic_energy_diagonal(v: &[f64], m_diag: &[f64]) -> f64 {
     0.5 * t
 }
 /// Compute the kinetic energy using a full (CSR) mass matrix.
-#[allow(dead_code)]
 pub fn kinetic_energy_full(v: &[f64], mass: &CsrMatrix) -> f64 {
     let mv = mass.mul_vec(v);
     let mut t = 0.0;
@@ -180,7 +169,6 @@ pub fn kinetic_energy_full(v: &[f64], mass: &CsrMatrix) -> f64 {
     0.5 * t
 }
 /// Compute the strain (potential) energy: `U = 0.5 * u^T * K * u`.
-#[allow(dead_code)]
 pub fn strain_energy(u: &[f64], stiffness: &CsrMatrix) -> f64 {
     let ku = stiffness.mul_vec(u);
     let mut e = 0.0;
@@ -190,7 +178,6 @@ pub fn strain_energy(u: &[f64], stiffness: &CsrMatrix) -> f64 {
     0.5 * e
 }
 /// Compute the total mechanical energy (kinetic + potential).
-#[allow(dead_code)]
 pub fn total_energy(u: &[f64], v: &[f64], m_diag: &[f64], stiffness: &CsrMatrix) -> f64 {
     kinetic_energy_diagonal(v, m_diag) + strain_energy(u, stiffness)
 }
@@ -199,7 +186,6 @@ pub fn total_energy(u: &[f64], v: &[f64], m_diag: &[f64], stiffness: &CsrMatrix)
 /// For typical structural applications:
 /// - `alpha` (mass proportional) damps low-frequency modes
 /// - `beta` (stiffness proportional) damps high-frequency modes
-#[allow(dead_code)]
 pub fn rayleigh_damping_matrix(
     mass: &CsrMatrix,
     stiffness: &CsrMatrix,
@@ -236,7 +222,6 @@ pub fn rayleigh_damping_matrix(
 /// From `zeta = alpha/(2*omega) + beta*omega/2`:
 /// - If only targeting one mode, there are infinite solutions.
 /// - This function returns the stiffness-only solution: `alpha = 0, beta = 2*zeta/omega`.
-#[allow(dead_code)]
 pub fn rayleigh_from_modal(omega: f64, zeta: f64) -> (f64, f64) {
     if omega < 1e-15 {
         return (0.0, 0.0);
@@ -252,7 +237,6 @@ pub fn rayleigh_from_modal(omega: f64, zeta: f64) -> (f64, f64) {
 /// [1/(2*omega1)  omega1/2] [alpha]   [zeta1]
 /// [1/(2*omega2)  omega2/2] [beta ] = [zeta2]
 /// ```
-#[allow(dead_code)]
 pub fn rayleigh_from_two_modes(omega1: f64, zeta1: f64, omega2: f64, zeta2: f64) -> (f64, f64) {
     let a11 = 0.5 / omega1;
     let a12 = 0.5 * omega1;
@@ -274,8 +258,6 @@ pub fn rayleigh_from_two_modes(omega1: f64, zeta1: f64, omega2: f64, zeta2: f64)
 /// where `r` is the influence vector (1 for DOFs in the excitation direction, 0 otherwise).
 ///
 /// `n_dof_per_node` = 3 (3D) or 2 (2D).
-#[allow(dead_code)]
-#[allow(clippy::needless_range_loop)]
 pub fn seismic_base_excitation_force(
     mass: &CsrMatrix,
     ground_acceleration: &[f64],
@@ -284,10 +266,10 @@ pub fn seismic_base_excitation_force(
     let n = mass.nrows;
     let ndim = ground_acceleration.len().min(n_dof_per_node);
     let mut r = vec![0.0_f64; n];
-    for i in 0..n {
+    for (i, r_i) in r.iter_mut().enumerate().take(n) {
         let dof_dir = i % n_dof_per_node;
         if dof_dir < ndim {
-            r[i] = ground_acceleration[dof_dir];
+            *r_i = ground_acceleration[dof_dir];
         }
     }
     let mr = mass.mul_vec(&r);
@@ -302,7 +284,6 @@ pub fn seismic_base_excitation_force(
 /// and `m_a`, `m_b` are the masses of the two bodies (here, body B is a rigid wall with infinite mass).
 ///
 /// Returns the impulse to apply to the DOF. Returns 0 if gap > 0 (no contact).
-#[allow(dead_code)]
 pub fn contact_impulse(
     gap: f64,
     velocities: &[f64],
@@ -329,9 +310,8 @@ pub fn contact_impulse(
 /// Apply contact impulses to a velocity vector for a set of contact DOFs.
 ///
 /// For each contact DOF, if penetration exists, applies the impulse.
-#[allow(dead_code)]
 pub fn apply_contact_impulses(
-    velocities: &mut Vec<f64>,
+    velocities: &mut [f64],
     gaps: &[f64],
     m_diag: &[f64],
     contact_dofs: &[usize],
@@ -352,7 +332,6 @@ pub fn apply_contact_impulses(
 /// For a linear tetrahedron: `dt_crit = L_min / c` where
 /// `c = sqrt(E/rho)` is the wave speed and `L_min` is the
 /// minimum element edge length.
-#[allow(dead_code)]
 pub fn critical_time_step(min_edge_length: f64, youngs_modulus: f64, density: f64) -> f64 {
     let c = (youngs_modulus / density).sqrt();
     if c < 1e-60 {
@@ -367,7 +346,6 @@ mod tests {
     use crate::constitutive::LinearElasticMaterial;
     use crate::dynamic::*;
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_element_mass_matrix_symmetry() {
         let nodes = [
             [0.0, 0.0, 0.0],
@@ -377,14 +355,14 @@ mod tests {
         ];
         let density = 7800.0;
         let me = element_mass_matrix(&nodes, density);
-        for i in 0..12 {
-            for j in 0..12 {
-                let diff = (me[i][j] - me[j][i]).abs();
-                let scale = me[i][j].abs().max(me[j][i].abs()).max(1e-30);
+        for (i, row) in me.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                let diff = (val - me[j][i]).abs();
+                let scale = val.abs().max(me[j][i].abs()).max(1e-30);
                 assert!(
                     diff / scale < 1e-12,
                     "Mass matrix not symmetric at ({i},{j}): {} vs {}",
-                    me[i][j],
+                    val,
                     me[j][i]
                 );
             }
@@ -583,7 +561,6 @@ mod tests {
         );
     }
     /// Row-sum lumping of the consistent mass matrix should preserve total mass.
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_lump_mass_row_sum_preserves_total() {
         let nodes = [
@@ -595,10 +572,10 @@ mod tests {
         let density = 7800.0;
         let me = element_mass_matrix(&nodes, density);
         let mut triplets = Vec::new();
-        for i in 0..12 {
-            for j in 0..12 {
-                if me[i][j].abs() > 1e-60 {
-                    triplets.push((i, j, me[i][j]));
+        for (i, row) in me.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                if val.abs() > 1e-60 {
+                    triplets.push((i, j, val));
                 }
             }
         }
@@ -612,7 +589,6 @@ mod tests {
         );
     }
     /// All lumped masses should be positive.
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_lump_mass_all_positive() {
         let nodes = [
@@ -624,10 +600,10 @@ mod tests {
         let density = 7800.0;
         let me = element_mass_matrix(&nodes, density);
         let mut triplets = Vec::new();
-        for i in 0..12 {
-            for j in 0..12 {
-                if me[i][j].abs() > 1e-60 {
-                    triplets.push((i, j, me[i][j]));
+        for (i, row) in me.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                if val.abs() > 1e-60 {
+                    triplets.push((i, j, val));
                 }
             }
         }
@@ -694,7 +670,6 @@ mod tests {
         assert!(dt_crit < 1e-5, "dt_crit should be small, got {dt_crit}");
     }
     /// HRZ lumping should produce positive diagonal entries.
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_hrz_lumping_positive() {
         let nodes = [
@@ -706,10 +681,10 @@ mod tests {
         let density = 7800.0;
         let me = element_mass_matrix(&nodes, density);
         let mut triplets = Vec::new();
-        for i in 0..12 {
-            for j in 0..12 {
-                if me[i][j].abs() > 1e-60 {
-                    triplets.push((i, j, me[i][j]));
+        for (i, row) in me.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                if val.abs() > 1e-60 {
+                    triplets.push((i, j, val));
                 }
             }
         }
@@ -819,7 +794,6 @@ mod tests {
 /// * `dt` – time step (s)
 ///
 /// Returns the time history of modal displacement q_r(t).
-#[allow(clippy::too_many_arguments)]
 pub fn modal_newmark_1dof(
     omega_r: f64,
     zeta_r: f64,
@@ -1141,7 +1115,6 @@ mod tests_dynamic_expanded {
         let peak = acc.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
         assert!((peak - a_max).abs() / a_max < 0.01, "peak = {peak}");
     }
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_half_sine_pulse_zero_after_duration() {
         let a_max = 9.81;
@@ -1149,11 +1122,11 @@ mod tests_dynamic_expanded {
         let dt = 0.001;
         let acc = half_sine_pulse(a_max, t_d, dt, 0.5);
         let n_td = (t_d / dt) as usize + 2;
-        for i in n_td..acc.len() {
+        for (i, &a) in acc.iter().enumerate().skip(n_td) {
             assert!(
-                acc[i].abs() < 1e-10,
+                a.abs() < 1e-10,
                 "acc[{i}] = {} should be zero after pulse",
-                acc[i]
+                a
             );
         }
     }
@@ -1177,7 +1150,6 @@ mod tests_dynamic_expanded {
             t_peak
         );
     }
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_rectangular_pulse_constant() {
         let a_max = 3.0;
@@ -1185,8 +1157,8 @@ mod tests_dynamic_expanded {
         let dt = 0.01;
         let acc = rectangular_pulse(a_max, t_d, dt, 0.3);
         let n_td = (t_d / dt) as usize;
-        for i in 0..=n_td {
-            assert!((acc[i] - a_max).abs() < 1e-10, "acc[{i}] = {}", acc[i]);
+        for (i, &a) in acc.iter().enumerate().take(n_td + 1) {
+            assert!((a - a_max).abs() < 1e-10, "acc[{i}] = {}", a);
         }
     }
     #[test]
@@ -1471,7 +1443,6 @@ mod tests_dynamic_expanded {
 /// zeta1 = alpha/(2*omega1) + beta*omega1/2
 /// zeta2 = alpha/(2*omega2) + beta*omega2/2
 /// ```
-#[allow(dead_code)]
 pub fn compute_rayleigh_coefficients(
     omega1: f64,
     zeta1: f64,
@@ -1505,7 +1476,6 @@ pub fn compute_rayleigh_coefficients(
 /// * `n_modes_included`  – number of modes already used in the solution
 ///
 /// Returns the static correction displacement vector.
-#[allow(dead_code)]
 pub fn modal_truncation_correction(
     omega_n: &[f64],
     phi: &[Vec<f64>],
@@ -1549,8 +1519,6 @@ pub fn modal_truncation_correction(
 /// * `dt`            – time step
 /// * `u0`            – initial displacements
 /// * `v0`            – initial velocities
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn modal_superposition(
     omega_n: &[f64],
     zeta_modes: &[f64],
@@ -1623,7 +1591,6 @@ pub fn modal_superposition(
 /// Perform a complete response spectrum analysis (SRSS combination).
 ///
 /// Returns peak displacements and accelerations for each DOF using SRSS.
-#[allow(dead_code)]
 pub fn response_spectrum_analysis(input: &ResponseSpectrumInput) -> (Vec<f64>, Vec<f64>) {
     let n_modes = input.omega_n.len();
     let n_dof = if n_modes > 0 { input.phi[0].len() } else { 0 };
@@ -1663,7 +1630,6 @@ pub fn response_spectrum_analysis(input: &ResponseSpectrumInput) -> (Vec<f64>, V
 /// * `zeta`  – damping ratio
 ///
 /// Returns the peak absolute displacement Sd.
-#[allow(dead_code)]
 pub fn compute_sd(ag: &[f64], dt: f64, omega: f64, zeta: f64) -> f64 {
     let beta = 0.25_f64;
     let gamma_nb = 0.5_f64;
@@ -1706,7 +1672,6 @@ pub fn compute_sd(ag: &[f64], dt: f64, omega: f64, zeta: f64) -> f64 {
 /// Compute spectral acceleration Sa from a ground acceleration record.
 ///
 /// Returns the peak absolute acceleration Sa = ω² * Sd (pseudo-acceleration).
-#[allow(dead_code)]
 pub fn compute_sa(ag: &[f64], dt: f64, omega: f64, zeta: f64) -> f64 {
     let sd = compute_sd(ag, dt, omega, zeta);
     omega * omega * sd
@@ -1719,7 +1684,6 @@ pub fn compute_sa(ag: &[f64], dt: f64, omega: f64, zeta: f64) -> f64 {
 /// # Arguments
 /// * `omega_r` – reference natural frequency [rad/s]
 /// * `zeta_r`  – target damping ratio at `omega_r`
-#[allow(dead_code)]
 pub fn mass_proportional_damping_alpha(omega_r: f64, zeta_r: f64) -> f64 {
     2.0 * zeta_r * omega_r
 }
@@ -1731,7 +1695,6 @@ pub fn mass_proportional_damping_alpha(omega_r: f64, zeta_r: f64) -> f64 {
 /// # Arguments
 /// * `omega_r` – reference natural frequency [rad/s]
 /// * `zeta_r`  – target damping ratio at `omega_r`
-#[allow(dead_code)]
 pub fn stiffness_proportional_damping_beta(omega_r: f64, zeta_r: f64) -> f64 {
     2.0 * zeta_r / omega_r
 }
@@ -1739,14 +1702,12 @@ pub fn stiffness_proportional_damping_beta(omega_r: f64, zeta_r: f64) -> f64 {
 /// given Rayleigh coefficients (α, β).
 ///
 /// ζ(ω) = α / (2ω) + β ω / 2
-#[allow(dead_code)]
 pub fn rayleigh_modal_damping(omega: f64, alpha: f64, beta: f64) -> f64 {
     alpha / (2.0 * omega) + beta * omega / 2.0
 }
 /// Apply mass-proportional damping to a force vector (equivalent to C·v for diagonal M).
 ///
 /// Returns the damping force vector d = α * M_diag * v.
-#[allow(dead_code)]
 pub fn mass_proportional_damping_force(m_diag: &[f64], v: &[f64], alpha: f64) -> Vec<f64> {
     m_diag
         .iter()
@@ -1755,7 +1716,6 @@ pub fn mass_proportional_damping_force(m_diag: &[f64], v: &[f64], alpha: f64) ->
         .collect()
 }
 /// Apply stiffness-proportional damping to a force vector: d = β * K_diag * v.
-#[allow(dead_code)]
 pub fn stiffness_proportional_damping_force(k_diag: &[f64], v: &[f64], beta: f64) -> Vec<f64> {
     k_diag
         .iter()
@@ -1766,7 +1726,6 @@ pub fn stiffness_proportional_damping_force(k_diag: &[f64], v: &[f64], beta: f64
 /// Cross-correlation coefficient ρ_ij for the CQC combination rule.
 ///
 /// Uses the standard Wilson (1981) formula.
-#[allow(dead_code)]
 pub fn cqc_rho(omega_i: f64, omega_j: f64, zeta_i: f64, zeta_j: f64) -> f64 {
     let r = omega_j / omega_i;
     let zeta_sum = zeta_i + zeta_j;
@@ -1779,7 +1738,6 @@ pub fn cqc_rho(omega_i: f64, omega_j: f64, zeta_i: f64, zeta_j: f64) -> f64 {
 /// CQC combination with individual modal damping ratios.
 ///
 /// Returns the combined peak response from `modal_peaks` using the CQC rule.
-#[allow(dead_code)]
 pub fn cqc_combination_individual_zeta(modal_peaks: &[f64], omega: &[f64], zeta: &[f64]) -> f64 {
     let n = modal_peaks.len().min(omega.len()).min(zeta.len());
     let mut sum = 0.0_f64;
@@ -1797,7 +1755,6 @@ pub fn cqc_combination_individual_zeta(modal_peaks: &[f64], omega: &[f64], zeta:
 ///
 /// The exact analytical solution is:
 ///   u(t) = e^{-ζ ω_n t} [cos(ω_d t) + (ζ/√(1-ζ²)) sin(ω_d t)]
-#[allow(dead_code)]
 pub fn free_vibration_decay(omega_n: f64, zeta: f64, dt: f64, n_steps: usize) -> Vec<f64> {
     let omega_d = omega_n * (1.0 - zeta * zeta).max(0.0).sqrt();
     (0..n_steps)
@@ -1816,7 +1773,6 @@ pub fn free_vibration_decay(omega_n: f64, zeta: f64, dt: f64, n_steps: usize) ->
 /// Estimate damping ratio from successive peaks of a free vibration record.
 ///
 /// Uses logarithmic decrement: δ = ln(u1/u2), ζ = δ / √(4π² + δ²).
-#[allow(dead_code)]
 pub fn damping_from_successive_peaks(u1: f64, u2: f64) -> f64 {
     if u2.abs() < 1e-60 || u1.abs() < 1e-60 {
         return 0.0;
@@ -1834,7 +1790,6 @@ pub fn damping_from_successive_peaks(u1: f64, u2: f64) -> f64 {
 /// * `zeta`    – damping ratio
 /// * `dt`      – time step \[s\]
 /// * `n`       – number of samples
-#[allow(dead_code)]
 pub fn impulse_response_function(m: f64, omega_n: f64, zeta: f64, dt: f64, n: usize) -> Vec<f64> {
     let omega_d = omega_n * (1.0 - zeta * zeta).max(0.0).sqrt();
     let denom = m * omega_d;
@@ -1852,7 +1807,6 @@ pub fn impulse_response_function(m: f64, omega_n: f64, zeta: f64, dt: f64, n: us
 /// Compute the numerical energy ratio E_{n+1} / E_n for monitoring dissipation.
 ///
 /// Returns a value ≤ 1 for stable (dissipative) schemes, ≈ 1 for conservative.
-#[allow(dead_code)]
 pub fn numerical_energy_ratio(
     u_new: &[f64],
     v_new: &[f64],

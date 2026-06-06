@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,9 +14,6 @@
 //! - Pressure (inflatable balloon)
 //! - Anchor (world-space pin with compliance)
 //! - Constraint solver (Gauss-Seidel PBD)
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use oxiphysics_core::math::{Real, Vec3};
 
@@ -41,6 +37,7 @@ fn cross(a: Vec3, b: Vec3) -> Vec3 {
 }
 
 /// Outer product A = a ⊗ b as a flat \[9\] row-major array.
+#[cfg(test)]
 #[inline]
 fn outer(a: Vec3, b: Vec3) -> [Real; 9] {
     [
@@ -73,7 +70,6 @@ fn mat3_transpose(m: &[Real; 9]) -> [Real; 9] {
 }
 
 /// 3×3 matrix product (row-major).
-#[allow(clippy::many_single_char_names)]
 #[inline]
 fn mat3_mul(a: &[Real; 9], b: &[Real; 9]) -> [Real; 9] {
     let mut c = [0.0_f64; 9];
@@ -231,9 +227,9 @@ impl SoftConstraint for IsometricBendingConstraint {
 
         // Gradient of E with respect to each particle: grad_i E = sum_j Q_ij x_j
         let mut grads = [Vec3::zeros(); 4];
-        for i in 0..4 {
-            for j in 0..4 {
-                grads[i] += ps[j] * self.q_matrix[i * 4 + j];
+        for (i, grad) in grads.iter_mut().enumerate() {
+            for (j, p_j) in ps.iter().enumerate() {
+                *grad += *p_j * self.q_matrix[i * 4 + j];
             }
         }
 

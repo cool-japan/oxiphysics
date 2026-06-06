@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,9 +6,6 @@
 //! Provides mock implementations for HDF5, parallel netCDF, ADIOS2,
 //! checkpoint management, distributed mesh I/O, performance logging,
 //! and scientific JSON with base64-encoded float arrays.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::collections::HashMap;
 
@@ -684,8 +680,8 @@ impl DistributedMeshIO {
         let start = rank * block;
         let end = (start + block).min(n_nodes_total);
         let mut mesh = Self::new(rank, n_ranks);
-        for i in start..end {
-            mesh.add_local_node(positions[i], i as u64);
+        for (i, &pos) in positions[start..end].iter().enumerate() {
+            mesh.add_local_node(pos, (start + i) as u64);
         }
         mesh
     }
@@ -1095,7 +1091,8 @@ mod tests {
 
     #[test]
     fn test_checkpoint_manager_register() {
-        let mut cm = CheckpointManager::new("/tmp/ckpt", 3);
+        let base = std::env::temp_dir().join("hpc_ckpt_register");
+        let mut cm = CheckpointManager::new(base.to_str().unwrap_or(""), 3);
         let path = cm.register(100, 1.0);
         assert!(path.contains("checkpoint_000000"));
         assert_eq!(cm.n_checkpoints(), 1);
@@ -1103,7 +1100,8 @@ mod tests {
 
     #[test]
     fn test_checkpoint_manager_keep_last_n() {
-        let mut cm = CheckpointManager::new("/tmp/ckpt", 2);
+        let base = std::env::temp_dir().join("hpc_ckpt_keepn");
+        let mut cm = CheckpointManager::new(base.to_str().unwrap_or(""), 2);
         cm.register(0, 0.0);
         cm.register(1, 1.0);
         cm.register(2, 2.0);
@@ -1112,7 +1110,8 @@ mod tests {
 
     #[test]
     fn test_checkpoint_manager_latest() {
-        let mut cm = CheckpointManager::new("/tmp/ckpt", 5);
+        let base = std::env::temp_dir().join("hpc_ckpt_latest");
+        let mut cm = CheckpointManager::new(base.to_str().unwrap_or(""), 5);
         cm.register(10, 1.0);
         cm.register(20, 2.0);
         assert_eq!(cm.latest().unwrap().step, 20);
@@ -1120,7 +1119,8 @@ mod tests {
 
     #[test]
     fn test_checkpoint_manager_restore_by_index() {
-        let mut cm = CheckpointManager::new("/tmp/ckpt", 5);
+        let base = std::env::temp_dir().join("hpc_ckpt_restore");
+        let mut cm = CheckpointManager::new(base.to_str().unwrap_or(""), 5);
         cm.register(10, 1.0);
         let e = cm.restore_by_index(0);
         assert!(e.is_some());

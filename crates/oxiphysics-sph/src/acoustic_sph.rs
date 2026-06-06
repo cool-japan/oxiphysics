@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -161,20 +160,25 @@ impl LinearAcousticSph {
         let mut dp = vec![0.0f64; n];
         let mut du = vec![[0.0f64; 3]; n];
 
-        for i in 0..n {
-            dp[i] = self.continuity_rhs(i);
-            let rhs = self.momentum_rhs(i);
-            du[i] = rhs;
+        for (i, (dp_i, du_i)) in dp.iter_mut().zip(du.iter_mut()).enumerate() {
+            *dp_i = self.continuity_rhs(i);
+            *du_i = self.momentum_rhs(i);
         }
 
         for i in 0..n {
             self.particles[i].acoustic_density += dp[i] * dt;
             self.particles[i].acoustic_pressure =
                 self.acoustic_eos(self.particles[i].acoustic_density);
-            for k in 0..3 {
-                self.particles[i].acoustic_velocity[k] += du[i][k] * dt;
-                self.particles[i].position[k] +=
-                    (self.particles[i].velocity[k] + self.particles[i].acoustic_velocity[k]) * dt;
+            let du_i = du[i];
+            let p = &mut self.particles[i];
+            for ((av, pos), (&du_k, &vel)) in p
+                .acoustic_velocity
+                .iter_mut()
+                .zip(p.position.iter_mut())
+                .zip(du_i.iter().zip(p.velocity.iter()))
+            {
+                *av += du_k * dt;
+                *pos += (vel + *av) * dt;
             }
         }
         self.time += dt;
@@ -190,26 +194,14 @@ impl LinearAcousticSph {
         cfl * h_min / self.sound_speed
     }
 
-    /// Cubic spline kernel (1D, normalized).
-    fn cubic_kernel_1d(q: f64, h: f64) -> f64 {
-        let sigma = 2.0 / (3.0 * h);
-        if q < 1.0 {
-            sigma * (1.0 - 1.5 * q * q + 0.75 * q * q * q)
-        } else if q < 2.0 {
-            sigma * 0.25 * (2.0 - q).powi(3)
-        } else {
-            0.0
-        }
-    }
-
     /// Kernel gradient between particles i and j.
     fn kernel_gradient(&self, pi: &AcousticParticle, pj: &AcousticParticle) -> [f64; 3] {
         let h = 0.5 * (pi.h + pj.h);
         let mut r_vec = [0.0f64; 3];
         let mut r = 0.0;
-        for k in 0..3 {
-            r_vec[k] = pi.position[k] - pj.position[k];
-            r += r_vec[k] * r_vec[k];
+        for (k, rv) in r_vec.iter_mut().enumerate() {
+            *rv = pi.position[k] - pj.position[k];
+            r += *rv * *rv;
         }
         r = r.sqrt();
         if r < 1e-15 {
@@ -231,15 +223,6 @@ impl LinearAcousticSph {
             grad[k] = dw_dr * r_vec[k] / r;
         }
         grad
-    }
-
-    /// Returns the kernel value W(r, h) using cubic spline.
-    #[allow(dead_code)]
-    fn kernel_value(&self, pi: &AcousticParticle, pj: &AcousticParticle) -> f64 {
-        let h = 0.5 * (pi.h + pj.h);
-        let r = pi.distance_to(pj);
-        let q = r / h;
-        Self::cubic_kernel_1d(q, h)
     }
 }
 
@@ -386,9 +369,13 @@ impl WaveEquationSph {
         let n = self.pressures.len();
         let lap: Vec<f64> = (0..n).map(|i| self.laplacian(i)).collect();
         let c2 = self.sound_speed * self.sound_speed;
-        for i in 0..n {
-            self.dp_dt[i] += c2 * lap[i] * dt;
-            self.pressures[i] += self.dp_dt[i] * dt;
+        for (dp_dt, (pressure, lap_i)) in self
+            .dp_dt
+            .iter_mut()
+            .zip(self.pressures.iter_mut().zip(lap.iter()))
+        {
+            *dp_dt += c2 * lap_i * dt;
+            *pressure += *dp_dt * dt;
         }
         self.time += dt;
     }
@@ -431,9 +418,9 @@ impl AeroacousticsSph {
     /// Computes the Lighthill stress tensor T_ij = ρ u_i u_j (isentropic, inviscid).
     pub fn lighthill_tensor(density: f64, velocity: &[f64; 3]) -> [[f64; 3]; 3] {
         let mut t = [[0.0f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                t[i][j] = density * velocity[i] * velocity[j];
+        for (i, ti) in t.iter_mut().enumerate() {
+            for (j, tij) in ti.iter_mut().enumerate() {
+                *tij = density * velocity[i] * velocity[j];
             }
         }
         t
@@ -441,9 +428,9 @@ impl AeroacousticsSph {
 
     /// Symmetry check of the Lighthill tensor: T_ij == T_ji.
     pub fn is_symmetric(t: &[[f64; 3]; 3]) -> bool {
-        for i in 0..3 {
-            for j in 0..3 {
-                if (t[i][j] - t[j][i]).abs() > 1e-10 {
+        for (i, ti) in t.iter().enumerate() {
+            for (j, &tij) in ti.iter().enumerate() {
+                if (tij - t[j][i]).abs() > 1e-10 {
                     return false;
                 }
             }
@@ -465,13 +452,15 @@ impl AeroacousticsSph {
         d2t_dt2: &[f64],
     ) -> f64 {
         let mut p_prime = 0.0;
-        for j in 0..source_positions.len() {
-            let mut r = 0.0;
-            for k in 0..3 {
-                let d = self.observer[k] - source_positions[j][k];
-                r += d * d;
-            }
-            r = r.sqrt();
+        for (j, sp) in source_positions.iter().enumerate() {
+            let r = {
+                let mut r2 = 0.0;
+                for (&obs_k, &sp_k) in self.observer.iter().zip(sp.iter()) {
+                    let d = obs_k - sp_k;
+                    r2 += d * d;
+                }
+                r2.sqrt()
+            };
             if r < 1e-15 {
                 continue;
             }
@@ -531,7 +520,6 @@ impl AcousticAbsorption {
     }
 
     /// Creates an absorption model with custom parameters.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         bulk_viscosity: f64,
         shear_viscosity: f64,
@@ -1063,9 +1051,9 @@ mod tests {
     fn test_lighthill_tensor_zero_velocity() {
         let v = [0.0, 0.0, 0.0];
         let t = AeroacousticsSph::lighthill_tensor(1.2, &v);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((t[i][j] - 0.0).abs() < 1e-15);
+        for row in &t {
+            for &val in row {
+                assert!(val.abs() < 1e-15);
             }
         }
     }

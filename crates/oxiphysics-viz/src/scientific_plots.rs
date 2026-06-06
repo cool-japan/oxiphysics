@@ -17,9 +17,6 @@
 //! - [`TimeFrequencyData`] — short-time Fourier transform (STFT) spectrogram
 //! - [`ScientificAxis`] — linear/log axis with Wilkinson-style tick generation
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

@@ -77,7 +77,6 @@ pub struct GpuThermalSolver {
 
 impl GpuThermalSolver {
     /// Create a new solver with uniform initial temperature `t0`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         nx: usize,
         ny: usize,
@@ -179,7 +178,6 @@ pub fn gpu_heat_diffusion(solver: &mut GpuThermalSolver, dt: f64) {
 /// * `bc_ymax` - BC on the y = ny-1 face.
 /// * `bc_zmin` - BC on the z = 0 face.
 /// * `bc_zmax` - BC on the z = nz-1 face.
-#[allow(clippy::too_many_arguments)]
 pub fn thermal_boundary_apply(
     solver: &mut GpuThermalSolver,
     bc_xmin: ThermalBc,
@@ -225,7 +223,6 @@ pub fn thermal_boundary_apply(
 }
 
 /// Internal helper: apply one BC to a cell.
-#[allow(dead_code)]
 fn apply_bc_to_cell(temperature: &mut [f64], idx: usize, bc: ThermalBc, _h: f64) {
     match bc {
         ThermalBc::Dirichlet(val) => {

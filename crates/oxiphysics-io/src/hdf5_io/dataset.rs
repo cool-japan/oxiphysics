@@ -3,8 +3,6 @@
 
 //! HDF5 dataset: a named, typed, shaped array with optional metadata.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use super::types::{

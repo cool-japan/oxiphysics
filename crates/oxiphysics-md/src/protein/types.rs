@@ -2,12 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// A protein chain composed of residues.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ProteinChain {
     /// Ordered list of residues in the chain.
@@ -92,7 +87,6 @@ impl ProteinChain {
     }
 }
 /// DSSP-like secondary structure classification.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecondaryStructure {
     /// Alpha-helix (H)
@@ -105,7 +99,6 @@ pub enum SecondaryStructure {
     Coil,
 }
 /// A single residue with its amino acid type and Cα coordinates.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Residue {
     /// The amino acid type.
@@ -114,7 +107,6 @@ pub struct Residue {
     pub ca_position: [f64; 3],
 }
 /// Extended residue with backbone dihedral angles.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ResidueExtended {
     /// Amino acid type.
@@ -129,7 +121,6 @@ pub struct ResidueExtended {
     pub o_position: Option<[f64; 3]>,
 }
 /// Ramachandran plot statistics for a chain.
-#[allow(dead_code)]
 pub struct RamachandranStats {
     /// Fraction in alpha-helix region.
     pub helix_fraction: f64,
@@ -145,7 +136,6 @@ pub struct RamachandranStats {
     pub n_classified: usize,
 }
 /// The 20 standard amino acids.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AminoAcid {
     /// Alanine
@@ -309,7 +299,6 @@ impl AminoAcid {
     }
 }
 /// Ramachandran plot region classification.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RamachandranRegion {
     /// Favoured alpha-helix region (phi ≈ -60°, psi ≈ -40°)

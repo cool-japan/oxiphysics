@@ -2,18 +2,13 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// Slow-fast system splitter for stiff ODEs.
 ///
 /// Models `dy/dt = f_slow(y, z) + f_fast(y, z)` where `z = z(y)` at slow
 /// equilibrium.  Implements the heterogeneous multiscale method for ODEs
 /// (HMM-ODE): run the fast system to equilibrium, then advance the slow
 /// variables.
-#[allow(dead_code)]
 pub struct SlowFastSplitter {
     /// Slow time step.
     pub dt_slow: f64,
@@ -42,7 +37,7 @@ impl SlowFastSplitter {
     pub fn step<FS, FF>(
         &self,
         slow: &[f64],
-        fast: &mut Vec<f64>,
+        fast: &mut [f64],
         slow_rhs: FS,
         fast_rhs: FF,
     ) -> Vec<f64>
@@ -74,7 +69,6 @@ impl SlowFastSplitter {
 ///
 /// Instead of simple Euler extrapolation, this uses a Runge-Kutta 4
 /// step on the coarse time derivative estimated from the micro solver.
-#[allow(dead_code)]
 pub struct CpiRk4 {
     /// Micro time step.
     pub dt_micro: f64,
@@ -163,7 +157,6 @@ impl CpiRk4 {
     }
 }
 /// Result of a homogenization cell-problem solve.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HomogenizationResult {
     /// Effective isotropic property (scalar for simplicity).
@@ -182,7 +175,6 @@ pub struct HomogenizationResult {
 /// A coarse grid for sequential multiscale upscaling.
 ///
 /// Each coarse cell aggregates a block of fine-grid cells.
-#[allow(dead_code)]
 pub struct CoarseGrid {
     /// Number of coarse cells.
     pub n_coarse: usize,
@@ -225,35 +217,17 @@ impl CoarseGrid {
     pub fn downscale_linear(&self) -> Vec<f64> {
         let n_fine = self.fine_values.len();
         let mut fine = vec![0.0f64; n_fine];
-        for fi in 0..n_fine {
+        for (fi, fv) in fine.iter_mut().enumerate() {
             let ci_f = fi as f64 / self.ratio as f64;
             let ci0 = (ci_f as usize).min(self.n_coarse - 1);
             let ci1 = (ci0 + 1).min(self.n_coarse - 1);
             let alpha = ci_f - ci0 as f64;
-            fine[fi] = (1.0 - alpha) * self.coarse_values[ci0] + alpha * self.coarse_values[ci1];
+            *fv = (1.0 - alpha) * self.coarse_values[ci0] + alpha * self.coarse_values[ci1];
         }
         fine
     }
 }
-#[allow(dead_code)]
-pub(super) struct Lcg {
-    pub(super) state: u64,
-}
-#[allow(dead_code)]
-impl Lcg {
-    fn new(seed: u64) -> Self {
-        Self { state: seed.max(1) }
-    }
-    fn next_f64(&mut self) -> f64 {
-        self.state = self
-            .state
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        ((self.state >> 11) as f64) * (1.0 / (1u64 << 53) as f64)
-    }
-}
 /// A rectangular subregion used in concurrent multiscale domain decomposition.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SubDomain {
     /// Domain index.
@@ -304,7 +278,6 @@ impl SubDomain {
     }
 }
 /// Resolution level for adaptive multiscale switching.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolutionLevel {
     /// Coarse (macro-scale) solver.
@@ -315,7 +288,6 @@ pub enum ResolutionLevel {
     Fine,
 }
 /// Criterion for triggering a resolution change.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AdaptiveCriterion {
     /// Error threshold above which we switch to a finer level.
@@ -354,7 +326,6 @@ impl AdaptiveCriterion {
     }
 }
 /// Adaptive multiscale mesh node.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AdaptiveNode {
     /// Position of this node.
@@ -382,7 +353,6 @@ impl AdaptiveNode {
     }
 }
 /// Configuration for the Heterogeneous Multiscale Method.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HmmConfig {
     /// Number of macro quadrature points.
@@ -401,7 +371,6 @@ pub struct HmmConfig {
 /// The cell is divided into `nx × ny × nz` voxels.  Each voxel carries a
 /// local material tensor (isotropic here, stored as a scalar conductivity /
 /// Young's modulus).
-#[allow(dead_code)]
 pub struct UnitCell {
     /// Number of voxels along x.
     pub nx: usize,
@@ -468,7 +437,6 @@ impl UnitCell {
     }
 }
 /// Multi-level error estimator that tracks errors across scale levels.
-#[allow(dead_code)]
 pub struct MultilevelErrorEstimator {
     /// Error tolerance per level.
     pub tolerances: Vec<f64>,
@@ -508,7 +476,6 @@ impl MultilevelErrorEstimator {
 /// 2. **Run**: advance the fine-scale model for a healing + estimation window.
 /// 3. **Restrict**: coarsen the fine-scale state.
 /// 4. **Project**: extrapolate coarse state over a large time step.
-#[allow(dead_code)]
 pub struct EquationFreeIntegrator {
     /// Time step for the fine-scale (microscale) solver.
     pub dt_micro: f64,
@@ -571,7 +538,6 @@ impl EquationFreeIntegrator {
     }
 }
 /// A node on the nudged elastic band (NEB) for minimum energy path finding.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NebImage {
     /// Configuration coordinates.
@@ -593,7 +559,6 @@ impl NebImage {
     }
 }
 /// Domain decomposition for concurrent multiscale simulation.
-#[allow(dead_code)]
 pub struct ConcurrentDomainDecomposition {
     /// List of all subdomains.
     pub domains: Vec<SubDomain>,
@@ -649,7 +614,6 @@ impl ConcurrentDomainDecomposition {
 }
 /// A macro-scale quadrature point carrying effective data computed by
 /// the micro solver.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MacroPoint {
     /// Position in macro domain.
@@ -660,7 +624,6 @@ pub struct MacroPoint {
     pub effective_stiffness: f64,
 }
 /// Atom in the atomistic region.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Atom {
     /// Current position.
@@ -681,7 +644,6 @@ impl Atom {
     }
 }
 /// Phase-field model parameters for Allen-Cahn microstructure evolution.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PhaseFieldParams {
     /// Interfacial energy parameter ε².
@@ -710,7 +672,6 @@ impl PhaseFieldParams {
     }
 }
 /// A coarse-grained bead representing a group of atoms.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CgBead {
     /// Position.
@@ -752,7 +713,6 @@ impl CgBead {
 ///
 /// In information-passing multiscale methods the micro simulator is run
 /// off-line for a set of macro inputs, and results are tabulated.
-#[allow(dead_code)]
 pub struct MicroDataTable {
     /// Macro inputs (e.g., strain values).
     pub inputs: Vec<f64>,
@@ -798,7 +758,6 @@ impl MicroDataTable {
 ///
 /// Given solutions on a coarse grid (`h`) and a fine grid (`h/2`),
 /// estimates the leading-order error and extrapolated solution.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RichardsonEstimator {
     /// Order of the numerical method (e.g., 2 for second-order).

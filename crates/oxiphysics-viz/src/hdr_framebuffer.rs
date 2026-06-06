@@ -31,8 +31,6 @@
 //! assert_eq!(ldr.len(), 4 * 4 * 4); // RGBA bytes
 //! ```
 
-#![allow(dead_code)]
-
 // ── HdrPixel ─────────────────────────────────────────────────────────────────
 
 /// An RGBA pixel with f32 components; values may exceed `[0, 1]`.

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -20,9 +19,6 @@
 //!   integration over an elliptical contact patch.
 //! - [`WrenchSpace`] — 6-D wrench representation, grasp map, and contact
 //!   wrench cone.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -172,10 +168,10 @@ impl DeformableBody {
     ///
     /// Uses semi-implicit Euler.
     pub fn integrate(&mut self, f_modal: [f64; NUM_MODES], dt: f64) {
-        for i in 0..NUM_MODES {
+        for (i, f_m) in f_modal.iter().enumerate() {
             let f_damp = -self.modal_damping[i] * self.q_dot[i];
             let f_spring = -self.modal_stiffness[i] * self.q[i];
-            let q_ddot = (f_modal[i] + f_spring + f_damp) / self.modal_mass[i];
+            let q_ddot = (f_m + f_spring + f_damp) / self.modal_mass[i];
             self.q_dot[i] += q_ddot * dt;
             self.q[i] += self.q_dot[i] * dt;
         }
@@ -206,9 +202,9 @@ impl DeformableBody {
     /// deformation vector.
     pub fn apply_compliance(&self, wrench: [f64; 6]) -> [f64; 6] {
         let mut deform = [0.0_f64; 6];
-        for i in 0..6 {
-            for j in 0..6 {
-                deform[i] += self.compliance[i * 6 + j] * wrench[j];
+        for (i, d_i) in deform.iter_mut().enumerate() {
+            for (j, w_j) in wrench.iter().enumerate() {
+                *d_i += self.compliance[i * 6 + j] * w_j;
             }
         }
         deform
@@ -391,12 +387,12 @@ impl RigidFlexiCoupling {
     pub fn resultant_force(&self, q: &[f64], modal_stiffness: &[f64]) -> [f64; 3] {
         let mut force = [0.0_f64; 3];
         let n = q.len().min(self.n_modes);
-        for i in 0..n {
-            let k_q = modal_stiffness.get(i).copied().unwrap_or(1.0) * q[i];
+        for (i, q_i) in q.iter().enumerate().take(n) {
+            let k_q = modal_stiffness.get(i).copied().unwrap_or(1.0) * q_i;
             let phi = &self.force_participation[i * 3..i * 3 + 3];
-            force[0] += phi[0] * k_q;
-            force[1] += phi[1] * k_q;
-            force[2] += phi[2] * k_q;
+            for (f_d, phi_d) in force.iter_mut().zip(phi.iter()) {
+                *f_d += phi_d * k_q;
+            }
         }
         force
     }
@@ -405,12 +401,12 @@ impl RigidFlexiCoupling {
     pub fn resultant_torque(&self, q: &[f64], modal_stiffness: &[f64]) -> [f64; 3] {
         let mut torque = [0.0_f64; 3];
         let n = q.len().min(self.n_modes);
-        for i in 0..n {
-            let k_q = modal_stiffness.get(i).copied().unwrap_or(1.0) * q[i];
+        for (i, q_i) in q.iter().enumerate().take(n) {
+            let k_q = modal_stiffness.get(i).copied().unwrap_or(1.0) * q_i;
             let phi = &self.torque_participation[i * 3..i * 3 + 3];
-            torque[0] += phi[0] * k_q;
-            torque[1] += phi[1] * k_q;
-            torque[2] += phi[2] * k_q;
+            for (t_d, phi_d) in torque.iter_mut().zip(phi.iter()) {
+                *t_d += phi_d * k_q;
+            }
         }
         torque
     }
@@ -419,9 +415,9 @@ impl RigidFlexiCoupling {
     /// at the surface, projected through participation vectors.
     pub fn project_force_to_modes(&self, f: [f64; 3]) -> Vec<f64> {
         let mut q_force = vec![0.0_f64; self.n_modes];
-        for i in 0..self.n_modes {
+        for (i, q_f) in q_force.iter_mut().enumerate() {
             let phi = &self.force_participation[i * 3..i * 3 + 3];
-            q_force[i] = phi[0] * f[0] + phi[1] * f[1] + phi[2] * f[2];
+            *q_f = phi[0] * f[0] + phi[1] * f[1] + phi[2] * f[2];
         }
         q_force
     }
@@ -432,11 +428,11 @@ impl RigidFlexiCoupling {
     pub fn reconstruct_displacement(&self, q: &[f64]) -> [f64; 3] {
         let mut disp = [0.0_f64; 3];
         let n = q.len().min(self.n_modes);
-        for i in 0..n {
+        for (i, q_i) in q.iter().enumerate().take(n) {
             let phi = &self.force_participation[i * 3..i * 3 + 3];
-            disp[0] += phi[0] * q[i];
-            disp[1] += phi[1] * q[i];
-            disp[2] += phi[2] * q[i];
+            for (d_d, phi_d) in disp.iter_mut().zip(phi.iter()) {
+                *d_d += phi_d * q_i;
+            }
         }
         disp
     }
@@ -745,8 +741,8 @@ impl GraspMap {
         let n = contact_points.len();
         let mut tangent1 = Vec::with_capacity(n);
         let mut tangent2 = Vec::with_capacity(n);
-        for i in 0..n {
-            let n_hat = v3_normalise(contact_normals[i]);
+        for normal in &contact_normals {
+            let n_hat = v3_normalise(*normal);
             // Choose an auxiliary vector not parallel to n_hat
             let aux = if n_hat[0].abs() < 0.9 {
                 [1.0_f64, 0.0, 0.0]
@@ -773,12 +769,13 @@ impl GraspMap {
     /// Each `contact_forces[i]` is expressed in world coordinates.
     pub fn map_to_wrench(&self, contact_forces: &[[f64; 3]]) -> Wrench {
         let mut net = Wrench::zero();
-        let n = contact_forces.len().min(self.n_contacts);
-        for i in 0..n {
-            let f = contact_forces[i];
-            let r = self.contact_points[i];
-            let torque = v3_cross(r, f);
-            net.force = v3_add(net.force, f);
+        for (force, pt) in contact_forces
+            .iter()
+            .zip(self.contact_points.iter())
+            .take(self.n_contacts)
+        {
+            let torque = v3_cross(*pt, *force);
+            net.force = v3_add(net.force, *force);
             net.moment = v3_add(net.moment, torque);
         }
         net
@@ -797,14 +794,19 @@ impl GraspMap {
         if n_hat.is_empty() {
             return false;
         }
-        for i in 0..self.n_contacts {
-            let fn_i = v3_dot(wrench.force, n_hat[i]);
+        for ((normal, t1), t2) in n_hat
+            .iter()
+            .zip(self.tangent1.iter())
+            .zip(self.tangent2.iter())
+            .take(self.n_contacts)
+        {
+            let fn_i = v3_dot(wrench.force, *normal);
             if fn_i < 0.0 {
                 return false;
             }
             // Friction cone: |tangential force| ≤ μ * fn
-            let ft1 = v3_dot(wrench.force, self.tangent1[i]).abs();
-            let ft2 = v3_dot(wrench.force, self.tangent2[i]).abs();
+            let ft1 = v3_dot(wrench.force, *t1).abs();
+            let ft2 = v3_dot(wrench.force, *t2).abs();
             if ft1 + ft2 > friction_coeff * fn_i + 1e-9 {
                 return false;
             }
@@ -913,8 +915,8 @@ mod tests {
         let wrench = [1.0_f64; 6];
         let deform = body.apply_compliance(wrench);
         // All deformations should be non-zero
-        for i in 0..6 {
-            assert!(deform[i].abs() > 0.0, "deform[{i}] should be non-zero");
+        for (i, &d) in deform.iter().enumerate() {
+            assert!(d.abs() > 0.0, "deform[{i}] should be non-zero");
         }
     }
 

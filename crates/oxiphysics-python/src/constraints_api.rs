@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,9 +6,6 @@
 //! Provides Python-friendly types for rigid body constraint solving,
 //! joints, contact constraints, motors, island management, CCD,
 //! PBD/XPBD solvers, control systems, friction models, and warm starting.
-
-#![allow(missing_docs)]
-#![allow(dead_code)]
 
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -1338,25 +1334,25 @@ impl PyControlSystem {
         let p = self.num_outputs;
         // dx = A x + B u
         let mut dx = vec![0.0f64; n];
-        for i in 0..n {
-            for j in 0..n {
-                dx[i] += self.a_matrix[i * n + j] * self.state[j];
+        for (i, dx_i) in dx.iter_mut().enumerate() {
+            for (j, &s_j) in self.state.iter().enumerate() {
+                *dx_i += self.a_matrix[i * n + j] * s_j;
             }
-            for j in 0..m {
-                dx[i] += self.b_matrix[i * m + j] * u.get(j).copied().unwrap_or(0.0);
+            for (j, u_j) in u.iter().enumerate().take(m) {
+                *dx_i += self.b_matrix[i * m + j] * u_j;
             }
         }
-        for i in 0..n {
-            self.state[i] += dx[i] * dt;
+        for (s, dx_i) in self.state.iter_mut().zip(dx.iter()) {
+            *s += dx_i * dt;
         }
         // y = C x + D u
         let mut y = vec![0.0f64; p];
-        for i in 0..p {
-            for j in 0..n {
-                y[i] += self.c_matrix[i * n + j] * self.state[j];
+        for (i, y_i) in y.iter_mut().enumerate() {
+            for (j, &s_j) in self.state.iter().enumerate() {
+                *y_i += self.c_matrix[i * n + j] * s_j;
             }
-            for j in 0..m {
-                y[i] += self.d_matrix[i * m + j] * u.get(j).copied().unwrap_or(0.0);
+            for (j, u_j) in u.iter().enumerate().take(m) {
+                *y_i += self.d_matrix[i * m + j] * u_j;
             }
         }
         y

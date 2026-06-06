@@ -1,4 +1,3 @@
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -176,7 +175,6 @@ pub struct GursonModel {
 
 impl GursonModel {
     /// Creates a new GTN model with standard Tvergaard parameters.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         void_fraction: f64,
         f_critical: f64,
@@ -406,7 +404,6 @@ pub struct CoupledDamagePlasticity {
 
 impl CoupledDamagePlasticity {
     /// Creates a new coupled damage-plasticity model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         young_modulus: f64,
         sigma_y0: f64,
@@ -550,7 +547,6 @@ impl WeibullModel {
 }
 
 /// Computes Γ(x) using Lanczos approximation (valid for x > 0.5).
-#[allow(dead_code)]
 fn gamma_function(x: f64) -> f64 {
     // Lanczos coefficients g=7, n=9
     let coeffs = [
@@ -951,7 +947,7 @@ mod tests {
         for i in 1..50 {
             let eps = [i as f64 * 1e-3, 0.0, 0.0];
             let d = model.update(&eps, 1.0);
-            assert!(d >= 0.0 && d <= 1.0);
+            assert!((0.0..=1.0).contains(&d));
         }
     }
 

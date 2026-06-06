@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 // Auto-generated module
 //
 // 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
@@ -8,7 +7,6 @@ use std::f64::consts::PI;
 use super::functions::*;
 
 /// Polytropic equation of state: P = K * ρ^Γ.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct PolytropicEos {
     /// Polytropic constant K.
@@ -16,7 +14,6 @@ pub struct PolytropicEos {
     /// Polytropic exponent Γ = 1 + 1/n where n is the polytropic index.
     pub gamma_poly: f64,
 }
-#[allow(dead_code)]
 impl PolytropicEos {
     /// Create a new polytropic EOS.
     pub fn new(k: f64, gamma_poly: f64) -> Self {
@@ -411,7 +408,6 @@ impl AdiabaticEos {
     }
 }
 /// Supernova feedback model parameters.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SupernovaFeedback {
     /// Energy per supernova event \[erg\] (canonical: 1e51).
@@ -425,7 +421,6 @@ pub struct SupernovaFeedback {
     /// Minimum number of neighbours to distribute energy.
     pub min_neighbours: usize,
 }
-#[allow(dead_code)]
 impl SupernovaFeedback {
     /// Create a standard supernova feedback model.
     pub fn standard() -> Self {
@@ -474,7 +469,6 @@ impl SupernovaFeedback {
     }
 }
 /// Cosmological parameters for comoving SPH.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Cosmology {
     /// Current scale factor a(t).
@@ -488,7 +482,6 @@ pub struct Cosmology {
     /// Radiation density parameter Ω_r (usually small).
     pub omega_r: f64,
 }
-#[allow(dead_code)]
 impl Cosmology {
     /// Create a standard ΛCDM cosmology (Planck 2018 values).
     pub fn planck2018() -> Self {
@@ -580,7 +573,6 @@ impl Cosmology {
     }
 }
 /// Radiative cooling function type.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub enum CoolingFunction {
     /// No cooling.
@@ -595,7 +587,6 @@ pub enum CoolingFunction {
     Tabulated,
 }
 /// A node in the Barnes-Hut octree.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OctreeNode {
     /// Bounding box of this node.
@@ -609,7 +600,6 @@ pub struct OctreeNode {
     /// Particle index (only set for leaf nodes with exactly one particle).
     pub particle_idx: Option<usize>,
 }
-#[allow(dead_code)]
 impl OctreeNode {
     /// Create an empty octree node.
     pub fn new(bbox: BBox3) -> Self {
@@ -626,8 +616,8 @@ impl OctreeNode {
         if max_depth == 0 {
             let tm = self.total_mass + mass;
             if tm > 0.0 {
-                for d in 0..3 {
-                    self.com[d] = (self.com[d] * self.total_mass + pos[d] * mass) / tm;
+                for (c, &p) in self.com.iter_mut().zip(pos.iter()) {
+                    *c = (*c * self.total_mass + p * mass) / tm;
                 }
             }
             self.total_mass = tm;
@@ -657,8 +647,8 @@ impl OctreeNode {
         child.insert(idx, pos, mass, max_depth - 1);
         let tm = self.total_mass + mass;
         if tm > 0.0 {
-            for d in 0..3 {
-                self.com[d] = (self.com[d] * self.total_mass + pos[d] * mass) / tm;
+            for (c, &p) in self.com.iter_mut().zip(pos.iter()) {
+                *c = (*c * self.total_mass + p * mass) / tm;
             }
         }
         self.total_mass = tm;
@@ -692,6 +682,35 @@ impl OctreeNode {
         acc
     }
 }
+/// Particle-pair data for the artificial-viscosity kernel.
+///
+/// Groups all per-particle scalars needed by [`ArtificialViscosity::compute_pi`]
+/// and [`ArtificialViscosity::compute_pi_balsara`] into a single struct so the
+/// public methods stay within the argument-count limit.
+#[derive(Debug, Clone, Copy)]
+pub struct ViscoPair {
+    /// Position of particle i \[m\]
+    pub ri: [f64; 3],
+    /// Position of particle j \[m\]
+    pub rj: [f64; 3],
+    /// Velocity of particle i \[m/s\]
+    pub vi: [f64; 3],
+    /// Velocity of particle j \[m/s\]
+    pub vj: [f64; 3],
+    /// Density of particle i \[kg/m³\]
+    pub rho_i: f64,
+    /// Density of particle j \[kg/m³\]
+    pub rho_j: f64,
+    /// Sound speed of particle i \[m/s\]
+    pub cs_i: f64,
+    /// Sound speed of particle j \[m/s\]
+    pub cs_j: f64,
+    /// Smoothing length of particle i \[m\]
+    pub hi: f64,
+    /// Smoothing length of particle j \[m\]
+    pub hj: f64,
+}
+
 /// Artificial viscosity for SPH shock capturing.
 ///
 /// Implements the standard Monaghan viscosity with Balsara limiter.
@@ -726,19 +745,19 @@ impl ArtificialViscosity {
     /// Uses the Monaghan (1992) formulation:
     /// Pi_ij = (-alpha * c_bar * mu_ij + beta * mu_ij^2) / rho_bar
     /// where mu_ij = h_bar * v_ij . r_ij / (|r_ij|^2 + eta^2)
-    pub fn compute_pi(
-        &self,
-        ri: [f64; 3],
-        rj: [f64; 3],
-        vi: [f64; 3],
-        vj: [f64; 3],
-        rho_i: f64,
-        rho_j: f64,
-        cs_i: f64,
-        cs_j: f64,
-        hi: f64,
-        hj: f64,
-    ) -> f64 {
+    pub fn compute_pi(&self, pair: ViscoPair) -> f64 {
+        let ViscoPair {
+            ri,
+            rj,
+            vi,
+            vj,
+            rho_i,
+            rho_j,
+            cs_i,
+            cs_j,
+            hi,
+            hj,
+        } = pair;
         let rij = sub3(ri, rj);
         let vij = sub3(vi, vj);
         let v_dot_r = dot3(vij, rij);
@@ -775,22 +794,8 @@ impl ArtificialViscosity {
         div_v.abs() / denom
     }
     /// Apply Balsara-limited viscosity.
-    pub fn compute_pi_balsara(
-        &self,
-        ri: [f64; 3],
-        rj: [f64; 3],
-        vi: [f64; 3],
-        vj: [f64; 3],
-        rho_i: f64,
-        rho_j: f64,
-        cs_i: f64,
-        cs_j: f64,
-        hi: f64,
-        hj: f64,
-        fi: f64,
-        fj: f64,
-    ) -> f64 {
-        let pi_ij = self.compute_pi(ri, rj, vi, vj, rho_i, rho_j, cs_i, cs_j, hi, hj);
+    pub fn compute_pi_balsara(&self, pair: ViscoPair, fi: f64, fj: f64) -> f64 {
+        let pi_ij = self.compute_pi(pair);
         let f_bar = 0.5 * (fi + fj);
         pi_ij * f_bar
     }
@@ -854,12 +859,12 @@ impl AstroAnalysis {
         }
         let mut com = [0.0; 3];
         for p in particles {
-            for d in 0..3 {
-                com[d] += p.mass * p.pos[d];
+            for (c, &pos_d) in com.iter_mut().zip(p.pos.iter()) {
+                *c += p.mass * pos_d;
             }
         }
-        for d in 0..3 {
-            com[d] /= total_mass;
+        for c in com.iter_mut() {
+            *c /= total_mass;
         }
         com
     }
@@ -871,12 +876,12 @@ impl AstroAnalysis {
         }
         let mut com_vel = [0.0; 3];
         for p in particles {
-            for d in 0..3 {
-                com_vel[d] += p.mass * p.vel[d];
+            for (cv, &vel_d) in com_vel.iter_mut().zip(p.vel.iter()) {
+                *cv += p.mass * vel_d;
             }
         }
-        for d in 0..3 {
-            com_vel[d] /= total_mass;
+        for cv in com_vel.iter_mut() {
+            *cv /= total_mass;
         }
         com_vel
     }
@@ -1172,7 +1177,6 @@ impl AstroParticle {
     }
 }
 /// An axis-aligned bounding box in 3-D.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct BBox3 {
     /// Minimum corner.
@@ -1180,7 +1184,6 @@ pub struct BBox3 {
     /// Maximum corner.
     pub hi: [f64; 3],
 }
-#[allow(dead_code)]
 impl BBox3 {
     /// Create a new bounding box.
     pub fn new(lo: [f64; 3], hi: [f64; 3]) -> Self {

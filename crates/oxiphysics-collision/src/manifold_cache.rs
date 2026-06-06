@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,7 +5,6 @@
 //!
 //! Provides warm-starting of contact impulses across frames by caching
 //! contact points and matching them between simulation steps.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 
@@ -925,13 +923,13 @@ pub fn build_contact_islands(cache: &ContactManifoldCache) -> Vec<ContactIsland>
     let mut island_map: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
     let mut islands: Vec<ContactIsland> = Vec::new();
 
-    for i in 0..n {
+    for (i, &body_id) in all_bodies.iter().enumerate() {
         let root = find(&mut parent, i);
         let island_idx = *island_map.entry(root).or_insert_with(|| {
             islands.push(ContactIsland::new());
             islands.len() - 1
         });
-        islands[island_idx].bodies.push(all_bodies[i]);
+        islands[island_idx].bodies.push(body_id);
     }
 
     // Assign manifold keys to islands
@@ -989,18 +987,16 @@ pub fn compute_manifold_metrics(manifold: &PersistentManifold) -> ManifoldMetric
         .all(|p| p.normal_impulse.abs() > 0.0 || p.lifetime > 0);
 
     // Max pairwise distance
-    let mut spread = 0.0f64;
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let d = len3(sub3(
-                manifold.points[i].world_pos_a,
-                manifold.points[j].world_pos_a,
-            ));
-            if d > spread {
-                spread = d;
-            }
-        }
-    }
+    let spread = manifold
+        .points
+        .iter()
+        .enumerate()
+        .flat_map(|(i, a)| {
+            manifold.points[i + 1..]
+                .iter()
+                .map(move |b| len3(sub3(a.world_pos_a, b.world_pos_a)))
+        })
+        .fold(0.0f64, f64::max);
 
     ManifoldMetrics {
         contact_count: n,

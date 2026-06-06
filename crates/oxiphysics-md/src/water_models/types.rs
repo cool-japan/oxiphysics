@@ -2,11 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 
 use std::f64::consts::PI;
 
@@ -232,7 +228,6 @@ impl WaterGeometry {
 ///
 /// - `a` = 4.513 Å, `c` = 7.352 Å (space group P6₃/mmc).
 /// - 4 molecules per unit cell.
-#[allow(dead_code)]
 pub struct IceIhCell {
     /// Lattice parameter a (Å).
     pub a: f64,
@@ -395,7 +390,6 @@ impl WaterParams {
     }
 }
 /// A TIP5P water molecule with O, H1, H2, LP1, LP2 positions (Å).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Tip5pMolecule {
     /// Oxygen position.
@@ -475,7 +469,6 @@ pub enum WaterModelType {
 /// Harmonic angle potential: V_angle = (K_theta/2) * (theta - theta_0)²
 ///
 /// Reference: Toukan & Rahman, Phys. Rev. B 31, 2643 (1985).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FlexibleSpcParams {
     /// Equilibrium O-H bond length r_0 (Å).
@@ -550,7 +543,6 @@ impl FlexibleSpcParams {
 /// Even though SPC treats water as rigid, one can evaluate the energy penalty
 /// when the geometry deviates from the ideal tetrahedral angle.  This is
 /// useful in flexible SPC variants or for testing.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Spc {
     /// Harmonic force constant for the H-O-H angle (kJ mol⁻¹ rad⁻²).
@@ -558,20 +550,22 @@ pub struct Spc {
     /// Equilibrium H-O-H angle (radians).
     pub theta_0: f64,
 }
+impl Default for Spc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl Spc {
     /// SPC parameters: θ₀ = 109.47°, k_θ = 383.0 kJ mol⁻¹ rad⁻².
-    #[allow(dead_code)]
-    #[allow(clippy::self_named_constructors)]
-    pub fn spc() -> Self {
+    pub fn new() -> Self {
         Self {
             k_theta: 383.0,
             theta_0: 109.47_f64.to_radians(),
         }
     }
     /// SPC/E parameters — same geometry as SPC.
-    #[allow(dead_code)]
     pub fn spce() -> Self {
-        Self::spc()
+        Self::new()
     }
     /// Harmonic angle energy: E = ½ k_θ (θ − θ₀)².
     ///
@@ -581,7 +575,6 @@ impl Spc {
     /// * `r_h2` — hydrogen-2 position (Å)
     ///
     /// Returns energy in kJ mol⁻¹.
-    #[allow(dead_code)]
     pub fn compute_angle_energy(&self, r_o: [f64; 3], r_h1: [f64; 3], r_h2: [f64; 3]) -> f64 {
         let v1 = [r_h1[0] - r_o[0], r_h1[1] - r_o[1], r_h1[2] - r_o[2]];
         let v2 = [r_h2[0] - r_o[0], r_h2[1] - r_o[1], r_h2[2] - r_o[2]];
@@ -597,7 +590,6 @@ impl Spc {
         0.5 * self.k_theta * d * d
     }
     /// Compute the current H-O-H angle (radians) for the given geometry.
-    #[allow(dead_code)]
     pub fn compute_angle(r_o: [f64; 3], r_h1: [f64; 3], r_h2: [f64; 3]) -> f64 {
         let v1 = [r_h1[0] - r_o[0], r_h1[1] - r_o[1], r_h1[2] - r_o[2]];
         let v2 = [r_h2[0] - r_o[0], r_h2[1] - r_o[1], r_h2[2] - r_o[2]];
@@ -616,7 +608,6 @@ impl Spc {
 /// H-O-H bisector at distance `r_om` from oxygen.  During MD the force on the
 /// M-site must be redistributed to the three real atoms (O, H1, H2) before
 /// integrating equations of motion.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Tip4p {
     /// O-M distance along bisector (Å).  Default 0.15 Å.
@@ -626,7 +617,6 @@ pub struct Tip4p {
 }
 impl Tip4p {
     /// Default TIP4P parameters (r_OM = 0.15 Å, HOH = 104.52°).
-    #[allow(dead_code)]
     pub fn default_params() -> Self {
         let r_om = 0.15_f64;
         let r_oh = 0.9572_f64;
@@ -644,7 +634,6 @@ impl Tip4p {
     /// - `f_H2 += γ * f_M`
     ///
     /// Returns `(delta_f_o, delta_f_h1, delta_f_h2)` — increments to add.
-    #[allow(dead_code)]
     pub fn compute_virtual_site_force_redistribution(
         &self,
         f_m: [f64; 3],
@@ -663,7 +652,6 @@ impl Tip4p {
     /// Compute the position of the M-site given the three real-atom positions.
     ///
     /// **r_M = r_O + γ*(r_H1 + r_H2 - 2*r_O)**
-    #[allow(dead_code)]
     pub fn m_site_position(&self, r_o: [f64; 3], r_h1: [f64; 3], r_h2: [f64; 3]) -> [f64; 3] {
         let g = self.gamma;
         [
@@ -675,7 +663,6 @@ impl Tip4p {
     /// Verify that force redistribution conserves total force.
     ///
     /// Sum of redistributed forces must equal the original M-site force.
-    #[allow(dead_code)]
     pub fn force_conservation_check(&self, f_m: [f64; 3]) -> f64 {
         let (df_o, df_h1, df_h2) = self.compute_virtual_site_force_redistribution(f_m);
         let mut max_err = 0.0_f64;
@@ -689,7 +676,6 @@ impl Tip4p {
     }
 }
 /// A cluster of water molecules with hydrogen-bond network utilities.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WaterCluster {
     /// The water molecules in the cluster.
@@ -703,7 +689,6 @@ impl WaterCluster {
     /// Create a new cluster with standard geometric thresholds.
     ///
     /// Defaults: r_OO < 3.5 Å, ∠OHO > 150°.
-    #[allow(dead_code)]
     pub fn new(molecules: Vec<WaterMolecule>) -> Self {
         Self {
             molecules,
@@ -712,7 +697,6 @@ impl WaterCluster {
         }
     }
     /// Create a cluster with custom thresholds.
-    #[allow(dead_code)]
     pub fn with_thresholds(
         molecules: Vec<WaterMolecule>,
         r_oo_cut: f64,
@@ -732,20 +716,18 @@ impl WaterCluster {
     ///
     /// Each qualifying D–H···A triple counts as one hydrogen bond.
     /// Returns the total H-bond count (integer cast to f64).
-    #[allow(dead_code)]
     pub fn compute_hydrogen_bond_count(&self) -> f64 {
         let mols = &self.molecules;
-        let n = mols.len();
         let angle_min_cos = self.angle_cut_deg.to_radians().cos();
         let mut count = 0usize;
-        for i in 0..n {
-            for h_pos in [mols[i].hydrogen1, mols[i].hydrogen2] {
-                let o_d = mols[i].oxygen;
-                for j in 0..n {
+        for (i, mol_i) in mols.iter().enumerate() {
+            for h_pos in [mol_i.hydrogen1, mol_i.hydrogen2] {
+                let o_d = mol_i.oxygen;
+                for (j, mol_j) in mols.iter().enumerate() {
                     if i == j {
                         continue;
                     }
-                    let o_a = mols[j].oxygen;
+                    let o_a = mol_j.oxygen;
                     let r_oo = dist3(o_d, o_a);
                     if r_oo >= self.r_oo_cut {
                         continue;
@@ -768,7 +750,6 @@ impl WaterCluster {
         count as f64
     }
     /// Average number of H-bonds per water molecule.
-    #[allow(dead_code)]
     pub fn average_hbonds_per_molecule(&self) -> f64 {
         let n = self.molecules.len();
         if n == 0 {
@@ -777,20 +758,18 @@ impl WaterCluster {
         self.compute_hydrogen_bond_count() / n as f64
     }
     /// Returns the adjacency list of H-bond pairs (donor molecule index, acceptor index).
-    #[allow(dead_code)]
     pub fn hbond_network(&self) -> Vec<(usize, usize)> {
         let mols = &self.molecules;
-        let n = mols.len();
         let angle_min_cos = self.angle_cut_deg.to_radians().cos();
         let mut pairs = Vec::new();
-        for i in 0..n {
-            for h_pos in [mols[i].hydrogen1, mols[i].hydrogen2] {
-                let o_d = mols[i].oxygen;
-                for j in 0..n {
+        for (i, mol_i) in mols.iter().enumerate() {
+            for h_pos in [mol_i.hydrogen1, mol_i.hydrogen2] {
+                let o_d = mol_i.oxygen;
+                for (j, mol_j) in mols.iter().enumerate() {
                     if i == j {
                         continue;
                     }
-                    let o_a = mols[j].oxygen;
+                    let o_a = mol_j.oxygen;
                     let r_oo = dist3(o_d, o_a);
                     if r_oo >= self.r_oo_cut {
                         continue;
@@ -814,7 +793,6 @@ impl WaterCluster {
     }
 }
 /// Summary of computed properties for a water model.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WaterModelSummary {
     /// Model name.
@@ -837,7 +815,6 @@ pub struct WaterModelSummary {
 /// LJ on oxygen: σ = 3.1200 Å, ε = 0.6694 kJ/mol.
 ///
 /// Reference: Mahoney & Jorgensen, J. Chem. Phys. 112, 8910 (2000).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Tip5pParams {
     /// Partial charge on each hydrogen (e).

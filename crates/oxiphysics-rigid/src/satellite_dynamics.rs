@@ -15,9 +15,6 @@
 //! * [`GravityGradientStabilization`] — Gravity gradient torque, stable/unstable equilibria.
 //! * [`SpacecraftFormation`] — Hill-Clohessy-Wiltshire equations, formation keeping.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use nalgebra::Quaternion;
 use oxiphysics_core::math::{Mat3, Quat, Real, Vec3};
 use std::f64::consts::PI;

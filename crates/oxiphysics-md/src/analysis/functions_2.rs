@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::functions::*;
     use crate::analysis::AngularMomentumAnalysis;
     use crate::analysis::MeanSquaredDisplacement;
     use crate::analysis::StructureAnalysis;

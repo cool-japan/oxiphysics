@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::FbMultibodySystem;
 
 /// 3×3 matrix stored row-major.
@@ -34,26 +33,6 @@ pub(super) fn mat3_transpose(m: Mat3) -> Mat3 {
         [m[0][1], m[1][1], m[2][1]],
         [m[0][2], m[1][2], m[2][2]],
     ]
-}
-#[allow(dead_code)]
-pub(super) fn mat3_add(a: Mat3, b: Mat3) -> Mat3 {
-    let mut c = [[0.0_f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            c[i][j] = a[i][j] + b[i][j];
-        }
-    }
-    c
-}
-#[allow(dead_code)]
-pub(super) fn mat3_scale(m: Mat3, s: f64) -> Mat3 {
-    let mut c = [[0.0_f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            c[i][j] = m[i][j] * s;
-        }
-    }
-    c
 }
 pub(super) fn vec3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
@@ -765,7 +744,6 @@ pub fn forward_kinematics(sys: &FbMultibodySystem) -> Vec<[f64; 3]> {
 ///
 /// This simplified implementation treats every joint as prismatic (translation
 /// along its axis), which is correct for a chain of prismatic joints.
-#[allow(clippy::too_many_arguments)]
 pub fn jacobian_column(
     sys: &FbMultibodySystem,
     _link_idx: usize,
@@ -991,8 +969,8 @@ mod simple_api_tests {
     fn mass_matrix_positive_definite() {
         let sys = two_link_system();
         let m = mass_matrix(&sys);
-        for i in 0..m.len() {
-            assert!(m[i][i] > 0.0);
+        for (i, row) in m.iter().enumerate() {
+            assert!(row[i] > 0.0);
         }
     }
     #[test]

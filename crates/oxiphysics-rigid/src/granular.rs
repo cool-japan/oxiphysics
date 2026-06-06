@@ -6,8 +6,6 @@
 //! Implements sphere-sphere and sphere-wall contacts with Hertz-Mindlin
 //! contact mechanics, angular integration, and granular flow analysis.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ── vector helpers (no nalgebra) ──────────────────────────────────────────────

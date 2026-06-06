@@ -1,4 +1,3 @@
-#![allow(clippy::should_implement_trait)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,7 +7,6 @@
 
 /// Topology section types in a GROMACS `.top` file.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum TopologySection {
     /// `[ atoms ]` section.
     Atoms,
@@ -24,7 +22,6 @@ pub enum TopologySection {
     Other(String),
 }
 
-#[allow(dead_code)]
 impl TopologySection {
     /// Parse a section name string into a `TopologySection`.
     pub(crate) fn from_name(name: &str) -> Self {
@@ -41,16 +38,14 @@ impl TopologySection {
 
 /// Parsed representation of a GROMACS topology (`.top`) file.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TopFile {
     /// Sections with their content lines.
     pub sections: Vec<(TopologySection, Vec<String>)>,
 }
 
-#[allow(dead_code)]
 impl TopFile {
     /// Parse a topology file from a string.
-    pub fn from_str(data: &str) -> Result<Self, String> {
+    pub fn parse(data: &str) -> Result<Self, String> {
         let mut sections: Vec<(TopologySection, Vec<String>)> = Vec::new();
         let mut current_section: Option<TopologySection> = None;
         let mut current_lines: Vec<String> = Vec::new();
@@ -112,9 +107,15 @@ impl TopFile {
 
 // ─── Force Field Parameters ─────────────────────────────────────────────────
 
+impl std::str::FromStr for TopFile {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
 /// Lennard-Jones parameters for an atom type.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct LJParams {
     /// Atom type name.
     pub atom_type: String,
@@ -126,7 +127,6 @@ pub struct LJParams {
 
 /// Bond parameters (harmonic).
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct BondParams {
     /// Atom type i.
     pub type_i: String,
@@ -140,7 +140,6 @@ pub struct BondParams {
 
 /// Angle parameters (harmonic).
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct AngleParams {
     /// Atom type i.
     pub type_i: String,
@@ -156,7 +155,6 @@ pub struct AngleParams {
 
 /// Collection of force field parameters.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct ForceFieldParams {
     /// LJ parameters per atom type.
     pub lj_params: Vec<LJParams>,
@@ -166,7 +164,6 @@ pub struct ForceFieldParams {
     pub angle_params: Vec<AngleParams>,
 }
 
-#[allow(dead_code)]
 impl ForceFieldParams {
     /// Create empty force field parameters.
     pub fn new() -> Self {
@@ -220,7 +217,6 @@ impl ForceFieldParams {
 
 /// A named group of atom indices (like GROMACS index groups).
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct IndexGroup {
     /// Group name.
     pub name: String,
@@ -230,13 +226,11 @@ pub struct IndexGroup {
 
 /// Parsed index file (`.ndx`).
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct IndexFile {
     /// Named groups.
     pub groups: Vec<IndexGroup>,
 }
 
-#[allow(dead_code)]
 impl IndexFile {
     /// Create an empty index file.
     pub fn new() -> Self {
@@ -244,7 +238,7 @@ impl IndexFile {
     }
 
     /// Parse an index file from a string.
-    pub fn from_str(data: &str) -> Result<Self, String> {
+    pub fn parse(data: &str) -> Result<Self, String> {
         let mut groups: Vec<IndexGroup> = Vec::new();
         let mut current_name: Option<String> = None;
         let mut current_indices: Vec<usize> = Vec::new();
@@ -313,17 +307,22 @@ impl IndexFile {
     }
 }
 
+impl std::str::FromStr for IndexFile {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
 // ─── MDP File Parsing ───────────────────────────────────────────────────────
 
 /// Parsed MDP (molecular dynamics parameters) file.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct MdpFile {
     /// Key-value parameters.
     pub params: Vec<(String, String)>,
 }
 
-#[allow(dead_code)]
 impl MdpFile {
     /// Create an empty MDP file.
     pub fn new() -> Self {
@@ -331,7 +330,7 @@ impl MdpFile {
     }
 
     /// Parse an MDP file from a string.
-    pub fn from_str(data: &str) -> Result<Self, String> {
+    pub fn parse(data: &str) -> Result<Self, String> {
         let mut params = Vec::new();
         for line in data.lines() {
             let trimmed = line.trim();
@@ -394,13 +393,18 @@ impl MdpFile {
     }
 }
 
+impl std::str::FromStr for MdpFile {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
 // ─── GROMACS Run Input Generation ───────────────────────────────────────────
 
 /// Generates GROMACS-compatible run input files.
-#[allow(dead_code)]
 pub struct GromacsRunInputGenerator;
 
-#[allow(dead_code)]
 impl GromacsRunInputGenerator {
     /// Generate a minimal MDP file for energy minimization.
     pub fn energy_minimization_mdp() -> MdpFile {
@@ -419,7 +423,6 @@ impl GromacsRunInputGenerator {
     }
 
     /// Generate a minimal MDP file for NVT equilibration.
-    #[allow(clippy::too_many_arguments)]
     pub fn nvt_equilibration_mdp(nsteps: i64, dt: f64, temperature: f64) -> MdpFile {
         let mut mdp = MdpFile::new();
         mdp.set("integrator", "md");
@@ -442,7 +445,6 @@ impl GromacsRunInputGenerator {
     }
 
     /// Generate a minimal MDP file for NPT production.
-    #[allow(clippy::too_many_arguments)]
     pub fn npt_production_mdp(nsteps: i64, dt: f64, temperature: f64, pressure: f64) -> MdpFile {
         let mut mdp = Self::nvt_equilibration_mdp(nsteps, dt, temperature);
         mdp.set("pcoupl", "Parrinello-Rahman");
@@ -469,7 +471,7 @@ pub struct ResolvedTopology {
 
 impl ResolvedTopology {
     /// Parse a topology string, recording `#include` directives.
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         let mut sections: Vec<(TopologySection, Vec<String>)> = Vec::new();
         let mut included_files: Vec<String> = Vec::new();
         let mut current_section: Option<(TopologySection, Vec<String>)> = None;
@@ -520,6 +522,12 @@ impl ResolvedTopology {
     }
 }
 
+impl From<&str> for ResolvedTopology {
+    fn from(s: &str) -> Self {
+        Self::parse(s)
+    }
+}
+
 // ============================================================================
 // Dihedral / Extended Force Field
 // ============================================================================
@@ -554,7 +562,6 @@ pub struct ExtForceFieldParams {
 
 impl ExtForceFieldParams {
     /// Add a dihedral parameter.
-    #[allow(clippy::too_many_arguments)]
     pub fn add_dihedral(
         &mut self,
         type_i: &str,
@@ -604,7 +611,6 @@ impl ExtForceFieldParams {
 
 /// A parsed atom entry from a GROMACS `[ atoms ]` section.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct TopAtom {
     /// Atom index (1-based in GRO convention).
     pub index: usize,
@@ -626,7 +632,6 @@ pub struct TopAtom {
 
 /// A bond entry from a `[ bonds ]` section.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct TopBond {
     /// First atom index (1-based).
     pub atom_i: usize,
@@ -638,7 +643,6 @@ pub struct TopBond {
 
 /// An angle entry from a `[ angles ]` section.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct TopAngle {
     /// First atom index (1-based).
     pub atom_i: usize,
@@ -652,7 +656,6 @@ pub struct TopAngle {
 
 /// A dihedral entry from a `[ dihedrals ]` section.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct TopDihedral {
     /// First atom index (1-based).
     pub atom_i: usize,
@@ -668,7 +671,6 @@ pub struct TopDihedral {
 
 /// A pair entry from a `[ pairs ]` section.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct TopPair {
     /// First atom index (1-based).
     pub atom_i: usize,
@@ -680,7 +682,6 @@ pub struct TopPair {
 
 /// A `[ moleculetype ]` entry.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct TopMoleculeType {
     /// Molecule name.
     pub name: String,
@@ -690,7 +691,6 @@ pub struct TopMoleculeType {
 
 /// Rich parsed representation of a GROMACS topology.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct TopologyData {
     /// Molecule type records.
     pub molecule_types: Vec<TopMoleculeType>,
@@ -706,7 +706,6 @@ pub struct TopologyData {
     pub dihedrals: Vec<TopDihedral>,
 }
 
-#[allow(dead_code)]
 impl TopologyData {
     /// Create empty topology data.
     pub fn new() -> Self {
@@ -714,7 +713,7 @@ impl TopologyData {
     }
 
     /// Parse topology data from a GROMACS `.top` string.
-    pub fn from_str(s: &str) -> Result<Self, String> {
+    pub fn parse(s: &str) -> Result<Self, String> {
         let mut data = TopologyData::new();
         let mut current_section: Option<TopologySection> = None;
 
@@ -937,16 +936,21 @@ impl TopologyData {
     }
 }
 
+impl std::str::FromStr for TopologyData {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
 // ============================================================================
 // TopWriter / DihedralEntry
 // ============================================================================
 
 /// A writer helper for GROMACS topology dihedral sections.
-#[allow(dead_code)]
 pub struct TopWriter;
 
 /// A single dihedral entry for [`TopWriter::write_dihedrals`].
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DihedralEntry {
     /// First atom index (1-based).
@@ -967,7 +971,6 @@ pub struct DihedralEntry {
     pub multiplicity: i32,
 }
 
-#[allow(dead_code)]
 impl TopWriter {
     /// Generate the `[ dihedrals ]` section text from a slice of entries.
     pub fn write_dihedrals(dihedrals: &[DihedralEntry]) -> String {
@@ -1043,7 +1046,6 @@ impl TopWriter {
 
 /// Represents a molecule type entry in the `[ molecules ]` directive.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct MoleculeEntry {
     /// Molecule type name.
     pub mol_name: String,
@@ -1053,7 +1055,6 @@ pub struct MoleculeEntry {
 
 /// Simplified GROMACS topology builder.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct GroTopBuilder {
     /// Title of the system.
     pub system_name: String,
@@ -1065,7 +1066,6 @@ pub struct GroTopBuilder {
 
 /// One atom type record in `[ atomtypes ]`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct GroAtomType {
     /// Atom type name.
     pub name: String,
@@ -1081,7 +1081,6 @@ pub struct GroAtomType {
 
 impl GroTopBuilder {
     /// Create an empty topology builder.
-    #[allow(dead_code)]
     pub fn new(system_name: &str) -> Self {
         GroTopBuilder {
             system_name: system_name.to_string(),
@@ -1091,7 +1090,6 @@ impl GroTopBuilder {
     }
 
     /// Add a molecule type entry.
-    #[allow(dead_code)]
     pub fn add_molecule(&mut self, name: &str, count: usize) {
         self.molecules.push(MoleculeEntry {
             mol_name: name.to_string(),
@@ -1100,19 +1098,16 @@ impl GroTopBuilder {
     }
 
     /// Add an atom type definition.
-    #[allow(dead_code)]
     pub fn add_atom_type(&mut self, at: GroAtomType) {
         self.atom_types.push(at);
     }
 
     /// Total number of molecules.
-    #[allow(dead_code)]
     pub fn total_molecules(&self) -> usize {
         self.molecules.iter().map(|m| m.count).sum()
     }
 
     /// Write the minimal `[ system ]` and `[ molecules ]` directives.
-    #[allow(dead_code)]
     pub fn write_system<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
         writeln!(writer, "[ system ]")?;
         writeln!(writer, "; Name")?;
@@ -1127,7 +1122,6 @@ impl GroTopBuilder {
     }
 
     /// Write the `[ atomtypes ]` directive.
-    #[allow(dead_code)]
     pub fn write_atom_types<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
         writeln!(writer, "[ atomtypes ]")?;
         writeln!(writer, "; name   mass    charge    sigma    epsilon")?;
@@ -1142,7 +1136,6 @@ impl GroTopBuilder {
     }
 
     /// Find an atom type by name.
-    #[allow(dead_code)]
     pub fn find_atom_type(&self, name: &str) -> Option<&GroAtomType> {
         self.atom_types.iter().find(|at| at.name == name)
     }
@@ -1151,7 +1144,6 @@ impl GroTopBuilder {
 // ─── LJ force-field parameter helpers ──────────────────────────────────────
 
 /// Convert a GROMACS LJ (C6, C12) representation to (epsilon, sigma).
-#[allow(dead_code)]
 pub fn c6c12_to_epsilon_sigma(c6: f64, c12: f64) -> (f64, f64) {
     if c6 <= 0.0 || c12 <= 0.0 {
         return (0.0, 0.0);
@@ -1162,7 +1154,6 @@ pub fn c6c12_to_epsilon_sigma(c6: f64, c12: f64) -> (f64, f64) {
 }
 
 /// Convert (epsilon, sigma) to GROMACS (C6, C12).
-#[allow(dead_code)]
 pub fn epsilon_sigma_to_c6c12(epsilon: f64, sigma: f64) -> (f64, f64) {
     let s6 = sigma.powi(6);
     let c6 = 4.0 * epsilon * s6;
@@ -1171,7 +1162,6 @@ pub fn epsilon_sigma_to_c6c12(epsilon: f64, sigma: f64) -> (f64, f64) {
 }
 
 /// Compute Lorentz-Berthelot combining rules for two atom types.
-#[allow(dead_code)]
 pub fn lorentz_berthelot(eps_i: f64, sig_i: f64, eps_j: f64, sig_j: f64) -> (f64, f64) {
     let sigma_ij = (sig_i + sig_j) / 2.0;
     let epsilon_ij = (eps_i * eps_j).sqrt();
@@ -1179,7 +1169,6 @@ pub fn lorentz_berthelot(eps_i: f64, sig_i: f64, eps_j: f64, sig_j: f64) -> (f64
 }
 
 /// Evaluate the Lennard-Jones 12-6 potential at distance `r`.
-#[allow(dead_code)]
 pub fn lj_potential(r: f64, epsilon: f64, sigma: f64) -> f64 {
     if r <= 0.0 {
         return f64::INFINITY;
@@ -1189,7 +1178,6 @@ pub fn lj_potential(r: f64, epsilon: f64, sigma: f64) -> f64 {
 }
 
 /// Evaluate the LJ force magnitude (dU/dr) at distance `r`.
-#[allow(dead_code)]
 pub fn lj_force(r: f64, epsilon: f64, sigma: f64) -> f64 {
     if r <= 0.0 {
         return f64::INFINITY;
@@ -1200,7 +1188,6 @@ pub fn lj_force(r: f64, epsilon: f64, sigma: f64) -> f64 {
 }
 
 /// Parse a single `[ atomtypes ]` line into a `GroAtomType`.
-#[allow(dead_code)]
 pub fn parse_atomtype_line(line: &str) -> Option<GroAtomType> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() < 5 {
@@ -1254,22 +1241,22 @@ SOL 3
 
     #[test]
     fn topology_data_atoms_parsed() {
-        let td = TopologyData::from_str(WATER_TOP).expect("parse");
+        let td = TopologyData::parse(WATER_TOP).expect("parse");
         assert_eq!(td.n_atoms(), 3);
         assert_eq!(td.atoms[0].atom_name, "OW");
     }
 
     #[test]
     fn topology_data_bonds_parsed() {
-        let td = TopologyData::from_str(WATER_TOP).expect("parse");
+        let td = TopologyData::parse(WATER_TOP).expect("parse");
         assert_eq!(td.n_bonds(), 2);
     }
 
     #[test]
     fn topology_data_roundtrip() {
-        let td = TopologyData::from_str(WATER_TOP).expect("parse");
+        let td = TopologyData::parse(WATER_TOP).expect("parse");
         let s = td.to_top_string();
-        let td2 = TopologyData::from_str(&s).expect("reparse");
+        let td2 = TopologyData::parse(&s).expect("reparse");
         assert_eq!(td2.n_atoms(), td.n_atoms());
         assert_eq!(td2.n_bonds(), td.n_bonds());
     }
@@ -1277,7 +1264,7 @@ SOL 3
     #[test]
     fn resolved_topology_include_detection() {
         let top_str = "#include \"amber99.itp\"\n#include \"spc.itp\"\n[ moleculetype ]\nWater 3\n";
-        let rt = ResolvedTopology::from_str(top_str);
+        let rt = ResolvedTopology::parse(top_str);
         assert_eq!(rt.included_files.len(), 2);
     }
 
@@ -1328,14 +1315,14 @@ SOL 3
     #[test]
     fn mdp_file_from_str_basic() {
         let data = "integrator = md\nnsteps = 50000\n";
-        let mdp = MdpFile::from_str(data).expect("parse");
+        let mdp = MdpFile::parse(data).expect("parse");
         assert_eq!(mdp.get("integrator"), Some("md"));
     }
 
     #[test]
     fn index_file_from_str_basic() {
         let data = "[ System ]\n1 2 3 4\n[ Protein ]\n1 2\n";
-        let ndx = IndexFile::from_str(data).expect("parse");
+        let ndx = IndexFile::parse(data).expect("parse");
         assert!(ndx.get_group("System").is_some());
         assert_eq!(ndx.group_count(), 2);
     }
@@ -1344,7 +1331,7 @@ SOL 3
     fn top_file_atom_count() {
         let data =
             "[ atoms ]\n1 opls_135 1 ETH C1 1 -0.18 12.011\n2 opls_140 1 ETH H1 1  0.06  1.008\n";
-        let top = TopFile::from_str(data).expect("parse");
+        let top = TopFile::parse(data).expect("parse");
         assert_eq!(top.atom_count(), 2);
     }
 

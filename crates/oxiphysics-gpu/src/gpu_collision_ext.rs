@@ -10,8 +10,6 @@
 //! - Free functions: AABB overlap, sphere overlap, point containment,
 //!   ray-AABB / ray-sphere intersection, GJK distance estimate.
 
-#![allow(dead_code)]
-
 // ── GpuBroadphaseGrid ────────────────────────────────────────────────────────
 
 /// A uniform-grid broadphase accelerator.

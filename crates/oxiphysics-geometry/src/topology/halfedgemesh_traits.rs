@@ -1,5 +1,3 @@
-#[allow(unused_imports)]
-use super::functions::*;
 // # HalfEdgeMesh - Trait Implementations
 //
 // This module contains trait implementations for `HalfEdgeMesh`.

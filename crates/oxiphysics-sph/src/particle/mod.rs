@@ -7,8 +7,4 @@ pub mod types;
 
 // Re-export all types
 pub use functions::*;
-#[allow(unused_imports)]
-pub use particleset_traits::*;
-#[allow(unused_imports)]
-pub use sphparticleset_traits::*;
 pub use types::*;

@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::too_many_arguments)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     add3, arbitrary_perp, cross3, dist3, dot3, lerp3, normalize3, scale3, sub3,
 };

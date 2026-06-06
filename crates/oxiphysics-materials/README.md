@@ -1,8 +1,8 @@
 # oxiphysics-materials
 
-**Status: [Alpha]** — v0.1.1 (2026-05-17)
+**Status: [Alpha]** — v0.1.2 (2026-06-06)
 
-[![Tests](https://img.shields.io/badge/tests-4486-brightgreen)](https://github.com/cool-japan/oxiphysics)
+[![Tests](https://img.shields.io/badge/tests-4506-brightgreen)](https://github.com/cool-japan/oxiphysics)
 [![docs.rs](https://img.shields.io/docsrs/oxiphysics-materials)](https://docs.rs/oxiphysics-materials)
 
 Comprehensive material science and constitutive model library for the [OxiPhysics](https://github.com/cool-japan/oxiphysics) engine.
@@ -35,7 +35,7 @@ use oxiphysics_materials::{
 
 - **Standalone**: no dependency on `oxiphysics-core`; can be used in any Rust project
 - 6,241 public API items across 75+ modules
-- 4,486 tests — 0 stubs
+- 4,506 tests — 0 stubs
 
 ## License
 

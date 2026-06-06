@@ -124,7 +124,6 @@ impl ChabocheKinematicHardening {
     }
 }
 /// Primary creep using Bailey-Norton time-hardening: ε_p = A * σ^n * t^m.
-#[allow(dead_code)]
 pub struct PrimaryCreepModel {
     /// Constant A
     pub a: f64,
@@ -425,7 +424,6 @@ pub struct CobleCreep {
 }
 impl CobleCreep {
     /// Create a new Coble creep model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         d_gb0: f64,
         activation_energy: f64,
@@ -529,7 +527,6 @@ impl NabarroHerringCreep {
 ///
 /// Strain rate: ε̇ = A * σ^n / (1 − ω)^n
 /// Damage rate: ω̇ = B * σ^χ / (1 − ω)^φ
-#[allow(dead_code)]
 pub struct TertiaryCreepModel {
     /// Creep constant A
     pub a: f64,
@@ -546,7 +543,6 @@ pub struct TertiaryCreepModel {
 }
 impl TertiaryCreepModel {
     /// Create a new tertiary creep model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(a: f64, n: f64, b_damage: f64, chi: f64, phi: f64) -> Self {
         Self {
             a,
@@ -775,7 +771,6 @@ impl RuptureEnvelope {
 }
 /// Composite three-stage creep model combining primary, secondary, and
 /// tertiary contributions.
-#[allow(dead_code)]
 pub struct ThreeStageCreep {
     /// Primary creep parameters.
     pub primary: PrimaryCreepModel,
@@ -1220,7 +1215,6 @@ pub struct CoupledCreepDamage {
 }
 impl CoupledCreepDamage {
     /// Create a new coupled creep-damage model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(a: f64, n: f64, q: f64, b_damage: f64, m_damage: f64, phi_damage: f64) -> Self {
         Self {
             a,
@@ -1279,7 +1273,6 @@ impl CoupledCreepDamage {
 /// Secondary (steady-state) creep stage — delegates to NortonCreep.
 ///
 /// This is a thin wrapper that represents the constant-rate stage.
-#[allow(dead_code)]
 pub struct SecondaryCreepModel {
     /// Underlying Norton power-law parameters.
     pub norton: NortonCreep,

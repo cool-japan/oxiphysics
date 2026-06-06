@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -19,8 +18,6 @@
 //! - Force chain network extraction and analysis
 //! - Granular temperature (velocity fluctuation measure)
 //! - Janssen arching effect (wall friction pressure saturation)
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -389,7 +386,6 @@ pub struct ContactResult {
 ///
 /// Computes normal, tangential, rolling resistance, and optional cohesion
 /// forces/torques. The tangential spring is updated with the current time step.
-#[allow(clippy::too_many_arguments)]
 pub fn resolve_hertz_mindlin(
     pi: &GranularParticle,
     pj: &GranularParticle,
@@ -890,9 +886,9 @@ pub fn fabric_tensor(particles: &[GranularParticle], contacts: &[ContactPair]) -
         }
     }
     let s = 1.0 / nc as f64;
-    for row in 0..3 {
-        for col in 0..3 {
-            f[row][col] *= s;
+    for f_row in f.iter_mut() {
+        for f_ij in f_row.iter_mut() {
+            *f_ij *= s;
         }
     }
     f

@@ -12,9 +12,6 @@
 //! - \[`periodic_boundary()`\] — copy particles across periodic faces
 //! - \[`no_penetration_correction()`\] — velocity correction at solid walls
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ── Math helpers ─────────────────────────────────────────────────────────────
 
 /// Dot product of two 3-D vectors.

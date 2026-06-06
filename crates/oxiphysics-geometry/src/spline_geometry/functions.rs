@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
 use super::types::{BSplineCurve, BezierCurve};
@@ -64,7 +63,6 @@ pub fn vec3_lerp(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
 ///
 /// Returns an array of `p+1` values: `N[0..=p]` corresponding to basis functions
 /// `N_{span-p,p}` through `N_{span,p}`.
-#[allow(clippy::too_many_arguments)]
 pub fn bspline_basis(span: usize, p: usize, t: f64, knots: &[f64]) -> Vec<f64> {
     let mut n = vec![0.0f64; p + 1];
     let mut left = vec![0.0f64; p + 1];
@@ -113,13 +111,13 @@ pub fn uniform_clamped_knots(num_ctrl: usize, p: usize) -> Vec<f64> {
     let n = num_ctrl - 1;
     let m = n + p + 1;
     let mut knots = vec![0.0f64; m + 1];
-    for i in 0..=m {
+    for (i, k) in knots.iter_mut().enumerate().take(m + 1) {
         if i <= p {
-            knots[i] = 0.0;
+            *k = 0.0;
         } else if i > n {
-            knots[i] = 1.0;
+            *k = 1.0;
         } else {
-            knots[i] = (i - p) as f64 / (n - p + 1) as f64;
+            *k = (i - p) as f64 / (n - p + 1) as f64;
         }
     }
     knots
@@ -129,7 +127,6 @@ pub fn uniform_clamped_knots(num_ctrl: usize, p: usize) -> Vec<f64> {
 /// Uses a uniform clamped knot vector and solves the normal equations
 /// `A^T A c = A^T y` for each coordinate independently via Cholesky-like
 /// tridiagonal-band decomposition approximation (here: full dense solver for simplicity).
-#[allow(clippy::too_many_arguments)]
 pub fn fit_bspline_least_squares(
     data: &[[f64; 3]],
     num_ctrl: usize,
@@ -181,7 +178,7 @@ pub fn fit_bspline_least_squares(
     for col in 0..n {
         let mut max_row = col;
         let mut max_val = aug[col][col].abs();
-        for row in col + 1..n {
+        for (row, _) in aug.iter().enumerate().take(n).skip(col + 1) {
             if aug[row][col].abs() > max_val {
                 max_val = aug[row][col].abs();
                 max_row = row;
@@ -192,14 +189,15 @@ pub fn fit_bspline_least_squares(
         if pivot.abs() < 1e-12 {
             continue;
         }
-        for j in col..n + 3 {
-            aug[col][j] /= pivot;
+        for elem in aug[col].iter_mut().skip(col) {
+            *elem /= pivot;
         }
         for row in 0..n {
             if row != col {
                 let factor = aug[row][col];
-                for j in col..n + 3 {
-                    aug[row][j] -= factor * aug[col][j];
+                let col_row: Vec<f64> = aug[col][col..].to_vec();
+                for (j_off, elem) in aug[row][col..].iter_mut().enumerate() {
+                    *elem -= factor * col_row[j_off];
                 }
             }
         }
@@ -221,9 +219,9 @@ pub fn surface_of_revolution(
     let n = num_angular_samples;
     let mut grid = vec![vec![[0.0f64; 3]; n]; m];
     for (i, &[r, z]) in profile.iter().enumerate() {
-        for j in 0..n {
+        for (j, cell) in grid[i].iter_mut().enumerate() {
             let theta = 2.0 * PI * j as f64 / n as f64;
-            grid[i][j] = [r * theta.cos(), r * theta.sin(), z];
+            *cell = [r * theta.cos(), r * theta.sin(), z];
         }
     }
     grid
@@ -239,12 +237,12 @@ pub fn lofted_surface(sections: &[Vec<[f64; 3]>], num_v_samples: usize) -> Vec<V
         assert_eq!(s.len(), np, "all sections must have equal point count");
     }
     let mut grid = vec![vec![[0.0f64; 3]; np]; num_v_samples];
-    for vi in 0..num_v_samples {
+    for (vi, row) in grid.iter_mut().enumerate() {
         let t = vi as f64 / (num_v_samples - 1).max(1) as f64;
         let seg = ((t * (ns - 1) as f64).min((ns - 2) as f64)) as usize;
         let local_t = t * (ns - 1) as f64 - seg as f64;
-        for pi in 0..np {
-            grid[vi][pi] = vec3_lerp(sections[seg][pi], sections[seg + 1][pi], local_t);
+        for (pi, cell) in row.iter_mut().enumerate() {
+            *cell = vec3_lerp(sections[seg][pi], sections[seg + 1][pi], local_t);
         }
     }
     grid
@@ -411,12 +409,12 @@ mod tests {
     #[test]
     fn test_uniform_clamped_knots_endpoints() {
         let knots = uniform_clamped_knots(5, 3);
-        for i in 0..4 {
-            assert_eq!(knots[i], 0.0);
+        for &k in knots.iter().take(4) {
+            assert_eq!(k, 0.0);
         }
         let n = knots.len();
-        for i in n - 4..n {
-            assert_eq!(knots[i], 1.0);
+        for &k in knots.iter().skip(n - 4) {
+            assert_eq!(k, 1.0);
         }
     }
     #[test]
@@ -875,8 +873,8 @@ mod tests {
         ];
         let curve = PeriodicBSpline::new(ctrl, 3);
         let p = curve.eval(0.5);
-        for k in 0..3 {
-            assert!(p[k].is_finite());
+        for &pk in p.iter() {
+            assert!(pk.is_finite());
         }
     }
     #[test]

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! Provides isotropic remeshing (split/collapse/flip/smooth/project loop),
 //! Loop subdivision for triangle meshes, and Catmull-Clark subdivision for
 //! quad meshes.
-
-#![allow(dead_code, missing_docs)]
 
 use std::collections::HashMap;
 
@@ -211,7 +208,7 @@ fn split_long_edges(verts: &mut Vec<[f64; 3]>, tris: &mut Vec<[usize; 3]>, max_l
 // Collapse short edges
 // ---------------------------------------------------------------------------
 
-fn collapse_short_edges(verts: &mut Vec<[f64; 3]>, tris: &mut Vec<[usize; 3]>, min_len: f64) {
+fn collapse_short_edges(verts: &mut [[f64; 3]], tris: &mut Vec<[usize; 3]>, min_len: f64) {
     // Build a remap table: vertex index → canonical index
     let n = verts.len();
     let mut remap: Vec<usize> = (0..n).collect();
@@ -261,7 +258,7 @@ fn collapse_short_edges(verts: &mut Vec<[f64; 3]>, tris: &mut Vec<[usize; 3]>, m
 // Flip edges for valence
 // ---------------------------------------------------------------------------
 
-fn flip_for_valence(tris: &mut Vec<[usize; 3]>, n_verts: usize) {
+fn flip_for_valence(tris: &mut [[usize; 3]], n_verts: usize) {
     // Compute vertex valence
     let mut valence = vec![0usize; n_verts];
     for tri in tris.iter() {
@@ -332,9 +329,8 @@ fn laplacian_smooth_surface(verts: &mut [[f64; 3]], tris: &[[usize; 3]]) {
     for tri in tris {
         for k in 0..3 {
             let vi = tri[k];
-            for j in 0..3 {
+            for (j, &vj) in tri.iter().enumerate() {
                 if j != k {
-                    let vj = tri[j];
                     sums[vi] = add3(sums[vi], verts[vj]);
                     counts[vi] += 1;
                 }
@@ -749,7 +745,7 @@ fn detect_feature_edges(
 
 /// Edge collapse that preserves feature edges.
 fn collapse_short_edges_preserving(
-    verts: &mut Vec<[f64; 3]>,
+    verts: &mut [[f64; 3]],
     tris: &mut Vec<[usize; 3]>,
     min_len: f64,
     feature_edges: &HashMap<(usize, usize), bool>,
@@ -809,7 +805,7 @@ fn collapse_short_edges_preserving(
 ///
 /// For each interior edge shared by two triangles, flip if the flipped
 /// configuration has a better minimum angle.
-pub fn flip_edges_for_quality(tris: &mut Vec<[usize; 3]>, verts: &[[f64; 3]]) {
+pub fn flip_edges_for_quality(tris: &mut [[usize; 3]], verts: &[[f64; 3]]) {
     let n_verts = verts.len();
 
     // Build edge → face map
@@ -959,7 +955,7 @@ pub fn tangent_laplacian_smooth(mesh: &TriangleMesh, iterations: usize) -> Trian
 ///
 /// All triangles containing both `v0` and `v1` are removed (degenerate after collapse).
 /// All other references to `v1` are remapped to `v0` (with the midpoint position).
-pub fn collapse_edge(verts: &mut Vec<[f64; 3]>, tris: &mut Vec<[usize; 3]>, v0: usize, v1: usize) {
+pub fn collapse_edge(verts: &mut [[f64; 3]], tris: &mut Vec<[usize; 3]>, v0: usize, v1: usize) {
     let mid = midpoint(verts[v0], verts[v1]);
     verts[v0] = mid;
 
@@ -998,9 +994,8 @@ pub fn laplacian_smooth(mesh: &TriangleMesh, iterations: usize, lambda: f64) -> 
         for tri in tris.iter() {
             for k in 0..3 {
                 let vi = tri[k];
-                for j in 0..3 {
+                for (j, &vj) in tri.iter().enumerate() {
                     if j != k {
-                        let vj = tri[j];
                         sums[vi] = add3(sums[vi], verts[vj]);
                         counts[vi] += 1;
                     }
@@ -1029,7 +1024,7 @@ pub fn laplacian_smooth(mesh: &TriangleMesh, iterations: usize, lambda: f64) -> 
 ///
 /// An edge is flipped if the opposite vertex lies inside the circumcircle of the
 /// current triangle.  Operates directly on the `tris` array (in-place).
-pub fn delaunay_edge_flip(tris: &mut Vec<[usize; 3]>, verts: &[[f64; 3]]) {
+pub fn delaunay_edge_flip(tris: &mut [[usize; 3]], verts: &[[f64; 3]]) {
     // Build edge → (tri_idx, opposite_vertex) map
     let mut changed = true;
     let max_passes = 32;

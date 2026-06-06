@@ -4,8 +4,6 @@
 //! Tone mapping operators, bloom effect, motion blur, ambient occlusion,
 //! and colour grading filters.
 
-#![allow(dead_code)]
-
 use super::core::{Image, PostColor};
 use super::effects::{Bloom, GaussianBlur, Ssao, ToneMapping};
 

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{InducedDipole, InducibleDipoleForce};
 
 #[inline]
@@ -55,7 +54,6 @@ pub fn polarization_energy(dipoles: &[[f64; 3]], polarizabilities: &[f64]) -> f6
 /// included; Coulomb fields from fixed charges use a simple 1/r^2 model.
 ///
 /// Returns the final induced dipole moments for each site.
-#[allow(clippy::too_many_arguments)]
 pub fn self_consistent_dipoles(
     positions: &[[f64; 3]],
     polarizabilities: &[f64],
@@ -347,11 +345,10 @@ mod tests {
         let r_core = [1.0, 2.0, 3.0];
         let r_drude = [1.0, 2.0, 3.0];
         let f = model.drude_spring_force(r_core, r_drude);
-        for d in 0..3 {
+        for (d, v) in f.iter().enumerate() {
             assert!(
-                f[d].abs() < 1e-15,
-                "spring force should be zero at core, f[{d}]={}",
-                f[d]
+                v.abs() < 1e-15,
+                "spring force should be zero at core, f[{d}]={v}"
             );
         }
     }
@@ -377,8 +374,8 @@ mod tests {
         let dipoles = self_consistent_dipoles(&positions, &alphas, &charges, 200, 1e-10);
         assert_eq!(dipoles.len(), 2, "should return one dipole per site");
         for dp in &dipoles {
-            for d in 0..3 {
-                assert!(dp[d].is_finite(), "dipole component should be finite");
+            for v in dp {
+                assert!(v.is_finite(), "dipole component should be finite");
             }
         }
     }
@@ -492,9 +489,9 @@ mod tests_polarizable_ext {
         );
         let fs = state.spring_forces();
         for f in &fs {
-            for d in 0..3 {
+            for v in f {
                 assert!(
-                    f[d].abs() < 1e-15,
+                    v.abs() < 1e-15,
                     "spring force should be zero at coincidence"
                 );
             }

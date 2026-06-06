@@ -12,7 +12,6 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Metric data for a bitmap font.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FontMetrics {
     /// Width of each character cell in pixels.
@@ -52,7 +51,6 @@ impl FontMetrics {
 /// Each glyph is stored as 8 bytes, one per row (MSB = leftmost pixel).
 /// Only printable ASCII (0x20–0x7E) is supported; other characters map to a
 /// default replacement glyph (a filled rectangle).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BitmapFont {
     /// Glyph data: 95 glyphs × 8 rows.  Index 0 = space (0x20).
@@ -153,7 +151,6 @@ impl BitmapFont {
 ///
 /// Width = `len(s) * (char_width + char_spacing) − char_spacing` (the last
 /// character has no trailing spacing).  Returns 0 for an empty string.
-#[allow(dead_code)]
 pub fn text_width(s: &str, metrics: &FontMetrics) -> u32 {
     let n = s.chars().count() as u32;
     if n == 0 {
@@ -166,7 +163,6 @@ pub fn text_width(s: &str, metrics: &FontMetrics) -> u32 {
 ///
 /// Height = `num_lines * line_height − (line_height − char_height)` so that
 /// the last line does not have extra leading below it.
-#[allow(dead_code)]
 pub fn text_height(s: &str, metrics: &FontMetrics) -> u32 {
     let lines = s.lines().count().max(1) as u32;
     // Total height: (lines - 1) full line_heights + one char_height
@@ -178,7 +174,6 @@ pub fn text_height(s: &str, metrics: &FontMetrics) -> u32 {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// A simple RGBA pixel buffer produced by the text rasterizer.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PixelBuffer {
     /// Width in pixels.
@@ -201,7 +196,6 @@ impl PixelBuffer {
     }
 
     /// Set pixel at `(x, y)` to `color`.  Out-of-bounds writes are silently ignored.
-    #[allow(dead_code)]
     pub fn set_pixel(&mut self, x: u32, y: u32, color: [u8; 4]) {
         if x < self.width && y < self.height {
             self.pixels[(y * self.width + x) as usize] = color;
@@ -209,7 +203,6 @@ impl PixelBuffer {
     }
 
     /// Get pixel at `(x, y)`.  Returns transparent black for out-of-bounds.
-    #[allow(dead_code)]
     pub fn get_pixel(&self, x: u32, y: u32) -> [u8; 4] {
         if x < self.width && y < self.height {
             self.pixels[(y * self.width + x) as usize]
@@ -230,7 +223,6 @@ impl PixelBuffer {
 /// - `font` — bitmap font to use.
 /// - `ox`, `oy` — pixel offset of the top-left corner of the first character.
 /// - `fg` — foreground colour `[r, g, b, a]`.
-#[allow(dead_code)]
 pub fn render_text(
     buf: &mut PixelBuffer,
     text: &str,
@@ -284,7 +276,6 @@ pub type ProjMatrix = [[f64; 4]; 4];
 ///
 /// Returns `(screen_x, screen_y)` in pixel coordinates with origin at
 /// the top-left.
-#[allow(dead_code)]
 pub fn label_3d_to_2d(
     world_pos: [f64; 3],
     mvp: &ProjMatrix,
@@ -319,7 +310,6 @@ pub fn label_3d_to_2d(
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Axis identifier for [`draw_axis_labels`].
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Axis {
     /// X axis.
@@ -331,7 +321,6 @@ pub enum Axis {
 }
 
 /// A text label placed at a screen position.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ScreenLabel {
     /// Label text.
@@ -355,8 +344,6 @@ pub struct ScreenLabel {
 /// - `mvp` — model-view-projection matrix.
 /// - `viewport_w`, `viewport_h` — screen dimensions.
 /// - `precision` — decimal places for each label.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn draw_axis_labels(
     axis: Axis,
     ticks: &[f64],
@@ -391,7 +378,6 @@ pub fn draw_axis_labels(
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Notation style for [`number_format`].
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumberNotation {
     /// Fixed-point: e.g. `3.14159`.
@@ -415,7 +401,6 @@ pub enum NumberNotation {
 /// let s = number_format(3.14159, 2, NumberNotation::Fixed);
 /// assert_eq!(s, "3.14");
 /// ```
-#[allow(dead_code)]
 pub fn number_format(value: f64, precision: usize, notation: NumberNotation) -> String {
     match notation {
         NumberNotation::Fixed => format!("{:.prec$}", value, prec = precision),

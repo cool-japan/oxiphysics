@@ -1,8 +1,5 @@
 //! Streaming, equilibrium, and macro utility functions for LBM lattices.
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     CS2, D2Q9_OPPOSITES, D2Q9_VELOCITIES, D2Q9_WEIGHTS, D3Q19_OPPOSITES, D3Q19_VELOCITIES,
     D3Q19_WEIGHTS,
@@ -13,11 +10,10 @@ use super::functions::{
 /// `f` is stored as `f[y * nx + x][q]` (cell-major).
 /// After streaming, each population `q` moves from cell `(x,y)` to
 /// `(x + cx_q, y + cy_q)` with periodic wrapping.
-#[allow(dead_code)]
-pub fn stream_d2q9_periodic(f: &mut Vec<[f64; 9]>, nx: usize, ny: usize) {
+pub fn stream_d2q9_periodic(f: &mut [[f64; 9]], nx: usize, ny: usize) {
     let cx: [i32; 9] = [0, 1, 0, -1, 0, 1, -1, -1, 1];
     let cy: [i32; 9] = [0, 0, 1, 0, -1, 1, 1, -1, -1];
-    let src = f.clone();
+    let src = f.to_vec();
     for y in 0..ny {
         for x in 0..nx {
             for q in 0..9usize {
@@ -31,10 +27,9 @@ pub fn stream_d2q9_periodic(f: &mut Vec<[f64; 9]>, nx: usize, ny: usize) {
 /// Perform a full periodic streaming step for a D3Q19 population array.
 ///
 /// `f` is stored as `f[z * nx*ny + y * nx + x][q]` (cell-major).
-#[allow(dead_code)]
-pub fn stream_d3q19_periodic(f: &mut Vec<[f64; 19]>, nx: usize, ny: usize, nz: usize) {
+pub fn stream_d3q19_periodic(f: &mut [[f64; 19]], nx: usize, ny: usize, nz: usize) {
     let (cx, cy, cz) = d3q19_vel_arrays();
-    let src = f.clone();
+    let src = f.to_vec();
     for z in 0..nz {
         for y in 0..ny {
             for x in 0..nx {
@@ -51,7 +46,6 @@ pub fn stream_d3q19_periodic(f: &mut Vec<[f64; 19]>, nx: usize, ny: usize, nz: u
 }
 /// Helper: return separate cx/cy/cz arrays for D3Q19.
 #[inline]
-#[allow(dead_code)]
 pub fn d3q19_vel_arrays() -> ([i32; 19], [i32; 19], [i32; 19]) {
     let mut cx = [0i32; 19];
     let mut cy = [0i32; 19];
@@ -66,7 +60,6 @@ pub fn d3q19_vel_arrays() -> ([i32; 19], [i32; 19], [i32; 19]) {
 /// Compute the full D2Q9 equilibrium distribution for given `rho`, `ux`, `uy`.
 ///
 /// Returns `[f64; 9]` with `feq_i = w_i * rho * (1 + eu/cs² + eu²/(2cs⁴) − u²/(2cs²))`.
-#[allow(dead_code)]
 pub fn equilibrium_d2q9(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
     let mut feq = [0.0f64; 9];
     let u2 = ux * ux + uy * uy;
@@ -81,7 +74,6 @@ pub fn equilibrium_d2q9(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
     feq
 }
 /// Compute the full D3Q19 equilibrium distribution for given `rho`, `ux`, `uy`, `uz`.
-#[allow(dead_code)]
 pub fn equilibrium_d3q19(rho: f64, ux: f64, uy: f64, uz: f64) -> [f64; 19] {
     let mut feq = [0.0f64; 19];
     let u2 = ux * ux + uy * uy + uz * uz;
@@ -97,7 +89,6 @@ pub fn equilibrium_d3q19(rho: f64, ux: f64, uy: f64, uz: f64) -> [f64; 19] {
     feq
 }
 /// Compute density `rho` and velocity `(ux, uy)` from a D2Q9 population `[f64; 9]`.
-#[allow(dead_code)]
 pub fn macros_from_d2q9(f: &[f64; 9]) -> (f64, f64, f64) {
     let rho: f64 = f.iter().sum();
     if rho < 1e-30 {
@@ -112,7 +103,6 @@ pub fn macros_from_d2q9(f: &[f64; 9]) -> (f64, f64, f64) {
     (rho, ux / rho, uy / rho)
 }
 /// Compute density and velocity from a D3Q19 population `[f64; 19]`.
-#[allow(dead_code)]
 pub fn macros_from_d3q19(f: &[f64; 19]) -> (f64, f64, f64, f64) {
     let rho: f64 = f.iter().sum();
     if rho < 1e-30 {
@@ -131,7 +121,6 @@ pub fn macros_from_d3q19(f: &[f64; 19]) -> (f64, f64, f64, f64) {
 /// Apply BGK collision to a D2Q9 node in-place.
 ///
 /// `omega = 1/tau` is the relaxation frequency.
-#[allow(dead_code)]
 pub fn bgk_d2q9(f: &mut [f64; 9], rho: f64, ux: f64, uy: f64, omega: f64) {
     let feq = equilibrium_d2q9(rho, ux, uy);
     for q in 0..9 {
@@ -139,7 +128,6 @@ pub fn bgk_d2q9(f: &mut [f64; 9], rho: f64, ux: f64, uy: f64, omega: f64) {
     }
 }
 /// Apply BGK collision to a D3Q19 node in-place.
-#[allow(dead_code)]
 pub fn bgk_d3q19(f: &mut [f64; 19], rho: f64, ux: f64, uy: f64, uz: f64, omega: f64) {
     let feq = equilibrium_d3q19(rho, ux, uy, uz);
     for q in 0..19 {
@@ -148,27 +136,22 @@ pub fn bgk_d3q19(f: &mut [f64; 19], rho: f64, ux: f64, uy: f64, uz: f64, omega: 
 }
 /// Apply half-way bounce-back at a D2Q9 node (no-slip wall).
 /// Swaps each population with its opposite direction.
-#[allow(dead_code)]
 pub fn bounce_back_node_d2q9(f: &mut [f64; 9]) {
-    for q in 0..9 {
-        let opp = D2Q9_OPPOSITES[q];
+    for (q, &opp) in D2Q9_OPPOSITES.iter().enumerate() {
         if opp > q {
             f.swap(q, opp);
         }
     }
 }
 /// Apply half-way bounce-back at a D3Q19 node.
-#[allow(dead_code)]
 pub fn bounce_back_node_d3q19(f: &mut [f64; 19]) {
-    for q in 0..19 {
-        let opp = D3Q19_OPPOSITES[q];
+    for (q, &opp) in D3Q19_OPPOSITES.iter().enumerate() {
         if opp > q {
             f.swap(q, opp);
         }
     }
 }
 /// Compute the non-equilibrium distribution `fneq_i = f_i - feq_i` for D2Q9.
-#[allow(dead_code)]
 pub fn non_equilibrium_d2q9(f: &[f64; 9], feq: &[f64; 9]) -> [f64; 9] {
     let mut fneq = [0.0f64; 9];
     for q in 0..9 {

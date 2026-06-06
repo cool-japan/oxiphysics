@@ -9,8 +9,6 @@
 //! - Contact detection and penalty-force response
 //! - Embedded rigid body constraints (rigid core inside a soft shell)
 
-#![allow(dead_code)]
-
 // ─── Vector helpers ──────────────────────────────────────────────────────────
 
 #[inline]
@@ -308,7 +306,6 @@ impl EmbeddedRigidBody {
     ///
     /// The velocity correction blends node velocity toward the rigid body velocity
     /// with a stiffness factor in \[0, 1\].  `dt` is the time step \[s\].
-    #[allow(clippy::too_many_arguments)]
     pub fn apply_constraints(&self, soft: &mut SoftBodyMesh, _dt: f64) {
         // Use the stored orientation quaternion to rotate rest offsets.
         let [qx, qy, qz, qw] = self.rigid.orientation;
@@ -358,10 +355,6 @@ mod tests {
     use super::*;
 
     const EPS: f64 = 1e-9;
-
-    fn sphere_rigid() -> RigidBody {
-        RigidBody::sphere([0.0, 0.0, 0.0], 1.0, 0.5)
-    }
 
     fn simple_mesh(nodes: Vec<[f64; 3]>) -> SoftBodyMesh {
         let n = nodes.len();

@@ -2,21 +2,14 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::should_implement_trait)]
 use super::functions::detect_delimiter;
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 
 /// A single record (row) in a CSV file.
-#[allow(dead_code)]
 pub struct CsvRecord {
     /// The fields (columns) in this record.
     pub fields: Vec<String>,
 }
 /// An in-memory representation of a CSV file with headers.
-#[allow(dead_code)]
 pub struct CsvFile {
     /// Column header names.
     pub headers: Vec<String>,
@@ -71,13 +64,7 @@ impl CsvFile {
     pub fn get_column_by_name(&self, name: &str) -> Option<usize> {
         self.headers.iter().position(|h| h == name)
     }
-    /// Serialize the CSV file to a `String` (header + records, comma-separated).
-    #[allow(clippy::inherent_to_string)]
-    pub fn to_string(&self) -> String {
-        self.to_string_with_delimiter(',')
-    }
     /// Serialize the CSV file using a custom delimiter character.
-    #[allow(dead_code)]
     pub fn to_string_with_delimiter(&self, delim: char) -> String {
         let mut out = String::new();
         let d = delim.to_string();
@@ -89,12 +76,7 @@ impl CsvFile {
         }
         out
     }
-    /// Parse a CSV string (first line = header, comma delimiter).
-    pub fn from_str(s: &str) -> Result<Self, String> {
-        Self::from_str_with_delimiter(s, ',')
-    }
     /// Parse a CSV string with a specified delimiter.
-    #[allow(dead_code)]
     pub fn from_str_with_delimiter(s: &str, delim: char) -> Result<Self, String> {
         let mut lines = s.lines();
         let header_line = lines.next().ok_or("Empty CSV input")?;
@@ -132,7 +114,6 @@ impl CsvFile {
         out
     }
     /// Infer the type of a column (Integer, Float, or Text).
-    #[allow(dead_code)]
     pub fn infer_column_type(&self, col_idx: usize) -> ColumnType {
         if col_idx >= self.headers.len() {
             return ColumnType::Text;
@@ -167,7 +148,6 @@ impl CsvFile {
         }
     }
     /// Return a new `CsvFile` containing only the specified columns (by index).
-    #[allow(dead_code)]
     pub fn select_columns(&self, col_indices: &[usize]) -> CsvFile {
         let headers: Vec<String> = col_indices
             .iter()
@@ -185,7 +165,6 @@ impl CsvFile {
     }
     /// Return a new `CsvFile` containing only columns whose headers match
     /// the given names (preserving the order of `names`).
-    #[allow(dead_code)]
     pub fn select_columns_by_name(&self, names: &[&str]) -> CsvFile {
         let indices: Vec<usize> = names
             .iter()
@@ -195,7 +174,6 @@ impl CsvFile {
     }
     /// Normalize headers: lowercase, replace spaces/special chars with underscores,
     /// strip leading/trailing whitespace.
-    #[allow(dead_code)]
     pub fn normalize_headers(&mut self) {
         for h in &mut self.headers {
             let normalized: String = h
@@ -215,7 +193,6 @@ impl CsvFile {
     }
     /// Compute statistics (min, max, mean, sum, count) for a numeric column.
     /// Returns `None` if no numeric values are found.
-    #[allow(dead_code)]
     pub fn column_stats(&self, col_idx: usize) -> Option<ColumnStats> {
         let values = self.get_column_f64(col_idx).ok()?;
         if values.is_empty() {
@@ -244,7 +221,6 @@ impl CsvFile {
     }
     /// Compute statistics for all columns that are numeric.
     /// Returns a vector of `(column_name, ColumnStats)`.
-    #[allow(dead_code)]
     pub fn all_column_stats(&self) -> Vec<(String, ColumnStats)> {
         let mut result = Vec::new();
         for i in 0..self.headers.len() {
@@ -255,7 +231,6 @@ impl CsvFile {
         result
     }
     /// Extract all values from a column as strings.
-    #[allow(dead_code)]
     pub fn get_column_strings(&self, col_idx: usize) -> Result<Vec<String>, String> {
         if col_idx >= self.headers.len() {
             return Err(format!("Column index {} out of range", col_idx));
@@ -271,7 +246,6 @@ impl CsvFile {
         Ok(out)
     }
     /// Extract all values from a column as `i64`.
-    #[allow(dead_code)]
     pub fn get_column_i64(&self, col_idx: usize) -> Result<Vec<i64>, String> {
         if col_idx >= self.headers.len() {
             return Err(format!("Column index {} out of range", col_idx));
@@ -291,7 +265,6 @@ impl CsvFile {
         Ok(out)
     }
     /// Sort rows by a column (ascending, numeric).
-    #[allow(dead_code)]
     pub fn sort_by_column(&mut self, col_idx: usize) {
         self.records.sort_by(|a, b| {
             let va = a
@@ -308,8 +281,18 @@ impl CsvFile {
         });
     }
 }
+impl std::fmt::Display for CsvFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_string_with_delimiter(','))
+    }
+}
+impl std::str::FromStr for CsvFile {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_str_with_delimiter(s, ',')
+    }
+}
 /// A streaming CSV writer that builds output row-by-row.
-#[allow(dead_code)]
 pub struct CsvWriter {
     pub(super) headers: Vec<String>,
     pub(super) delimiter: char,
@@ -350,7 +333,6 @@ impl CsvWriter {
     }
 }
 /// Aggregation operations for a numeric CSV column.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AggOp {
     /// Sum of all values.
@@ -369,7 +351,6 @@ pub enum AggOp {
 /// A time-series CSV file: a [`CsvFile`] with an explicit time column.
 ///
 /// The time column is identified by name (default `"time"`).
-#[allow(dead_code)]
 pub struct TimeSeriesCsv {
     /// Underlying CSV data.
     pub csv: CsvFile,
@@ -385,8 +366,8 @@ impl TimeSeriesCsv {
         }
     }
     /// Parse a CSV string and treat `time_column` as the time axis.
-    pub fn from_str(s: &str, time_column: &str) -> Result<Self, String> {
-        let csv = CsvFile::from_str(s)?;
+    pub fn parse(s: &str, time_column: &str) -> Result<Self, String> {
+        let csv: CsvFile = s.parse()?;
         Ok(Self::new(csv, time_column))
     }
     /// Extract the time column as `Vec`f64`.  Returns `None` if the column
@@ -420,7 +401,6 @@ impl TimeSeriesCsv {
     }
 }
 /// A schema definition for a CSV file: each column has a name and expected type.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CsvSchema {
     /// Ordered column definitions.
@@ -524,7 +504,6 @@ impl<'a> LazyCsvIter<'a> {
     }
 }
 /// Summary of validation errors found in a CSV file.
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct CsvValidationReport {
     /// All error messages.
@@ -542,7 +521,6 @@ impl CsvValidationReport {
 }
 /// Inferred column types.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum ColumnType {
     /// All values parse as integers.
     Integer,
@@ -552,7 +530,6 @@ pub enum ColumnType {
     Text,
 }
 /// Typed column data in a [`CsvDataFrame`].
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum CsvColumnData {
     /// Column of 64-bit integers.
@@ -562,7 +539,6 @@ pub enum CsvColumnData {
     /// Column of strings.
     Text(Vec<String>),
 }
-#[allow(dead_code)]
 impl CsvColumnData {
     /// Return the length of this column.
     pub fn len(&self) -> usize {
@@ -588,8 +564,7 @@ impl CsvColumnData {
 /// A DataFrame-like structure with named, typed columns.
 ///
 /// Each column carries its inferred type. Construct via
-/// [`CsvDataFrame::from_csv`] or [`CsvDataFrame::from_str`].
-#[allow(dead_code)]
+/// [`CsvDataFrame::from_csv`] or `.parse::<CsvDataFrame>()`.
 #[derive(Debug, Clone)]
 pub struct CsvDataFrame {
     /// Column names, in order.
@@ -597,7 +572,6 @@ pub struct CsvDataFrame {
     /// Typed column data (parallel to `column_names`).
     pub columns: Vec<CsvColumnData>,
 }
-#[allow(dead_code)]
 impl CsvDataFrame {
     /// Build a `CsvDataFrame` from an existing [`CsvFile`] with auto type inference.
     pub fn from_csv(csv: &CsvFile) -> Self {
@@ -657,13 +631,6 @@ impl CsvDataFrame {
             column_names,
             columns,
         }
-    }
-    /// Parse a CSV string and build a `CsvDataFrame` with type inference.
-    ///
-    /// Returns an error message with the problematic line number if parsing fails.
-    pub fn from_str(s: &str) -> std::result::Result<Self, String> {
-        let csv = CsvFile::from_str(s).map_err(|e| format!("line 1: {e}"))?;
-        Ok(Self::from_csv(&csv))
     }
     /// Parse a delimiter-separated string and build a `CsvDataFrame`.
     pub fn from_str_with_delimiter(s: &str, delim: char) -> std::result::Result<Self, String> {
@@ -737,11 +704,17 @@ impl CsvDataFrame {
         out
     }
 }
+impl std::str::FromStr for CsvDataFrame {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let csv: CsvFile = s.parse().map_err(|e: String| format!("line 1: {e}"))?;
+        Ok(Self::from_csv(&csv))
+    }
+}
 /// A line-by-line streaming CSV reader backed by an in-memory string.
 ///
 /// Unlike [`LazyCsvIter`], this reader tracks the current row number and
 /// supports peeking at headers before iterating data rows.
-#[allow(dead_code)]
 pub struct StreamingCsvReader<'a> {
     /// Delimiter detected or supplied.
     pub delimiter: char,
@@ -751,7 +724,6 @@ pub struct StreamingCsvReader<'a> {
     /// Current row (0-based, not counting header).
     pub(super) row: usize,
 }
-#[allow(dead_code)]
 impl<'a> StreamingCsvReader<'a> {
     /// Create a reader with explicit delimiter.
     pub fn new(input: &'a str, delimiter: char) -> Self {
@@ -812,7 +784,6 @@ impl<'a> StreamingCsvReader<'a> {
 }
 /// Statistics for a numeric column.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ColumnStats {
     /// Minimum value.
     pub min: f64,
@@ -830,7 +801,6 @@ pub struct ColumnStats {
 /// One frame per "block", where each block has optional comment/header
 /// lines followed by rows of `x,y,z` coordinates (one atom per row).
 /// Blocks are separated by a blank line.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct TrajectoryFrame {
     /// Optional frame title/comment.
@@ -838,7 +808,6 @@ pub struct TrajectoryFrame {
     /// 3D positions for each atom: `[x, y, z]` in simulation units.
     pub positions: Vec<[f64; 3]>,
 }
-#[allow(dead_code)]
 impl TrajectoryFrame {
     /// Create an empty frame.
     pub fn new() -> Self {

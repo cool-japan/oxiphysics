@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,11 +7,11 @@
 //! quality: energy tracking, momentum conservation, collision statistics,
 //! performance profiling, and full simulation reports.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
+
+/// `(time, body_id, px, py, pz, vx, vy, vz, ke)` data row exported by [`PyDataExporter`].
+type DataRow = (f64, u32, f64, f64, f64, f64, f64, f64, f64);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Snapshot
@@ -1072,7 +1071,7 @@ impl PyBenchmark {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PyDataExporter {
     /// Recorded rows: (time, body_id, px, py, pz, vx, vy, vz, ke).
-    rows: Vec<(f64, u32, f64, f64, f64, f64, f64, f64, f64)>,
+    rows: Vec<DataRow>,
 }
 
 #[pymethods]
@@ -1134,7 +1133,7 @@ impl PyDataExporter {
 
     /// Get all rows as list of tuples.
     #[getter]
-    pub fn get_rows(&self) -> Vec<(f64, u32, f64, f64, f64, f64, f64, f64, f64)> {
+    pub fn get_rows(&self) -> Vec<DataRow> {
         self.rows.clone()
     }
 }

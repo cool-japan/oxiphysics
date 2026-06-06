@@ -2,11 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions_2::*;
 use oxiphysics_core::math::{Real, Vec3};
 
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// A convex hull defined by a set of vertices (uses nalgebra `Vec3`).
@@ -326,7 +323,6 @@ impl ConvexHull3D {
     ///
     /// Uses the tetrahedral decomposition method from Polyhedral Mass Properties
     /// (David Eberly, Geometric Tools).
-    #[allow(clippy::too_many_arguments)]
     pub fn compute_moment_of_inertia(&self, mass: f64) -> [[f64; 3]; 3] {
         if self.faces.is_empty() || mass <= 0.0 {
             return [[0.0; 3]; 3];
@@ -432,7 +428,6 @@ impl ConvexHull3D {
 }
 /// Build an approximate convex hull after optionally deduplicating and
 /// thinning the input, and return it together with quality metrics.
-#[allow(dead_code)]
 pub struct HullWithQuality {
     /// The convex hull.
     pub hull: ConvexHull3D,
@@ -441,7 +436,6 @@ pub struct HullWithQuality {
     /// Aspect ratio (1 = cube-like, ∞ = degenerate).
     pub aspect_ratio: f64,
 }
-#[allow(dead_code)]
 impl HullWithQuality {
     /// Build the hull and compute quality metrics in one step.
     pub fn build(points: &[[f64; 3]], tolerance: f64) -> Option<Self> {
@@ -465,14 +459,12 @@ impl HullWithQuality {
 ///
 /// For large datasets, prefer `ConvexHull3D::build` directly.  This builder is
 /// useful when points arrive in a stream.
-#[allow(dead_code)]
 pub struct IncrementalConvexHull {
     /// All points added so far.
     pub(super) points: Vec<[f64; 3]>,
     /// Current best hull (if at least 4 non-coplanar points exist).
     pub(super) hull: Option<ConvexHull3D>,
 }
-#[allow(dead_code)]
 impl IncrementalConvexHull {
     /// Create an empty incremental hull builder.
     pub fn new() -> Self {

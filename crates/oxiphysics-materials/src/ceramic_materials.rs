@@ -9,9 +9,6 @@
 //!
 //! All functions use SI units unless otherwise stated.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 /// Universal gas constant (J/(mol K)).

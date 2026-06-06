@@ -15,9 +15,6 @@
 //! - [`DifferentialGrowth`] — elastic instability from differential growth
 //! - [`PhyllotaxisModel`] — phyllotaxis spiral (Fibonacci), auxin transport
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -30,38 +27,10 @@ type Vec2 = [f64; 2];
 /// 3-D vector type alias.
 type Vec3 = [f64; 3];
 
-/// Euclidean norm of a 2-D vector.
-#[inline]
-fn norm2(v: Vec2) -> f64 {
-    (v[0] * v[0] + v[1] * v[1]).sqrt()
-}
-
 /// Euclidean norm of a 3-D vector.
 #[inline]
 fn norm3(v: Vec3) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
-}
-
-/// Dot product of two 3-D vectors.
-#[inline]
-fn dot3(a: Vec3, b: Vec3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-/// Cross product of two 3-D vectors.
-#[inline]
-fn cross3(a: Vec3, b: Vec3) -> Vec3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-/// Add two 3-D vectors.
-#[inline]
-fn add3(a: Vec3, b: Vec3) -> Vec3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 /// Subtract two 3-D vectors.
@@ -85,12 +54,6 @@ fn normalize3(v: Vec3) -> Vec3 {
     } else {
         scale3(v, 1.0 / n)
     }
-}
-
-/// Linear interpolation between a and b.
-#[inline]
-fn lerp(a: f64, b: f64, t: f64) -> f64 {
-    a + t * (b - a)
 }
 
 // ---------------------------------------------------------------------------

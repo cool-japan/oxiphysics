@@ -35,7 +35,6 @@ pub fn scale3(v: [f64; 3], s: f64) -> [f64; 3] {
     [v[0] * s, v[1] * s, v[2] * s]
 }
 /// Cross product of two 3-vectors.
-#[allow(dead_code)]
 pub fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -376,7 +375,6 @@ mod rope_verlet_tests {
 /// ```
 ///
 /// `n` must be >= 1.
-#[allow(dead_code)]
 pub fn taut_string_frequency(n: usize, length: f64, tension: f64, linear_density: f64) -> f64 {
     assert!(n >= 1, "mode number must be >= 1");
     let wave_speed = (tension / linear_density.max(1e-30)).sqrt();
@@ -385,7 +383,6 @@ pub fn taut_string_frequency(n: usize, length: f64, tension: f64, linear_density
 /// Compute the first `n_modes` standing-wave frequencies for a taut string.
 ///
 /// Returns a `Vec` of length `n_modes` with frequencies in ascending order.
-#[allow(dead_code)]
 pub fn taut_string_modes(
     n_modes: usize,
     length: f64,
@@ -400,7 +397,6 @@ pub fn taut_string_modes(
 /// and time `t`:
 ///
 /// `y(x, t) = amplitude * sin(n π x / L) * cos(2π f_n t)`
-#[allow(dead_code)]
 pub fn standing_wave_displacement(
     x: f64,
     t: f64,
@@ -421,7 +417,6 @@ pub fn standing_wave_displacement(
 /// weight under compression.
 ///
 /// Returns the index of the first node where coiling is detected, or `None`.
-#[allow(dead_code)]
 pub fn detect_coiling(rope: &Rope, curvature_threshold: f64, window: usize) -> Option<usize> {
     let n = rope.nodes.len();
     if n < 3 || window == 0 {
@@ -439,7 +434,6 @@ pub fn detect_coiling(rope: &Rope, curvature_threshold: f64, window: usize) -> O
 }
 /// Maximum tension threshold for coiling: if any segment tension exceeds
 /// `max_tension`, the rope is considered taut enough that coiling cannot occur.
-#[allow(dead_code)]
 pub fn coil_tension_exceeded(rope: &Rope, max_tension: f64) -> bool {
     rope.max_tension() > max_tension
 }

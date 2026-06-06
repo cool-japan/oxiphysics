@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! Implements Arrhenius reaction kinetics, species transport, heat release,
 //! laminar flame speed, Chapman-Jouguet detonation velocity, and a simple
 //! reactive SPH time-step integrator.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -39,22 +36,6 @@ fn scale3(a: [f64; 3], s: f64) -> [f64; 3] {
 // ---------------------------------------------------------------------------
 // SPH kernel (cubic spline, 3-D)
 // ---------------------------------------------------------------------------
-
-fn cubic_kernel(r: f64, h: f64) -> f64 {
-    if h < 1e-300 {
-        return 0.0;
-    }
-    let q = r / h;
-    let alpha = 1.0 / (PI * h * h * h);
-    if q < 1.0 {
-        alpha * (1.0 - 1.5 * q * q + 0.75 * q * q * q)
-    } else if q < 2.0 {
-        let t = 2.0 - q;
-        alpha * 0.25 * t * t * t
-    } else {
-        0.0
-    }
-}
 
 fn cubic_kernel_grad(r_ij: [f64; 3], h: f64) -> [f64; 3] {
     let r = len3(r_ij);
@@ -274,7 +255,7 @@ pub fn detonation_velocity_cj(q: f64, gamma: f64, speed_sound: f64) -> f64 {
 /// 2. Update temperature from heat release (assuming constant c_p = 1000 J/kg/K).
 /// 3. Update pressure via ideal gas: p = ρ R_spec T (R_spec = 287 J/kg/K).
 /// 4. Advance position by velocity.
-pub fn reactive_sph_step(particles: &mut Vec<ReactiveParticle>, params: &ReactionParams, dt: f64) {
+pub fn reactive_sph_step(particles: &mut [ReactiveParticle], params: &ReactionParams, dt: f64) {
     const C_P: f64 = 1000.0; // J/(kg K) — constant-pressure specific heat
     const R_SPEC: f64 = 287.0; // J/(kg K) — specific gas constant (air-like)
 
@@ -400,7 +381,7 @@ pub fn adiabatic_flame_temperature(t_unburnt: f64, q: f64, c_p: f64) -> f64 {
 }
 
 /// Normalise species fractions so they sum to 1.
-pub fn normalise_species(fracs: &mut Vec<f64>) {
+pub fn normalise_species(fracs: &mut [f64]) {
     let total: f64 = fracs.iter().sum();
     if total > 1e-300 {
         for f in fracs.iter_mut() {

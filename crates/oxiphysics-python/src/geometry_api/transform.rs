@@ -3,6 +3,7 @@
 
 //! Point cloud, geometry transforms, mesh quality, and utility pyfunction wrappers.
 
+use oxiphysics::geometry::signed_distance_field::MarchingCubes;
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -83,11 +84,19 @@ impl PyPointCloud {
         self.normals.clear();
     }
 
-    /// Stub for Poisson surface reconstruction.
+    /// Implicit Moving Least Squares (IMLS) surface reconstruction.
     ///
-    /// Returns an empty mesh — full implementation requires an octree solver.
+    /// Evaluates an IMLS implicit function on a uniform grid and extracts
+    /// the isosurface at zero using Marching Cubes.  Grid resolution is
+    /// fixed at 32³ to keep run-time predictable; call
+    /// `poisson_reconstruct_res` for a configurable resolution.
     pub fn poisson_reconstruct(&self) -> PyTriangleMesh {
-        PyTriangleMesh::new()
+        self.poisson_reconstruct_res(32)
+    }
+
+    /// IMLS reconstruction at a given grid `resolution` (clamped to 4–128).
+    pub fn poisson_reconstruct_res(&self, resolution: usize) -> PyTriangleMesh {
+        imls_reconstruct(&self.points, &self.normals, resolution)
     }
 
     /// Get points as list of [x, y, z] lists.
@@ -435,4 +444,208 @@ pub fn convex_hull_from_mesh(mesh: &PyTriangleMesh) -> PyConvexHull {
 #[pyfunction]
 pub fn py_convex_hull_from_mesh(mesh: &PyTriangleMesh) -> PyConvexHull {
     convex_hull_from_mesh(mesh)
+}
+
+// ---------------------------------------------------------------------------
+// IMLS implicit surface reconstruction
+// ---------------------------------------------------------------------------
+
+/// Evaluate an IMLS implicit function at query point `x`.
+///
+/// Returns a large positive value (outside) when the weighted sum is
+/// negligible, which correctly places uninformed regions outside the surface.
+fn imls_eval(x: [f64; 3], points: &[[f64; 3]], normals: &[[f64; 3]], h_sq: f64) -> f64 {
+    let mut sum_w = 0.0_f64;
+    let mut sum_wn = 0.0_f64;
+    for (p, n) in points.iter().zip(normals.iter()) {
+        let dx = x[0] - p[0];
+        let dy = x[1] - p[1];
+        let dz = x[2] - p[2];
+        let d_sq = dx * dx + dy * dy + dz * dz;
+        let w = (-d_sq / h_sq).exp();
+        sum_w += w;
+        sum_wn += w * (dx * n[0] + dy * n[1] + dz * n[2]);
+    }
+    if sum_w < 1e-12 {
+        return 1.0;
+    }
+    sum_wn / sum_w
+}
+
+/// Estimate per-point normals from a point set by computing centroid-based
+/// outward directions — a fast fallback when no normals are provided.
+fn estimate_normals_centroid(points: &[[f64; 3]]) -> Vec<[f64; 3]> {
+    let c = centroid(points);
+    points.iter().map(|&p| normalize3(sub3(p, c))).collect()
+}
+
+/// Full IMLS surface reconstruction pipeline.
+///
+/// 1. Validate / estimate normals.
+/// 2. Compute bandwidth `h` from mean nearest-neighbour distances.
+/// 3. Determine padded AABB.
+/// 4. Sample the IMLS implicit on a uniform grid.
+/// 5. Extract the zero isosurface with Marching Cubes.
+pub(crate) fn imls_reconstruct(
+    points: &[[f64; 3]],
+    normals: &[[f64; 3]],
+    resolution: usize,
+) -> PyTriangleMesh {
+    if points.is_empty() {
+        return PyTriangleMesh::new();
+    }
+
+    let n_pts = points.len();
+
+    let effective_normals: Vec<[f64; 3]> = if normals.len() == n_pts {
+        normals.to_vec()
+    } else {
+        estimate_normals_centroid(points)
+    };
+
+    // Compute mean nearest-neighbour distance as bandwidth.
+    let sample_count = n_pts.min(100);
+    let mut h_sum = 0.0_f64;
+    let mut h_cnt = 0_usize;
+    for i in 0..sample_count {
+        let p = points[i];
+        let mut best_d2 = f64::MAX;
+        for (j, q) in points.iter().enumerate() {
+            if j == i {
+                continue;
+            }
+            let d2 = {
+                let dx = p[0] - q[0];
+                let dy = p[1] - q[1];
+                let dz = p[2] - q[2];
+                dx * dx + dy * dy + dz * dz
+            };
+            if d2 < best_d2 {
+                best_d2 = d2;
+            }
+        }
+        if best_d2.is_finite() && best_d2 > 0.0 {
+            h_sum += best_d2.sqrt();
+            h_cnt += 1;
+        }
+    }
+    let h = if h_cnt > 0 && h_sum / h_cnt as f64 > 1e-12 {
+        h_sum / h_cnt as f64
+    } else {
+        0.1
+    };
+    let h_sq = h * h;
+
+    // Padded AABB.
+    let (mn, mx) = compute_aabb_internal(points);
+    let pad = |lo: f64, hi: f64| {
+        let span = hi - lo;
+        let p = 0.1 * (span + h);
+        (lo - p, hi + p)
+    };
+    let (xlo, xhi) = pad(mn[0], mx[0]);
+    let (ylo, yhi) = pad(mn[1], mx[1]);
+    let (zlo, zhi) = pad(mn[2], mx[2]);
+
+    let res = resolution.clamp(4, 128);
+    let bounds = [xlo, xhi, ylo, yhi, zlo, zhi];
+
+    let pts = points.to_vec();
+    let nrms = effective_normals;
+
+    let mc_result = MarchingCubes::from_function(
+        &|p: [f64; 3]| imls_eval(p, &pts, &nrms, h_sq),
+        res,
+        res,
+        res,
+        bounds,
+    )
+    .extract(0.0);
+
+    let vertices: Vec<[f64; 3]> = mc_result.vertices.iter().map(|v| v.position).collect();
+    let indices: Vec<usize> = mc_result
+        .triangles
+        .iter()
+        .flat_map(|t| [t.indices[0], t.indices[1], t.indices[2]])
+        .collect();
+
+    PyTriangleMesh::from_raw_internal(vertices, indices)
+}
+
+// ---------------------------------------------------------------------------
+// Tests for IMLS reconstruction
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::PI;
+
+    /// Generate ~n points uniformly on the unit sphere with outward normals.
+    fn sphere_point_cloud(n: usize) -> PyPointCloud {
+        let mut points = Vec::with_capacity(n);
+        let mut normals = Vec::with_capacity(n);
+        // Fibonacci lattice for roughly uniform sphere sampling.
+        let golden = (1.0 + 5.0_f64.sqrt()) / 2.0;
+        for i in 0..n {
+            let theta = (1.0 - 2.0 * (i as f64 + 0.5) / n as f64).acos();
+            let phi = 2.0 * PI * (i as f64) / golden;
+            let x = theta.sin() * phi.cos();
+            let y = theta.sin() * phi.sin();
+            let z = theta.cos();
+            points.push([x, y, z]);
+            normals.push([x, y, z]);
+        }
+        PyPointCloud { points, normals }
+    }
+
+    #[test]
+    fn test_imls_reconstruct_sphere_point_cloud() {
+        let cloud = sphere_point_cloud(100);
+        let mesh = cloud.poisson_reconstruct_res(24);
+        assert!(
+            !mesh.vertices.is_empty(),
+            "reconstructed sphere mesh should have vertices"
+        );
+        assert!(
+            !mesh.indices.is_empty(),
+            "reconstructed sphere mesh should have triangles"
+        );
+        for v in &mesh.vertices {
+            for &coord in v.iter() {
+                assert!(
+                    coord.abs() <= 1.6,
+                    "reconstructed vertex {} outside [-1.6, 1.6]³",
+                    coord
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_imls_reconstruct_empty_input() {
+        let cloud = PyPointCloud::new();
+        let mesh = cloud.poisson_reconstruct();
+        assert!(
+            mesh.vertices.is_empty(),
+            "empty cloud should yield empty mesh"
+        );
+        assert!(
+            mesh.indices.is_empty(),
+            "empty cloud should yield empty mesh"
+        );
+    }
+
+    #[test]
+    fn test_imls_reconstruct_without_normals() {
+        let cloud = PyPointCloud {
+            points: sphere_point_cloud(60).points,
+            normals: vec![],
+        };
+        let mesh = cloud.poisson_reconstruct_res(20);
+        assert!(
+            !mesh.vertices.is_empty(),
+            "mesh should be non-empty even when normals are estimated internally"
+        );
+    }
 }

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,8 +8,6 @@
 //! JWL equation of state, shock tube (Sod) validation, blast loading on
 //! structures, cratering models, air blast propagation, particle splitting,
 //! and damage assessment.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -55,18 +52,6 @@ fn add3(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
 #[inline]
 fn scale3(s: f64, v: &[f64; 3]) -> [f64; 3] {
     [s * v[0], s * v[1], s * v[2]]
-}
-
-/// Normalize a 3-D vector. Returns the length.
-#[inline]
-fn normalize3(v: &mut [f64; 3]) -> f64 {
-    let len = norm3(v);
-    if len > f64::EPSILON {
-        v[0] /= len;
-        v[1] /= len;
-        v[2] /= len;
-    }
-    len
 }
 
 // ---------------------------------------------------------------------------
@@ -951,7 +936,6 @@ pub fn sph_density(particle_idx: usize, particles: &[BlastParticle], neighbors: 
 }
 
 /// SPH momentum equation acceleration (Euler equation with artificial viscosity).
-#[allow(clippy::too_many_arguments)]
 pub fn sph_acceleration(
     particle_idx: usize,
     particles: &[BlastParticle],
@@ -994,7 +978,6 @@ pub fn sph_acceleration(
 }
 
 /// SPH energy equation (rate of change of specific internal energy).
-#[allow(clippy::too_many_arguments)]
 pub fn sph_energy_rate(
     particle_idx: usize,
     particles: &[BlastParticle],
@@ -1075,15 +1058,13 @@ pub fn particles_to_split(
         return to_split;
     }
 
-    for i in 0..n {
+    for (i, pi) in particles.iter().enumerate() {
         // Estimate pressure gradient from nearest neighbors (simplified)
-        let pi = &particles[i];
         let mut max_grad = 0.0;
-        for j in 0..n {
+        for (j, pj) in particles.iter().enumerate() {
             if i == j {
                 continue;
             }
-            let pj = &particles[j];
             let r = dist3(&pi.position, &pj.position);
             if r < 2.0 * pi.smoothing_length && r > f64::EPSILON {
                 let grad = (pi.pressure - pj.pressure).abs() / r;

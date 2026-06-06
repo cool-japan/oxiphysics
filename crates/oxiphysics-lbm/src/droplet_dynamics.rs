@@ -1,4 +1,3 @@
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! Implements droplet tracking, coalescence detection, breakup criteria,
 //! and deformation analysis using the Weber number for droplets in LBM
 //! phase-field or multiphase simulations.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -316,7 +313,6 @@ pub struct DropletDynamics {
 
 impl DropletDynamics {
     /// Create a new DropletDynamics instance.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         droplet: Droplet,
         outer_density: f64,
@@ -425,7 +421,6 @@ pub fn ohnesorge_number(viscosity: f64, density: f64, surface_tension: f64, radi
 /// The phase field φ ∈ \[0,1\] distinguishes liquid (φ≈1) from gas (φ≈0).
 /// The distribution function `f_dist` holds the D2Q9 populations for the
 /// flow solver (9 velocities per node) and `phi` stores the scalar field.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DropletLBM {
     /// Number of lattice nodes in x.
@@ -1090,7 +1085,7 @@ mod tests {
         let mut d = DropletLBM::new(16, 16, 0.01, 1.0, 0.0);
         d.init_circular_droplet(8.0, 8.0, 4.0);
         for &p in &d.phi {
-            assert!(p >= 0.0 && p <= 1.0 + 1e-12);
+            assert!((0.0..=(1.0 + 1e-12)).contains(&p), "p={p}");
         }
     }
 
@@ -1146,7 +1141,7 @@ mod tests {
     #[test]
     fn test_contact_angle_range() {
         let theta = contact_angle_from_energy(0.7, 0.3, 1.0);
-        assert!(theta >= 0.0 && theta <= PI);
+        assert!((0.0..=PI).contains(&theta));
     }
 
     // --- weber_number (standalone) ---

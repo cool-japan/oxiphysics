@@ -3,8 +3,6 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::fwh_acoustic_pressure;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions_2::spl_from_pressure_fluctuation;
 use std::f64::consts::PI;
 
@@ -12,7 +10,6 @@ use std::f64::consts::PI;
 ///
 /// Stores the numerator and denominator coefficients of the A-weighting
 /// transfer function in continuous-time bilinear form.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct AWeightingFilter {
     /// Poles of the A-weighting filter (rad/s)
@@ -24,7 +21,6 @@ impl AWeightingFilter {
     /// Create the standard A-weighting filter.
     ///
     /// Based on IEC 61672-1 / ANSI S1.42 specification.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             poles: [
@@ -37,7 +33,6 @@ impl AWeightingFilter {
         }
     }
     /// Compute A-weighting magnitude (linear, not dB) at frequency f (Hz).
-    #[allow(dead_code)]
     pub fn magnitude(&self, f: f64) -> f64 {
         if f < 1e-6 {
             return 0.0;
@@ -56,7 +51,6 @@ impl AWeightingFilter {
         num / den
     }
     /// Compute A-weighting in dB at frequency f (Hz).
-    #[allow(dead_code)]
     pub fn magnitude_db(&self, f: f64) -> f64 {
         let mag = self.magnitude(f);
         if mag < 1e-30 {
@@ -68,7 +62,6 @@ impl AWeightingFilter {
     ///
     /// `freqs` and `spls` must have the same length.
     /// Returns A-weighted SPL values.
-    #[allow(dead_code)]
     pub fn apply_to_spectrum(&self, freqs: &[f64], spls: &[f64]) -> Vec<f64> {
         freqs
             .iter()
@@ -78,7 +71,6 @@ impl AWeightingFilter {
     }
 }
 /// FWH surface integral data: surface normal, velocity, and pressure at one panel.
-#[allow(dead_code)]
 pub struct FwhSurfacePanel {
     /// Panel area (m^2).
     pub area: f64,
@@ -94,7 +86,6 @@ pub struct FwhSurfacePanel {
     pub r: f64,
 }
 /// Source type identification based on Mach number scaling.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum AcousticSourceType {
     /// W ∝ Ma² (compact volume fluctuation)
@@ -105,7 +96,6 @@ pub enum AcousticSourceType {
     Quadrupole,
 }
 /// A single FW-H (Ffowcs Williams-Hawkings) surface panel.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct FwhPanel {
     /// Panel center position \[x, y, z\].
@@ -123,7 +113,6 @@ pub struct FwhPanel {
 ///
 /// Uses FWH surface integral on a near-field control surface surrounding
 /// the source region. The surface encloses the near-field LBM data.
-#[allow(dead_code)]
 pub struct NearToFarField {
     /// Control surface panels (reuse FwhPanel)
     pub panels: Vec<FwhPanel>,
@@ -132,7 +121,6 @@ pub struct NearToFarField {
 }
 impl NearToFarField {
     /// Create a new near-to-far-field transformer.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             panels: Vec::new(),
@@ -140,17 +128,14 @@ impl NearToFarField {
         }
     }
     /// Add a control surface panel.
-    #[allow(dead_code)]
     pub fn add_panel(&mut self, panel: FwhPanel) {
         self.panels.push(panel);
     }
     /// Add an observer position.
-    #[allow(dead_code)]
     pub fn add_observer(&mut self, pos: [f64; 3]) {
         self.observers.push(pos);
     }
     /// Compute far-field pressure at all observer positions.
-    #[allow(dead_code)]
     pub fn compute_far_field(&self) -> Vec<f64> {
         self.observers
             .iter()
@@ -158,7 +143,6 @@ impl NearToFarField {
             .collect()
     }
     /// Compute SPL at all observer positions.
-    #[allow(dead_code)]
     pub fn compute_spl(&self) -> Vec<f64> {
         self.compute_far_field()
             .iter()
@@ -167,7 +151,6 @@ impl NearToFarField {
     }
 }
 /// Helmholtz resonator model with volume, neck geometry and speed of sound.
-#[allow(dead_code)]
 pub struct HelmholtzResonator {
     /// Cavity volume (m³ or lattice units³)
     pub volume: f64,
@@ -180,7 +163,6 @@ pub struct HelmholtzResonator {
 }
 impl HelmholtzResonator {
     /// Create a new Helmholtz resonator.
-    #[allow(dead_code)]
     pub fn new(v: f64, l: f64, a: f64, c: f64) -> Self {
         Self {
             volume: v,
@@ -191,7 +173,6 @@ impl HelmholtzResonator {
     }
     /// Resonance frequency with end correction:
     /// f = c/(2π) * sqrt(A / (V*(L + 0.85*sqrt(A/π))))
-    #[allow(dead_code)]
     pub fn resonance_frequency(&self) -> f64 {
         let l_eff = self.neck_length + 0.85 * (self.neck_area / PI).sqrt();
         self.c0 / (2.0 * PI) * (self.neck_area / (self.volume * l_eff)).sqrt()
@@ -199,20 +180,17 @@ impl HelmholtzResonator {
     /// Quality factor: Q = sqrt(V*L) / (A^0.25 * sqrt(2*nu/omega))
     ///
     /// `viscosity` is the kinematic viscosity ν.
-    #[allow(dead_code)]
     pub fn quality_factor(&self, viscosity: f64) -> f64 {
         let omega = 2.0 * PI * self.resonance_frequency();
         let denom = self.neck_area.powf(0.25) * (2.0 * viscosity / omega).sqrt();
         (self.volume * self.neck_length).sqrt() / denom
     }
     /// Peak transmission loss: TL_max ≈ 10*log10(1 + V/(4*L*A))
-    #[allow(dead_code)]
     pub fn transmission_loss_peak(&self) -> f64 {
         10.0 * (1.0 + self.volume / (4.0 * self.neck_length * self.neck_area)).log10()
     }
 }
 /// Observer position for FWH calculation.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct FwhObserver {
     /// Observer position \[x, y, z\]
@@ -224,7 +202,6 @@ pub struct FwhObserver {
 }
 impl FwhObserver {
     /// Create a new FWH observer.
-    #[allow(dead_code)]
     pub fn new(x: f64, y: f64, z: f64, c0: f64, rho0: f64) -> Self {
         Self {
             position: [x, y, z],
@@ -233,7 +210,6 @@ impl FwhObserver {
         }
     }
     /// Compute distance from this observer to a source point.
-    #[allow(dead_code)]
     pub fn distance_to(&self, source: [f64; 3]) -> f64 {
         let dx = self.position[0] - source[0];
         let dy = self.position[1] - source[1];
@@ -241,7 +217,6 @@ impl FwhObserver {
         (dx * dx + dy * dy + dz * dz).sqrt()
     }
     /// Unit vector from source to observer.
-    #[allow(dead_code)]
     pub fn unit_vector_from(&self, source: [f64; 3]) -> [f64; 3] {
         let dx = self.position[0] - source[0];
         let dy = self.position[1] - source[1];

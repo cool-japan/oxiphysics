@@ -17,8 +17,6 @@
 //! - **Coupler forces** – draft gear / buffer spring model
 //! - **Derailment criteria** – Nadal L/V ratio and wheel unloading
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -641,7 +639,6 @@ pub fn iso2631_rms(accelerations: &[f64]) -> f64 {
 ///
 /// Returns the braking distance in metres. Returns `f64::INFINITY` if braking
 /// is insufficient to decelerate on the given grade.
-#[allow(clippy::too_many_arguments)]
 pub fn braking_distance(
     mass: f64,
     initial_speed: f64,
@@ -989,7 +986,6 @@ pub fn grade_resistance(mass: f64, gradient: f64) -> f64 {
 /// * `mass` — mass (kg), used to derive default A if coefficients are per-tonne.
 /// * `speed` — speed (m/s).
 /// * `a`, `b`, `c` — Davis coefficients (N, N·s/m, N·s²/m²).
-#[allow(clippy::too_many_arguments)]
 pub fn davis_resistance_force(mass: f64, speed: f64, a: f64, b: f64, c: f64) -> f64 {
     let _mass = mass; // included for API symmetry / future per-tonne scaling
     let v = speed.abs();

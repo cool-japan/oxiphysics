@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,8 +5,6 @@
 //!
 //! Implements NeRF (Neural Radiance Fields), Gaussian Splatting, Neural SDFs,
 //! and related neural rendering techniques for advanced visualization pipelines.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -48,15 +45,6 @@ fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// Scale a 3-vector by a scalar.
 fn scale3(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
-}
-
-/// Cross product of two 3-vectors.
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 /// Clamp a value to \[lo, hi\].
@@ -431,7 +419,6 @@ impl NeRfVolume {
     /// Integrate radiance along a ray using the NeRF volume rendering integral.
     ///
     /// Implements: C(r) = ∫ T(t) σ(t) c(t) dt where T(t) = exp(-∫₀ᵗ σ(s) ds).
-    #[allow(clippy::too_many_arguments)]
     pub fn render_ray(
         &self,
         nerf: &NeuralRadianceField,
@@ -492,8 +479,8 @@ impl NeRfVolume {
             let alpha = 1.0 - (-s.density * delta).exp();
             let weight = transmittance * alpha;
 
-            for k in 0..3 {
-                acc_color[k] += weight * s.color[k];
+            for (ac, sc) in acc_color.iter_mut().zip(s.color.iter()) {
+                *ac += weight * sc;
             }
             acc_depth += weight * s.t;
             acc_alpha += weight;
@@ -505,8 +492,8 @@ impl NeRfVolume {
         }
 
         // White background blend.
-        for k in 0..3 {
-            acc_color[k] += transmittance; // white = 1.0
+        for ac in acc_color.iter_mut() {
+            *ac += transmittance; // white = 1.0
         }
 
         RayIntegral {
@@ -580,8 +567,8 @@ impl HashGridLevel {
                     let w = (if dx == 0 { 1.0 - wx } else { wx })
                         * (if dy == 0 { 1.0 - wy } else { wy })
                         * (if dz == 0 { 1.0 - wz } else { wz });
-                    for k in 0..2 {
-                        result[k] += (w * self.table[h][k] as f64) as f32;
+                    for (res_k, tbl_k) in result.iter_mut().zip(self.table[h].iter()) {
+                        *res_k += (w * *tbl_k as f64) as f32;
                     }
                 }
             }
@@ -847,8 +834,8 @@ impl GaussianSplatting {
 
             // Front-to-back blending.
             let contribution = alpha * (1.0 - acc_alpha);
-            for k in 0..3 {
-                acc_color[k] += contribution * g.color[k];
+            for (ac, gc) in acc_color.iter_mut().zip(g.color.iter()) {
+                *ac += contribution * gc;
             }
             acc_alpha += contribution;
 
@@ -1071,8 +1058,8 @@ impl DeepRenderImage {
     pub fn gamma_correct(&mut self, gamma: f32) {
         let inv_gamma = 1.0 / gamma;
         for px in &mut self.pixels {
-            for k in 0..3 {
-                px[k] = px[k].max(0.0).powf(inv_gamma);
+            for ch in px[0..3].iter_mut() {
+                *ch = ch.max(0.0).powf(inv_gamma);
             }
         }
     }
@@ -1444,14 +1431,14 @@ impl LatentSpaceViz {
             }
 
             // Update step.
-            for ci in 0..k {
+            for (ci, centroid) in centroids.iter_mut().enumerate() {
                 let members: Vec<_> = self.points.iter().filter(|p| p.cluster == ci).collect();
                 if members.is_empty() {
                     continue;
                 }
                 let n = members.len() as f64;
-                centroids[ci][0] = members.iter().map(|p| p.projected[0]).sum::<f64>() / n;
-                centroids[ci][1] = members.iter().map(|p| p.projected[1]).sum::<f64>() / n;
+                centroid[0] = members.iter().map(|p| p.projected[0]).sum::<f64>() / n;
+                centroid[1] = members.iter().map(|p| p.projected[1]).sum::<f64>() / n;
             }
         }
     }
@@ -1715,14 +1702,14 @@ mod tests {
             [1.0, 0.0, 0.0, 0.0],
         );
         let cov = g.covariance();
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in cov.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (cov[i][j] - cov[j][i]).abs() < 1e-10,
+                    (val - cov[j][i]).abs() < 1e-10,
                     "covariance not symmetric at ({},{}) : {} vs {}",
                     i,
                     j,
-                    cov[i][j],
+                    val,
                     cov[j][i]
                 );
             }

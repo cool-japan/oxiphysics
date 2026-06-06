@@ -6,8 +6,6 @@
 //! Provides coarse-grained lipid models, bilayer construction, MD stepping,
 //! and analysis (order parameter, area per lipid, bending modulus, tension).
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 /// Type of lipid molecule in the bilayer.

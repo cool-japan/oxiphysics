@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,8 +10,6 @@
 //! - Springel & Hernquist (2002): Cosmological smoothed particle hydrodynamics simulations
 //! - Barnes & Hut (1986): A hierarchical O(N log N) force-calculation algorithm
 //! - Jeans (1902): The stability of a spherical nebula
-
-#![allow(dead_code)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1.  AstroSphParticle
@@ -53,7 +50,6 @@ impl AstroSphParticle {
     /// Construct a new particle with given mass, position, velocity, internal energy.
     ///
     /// Entropy and derived quantities are computed assuming adiabatic index γ.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: usize,
         mass: f64,
@@ -198,14 +194,14 @@ impl GravitationalForce {
     }
 
     /// Compute accelerations for all N particles via direct pairwise sum (O(N²)).
-    pub fn compute_all_direct(&self, particles: &mut Vec<AstroSphParticle>) {
+    pub fn compute_all_direct(&self, particles: &mut [AstroSphParticle]) {
         let n = particles.len();
         let mut accels = vec![[0.0f64; 3]; n];
-        for i in 0..n {
-            accels[i] = self.direct_acceleration(i, particles);
+        for (i, a) in accels.iter_mut().enumerate() {
+            *a = self.direct_acceleration(i, particles);
         }
-        for (i, p) in particles.iter_mut().enumerate() {
-            p.accel = accels[i];
+        for (p, a) in particles.iter_mut().zip(accels.iter()) {
+            p.accel = *a;
         }
     }
 
@@ -253,7 +249,7 @@ impl GravitationalForce {
     /// Barnes-Hut tree gravity: simplified direct O(N²) fallback for small N.
     ///
     /// For large N a proper octree is needed; this provides the interface.
-    pub fn compute_all_tree(&self, particles: &mut Vec<AstroSphParticle>) {
+    pub fn compute_all_tree(&self, particles: &mut [AstroSphParticle]) {
         // For correctness, fall back to direct sum for N ≤ 1000
         self.compute_all_direct(particles);
     }
@@ -263,13 +259,13 @@ impl GravitationalForce {
         let total_mass: f64 = particles.iter().map(|p| p.mass).sum();
         let mut com = [0.0f64; 3];
         for p in particles {
-            for d in 0..3 {
-                com[d] += p.mass * p.pos[d];
+            for (c, &pos_d) in com.iter_mut().zip(p.pos.iter()) {
+                *c += p.mass * pos_d;
             }
         }
         if total_mass > 1e-15 {
-            for d in 0..3 {
-                com[d] /= total_mass;
+            for c in com.iter_mut() {
+                *c /= total_mass;
             }
         }
         com
@@ -306,6 +302,34 @@ impl GravitationalForce {
 // ─────────────────────────────────────────────────────────────────────────────
 // 3.  ArtificialViscositySph — Monaghan AV, Balsara switch, Morris-Monaghan
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Particle-pair data for [`ArtificialViscositySph::pi_ij`].
+///
+/// Groups the ten positional/velocity/state scalars into a named struct so
+/// that the method signature stays within clippy's argument-count threshold.
+#[derive(Debug, Clone, Copy)]
+pub struct ViscoPairSph {
+    /// Velocity of particle i \[m/s\]
+    pub vi: [f64; 3],
+    /// Velocity of particle j \[m/s\]
+    pub vj: [f64; 3],
+    /// Position of particle i \[m\]
+    pub ri: [f64; 3],
+    /// Position of particle j \[m\]
+    pub rj: [f64; 3],
+    /// Sound speed of particle i \[m/s\]
+    pub ci: f64,
+    /// Sound speed of particle j \[m/s\]
+    pub cj: f64,
+    /// Density of particle i \[kg/m³\]
+    pub rho_i: f64,
+    /// Density of particle j \[kg/m³\]
+    pub rho_j: f64,
+    /// Smoothing length of particle i \[m\]
+    pub hi: f64,
+    /// Smoothing length of particle j \[m\]
+    pub hj: f64,
+}
 
 /// Artificial viscosity for SPH, following Monaghan (1992).
 ///
@@ -346,20 +370,19 @@ impl ArtificialViscositySph {
     ///
     /// Π_ij = (−α c̄_ij μ_ij + β μ_ij²) / ρ̄_ij  if **v**_ij · **r**_ij < 0
     ///       = 0                                    otherwise
-    #[allow(clippy::too_many_arguments)]
-    pub fn pi_ij(
-        &self,
-        vi: [f64; 3],
-        vj: [f64; 3],
-        ri: [f64; 3],
-        rj: [f64; 3],
-        ci: f64,
-        cj: f64,
-        rho_i: f64,
-        rho_j: f64,
-        hi: f64,
-        hj: f64,
-    ) -> f64 {
+    pub fn pi_ij(&self, pair: ViscoPairSph) -> f64 {
+        let ViscoPairSph {
+            vi,
+            vj,
+            ri,
+            rj,
+            ci,
+            cj,
+            rho_i,
+            rho_j,
+            hi,
+            hj,
+        } = pair;
         let dx = ri[0] - rj[0];
         let dy = ri[1] - rj[1];
         let dz = ri[2] - rj[2];
@@ -414,7 +437,6 @@ impl ArtificialViscositySph {
     /// Apply Monaghan AV to a particle pair: update accelerations and du/dt.
     ///
     /// `grad_w_ij`: gradient of smoothing kernel W(r_ij, h) evaluated at r_ij.
-    #[allow(clippy::too_many_arguments)]
     pub fn apply_pair(
         &self,
         pi: &mut AstroSphParticle,
@@ -422,28 +444,32 @@ impl ArtificialViscositySph {
         grad_w_ij: [f64; 3],
         gamma: f64,
     ) {
-        let pi_ij = self.pi_ij(
-            pi.vel,
-            pj.vel,
-            pi.pos,
-            pj.pos,
-            pi.sound_speed,
-            pj.sound_speed,
-            pi.density,
-            pj.density,
-            pi.smoothing_length,
-            pj.smoothing_length,
-        );
+        let pi_ij = self.pi_ij(ViscoPairSph {
+            vi: pi.vel,
+            vj: pj.vel,
+            ri: pi.pos,
+            rj: pj.pos,
+            ci: pi.sound_speed,
+            cj: pj.sound_speed,
+            rho_i: pi.density,
+            rho_j: pj.density,
+            hi: pi.smoothing_length,
+            hj: pj.smoothing_length,
+        });
         // Pressure gradient + AV terms
         let pi_press = pi.pressure / (pi.density * pi.density);
         let pj_press = pj.pressure / (pj.density * pj.density);
         let coeff_i = -(pi_press + pj_press + pi_ij);
         let coeff_j = pi_press + pj_press + pi_ij;
         // Symmetric gradient: force on i from j, and vice versa
-        for d in 0..3 {
-            let fa = pj.mass * coeff_i * grad_w_ij[d];
-            pi.accel[d] += fa;
-            pj.accel[d] -= coeff_j * pi.mass * grad_w_ij[d];
+        for ((ai, aj), &gw) in pi
+            .accel
+            .iter_mut()
+            .zip(pj.accel.iter_mut())
+            .zip(grad_w_ij.iter())
+        {
+            *ai += pj.mass * coeff_i * gw;
+            *aj -= coeff_j * pi.mass * gw;
         }
         // Thermal energy change
         let dvx = pi.vel[0] - pj.vel[0];
@@ -531,7 +557,7 @@ impl AdiabticSph {
         let n = self.particles.len();
         let gamma = self.gamma;
         let mut da_dt = vec![0.0f64; n];
-        for i in 0..n {
+        for (i, da) in da_dt.iter_mut().enumerate() {
             let pi = &self.particles[i];
             let hi = pi.smoothing_length;
             let rho_i = pi.density;
@@ -549,25 +575,25 @@ impl AdiabticSph {
                 let dvy = pi.vel[1] - pj.vel[1];
                 let dvz = pi.vel[2] - pj.vel[2];
                 let vdotgw = dvx * grad_w[0] + dvy * grad_w[1] + dvz * grad_w[2];
-                let pi_ij_val = self.av.pi_ij(
-                    pi.vel,
-                    pj.vel,
-                    pi.pos,
-                    pj.pos,
-                    pi.sound_speed,
-                    pj.sound_speed,
+                let pi_ij_val = self.av.pi_ij(ViscoPairSph {
+                    vi: pi.vel,
+                    vj: pj.vel,
+                    ri: pi.pos,
+                    rj: pj.pos,
+                    ci: pi.sound_speed,
+                    cj: pj.sound_speed,
                     rho_i,
-                    pj.density,
+                    rho_j: pj.density,
                     hi,
-                    pj.smoothing_length,
-                );
-                da_dt[i] += pj.mass * pi_ij_val * vdotgw;
+                    hj: pj.smoothing_length,
+                });
+                *da += pj.mass * pi_ij_val * vdotgw;
             }
-            da_dt[i] *= (gamma - 1.0) / (2.0 * rho_i.powf(gamma - 1.0));
+            *da *= (gamma - 1.0) / (2.0 * rho_i.powf(gamma - 1.0));
         }
-        for i in 0..n {
+        for (p, &da) in self.particles.iter_mut().zip(da_dt.iter()) {
             // Store in du_dt field as proxy for da_dt
-            self.particles[i].du_dt = da_dt[i];
+            p.du_dt = da;
         }
     }
 
@@ -593,21 +619,21 @@ impl AdiabticSph {
                 let mj = self.particles[j].mass;
                 let mi = self.particles[i].mass;
                 let coeff = pi_press + pj_press;
-                for d in 0..3 {
-                    self.particles[i].accel[d] -= mj * coeff * grad_w[d];
-                    self.particles[j].accel[d] += mi * coeff * grad_w[d];
+                for (d, &gw) in grad_w.iter().enumerate() {
+                    self.particles[i].accel[d] -= mj * coeff * gw;
+                    self.particles[j].accel[d] += mi * coeff * gw;
                 }
             }
         }
         // Gravity
         let n_p = self.particles.len();
         let mut grav_accels = vec![[0.0f64; 3]; n_p];
-        for i in 0..n_p {
-            grav_accels[i] = self.gravity.direct_acceleration(i, &self.particles);
+        for (i, a) in grav_accels.iter_mut().enumerate() {
+            *a = self.gravity.direct_acceleration(i, &self.particles);
         }
-        for (i, p) in self.particles.iter_mut().enumerate() {
-            for d in 0..3 {
-                p.accel[d] += grav_accels[i][d];
+        for (p, ga) in self.particles.iter_mut().zip(grav_accels.iter()) {
+            for (pa, &gaa) in p.accel.iter_mut().zip(ga.iter()) {
+                *pa += gaa;
             }
         }
     }
@@ -1232,7 +1258,18 @@ mod tests {
         let vj = [1.0, 0.0, 0.0];
         let ri = [1.0, 0.0, 0.0];
         let rj = [0.0, 0.0, 0.0];
-        let pi_ij = av.pi_ij(vi, vj, ri, rj, 1.0, 1.0, 1.0, 1.0, 0.5, 0.5);
+        let pi_ij = av.pi_ij(ViscoPairSph {
+            vi,
+            vj,
+            ri,
+            rj,
+            ci: 1.0,
+            cj: 1.0,
+            rho_i: 1.0,
+            rho_j: 1.0,
+            hi: 0.5,
+            hj: 0.5,
+        });
         assert!(pi_ij > 0.0, "pi_ij = {}", pi_ij);
     }
 
@@ -1245,7 +1282,18 @@ mod tests {
         let vj = [-1.0, 0.0, 0.0];
         let ri = [1.0, 0.0, 0.0];
         let rj = [0.0, 0.0, 0.0];
-        let pi_ij = av.pi_ij(vi, vj, ri, rj, 1.0, 1.0, 1.0, 1.0, 0.5, 0.5);
+        let pi_ij = av.pi_ij(ViscoPairSph {
+            vi,
+            vj,
+            ri,
+            rj,
+            ci: 1.0,
+            cj: 1.0,
+            rho_i: 1.0,
+            rho_j: 1.0,
+            hi: 0.5,
+            hj: 0.5,
+        });
         assert_eq!(pi_ij, 0.0, "Receding particles should give 0 AV");
     }
 

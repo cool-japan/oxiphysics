@@ -338,7 +338,12 @@ mod tests {
         cat.register(SimulationMetadata::new("s1", "run", 0.0));
         let meta = cat.lookup_mut("s1").unwrap();
         meta.set_param("dt", "0.01");
-        meta.add_artifact("/tmp/result.vtk");
+        meta.add_artifact(
+            std::env::temp_dir()
+                .join("result.vtk")
+                .to_str()
+                .unwrap_or(""),
+        );
         let meta2 = cat.lookup("s1").unwrap();
         assert_eq!(meta2.parameters.get("dt"), Some(&"0.01".to_string()));
         assert_eq!(meta2.artifacts.len(), 1);
@@ -442,9 +447,11 @@ mod tests {
     }
     #[test]
     fn test_sim_record_set_output() {
+        let path = std::env::temp_dir().join("result.vtk");
+        let path_str = path.to_str().unwrap_or("").to_string();
         let mut rec = SimulationRecord::new("r", 0.0_f64);
-        rec.set_output("/tmp/result.vtk");
-        assert_eq!(rec.output_path, Some("/tmp/result.vtk".to_string()));
+        rec.set_output(&path_str);
+        assert_eq!(rec.output_path, Some(path_str));
     }
     #[test]
     fn test_query_time_range_pass() {
@@ -590,7 +597,8 @@ mod tests {
     #[test]
     fn test_snapshot_catalog_register_get() {
         let mut cat = SnapshotCatalog::new();
-        let entry = SnapshotEntry::new("frame_001", 0.1_f64, "/tmp/f001.vtk");
+        let path = std::env::temp_dir().join("f001.vtk");
+        let entry = SnapshotEntry::new("frame_001", 0.1_f64, path.to_str().unwrap_or(""));
         cat.register(entry);
         assert!(cat.get("frame_001").is_some());
         assert_eq!(cat.len(), 1);
@@ -598,7 +606,8 @@ mod tests {
     #[test]
     fn test_snapshot_catalog_auto_id() {
         let mut cat = SnapshotCatalog::new();
-        let id = cat.register_auto(0.5_f64, "/tmp/snap.vtk");
+        let path = std::env::temp_dir().join("snap.vtk");
+        let id = cat.register_auto(0.5_f64, path.to_str().unwrap_or(""));
         assert!(id.starts_with("snap_"));
         assert_eq!(cat.len(), 1);
     }

@@ -15,14 +15,12 @@ pub const SPEED_OF_LIGHT: f64 = 2.998e8;
 /// Boltzmann constant \[J/K\]
 pub const BOLTZMANN_K: f64 = 1.381e-23;
 /// Blackbody emissive power \[W/m²\]: E_b = sigma * T^4.
-#[allow(dead_code)]
 pub fn blackbody_emissive_power(temp_k: f64) -> f64 {
     SIGMA * temp_k.powi(4)
 }
 /// Planck spectral intensity \[W/(m²·sr·m)\] at wavelength (m) and temperature (K).
 ///
 /// I_lambda = (2*h*c²/lambda^5) / (exp(h*c/(lambda*k*T)) - 1)
-#[allow(dead_code)]
 pub fn blackbody_spectral_intensity(wavelength_m: f64, temp_k: f64) -> f64 {
     let h = PLANCK_H;
     let c = SPEED_OF_LIGHT;
@@ -32,19 +30,16 @@ pub fn blackbody_spectral_intensity(wavelength_m: f64, temp_k: f64) -> f64 {
     numerator / (exponent.exp() - 1.0)
 }
 /// Wien's displacement law: lambda_max = b / T.
-#[allow(dead_code)]
 pub fn wien_displacement(temp_k: f64) -> f64 {
     WIEN_B / temp_k
 }
 /// Total emission from a gray surface \[W\]: Q = emissivity * sigma * T^4 * area.
-#[allow(dead_code)]
 pub fn total_emission(emissivity: f64, temp_k: f64, area: f64) -> f64 {
     emissivity * SIGMA * temp_k.powi(4) * area
 }
 /// Net radiation exchange between two gray surfaces (simplified) \[W\].
 ///
 /// q = epsilon_1 * sigma * A * F12 * (T1^4 - T2^4)
-#[allow(dead_code)]
 pub fn net_radiation_exchange(e1: f64, t1: f64, e2: f64, t2: f64, f12: f64, a: f64) -> f64 {
     let _ = e2;
     e1 * SIGMA * a * f12 * (t1.powi(4) - t2.powi(4))
@@ -52,7 +47,6 @@ pub fn net_radiation_exchange(e1: f64, t1: f64, e2: f64, t2: f64, f12: f64, a: f
 /// Radiation heat transfer coefficient \[W/(m²·K)\].
 ///
 /// h_r = epsilon * sigma * (T1² + T2²) * (T1 + T2)
-#[allow(dead_code)]
 pub fn radiation_heat_transfer_coefficient(e: f64, t1: f64, t2: f64) -> f64 {
     e * SIGMA * (t1 * t1 + t2 * t2) * (t1 + t2)
 }
@@ -61,7 +55,6 @@ pub fn radiation_heat_transfer_coefficient(e: f64, t1: f64, t2: f64) -> f64 {
 ///
 /// Uses the standard double-area-integral result (Sparrow-Cess / radiation
 /// handbook formula for aligned parallel rectangles).
-#[allow(dead_code)]
 pub fn view_factor_parallel_plates(a: f64, b: f64, h: f64) -> f64 {
     let x = a / h;
     let y = b / h;
@@ -82,7 +75,6 @@ pub fn view_factor_parallel_plates(a: f64, b: f64, h: f64) -> f64 {
 ///
 /// Exact formula: F12 = 0.5*(S - sqrt(S² - 4*(r2/r1)²))
 /// where S = 1 + (1 + R2²) / R1²,  R1 = r1/h, R2 = r2/h.
-#[allow(dead_code)]
 pub fn view_factor_coaxial_disks(r1: f64, r2: f64, h: f64) -> f64 {
     let big_r1 = r1 / h;
     let big_r2 = r2 / h;
@@ -90,12 +82,10 @@ pub fn view_factor_coaxial_disks(r1: f64, r2: f64, h: f64) -> f64 {
     0.5 * (s - (s * s - 4.0 * (big_r2 / big_r1).powi(2)).sqrt())
 }
 /// View factor reciprocity: F21 = A1 * F12 / A2.
-#[allow(dead_code)]
 pub fn view_factor_reciprocity(f12: f64, a1: f64, a2: f64) -> f64 {
     f12 * a1 / a2
 }
 /// View factor sum rule: F_self = 1 - sum(F_others).
-#[allow(dead_code)]
 pub fn view_factor_sum_rule(f_others: &[f64]) -> f64 {
     let total: f64 = f_others.iter().sum();
     (1.0 - total).max(0.0)
@@ -103,7 +93,6 @@ pub fn view_factor_sum_rule(f_others: &[f64]) -> f64 {
 /// Heat transfer rate for a two-surface enclosure \[W\].
 ///
 /// q = (E_b1 - E_b2) / (R_s1 + 1/(A1*F12) + R_s2)
-#[allow(dead_code)]
 pub fn two_surface_enclosure_heat_transfer(
     s1: &RadiationSurface,
     s2: &RadiationSurface,
@@ -126,7 +115,6 @@ pub fn two_surface_enclosure_heat_transfer(
 /// - `azimuth_deg` – surface azimuth (0 = south, positive east) \[°\]
 /// - `sun_altitude_deg` – solar altitude angle \[°\]
 /// - `sun_azimuth_deg`  – solar azimuth angle (0 = south, positive east) \[°\]
-#[allow(dead_code)]
 pub fn solar_irradiance_surface(
     dni: f64,
     dhi: f64,
@@ -148,7 +136,6 @@ pub fn solar_irradiance_surface(
 /// Air mass: AM = 1 / sin(altitude) (Kasten simple form).
 ///
 /// Returns a large value for altitudes near zero to avoid division by zero.
-#[allow(dead_code)]
 pub fn air_mass(sun_altitude_deg: f64) -> f64 {
     let alt = sun_altitude_deg.to_radians();
     if alt <= 0.0 {
@@ -157,14 +144,12 @@ pub fn air_mass(sun_altitude_deg: f64) -> f64 {
     1.0 / alt.sin()
 }
 /// Atmospheric attenuation factor: I/I0 = exp(-tau * AM).
-#[allow(dead_code)]
 pub fn attenuation_factor(air_mass: f64, tau: f64) -> f64 {
     (-tau * air_mass).exp()
 }
 /// Net radiative heat flux between two infinite parallel gray plates \[W/m²\].
 ///
 /// `q'' = σ·(T₁⁴ − T₂⁴) / (1/ε₁ + 1/ε₂ − 1)`
-#[allow(dead_code)]
 pub fn thermal_radiation_parallel_plates(eps1: f64, temp1: f64, eps2: f64, temp2: f64) -> f64 {
     let eb1 = SIGMA * temp1.powi(4);
     let eb2 = SIGMA * temp2.powi(4);
@@ -175,7 +160,6 @@ pub fn thermal_radiation_parallel_plates(eps1: f64, temp1: f64, eps2: f64, temp2
 /// a large isothermal enclosure (2) \[W/m²\].
 ///
 /// `q'' = ε₁·σ·(T₁⁴ − T₂⁴)`
-#[allow(dead_code)]
 pub fn thermal_radiation_body_in_enclosure(eps1: f64, temp1: f64, temp2: f64) -> f64 {
     eps1 * SIGMA * (temp1.powi(4) - temp2.powi(4))
 }
@@ -188,7 +172,6 @@ pub fn thermal_radiation_body_in_enclosure(eps1: f64, temp1: f64, temp2: f64) ->
 /// # Arguments
 /// * `r_inner` — radius of inner cylinder \[m\]
 /// * `r_outer` — radius of outer cylinder \[m\]
-#[allow(dead_code)]
 pub fn view_factor_concentric_cylinders(r_inner: f64, r_outer: f64) -> (f64, f64) {
     let _ = r_outer;
     let _ = r_inner;
@@ -206,7 +189,6 @@ pub const SOLAR_CONSTANT: f64 = 1361.0;
 ///
 /// # Arguments
 /// * `day_of_year` — calendar day (1–365)
-#[allow(dead_code)]
 pub fn extraterrestrial_irradiance(day_of_year: u32) -> f64 {
     let b = 2.0 * std::f64::consts::PI * (day_of_year as f64) / 365.0;
     SOLAR_CONSTANT * (1.0 + 0.033 * b.cos())
@@ -219,7 +201,6 @@ pub fn extraterrestrial_irradiance(day_of_year: u32) -> f64 {
 /// * `lat_deg`   — observer latitude \[°\]
 /// * `decl_deg`  — solar declination \[°\] (e.g. ±23.45 at solstices)
 /// * `hour_angle_deg` — hour angle \[°\] (0 = solar noon, ±180 = midnight)
-#[allow(dead_code)]
 pub fn solar_elevation(lat_deg: f64, decl_deg: f64, hour_angle_deg: f64) -> f64 {
     let phi = lat_deg.to_radians();
     let delta = decl_deg.to_radians();
@@ -246,7 +227,6 @@ pub fn solar_elevation(lat_deg: f64, decl_deg: f64, hour_angle_deg: f64) -> f64 
 /// * `eps2`     — emissivity of surface 2
 /// * `eps_sh`   — emissivity of each shield (assumed equal on both faces)
 /// * `n_shields`— number of shields
-#[allow(dead_code)]
 pub fn radiation_shield_effective_emissivity(
     eps1: f64,
     eps2: f64,
@@ -269,7 +249,6 @@ pub fn radiation_shield_effective_emissivity(
 /// Reduction = `ε_eff / ε_eff₀` = `(1+N*(2/ε-1)) / (1+N*(2/ε-1)+... )`
 ///
 /// For equal emissivities: ratio = `1 / (1 + N * (2/ε - 1) * ε / (2 - ε))`
-#[allow(dead_code)]
 pub fn radiation_shield_reduction_factor(eps: f64, n_shields: u32) -> f64 {
     let eps_eff_no_shield = radiation_shield_effective_emissivity(eps, eps, eps, 0);
     let eps_eff_with = radiation_shield_effective_emissivity(eps, eps, eps, n_shields);
@@ -284,13 +263,11 @@ pub fn radiation_shield_reduction_factor(eps: f64, n_shields: u32) -> f64 {
 ///
 /// This is a convenience validator function used to check that a radiative
 /// surface model satisfies the fundamental thermodynamic constraint.
-#[allow(dead_code)]
 pub fn kirchhoff_law_satisfied(emissivity: f64, absorptivity: f64, tol: f64) -> bool {
     (emissivity - absorptivity).abs() < tol
 }
 /// Gray surface approximation: compute absorptivity from emissivity assuming
 /// Kirchhoff's law holds (valid at thermal equilibrium for opaque gray surfaces).
-#[allow(dead_code)]
 pub fn absorptivity_from_emissivity(emissivity: f64) -> f64 {
     emissivity
 }
@@ -298,7 +275,6 @@ pub fn absorptivity_from_emissivity(emissivity: f64) -> f64 {
 ///
 /// For a surface in thermal equilibrium: `ε_λ = α_λ` at each wavelength.
 /// Returns a vector of emissivities matching the input absorptivity slice.
-#[allow(dead_code)]
 pub fn spectral_emissivity_kirchhoff(spectral_absorptivity: &[f64]) -> Vec<f64> {
     spectral_absorptivity.to_vec()
 }
@@ -308,7 +284,6 @@ pub fn spectral_emissivity_kirchhoff(spectral_absorptivity: &[f64]) -> Vec<f64> 
 ///
 /// where `E_b = σ·T⁴` is the blackbody emissive power and `G` is the irradiation.
 /// For a blackbody (ε = 1), `J = E_b`.
-#[allow(dead_code)]
 pub fn surface_radiosity(emissivity: f64, temp_k: f64, irradiation: f64) -> f64 {
     let e_b = SIGMA * temp_k.powi(4);
     emissivity * e_b + (1.0 - emissivity) * irradiation
@@ -318,7 +293,6 @@ pub fn surface_radiosity(emissivity: f64, temp_k: f64, irradiation: f64) -> f64 
 /// `q_i = (E_b,i - J_i) / ((1-ε_i)/ε_i)` (surface resistance form)
 ///
 /// When ε = 1 (blackbody), returns `E_b - J`.
-#[allow(dead_code)]
 pub fn radiosity_net_flux(emissivity: f64, temp_k: f64, radiosity: f64) -> f64 {
     let e_b = SIGMA * temp_k.powi(4);
     if (emissivity - 1.0).abs() < 1e-12 {
@@ -340,7 +314,6 @@ pub fn radiosity_net_flux(emissivity: f64, temp_k: f64, radiosity: f64) -> f64 {
 /// * `emissivities` — emissivities (0–1)
 /// * `view_factors` — row-major n×n view factor matrix
 /// * `n_iter`       — number of Jacobi iterations
-#[allow(dead_code)]
 pub fn radiosity_solve_jacobi(
     temps: &[f64],
     emissivities: &[f64],
@@ -367,7 +340,6 @@ pub fn radiosity_solve_jacobi(
 /// Net heat flow \[W\] from surface i computed from the radiosity solution.
 ///
 /// `q_i = A_i * (J_i - G_i)` where `G_i = Σ_j F[i,j] * J[j]`
-#[allow(dead_code)]
 pub fn radiosity_net_heat_flow(
     i: usize,
     areas: &[f64],
@@ -389,7 +361,6 @@ pub fn radiosity_net_heat_flow(
 /// For accurate photovoltaic calculations, use tabulated data.
 ///
 /// Dominant peak near 500 nm (visible), secondary peak near 1600 nm (NIR).
-#[allow(dead_code)]
 pub fn am15_spectral_irradiance(lambda_nm: f64) -> f64 {
     let vis = 1.8 * (-0.5 * ((lambda_nm - 500.0) / 150.0).powi(2)).exp();
     let nir = 0.9 * (-0.5 * ((lambda_nm - 1000.0) / 300.0).powi(2)).exp();
@@ -399,7 +370,6 @@ pub fn am15_spectral_irradiance(lambda_nm: f64) -> f64 {
 /// Integrated AM1.5 irradiance \[W/m²\] over a wavelength range \[lambda_a, lambda_b\] (nm).
 ///
 /// Uses a simple trapezoidal integration with `n_steps` intervals.
-#[allow(dead_code)]
 pub fn am15_integrated_irradiance(lambda_a_nm: f64, lambda_b_nm: f64, n_steps: usize) -> f64 {
     let n = n_steps.max(2);
     let dl = (lambda_b_nm - lambda_a_nm) / n as f64;
@@ -414,7 +384,6 @@ pub fn am15_integrated_irradiance(lambda_a_nm: f64, lambda_b_nm: f64, n_steps: u
 /// Photon flux density \[photons/(s·m²·nm)\] at wavelength `lambda_nm` \[nm\].
 ///
 /// `Φ_λ = E_λ / (h·c/λ)` where `E_λ` is the spectral irradiance.
-#[allow(dead_code)]
 pub fn am15_photon_flux(lambda_nm: f64) -> f64 {
     let irradiance = am15_spectral_irradiance(lambda_nm);
     let lambda_m = lambda_nm * 1.0e-9;
@@ -443,7 +412,6 @@ pub fn am15_photon_flux(lambda_nm: f64) -> f64 {
 /// * `h` — height of first rectangle \[m\]
 /// * `l` — length of second rectangle \[m\]
 /// * `w` — width (shared edge) \[m\]
-#[allow(dead_code)]
 pub fn view_factor_perpendicular_rectangles(h: f64, l: f64, w: f64) -> f64 {
     let big_h = h / w;
     let big_l = l / w;
@@ -466,7 +434,6 @@ pub fn view_factor_perpendicular_rectangles(h: f64, l: f64, w: f64) -> f64 {
 /// # Arguments
 /// * `r_sphere`    — radius of the sphere \[m\]
 /// * `a_enclosure` — total area of the surrounding enclosure \[m²\]
-#[allow(dead_code)]
 pub fn view_factor_sphere_in_enclosure(r_sphere: f64, a_enclosure: f64) -> f64 {
     let a_sphere = 4.0 * std::f64::consts::PI * r_sphere * r_sphere;
     (a_sphere / a_enclosure).min(1.0)
@@ -475,7 +442,6 @@ pub fn view_factor_sphere_in_enclosure(r_sphere: f64, a_enclosure: f64) -> f64 {
 ///
 /// Uses the crossed-string method for 2-D geometry:
 /// `F12 = (sqrt(w²+h²) - h) / w`  (Hottel's crossed-string method)
-#[allow(dead_code)]
 pub fn view_factor_infinite_parallel_strips(w1: f64, w2: f64, h: f64) -> f64 {
     let _ = w2;
     let w = w1;
@@ -487,7 +453,6 @@ pub fn view_factor_infinite_parallel_strips(w1: f64, w2: f64, h: f64) -> f64 {
 /// `F_dA→sphere = (r/d)² / 4` where `d` is the distance centre-to-element, `r` sphere radius.
 ///
 /// Valid only when `d > r` (element outside sphere).
-#[allow(dead_code)]
 pub fn view_factor_diff_area_to_sphere(r_sphere: f64, d_centre: f64) -> f64 {
     if d_centre <= r_sphere {
         return 1.0;

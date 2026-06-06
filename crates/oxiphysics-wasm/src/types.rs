@@ -14,8 +14,6 @@
 //! - All types derive `Clone`, `Debug`, and `serde` traits.
 //! - Comprehensive doc comments on every type and field.
 
-#![allow(missing_docs)]
-
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------

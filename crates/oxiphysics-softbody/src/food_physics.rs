@@ -11,9 +11,6 @@
 //! - [`ChewingSimulation`] — jaw mechanics, food fragmentation, particle size reduction
 //! - [`FoodEmulsion`] — oil-water emulsion stability, Ostwald ripening, droplet size distribution
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

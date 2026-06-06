@@ -1,13 +1,9 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! Coupled multi-physics FEM: thermo-mechanical, thermo-electric,
 //! electro-magnetic, chemo-mechanical, hydro-mechanical, and staggered /
 //! monolithic coupled solvers with Aitken relaxation.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ---------------------------------------------------------------------------
 // Math helpers
@@ -21,16 +17,6 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 /// Euclidean norm.
 fn norm(v: &[f64]) -> f64 {
     dot(v, v).sqrt()
-}
-
-/// Element-wise vector addition.
-fn vec_add(a: &[f64], b: &[f64]) -> Vec<f64> {
-    a.iter().zip(b.iter()).map(|(x, y)| x + y).collect()
-}
-
-/// Scale a vector.
-fn vec_scale(v: &[f64], s: f64) -> Vec<f64> {
-    v.iter().map(|x| x * s).collect()
 }
 
 /// Dense matrix–vector product (row-major).
@@ -783,17 +769,19 @@ impl CoupledSolver {
         for _ in 0..n * 10 {
             let kp = mat_vec(k, &p);
             let alpha = rs / dot(&p, &kp).max(1e-300);
-            for i in 0..n {
-                x[i] += alpha * p[i];
-                r[i] -= alpha * kp[i];
+            for ((x_i, r_i), (&p_i, &kp_i)) in
+                x.iter_mut().zip(r.iter_mut()).zip(p.iter().zip(kp.iter()))
+            {
+                *x_i += alpha * p_i;
+                *r_i -= alpha * kp_i;
             }
             let rs_new = dot(&r, &r);
             if rs_new.sqrt() < 1e-12 * norm(f).max(1e-30) {
                 break;
             }
             let beta = rs_new / rs.max(1e-300);
-            for i in 0..n {
-                p[i] = r[i] + beta * p[i];
+            for (p_i, &r_i) in p.iter_mut().zip(r.iter()) {
+                *p_i = r_i + beta * (*p_i);
             }
             rs = rs_new;
         }
@@ -869,11 +857,17 @@ impl CoupledSolver {
             }
         }
         let mut rhs = vec![0.0; ntot];
-        for i in 0..nu {
-            rhs[i] = if i < f_u.len() { f_u[i] } else { 0.0 };
+        for (rhs_i, &f_u_i) in rhs[..nu]
+            .iter_mut()
+            .zip(f_u.iter().chain(std::iter::repeat(&0.0)))
+        {
+            *rhs_i = f_u_i;
         }
-        for i in 0..ns {
-            rhs[nu + i] = if i < f_s.len() { f_s[i] } else { 0.0 };
+        for (rhs_i, &f_s_i) in rhs[nu..]
+            .iter_mut()
+            .zip(f_s.iter().chain(std::iter::repeat(&0.0)))
+        {
+            *rhs_i = f_s_i;
         }
 
         let x = Self::cg_solve(&a, &rhs);
@@ -918,8 +912,8 @@ mod tests {
 
     fn diag_k(n: usize, val: f64) -> Vec<Vec<f64>> {
         let mut k = vec![vec![0.0; n]; n];
-        for i in 0..n {
-            k[i][i] = val;
+        for (i, row) in k.iter_mut().enumerate() {
+            row[i] = val;
         }
         k
     }
@@ -948,9 +942,9 @@ mod tests {
     #[test]
     fn test_tm_stiffness_symmetry() {
         let c = steel_tm().stiffness_tensor();
-        for i in 0..6 {
-            for j in 0..6 {
-                assert!((c[i][j] - c[j][i]).abs() < 1e-6);
+        for (i, row) in c.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
+                assert!((v - c[j][i]).abs() < 1e-6);
             }
         }
     }
@@ -958,8 +952,8 @@ mod tests {
     #[test]
     fn test_tm_stiffness_positive_definite_diagonal() {
         let c = steel_tm().stiffness_tensor();
-        for i in 0..6 {
-            assert!(c[i][i] > 0.0, "C[{i}][{i}] should be positive");
+        for (i, row) in c.iter().enumerate() {
+            assert!(row[i] > 0.0, "C[{i}][{i}] should be positive");
         }
     }
 
@@ -990,8 +984,8 @@ mod tests {
         let sigma_check: Vec<f64> = (0..6)
             .map(|i| (0..6).map(|j| c[i][j] * strain[j]).sum())
             .collect();
-        for k in 0..6 {
-            assert!((sigma[k] - sigma_check[k]).abs() < 1e3);
+        for (&s, &sc) in sigma.iter().zip(sigma_check.iter()) {
+            assert!((s - sc).abs() < 1e3);
         }
     }
 
@@ -1181,8 +1175,8 @@ mod tests {
         let p = 3e5;
         let sigma_tot = m.total_stress(&sigma_eff, p);
         let sigma_eff_back = m.effective_stress(&sigma_tot, p);
-        for k in 0..6 {
-            assert!((sigma_eff[k] - sigma_eff_back[k]).abs() < 1e3);
+        for (&eff, &eff_back) in sigma_eff.iter().zip(sigma_eff_back.iter()) {
+            assert!((eff - eff_back).abs() < 1e3);
         }
     }
 
@@ -1219,7 +1213,7 @@ mod tests {
         let mut ar = AitkenRelaxation::new(0.5);
         ar.update(&[1.0, 0.0]);
         let omega = ar.update(&[0.0, 1.0]);
-        assert!(omega >= ar.omega_min && omega <= ar.omega_max);
+        assert!((ar.omega_min..=ar.omega_max).contains(&omega));
     }
 
     #[test]

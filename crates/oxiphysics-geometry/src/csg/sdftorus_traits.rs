@@ -10,8 +10,6 @@
 
 use super::functions::ImplicitSurface;
 use super::functions::normalize;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::SdfTorus;
 
 impl ImplicitSurface for SdfTorus {

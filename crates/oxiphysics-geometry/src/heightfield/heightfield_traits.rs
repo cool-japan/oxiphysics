@@ -13,8 +13,6 @@ use oxiphysics_core::Aabb;
 use oxiphysics_core::math::{Mat3, Real, Vec3};
 
 use super::functions::ray_triangle;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::HeightField;
 
 impl Shape for HeightField {

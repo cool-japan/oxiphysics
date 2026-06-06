@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -18,9 +17,6 @@
 //! - [`poynting_vector`]: Poynting vector S = (1/μ₀) E × B
 //! - [`em_energy_density`]: Electromagnetic energy density
 //! - [`waveguide_te10_cutoff`]: TE10 cutoff frequency
-
-#![allow(dead_code)]
-#![allow(non_snake_case)]
 
 use std::f64::consts::PI;
 
@@ -51,11 +47,6 @@ fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
         a[2] * b[0] - a[0] * b[2],
         a[0] * b[1] - a[1] * b[0],
     ]
-}
-
-#[inline]
-fn len3(v: [f64; 3]) -> f64 {
-    dot3(v, v).sqrt()
 }
 
 // ============================================================================
@@ -644,12 +635,9 @@ mod tests {
         let e = [1e3, 2e3, 3e3];
         let b = [1e-3, 2e-3, 3e-3];
         let t = maxwell_stress_tensor(e, b);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(
-                    (t[i][j] - t[j][i]).abs() < 1e-20,
-                    "Tensor must be symmetric"
-                );
+        for (i, row) in t.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - t[j][i]).abs() < 1e-20, "Tensor must be symmetric");
             }
         }
     }

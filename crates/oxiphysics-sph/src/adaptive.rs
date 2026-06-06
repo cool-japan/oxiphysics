@@ -7,8 +7,6 @@
 //! dynamically split into 8 children or merged from N particles into one,
 //! based on local flow activity (velocity gradients, density errors).
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // SphParticle
 // ---------------------------------------------------------------------------
@@ -580,7 +578,6 @@ fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Result of an adaptive-h solve for a single particle.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AdaptiveHResult {
     /// Converged smoothing length.
@@ -593,7 +590,6 @@ pub struct AdaptiveHResult {
     pub converged: bool,
 }
 
-#[allow(dead_code)]
 impl AdaptiveHResult {
     /// Solve for adaptive h for a single particle.
     pub fn solve(
@@ -667,7 +663,6 @@ pub fn should_coarsen_h(h_current: f64, h_target: f64, coarsen_ratio: f64) -> bo
 // ---------------------------------------------------------------------------
 
 /// Statistics of smoothing lengths across the particle set.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HStatistics {
     /// Minimum smoothing length.
@@ -682,7 +677,6 @@ pub struct HStatistics {
     pub n: usize,
 }
 
-#[allow(dead_code)]
 impl HStatistics {
     /// Compute statistics from a slice of smoothing lengths.
     pub fn compute(hs: &[f64]) -> Self {
@@ -738,7 +732,6 @@ impl HStatistics {
 ///
 /// where `c_s` is the speed of sound, `nu` is kinematic viscosity (can be 0),
 /// and `h` is the smoothing length.
-#[allow(clippy::too_many_arguments)]
 pub fn cfl_timestep_sph(
     h: f64,
     c_sound: f64,
@@ -789,7 +782,6 @@ pub fn acceleration_timestep(h: f64, max_accel: f64, safety: f64) -> f64 {
 }
 
 /// Combined SPH time step: min of CFL, viscosity, and acceleration limits.
-#[allow(clippy::too_many_arguments)]
 pub fn combined_sph_timestep(
     h: f64,
     c_sound: f64,
@@ -1003,7 +995,6 @@ pub fn density_gradient_indicator(
 ///
 /// Tracks per-particle error indicators and decides which particles to
 /// split (too coarse), merge (too fine), or leave unchanged.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AdaptationController {
     /// Refinement threshold: particles with indicator > refine_threshold are split.
@@ -1018,7 +1009,6 @@ pub struct AdaptationController {
     pub hysteresis: f64,
 }
 
-#[allow(dead_code)]
 impl AdaptationController {
     /// Create a new adaptation controller.
     pub fn new(refine_threshold: f64, max_level: u32) -> Self {
@@ -1074,7 +1064,6 @@ impl AdaptationController {
 }
 
 /// Decision from the adaptation controller.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum AdaptationAction {
     /// Split this particle into 8 children.
@@ -1093,7 +1082,6 @@ pub enum AdaptationAction {
 ///
 /// Combines CFL condition, force-based limiter, and solver convergence
 /// feedback to suggest the next time step.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AdaptiveTimestepManager {
     /// Current time step.
@@ -1118,7 +1106,6 @@ pub struct AdaptiveTimestepManager {
     pub converged_count: usize,
 }
 
-#[allow(dead_code)]
 impl AdaptiveTimestepManager {
     /// Create a new manager with typical SPH defaults.
     pub fn new(dt_initial: f64, dt_min: f64, dt_max: f64) -> Self {
@@ -1144,7 +1131,6 @@ impl AdaptiveTimestepManager {
     /// * `kinematic_viscosity` – fluid kinematic viscosity.
     /// * `max_accel` – maximum acceleration magnitude.
     /// * `solver_converged` – whether the pressure solver converged.
-    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
         h: f64,
@@ -1189,7 +1175,6 @@ impl AdaptiveTimestepManager {
 // ---------------------------------------------------------------------------
 
 /// Statistics tracked during an adaptive simulation.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct AdaptiveStats {
     /// Total splits performed so far.
@@ -1206,7 +1191,6 @@ pub struct AdaptiveStats {
     pub max_dt: f64,
 }
 
-#[allow(dead_code)]
 impl AdaptiveStats {
     /// Create zeroed statistics.
     pub fn new() -> Self {

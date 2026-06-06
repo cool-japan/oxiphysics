@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -154,6 +153,9 @@ pub struct Mesh {
     pub indices: Vec<u32>,
 }
 
+/// Face data for box mesh: (normal, 4 corner positions, 4 UV coords).
+type BoxFaceData = ([f32; 3], [[f32; 3]; 4], [[f32; 2]; 4]);
+
 impl Mesh {
     /// Generate a UV sphere with `rings` latitude bands and `sectors` longitude slices.
     ///
@@ -204,7 +206,7 @@ impl Mesh {
         let [hx, hy, hz] = half_extents;
 
         // (normal, 4 corner positions, 4 UVs)
-        let faces: [([f32; 3], [[f32; 3]; 4], [[f32; 2]; 4]); 6] = [
+        let faces: [BoxFaceData; 6] = [
             (
                 [1.0, 0.0, 0.0],
                 [[hx, -hy, -hz], [hx, hy, -hz], [hx, hy, hz], [hx, -hy, hz]],

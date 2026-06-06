@@ -2,10 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::f64::consts::PI;
 
 /// CTOD (Crack Tip Opening Displacement) fracture criterion.
@@ -13,7 +9,6 @@ use std::f64::consts::PI;
 /// Failure is predicted when CTOD reaches a material-dependent critical value.
 /// The plastic zone size at the crack tip is computed using the Irwin or Dugdale
 /// model.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct CtodCriterion {
     /// Critical CTOD δ_c (m).
@@ -25,7 +20,6 @@ pub struct CtodCriterion {
     /// Yield stress σ_ys (Pa).
     pub yield_stress: f64,
 }
-#[allow(dead_code)]
 impl CtodCriterion {
     /// Create a new CTOD criterion model.
     pub fn new(
@@ -98,7 +92,6 @@ impl CtodCriterion {
     }
 }
 /// Parameters for the AT2 phase field fracture model.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PhaseFieldParams {
     /// Critical energy release rate (J/m²)
@@ -117,7 +110,6 @@ impl PhaseFieldParams {
     }
 }
 /// Parameters for the Gurson-Tvergaard-Needleman ductile fracture model.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GtnParams {
     /// Tvergaard correction factor q1 (≈1.5)
@@ -174,7 +166,6 @@ impl GtnParams {
 /// For mode III: G = K_III² / (2 μ)
 ///
 /// where E' = E for plane stress and E' = E / (1-ν²) for plane strain.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct GriffithCriterion {
     /// Critical energy release rate G_c (J/m²).
@@ -186,7 +177,6 @@ pub struct GriffithCriterion {
     /// Shear modulus G (Pa) = E / (2(1+ν)).
     pub shear_modulus: f64,
 }
-#[allow(dead_code)]
 impl GriffithCriterion {
     /// Create a Griffith criterion model.
     pub fn new(g_critical: f64, young_modulus: f64, poisson_ratio: f64) -> Self {
@@ -261,7 +251,6 @@ impl GriffithCriterion {
 ///
 /// Models the rising resistance to crack growth due to crack-wake processes
 /// (bridging, plastic zone development, etc.).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RCurve {
     /// Initial fracture toughness K_Ic or G_Ic (at initiation).
@@ -271,7 +260,6 @@ pub struct RCurve {
     /// Characteristic length for the transition (m).
     pub delta_a_char: f64,
 }
-#[allow(dead_code)]
 impl RCurve {
     /// Create a new R-curve model.
     pub fn new(k_init: f64, k_plateau: f64, delta_a_char: f64) -> Self {

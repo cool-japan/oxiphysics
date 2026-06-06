@@ -11,8 +11,6 @@
 use crate::atom::AtomSet;
 
 use super::functions::Thermostat;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::SvrThermostat;
 
 impl Thermostat for SvrThermostat {

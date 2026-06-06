@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_range_contains)]
 /// Compute dot product of two 3-vectors.
 #[inline]
 pub fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -40,7 +38,6 @@ pub fn normalize3(a: [f64; 3]) -> [f64; 3] {
 }
 /// Add two 3-vectors.
 #[inline]
-#[allow(dead_code)]
 pub fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
@@ -183,9 +180,9 @@ pub fn basis_derivatives(i: usize, p: usize, t: f64, knot: &[f64], d: usize) -> 
         }
     }
     let mut rp = p as f64;
-    for k in 1..=d_ord {
-        for j in 0..=p {
-            ders[k][j] *= rp;
+    for (k, ders_k) in ders.iter_mut().enumerate().take(d_ord + 1).skip(1) {
+        for val in ders_k.iter_mut().take(p + 1) {
+            *val *= rp;
         }
         rp *= (p - k) as f64;
     }
@@ -208,9 +205,9 @@ pub fn nurbs_point(ctrl: &[[f64; 3]], weights: &[f64], knot: &[f64], p: usize, t
     let basis = basis_functions(span, p, t, knot);
     let mut w_sum = 0.0;
     let mut pw = [0.0f64; 3];
-    for j in 0..=p {
+    for (j, &basis_j) in basis.iter().enumerate().take(p + 1) {
         let idx = span - p + j;
-        let w = weights[idx] * basis[j];
+        let w = weights[idx] * basis_j;
         pw[0] += w * ctrl[idx][0];
         pw[1] += w * ctrl[idx][1];
         pw[2] += w * ctrl[idx][2];
@@ -275,8 +272,8 @@ pub fn gauss_legendre_1d(n_pts: usize) -> (Vec<f64>, Vec<f64>) {
 pub fn open_uniform_knot(n: usize, p: usize) -> Vec<f64> {
     let m = n + p + 1;
     let mut knot = vec![0.0f64; m + 1];
-    for i in (m - p)..=m {
-        knot[i] = 1.0;
+    for knot_i in &mut knot[(m - p)..=m] {
+        *knot_i = 1.0;
     }
     let n_interior = m - 2 * p;
     if n_interior > 0 {
@@ -417,9 +414,9 @@ mod tests {
         );
         let p_orig = curve.point_at(0.3);
         let p_new = new_curve.point_at(0.3);
-        for i in 0..3 {
+        for (&orig_i, &new_i) in p_orig.iter().zip(p_new.iter()) {
             assert!(
-                (p_orig[i] - p_new[i]).abs() < 1e-10,
+                (orig_i - new_i).abs() < 1e-10,
                 "geometry changed after knot insert"
             );
         }
@@ -501,7 +498,11 @@ mod tests {
         assert_eq!(knot[5], 1.0);
         assert_eq!(knot[6], 1.0);
         for &k in &knot {
-            assert!(k >= 0.0 && k <= 1.0, "knot value should be in [0,1]: {}", k);
+            assert!(
+                (0.0..=1.0).contains(&k),
+                "knot value should be in [0,1]: {}",
+                k
+            );
         }
         for i in 1..knot.len() {
             assert!(knot[i] >= knot[i - 1], "knot should be non-decreasing");
@@ -829,7 +830,7 @@ mod tests_extended {
         let surf = make_flat_surface();
         let q = ParameterizationQuality::analyze_surface(&surf, 4);
         let score = q.quality_score();
-        assert!(score >= 0.0 && score <= 1.0, "score={score}");
+        assert!((0.0..=1.0).contains(&score), "score={score}");
     }
     #[test]
     fn param_quality_num_samples() {
@@ -1092,12 +1093,12 @@ mod tests_nurbs_basis_and_assembly {
         let p = 3;
         let n = 5;
         let knot = NurbsBasis::uniform_open_knot(p, n);
-        for i in 0..p {
-            assert_eq!(knot[i], 0.0, "start of knot clamped to 0");
+        for &k in knot.iter().take(p) {
+            assert_eq!(k, 0.0, "start of knot clamped to 0");
         }
         let m = knot.len();
-        for i in (m - p)..m {
-            assert_eq!(knot[i], 1.0, "end of knot clamped to 1");
+        for &k in knot.iter().skip(m - p) {
+            assert_eq!(k, 1.0, "end of knot clamped to 1");
         }
     }
     #[test]

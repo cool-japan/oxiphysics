@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -211,7 +210,6 @@ impl NhcThermostat {
 /// 1. Half-step NHC propagation (thermostat acts on velocities)
 /// 2. N inner steps of velocity-Verlet for fast forces
 /// 3. Half-step NHC propagation
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RespaNhc {
     /// NHC thermostat for the outer (slow) loop.
@@ -266,7 +264,6 @@ impl RespaNhc {
 /// particle thermostat acts on particle kinetic energy.
 ///
 /// Reference: Martyna, Tobias & Klein, J. Chem. Phys. 101, 4177 (1994).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MtkNpt {
     /// Particle thermostat (NHC chain).
@@ -295,7 +292,6 @@ impl MtkNpt {
     /// * `n_dof` – particle degrees of freedom
     /// * `tau_t` – thermostat coupling time (s)
     /// * `tau_p` – barostat coupling time (s)
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         target_temp: f64,
         target_pressure: f64,
@@ -402,7 +398,6 @@ impl MtkNpt {
 ///
 /// Allows non-uniform chain masses (e.g., for massive thermostatting where
 /// each DOF has its own chain, or for gradually decaying masses along the chain).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FlexibleNhc {
     /// Inner NHC thermostat.
@@ -458,7 +453,6 @@ impl FlexibleNhc {
 ///
 /// Higher-order factorization reduces the integration error of the NHC
 /// propagation at the cost of more substeps.
-#[allow(dead_code)]
 const YS_WEIGHTS_5: [f64; 5] = [
     0.414_490_771_794_375_9,
     0.414_490_771_794_375_9,
@@ -471,7 +465,6 @@ const YS_WEIGHTS_5: [f64; 5] = [
 ///
 /// Provides higher-order accuracy compared to the 3-stage version at the
 /// cost of 5 sub-steps per NHC propagation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NhcThermostatOrder6 {
     /// Target temperature (K).
@@ -592,7 +585,6 @@ impl NhcThermostatOrder6 {
 /// This produces the isokinetic ensemble (microcanonical in momenta).
 ///
 /// Reference: Evans & Morriss, Phys. Rev. A 30, 1060 (1984).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IsokineThermostat {
     /// Target kinetic energy (J).
@@ -651,18 +643,18 @@ impl IsokineThermostat {
     pub fn rescale_velocities(&self, velocities: &mut [[f64; 3]], masses: &[f64]) -> f64 {
         let n = velocities.len().min(masses.len());
         let mut ke = 0.0;
-        for i in 0..n {
-            for d in 0..3 {
-                ke += 0.5 * masses[i] * velocities[i][d] * velocities[i][d];
+        for (vel, &m) in velocities.iter().zip(masses.iter()).take(n) {
+            for &vd in vel.iter() {
+                ke += 0.5 * m * vd * vd;
             }
         }
         if ke < 1e-300 {
             return 1.0;
         }
         let scale = (self.target_ke / ke).sqrt();
-        for i in 0..n {
-            for d in 0..3 {
-                velocities[i][d] *= scale;
+        for vel in velocities.iter_mut().take(n) {
+            for vd in vel.iter_mut() {
+                *vd *= scale;
             }
         }
         scale
@@ -672,9 +664,9 @@ impl IsokineThermostat {
     pub fn is_constrained(&self, velocities: &[[f64; 3]], masses: &[f64], tol: f64) -> bool {
         let n = velocities.len().min(masses.len());
         let mut ke = 0.0;
-        for i in 0..n {
-            for d in 0..3 {
-                ke += 0.5 * masses[i] * velocities[i][d] * velocities[i][d];
+        for (vel, &m) in velocities.iter().zip(masses.iter()).take(n) {
+            for &vd in vel.iter() {
+                ke += 0.5 * m * vd * vd;
             }
         }
         (ke - self.target_ke).abs() / self.target_ke < tol
@@ -692,7 +684,6 @@ impl IsokineThermostat {
 /// the temperature toward the target.
 ///
 /// Reference: Bussi, Donadio & Parrinello, J. Chem. Phys. 126, 014101 (2007).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StochasticVelocityRescaling {
     /// Target temperature (K).
@@ -748,7 +739,6 @@ impl StochasticVelocityRescaling {
 /// In a properly implemented NHC the extended Hamiltonian
 /// H_ext = KE + PE + bath_KE + bath_PE
 /// should be conserved.  This struct accumulates statistics about the drift.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NhcConservedQuantity {
     /// Initial value of the extended Hamiltonian.
@@ -812,7 +802,6 @@ impl NhcConservedQuantity {
 ///
 /// For very high precision NHC integration where machine-precision
 /// conservation is required.
-#[allow(dead_code)]
 pub const YS_WEIGHTS_7: [f64; 7] = [
     0.784_513_610_477_560,
     0.235_573_213_359_357,
@@ -831,7 +820,6 @@ pub const YS_WEIGHTS_7: [f64; 7] = [
 ///
 /// Returns the effective coupling frequency (rad/s) for the first chain
 /// element: ω_0 = 1/τ.
-#[allow(dead_code)]
 pub fn nhc_coupling_frequency(tau: f64) -> f64 {
     if tau > 0.0 { 1.0 / tau } else { 0.0 }
 }
@@ -841,7 +829,6 @@ pub fn nhc_coupling_frequency(tau: f64) -> f64 {
 /// The thermostat is most efficient when the physical motion frequency
 /// matches ω_0 = 1/τ.  The Q-factor is defined here as:
 /// Q(ω) = ω / ω_0 (dimensionless ratio).
-#[allow(dead_code)]
 pub fn nhc_quality_factor(omega: f64, tau: f64) -> f64 {
     let omega0 = nhc_coupling_frequency(tau);
     if omega0 < 1e-300 {
@@ -853,7 +840,6 @@ pub fn nhc_quality_factor(omega: f64, tau: f64) -> f64 {
 /// Compute the optimal coupling time τ for a given target frequency ω.
 ///
 /// Returns τ = 1 / ω.
-#[allow(dead_code)]
 pub fn nhc_optimal_tau(omega: f64) -> f64 {
     if omega > 0.0 { 1.0 / omega } else { 0.0 }
 }
@@ -867,7 +853,6 @@ pub fn nhc_optimal_tau(omega: f64) -> f64 {
 ///
 /// This routine uses a simple linear congruential generator (LCG) seeded
 /// by `seed` so that tests are reproducible without external crates.
-#[allow(dead_code)]
 pub fn init_chain_velocities(nhc: &mut NhcThermostat, seed: u64) {
     let kt = KB * nhc.target_temp;
     let mut state = seed;
@@ -888,7 +873,6 @@ pub fn init_chain_velocities(nhc: &mut NhcThermostat, seed: u64) {
 /// Compute the kinetic energy of the NHC bath variables.
 ///
 /// KE_bath = sum_j 0.5 * Q_j * v_xi_j^2
-#[allow(dead_code)]
 pub fn chain_kinetic_energy(nhc: &NhcThermostat) -> f64 {
     nhc.q_masses
         .iter()
@@ -900,7 +884,6 @@ pub fn chain_kinetic_energy(nhc: &NhcThermostat) -> f64 {
 /// Compute the potential energy of the NHC bath variables.
 ///
 /// V_bath = n_dof * k_B * T * xi_0 + sum_{j>0} k_B * T * xi_j
-#[allow(dead_code)]
 pub fn chain_potential_energy(nhc: &NhcThermostat) -> f64 {
     let kt = KB * nhc.target_temp;
     let ndof = nhc.n_dof as f64;
@@ -914,7 +897,6 @@ pub fn chain_potential_energy(nhc: &NhcThermostat) -> f64 {
 /// Compute the extended system energy: physical_ke + bath_ke + bath_pe.
 ///
 /// This quantity should be conserved during NHC dynamics.
-#[allow(dead_code)]
 pub fn extended_energy(nhc: &NhcThermostat, physical_ke: f64) -> f64 {
     physical_ke + chain_kinetic_energy(nhc) + chain_potential_energy(nhc)
 }
@@ -928,7 +910,6 @@ pub fn extended_energy(nhc: &NhcThermostat, physical_ke: f64) -> f64 {
 /// Divides a large outer timestep `dt_outer` into `n_inner` inner steps
 /// for the fast (bonded) forces, while slow (non-bonded) forces are applied
 /// every outer step.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RespaIntegrator {
     /// Outer (slow) timestep.
@@ -943,7 +924,6 @@ pub struct RespaIntegrator {
 
 impl RespaIntegrator {
     /// Create a new RESPA integrator.
-    #[allow(dead_code)]
     pub fn new(dt_outer: f64, n_inner: usize) -> Self {
         let dt_inner = dt_outer / n_inner.max(1) as f64;
         Self {
@@ -957,7 +937,6 @@ impl RespaIntegrator {
     /// Advance one outer step, returning the sequence of inner timesteps.
     ///
     /// Returns a Vec of `n_inner` inner timesteps (all equal to `dt_inner`).
-    #[allow(dead_code)]
     pub fn inner_steps(&mut self) -> Vec<f64> {
         self.step += 1;
         vec![self.dt_inner; self.n_inner]
@@ -969,19 +948,16 @@ impl RespaIntegrator {
     /// `v_i += 0.5 * dt_outer * f_slow_i / m_i`
     ///
     /// Returns the half-step scale: always 0.5 * dt_outer.
-    #[allow(dead_code)]
     pub fn half_step_dt(&self) -> f64 {
         0.5 * self.dt_outer
     }
 
     /// Reset the step counter.
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         self.step = 0;
     }
 
     /// Total simulation time elapsed.
-    #[allow(dead_code)]
     pub fn elapsed_time(&self) -> f64 {
         self.step as f64 * self.dt_outer
     }
@@ -995,7 +971,6 @@ impl RespaIntegrator {
 ///
 /// **Note**: Does not produce correct canonical ensemble.
 /// Use for equilibration only.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BerendsenThermostat {
     /// Target temperature (K).
@@ -1006,7 +981,6 @@ pub struct BerendsenThermostat {
 
 impl BerendsenThermostat {
     /// Create a new Berendsen thermostat.
-    #[allow(dead_code)]
     pub fn new(target_temp: f64, tau: f64) -> Self {
         Self { target_temp, tau }
     }
@@ -1016,7 +990,6 @@ impl BerendsenThermostat {
     /// λ = sqrt(1 + (dt/τ) * (T_target/T_current - 1))
     ///
     /// Returns 1.0 if T_current ≈ 0.
-    #[allow(dead_code)]
     pub fn lambda(&self, t_current: f64, dt: f64) -> f64 {
         if t_current < 1e-300 {
             return 1.0;
@@ -1026,7 +999,6 @@ impl BerendsenThermostat {
     }
 
     /// Rescale velocities (3D) by λ.  Returns the scale factor used.
-    #[allow(dead_code)]
     pub fn rescale(&self, velocities: &mut [[f64; 3]], t_current: f64, dt: f64) -> f64 {
         let lam = self.lambda(t_current, dt);
         for v in velocities.iter_mut() {
@@ -1040,7 +1012,6 @@ impl BerendsenThermostat {
     /// Compute instantaneous temperature from kinetic energy.
     ///
     /// T = 2 * KE / (n_dof * k_B)
-    #[allow(dead_code)]
     pub fn temperature_from_ke(&self, ke: f64, n_dof: usize) -> f64 {
         if n_dof == 0 {
             return 0.0;
@@ -1057,7 +1028,6 @@ impl BerendsenThermostat {
 ///
 /// With collision frequency ν, each atom has probability ν*dt of having
 /// its velocity reassigned from a Maxwell-Boltzmann distribution.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AndersenThermostat {
     /// Target temperature (K).
@@ -1068,13 +1038,11 @@ pub struct AndersenThermostat {
 
 impl AndersenThermostat {
     /// Create a new Andersen thermostat.
-    #[allow(dead_code)]
     pub fn new(target_temp: f64, nu: f64) -> Self {
         Self { target_temp, nu }
     }
 
     /// Probability that a given atom experiences a collision in time `dt`.
-    #[allow(dead_code)]
     pub fn collision_probability(&self, dt: f64) -> f64 {
         (self.nu * dt).min(1.0)
     }
@@ -1083,7 +1051,6 @@ impl AndersenThermostat {
     /// using a simple pseudo-random approach (LCG).
     ///
     /// Returns a velocity component with variance k_B * T / mass.
-    #[allow(dead_code)]
     pub fn sample_velocity_component(&self, mass: f64, state: &mut u64) -> f64 {
         // Advance LCG
         *state = state
@@ -1103,7 +1070,6 @@ impl AndersenThermostat {
     /// Count atoms that would receive a collision for given dt and seed.
     ///
     /// Uses a deterministic LCG to decide per-atom collisions.
-    #[allow(dead_code)]
     pub fn count_collisions(&self, n_atoms: usize, dt: f64, seed: u64) -> usize {
         let prob = self.collision_probability(dt);
         let mut state = seed;
@@ -1126,7 +1092,6 @@ impl AndersenThermostat {
 // ---------------------------------------------------------------------------
 
 /// Simple time series for tracking a conserved quantity over a simulation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConservedQuantityTimeSeries {
     /// Recorded values.
@@ -1137,7 +1102,6 @@ pub struct ConservedQuantityTimeSeries {
 
 impl ConservedQuantityTimeSeries {
     /// Create an empty time series.
-    #[allow(dead_code)]
     pub fn new(dt: f64) -> Self {
         Self {
             values: Vec::new(),
@@ -1146,13 +1110,11 @@ impl ConservedQuantityTimeSeries {
     }
 
     /// Append a value.
-    #[allow(dead_code)]
     pub fn push(&mut self, val: f64) {
         self.values.push(val);
     }
 
     /// Mean of the recorded values.
-    #[allow(dead_code)]
     pub fn mean(&self) -> f64 {
         if self.values.is_empty() {
             return 0.0;
@@ -1161,7 +1123,6 @@ impl ConservedQuantityTimeSeries {
     }
 
     /// Standard deviation of the recorded values.
-    #[allow(dead_code)]
     pub fn std_dev(&self) -> f64 {
         let n = self.values.len();
         if n < 2 {
@@ -1173,7 +1134,6 @@ impl ConservedQuantityTimeSeries {
     }
 
     /// Relative standard deviation (coefficient of variation).
-    #[allow(dead_code)]
     pub fn relative_std_dev(&self) -> f64 {
         let m = self.mean();
         if m.abs() < 1e-300 {
@@ -1183,13 +1143,11 @@ impl ConservedQuantityTimeSeries {
     }
 
     /// Number of samples.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.values.len()
     }
 
     /// Returns true if no samples recorded.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
@@ -1440,12 +1398,16 @@ mod tests {
         let fnhc = FlexibleNhc::new(300.0, 3, 9, 1e-13, scales.clone());
         // Check that masses were scaled
         let base_nhc = NhcThermostat::new(300.0, 3, 9, 1e-13);
-        for j in 0..3 {
-            let expected = base_nhc.q_masses[j] * scales[j];
-            assert!(
-                (fnhc.inner.q_masses[j] - expected).abs() < 1e-60,
-                "chain {j} mass mismatch"
-            );
+        for (j, ((&qm, &sc), &base_qm)) in fnhc
+            .inner
+            .q_masses
+            .iter()
+            .zip(scales.iter())
+            .zip(base_nhc.q_masses.iter())
+            .enumerate()
+        {
+            let expected = base_qm * sc;
+            assert!((qm - expected).abs() < 1e-60, "chain {j} mass mismatch");
         }
     }
 

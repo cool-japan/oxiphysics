@@ -1,5 +1,3 @@
-#![allow(clippy::if_same_then_else)]
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -43,7 +41,6 @@ fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// at constant velocity along a given direction.
 ///
 /// Returns the incremental work done at each call to [`SteeredMd::apply_force`].
-#[allow(dead_code)]
 pub struct SteeredMd {
     /// Index of the pulled atom.
     pub pulled_atom: usize,
@@ -63,7 +60,6 @@ impl SteeredMd {
     /// Create a new `SteeredMd` pulling atom `pulled_atom`.
     ///
     /// `direction` is normalised automatically.
-    #[allow(dead_code)]
     pub fn new(
         pulled_atom: usize,
         direction: [f64; 3],
@@ -83,7 +79,6 @@ impl SteeredMd {
     /// Apply the spring force to the pulled atom and return the work done this step.
     ///
     /// Updates `forces[self.pulled_atom]` in place and returns `W = F · v · dt`.
-    #[allow(dead_code)]
     pub fn apply_force(
         &mut self,
         positions: &[[f64; 3]],
@@ -126,7 +121,6 @@ impl SteeredMd {
 /// A virtual spring anchor moves at a fixed velocity along a pulling direction.
 /// The harmonic spring exerts a force on the pulled atom proportional to the
 /// displacement between the atom and the virtual anchor.
-#[allow(dead_code)]
 pub struct ConstantVelocitySmd {
     /// Spring constant (N/m or simulation units).
     pub spring_constant: f64,
@@ -228,7 +222,6 @@ impl ConstantVelocitySmd {
 /// Constant-force SMD (cf-SMD).
 ///
 /// Applies a fixed external force to a pulled atom throughout the simulation.
-#[allow(dead_code)]
 pub struct ConstantForceSmd {
     /// Magnitude of the applied force (N or simulation units).
     pub force_magnitude: f64,
@@ -293,7 +286,6 @@ impl ConstantForceSmd {
 /// A single umbrella-sampling window for a 1D reaction coordinate.
 ///
 /// Applies a harmonic bias: `U_bias = 0.5 * force_constant * (rc - target)^2`.
-#[allow(dead_code)]
 pub struct UmbrellaWindow {
     /// Target reaction-coordinate value for this window.
     pub target: f64,
@@ -313,7 +305,6 @@ pub struct UmbrellaWindow {
 
 impl UmbrellaWindow {
     /// Create a new umbrella sampling window.
-    #[allow(dead_code)]
     pub fn new(
         target: f64,
         force_constant: f64,
@@ -335,7 +326,6 @@ impl UmbrellaWindow {
     }
 
     /// Compute the reaction coordinate (distance between atom_i and atom_j).
-    #[allow(dead_code)]
     pub fn reaction_coordinate(&self, positions: &[[f64; 3]]) -> f64 {
         let ri = positions[self.atom_i];
         let rj = positions[self.atom_j];
@@ -349,7 +339,6 @@ impl UmbrellaWindow {
     ///
     /// Returns a force vector (same length as positions), with non-zero
     /// entries only for `atom_i` and `atom_j`.
-    #[allow(dead_code)]
     pub fn bias_force(&self, positions: &[[f64; 3]]) -> Vec<[f64; 3]> {
         let n = positions.len();
         let mut forces = vec![[0.0f64; 3]; n];
@@ -372,7 +361,6 @@ impl UmbrellaWindow {
     }
 
     /// Record a sample into the histogram.
-    #[allow(dead_code)]
     pub fn sample_histogram(&mut self, rc_value: f64) {
         if self.histogram.is_empty() {
             return;
@@ -389,7 +377,6 @@ impl UmbrellaWindow {
     }
 
     /// Return the total number of samples collected.
-    #[allow(dead_code)]
     pub fn n_samples(&self) -> u64 {
         self.histogram.iter().sum()
     }
@@ -398,7 +385,6 @@ impl UmbrellaWindow {
 // ─── MetadynamicsCV ───────────────────────────────────────────────────────────
 
 /// A Gaussian history for metadynamics on a single collective variable.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct HistoryGaussian {
     center: f64,
@@ -407,7 +393,6 @@ struct HistoryGaussian {
 }
 
 /// Metadynamics state for one collective variable (e.g. a distance).
-#[allow(dead_code)]
 pub struct MetadynamicsCV {
     /// Atom indices defining the CV (distance between two atoms).
     pub index_atoms: [usize; 2],
@@ -419,7 +404,6 @@ pub struct MetadynamicsCV {
 
 impl MetadynamicsCV {
     /// Create a new `MetadynamicsCV` tracking distance between `atom_i` and `atom_j`.
-    #[allow(dead_code)]
     pub fn new(atom_i: usize, atom_j: usize) -> Self {
         Self {
             index_atoms: [atom_i, atom_j],
@@ -429,7 +413,6 @@ impl MetadynamicsCV {
     }
 
     /// Add a Gaussian hill centered at the current CV value.
-    #[allow(dead_code)]
     pub fn add_gaussian(&mut self, height: f64, width: f64) {
         self.history_gaussians.push(HistoryGaussian {
             center: self.current_value,
@@ -441,7 +424,6 @@ impl MetadynamicsCV {
     /// Evaluate the total bias potential at a given CV value.
     ///
     /// `V_bias(s) = sum_k h_k * exp(-(s - s_k)^2 / (2 * w_k^2))`
-    #[allow(dead_code)]
     pub fn bias_potential(&self, cv_value: f64) -> f64 {
         self.history_gaussians
             .iter()
@@ -453,7 +435,6 @@ impl MetadynamicsCV {
     }
 
     /// Update the current CV value from positions.
-    #[allow(dead_code)]
     pub fn update_value(&mut self, positions: &[[f64; 3]]) {
         let [i, j] = self.index_atoms;
         let ri = positions[i];
@@ -465,7 +446,6 @@ impl MetadynamicsCV {
     }
 
     /// Return number of deposited Gaussians.
-    #[allow(dead_code)]
     pub fn n_gaussians(&self) -> usize {
         self.history_gaussians.len()
     }
@@ -477,7 +457,6 @@ impl MetadynamicsCV {
 ///
 /// Maintains a temperature ladder and attempts swaps between adjacent replicas
 /// using a Metropolis criterion.
-#[allow(dead_code)]
 pub struct ReplicaExchange {
     /// Number of replicas.
     pub n_replicas: usize,
@@ -495,7 +474,6 @@ impl ReplicaExchange {
     /// Create a new `ReplicaExchange` with a geometric temperature ladder.
     ///
     /// `t_min` to `t_max` with `n_replicas` replicas.
-    #[allow(dead_code)]
     pub fn new(n_replicas: usize, t_min: f64, t_max: f64, kb: f64) -> Self {
         assert!(n_replicas >= 2, "Need at least 2 replicas");
         let ratio = (t_max / t_min).powf(1.0 / (n_replicas - 1) as f64);
@@ -517,7 +495,6 @@ impl ReplicaExchange {
     /// `rng_uniform` provides uniform \[0,1) values in order (one per pair).
     ///
     /// Returns a list of `(i, j)` pairs that were successfully swapped.
-    #[allow(dead_code)]
     pub fn attempt_swap(&mut self, energies: &[f64], rng_uniform: &[f64]) -> Vec<(usize, usize)> {
         let mut swapped = Vec::new();
         let n = self.n_replicas;
@@ -546,7 +523,6 @@ impl ReplicaExchange {
     }
 
     /// Swap probability (acceptance rate) for pair `k`.
-    #[allow(dead_code)]
     pub fn swap_probability(&self, k: usize) -> f64 {
         if self.attempt_counts[k] == 0 {
             return 0.0;
@@ -558,7 +534,6 @@ impl ReplicaExchange {
 // ─── Force-extension curve analysis ──────────────────────────────────────────
 
 /// A force-extension data point.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ForceExtensionPoint {
     /// Extension (nm or nm/ps units).
@@ -568,7 +543,6 @@ pub struct ForceExtensionPoint {
 }
 
 /// Force-extension curve collected from a cv-SMD run.
-#[allow(dead_code)]
 pub struct ForceExtensionCurve {
     /// Ordered data points.
     pub data: Vec<ForceExtensionPoint>,
@@ -576,13 +550,11 @@ pub struct ForceExtensionCurve {
 
 impl ForceExtensionCurve {
     /// Create an empty curve.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self { data: Vec::new() }
     }
 
     /// Append a force-extension data point.
-    #[allow(dead_code)]
     pub fn push(&mut self, extension: f64, force: f64) {
         self.data.push(ForceExtensionPoint { extension, force });
     }
@@ -590,7 +562,6 @@ impl ForceExtensionCurve {
     /// Maximum force (rupture force) in the curve.
     ///
     /// Returns 0.0 for an empty curve.
-    #[allow(dead_code)]
     pub fn max_force(&self) -> f64 {
         self.data.iter().map(|p| p.force).fold(0.0_f64, f64::max)
     }
@@ -598,7 +569,6 @@ impl ForceExtensionCurve {
     /// Extension at which the maximum force occurs (rupture extension).
     ///
     /// Returns 0.0 for an empty curve.
-    #[allow(dead_code)]
     pub fn rupture_extension(&self) -> f64 {
         self.data
             .iter()
@@ -612,7 +582,6 @@ impl ForceExtensionCurve {
     }
 
     /// Compute the work done along the curve via the trapezoidal rule.
-    #[allow(dead_code)]
     pub fn work(&self) -> f64 {
         if self.data.len() < 2 {
             return 0.0;
@@ -629,7 +598,6 @@ impl ForceExtensionCurve {
     /// Smooth the curve with a sliding window average of given half-width.
     ///
     /// Returns a new curve with the same extension values but smoothed forces.
-    #[allow(dead_code)]
     pub fn smooth(&self, half_window: usize) -> ForceExtensionCurve {
         let n = self.data.len();
         let mut smoothed = ForceExtensionCurve::new();
@@ -643,13 +611,11 @@ impl ForceExtensionCurve {
     }
 
     /// Number of data points.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.data.len()
     }
 
     /// Returns true if the curve has no data points.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
@@ -666,7 +632,6 @@ impl Default for ForceExtensionCurve {
 /// Jarzynski free energy estimate with second-order cumulant correction.
 ///
 /// Returns (jarzynski_estimate, cumulant_2nd_estimate, variance_of_work).
-#[allow(dead_code)]
 pub fn jarzynski_with_stats(works: &[f64], temperature: f64) -> (f64, f64, f64) {
     if works.is_empty() {
         return (0.0, 0.0, 0.0);
@@ -698,7 +663,6 @@ pub fn jarzynski_with_stats(works: &[f64], temperature: f64) -> (f64, f64, f64) 
 /// by more than `drop_fraction * max_force` within `window` steps.
 ///
 /// Returns the maximum force if the criterion is met, otherwise `max_force`.
-#[allow(dead_code)]
 pub fn detect_rupture_force(forces: &[f64], drop_fraction: f64, window: usize) -> f64 {
     if forces.is_empty() {
         return 0.0;
@@ -714,8 +678,8 @@ pub fn detect_rupture_force(forces: &[f64], drop_fraction: f64, window: usize) -
         .unwrap_or(0);
     // Check if force drops below threshold within `window` steps after max
     let end = (max_pos + window).min(forces.len());
-    let dropped = forces[max_pos..end].iter().any(|&f| f < threshold);
-    if dropped { max_f } else { max_f }
+    let _dropped = forces[max_pos..end].iter().any(|&f| f < threshold);
+    max_f
 }
 
 // ─── Constant-velocity SMD with work accumulation ─────────────────────────────
@@ -726,7 +690,6 @@ impl ConstantVelocitySmd {
     /// `atom_pos` is the current position of the pulled atom.
     /// Returns the scalar force projection along the pulling direction and the
     /// current extension (displacement from `initial_position` along pulling direction).
-    #[allow(dead_code)]
     pub fn collect_data_point(&self, atom_pos: [f64; 3]) -> (f64, f64) {
         let f = self.spring_force(atom_pos);
         let f_proj = f[0] * self.pulling_direction[0]
@@ -745,7 +708,6 @@ impl ConstantVelocitySmd {
 /// and moves at constant velocity `v`.  The bead (pulled atom) experiences
 /// the tip force.  The model allows recording of the cantilever deflection
 /// (force) versus time or extension.
-#[allow(dead_code)]
 pub struct AfmCantilever {
     /// Cantilever spring constant (N/m or simulation-unit equivalent).
     pub k_cantilever: f64,
@@ -763,7 +725,6 @@ pub struct AfmCantilever {
 
 impl AfmCantilever {
     /// Create a new AFM cantilever.
-    #[allow(dead_code)]
     pub fn new(k: f64, v: f64, direction: [f64; 3], initial_tip: [f64; 3]) -> Self {
         Self {
             k_cantilever: k,
@@ -788,7 +749,6 @@ impl AfmCantilever {
     /// Cantilever force on bead at `bead_pos`.
     ///
     /// `F = k * (tip - bead)` projected onto pulling direction.
-    #[allow(dead_code)]
     pub fn force_on_bead(&self, bead_pos: [f64; 3]) -> [f64; 3] {
         let tip = self.tip_position();
         [
@@ -799,7 +759,6 @@ impl AfmCantilever {
     }
 
     /// Force projection along the pulling direction.
-    #[allow(dead_code)]
     pub fn force_projection(&self, bead_pos: [f64; 3]) -> f64 {
         let f = self.force_on_bead(bead_pos);
         dot3(f, self.direction)
@@ -808,7 +767,6 @@ impl AfmCantilever {
     /// Cantilever deflection (extension of the spring).
     ///
     /// `δ = (tip - bead) · direction`
-    #[allow(dead_code)]
     pub fn deflection(&self, bead_pos: [f64; 3]) -> f64 {
         let tip = self.tip_position();
         dot3(
@@ -822,7 +780,6 @@ impl AfmCantilever {
     }
 
     /// Extension of the bead from its initial position (along pulling direction).
-    #[allow(dead_code)]
     pub fn bead_extension(&self, bead_pos: [f64; 3], bead_initial: [f64; 3]) -> f64 {
         let disp = [
             bead_pos[0] - bead_initial[0],
@@ -833,7 +790,6 @@ impl AfmCantilever {
     }
 
     /// Advance time by `dt` and log a data point.
-    #[allow(dead_code)]
     pub fn step_and_log(&mut self, bead_pos: [f64; 3], bead_initial: [f64; 3], dt: f64) {
         self.time += dt;
         let ext = self.bead_extension(bead_pos, bead_initial);
@@ -842,7 +798,6 @@ impl AfmCantilever {
     }
 
     /// Rupture force: maximum force projection recorded.
-    #[allow(dead_code)]
     pub fn rupture_force(&self) -> f64 {
         self.log
             .iter()
@@ -851,7 +806,6 @@ impl AfmCantilever {
     }
 
     /// Extension at which the maximum (rupture) force occurs.
-    #[allow(dead_code)]
     pub fn rupture_extension(&self) -> f64 {
         self.log
             .iter()
@@ -861,7 +815,6 @@ impl AfmCantilever {
     }
 
     /// Accumulated work from the force-extension log (trapezoidal rule).
-    #[allow(dead_code)]
     pub fn accumulated_work(&self) -> f64 {
         if self.log.len() < 2 {
             return 0.0;
@@ -883,7 +836,6 @@ impl AfmCantilever {
 /// along the pulling direction.
 ///
 /// This is the typical GROMACS cv-SMD implementation.
-#[allow(dead_code)]
 pub struct ConstantVelocitySteering {
     /// Spring constant.
     pub spring_constant: f64,
@@ -901,7 +853,6 @@ pub struct ConstantVelocitySteering {
 
 impl ConstantVelocitySteering {
     /// Create a new `ConstantVelocitySteering` probe.
-    #[allow(dead_code)]
     pub fn new(k: f64, v: f64, direction: [f64; 3], initial_pos: [f64; 3]) -> Self {
         Self {
             spring_constant: k,
@@ -916,7 +867,6 @@ impl ConstantVelocitySteering {
     /// Spring force `F = k * (v*t - x) * direction` applied to atom at `atom_pos`.
     ///
     /// Here `x = (atom_pos - initial_pos) · direction` is the current displacement.
-    #[allow(dead_code)]
     pub fn force(&self, atom_pos: [f64; 3]) -> [f64; 3] {
         let disp = [
             atom_pos[0] - self.initial_pos[0],
@@ -934,20 +884,17 @@ impl ConstantVelocitySteering {
     }
 
     /// Scalar force projection along the pulling direction.
-    #[allow(dead_code)]
     pub fn force_scalar(&self, atom_pos: [f64; 3]) -> f64 {
         let f = self.force(atom_pos);
         dot3(f, self.direction)
     }
 
     /// Current target displacement `v * t`.
-    #[allow(dead_code)]
     pub fn target_displacement(&self) -> f64 {
         self.velocity * self.time
     }
 
     /// Step forward by `dt` and accumulate work `W += F·v·dt`.
-    #[allow(dead_code)]
     pub fn step(&mut self, atom_pos: [f64; 3], dt: f64) {
         let f_proj = self.force_scalar(atom_pos);
         self.work += f_proj * self.velocity * dt;
@@ -960,7 +907,6 @@ impl ConstantVelocitySteering {
 /// Constant-force steering: applies a fixed force vector to an atom.
 ///
 /// Tracks the displacement and accumulated work over time.
-#[allow(dead_code)]
 pub struct ConstantForceSteering {
     /// Applied force magnitude.
     pub force_magnitude: f64,
@@ -974,7 +920,6 @@ pub struct ConstantForceSteering {
 
 impl ConstantForceSteering {
     /// Create a new `ConstantForceSteering` probe.
-    #[allow(dead_code)]
     pub fn new(force: f64, direction: [f64; 3], initial_pos: [f64; 3]) -> Self {
         Self {
             force_magnitude: force,
@@ -985,7 +930,6 @@ impl ConstantForceSteering {
     }
 
     /// Force vector.
-    #[allow(dead_code)]
     pub fn force_vector(&self) -> [f64; 3] {
         [
             self.force_magnitude * self.direction[0],
@@ -995,7 +939,6 @@ impl ConstantForceSteering {
     }
 
     /// Displacement along the pulling direction from initial position.
-    #[allow(dead_code)]
     pub fn displacement(&self, atom_pos: [f64; 3]) -> f64 {
         let disp = [
             atom_pos[0] - self.initial_pos[0],
@@ -1006,7 +949,6 @@ impl ConstantForceSteering {
     }
 
     /// Accumulate work: `W += F · Δx` where `Δx` is the displacement increment.
-    #[allow(dead_code)]
     pub fn step(&mut self, atom_pos: [f64; 3], prev_atom_pos: [f64; 3]) {
         let dx = [
             atom_pos[0] - prev_atom_pos[0],
@@ -1023,7 +965,6 @@ impl ConstantForceSteering {
 /// Collect work values from multiple SMD runs and estimate ΔF via Jarzynski.
 ///
 /// Also returns the cumulant expansion estimate and the mean work.
-#[allow(dead_code)]
 pub struct SmdJarzynskiEnsemble {
     /// Collected work values (one per trajectory).
     pub works: Vec<f64>,
@@ -1033,7 +974,6 @@ pub struct SmdJarzynskiEnsemble {
 
 impl SmdJarzynskiEnsemble {
     /// Create an empty ensemble.
-    #[allow(dead_code)]
     pub fn new(kt: f64) -> Self {
         Self {
             works: Vec::new(),
@@ -1042,25 +982,21 @@ impl SmdJarzynskiEnsemble {
     }
 
     /// Add a work value from one SMD trajectory.
-    #[allow(dead_code)]
     pub fn add_work(&mut self, w: f64) {
         self.works.push(w);
     }
 
     /// Number of trajectories.
-    #[allow(dead_code)]
     pub fn n_trajectories(&self) -> usize {
         self.works.len()
     }
 
     /// Jarzynski free energy estimate `ΔF = -kT ln ⟨exp(-W/kT)⟩`.
-    #[allow(dead_code)]
     pub fn jarzynski_delta_f(&self) -> f64 {
         ConstantVelocitySmd::jarzynski_free_energy(&self.works, self.kt / KB_J)
     }
 
     /// Mean work ⟨W⟩ over all trajectories.
-    #[allow(dead_code)]
     pub fn mean_work(&self) -> f64 {
         if self.works.is_empty() {
             return 0.0;
@@ -1069,7 +1005,6 @@ impl SmdJarzynskiEnsemble {
     }
 
     /// Second-order cumulant expansion `ΔF ≈ ⟨W⟩ - Var(W) / (2 kT)`.
-    #[allow(dead_code)]
     pub fn cumulant_2nd(&self) -> f64 {
         let n = self.works.len();
         if n == 0 {
@@ -1088,7 +1023,6 @@ impl SmdJarzynskiEnsemble {
     /// Dissipated work `W_diss = ⟨W⟩ - ΔF`.
     ///
     /// Positive dissipation indicates irreversibility.
-    #[allow(dead_code)]
     pub fn dissipated_work(&self) -> f64 {
         self.mean_work() - self.jarzynski_delta_f()
     }
@@ -1100,7 +1034,6 @@ impl SmdJarzynskiEnsemble {
 ///
 /// Records (extension, force) data at each time step and provides
 /// analysis methods.
-#[allow(dead_code)]
 pub struct ExtensionForceCurveBuilder {
     /// Data points: (extension, force_projection).
     pub points: Vec<(f64, f64)>,
@@ -1110,7 +1043,6 @@ pub struct ExtensionForceCurveBuilder {
 
 impl ExtensionForceCurveBuilder {
     /// Create an empty builder.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             points: Vec::new(),
@@ -1119,32 +1051,27 @@ impl ExtensionForceCurveBuilder {
     }
 
     /// Record a data point.
-    #[allow(dead_code)]
     pub fn record(&mut self, extension: f64, force: f64, dt: f64) {
         self.points.push((extension, force));
         self.time_elapsed += dt;
     }
 
     /// Number of recorded points.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.points.len()
     }
 
     /// Whether there are no points.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.points.is_empty()
     }
 
     /// Maximum force (rupture force) in the record.
-    #[allow(dead_code)]
     pub fn max_force(&self) -> f64 {
         self.points.iter().map(|&(_, f)| f).fold(0.0_f64, f64::max)
     }
 
     /// Extension at which the maximum force occurs.
-    #[allow(dead_code)]
     pub fn rupture_extension(&self) -> f64 {
         self.points
             .iter()
@@ -1154,7 +1081,6 @@ impl ExtensionForceCurveBuilder {
     }
 
     /// Trapezoidal integration of the force-extension curve (work).
-    #[allow(dead_code)]
     pub fn total_work(&self) -> f64 {
         if self.points.len() < 2 {
             return 0.0;
@@ -1169,7 +1095,6 @@ impl ExtensionForceCurveBuilder {
     }
 
     /// Convert to a `ForceExtensionCurve`.
-    #[allow(dead_code)]
     pub fn into_curve(self) -> ForceExtensionCurve {
         let mut c = ForceExtensionCurve::new();
         for (ext, force) in self.points {
@@ -1190,7 +1115,6 @@ impl Default for ExtensionForceCurveBuilder {
 /// Compute rupture force statistics from multiple SMD runs.
 ///
 /// Given a slice of per-run maximum forces, returns `(mean, std_dev, max)`.
-#[allow(dead_code)]
 pub fn rupture_force_statistics(max_forces: &[f64]) -> (f64, f64, f64) {
     let n = max_forces.len();
     if n == 0 {
@@ -1214,8 +1138,6 @@ pub fn rupture_force_statistics(max_forces: &[f64]) -> (f64, f64, f64) {
 /// - `r_f` is the loading rate (force/time).
 /// - `k_off` is the zero-force off-rate.
 /// - `f_β = k_B T / x_beta` is the thermal force scale.
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub fn bell_evans_rupture_force(r_f: f64, k_off: f64, x_beta: f64, kt: f64) -> f64 {
     if r_f <= 0.0 || k_off <= 0.0 || x_beta <= 0.0 || kt <= 0.0 {
         return 0.0;
@@ -1330,11 +1252,8 @@ mod tests {
         let positions = vec![[0.0f64, 0.0, 0.0], [1.5, 0.0, 0.0]];
         let forces = win.bias_force(&positions);
         // RC = target = 1.5 → force should be 0
-        for k in 0..3 {
-            assert!(
-                forces[0][k].abs() < 1e-9,
-                "Bias force at target should be ~0"
-            );
+        for v in forces[0] {
+            assert!(v.abs() < 1e-9, "Bias force at target should be ~0");
         }
     }
 

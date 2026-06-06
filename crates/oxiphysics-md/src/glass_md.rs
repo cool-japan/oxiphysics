@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,9 +14,6 @@
 //! - Mean-squared displacement and non-Gaussian parameter
 //! - `GlassSimulation` driver with anneal and quench protocols
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -32,9 +28,6 @@ const E_CHARGE: f64 = 1.602_176_634e-19;
 
 /// Permittivity of free space (F m⁻¹).
 const EPS_0: f64 = 8.854_187_817e-12;
-
-/// Universal gas constant (J mol⁻¹ K⁻¹).
-const R_GAS: f64 = 8.314_462_618;
 
 // ---------------------------------------------------------------------------
 // Vector helpers
@@ -670,19 +663,25 @@ impl GlassSimulation {
         let n = self.positions.len();
         let dt = self.dt;
         // Velocity Verlet
-        for i in 0..n {
+        for (i, (vel, pos)) in self
+            .velocities
+            .iter_mut()
+            .zip(self.positions.iter_mut())
+            .enumerate()
+            .take(n)
+        {
             let m = self.masses[i];
             let acc = scale3(forces[i], 1.0 / m);
             // half-kick velocity
-            self.velocities[i] = add3(self.velocities[i], scale3(acc, 0.5 * dt));
+            *vel = add3(*vel, scale3(acc, 0.5 * dt));
             // update position
-            self.positions[i] = add3(self.positions[i], scale3(self.velocities[i], dt));
+            *pos = add3(*pos, scale3(*vel, dt));
         }
         let forces2 = self.compute_forces_lj(1.0e-21, 3.4e-10);
-        for i in 0..n {
+        for (i, vel) in self.velocities.iter_mut().enumerate().take(n) {
             let m = self.masses[i];
             let acc = scale3(forces2[i], 1.0 / m);
-            self.velocities[i] = add3(self.velocities[i], scale3(acc, 0.5 * dt));
+            *vel = add3(*vel, scale3(acc, 0.5 * dt));
         }
 
         // Rescale to current temperature (simple velocity rescaling thermostat)

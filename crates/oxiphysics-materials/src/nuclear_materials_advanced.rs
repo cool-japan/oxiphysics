@@ -22,9 +22,6 @@
 //! - **Sodium fast reactor structural materials** — 316 SS and HT-9 ferritic-
 //!   martensitic steel properties, creep-fatigue interaction
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

@@ -2,11 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use std::f64::consts::PI;
 
 use super::functions::Mat3;
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// Continuum damage model for brittle solids.
@@ -338,7 +336,6 @@ impl SphFractureParticle {
     /// * `mass`        — particle mass (kg)
     /// * `smooth_h`    — smoothing length (m)
     /// * `density`     — initial density (kg/m³)
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         position: [f64; 3],
         velocity: [f64; 3],
@@ -448,14 +445,14 @@ impl FragmentTracking {
         let n = particles.len();
         self.labels = vec![-1; n];
         let mut parent: Vec<usize> = (0..n).collect();
-        fn find(parent: &mut Vec<usize>, mut x: usize) -> usize {
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
             while parent[x] != x {
                 parent[x] = parent[parent[x]];
                 x = parent[x];
             }
             x
         }
-        fn union(parent: &mut Vec<usize>, a: usize, b: usize) {
+        fn union(parent: &mut [usize], a: usize, b: usize) {
             let ra = find(parent, a);
             let rb = find(parent, b);
             if ra != rb {
@@ -481,9 +478,9 @@ impl FragmentTracking {
         }
         let mut label_map = std::collections::HashMap::new();
         let mut next_label = 0i32;
-        for i in 0..n {
+        for (i, lbl) in self.labels.iter_mut().enumerate().take(n) {
             if particles[i].damage >= self.damage_threshold {
-                self.labels[i] = -1;
+                *lbl = -1;
             } else {
                 let root = find(&mut parent, i);
                 let label = *label_map.entry(root).or_insert_with(|| {
@@ -491,7 +488,7 @@ impl FragmentTracking {
                     next_label += 1;
                     l
                 });
-                self.labels[i] = label;
+                *lbl = label;
             }
         }
         self.num_fragments = next_label as usize;
@@ -533,8 +530,8 @@ impl FragmentTracking {
         for (i, &lbl) in self.labels.iter().enumerate() {
             if lbl >= 0 && (lbl as usize) < self.num_fragments && i < particles.len() {
                 let fid = lbl as usize;
-                for k in 0..3 {
-                    sums[fid][k] += particles[i].position[k];
+                for (k, s) in sums[fid].iter_mut().enumerate() {
+                    *s += particles[i].position[k];
                 }
                 counts[fid] += 1;
             }
@@ -594,7 +591,6 @@ impl SphFractureSimulation {
     /// * `fracture_energy` — fracture energy parameters
     /// * `dt`              — timestep (s)
     /// * `smooth_h`        — SPH smoothing length (m)
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         particles: Vec<SphFractureParticle>,
         damage_model: ContinuumDamageModel,
@@ -645,29 +641,28 @@ impl SphFractureSimulation {
                 }
                 let dw_dr = wendland_c2_3d_grad(r, h);
                 let vol_j = self.particles[j].mass / self.particles[j].density.max(1e-30);
-                for alpha in 0..3 {
+                for (alpha, sr_row) in strain_rate.iter_mut().enumerate() {
                     let dv_alpha =
                         self.particles[j].velocity[alpha] - self.particles[i].velocity[alpha];
-                    for beta in 0..3 {
+                    for (beta, sr_val) in sr_row.iter_mut().enumerate() {
                         let grad_w = -dw_dr * r_vec[beta] / r;
-                        strain_rate[alpha][beta] += vol_j * dv_alpha * grad_w;
+                        *sr_val += vol_j * dv_alpha * grad_w;
                     }
                 }
             }
             let mut eps_dot = [[0.0f64; 3]; 3];
-            for alpha in 0..3 {
-                for beta in 0..3 {
-                    eps_dot[alpha][beta] =
-                        0.5 * (strain_rate[alpha][beta] + strain_rate[beta][alpha]);
+            for (alpha, eps_row) in eps_dot.iter_mut().enumerate() {
+                for (beta, eps_val) in eps_row.iter_mut().enumerate() {
+                    *eps_val = 0.5 * (strain_rate[alpha][beta] + strain_rate[beta][alpha]);
                 }
             }
             let tr_eps = eps_dot[0][0] + eps_dot[1][1] + eps_dot[2][2];
             let d = self.particles[i].damage;
             let eff = 1.0 - d.clamp(0.0, 1.0);
-            for alpha in 0..3 {
-                for beta in 0..3 {
+            for (alpha, stress_row) in self.particles[i].stress.iter_mut().enumerate() {
+                for (beta, stress_val) in stress_row.iter_mut().enumerate() {
                     let delta = if alpha == beta { 1.0 } else { 0.0 };
-                    self.particles[i].stress[alpha][beta] += eff
+                    *stress_val += eff
                         * (lame_lambda * tr_eps * delta + 2.0 * lame_mu * eps_dot[alpha][beta])
                         * dt;
                 }
@@ -680,15 +675,15 @@ impl SphFractureSimulation {
         let dt = self.dt;
         let n = self.particles.len();
         let mut new_damages = vec![0.0f64; n];
-        for i in 0..n {
-            new_damages[i] = self.damage_model.update_damage(&self.particles[i], dt);
+        for (nd, p) in new_damages.iter_mut().zip(self.particles.iter()) {
+            *nd = self.damage_model.update_damage(p, dt);
         }
-        for i in 0..n {
-            self.particles[i].damage = new_damages[i];
-            if self.particles[i].damage > 0.01 {
-                let n_dir = max_eigenvector_3x3(&self.particles[i].stress);
-                self.particles[i].crack_normal = n_dir;
-                self.particles[i].on_crack_surface = self.particles[i].damage > 0.5;
+        for (i, p) in self.particles.iter_mut().enumerate() {
+            p.damage = new_damages[i];
+            if p.damage > 0.01 {
+                let n_dir = max_eigenvector_3x3(&p.stress);
+                p.crack_normal = n_dir;
+                p.on_crack_surface = p.damage > 0.5;
             }
         }
     }
@@ -796,7 +791,6 @@ impl FractureEnergy {
     /// * `cohesive_traction`  — peak cohesive traction t_0 (Pa)
     /// * `critical_separation`— δ_c at which traction vanishes (m)
     /// * `plane_stress`       — true for plane stress, false for plane strain
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         g_c: f64,
         youngs_modulus: f64,

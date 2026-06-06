@@ -11,8 +11,6 @@
 //! - Center-of-mass mapping (`map_to_cg`) and geometry back-mapping (`backmap_cg`).
 //! - Kinetic temperature of the CG system (`cg_temperature`).
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -37,26 +35,10 @@ fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-/// Add two 3-vectors.
-#[inline]
-fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
 /// Scale a 3-vector.
 #[inline]
 fn scale(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
-}
-
-/// Cross product of two 3-vectors.
-#[inline]
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 // ---------------------------------------------------------------------------

@@ -8,8 +8,6 @@
 //! non-exhaustive to allow future additions without breaking downstream
 //! code.
 
-#![allow(dead_code)]
-
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------

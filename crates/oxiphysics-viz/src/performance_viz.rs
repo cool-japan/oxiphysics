@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,9 +14,6 @@
 //! - Spatial heat-maps of hot spots
 //! - Iteration-convergence display
 //! - Adaptive-timestep history
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Primitive rendering types (no GPU dependency)
@@ -1407,8 +1403,8 @@ pub fn ascii_bar_graph(data: &[f64], width: usize, height: usize) -> String {
         .collect();
     let mut out = String::new();
     for row in 0..height {
-        for col in 0..width {
-            out.push(bars[col][row]);
+        for bar_col in bars.iter() {
+            out.push(bar_col[row]);
         }
         out.push('\n');
     }

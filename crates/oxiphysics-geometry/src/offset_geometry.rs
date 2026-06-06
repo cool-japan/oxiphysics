@@ -1,4 +1,3 @@
-#![allow(clippy::if_same_then_else, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,8 +13,6 @@
 //! - **Minkowski sum / difference** for convex 2-D shapes
 //! - **Morphological operations** (erosion, dilation, opening, closing)
 //! - **Tubular neighborhoods** (thickening of curves/surfaces)
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -198,7 +195,7 @@ pub fn polygon_centroid(poly: &[Point2]) -> Point2 {
 }
 
 /// Ensure polygon is in CCW order.
-pub fn ensure_ccw(poly: &mut Vec<Point2>) {
+pub fn ensure_ccw(poly: &mut [Point2]) {
     if signed_area(poly) < 0.0 {
         poly.reverse();
     }
@@ -605,9 +602,7 @@ pub fn minkowski_sum_convex(a: &[Point2], b: &[Point2]) -> Vec<Point2> {
 
         if i >= na {
             j += 1;
-        } else if j >= nb {
-            i += 1;
-        } else if cross > 0.0 {
+        } else if j >= nb || cross > 0.0 {
             i += 1;
         } else if cross < 0.0 {
             j += 1;

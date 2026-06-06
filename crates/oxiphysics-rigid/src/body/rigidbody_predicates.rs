@@ -3,9 +3,6 @@
 //! This module contains method implementations for `RigidBody`.
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use oxiphysics_core::math::{Real, Vec3};
 
 use super::types::{BodyState, BodyType};
@@ -90,7 +87,6 @@ impl RigidBody {
         }
     }
     /// Apply angular impulse (instantaneous angular velocity change).
-    #[allow(dead_code)]
     pub fn apply_angular_impulse(&mut self, impulse: Vec3) {
         if self.is_dynamic() {
             self.angular_velocity += self.world_inverse_inertia * impulse;

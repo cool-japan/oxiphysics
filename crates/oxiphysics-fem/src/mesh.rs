@@ -1,5 +1,3 @@
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -546,7 +544,6 @@ impl MeshStats {
 // ---------------------------------------------------------------------------
 
 /// Result of an h-refinement pass on a tetrahedral mesh.
-#[allow(dead_code)]
 pub struct RefinedMesh {
     /// New node positions.
     pub nodes: Vec<Vec3>,
@@ -560,7 +557,6 @@ pub struct RefinedMesh {
 ///
 /// Each tetrahedron is split into 8 sub-tetrahedra by inserting mid-edge nodes.
 /// Returns the refined mesh.
-#[allow(dead_code)]
 pub fn h_refine(mesh: &TetMesh) -> TetMesh {
     let mut new_nodes = mesh.nodes.clone();
     // Map from sorted edge (a,b) to midpoint node index.
@@ -611,7 +607,6 @@ pub fn h_refine(mesh: &TetMesh) -> TetMesh {
 
 /// Remove elements whose quality (aspect ratio) exceeds a threshold,
 /// performing a simple coarsening. Returns the number of elements removed.
-#[allow(dead_code)]
 pub fn coarsen_by_quality(mesh: &mut TetMesh, max_aspect_ratio: f64) -> usize {
     let original_count = mesh.elements.len();
     let nodes = &mesh.nodes;
@@ -626,7 +621,6 @@ pub fn coarsen_by_quality(mesh: &mut TetMesh, max_aspect_ratio: f64) -> usize {
 
 /// Collapse short edges below `min_length`, merging the two endpoints into
 /// their midpoint. Returns the number of edges collapsed.
-#[allow(dead_code)]
 pub fn collapse_short_edges(mesh: &mut TetMesh, min_length: f64) -> usize {
     let mut collapsed = 0usize;
     let mut remap: HashMap<usize, usize> = HashMap::new();
@@ -676,7 +670,6 @@ pub fn collapse_short_edges(mesh: &mut TetMesh, min_length: f64) -> usize {
 // ---------------------------------------------------------------------------
 
 /// Quality metric for a single tetrahedral element.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementQuality {
     /// Aspect ratio (circumradius / inradius).
@@ -690,7 +683,6 @@ pub struct ElementQuality {
 }
 
 /// Compute quality metrics for all elements in a mesh.
-#[allow(dead_code)]
 pub fn compute_element_qualities(mesh: &TetMesh) -> Vec<ElementQuality> {
     (0..mesh.n_elements())
         .map(|i| {
@@ -711,7 +703,6 @@ pub fn compute_element_qualities(mesh: &TetMesh) -> Vec<ElementQuality> {
 }
 
 /// Find the worst-quality element index by aspect ratio.
-#[allow(dead_code)]
 pub fn worst_element(mesh: &TetMesh) -> Option<usize> {
     if mesh.n_elements() == 0 {
         return None;
@@ -737,7 +728,6 @@ pub fn worst_element(mesh: &TetMesh) -> Option<usize> {
 ///
 /// Returns `(left_elements, right_elements)` where each is a vector of
 /// element indices.
-#[allow(dead_code)]
 pub fn partition_bisection(mesh: &TetMesh, axis: usize) -> (Vec<usize>, Vec<usize>) {
     assert!(axis < 3, "axis must be 0, 1, or 2");
     let n = mesh.n_elements();
@@ -764,7 +754,6 @@ pub fn partition_bisection(mesh: &TetMesh, axis: usize) -> (Vec<usize>, Vec<usiz
 }
 
 /// Recursive bisection partitioning into `2^levels` parts.
-#[allow(dead_code)]
 pub fn partition_recursive_bisection(mesh: &TetMesh, levels: usize) -> Vec<Vec<usize>> {
     if levels == 0 || mesh.n_elements() == 0 {
         return vec![(0..mesh.n_elements()).collect()];
@@ -819,7 +808,6 @@ pub fn partition_recursive_bisection(mesh: &TetMesh, levels: usize) -> Vec<Vec<u
 /// Reverse Cuthill-McKee (RCM) node ordering to reduce matrix bandwidth.
 ///
 /// Returns a permutation vector where `perm[new_index] = old_index`.
-#[allow(dead_code)]
 pub fn cuthill_mckee(mesh: &TetMesh) -> Vec<usize> {
     let n = mesh.n_nodes();
     if n == 0 {
@@ -869,9 +857,9 @@ pub fn cuthill_mckee(mesh: &TetMesh) -> Vec<usize> {
     }
 
     // Handle disconnected components
-    for v in 0..n {
-        if !visited[v] {
-            visited[v] = true;
+    for (v, vis) in visited.iter_mut().enumerate().take(n) {
+        if !*vis {
+            *vis = true;
             order.push(v);
         }
     }
@@ -884,7 +872,6 @@ pub fn cuthill_mckee(mesh: &TetMesh) -> Vec<usize> {
 /// Compute the bandwidth of the stiffness matrix for a given node ordering.
 ///
 /// The bandwidth is `max |perm_inv[a] - perm_inv[b]|` over all edges (a,b).
-#[allow(dead_code)]
 pub fn compute_bandwidth(mesh: &TetMesh, perm: &[usize]) -> usize {
     let n = mesh.n_nodes();
     // Build inverse permutation
@@ -913,7 +900,6 @@ pub fn compute_bandwidth(mesh: &TetMesh, perm: &[usize]) -> usize {
 
 /// Apply a node permutation to a `TetMesh`, reordering node positions and
 /// updating element connectivity.
-#[allow(dead_code)]
 pub fn apply_permutation(mesh: &TetMesh, perm: &[usize]) -> TetMesh {
     let n = mesh.n_nodes();
     assert_eq!(perm.len(), n);
@@ -947,7 +933,6 @@ pub fn apply_permutation(mesh: &TetMesh, perm: &[usize]) -> TetMesh {
 /// Build an edge table for a tetrahedral mesh.
 ///
 /// Returns a sorted, deduplicated list of directed edges `(a, b)` where `a <= b`.
-#[allow(dead_code)]
 pub fn mesh_edge_table(mesh: &TetMesh) -> Vec<(usize, usize)> {
     let mut edges = std::collections::BTreeSet::new();
     for elem in &mesh.elements {
@@ -965,7 +950,6 @@ pub fn mesh_edge_table(mesh: &TetMesh) -> Vec<(usize, usize)> {
 ///
 /// A face is on the boundary if it belongs to exactly one tetrahedron.
 /// Returns faces as sorted (a, b, c) triples with a < b < c.
-#[allow(dead_code)]
 pub fn mesh_face_table(mesh: &TetMesh) -> Vec<(usize, usize, usize)> {
     let mut face_count: std::collections::HashMap<(usize, usize, usize), usize> =
         std::collections::HashMap::new();
@@ -1003,7 +987,6 @@ pub fn mesh_face_table(mesh: &TetMesh) -> Vec<(usize, usize, usize)> {
 ///
 /// A value of 1.0 corresponds to a regular (ideal) tetrahedron.
 /// Returns values in \[0, 1\].
-#[allow(dead_code)]
 pub fn mesh_quality(mesh: &TetMesh) -> Vec<f64> {
     use oxiphysics_core::math::Vec3;
     mesh.elements
@@ -1098,7 +1081,6 @@ pub struct MeshStatistics {
 }
 
 /// Compute aggregate statistics for a tetrahedral mesh.
-#[allow(dead_code)]
 pub fn mesh_statistics(mesh: &TetMesh) -> MeshStatistics {
     let n = mesh.n_elements();
     let mut min_vol = f64::INFINITY;
@@ -1166,7 +1148,6 @@ pub fn mesh_statistics(mesh: &TetMesh) -> MeshStatistics {
 /// Mesh coarsening by collapsing edges shorter than `min_length`.
 ///
 /// Wraps the existing `collapse_short_edges` function and returns a new mesh.
-#[allow(dead_code)]
 pub fn mesh_coarsen(mesh: &TetMesh, min_length: f64) -> TetMesh {
     let mut coarsened = mesh.clone();
     collapse_short_edges(&mut coarsened, min_length);
@@ -1181,7 +1162,6 @@ pub fn mesh_coarsen(mesh: &TetMesh, min_length: f64) -> TetMesh {
 ///
 /// Each tetrahedron is split into 8 sub-tetrahedra by introducing midpoints
 /// on each edge (red refinement). This approximately doubles the mesh resolution.
-#[allow(dead_code)]
 pub fn mesh_refine_uniform(mesh: &TetMesh) -> TetMesh {
     h_refine(mesh)
 }
@@ -1193,7 +1173,6 @@ pub fn mesh_refine_uniform(mesh: &TetMesh) -> TetMesh {
 /// Reverse Cuthill-McKee reordering to reduce matrix bandwidth.
 ///
 /// This is an alias for the existing `cuthill_mckee` function.
-#[allow(dead_code)]
 pub fn rcm_reordering(mesh: &TetMesh) -> Vec<usize> {
     cuthill_mckee(mesh)
 }
@@ -1583,7 +1562,10 @@ mod tests {
         let qualities = mesh_quality(&mesh);
         assert_eq!(qualities.len(), mesh.n_elements());
         for &q in &qualities {
-            assert!(q >= 0.0 && q <= 1.0, "Quality must be in [0,1], got {q}");
+            assert!(
+                (0.0..=1.0).contains(&q),
+                "Quality must be in [0,1], got {q}"
+            );
         }
     }
 

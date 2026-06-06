@@ -300,7 +300,6 @@ pub fn sdf_box(p: [f64; 3], center: [f64; 3], b: [f64; 3]) -> f64 {
 
 /// Signed distance from point `p` to a finite cylinder (Y-axis aligned)
 /// centred at `center` with radius `radius` and total height `height`.
-#[allow(dead_code)]
 pub fn sdf_cylinder(p: [f64; 3], center: [f64; 3], radius: f64, height: f64) -> f64 {
     let dx = p[0] - center[0];
     let dz = p[2] - center[2];
@@ -313,7 +312,6 @@ pub fn sdf_cylinder(p: [f64; 3], center: [f64; 3], radius: f64, height: f64) -> 
 
 /// Signed distance from point `p` to a torus (Y-axis aligned) centred at
 /// `center` with major radius `r_major` and minor radius `r_minor`.
-#[allow(dead_code)]
 pub fn sdf_torus(p: [f64; 3], center: [f64; 3], r_major: f64, r_minor: f64) -> f64 {
     let dx = p[0] - center[0];
     let dy = p[1] - center[1];

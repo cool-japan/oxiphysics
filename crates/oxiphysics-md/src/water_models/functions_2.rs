@@ -2,13 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::types::*;
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::functions::*;
+    use super::super::types::*;
     use std::f64::consts::PI;
     /// TIP3P charges must sum to zero: q_O + 2*q_H = 0.
     #[test]
@@ -628,7 +625,7 @@ mod tests {
     }
     #[test]
     fn spc_angle_energy_zero_at_equilibrium() {
-        let spc = Spc::spc();
+        let spc = Spc::new();
         let r_o = [0.0, 0.0, 0.0];
         let theta_eq = spc.theta_0;
         let r_oh = 1.0_f64;
@@ -643,7 +640,7 @@ mod tests {
     }
     #[test]
     fn spc_angle_energy_positive_when_distorted() {
-        let spc = Spc::spc();
+        let spc = Spc::new();
         let r_o = [0.0, 0.0, 0.0];
         let r_h1 = [1.0, 0.0, 0.0];
         let r_h2 = [0.0, 1.0, 0.0];

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,8 +13,6 @@
 //!   conjugate heat transfer. *Int. J. Therm. Sci.* 46, 228–234.
 //! - Karani, H., & Huber, C. (2015). Lattice Boltzmann formulation for
 //!   conjugate heat transfer in heterogeneous media. *Phys. Rev. E* 91, 023304.
-
-#![allow(dead_code)]
 
 use crate::lattice::{D2Q9_VELOCITIES, D2Q9_WEIGHTS};
 
@@ -214,12 +211,14 @@ impl ThermalLbmD2Q5 {
     /// BGK collision on all nodes given fluid velocities.
     pub fn collide(&mut self, velocities: &[[f64; 2]]) {
         let n = self.nx * self.ny;
-        for k in 0..n {
+        for (k, vel) in velocities.iter().enumerate().take(n) {
             let t = self.temperature[k];
-            let u = velocities[k];
-            for i in 0..5 {
-                let heq = self.equilibrium(t, u, i);
-                self.h[k][i] -= (self.h[k][i] - heq) / self.tau_t;
+            let u = *vel;
+            let tau = self.tau_t;
+            // Precompute equilibrium values to avoid conflicting borrows
+            let heq: [f64; 5] = std::array::from_fn(|i| self.equilibrium(t, u, i));
+            for (h_ki, heq_i) in self.h[k].iter_mut().zip(heq.iter()) {
+                *h_ki -= (*h_ki - heq_i) / tau;
             }
         }
     }
@@ -398,10 +397,9 @@ impl DoubleDistribution {
             let rho: f64 = self.f[k].iter().sum();
             let mut ux = 0.0_f64;
             let mut uy = 0.0_f64;
-            for i in 0..9 {
-                let c = D2Q9_VELOCITIES[i];
-                ux += c[0] as f64 * self.f[k][i];
-                uy += c[1] as f64 * self.f[k][i];
+            for (f_ki, c) in self.f[k].iter().zip(D2Q9_VELOCITIES.iter()) {
+                ux += c[0] as f64 * f_ki;
+                uy += c[1] as f64 * f_ki;
             }
             self.rho[k] = rho;
             self.u[k] = [ux / rho, uy / rho];
@@ -483,7 +481,6 @@ pub struct PcmMaterial {
 
 impl PcmMaterial {
     /// Create a new PCM material specification.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         latent_heat: f64,
         melting_temperature: f64,
@@ -587,7 +584,6 @@ impl NaturalConvection {
     ///
     /// `length` is the characteristic length L (cavity height in lattice units).
     /// `nu` is kinematic viscosity, `alpha` is thermal diffusivity.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         g: f64,
         beta: f64,
@@ -774,7 +770,6 @@ impl ConjugateHeatSolver {
     /// Create a new conjugate heat solver.
     ///
     /// `is_fluid[k] = true` marks fluid nodes; solid nodes use finite-difference diffusion.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         nx: usize,
         ny: usize,

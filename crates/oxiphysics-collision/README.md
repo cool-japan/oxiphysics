@@ -2,9 +2,9 @@
 
 **[Alpha]** High-performance collision detection pipeline for the OxiPhysics engine.
 
-[![Tests](https://img.shields.io/badge/tests-2439-brightgreen)](https://github.com/cool-japan/oxiphysics)
+[![Tests](https://img.shields.io/badge/tests-2443-brightgreen)](https://github.com/cool-japan/oxiphysics)
 [![docs.rs](https://img.shields.io/docsrs/oxiphysics-collision)](https://docs.rs/oxiphysics_collision)
-[![version](https://img.shields.io/badge/version-0.1.0-blue)](https://crates.io/crates/oxiphysics-collision)
+[![version](https://img.shields.io/badge/version-0.1.2-blue)](https://crates.io/crates/oxiphysics-collision)
 
 Part of the [OxiPhysics](https://github.com/cool-japan/oxiphysics) project.
 
@@ -13,7 +13,7 @@ Part of the [OxiPhysics](https://github.com/cool-japan/oxiphysics) project.
 `oxiphysics-collision` implements the full collision detection stack: broad-phase pruning,
 narrow-phase exactalgorithms, continuous collision detection, contact generation and caching,
 deformable/soft-body support, and parallel batch processing. 34+ modules, 2,625 public items,
-2,439 passing tests, 0 stubs.
+2,443 passing tests, 0 stubs.
 
 ## Features
 

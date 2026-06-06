@@ -2,10 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// A single term in a partial fraction decomposition: `coeff / (x - root)`.
 #[derive(Debug, Clone)]
 pub struct PartialFractionTerm {

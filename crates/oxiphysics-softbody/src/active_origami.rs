@@ -21,45 +21,7 @@
 //! assert_eq!(mech.dof(), 1);
 //! ```
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
-
-// ── Vector helpers ────────────────────────────────────────────────────────────
-
-/// Dot product of two 3-vectors.
-#[inline]
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-/// L2 norm of a 3-vector.
-#[inline]
-fn norm3(a: [f64; 3]) -> f64 {
-    dot3(a, a).sqrt()
-}
-
-/// Normalize a 3-vector; returns zero vector if norm is tiny.
-#[inline]
-fn normalize3(a: [f64; 3]) -> [f64; 3] {
-    let n = norm3(a);
-    if n < 1e-30 {
-        [0.0; 3]
-    } else {
-        [a[0] / n, a[1] / n, a[2] / n]
-    }
-}
-
-/// Cross product of two 3-vectors.
-#[inline]
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
 
 // ── SmaActuator ───────────────────────────────────────────────────────────────
 

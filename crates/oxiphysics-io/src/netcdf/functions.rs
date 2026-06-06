@@ -2,7 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::type_complexity)]
+/// Trajectory data: `(time_steps, frames)` where `frames[frame][atom] = [x, y, z]`.
+type TrajectoryData = (Vec<f64>, Vec<Vec<[f64; 3]>>);
 use crate::netcdf::types::*;
 
 /// Create an AMBER-convention NetCDF trajectory file.
@@ -11,7 +12,6 @@ use crate::netcdf::types::*;
 /// - dimensions: frame (unlimited), atom, spatial (3)
 /// - variables: coordinates(frame, atom, spatial), cell_lengths(frame, spatial),
 ///   cell_angles(frame, spatial), time(frame)
-#[allow(dead_code)]
 pub fn create_amber_trajectory(
     n_atoms: usize,
     n_frames: usize,
@@ -58,7 +58,6 @@ pub fn create_amber_trajectory(
     file
 }
 /// Extract coordinates for a specific frame from an AMBER trajectory.
-#[allow(dead_code)]
 pub fn extract_frame_coordinates(file: &NetCdfFile, frame_idx: usize) -> Option<Vec<[f64; 3]>> {
     let coords_var = file.get_variable("coordinates")?;
     let n_atoms = file.get_dimension_size("atom")?;
@@ -79,14 +78,12 @@ pub fn extract_frame_coordinates(file: &NetCdfFile, frame_idx: usize) -> Option<
     Some(positions)
 }
 /// Create a coordinate variable (a 1D variable with the same name as its dimension).
-#[allow(dead_code)]
 pub fn create_coordinate_variable(name: &str, values: Vec<f64>, units: &str) -> NetCdfVariable {
     let mut var = NetCdfVariable::new(name, vec![name.to_string()], values);
     var.add_attribute("units", units);
     var
 }
 /// Write a [`NetCdfFile`] as human-readable CDL text.
-#[allow(dead_code)]
 pub fn write_ncf_text(file: &NetCdfFile) -> String {
     let mut out = String::new();
     out.push_str("netcdf data {\n");
@@ -126,7 +123,6 @@ pub fn write_ncf_text(file: &NetCdfFile) -> String {
 /// Parse a CDL text string produced by [`write_ncf_text`] into a [`NetCdfFile`].
 ///
 /// Returns `Err(String)` on the first parse failure.
-#[allow(dead_code)]
 pub fn parse_ncf_text(cdl: &str) -> Result<NetCdfFile, String> {
     let mut dimensions: Vec<(String, usize)> = Vec::new();
     let mut variable_headers: Vec<(String, Vec<String>)> = Vec::new();
@@ -275,7 +271,6 @@ pub fn parse_ncf_text(cdl: &str) -> Result<NetCdfFile, String> {
     })
 }
 /// Reshape flat data into a 2D array (row-major) given row and column sizes.
-#[allow(dead_code)]
 pub fn reshape_2d(data: &[f64], n_rows: usize, n_cols: usize) -> Vec<Vec<f64>> {
     let mut result = Vec::with_capacity(n_rows);
     for r in 0..n_rows {
@@ -288,7 +283,6 @@ pub fn reshape_2d(data: &[f64], n_rows: usize, n_cols: usize) -> Vec<Vec<f64>> {
     result
 }
 /// Compute statistics for a variable's data.
-#[allow(dead_code)]
 pub fn variable_stats(var: &NetCdfVariable) -> Option<(f64, f64, f64)> {
     if var.data.is_empty() {
         return None;
@@ -309,7 +303,6 @@ pub fn variable_stats(var: &NetCdfVariable) -> Option<(f64, f64, f64)> {
     Some((min, max, mean))
 }
 /// Create a NetCDF string variable for atom names, residue names, etc.
-#[allow(dead_code)]
 pub fn create_string_variable(name: &str, dims: Vec<String>, values: Vec<String>) -> Nc4Variable {
     let mut var = Nc4Variable::string_var(name, dims, values);
     var.add_attribute("dtype", "string");
@@ -317,7 +310,6 @@ pub fn create_string_variable(name: &str, dims: Vec<String>, values: Vec<String>
 }
 /// Copy global attributes from a source file into each variable of a target file,
 /// unless the variable already has an attribute with the same key.
-#[allow(dead_code)]
 pub fn inherit_global_attributes(source: &NetCdfFile, target: &mut NetCdfFile) {
     for (key, value) in &source.attributes {
         for var in target.variables.iter_mut() {
@@ -329,7 +321,6 @@ pub fn inherit_global_attributes(source: &NetCdfFile, target: &mut NetCdfFile) {
 }
 /// Merge two `NetCdfFile` datasets by combining variables (source variables
 /// overwrite target variables with the same name).
-#[allow(dead_code)]
 pub fn merge_netcdf_files(base: &NetCdfFile, overlay: &NetCdfFile) -> NetCdfFile {
     let mut result = base.clone();
     for var in &overlay.variables {
@@ -351,7 +342,6 @@ pub fn merge_netcdf_files(base: &NetCdfFile, overlay: &NetCdfFile) -> NetCdfFile
 /// Parse dimension declarations from a CDL string.
 ///
 /// Returns a list of `(name, size)` pairs for lines matching `name` = `size` ;`.
-#[allow(dead_code)]
 pub fn parse_cdl_dimensions(cdl: &str) -> Vec<(String, usize)> {
     let mut result = Vec::new();
     let mut in_dimensions = false;
@@ -389,7 +379,6 @@ pub fn parse_cdl_dimensions(cdl: &str) -> Vec<(String, usize)> {
 /// `total_time` = last time – first time (0 if fewer than 2 frames).
 /// `avg_displacement` = mean Euclidean distance from frame 0 to the last frame
 /// (averaged over atoms; 0 if no atoms or only 1 frame).
-#[allow(dead_code)]
 pub fn trajectory_stats(times: &[f64], positions: &[Vec<[f64; 3]>]) -> (f64, f64, usize) {
     let n_frames = times.len();
     if n_frames == 0 {
@@ -1058,9 +1047,9 @@ mod tests {
             vec![[1.1, 2.1, 3.1]],
             vec![[1.2, 2.2, 3.2]],
         ];
-        let path = "/tmp/test_trajectory.cdl";
-        NetcdfFile::trajectory_write(path, &times, &positions).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_trajectory.cdl");
+        NetcdfFile::trajectory_write(path.to_str().unwrap_or(""), &times, &positions).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("frame"), "missing 'frame' dimension");
         assert!(content.contains("atom"));
         assert!(content.contains("coordinates"));
@@ -1071,7 +1060,6 @@ mod tests {
 ///
 /// Dimensions: `time` (unlimited), `atom`, `spatial` (3).
 /// Variables: `time(time)`, `x(time, atom)`, `y(time, atom)`, `z(time, atom)`.
-#[allow(dead_code)]
 pub fn write_particle_trajectory_cdl(
     times: &[f64],
     positions: &[Vec<[f64; 3]>],
@@ -1114,8 +1102,7 @@ pub fn write_particle_trajectory_cdl(
 /// Parse a particle trajectory CDL back into time and position arrays.
 ///
 /// Returns `(times, positions)` where `positions\[frame\]\[atom\] = \[x, y, z\]`.
-#[allow(dead_code)]
-pub fn read_particle_trajectory_cdl(cdl: &str) -> Result<(Vec<f64>, Vec<Vec<[f64; 3]>>), String> {
+pub fn read_particle_trajectory_cdl(cdl: &str) -> Result<TrajectoryData, String> {
     let reader = NetcdfReader::from_cdl(cdl)?;
     let times = reader
         .get_data("time")
@@ -1141,12 +1128,10 @@ pub fn read_particle_trajectory_cdl(cdl: &str) -> Result<(Vec<f64>, Vec<Vec<[f64
     Ok((times, positions))
 }
 /// Build a regularly-spaced time coordinate (start, step, n).
-#[allow(dead_code)]
 pub fn linspace_time(start: f64, step: f64, n: usize) -> Vec<f64> {
     (0..n).map(|i| start + i as f64 * step).collect()
 }
 /// Build X/Y/Z Cartesian coordinate arrays for a uniform grid.
-#[allow(dead_code)]
 pub fn uniform_grid_coords(
     nx: usize,
     ny: usize,
@@ -1160,7 +1145,6 @@ pub fn uniform_grid_coords(
     (x, y, z)
 }
 /// Common CF (Climate and Forecast) convention global attributes.
-#[allow(dead_code)]
 pub fn cf_global_attributes(title: &str, institution: &str, source: &str) -> Vec<(String, String)> {
     vec![
         ("Conventions".to_string(), "CF-1.8".to_string()),
@@ -1171,14 +1155,12 @@ pub fn cf_global_attributes(title: &str, institution: &str, source: &str) -> Vec
     ]
 }
 /// Add CF convention attributes to a [`NetCdfFile`].
-#[allow(dead_code)]
 pub fn apply_cf_conventions(file: &mut NetCdfFile, title: &str) {
     file.add_attribute("Conventions", "CF-1.8");
     file.add_attribute("title", title);
     file.add_attribute("institution", "OxiPhysics");
 }
 /// Compute extended statistics for a variable.
-#[allow(dead_code)]
 pub fn extended_variable_stats(var: &NetCdfVariable) -> Option<NetcdfVariableStats> {
     if var.data.is_empty() {
         return None;
@@ -1265,9 +1247,9 @@ mod tests_netcdf_new {
         let mut w = NetcdfWriter::new("out");
         w.add_dimension("t", 2);
         w.add_variable("time", &["t"], vec![0.0, 1.0]);
-        let path = "/tmp/test_netcdf_writer.cdl";
-        w.write_to_file(path).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_netcdf_writer.cdl");
+        w.write_to_file(path.to_str().unwrap_or("")).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("netcdf out"));
         assert!(content.contains("time = 0, 1"));
     }
@@ -1531,7 +1513,6 @@ mod tests_netcdf_new {
     }
 }
 #[cfg(test)]
-#[allow(dead_code)]
 mod tests_netcdf_extra {
     use super::*;
 
@@ -1872,7 +1853,6 @@ mod tests_netcdf_extra {
     }
 }
 /// Write a CDL dimensions block from a list of `NetcdfDimSpec`.
-#[allow(dead_code)]
 pub fn write_cdl_dimensions<W: std::io::Write>(
     writer: &mut W,
     dims: &[NetcdfDimSpec],
@@ -1884,7 +1864,6 @@ pub fn write_cdl_dimensions<W: std::io::Write>(
     Ok(())
 }
 /// Wrap positions from Å → nm (divide by 10).
-#[allow(dead_code)]
 pub fn angstroms_to_nm(positions: &[[f64; 3]]) -> Vec<[f64; 3]> {
     positions
         .iter()
@@ -1892,7 +1871,6 @@ pub fn angstroms_to_nm(positions: &[[f64; 3]]) -> Vec<[f64; 3]> {
         .collect()
 }
 /// Wrap positions from nm → Å (multiply by 10).
-#[allow(dead_code)]
 pub fn nm_to_angstroms(positions: &[[f64; 3]]) -> Vec<[f64; 3]> {
     positions
         .iter()
@@ -1901,13 +1879,11 @@ pub fn nm_to_angstroms(positions: &[[f64; 3]]) -> Vec<[f64; 3]> {
 }
 /// Generate a linearly spaced time vector from `t0` to `t0 + (n-1)*dt`.
 /// (Same as linspace_time but with explicit start time.)
-#[allow(dead_code)]
 pub fn time_vector(t0: f64, dt: f64, n: usize) -> Vec<f64> {
     (0..n).map(|i| t0 + i as f64 * dt).collect()
 }
 /// Compute mean-square displacement (MSD) for a 1-D position series.
 /// `positions\[i\]` is the 1-D coordinate at frame `i`.
-#[allow(dead_code)]
 pub fn msd_1d(positions: &[f64]) -> Vec<f64> {
     if positions.is_empty() {
         return vec![];
@@ -1921,7 +1897,6 @@ pub fn msd_1d(positions: &[f64]) -> Vec<f64> {
         .to_vec()
 }
 /// Compute the mean (average) of a slice.
-#[allow(dead_code)]
 pub fn slice_mean(data: &[f64]) -> f64 {
     if data.is_empty() {
         return 0.0;
@@ -1929,7 +1904,6 @@ pub fn slice_mean(data: &[f64]) -> f64 {
     data.iter().sum::<f64>() / data.len() as f64
 }
 /// Compute the variance of a slice.
-#[allow(dead_code)]
 pub fn slice_variance(data: &[f64]) -> f64 {
     if data.len() < 2 {
         return 0.0;
@@ -1938,7 +1912,6 @@ pub fn slice_variance(data: &[f64]) -> f64 {
     data.iter().map(|x| (x - m).powi(2)).sum::<f64>() / data.len() as f64
 }
 /// Compute the autocorrelation at lag `lag` for a centred signal.
-#[allow(dead_code)]
 pub fn autocorrelation(data: &[f64], lag: usize) -> f64 {
     let n = data.len();
     if lag >= n {

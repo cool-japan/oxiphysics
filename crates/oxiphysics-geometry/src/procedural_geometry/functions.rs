@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 /// Compute uniform B-spline knot vector for `n` control points and given degree.
 pub fn uniform_knot_vector(n: usize, degree: usize) -> Vec<f64> {
     let m = n + degree + 1;
@@ -12,13 +11,13 @@ pub fn uniform_knot_vector(n: usize, degree: usize) -> Vec<f64> {
 pub fn clamped_knot_vector(n: usize, degree: usize) -> Vec<f64> {
     let m = n + degree + 1;
     let mut knots = vec![0.0f64; m];
-    for i in 0..m {
+    for (i, knot) in knots.iter_mut().enumerate().take(m) {
         if i <= degree {
-            knots[i] = 0.0;
+            *knot = 0.0;
         } else if i >= n {
-            knots[i] = (n - degree) as f64;
+            *knot = (n - degree) as f64;
         } else {
-            knots[i] = (i - degree) as f64;
+            *knot = (i - degree) as f64;
         }
     }
     let max_k = knots[m - 1];

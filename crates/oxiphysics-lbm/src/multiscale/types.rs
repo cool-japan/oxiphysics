@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use crate::lattice::{D2Q9_VELOCITIES, D2Q9_WEIGHTS};
 
 use super::functions::*;
@@ -290,8 +289,7 @@ impl TwoWayCoupling {
             let fy = self.body_force[k][1];
             let mut ux = 0.0_f64;
             let mut uy = 0.0_f64;
-            for i in 0..9 {
-                let c = D2Q9_VELOCITIES[i];
+            for (i, c) in D2Q9_VELOCITIES.iter().enumerate() {
                 ux += c[0] as f64 * self.f[k][i];
                 uy += c[1] as f64 * self.f[k][i];
             }
@@ -408,9 +406,8 @@ impl LbmDsmcCoupling {
         }
         let f_dsmc_eq = self.dsmc_to_lbm(idx);
         let alpha_blend = 0.5;
-        for i in 0..9 {
-            self.f_lbm[idx][i] =
-                (1.0 - alpha_blend) * self.f_lbm[idx][i] + alpha_blend * f_dsmc_eq[i];
+        for (fi, &feq) in self.f_lbm[idx].iter_mut().zip(f_dsmc_eq.iter()) {
+            *fi = (1.0 - alpha_blend) * *fi + alpha_blend * feq;
         }
     }
     /// Update all overlap nodes with DSMC data.
@@ -548,8 +545,7 @@ impl HybridLbmNs {
             let rho: f64 = self.f_lbm[lbm_idx].iter().sum();
             let mut ux = 0.0_f64;
             let mut uy = 0.0_f64;
-            for i in 0..9 {
-                let c = D2Q9_VELOCITIES[i];
+            for (i, c) in D2Q9_VELOCITIES.iter().enumerate() {
                 ux += c[0] as f64 * self.f_lbm[lbm_idx][i];
                 uy += c[1] as f64 * self.f_lbm[lbm_idx][i];
             }
@@ -795,10 +791,13 @@ impl ChapmanEnskogExpansion {
     }
     /// Reconstruct total distribution f = f⁽⁰⁾ + ε f⁽¹⁾ + ε² f⁽²⁾.
     pub fn total_distribution(&self) -> [f64; 9] {
-        let mut f = [0.0f64; 9];
         let eps = self.epsilon;
-        for alpha in 0..9 {
-            f[alpha] = self.f0[alpha] + eps * self.f1[alpha] + eps * eps * self.f2[alpha];
+        let mut f = [0.0f64; 9];
+        for (fi, (f0i, (f1i, f2i))) in f
+            .iter_mut()
+            .zip(self.f0.iter().zip(self.f1.iter().zip(self.f2.iter())))
+        {
+            *fi = f0i + eps * f1i + eps * eps * f2i;
         }
         f
     }
@@ -807,11 +806,9 @@ impl ChapmanEnskogExpansion {
     /// Π⁽¹⁾_αβ = Σ_i f_i⁽¹⁾ e_iα e_iβ
     pub fn neq_stress_tensor(&self) -> [f64; 4] {
         let mut pi = [0.0f64; 4];
-        for alpha in 0..9 {
-            let [ex, ey] = [
-                D2Q9_VELOCITIES[alpha][0] as f64,
-                D2Q9_VELOCITIES[alpha][1] as f64,
-            ];
+        for (alpha, c) in D2Q9_VELOCITIES.iter().enumerate() {
+            let ex = c[0] as f64;
+            let ey = c[1] as f64;
             pi[0] += self.f1[alpha] * ex * ex;
             pi[1] += self.f1[alpha] * ex * ey;
             pi[2] += self.f1[alpha] * ey * ex;
@@ -892,13 +889,13 @@ impl VariableResolution {
         };
         let mut xs = vec![0.0_f64; nx];
         if (r - 1.0).abs() < 1e-10 {
-            for i in 0..nx {
-                xs[i] = x_min + (x_max - x_min) * i as f64 / (nx - 1).max(1) as f64;
+            for (i, x) in xs.iter_mut().enumerate() {
+                *x = x_min + (x_max - x_min) * i as f64 / (nx - 1).max(1) as f64;
             }
         } else {
             let scale = (x_max - x_min) / (r.powi(nx as i32) - 1.0);
-            for i in 0..nx {
-                xs[i] = x_min + scale * (r.powi(i as i32) - 1.0);
+            for (i, x) in xs.iter_mut().enumerate() {
+                *x = x_min + scale * (r.powi(i as i32) - 1.0);
             }
         }
         for y in 0..ny {
@@ -922,8 +919,7 @@ impl VariableResolution {
             let rho: f64 = self.f[k].iter().sum();
             let mut ux = 0.0_f64;
             let mut uy = 0.0_f64;
-            for i in 0..9 {
-                let c = D2Q9_VELOCITIES[i];
+            for (i, c) in D2Q9_VELOCITIES.iter().enumerate() {
                 ux += c[0] as f64 * self.f[k][i];
                 uy += c[1] as f64 * self.f[k][i];
             }
@@ -1113,7 +1109,7 @@ impl HeterogeneousMultiscale {
         }
         let h = self.h_macro;
         let mut u_new = self.u_macro.clone();
-        for i in 1..n - 1 {
+        for (u_out, i) in u_new[1..n - 1].iter_mut().zip(1..n - 1) {
             let ux = self.u_macro[i][0];
             let ux_l = self.u_macro[i - 1][0];
             let ux_r = self.u_macro[i + 1][0];
@@ -1123,7 +1119,7 @@ impl HeterogeneousMultiscale {
             let adv = -ux * (ux_r - ux_l) / (2.0 * h);
             let pres = -(p_r - p_l) / (2.0 * h);
             let diff = nu * (ux_r - 2.0 * ux + ux_l) / (h * h);
-            u_new[i][0] = ux + dt * (adv + pres + diff);
+            u_out[0] = ux + dt * (adv + pres + diff);
         }
         self.u_macro = u_new;
     }
@@ -1342,16 +1338,16 @@ impl PatchedGrid {
                 for yf in yf_start..yf_end {
                     for xf in xf_start..xf_end {
                         let kf = yf * nxf + xf;
-                        for i in 0..9 {
-                            sum[i] += self.f_fine[kf][i];
+                        for (s, &ff) in sum.iter_mut().zip(self.f_fine[kf].iter()) {
+                            *s += ff;
                         }
                         count += 1;
                     }
                 }
                 if count > 0 {
                     let scale = count as f64 / r2;
-                    for i in 0..9 {
-                        self.f_coarse[kc][i] = sum[i] / scale.max(1.0);
+                    for (fc, &s) in self.f_coarse[kc].iter_mut().zip(sum.iter()) {
+                        *fc = s / scale.max(1.0);
                     }
                 }
             }
@@ -1678,9 +1674,12 @@ impl SpaceTimeLbm {
     pub fn interpolated_coarse(&self, node: usize, s: usize) -> [f64; 9] {
         let alpha = s as f64 / self.ratio as f64;
         let mut result = [0.0_f64; 9];
-        for i in 0..9 {
-            result[i] =
-                (1.0 - alpha) * self.f_coarse_n[node][i] + alpha * self.f_coarse_np1[node][i];
+        for (r, (&fn_i, &fnp1_i)) in result.iter_mut().zip(
+            self.f_coarse_n[node]
+                .iter()
+                .zip(self.f_coarse_np1[node].iter()),
+        ) {
+            *r = (1.0 - alpha) * fn_i + alpha * fnp1_i;
         }
         result
     }
@@ -1690,8 +1689,7 @@ impl SpaceTimeLbm {
             let rho: f64 = self.f_fine[k].iter().sum();
             let mut ux = 0.0_f64;
             let mut uy = 0.0_f64;
-            for i in 0..9 {
-                let c = D2Q9_VELOCITIES[i];
+            for (i, c) in D2Q9_VELOCITIES.iter().enumerate() {
                 ux += c[0] as f64 * self.f_fine[k][i];
                 uy += c[1] as f64 * self.f_fine[k][i];
             }

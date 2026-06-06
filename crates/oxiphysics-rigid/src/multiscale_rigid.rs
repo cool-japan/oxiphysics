@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! Provides coarse-grained (CG) representations of fine-scale rigid body
 //! assemblies, including inertia homogenization, force projection/interpolation,
 //! adaptive resolution switching, and error estimation.
-
-#![allow(dead_code)]
 
 // ── vector helpers ────────────────────────────────────────────────────────────
 
@@ -32,11 +29,6 @@ fn vec3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-#[inline]
-fn vec3_norm(a: [f64; 3]) -> f64 {
-    vec3_dot(a, a).sqrt()
-}
-
 // ── mat3 helpers ──────────────────────────────────────────────────────────────
 
 /// A 3×3 matrix stored row-major.
@@ -52,6 +44,7 @@ fn mat3_add(a: Mat3, b: Mat3) -> Mat3 {
     c
 }
 
+#[cfg(test)]
 fn mat3_scale(a: Mat3, s: f64) -> Mat3 {
     let mut c = [[0.0_f64; 3]; 3];
     for i in 0..3 {
@@ -62,6 +55,7 @@ fn mat3_scale(a: Mat3, s: f64) -> Mat3 {
     c
 }
 
+#[cfg(test)]
 fn mat3_transpose(a: Mat3) -> Mat3 {
     let mut t = [[0.0_f64; 3]; 3];
     for i in 0..3 {
@@ -72,6 +66,7 @@ fn mat3_transpose(a: Mat3) -> Mat3 {
     t
 }
 
+#[cfg(test)]
 fn mat3_trace(a: Mat3) -> f64 {
     a[0][0] + a[1][1] + a[2][2]
 }
@@ -397,10 +392,10 @@ mod tests {
     fn homogenize_inertia_symmetric() {
         let bodies = two_symmetric_bodies();
         let i = homogenize_inertia(&bodies);
-        for row in 0..3 {
-            for col in 0..3 {
+        for (row, r) in i.iter().enumerate() {
+            for (col, &val) in r.iter().enumerate() {
                 assert!(
-                    (i[row][col] - i[col][row]).abs() < 1e-12,
+                    (val - i[col][row]).abs() < 1e-12,
                     "asymmetric ({row},{col})"
                 );
             }
@@ -411,8 +406,8 @@ mod tests {
     fn homogenize_inertia_positive_diagonal() {
         let bodies = two_symmetric_bodies();
         let i = homogenize_inertia(&bodies);
-        for k in 0..3 {
-            assert!(i[k][k] > 0.0, "diagonal[{k}] should be positive");
+        for (k, row) in i.iter().enumerate() {
+            assert!(row[k] > 0.0, "diagonal[{k}] should be positive");
         }
     }
 

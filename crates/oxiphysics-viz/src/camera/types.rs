@@ -2,13 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// Depth of field configuration for post-processing.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct DepthOfField {
     /// Distance to the focal plane (sharp focus).
     pub focal_distance: f64,
@@ -17,7 +14,6 @@ pub struct DepthOfField {
     /// Maximum blur radius in pixels.
     pub max_blur: f64,
 }
-#[allow(dead_code)]
 impl DepthOfField {
     /// Create a new depth of field configuration.
     pub fn new(focal_distance: f64, focal_range: f64, max_blur: f64) -> Self {
@@ -46,7 +42,6 @@ impl DepthOfField {
 }
 /// Type of cinematic camera move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum CinematicMoveType {
     /// Linear dolly (forward/backward along the look axis).
     Dolly,
@@ -59,7 +54,6 @@ pub enum CinematicMoveType {
 }
 /// A multi-target camera that automatically frames a set of world-space points.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct MultiTargetCamera {
     /// Base camera whose position/target will be updated.
     pub camera: Camera,
@@ -74,7 +68,6 @@ pub struct MultiTargetCamera {
     /// Current smooth target.
     pub(super) current_target: [f64; 3],
 }
-#[allow(dead_code)]
 impl MultiTargetCamera {
     /// Create a new multi-target camera from an existing [`Camera`].
     pub fn new(camera: Camera) -> Self {
@@ -152,7 +145,6 @@ impl MultiTargetCamera {
 /// A first-person fly camera that moves freely in 3D space.
 ///
 /// Controlled by yaw/pitch angles and forward/right/up movement.
-#[allow(dead_code)]
 pub struct FlyCamera {
     /// World-space position.
     pub position: [f64; 3],
@@ -173,7 +165,6 @@ pub struct FlyCamera {
     /// Far plane.
     pub far: f64,
 }
-#[allow(dead_code)]
 impl FlyCamera {
     /// Create a new fly camera at the given position.
     pub fn new(position: [f64; 3], fov_y_deg: f64, aspect: f64) -> Self {
@@ -210,15 +201,15 @@ impl FlyCamera {
     /// Move forward/backward by `amount * speed`.
     pub fn move_forward(&mut self, amount: f64) {
         let fwd = self.forward();
-        for i in 0..3 {
-            self.position[i] += fwd[i] * amount * self.speed;
+        for (p, f) in self.position.iter_mut().zip(fwd.iter()) {
+            *p += f * amount * self.speed;
         }
     }
     /// Strafe left/right by `amount * speed`.
     pub fn move_right(&mut self, amount: f64) {
         let r = self.right();
-        for i in 0..3 {
-            self.position[i] += r[i] * amount * self.speed;
+        for (p, r_i) in self.position.iter_mut().zip(r.iter()) {
+            *p += r_i * amount * self.speed;
         }
     }
     /// Move up/down along world Y axis by `amount * speed`.
@@ -260,7 +251,6 @@ impl FlyCamera {
 ///
 /// Stores the last N camera poses for jitter-blending across frames.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TaaHistory {
     /// Ring buffer of previous camera positions.
     pub positions: Vec<[f64; 3]>,
@@ -273,7 +263,6 @@ pub struct TaaHistory {
     /// Number of valid entries currently stored.
     pub(super) count: usize,
 }
-#[allow(dead_code)]
 impl TaaHistory {
     /// Create a new TAA history with the given capacity.
     pub fn new(capacity: usize) -> Self {
@@ -339,7 +328,6 @@ impl TaaHistory {
 }
 /// A cinematic camera move definition.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CinematicMove {
     /// The type of move.
     pub move_type: CinematicMoveType,
@@ -350,7 +338,6 @@ pub struct CinematicMove {
     /// Elapsed time within this move (0..duration).
     pub(super) elapsed: f64,
 }
-#[allow(dead_code)]
 impl CinematicMove {
     /// Create a new cinematic move.
     pub fn new(move_type: CinematicMoveType, amount: f64, duration: f64) -> Self {
@@ -402,14 +389,12 @@ impl CinematicMove {
 }
 /// A camera rig that sequences multiple [`CinematicMove`]s.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CameraRig {
     /// The camera being controlled.
     pub camera: Camera,
     /// The pending move queue.
     pub moves: std::collections::VecDeque<CinematicMove>,
 }
-#[allow(dead_code)]
 impl CameraRig {
     /// Create a new rig wrapping the given camera.
     pub fn new(camera: Camera) -> Self {
@@ -443,7 +428,6 @@ impl CameraRig {
 }
 /// A keyframe for camera animation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CameraKeyframe {
     /// Time at which this keyframe occurs.
     pub time: f64,
@@ -570,14 +554,12 @@ impl Camera {
         ];
     }
     /// Distance from the camera eye to the target.
-    #[allow(dead_code)]
     pub fn distance_to_target(&self) -> f64 {
         let d = sub3(self.position, self.target);
         (dot3(d, d)).sqrt()
     }
     /// Pan the camera (translate position and target) by `dx` in the right direction
     /// and `dy` in the up direction.
-    #[allow(dead_code)]
     pub fn pan(&mut self, dx: f64, dy: f64) {
         let r = self.right();
         let u = self.up_vector();
@@ -588,7 +570,6 @@ impl Camera {
         }
     }
     /// Set the camera to look at a target from a given distance along the -Z axis.
-    #[allow(dead_code)]
     pub fn look_at_distance(&mut self, target: [f64; 3], distance: f64) {
         self.target = target;
         self.position = [target[0], target[1], target[2] + distance];
@@ -596,7 +577,6 @@ impl Camera {
 }
 /// Perlin-noise camera shake — produces smoother, more cinematic shake than
 /// the simple sinusoidal version.
-#[allow(dead_code)]
 pub struct PerlinShake {
     /// Shake amplitude in world units.
     pub amplitude: f64,
@@ -607,7 +587,6 @@ pub struct PerlinShake {
     /// Shake frequency in Hz.
     pub frequency: f64,
 }
-#[allow(dead_code)]
 impl PerlinShake {
     /// Create a new Perlin-noise shake.
     pub fn new(amplitude: f64, decay: f64, frequency: f64) -> Self {
@@ -646,7 +625,6 @@ impl PerlinShake {
     }
 }
 /// Simple camera shake state.
-#[allow(dead_code)]
 pub struct CameraShake {
     /// Current shake intensity (amplitude).
     pub(super) intensity: f64,
@@ -657,7 +635,6 @@ pub struct CameraShake {
     /// Frequency of oscillation (Hz).
     pub(super) frequency: f64,
 }
-#[allow(dead_code)]
 impl CameraShake {
     /// Create a new camera shake with the given initial intensity.
     pub fn new(intensity: f64, decay: f64, frequency: f64) -> Self {
@@ -695,7 +672,6 @@ impl CameraShake {
 }
 /// Extended depth-of-field with physical lens parameters.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct PhysicalDoF {
     /// Focal length of the lens in mm.
     pub focal_length_mm: f64,
@@ -710,7 +686,6 @@ pub struct PhysicalDoF {
     /// Circle-of-confusion diameter threshold in mm.
     pub coc_threshold_mm: f64,
 }
-#[allow(dead_code)]
 impl PhysicalDoF {
     /// 35 mm full-frame portrait lens at f/1.8, focused at 2 m.
     pub fn portrait() -> Self {
@@ -832,7 +807,6 @@ impl Frustum {
         true
     }
     /// Signed distance from a point to a specific plane.
-    #[allow(dead_code)]
     pub fn signed_distance(&self, plane_idx: usize, p: [f64; 3]) -> f64 {
         let pl = &self.planes[plane_idx];
         pl[0] * p[0] + pl[1] * p[1] + pl[2] * p[2] + pl[3]

@@ -263,9 +263,6 @@ mod tests {
         assert!((ss.control_gains[2] - 0.0).abs() < 1e-10);
     }
 }
-/// Boltzmann constant used in SMA thermal computations.
-#[allow(dead_code)]
-pub(super) const BOLTZMANN: f64 = 1.380649e-23;
 #[cfg(test)]
 mod smart_new_tests {
 

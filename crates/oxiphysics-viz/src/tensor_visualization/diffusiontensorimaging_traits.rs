@@ -8,8 +8,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::{DiffusionTensorImaging, FaColorMode};
 
 impl Default for DiffusionTensorImaging {

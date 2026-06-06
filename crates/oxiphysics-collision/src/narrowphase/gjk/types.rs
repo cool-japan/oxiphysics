@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions_2::*;
 use oxiphysics_core::Transform;
 use oxiphysics_core::math::{Real, Vec3};
 use oxiphysics_geometry::Shape;
@@ -12,7 +10,6 @@ use super::functions::*;
 
 /// A single iteration record in a GJK debug trace.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct GjkIterationRecord {
     /// Simplex state at start of this iteration.
     pub simplex_size: usize,
@@ -65,7 +62,6 @@ impl Simplex {
 }
 /// Result of a GJK ray-cast query.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct RayCastResult {
     /// Hit parameter `t` along the ray: `origin + t * direction`.
     pub t: f64,
@@ -79,7 +75,6 @@ pub struct RayCastResult {
 /// In physics simulation the relative motion of two bodies between frames is
 /// small.  Seeding GJK with the simplex from the previous collision query
 /// (warm-starting) typically halves the iteration count.
-#[allow(dead_code)]
 pub struct WarmStartGjk {
     /// Simplex retained from the previous frame.
     pub(super) prev_simplex: Option<Simplex>,
@@ -90,7 +85,6 @@ pub struct WarmStartGjk {
     /// Number of queries performed.
     pub(super) query_count: usize,
 }
-#[allow(dead_code)]
 impl WarmStartGjk {
     /// Create a new warm-start solver with no cached state.
     pub fn new() -> Self {
@@ -200,14 +194,12 @@ impl WarmStartGjk {
 /// Stores the result of the previous frame's query so that the next
 /// call can reuse the cached simplex as its initial starting point,
 /// typically converging in far fewer iterations.
-#[allow(dead_code)]
 pub struct GjkSolver {
     /// Cached simplex from the last successful query.
     pub(super) cached_simplex: Option<Simplex>,
     /// Last known search direction (used for warm-starting).
     pub(super) last_direction: Option<Vec3>,
 }
-#[allow(dead_code)]
 impl GjkSolver {
     /// Create a new solver with no cached state.
     pub fn new() -> Self {
@@ -329,7 +321,6 @@ impl GjkSolver {
 /// is generated that allows the constraint solver to keep them apart over the
 /// next timestep, preventing tunnelling without requiring CCD.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SpeculativeContact {
     /// Closest point on shape A.
     pub point_a: Vec3,
@@ -345,7 +336,6 @@ pub struct SpeculativeContact {
 ///
 /// This is a more robust implementation that explicitly identifies which
 /// feature (vertex, edge, or face) of the simplex is closest.
-#[allow(dead_code)]
 pub struct VoronoiSimplexSolver {
     /// Points in the simplex.
     pub(super) points: Vec<Vec3>,
@@ -359,7 +349,6 @@ impl Default for VoronoiSimplexSolver {
         Self::new()
     }
 }
-#[allow(dead_code)]
 impl VoronoiSimplexSolver {
     /// Create a new empty solver.
     pub fn new() -> Self {
@@ -560,7 +549,6 @@ impl Gjk {
     /// Test intersection between two uniformly-scaled convex shapes.
     ///
     /// `scale_a` and `scale_b` uniformly inflate/deflate the respective shapes.
-    #[allow(dead_code)]
     pub fn intersect_scaled(
         shape_a: &dyn Shape,
         transform_a: &Transform,
@@ -622,12 +610,10 @@ pub enum GjkResult {
 }
 /// Full debug trace of a GJK run.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct GjkDebugTrace {
     pub(super) iterations: Vec<GjkIterationRecord>,
     pub(super) terminated_intersecting: bool,
 }
-#[allow(dead_code)]
 impl GjkDebugTrace {
     /// Run GJK while recording each iteration.
     pub fn collect(
@@ -712,7 +698,6 @@ impl GjkDebugTrace {
     }
 }
 /// Cache for support function evaluations to avoid redundant computation.
-#[allow(dead_code)]
 pub struct SupportCache {
     /// Cached directions (unit vectors).
     pub(super) directions: Vec<Vec3>,
@@ -721,7 +706,6 @@ pub struct SupportCache {
     /// Maximum cache size.
     pub(super) max_size: usize,
 }
-#[allow(dead_code)]
 impl SupportCache {
     /// Create a new support cache with the given maximum size.
     pub fn new(max_size: usize) -> Self {
@@ -778,7 +762,6 @@ impl SupportCache {
 }
 /// Identifies the closest feature of a simplex to a query point.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub enum ClosestFeature {
     /// Closest feature is a vertex.
     Vertex(usize),
@@ -791,7 +774,6 @@ pub enum ClosestFeature {
 }
 /// Result of an MPR query.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum MprResult {
     /// Shapes are intersecting; contact normal and depth provided.
     Intersecting {
@@ -817,7 +799,6 @@ pub struct SupportPoint {
 }
 /// Result of a continuous-collision detection (CCD) sweep.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CcdResult {
     /// Time of impact in \[0, 1\].
     pub toi: f64,
@@ -828,7 +809,6 @@ pub struct CcdResult {
 }
 /// Result of a GJK distance query.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct GjkDistanceResult {
     /// Signed distance: positive = separated, negative = penetrating (approx).
     pub distance: f64,

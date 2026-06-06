@@ -1,6 +1,6 @@
 # oxiphysics-lbm
 
-**Status: Alpha** | Version 0.1.1 | 2026-05-17
+**Status: Alpha** | Version 0.1.2 | 2026-06-06
 
 Lattice Boltzmann method (LBM) simulation for the OxiPhysics engine. Pure Rust.
 
@@ -56,6 +56,6 @@ sim.run(n_steps)?;
 ## Statistics
 
 - **5,649** public items
-- **5,313** tests — **largest test suite in the workspace**
+- **5,320** tests — **largest test suite in the workspace**
 - **0** stubs — fully implemented
 

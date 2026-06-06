@@ -2,16 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{discretize_zoh, mat2_mul, mat2_mul_transpose};
 
 /// Smith predictor wrapper for a PID controller with process dead-time.
 ///
 /// Compensates for dead-time L by subtracting the predicted delayed response
 /// from the feedback signal.
-#[allow(dead_code)]
 pub struct SmithPredictor {
     /// Inner PID controller.
     pub pid: BumplessPid,
@@ -28,7 +24,6 @@ pub struct SmithPredictor {
     /// Time step dt.
     pub dt: f64,
 }
-#[allow(dead_code)]
 impl SmithPredictor {
     /// Create a new Smith predictor.
     ///
@@ -147,7 +142,6 @@ impl PidController {
 /// In a relay feedback test a relay of amplitude `d` forces the plant into
 /// sustained oscillation.  The critical gain and period are estimated from
 /// the oscillation amplitude and period.
-#[allow(dead_code)]
 pub struct RelayFeedbackResult {
     /// Estimated critical gain Ku.
     pub ku: f64,
@@ -227,7 +221,6 @@ impl ZieglerNichols {
 ///
 /// When switching from Manual to Auto, the integral term is pre-loaded so
 /// that the controller output matches the manual output without a bump.
-#[allow(dead_code)]
 pub struct BumplessPid {
     /// Proportional gain.
     pub kp: f64,
@@ -248,7 +241,6 @@ pub struct BumplessPid {
     /// Last manual override value (used for bumpless transfer).
     pub manual_output: f64,
 }
-#[allow(dead_code)]
 impl BumplessPid {
     /// Create a new bumpless PID controller in Auto mode.
     pub fn new(kp: f64, ki: f64, kd: f64, integral_limit: f64, output_limit: f64) -> Self {
@@ -354,7 +346,6 @@ impl FirstOrderTf {
 /// Measurement:     y\[k\]   = C x\[k\] + v\[k\]
 ///
 /// w ~ N(0, Q), v ~ N(0, R)
-#[allow(dead_code)]
 pub struct KalmanFilter {
     /// Discrete-time system matrix A.
     pub a: [[f64; 2]; 2],
@@ -371,7 +362,6 @@ pub struct KalmanFilter {
     /// Current error covariance P (2×2).
     pub p: [[f64; 2]; 2],
 }
-#[allow(dead_code)]
 impl KalmanFilter {
     /// Create a new Kalman filter.
     pub fn new(a: [[f64; 2]; 2], b: [f64; 2], c: [f64; 2], q: [[f64; 2]; 2], r: f64) -> Self {
@@ -406,9 +396,9 @@ impl KalmanFilter {
         self.x_hat[1] = self.a[1][0] * x0 + self.a[1][1] * x1 + self.b[1] * u;
         let ap = mat2_mul(&self.a, &self.p);
         let apat = mat2_mul_transpose(&ap, &self.a);
-        for i in 0..2 {
-            for j in 0..2 {
-                self.p[i][j] = apat[i][j] + self.q[i][j];
+        for (p_row, (apat_row, q_row)) in self.p.iter_mut().zip(apat.iter().zip(self.q.iter())) {
+            for (p_ij, (apat_ij, q_ij)) in p_row.iter_mut().zip(apat_row.iter().zip(q_row.iter())) {
+                *p_ij = apat_ij + q_ij;
             }
         }
     }
@@ -496,10 +486,9 @@ impl TrajectoryFollower {
     }
 }
 /// State-feedback (LQR-style) controller: u = -K * x.
-#[allow(non_snake_case)]
 pub struct StateFeedbackController {
     /// Gain matrix K (n_inputs × n_states).
-    pub K: Vec<Vec<f64>>,
+    pub k: Vec<Vec<f64>>,
     /// Number of state variables.
     pub n_states: usize,
     /// Number of control inputs.
@@ -507,12 +496,11 @@ pub struct StateFeedbackController {
 }
 impl StateFeedbackController {
     /// Create a new state-feedback controller from a gain matrix.
-    #[allow(non_snake_case)]
-    pub fn new(K: Vec<Vec<f64>>) -> Self {
-        let n_inputs = K.len();
-        let n_states = if n_inputs > 0 { K[0].len() } else { 0 };
+    pub fn new(k: Vec<Vec<f64>>) -> Self {
+        let n_inputs = k.len();
+        let n_states = if n_inputs > 0 { k[0].len() } else { 0 };
         Self {
-            K,
+            k,
             n_states,
             n_inputs,
         }
@@ -521,7 +509,7 @@ impl StateFeedbackController {
     pub fn control(&self, state: &[f64]) -> Vec<f64> {
         (0..self.n_inputs)
             .map(|i| {
-                -self.K[i]
+                -self.k[i]
                     .iter()
                     .zip(state.iter())
                     .map(|(k, x)| k * x)
@@ -612,7 +600,6 @@ impl SecondOrderTf {
 ///
 /// x\[k+1\] = Ad * x\[k\] + Bd * u\[k\]
 /// y\[k\]   = C  * x\[k\]
-#[allow(dead_code)]
 pub struct DiscreteStateSpace {
     /// Discrete-time system matrix (n × n).
     pub ad: [[f64; 2]; 2],
@@ -623,7 +610,6 @@ pub struct DiscreteStateSpace {
     /// Current state.
     pub x: [f64; 2],
 }
-#[allow(dead_code)]
 impl DiscreteStateSpace {
     /// Create a new discrete-time state-space system.
     pub fn new(ad: [[f64; 2]; 2], bd: [f64; 2], c: [f64; 2]) -> Self {
@@ -855,7 +841,6 @@ pub struct BodePoint {
 }
 /// Mode of a PID controller for bumpless transfer.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub enum PidMode {
     /// Controller is actively computing outputs.
     Auto,
@@ -863,7 +848,6 @@ pub enum PidMode {
     Manual,
 }
 /// Stability margins for an open-loop transfer function.
-#[allow(dead_code)]
 pub struct StabilityMargins {
     /// Gain margin in decibels (how much gain can increase before instability).
     pub gain_margin_db: f64,
@@ -948,14 +932,13 @@ impl FeedforwardController {
     }
 }
 /// Continuous-time LTI state-space model: dx/dt = Ax + Bu, y = Cx.
-#[allow(non_snake_case)]
 pub struct StateSpace {
     /// System matrix (n × n).
-    pub A: Vec<Vec<f64>>,
+    pub a: Vec<Vec<f64>>,
     /// Input matrix (n × m).
-    pub B: Vec<Vec<f64>>,
+    pub b: Vec<Vec<f64>>,
     /// Output matrix (p × n).
-    pub C: Vec<Vec<f64>>,
+    pub c: Vec<Vec<f64>>,
     /// Number of states.
     pub n: usize,
     /// Number of inputs.
@@ -965,32 +948,36 @@ pub struct StateSpace {
 }
 impl StateSpace {
     /// Create a new state-space model.
-    #[allow(non_snake_case)]
-    pub fn new(A: Vec<Vec<f64>>, B: Vec<Vec<f64>>, C: Vec<Vec<f64>>) -> Self {
-        let n = A.len();
-        let m = if n > 0 { B[0].len() } else { 0 };
-        let p = C.len();
-        Self { A, B, C, n, m, p }
+    pub fn new(a: Vec<Vec<f64>>, b: Vec<Vec<f64>>, c: Vec<Vec<f64>>) -> Self {
+        let n = a.len();
+        let m = if n > 0 { b[0].len() } else { 0 };
+        let p = c.len();
+        Self { a, b, c, n, m, p }
     }
-    /// Euler integration: x += (A*x + B*u) * dt.
-    pub fn step(&mut self, x: &mut Vec<f64>, u: &[f64], dt: f64) {
+    /// Euler integration: x += (a*x + b*u) * dt.
+    pub fn step(&mut self, x: &mut [f64], u: &[f64], dt: f64) {
         let mut dx = vec![0.0; self.n];
-        for i in 0..self.n {
-            for j in 0..self.n {
-                dx[i] += self.A[i][j] * x[j];
+        for (i, (dx_i, (a_row, b_row))) in dx
+            .iter_mut()
+            .zip(self.a.iter().zip(self.b.iter()))
+            .enumerate()
+        {
+            let _ = i;
+            for (a_ij, x_j) in a_row.iter().zip(x.iter()) {
+                *dx_i += a_ij * x_j;
             }
-            for j in 0..self.m {
-                dx[i] += self.B[i][j] * u[j];
+            for (b_ij, u_j) in b_row.iter().zip(u.iter()) {
+                *dx_i += b_ij * u_j;
             }
         }
-        for i in 0..self.n {
-            x[i] += dx[i] * dt;
+        for (x_i, dx_i) in x.iter_mut().zip(dx.iter()) {
+            *x_i += dx_i * dt;
         }
     }
     /// Compute output y = C*x (D=0).
     pub fn output(&self, x: &[f64], _u: &[f64]) -> Vec<f64> {
         (0..self.p)
-            .map(|i| (0..self.n).map(|j| self.C[i][j] * x[j]).sum())
+            .map(|i| (0..self.n).map(|j| self.c[i][j] * x[j]).sum())
             .collect()
     }
 }
@@ -999,7 +986,6 @@ impl StateSpace {
 /// x_hat\[k+1\] = (A - L C) x_hat\[k\] + B u\[k\] + L y\[k\]
 ///
 /// where L is the observer gain vector.
-#[allow(dead_code)]
 pub struct LuenbergerObserver {
     /// System matrix A (2×2).
     pub a: [[f64; 2]; 2],
@@ -1012,7 +998,6 @@ pub struct LuenbergerObserver {
     /// State estimate.
     pub x_hat: [f64; 2],
 }
-#[allow(dead_code)]
 impl LuenbergerObserver {
     /// Create a new Luenberger observer.
     pub fn new(a: [[f64; 2]; 2], b: [f64; 2], c: [f64; 2], l: [f64; 2]) -> Self {

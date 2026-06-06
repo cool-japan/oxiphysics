@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -133,15 +132,20 @@ impl MultiStepReaction {
 
     /// Apply all steps of this reaction chain to a reactive lattice.
     pub fn apply(&self, concentrations: &mut [Vec<f64>], dt: f64) {
-        let n_cells = concentrations[0].len();
         for step in 0..self.rate_constants.len() {
             let src = self.species_indices[step];
             let dst = self.species_indices[step + 1];
-            let k = self.rate_constants[step];
-            for cell in 0..n_cells {
-                let delta = k * concentrations[src][cell] * dt;
-                concentrations[src][cell] -= delta;
-                concentrations[dst][cell] += delta;
+            let rate_k = self.rate_constants[step];
+            // Collect deltas to avoid simultaneous mutable borrows of two sub-slices.
+            let deltas: Vec<f64> = concentrations[src]
+                .iter()
+                .map(|&c| rate_k * c * dt)
+                .collect();
+            for (c_src, &delta) in concentrations[src].iter_mut().zip(deltas.iter()) {
+                *c_src -= delta;
+            }
+            for (c_dst, &delta) in concentrations[dst].iter_mut().zip(deltas.iter()) {
+                *c_dst += delta;
             }
         }
     }

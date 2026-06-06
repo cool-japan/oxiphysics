@@ -9,7 +9,6 @@ use super::types::Ply;
 /// `[A] = Σ Q̄_k · h_k`  (sum over all plies)
 ///
 /// Returns the 3×3 A matrix as `[[A11, A12, A16], [A12, A22, A26], [A16, A26, A66]]`.
-#[allow(dead_code)]
 pub fn laminate_a_matrix(plies: &[Ply]) -> [[f64; 3]; 3] {
     let mut a = [[0.0_f64; 3]; 3];
     for ply in plies {
@@ -25,7 +24,6 @@ pub fn laminate_a_matrix(plies: &[Ply]) -> [[f64; 3]; 3] {
 /// Effective in-plane Young's modulus `Ex` for a symmetric laminate.
 ///
 /// Uses the inverse of `[A]`: `Ex = (A11·A22 − A12²) / (A22 · h)`.
-#[allow(dead_code)]
 pub fn laminate_effective_ex(plies: &[Ply]) -> f64 {
     let a = laminate_a_matrix(plies);
     let h: f64 = plies.iter().map(|p| p.thickness).sum();
@@ -48,7 +46,6 @@ pub fn laminate_effective_ex(plies: &[Ply]) -> f64 {
 /// * `n_beta`       – number of azimuth bins.
 ///
 /// Returns a 2D histogram (n_alpha × n_beta) of pole intensities.
-#[allow(dead_code)]
 pub fn pole_figure(orientations: &[[f64; 3]], n_alpha: usize, n_beta: usize) -> Vec<Vec<u32>> {
     let mut pf = vec![vec![0u32; n_beta]; n_alpha];
     for &v in orientations {
@@ -77,7 +74,6 @@ pub fn pole_figure(orientations: &[[f64; 3]], n_alpha: usize, n_beta: usize) -> 
 /// * `pole_fig` – 2D histogram (α × β bins) from [`pole_figure`].
 ///
 /// Returns the texture index (≥ 1 for any texture, = 1 for random texture).
-#[allow(dead_code)]
 pub fn texture_index(pole_fig: &[Vec<u32>]) -> f64 {
     let total: u32 = pole_fig.iter().flat_map(|row| row.iter()).sum();
     if total == 0 {
@@ -105,7 +101,6 @@ pub fn texture_index(pole_fig: &[Vec<u32>]) -> f64 {
 /// Ply positions are computed from the bottom of the stack.
 ///
 /// Returns the 3×3 B matrix as `[[B11, B12, B16], [B12, B22, B26], [B16, B26, B66]]`.
-#[allow(dead_code)]
 pub fn laminate_b_matrix(plies: &[Ply]) -> [[f64; 3]; 3] {
     let total_thickness: f64 = plies.iter().map(|p| p.thickness).sum();
     let mut z_bottom = -total_thickness / 2.0;
@@ -128,7 +123,6 @@ pub fn laminate_b_matrix(plies: &[Ply]) -> [[f64; 3]; 3] {
 /// `[D] = 1/3 * Σ Q̄_k * (z_k³ - z_{k-1}³)`
 ///
 /// Returns the 3×3 D matrix.
-#[allow(dead_code)]
 pub fn laminate_d_matrix(plies: &[Ply]) -> [[f64; 3]; 3] {
     let total_thickness: f64 = plies.iter().map(|p| p.thickness).sum();
     let mut z_bottom = -total_thickness / 2.0;
@@ -149,7 +143,6 @@ pub fn laminate_d_matrix(plies: &[Ply]) -> [[f64; 3]; 3] {
 /// Effective transverse modulus Ey for a symmetric laminate.
 ///
 /// `Ey = (A11*A22 - A12²) / (A11 * h)`.
-#[allow(dead_code)]
 pub fn laminate_effective_ey(plies: &[Ply]) -> f64 {
     let a = laminate_a_matrix(plies);
     let h: f64 = plies.iter().map(|p| p.thickness).sum();
@@ -168,15 +161,14 @@ mod tests {
     use crate::anisotropic::HashinFailureCriteria;
     use crate::anisotropic::HillYieldCriterion;
     use crate::anisotropic::LaRCFailureCriteria;
-    use crate::anisotropic::MonoclinicMaterial;
     use crate::anisotropic::OrthotropicMaterial;
     use crate::anisotropic::PuckFailureCriteria;
     use crate::anisotropic::SymmetryOperation;
     use crate::anisotropic::ThermalConductivityTensor;
     use crate::anisotropic::TransverselyIsotropic;
     use crate::anisotropic::WovenLamina;
+    use crate::anisotropic::{MonoclinicCompliance, MonoclinicMaterial};
     /// Helper: multiply two 6×6 matrices.
-    #[allow(clippy::needless_range_loop)]
     fn mat6_mul(a: &[[f64; 6]; 6], b: &[[f64; 6]; 6]) -> [[f64; 6]; 6] {
         let mut c = [[0.0_f64; 6]; 6];
         for i in 0..6 {
@@ -228,19 +220,18 @@ mod tests {
         );
     }
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_orthotropic_stiffness_inverts_compliance() {
         let mat = OrthotropicMaterial::carbon_fiber_epoxy();
         let d = mat.constitutive_matrix();
         let s = mat.compliance_matrix();
         let ds = mat6_mul(&d, &s);
-        for i in 0..6 {
-            for j in 0..6 {
+        for (i, row) in ds.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (ds[i][j] - expected).abs() < 1.0e-10,
+                    (val - expected).abs() < 1.0e-10,
                     "D*S[{i}][{j}] = {} but expected {expected}",
-                    ds[i][j]
+                    val
                 );
             }
         }
@@ -276,7 +267,6 @@ mod tests {
         assert!((orth.g23 - ti.gt()).abs() < 1.0e-10);
     }
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_isotropic_is_special_case() {
         use crate::elastic::LinearElastic;
         let e = 200.0e9;
@@ -311,7 +301,6 @@ mod tests {
         );
     }
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_compliance_positive_diagonal() {
         let mats = [
             OrthotropicMaterial::carbon_fiber_epoxy(),
@@ -319,11 +308,11 @@ mod tests {
         ];
         for mat in &mats {
             let s = mat.compliance_matrix();
-            for i in 0..6 {
+            for (i, row) in s.iter().enumerate() {
                 assert!(
-                    s[i][i] > 0.0,
+                    row[i] > 0.0,
                     "S[{i}][{i}] should be positive, got {}",
-                    s[i][i]
+                    row[i]
                 );
             }
         }
@@ -415,21 +404,21 @@ mod tests {
     #[test]
     fn test_monoclinic_e1_from_s11() {
         let e1 = 100.0e9;
-        let mat = MonoclinicMaterial::new(
-            1.0 / e1,
-            -0.3 / e1,
-            -0.1 / e1,
-            0.0,
-            1.0 / 70.0e9,
-            -0.2 / 70.0e9,
-            0.0,
-            1.0 / 50.0e9,
-            0.0,
-            1.0 / 30.0e9,
-            0.0,
-            1.0 / 25.0e9,
-            1.0 / 40.0e9,
-        );
+        let mat = MonoclinicMaterial::new(MonoclinicCompliance {
+            s11: 1.0 / e1,
+            s12: -0.3 / e1,
+            s13: -0.1 / e1,
+            s16: 0.0,
+            s22: 1.0 / 70.0e9,
+            s23: -0.2 / 70.0e9,
+            s26: 0.0,
+            s33: 1.0 / 50.0e9,
+            s36: 0.0,
+            s44: 1.0 / 30.0e9,
+            s45: 0.0,
+            s55: 1.0 / 25.0e9,
+            s66: 1.0 / 40.0e9,
+        });
         assert!(
             (mat.e1() - e1).abs() < 1.0,
             "E1={}, expected {e1}",
@@ -438,21 +427,21 @@ mod tests {
     }
     #[test]
     fn test_monoclinic_physical_validity() {
-        let mat = MonoclinicMaterial::new(
-            1.0 / 100.0e9,
-            -0.3 / 100.0e9,
-            -0.1 / 100.0e9,
-            0.0,
-            1.0 / 70.0e9,
-            -0.2 / 70.0e9,
-            0.0,
-            1.0 / 50.0e9,
-            0.0,
-            1.0 / 30.0e9,
-            0.0,
-            1.0 / 25.0e9,
-            1.0 / 40.0e9,
-        );
+        let mat = MonoclinicMaterial::new(MonoclinicCompliance {
+            s11: 1.0 / 100.0e9,
+            s12: -0.3 / 100.0e9,
+            s13: -0.1 / 100.0e9,
+            s16: 0.0,
+            s22: 1.0 / 70.0e9,
+            s23: -0.2 / 70.0e9,
+            s26: 0.0,
+            s33: 1.0 / 50.0e9,
+            s36: 0.0,
+            s44: 1.0 / 30.0e9,
+            s45: 0.0,
+            s55: 1.0 / 25.0e9,
+            s66: 1.0 / 40.0e9,
+        });
         assert!(mat.is_physically_valid());
     }
     #[test]
@@ -746,30 +735,28 @@ mod tests {
         );
     }
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_laminate_b_matrix_symmetric_balanced() {
         let ply0 = Ply::new(140.0e9, 10.0e9, 0.3, 5.0e9, 0.125e-3, 0.0);
         let ply90 = Ply::new(140.0e9, 10.0e9, 0.3, 5.0e9, 0.125e-3, 90.0);
         let plies = [ply0, ply90, ply90, ply0];
         let b = laminate_b_matrix(&plies);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in b.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    b[i][j].abs() < 1.0,
+                    val.abs() < 1.0,
                     "B[{i}][{j}]={} should be ~0 for symmetric laminate",
-                    b[i][j]
+                    val
                 );
             }
         }
     }
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_laminate_d_matrix_positive_diagonal() {
         let ply = Ply::new(140.0e9, 10.0e9, 0.3, 5.0e9, 0.25e-3, 0.0);
         let plies = [ply, ply, ply, ply];
         let d = laminate_d_matrix(&plies);
-        for i in 0..3 {
-            assert!(d[i][i] > 0.0, "D[{i}][{i}]={} should be positive", d[i][i]);
+        for (i, row) in d.iter().enumerate() {
+            assert!(row[i] > 0.0, "D[{i}][{i}]={} should be positive", row[i]);
         }
     }
     #[test]
@@ -806,28 +793,26 @@ mod tests {
         assert!(mat.check_symmetry(), "Douglas fir should satisfy symmetry");
     }
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_orthotropic_constitutive_symmetric() {
         let mat = OrthotropicMaterial::carbon_fiber_epoxy();
         let d = mat.constitutive_matrix();
-        for i in 0..6 {
-            for j in 0..6 {
+        for (i, row) in d.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (d[i][j] - d[j][i]).abs() < 1.0,
+                    (val - d[j][i]).abs() < 1.0,
                     "D[{i}][{j}]={} vs D[{j}][{i}]={}",
-                    d[i][j],
+                    val,
                     d[j][i]
                 );
             }
         }
     }
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_transverse_isotropic_constitutive_dimensions() {
         let mat = TransverselyIsotropic::new(140.0e9, 10.0e9, 0.3, 0.4, 5.0e9);
         let d = mat.constitutive_matrix();
-        for i in 0..6 {
-            assert!(d[i][i] > 0.0, "D[{i}][{i}] should be positive");
+        for (i, row) in d.iter().enumerate() {
+            assert!(row[i] > 0.0, "D[{i}][{i}] should be positive");
         }
     }
     #[test]

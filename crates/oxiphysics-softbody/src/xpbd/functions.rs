@@ -9,19 +9,16 @@ use oxiphysics_core::math::Vec3;
 ///
 /// Smaller dt makes the effective compliance larger (softer), which is why
 /// XPBD properly decouples stiffness from substep count.
-#[allow(dead_code)]
 pub fn effective_compliance(alpha: f64, dt: f64) -> f64 {
     alpha / (dt * dt)
 }
 /// Convert a spring stiffness k (N/m) to XPBD compliance alpha (m^2/N).
 ///
 /// alpha = 1/k.
-#[allow(dead_code)]
 pub fn stiffness_to_compliance(k: f64) -> f64 {
     if k.abs() < 1e-30 { 0.0 } else { 1.0 / k }
 }
 /// Convert XPBD compliance alpha (m^2/N) to spring stiffness k (N/m).
-#[allow(dead_code)]
 pub fn compliance_to_stiffness(alpha: f64) -> f64 {
     if alpha.abs() < 1e-30 {
         f64::INFINITY
@@ -34,7 +31,6 @@ pub fn compliance_to_stiffness(alpha: f64) -> f64 {
 ///
 /// This is useful for removing drift in simulations with only relative
 /// constraints.
-#[allow(dead_code)]
 pub fn remove_com_drift(positions: &mut [Vec3], inv_masses: &[f64]) {
     if positions.is_empty() {
         return;
@@ -57,7 +53,6 @@ pub fn remove_com_drift(positions: &mut [Vec3], inv_masses: &[f64]) {
 /// Clamp particle velocities to a maximum magnitude.
 ///
 /// This prevents numerical explosion in unstable simulations.
-#[allow(dead_code)]
 pub fn clamp_velocities(velocities: &mut [Vec3], max_speed: f64) {
     let max2 = max_speed * max_speed;
     for v in velocities.iter_mut() {
@@ -71,7 +66,6 @@ pub fn clamp_velocities(velocities: &mut [Vec3], max_speed: f64) {
 /// Apply global velocity damping to all particles.
 ///
 /// `factor` should be in \[0, 1\]; 0 = no damping, 1 = full damping (freeze).
-#[allow(dead_code)]
 pub fn apply_global_damping(velocities: &mut [Vec3], factor: f64) {
     let keep = (1.0 - factor).clamp(0.0, 1.0);
     for v in velocities.iter_mut() {
@@ -233,7 +227,6 @@ pub(super) fn col_gs_3x3(a: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 /// * `rest_length` – rest distance between the anchor and the particle.
 /// * `compliance`  – XPBD compliance α (m²/N).  0 = rigid coupling.
 /// * `dt`          – current sub-step time (s).
-#[allow(dead_code)]
 pub fn apply_rigid_body_coupling(
     rigid_pos: &Vec3,
     soft_pos: &mut Vec3,
@@ -262,7 +255,6 @@ pub fn apply_rigid_body_coupling(
 /// `||C||_rms = sqrt( Σ C_i² / n )`.
 ///
 /// An empty slice returns 0.
-#[allow(dead_code)]
 pub fn compute_constraint_residual(constraint_values: &[f64]) -> f64 {
     let n = constraint_values.len();
     if n == 0 {
@@ -288,7 +280,6 @@ pub fn compute_constraint_residual(constraint_values: &[f64]) -> f64 {
 /// * `max_compliance`   – upper bound on the returned compliance.
 /// * `softening`        – dimensionless softening factor (≥ 0).  Higher
 ///   values ramp up compliance more aggressively.
-#[allow(dead_code)]
 pub fn adaptive_compliance(
     base_compliance: f64,
     strain: f64,

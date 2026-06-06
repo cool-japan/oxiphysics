@@ -24,7 +24,6 @@ use thiserror::Error;
 // ---------------------------------------------------------------------------
 
 /// Unified error type for the SPH crate.
-#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum Error {
     // ---- generic -----------------------------------------------------------
@@ -374,7 +373,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 // Helper constructors
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 impl Error {
     /// Create a [`Error::General`] from any displayable value.
     pub fn general(msg: impl std::fmt::Display) -> Self {

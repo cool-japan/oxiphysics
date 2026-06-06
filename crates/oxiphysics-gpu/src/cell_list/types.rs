@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use rayon::prelude::*;
 
@@ -40,8 +38,8 @@ impl GridResizer {
             return true;
         }
         for p in positions {
-            for d in 0..3 {
-                if p[d] < self.current_min[d] || p[d] >= self.current_max[d] {
+            for (d, &pd) in p.iter().enumerate().take(3) {
+                if pd < self.current_min[d] || pd >= self.current_max[d] {
                     return true;
                 }
             }
@@ -170,18 +168,16 @@ impl GhostCellManager {
     /// Wraps each component so that it lies in `[-L/2, L/2)`.
     pub fn minimum_image(&self, dx: [f64; 3]) -> [f64; 3] {
         let mut d = dx;
-        for k in 0..3 {
-            let l = self.box_lengths[k];
-            d[k] -= l * (d[k] / l).round();
+        for (dk, &l) in d.iter_mut().zip(self.box_lengths.iter()) {
+            *dk -= l * (*dk / l).round();
         }
         d
     }
     /// Wrap a position into the primary simulation box `[0, L)`.
     pub fn wrap_position(&self, p: [f64; 3]) -> [f64; 3] {
         let mut q = p;
-        for k in 0..3 {
-            let l = self.box_lengths[k];
-            q[k] = q[k].rem_euclid(l);
+        for (qk, &l) in q.iter_mut().zip(self.box_lengths.iter()) {
+            *qk = qk.rem_euclid(l);
         }
         q
     }
@@ -722,8 +718,6 @@ pub struct SpatialHash {
     pub(super) table: Vec<Vec<usize>>,
     /// Number of buckets.
     pub(super) num_buckets: usize,
-    /// Cell size.
-    pub(super) cell_size: f64,
     /// Inverse cell size (cached).
     pub(super) inv_cell_size: f64,
 }
@@ -733,7 +727,6 @@ impl SpatialHash {
         Self {
             table: vec![Vec::new(); num_buckets],
             num_buckets,
-            cell_size,
             inv_cell_size: 1.0 / cell_size,
         }
     }

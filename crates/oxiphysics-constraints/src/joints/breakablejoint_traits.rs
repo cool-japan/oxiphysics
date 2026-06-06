@@ -13,8 +13,6 @@ use oxiphysics_core::BodyHandle;
 use oxiphysics_core::math::Vec3;
 use oxiphysics_rigid::RigidBodySet;
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{apply_pair_impulse, read_body};
 use super::types::BreakableJoint;
 

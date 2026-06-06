@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod shader_meta_tests {
-    use super::*;
+    use super::super::functions::*;
     use crate::shaders::BytecodeShaderCache;
     use crate::shaders::ShaderMetaRegistry;
     use crate::shaders::ShaderMetadata;

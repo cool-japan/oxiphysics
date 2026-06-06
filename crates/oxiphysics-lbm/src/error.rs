@@ -1,4 +1,3 @@
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -279,19 +278,16 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
     /// Construct a [`General`](Error::General) error from any displayable type.
-    #[allow(dead_code)]
     pub fn general(msg: impl std::fmt::Display) -> Self {
         Self::General(msg.to_string())
     }
 
     /// Construct an [`InvalidGridDimensions`](Error::InvalidGridDimensions) error.
-    #[allow(dead_code)]
     pub fn invalid_grid(nx: usize, ny: usize) -> Self {
         Self::InvalidGridDimensions { nx, ny }
     }
 
     /// Construct an [`UnstableRelaxationTime`](Error::UnstableRelaxationTime) error.
-    #[allow(dead_code)]
     pub fn unstable_tau(tau: f64) -> Self {
         Self::UnstableRelaxationTime { tau }
     }
@@ -299,7 +295,6 @@ impl Error {
     /// Check that τ is numerically stable; return `Err` if not.
     ///
     /// For BGK LBM, stability requires τ > 0.5.
-    #[allow(dead_code)]
     pub fn check_tau(tau: f64) -> Result<()> {
         if tau <= 0.5 {
             Err(Self::UnstableRelaxationTime { tau })
@@ -309,7 +304,6 @@ impl Error {
     }
 
     /// Check that a 2-D grid size is valid (both dimensions > 0).
-    #[allow(dead_code)]
     pub fn check_grid(nx: usize, ny: usize) -> Result<()> {
         if nx == 0 || ny == 0 {
             Err(Self::InvalidGridDimensions { nx, ny })
@@ -319,7 +313,6 @@ impl Error {
     }
 
     /// Check that a value is finite; return `NonFiniteField` if not.
-    #[allow(dead_code)]
     pub fn check_finite(value: f64, field: &str, index: usize) -> Result<()> {
         if value.is_finite() {
             Ok(())
@@ -333,9 +326,8 @@ impl Error {
     }
 
     /// Check that a value lies within `[min, max]`.
-    #[allow(dead_code)]
     pub fn check_range(value: f64, min: f64, max: f64, name: &str) -> Result<()> {
-        if value >= min && value <= max {
+        if (min..=max).contains(&value) {
             Ok(())
         } else {
             Err(Self::ParameterOutOfBounds {
@@ -348,7 +340,6 @@ impl Error {
     }
 
     /// Check that a temperature is physically meaningful (> 0 K).
-    #[allow(dead_code)]
     pub fn check_temperature(temperature: f64, index: usize) -> Result<()> {
         if temperature > 0.0 {
             Ok(())
@@ -360,7 +351,6 @@ impl Error {
     /// Check that the Mach number stays below the LBM incompressibility limit.
     ///
     /// The canonical LBM limit is Ma < 0.3; this function uses that default.
-    #[allow(dead_code)]
     pub fn check_mach(mach: f64) -> Result<()> {
         const LIMIT: f64 = 0.3;
         if mach < LIMIT {
@@ -371,7 +361,6 @@ impl Error {
     }
 
     /// Validate a 2-D grid index against the grid dimensions.
-    #[allow(dead_code)]
     pub fn check_index(x: usize, y: usize, nx: usize, ny: usize) -> Result<()> {
         if x < nx && y < ny {
             Ok(())
@@ -381,7 +370,6 @@ impl Error {
     }
 
     /// Check that a 3-D grid size is valid (all dimensions > 0).
-    #[allow(dead_code)]
     pub fn check_grid_3d(nx: usize, ny: usize, nz: usize) -> Result<()> {
         if nx == 0 || ny == 0 || nz == 0 {
             Err(Self::InvalidGridDimensions3D { nx, ny, nz })
@@ -391,7 +379,6 @@ impl Error {
     }
 
     /// Check that a 3-D grid index is within bounds.
-    #[allow(dead_code)]
     pub fn check_index_3d(
         x: usize,
         y: usize,
@@ -415,7 +402,6 @@ impl Error {
     }
 
     /// Check that a distribution function value is non-negative.
-    #[allow(dead_code)]
     pub fn check_distribution(value: f64, direction: usize, index: usize) -> Result<()> {
         if value >= 0.0 {
             Ok(())
@@ -431,10 +417,9 @@ impl Error {
     /// Check that a Knudsen number is within the continuum (BGK) range.
     ///
     /// The BGK approximation holds for Kn < 0.1.
-    #[allow(dead_code)]
     pub fn check_knudsen(kn: f64) -> Result<()> {
         const KN_MAX: f64 = 0.1;
-        if kn >= 0.0 && kn <= KN_MAX {
+        if (0.0..=KN_MAX).contains(&kn) {
             Ok(())
         } else {
             Err(Self::KnudsenNumberOutOfRange { kn, kn_max: KN_MAX })
@@ -442,7 +427,6 @@ impl Error {
     }
 
     /// Check that a time step does not exceed the CFL stability bound.
-    #[allow(dead_code)]
     pub fn check_dt(dt: f64, dt_max: f64) -> Result<()> {
         if dt <= dt_max {
             Ok(())
@@ -452,9 +436,8 @@ impl Error {
     }
 
     /// Check that a phase-field order parameter is within \[-1, 1\].
-    #[allow(dead_code)]
     pub fn check_phase_field(phi: f64, index: usize) -> Result<()> {
-        if phi >= -1.0 && phi <= 1.0 {
+        if (-1.0_f64..=1.0).contains(&phi) {
             Ok(())
         } else {
             Err(Self::PhaseFieldOutOfRange { phi, index })
@@ -462,7 +445,6 @@ impl Error {
     }
 
     /// Check that the wall-normal distance in wall units is positive.
-    #[allow(dead_code)]
     pub fn check_wall_distance(y_plus: f64, index: usize) -> Result<()> {
         if y_plus > 0.0 {
             Ok(())
@@ -472,7 +454,6 @@ impl Error {
     }
 
     /// Check that the IBM marker count meets the minimum requirement.
-    #[allow(dead_code)]
     pub fn check_ibm_markers(actual: usize, min_markers: usize) -> Result<()> {
         if actual >= min_markers {
             Ok(())
@@ -485,7 +466,6 @@ impl Error {
     }
 
     /// Check that a Reynolds number does not exceed the grid-resolution limit.
-    #[allow(dead_code)]
     pub fn check_reynolds(re: f64, re_max: f64, grid_res: usize) -> Result<()> {
         if re <= re_max {
             Ok(())

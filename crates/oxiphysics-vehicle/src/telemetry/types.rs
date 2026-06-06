@@ -115,7 +115,6 @@ pub struct TireSlipRecorder {
 }
 impl TireSlipRecorder {
     /// Create a new recorder with a rolling window.
-    #[allow(dead_code)]
     pub fn new(max_samples: usize) -> Self {
         Self {
             times: Vec::new(),
@@ -129,7 +128,6 @@ impl TireSlipRecorder {
     /// * `t`            – simulation time (s)
     /// * `slip_ang`     – lateral slip angles `[FL, FR, RL, RR]` (rad)
     /// * `long_slip_r`  – longitudinal slip ratios `[FL, FR, RL, RR]`
-    #[allow(dead_code)]
     pub fn record(&mut self, t: f64, slip_ang: [f64; 4], long_slip_r: [f64; 4]) {
         if self.times.len() >= self.max_samples {
             self.times.remove(0);
@@ -141,7 +139,6 @@ impl TireSlipRecorder {
         self.long_slip.push(long_slip_r);
     }
     /// Peak lateral slip angle magnitude across all tyres and all frames.
-    #[allow(dead_code)]
     pub fn peak_slip_angle(&self) -> f64 {
         self.slip_angles
             .iter()
@@ -150,7 +147,6 @@ impl TireSlipRecorder {
             .fold(0.0_f64, f64::max)
     }
     /// Peak longitudinal slip magnitude across all tyres and all frames.
-    #[allow(dead_code)]
     pub fn peak_long_slip(&self) -> f64 {
         self.long_slip
             .iter()
@@ -159,7 +155,6 @@ impl TireSlipRecorder {
             .fold(0.0_f64, f64::max)
     }
     /// Mean slip angle magnitude for a single tyre index (0..4) over the window.
-    #[allow(dead_code)]
     pub fn mean_slip_angle(&self, wheel: usize) -> f64 {
         if self.slip_angles.is_empty() {
             return 0.0;
@@ -169,7 +164,6 @@ impl TireSlipRecorder {
         sum / self.slip_angles.len() as f64
     }
     /// Fraction of time that tyre `wheel` is operating above `threshold` slip angle (rad).
-    #[allow(dead_code)]
     pub fn time_above_slip_threshold(&self, wheel: usize, threshold: f64) -> f64 {
         let n = self.times.len();
         if n < 2 {
@@ -305,7 +299,6 @@ impl PitlaneDetector {
     /// Create a new pitlane detector.
     ///
     /// `pit_speed_limit` – typical: 60 km/h = 16.67 m/s for Formula cars
-    #[allow(dead_code)]
     pub fn new(pit_speed_limit: f64) -> Self {
         Self {
             pit_speed_limit,
@@ -318,7 +311,6 @@ impl PitlaneDetector {
     ///
     /// Returns `Some(PitEvent::Entry)` or `Some(PitEvent::Exit)` if an event
     /// occurred this step, `None` otherwise.
-    #[allow(dead_code)]
     pub fn update(&mut self, t: f64, speed: f64) -> Option<PitEvent> {
         if !self.in_pit && speed < self.pit_speed_limit {
             self.in_pit = true;
@@ -335,12 +327,10 @@ impl PitlaneDetector {
         None
     }
     /// Number of completed pit stops.
-    #[allow(dead_code)]
     pub fn num_pit_stops(&self) -> usize {
         self.pit_stops.len()
     }
     /// Mean pit stop duration in seconds.
-    #[allow(dead_code)]
     pub fn mean_stop_duration(&self) -> f64 {
         if self.pit_stops.is_empty() {
             return 0.0;
@@ -349,13 +339,11 @@ impl PitlaneDetector {
         total / self.pit_stops.len() as f64
     }
     /// Total time spent in the pitlane.
-    #[allow(dead_code)]
     pub fn total_pit_time(&self) -> f64 {
         self.pit_stops.iter().map(|(e, x)| x - e).sum()
     }
 }
 /// Pitlane event type emitted by [`PitlaneDetector`].
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PitEvent {
     /// Vehicle entered the pitlane (speed dropped below limit).
@@ -720,14 +708,12 @@ pub struct LapComparison {
 }
 impl LapComparison {
     /// Create a new lap comparison.
-    #[allow(dead_code)]
     pub fn new(reference: Vec<TelemetryFrame>, target: Vec<TelemetryFrame>) -> Self {
         Self { reference, target }
     }
     /// Time delta at each frame index: `target.time[i] − reference.time[i]`.
     ///
     /// Positive = target is slower at that point.
-    #[allow(dead_code)]
     pub fn time_deltas(&self) -> Vec<f64> {
         let n = self.reference.len().min(self.target.len());
         (0..n)
@@ -735,7 +721,6 @@ impl LapComparison {
             .collect()
     }
     /// Speed delta at each frame: `|v_target[i]| − |v_ref[i]|` (m/s).
-    #[allow(dead_code)]
     pub fn speed_deltas(&self) -> Vec<f64> {
         let n = self.reference.len().min(self.target.len());
         (0..n)
@@ -747,7 +732,6 @@ impl LapComparison {
             .collect()
     }
     /// Throttle delta at each frame: `target.throttle[i] − reference.throttle[i]`.
-    #[allow(dead_code)]
     pub fn throttle_deltas(&self) -> Vec<f64> {
         let n = self.reference.len().min(self.target.len());
         (0..n)
@@ -757,7 +741,6 @@ impl LapComparison {
     /// Total lap time difference: `target_lap_time − reference_lap_time`.
     ///
     /// Requires at least one frame in each recording.
-    #[allow(dead_code)]
     pub fn total_time_delta(&self) -> f64 {
         let ref_dur = match (self.reference.first(), self.reference.last()) {
             (Some(f), Some(l)) => l.time - f.time,
@@ -770,7 +753,6 @@ impl LapComparison {
         tgt_dur - ref_dur
     }
     /// Maximum speed advantage of the target over the reference (positive if target faster).
-    #[allow(dead_code)]
     pub fn max_speed_advantage(&self) -> f64 {
         self.speed_deltas()
             .iter()
@@ -778,7 +760,6 @@ impl LapComparison {
             .fold(f64::NEG_INFINITY, f64::max)
     }
     /// Number of frames where the target is faster than the reference.
-    #[allow(dead_code)]
     pub fn frames_faster_count(&self) -> usize {
         self.time_deltas().iter().filter(|&&d| d < 0.0).count()
     }
@@ -825,7 +806,6 @@ pub struct SessionSummary {
 }
 impl SessionSummary {
     /// Create an empty session summary.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             lap_times: Vec::new(),
@@ -835,24 +815,20 @@ impl SessionSummary {
         }
     }
     /// Record a completed lap.
-    #[allow(dead_code)]
     pub fn record_lap(&mut self, lap_time: f64, sectors: Vec<f64>) {
         self.lap_times.push(lap_time);
         self.sector_times.push(sectors);
     }
     /// Set pit stop data.
-    #[allow(dead_code)]
     pub fn set_pit_data(&mut self, total_pit_time: f64, num_pit_stops: usize) {
         self.total_pit_time = total_pit_time;
         self.num_pit_stops = num_pit_stops;
     }
     /// Best lap time (s), or `None` if no laps completed.
-    #[allow(dead_code)]
     pub fn best_lap(&self) -> Option<f64> {
         self.lap_times.iter().cloned().reduce(f64::min)
     }
     /// Mean lap time (s).
-    #[allow(dead_code)]
     pub fn mean_lap(&self) -> f64 {
         if self.lap_times.is_empty() {
             return 0.0;
@@ -860,7 +836,6 @@ impl SessionSummary {
         self.lap_times.iter().sum::<f64>() / self.lap_times.len() as f64
     }
     /// Standard deviation of lap times (s).
-    #[allow(dead_code)]
     pub fn lap_time_std(&self) -> f64 {
         let n = self.lap_times.len();
         if n < 2 {
@@ -878,7 +853,6 @@ impl SessionSummary {
     /// Fastest sector times across all laps (one per sector position).
     ///
     /// Returns an empty vector if no sectors were recorded.
-    #[allow(dead_code)]
     pub fn theoretical_best_lap(&self) -> Vec<f64> {
         if self.sector_times.is_empty() {
             return Vec::new();
@@ -896,12 +870,10 @@ impl SessionSummary {
             .collect()
     }
     /// Sum of the theoretical best sectors (s).
-    #[allow(dead_code)]
     pub fn theoretical_best_total(&self) -> f64 {
         self.theoretical_best_lap().iter().sum()
     }
     /// Produce a formatted multi-line session report.
-    #[allow(dead_code)]
     pub fn report(&self) -> String {
         let best = self
             .best_lap()
@@ -1066,7 +1038,6 @@ impl ErsEnergyLog {
     ///
     /// * `capacity_j`  – battery capacity in Joules
     /// * `initial_soc` – initial state-of-charge (0–1)
-    #[allow(dead_code)]
     pub fn new(capacity_j: f64, initial_soc: f64) -> Self {
         let soc = initial_soc.clamp(0.0, 1.0);
         Self {
@@ -1080,7 +1051,6 @@ impl ErsEnergyLog {
     /// Step the ERS logger by `dt` seconds with power `p_w` (W).
     ///
     /// Positive `p_w` = deploy (discharge battery); negative = harvest (charge).
-    #[allow(dead_code)]
     pub fn step(&mut self, t: f64, p_w: f64, dt: f64) {
         let delta_j = p_w * dt;
         self.stored_j = (self.stored_j - delta_j).clamp(0.0, self.capacity_j);
@@ -1090,12 +1060,10 @@ impl ErsEnergyLog {
         self.soc.push(soc);
     }
     /// Current state-of-charge (0–1).
-    #[allow(dead_code)]
     pub fn current_soc(&self) -> f64 {
         self.stored_j / self.capacity_j
     }
     /// Total energy deployed (J) over the log.
-    #[allow(dead_code)]
     pub fn total_deployed_j(&self) -> f64 {
         if self.times.len() < 2 {
             return 0.0;
@@ -1111,7 +1079,6 @@ impl ErsEnergyLog {
         total
     }
     /// Total energy harvested (J) over the log.
-    #[allow(dead_code)]
     pub fn total_harvested_j(&self) -> f64 {
         if self.times.len() < 2 {
             return 0.0;
@@ -1127,12 +1094,10 @@ impl ErsEnergyLog {
         total
     }
     /// Peak deployment power (W).
-    #[allow(dead_code)]
     pub fn peak_deployment_power(&self) -> f64 {
         self.power.iter().cloned().fold(0.0_f64, f64::max)
     }
     /// Battery delta over the log (final_soc − initial_soc, in fraction).
-    #[allow(dead_code)]
     pub fn soc_delta(&self) -> f64 {
         match (self.soc.first(), self.soc.last()) {
             (Some(&first), Some(&last)) => last - first,

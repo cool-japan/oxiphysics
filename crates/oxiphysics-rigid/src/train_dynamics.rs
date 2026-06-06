@@ -6,8 +6,6 @@
 //! Provides models for multi-car train consists, track geometry, wheelset
 //! mechanics, Davis resistance, and signaling headway calculations.
 
-#![allow(dead_code)]
-
 // ── TrainCar ──────────────────────────────────────────────────────────────────
 
 /// A single passenger or freight car in a train consist.

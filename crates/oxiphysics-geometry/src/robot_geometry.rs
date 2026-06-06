@@ -8,9 +8,6 @@
 //! row-major order as `[f64; 16]`. Joint arrays use plain `[f64; 3]` vectors
 //! for positions and axes. No external linear-algebra crate is used.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use rand::RngExt;
 use std::f64::consts::PI;
 
@@ -48,17 +45,6 @@ fn len3(a: [f64; 3]) -> f64 {
     dot3(a, a).sqrt()
 }
 
-/// Normalize a 3-vector; returns zero vector if near-zero length.
-#[inline]
-fn normalize3(a: [f64; 3]) -> [f64; 3] {
-    let l = len3(a);
-    if l < 1e-14 {
-        [0.0; 3]
-    } else {
-        scale3(a, 1.0 / l)
-    }
-}
-
 /// Cross product.
 #[inline]
 fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -79,7 +65,6 @@ fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 pub type Mat4 = [f64; 16];
 
 /// Returns the 4×4 identity matrix.
-#[allow(dead_code)]
 pub fn mat4_identity() -> Mat4 {
     let mut m = [0.0f64; 16];
     m[0] = 1.0;

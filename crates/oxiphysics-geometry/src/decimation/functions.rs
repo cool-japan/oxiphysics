@@ -400,7 +400,6 @@ pub fn mesh_compactness(mesh: &SimpleMesh) -> f64 {
 /// of a uniform grid, then rebuilding triangles.
 ///
 /// The grid cell size `cell_size` controls the level of simplification.
-#[allow(dead_code)]
 pub fn vertex_clustering_decimate(mesh: &SimpleMesh, cell_size: f64) -> SimpleMesh {
     if mesh.vertices.is_empty() || cell_size <= 0.0 {
         return SimpleMesh::new();
@@ -457,7 +456,6 @@ pub fn vertex_clustering_decimate(mesh: &SimpleMesh, cell_size: f64) -> SimpleMe
 ///
 /// `n0`, `n1`: outward normals of the two triangles.
 /// `crease_angle_deg`: threshold for classifying as a crease.
-#[allow(dead_code)]
 pub fn classify_edge(n0: [f64; 3], n1: [f64; 3], crease_angle_deg: f64) -> EdgeFeature {
     let cos_angle = dot3(normalize3(n0), normalize3(n1)).clamp(-1.0, 1.0);
     let angle_deg = cos_angle.acos().to_degrees();
@@ -473,7 +471,6 @@ pub fn classify_edge(n0: [f64; 3], n1: [f64; 3], crease_angle_deg: f64) -> EdgeF
 /// - Smooth: weight = 1.0
 /// - Crease: weight = `crease_weight`
 /// - Boundary: weight = `boundary_weight`
-#[allow(dead_code)]
 pub fn feature_aware_cost(
     base_cost: f64,
     feature: EdgeFeature,
@@ -488,7 +485,6 @@ pub fn feature_aware_cost(
     base_cost * w
 }
 /// Collect decimation statistics before and after simplification.
-#[allow(dead_code)]
 pub fn collect_decimation_metrics(
     original: &SimpleMesh,
     reduced: &SimpleMesh,

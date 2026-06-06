@@ -2,20 +2,18 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::should_implement_trait)]
 use super::super::gjk::{Simplex, SupportPoint};
-#[allow(unused_imports)]
-use super::functions_2::*;
 use crate::types::Contact;
 use oxiphysics_core::Transform;
 use oxiphysics_core::math::{Real, Vec3};
 use oxiphysics_geometry::Shape;
 
-#[allow(unused_imports)]
-use super::functions::*;
+use super::functions::{
+    MAX_ITERATIONS, TOLERANCE, add_edge, build_contact, build_initial_faces, compute_face_normal,
+    epa_add_edge, epa_dot3, epa_face_normal, epa_negate3, epa_scale3, epa_sub3, support_minkowski,
+};
 
 /// A face of the EPA polytope (raw array version).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EpaFaceRaw {
     /// Indices of the three vertices forming this face.
@@ -31,7 +29,6 @@ pub struct EpaFaceRaw {
 /// The underlying algorithm is the same expanding-polytope approach used by
 /// `epa_penetration`, but wrapped in a struct to allow step-by-step refinement
 /// and integration testing.
-#[allow(dead_code)]
 pub struct EpaSolver {
     /// Current polytope being refined.
     pub(super) polytope: Option<EpaPolytope>,
@@ -40,7 +37,6 @@ pub struct EpaSolver {
     /// Last convergence tolerance used.
     pub(super) tolerance: f64,
 }
-#[allow(dead_code)]
 impl EpaSolver {
     /// Create a new solver seeded from a GJK tetrahedron simplex.
     pub fn from_simplex(simplex: &[[f64; 3]; 4]) -> Self {
@@ -149,7 +145,6 @@ impl EpaSolver {
     }
 }
 /// EPA polytope storing vertices and faces.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EpaPolytope {
     /// Vertices of the polytope (Minkowski-difference points).
@@ -157,7 +152,6 @@ pub struct EpaPolytope {
     /// Faces of the polytope.
     pub faces: Vec<EpaFaceRaw>,
 }
-#[allow(dead_code)]
 impl EpaPolytope {
     /// Initialize the polytope from a GJK tetrahedron (4 vertices).
     pub fn from_gjk_simplex(simplex: &[[f64; 3]; 4]) -> Self {
@@ -254,7 +248,6 @@ impl EpaPolytope {
     }
 }
 /// Configuration for EPA termination.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EpaConfig {
     /// Maximum number of expansion iterations.
@@ -264,16 +257,17 @@ pub struct EpaConfig {
     /// Maximum number of faces allowed in the polytope.
     pub max_faces: usize,
 }
-#[allow(dead_code)]
-impl EpaConfig {
+impl Default for EpaConfig {
     /// Default EPA configuration.
-    pub fn default() -> Self {
+    fn default() -> Self {
         Self {
             max_iter: 64,
             tolerance: 1e-6,
             max_faces: 256,
         }
     }
+}
+impl EpaConfig {
     /// Create a high-precision configuration.
     pub fn high_precision() -> Self {
         Self {
@@ -284,7 +278,6 @@ impl EpaConfig {
     }
 }
 /// Summary statistics about an EPA polytope's geometry.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct EpaPolytopeStats {
     /// Number of faces.
@@ -303,7 +296,6 @@ pub struct EpaPolytopeStats {
     pub max_area: f64,
 }
 /// Witness point data: contact positions on each shape.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EpaWitness {
     /// Contact point on shape A.
@@ -413,7 +405,6 @@ impl Epa {
     }
 }
 /// Statistics collected during an EPA run.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct EpaStats {
     /// Number of expansion iterations performed.
@@ -427,20 +418,21 @@ pub struct EpaStats {
 }
 /// A triangle face of the EPA polytope.
 #[derive(Debug, Clone)]
-pub(super) struct Face {
-    pub(super) indices: [usize; 3],
-    pub(super) normal: Vec3,
-    pub(super) distance: Real,
+pub struct Face {
+    /// Indices of the three vertices forming this triangle face.
+    pub indices: [usize; 3],
+    /// Outward-pointing unit normal of the face.
+    pub normal: Vec3,
+    /// Signed distance from the origin to the face plane along the normal.
+    pub distance: Real,
 }
 /// A priority-queue-like structure that tracks the EPA face with minimum distance.
 ///
 /// In practice, EPA typically scans all faces each iteration (O(n)), but this
 /// wrapper exposes a clean interface to find the best face.
-#[allow(dead_code)]
 pub struct EpaFaceQueue<'a> {
     pub(super) polytope: &'a EpaPolytope,
 }
-#[allow(dead_code)]
 impl<'a> EpaFaceQueue<'a> {
     /// Create a new face queue backed by the given polytope.
     pub fn new(polytope: &'a EpaPolytope) -> Self {
@@ -469,7 +461,6 @@ impl<'a> EpaFaceQueue<'a> {
     }
 }
 /// Penetration result from the EPA algorithm.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EpaPenetration {
     /// Penetration normal (unit vector, points from B to A).

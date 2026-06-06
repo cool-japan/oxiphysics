@@ -19,8 +19,6 @@
 //! - [`a_weighting_db`] — A-weighting correction in dB at a given frequency.
 //! - [`sone_to_phon`] — loudness conversion from sone to phon.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

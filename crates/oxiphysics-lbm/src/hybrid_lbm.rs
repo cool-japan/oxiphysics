@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -12,8 +11,6 @@
 //! - LBM-to-NS and NS-to-LBM field conversion helpers
 //! - Interface interpolation and domain decomposition
 //! - Conservation-check utilities
-
-#![allow(dead_code)]
 
 // ============================================================================
 // D2Q9 velocity set (shared constant)
@@ -370,9 +367,9 @@ mod tests {
     fn test_equilibrium_rest_matches_weights() {
         let rho = 1.0;
         let u = [0.0, 0.0];
-        for a in 0..9 {
+        for (a, &w) in D2Q9_WEIGHTS.iter().enumerate() {
             let feq = ns_to_lbm_equilibrium(rho, u, a);
-            assert!((feq - D2Q9_WEIGHTS[a]).abs() < 1e-12, "a={a}");
+            assert!((feq - w).abs() < 1e-12, "a={a}");
         }
     }
 

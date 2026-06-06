@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,7 +8,6 @@
 
 // ── silence unused-item lints for the enum variants / fields used only in
 //    tests or future GPU back-ends ──────────────────────────────────────────
-#![allow(dead_code)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BufferUsage
@@ -283,7 +281,7 @@ impl GpuStats {
 ///
 /// Updates every interior cell of `p_new` using `p_old` and `rhs`.
 pub fn jacobi_step_2d(
-    p_new: &mut Vec<f32>,
+    p_new: &mut [f32],
     p_old: &[f32],
     rhs: &[f32],
     nx: usize,
@@ -305,7 +303,7 @@ pub fn jacobi_step_2d(
 ///
 /// Runs `n_iter` Jacobi sweeps and returns the final L∞ residual.
 pub fn pressure_poisson_solve(
-    p: &mut Vec<f32>,
+    p: &mut [f32],
     rhs: &[f32],
     nx: usize,
     ny: usize,
@@ -313,7 +311,7 @@ pub fn pressure_poisson_solve(
     n_iter: usize,
 ) -> f32 {
     let size = nx * ny;
-    let mut p_old = p.clone();
+    let mut p_old = p.to_vec();
 
     for _ in 0..n_iter {
         jacobi_step_2d(p, &p_old, rhs, nx, ny, dx);
@@ -521,7 +519,7 @@ pub fn validate_pipeline(pipeline: &MultiPassPipeline, buffers: &[ComputeBuffer]
 ///
 /// `omega = 1.0` gives standard Gauss-Seidel; `omega ∈ (1, 2)` gives SOR.
 pub fn sor_step_2d(
-    p: &mut Vec<f32>,
+    p: &mut [f32],
     p_old: &[f32],
     rhs: &[f32],
     nx: usize,
@@ -544,7 +542,7 @@ pub fn sor_step_2d(
 /// Red-black Gauss-Seidel sweep (in-place) on an `nx × ny` grid.
 ///
 /// Updates "red" cells (i+j even) first, then "black" cells (i+j odd).
-pub fn red_black_gauss_seidel_step(p: &mut Vec<f32>, rhs: &[f32], nx: usize, ny: usize, dx: f32) {
+pub fn red_black_gauss_seidel_step(p: &mut [f32], rhs: &[f32], nx: usize, ny: usize, dx: f32) {
     let dx2 = dx * dx;
     // Red sweep (i + j even)
     for j in 1..ny - 1 {

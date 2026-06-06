@@ -1,5 +1,3 @@
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -29,9 +27,6 @@
 //! - Odenbach, S. (2002). *Magnetoviscous Effects in Ferrofluids*. Springer.
 //! - Guo, Z., Zheng, C., & Shi, B. (2002). Discrete lattice effects on the
 //!   forcing term in the lattice Boltzmann method. *Phys. Rev. E*, 65, 046308.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -392,8 +387,8 @@ impl FerrofluidLbm {
             cell.velocity = [velocity[0], velocity[1], 0.0];
         }
         for c in 0..self.nx * self.ny {
-            for i in 0..D2Q9_Q {
-                self.f[c * D2Q9_Q + i] = feq[i];
+            for (i, feq_i) in feq.iter().enumerate() {
+                self.f[c * D2Q9_Q + i] = *feq_i;
             }
         }
         self
@@ -459,10 +454,10 @@ impl FerrofluidLbm {
             let fy = kf[1];
 
             let feq = equilibrium_d2q9(rho, ux, uy);
-            for i in 0..D2Q9_Q {
+            for (i, feq_i) in feq.iter().enumerate() {
                 let fi = self.f[c * D2Q9_Q + i];
                 let forcing = guo_forcing(i, ux, uy, fx, fy, tau);
-                self.f[c * D2Q9_Q + i] = fi - omega * (fi - feq[i]) + forcing;
+                self.f[c * D2Q9_Q + i] = fi - omega * (fi - feq_i) + forcing;
             }
         }
         self
@@ -745,7 +740,7 @@ mod tests {
     fn test_chain_order_bounded() {
         // For large α the order parameter saturates to (at most) 1.0
         let s = chain_order_parameter(100.0, 0.1, 5.0, 2.0);
-        assert!(s >= 0.0 && s <= 1.0);
+        assert!((0.0..=1.0).contains(&s));
     }
 
     #[test]

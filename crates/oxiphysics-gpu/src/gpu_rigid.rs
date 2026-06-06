@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -116,17 +115,6 @@ impl GpuRigidBody {
             mass,
             inv_inertia,
         }
-    }
-
-    /// Apply an inverse inertia tensor (row-major 3×3) to a vector.
-    #[allow(dead_code)]
-    fn apply_inv_inertia(&self, v: [f32; 3]) -> [f32; 3] {
-        let i = &self.inv_inertia;
-        [
-            i[0] * v[0] + i[1] * v[1] + i[2] * v[2],
-            i[3] * v[0] + i[4] * v[1] + i[5] * v[2],
-            i[6] * v[0] + i[7] * v[1] + i[8] * v[2],
-        ]
     }
 }
 
@@ -260,11 +248,9 @@ impl GpuBroadphase {
             ax.partial_cmp(&bx).unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        for i in 0..order.len() {
-            let ai = order[i];
+        for (i, &ai) in order.iter().enumerate() {
             let a_max_x = self.bodies[ai].position[0] + self.radii[ai];
-            for j in (i + 1)..order.len() {
-                let bi = order[j];
+            for &bi in order.iter().skip(i + 1) {
                 let b_min_x = self.bodies[bi].position[0] - self.radii[bi];
                 if b_min_x > a_max_x {
                     break; // sorted: no further pair can overlap on X
@@ -371,7 +357,6 @@ impl GpuConstraintSolver {
     ///
     /// Iterates `iterations` times over every contact point and applies a
     /// non-penetration impulse. A restitution coefficient of 0.3 is used.
-    #[allow(clippy::too_many_arguments)]
     pub fn solve_sequential_impulse(
         &self,
         bodies: &mut [GpuRigidBody],

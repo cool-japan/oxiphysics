@@ -5,19 +5,16 @@
 use super::types::{Atom, BondGraph, Element, ExclusionPolicy};
 
 /// Return the atomic (covalent) radius in Angstrom for an element.
-#[allow(dead_code)]
 pub fn atomic_radius(element: Element) -> f64 {
     element.covalent_radius()
 }
 /// Return the van der Waals radius in Angstrom for an element.
-#[allow(dead_code)]
 pub fn van_der_waals_radius(element: Element) -> f64 {
     element.van_der_waals_radius()
 }
 /// Check whether two atoms are likely bonded based on the sum of their covalent radii.
 ///
 /// Uses a tolerance factor of 1.3 to account for slightly stretched bonds.
-#[allow(dead_code)]
 pub fn are_likely_bonded(a: &Atom, b: &Atom) -> bool {
     let dx = a.position[0] - b.position[0];
     let dy = a.position[1] - b.position[1];
@@ -27,7 +24,6 @@ pub fn are_likely_bonded(a: &Atom, b: &Atom) -> bool {
     dist_nm <= r_sum_nm * 1.3
 }
 /// Compute the distance between two atoms in nm.
-#[allow(dead_code)]
 pub fn atom_distance(a: &Atom, b: &Atom) -> f64 {
     let dx = a.position[0] - b.position[0];
     let dy = a.position[1] - b.position[1];
@@ -37,7 +33,6 @@ pub fn atom_distance(a: &Atom, b: &Atom) -> f64 {
 /// Compute the bond angle at atom `b` formed by atoms `a`-`b`-`c` (in radians).
 ///
 /// Returns 0.0 if any distance is zero.
-#[allow(dead_code)]
 pub fn bond_angle(a: &Atom, b: &Atom, c: &Atom) -> f64 {
     let u = [
         a.position[0] - b.position[0],
@@ -61,7 +56,6 @@ pub fn bond_angle(a: &Atom, b: &Atom, c: &Atom) -> f64 {
 ///
 /// Uses the Praxedes-Hückel sign convention.
 /// Returns a value in (-π, π].
-#[allow(dead_code)]
 pub fn dihedral_angle(a: &Atom, b: &Atom, c: &Atom, d: &Atom) -> f64 {
     let b1 = [
         b.position[0] - a.position[0],
@@ -94,21 +88,18 @@ pub fn dihedral_angle(a: &Atom, b: &Atom, c: &Atom, d: &Atom) -> f64 {
 /// Sort atoms by their element atomic number (ascending).
 ///
 /// Returns a vector of indices into the original atom slice in sorted order.
-#[allow(dead_code)]
 pub fn sort_atoms_by_atomic_number(atoms: &[Atom]) -> Vec<usize> {
     let mut indices: Vec<usize> = (0..atoms.len()).collect();
     indices.sort_by_key(|&i| atoms[i].element.atomic_number());
     indices
 }
 /// Sort atoms by residue ID.
-#[allow(dead_code)]
 pub fn sort_atoms_by_residue(atoms: &[Atom]) -> Vec<usize> {
     let mut indices: Vec<usize> = (0..atoms.len()).collect();
     indices.sort_by_key(|&i| atoms[i].residue_id);
     indices
 }
 /// Compute the geometric centroid of a set of atom positions (in nm).
-#[allow(dead_code)]
 pub fn geometric_centroid(atoms: &[Atom]) -> [f64; 3] {
     if atoms.is_empty() {
         return [0.0; 3];
@@ -128,14 +119,12 @@ pub fn geometric_centroid(atoms: &[Atom]) -> [f64; 3] {
 ///
 /// Contact is detected when the interatomic distance is less than the sum
 /// of their van der Waals radii (converted from Å to nm).
-#[allow(dead_code)]
 pub fn in_vdw_contact(a: &Atom, b: &Atom) -> bool {
     let dist = atom_distance(a, b);
     let r_sum_nm = (a.element.van_der_waals_radius() + b.element.van_der_waals_radius()) * 0.1;
     dist < r_sum_nm
 }
 /// Return all pairs of atom indices that are within a cutoff distance (nm).
-#[allow(dead_code)]
 pub fn neighbors_within(atoms: &[Atom], cutoff_nm: f64) -> Vec<(usize, usize)> {
     let n = atoms.len();
     let mut pairs = Vec::new();
@@ -149,7 +138,6 @@ pub fn neighbors_within(atoms: &[Atom], cutoff_nm: f64) -> Vec<(usize, usize)> {
     pairs
 }
 /// Count atoms of each element in a slice and return (element, count) pairs.
-#[allow(dead_code)]
 pub fn element_composition(atoms: &[Atom]) -> std::collections::HashMap<u32, usize> {
     let mut map = std::collections::HashMap::new();
     for a in atoms {
@@ -160,7 +148,6 @@ pub fn element_composition(atoms: &[Atom]) -> std::collections::HashMap<u32, usi
 /// Compute the coordination number of atom `idx` within `cutoff` nm.
 ///
 /// Returns the count of other atoms whose distance to atom `idx` is <= cutoff.
-#[allow(dead_code)]
 pub fn coordination_number(atoms: &[Atom], idx: usize, cutoff_nm: f64) -> usize {
     let ref_pos = atoms[idx].position;
     atoms
@@ -178,7 +165,6 @@ pub fn coordination_number(atoms: &[Atom], idx: usize, cutoff_nm: f64) -> usize 
         .count()
 }
 /// Compute the coordination number for every atom in the slice.
-#[allow(dead_code)]
 pub fn all_coordination_numbers(atoms: &[Atom], cutoff_nm: f64) -> Vec<usize> {
     (0..atoms.len())
         .map(|i| coordination_number(atoms, i, cutoff_nm))
@@ -187,7 +173,6 @@ pub fn all_coordination_numbers(atoms: &[Atom], cutoff_nm: f64) -> Vec<usize> {
 /// Build a list of non-bonded atom pairs, respecting an exclusion policy.
 ///
 /// Returns pairs (i, j) with i < j that are NOT excluded by the bond graph.
-#[allow(dead_code)]
 pub fn non_bonded_pairs(
     n_atoms: usize,
     bonds: &BondGraph,
@@ -235,7 +220,6 @@ pub fn non_bonded_pairs(
     pairs
 }
 /// Count bonded neighbors for each atom in the bond graph.
-#[allow(dead_code)]
 pub fn bond_degree(bonds: &BondGraph, n_atoms: usize) -> Vec<usize> {
     let mut degree = vec![0usize; n_atoms];
     for b in &bonds.bonds {
@@ -249,7 +233,6 @@ pub fn bond_degree(bonds: &BondGraph, n_atoms: usize) -> Vec<usize> {
     degree
 }
 /// Compute bond angle (radians) at position `b` given positions `a`, `b`, `c`.
-#[allow(dead_code)]
 pub fn bond_angle_pos(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
     let u = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
     let v = [c[0] - b[0], c[1] - b[1], c[2] - b[2]];
@@ -262,7 +245,6 @@ pub fn bond_angle_pos(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
     cos.acos()
 }
 /// Compute the dihedral angle (radians) for four positions a-b-c-d.
-#[allow(dead_code)]
 pub fn dihedral_angle_pos(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
     let b1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let b2 = [c[0] - b[0], c[1] - b[1], c[2] - b[2]];

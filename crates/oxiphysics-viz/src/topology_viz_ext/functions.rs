@@ -10,7 +10,6 @@ pub type Point3 = [f64; 3];
 ///
 /// The radius is scaled by `base_radius`. Each critical point type gets its
 /// canonical color (blue=min, cyan=saddle1, orange=saddle2, red=max).
-#[allow(clippy::too_many_arguments)]
 pub fn render_critical_points(cps: &[CriticalPoint], base_radius: f64) -> Vec<PointGlyph> {
     cps.iter().map(|cp| cp.to_glyph(base_radius)).collect()
 }
@@ -22,7 +21,6 @@ pub fn persistence_color(persistence: f64, max_persistence: f64) -> Color4 {
     Color4::lerp(Color4::blue(), Color4::red(), t)
 }
 /// Build a birth-death scatter plot as a vector of glyphs from raw pairs.
-#[allow(clippy::too_many_arguments)]
 pub fn build_birth_death_scatter(
     pairs: &[BirthDeathPair],
     max_death: f64,

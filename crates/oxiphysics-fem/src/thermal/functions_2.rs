@@ -2,13 +2,209 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
-#![allow(clippy::items_after_test_module)]
-#![allow(clippy::manual_range_contains)]
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::types::{ThermalConductivityTensor, ThermalMesh1D};
+/// Advance temperatures by one time step using the enthalpy method for phase change.
+///
+/// Each node uses the apparent-heat-capacity form:
+///   C_eff * dT/dt = q_net
+///
+/// where C_eff absorbs the latent heat over a small mushy-zone width `delta_T`.
+///
+/// # Arguments
+/// * `temperatures` – mutable node temperature vector (updated in place)
+/// * `heat_source`  – volumetric heat source (W/m³, uniform)
+/// * `density`      – kg/m³
+/// * `specific_heat`– J/(kg K) (sensible heat)
+/// * `latent_heat`  – L \[J/kg\] (fusion latent heat)
+/// * `t_melt`       – melting point \[K\]
+/// * `dt`           – time step \[s\]
+/// * `delta_t_mushy`– width of mushy zone \[K\]
+pub fn phase_change_step(
+    temperatures: &mut [f64],
+    heat_source: f64,
+    density: f64,
+    specific_heat: f64,
+    latent_heat: f64,
+    t_melt: f64,
+    dt: f64,
+    delta_t_mushy: f64,
+) {
+    let dmu = delta_t_mushy.max(1e-10);
+    for t in temperatures.iter_mut() {
+        let xi = (*t - t_melt) / dmu;
+        let f_mushy = if xi.abs() <= 1.0 {
+            0.5 * (1.0 + (std::f64::consts::PI * xi).cos())
+        } else {
+            0.0
+        };
+        let c_eff = specific_heat + latent_heat / dmu * f_mushy;
+        let rho_c = density * c_eff;
+        if rho_c > 1e-60 {
+            *t += heat_source / rho_c * dt;
+        }
+    }
+}
+/// Compute the radiation view factor F_12 for two finite parallel plates.
+///
+/// Uses the crossed-string method / analytical approximation for two parallel
+/// coaxial discs of areas `a1` and `a2` separated by distance `h`:
+///
+/// This is a simplified planar approximation:
+///   R1 = sqrt(a1/π), R2 = sqrt(a2/π)
+///   S = 1 + (1 + R2²) / R1²
+///   F12 = 0.5*(S - sqrt(S² - 4*(R2/R1)²))
+///
+/// # Arguments
+/// * `area1` – area of surface 1 \[m²\]
+/// * `area2` – area of surface 2 \[m²\]
+/// * `separation` – distance between plates \[m\]
+pub fn view_factor_parallel_plates(area1: f64, area2: f64, separation: f64) -> f64 {
+    let r1 = (area1 / std::f64::consts::PI).sqrt().max(1e-60);
+    let r2 = (area2 / std::f64::consts::PI).sqrt().max(1e-60);
+    let h = separation.max(1e-60);
+    let r1n = r1 / h;
+    let r2n = r2 / h;
+    let s_val = 1.0 + (1.0 + r2n * r2n) / (r1n * r1n);
+    let discriminant = s_val * s_val - 4.0 * (r2n / r1n).powi(2);
+    let f12 = 0.5 * (s_val - discriminant.max(0.0).sqrt());
+    f12.clamp(0.0, 1.0)
+}
+/// Net radiation heat exchange rate between two grey-body surfaces \[W\].
+///
+/// Q_12 = σ * F_12 * A1 * (T1⁴ - T2⁴) / (1/ε1 + A1/A2*(1/ε2-1) + 1/F12 - 1)
+///
+/// Simplified form (black bodies, F12 given):
+///   Q_12 = σ * A1 * F_12 * (T1⁴ - T2⁴)
+///
+/// # Arguments
+/// * `t1`, `t2` – surface temperatures \[K\]
+/// * `area1`    – area of surface 1 \[m²\]
+/// * `f12`      – view factor F_12
+/// * `emissivity` – emissivity (0..1) for both surfaces (assumed equal)
+pub fn radiation_heat_exchange(t1: f64, t2: f64, area1: f64, f12: f64, emissivity: f64) -> f64 {
+    pub(super) const SIGMA: f64 = 5.670_374_419e-8;
+    let eps = emissivity.clamp(1e-9, 1.0);
+    SIGMA * eps * area1 * f12 * (t1.powi(4) - t2.powi(4))
+}
+/// Perform one implicit (backward-Euler) time step with Newton-Raphson linearisation.
+///
+/// Residual: R(T) = C*(T - T_n)/dt + K*T - f = 0
+/// Newton:   J * δT = -R, then T ← T + δT
+///
+/// For linear K the method converges in one iteration, but allowing `max_iter`
+/// makes this suitable for weakly nonlinear problems where K = K(T).
+///
+/// # Arguments
+/// * `k_global`  – n×n conductance matrix (dense, row-major)
+/// * `c_lumped`  – lumped capacitance vector
+/// * `t_n`       – temperatures at time n
+/// * `heat_src`  – nodal heat sources
+/// * `dirichlet` – Dirichlet BCs (node, value)
+/// * `dt`        – time step \[s\]
+/// * `max_iter`  – maximum Newton iterations
+/// * `tol`       – convergence tolerance on ‖δT‖₂
+pub fn transient_nonlinear_step(
+    k_global: &[Vec<f64>],
+    c_lumped: &[f64],
+    t_n: &[f64],
+    heat_src: &[f64],
+    dirichlet: &[(usize, f64)],
+    dt: f64,
+    max_iter: usize,
+    tol: f64,
+) -> Vec<f64> {
+    let n = t_n.len();
+    assert_eq!(k_global.len(), n);
+    assert_eq!(c_lumped.len(), n);
+    assert_eq!(heat_src.len(), n);
+    let mut t = t_n.to_vec();
+    for &(node, val) in dirichlet {
+        t[node] = val;
+    }
+    for _iter in 0..max_iter {
+        let mut r = vec![0.0_f64; n];
+        for (i, r_i) in r.iter_mut().enumerate() {
+            let kt_i: f64 = (0..n).map(|j| k_global[i][j] * t[j]).sum();
+            *r_i = c_lumped[i] * (t[i] - t_n[i]) / dt + kt_i - heat_src[i];
+        }
+        for &(node, _) in dirichlet {
+            r[node] = 0.0;
+        }
+        let r_norm: f64 = r.iter().map(|&v| v * v).sum::<f64>().sqrt();
+        if r_norm < tol {
+            break;
+        }
+        let mut jac: Vec<Vec<f64>> = (0..n)
+            .map(|i| {
+                let mut row = k_global[i].to_vec();
+                row[i] += c_lumped[i] / dt;
+                row
+            })
+            .collect();
+        let mut rhs: Vec<f64> = r.iter().map(|&v| -v).collect();
+        for &(node, _) in dirichlet {
+            for v in jac[node].iter_mut() {
+                *v = 0.0;
+            }
+            jac[node][node] = 1.0;
+            rhs[node] = 0.0;
+        }
+        let delta = gauss_solve_dense(&jac, &rhs);
+        let delta_norm: f64 = delta.iter().map(|&v| v * v).sum::<f64>().sqrt();
+        for (t_i, &d_i) in t.iter_mut().zip(delta.iter()) {
+            *t_i += d_i;
+        }
+        for &(node, val) in dirichlet {
+            t[node] = val;
+        }
+        if delta_norm < tol {
+            break;
+        }
+    }
+    t
+}
+/// Simple dense Gauss elimination (no pivoting) for internal use.
+pub(super) fn gauss_solve_dense(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
+    let n = b.len();
+    let mut mat: Vec<Vec<f64>> = a.to_vec();
+    let mut rhs = b.to_vec();
+    for col in 0..n {
+        let mut max_row = col;
+        let mut max_val = mat[col][col].abs();
+        for (row, mat_row) in mat.iter().enumerate().skip(col + 1) {
+            if mat_row[col].abs() > max_val {
+                max_val = mat_row[col].abs();
+                max_row = row;
+            }
+        }
+        mat.swap(col, max_row);
+        rhs.swap(col, max_row);
+        let pivot = mat[col][col];
+        if pivot.abs() < 1e-60 {
+            continue;
+        }
+        let col_row: Vec<f64> = mat[col][col..].to_vec();
+        for row in (col + 1)..n {
+            let factor = mat[row][col] / pivot;
+            for (j_off, &col_val) in col_row.iter().enumerate() {
+                mat[row][col + j_off] -= col_val * factor;
+            }
+            rhs[row] -= rhs[col] * factor;
+        }
+    }
+    let mut x = vec![0.0_f64; n];
+    for i in (0..n).rev() {
+        let mut s = rhs[i];
+        for j in (i + 1)..n {
+            s -= mat[i][j] * x[j];
+        }
+        x[i] = if mat[i][i].abs() > 1e-60 {
+            s / mat[i][i]
+        } else {
+            0.0
+        };
+    }
+    x
+}
 
 #[cfg(test)]
 mod thermal_extended_tests {
@@ -358,7 +554,10 @@ mod thermal_extended_tests {
     #[test]
     fn test_view_factor_enclosure_sum_to_one() {
         let f = view_factor_parallel_plates(1.0, 2.0, 0.3);
-        assert!(f >= 0.0 && f <= 1.0 + 1e-10, "F12 must be in [0,1]: {f}");
+        assert!(
+            (0.0..=1.0 + 1e-10).contains(&f),
+            "F12 must be in [0,1]: {f}"
+        );
     }
     #[test]
     fn test_view_factor_increases_with_proximity() {
@@ -443,211 +642,4 @@ mod thermal_extended_tests {
             );
         }
     }
-}
-/// Advance temperatures by one time step using the enthalpy method for phase change.
-///
-/// Each node uses the apparent-heat-capacity form:
-///   C_eff * dT/dt = q_net
-///
-/// where C_eff absorbs the latent heat over a small mushy-zone width `delta_T`.
-///
-/// # Arguments
-/// * `temperatures` – mutable node temperature vector (updated in place)
-/// * `heat_source`  – volumetric heat source (W/m³, uniform)
-/// * `density`      – kg/m³
-/// * `specific_heat`– J/(kg K) (sensible heat)
-/// * `latent_heat`  – L \[J/kg\] (fusion latent heat)
-/// * `t_melt`       – melting point \[K\]
-/// * `dt`           – time step \[s\]
-/// * `delta_t_mushy`– width of mushy zone \[K\]
-#[allow(clippy::too_many_arguments)]
-pub fn phase_change_step(
-    temperatures: &mut Vec<f64>,
-    heat_source: f64,
-    density: f64,
-    specific_heat: f64,
-    latent_heat: f64,
-    t_melt: f64,
-    dt: f64,
-    delta_t_mushy: f64,
-) {
-    let dmu = delta_t_mushy.max(1e-10);
-    for t in temperatures.iter_mut() {
-        let xi = (*t - t_melt) / dmu;
-        let f_mushy = if xi.abs() <= 1.0 {
-            0.5 * (1.0 + (std::f64::consts::PI * xi).cos())
-        } else {
-            0.0
-        };
-        let c_eff = specific_heat + latent_heat / dmu * f_mushy;
-        let rho_c = density * c_eff;
-        if rho_c > 1e-60 {
-            *t += heat_source / rho_c * dt;
-        }
-    }
-}
-/// Compute the radiation view factor F_12 for two finite parallel plates.
-///
-/// Uses the crossed-string method / analytical approximation for two parallel
-/// coaxial discs of areas `a1` and `a2` separated by distance `h`:
-///
-/// This is a simplified planar approximation:
-///   R1 = sqrt(a1/π), R2 = sqrt(a2/π)
-///   S = 1 + (1 + R2²) / R1²
-///   F12 = 0.5*(S - sqrt(S² - 4*(R2/R1)²))
-///
-/// # Arguments
-/// * `area1` – area of surface 1 \[m²\]
-/// * `area2` – area of surface 2 \[m²\]
-/// * `separation` – distance between plates \[m\]
-pub fn view_factor_parallel_plates(area1: f64, area2: f64, separation: f64) -> f64 {
-    let r1 = (area1 / std::f64::consts::PI).sqrt().max(1e-60);
-    let r2 = (area2 / std::f64::consts::PI).sqrt().max(1e-60);
-    let h = separation.max(1e-60);
-    let r1n = r1 / h;
-    let r2n = r2 / h;
-    let s_val = 1.0 + (1.0 + r2n * r2n) / (r1n * r1n);
-    let discriminant = s_val * s_val - 4.0 * (r2n / r1n).powi(2);
-    let f12 = 0.5 * (s_val - discriminant.max(0.0).sqrt());
-    f12.clamp(0.0, 1.0)
-}
-/// Net radiation heat exchange rate between two grey-body surfaces \[W\].
-///
-/// Q_12 = σ * F_12 * A1 * (T1⁴ - T2⁴) / (1/ε1 + A1/A2*(1/ε2-1) + 1/F12 - 1)
-///
-/// Simplified form (black bodies, F12 given):
-///   Q_12 = σ * A1 * F_12 * (T1⁴ - T2⁴)
-///
-/// # Arguments
-/// * `t1`, `t2` – surface temperatures \[K\]
-/// * `area1`    – area of surface 1 \[m²\]
-/// * `f12`      – view factor F_12
-/// * `emissivity` – emissivity (0..1) for both surfaces (assumed equal)
-#[allow(dead_code)]
-pub fn radiation_heat_exchange(t1: f64, t2: f64, area1: f64, f12: f64, emissivity: f64) -> f64 {
-    pub(super) const SIGMA: f64 = 5.670_374_419e-8;
-    let eps = emissivity.clamp(1e-9, 1.0);
-    SIGMA * eps * area1 * f12 * (t1.powi(4) - t2.powi(4))
-}
-/// Perform one implicit (backward-Euler) time step with Newton-Raphson linearisation.
-///
-/// Residual: R(T) = C*(T - T_n)/dt + K*T - f = 0
-/// Newton:   J * δT = -R, then T ← T + δT
-///
-/// For linear K the method converges in one iteration, but allowing `max_iter`
-/// makes this suitable for weakly nonlinear problems where K = K(T).
-///
-/// # Arguments
-/// * `k_global`  – n×n conductance matrix (dense, row-major)
-/// * `c_lumped`  – lumped capacitance vector
-/// * `t_n`       – temperatures at time n
-/// * `heat_src`  – nodal heat sources
-/// * `dirichlet` – Dirichlet BCs (node, value)
-/// * `dt`        – time step \[s\]
-/// * `max_iter`  – maximum Newton iterations
-/// * `tol`       – convergence tolerance on ‖δT‖₂
-#[allow(clippy::too_many_arguments)]
-pub fn transient_nonlinear_step(
-    k_global: &[Vec<f64>],
-    c_lumped: &[f64],
-    t_n: &[f64],
-    heat_src: &[f64],
-    dirichlet: &[(usize, f64)],
-    dt: f64,
-    max_iter: usize,
-    tol: f64,
-) -> Vec<f64> {
-    let n = t_n.len();
-    assert_eq!(k_global.len(), n);
-    assert_eq!(c_lumped.len(), n);
-    assert_eq!(heat_src.len(), n);
-    let mut t = t_n.to_vec();
-    for &(node, val) in dirichlet {
-        t[node] = val;
-    }
-    for _iter in 0..max_iter {
-        let mut r = vec![0.0_f64; n];
-        for i in 0..n {
-            let kt_i: f64 = (0..n).map(|j| k_global[i][j] * t[j]).sum();
-            r[i] = c_lumped[i] * (t[i] - t_n[i]) / dt + kt_i - heat_src[i];
-        }
-        for &(node, _) in dirichlet {
-            r[node] = 0.0;
-        }
-        let r_norm: f64 = r.iter().map(|&v| v * v).sum::<f64>().sqrt();
-        if r_norm < tol {
-            break;
-        }
-        let mut jac: Vec<Vec<f64>> = (0..n)
-            .map(|i| {
-                let mut row = k_global[i].to_vec();
-                row[i] += c_lumped[i] / dt;
-                row
-            })
-            .collect();
-        let mut rhs: Vec<f64> = r.iter().map(|&v| -v).collect();
-        for &(node, _) in dirichlet {
-            for j in 0..n {
-                jac[node][j] = 0.0;
-            }
-            jac[node][node] = 1.0;
-            rhs[node] = 0.0;
-        }
-        let delta = gauss_solve_dense(&jac, &rhs);
-        let delta_norm: f64 = delta.iter().map(|&v| v * v).sum::<f64>().sqrt();
-        for i in 0..n {
-            t[i] += delta[i];
-        }
-        for &(node, val) in dirichlet {
-            t[node] = val;
-        }
-        if delta_norm < tol {
-            break;
-        }
-    }
-    t
-}
-/// Simple dense Gauss elimination (no pivoting) for internal use.
-#[allow(dead_code)]
-pub(super) fn gauss_solve_dense(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
-    let n = b.len();
-    let mut mat: Vec<Vec<f64>> = a.to_vec();
-    let mut rhs = b.to_vec();
-    for col in 0..n {
-        let mut max_row = col;
-        let mut max_val = mat[col][col].abs();
-        for row in (col + 1)..n {
-            if mat[row][col].abs() > max_val {
-                max_val = mat[row][col].abs();
-                max_row = row;
-            }
-        }
-        mat.swap(col, max_row);
-        rhs.swap(col, max_row);
-        let pivot = mat[col][col];
-        if pivot.abs() < 1e-60 {
-            continue;
-        }
-        for row in (col + 1)..n {
-            let factor = mat[row][col] / pivot;
-            for j in col..n {
-                let val = mat[col][j] * factor;
-                mat[row][j] -= val;
-            }
-            rhs[row] -= rhs[col] * factor;
-        }
-    }
-    let mut x = vec![0.0_f64; n];
-    for i in (0..n).rev() {
-        let mut s = rhs[i];
-        for j in (i + 1)..n {
-            s -= mat[i][j] * x[j];
-        }
-        x[i] = if mat[i][i].abs() > 1e-60 {
-            s / mat[i][i]
-        } else {
-            0.0
-        };
-    }
-    x
 }

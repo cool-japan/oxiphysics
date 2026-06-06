@@ -27,7 +27,6 @@ pub fn foam_header(class: &str, object: &str) -> String {
     )
 }
 /// Strip C and C++ style comments from input.
-#[allow(dead_code)]
 pub fn strip_foam_comments(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let chars: Vec<char> = input.chars().collect();
@@ -54,7 +53,6 @@ pub fn strip_foam_comments(input: &str) -> String {
     out
 }
 /// Tokenise OpenFOAM dictionary text into simple tokens.
-#[allow(dead_code)]
 pub fn tokenise_foam(input: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let chars: Vec<char> = input.chars().collect();
@@ -104,7 +102,6 @@ pub fn tokenise_foam(input: &str) -> Vec<String> {
 }
 /// Parse tokens into a `FoamDict`, starting at position `pos`.
 /// Returns the dict and the next token position.
-#[allow(dead_code)]
 pub fn parse_dict_tokens(tokens: &[String], mut pos: usize) -> (FoamDict, usize) {
     let mut dict = FoamDict::new();
     while pos < tokens.len() {
@@ -173,7 +170,6 @@ pub fn parse_dict_tokens(tokens: &[String], mut pos: usize) -> (FoamDict, usize)
     (dict, pos)
 }
 /// Parse an OpenFOAM `points` file content into a vector of 3D coordinates.
-#[allow(dead_code)]
 pub fn parse_foam_points(input: &str) -> Vec<[f64; 3]> {
     let cleaned = strip_foam_comments(input);
     let mut points = Vec::new();
@@ -205,7 +201,6 @@ pub fn parse_foam_points(input: &str) -> Vec<[f64; 3]> {
     points
 }
 /// Parse an OpenFOAM `owner` or `neighbour` file content into a list of integers.
-#[allow(dead_code)]
 pub fn parse_foam_label_list(input: &str) -> Vec<i64> {
     let cleaned = strip_foam_comments(input);
     let mut labels = Vec::new();
@@ -229,7 +224,6 @@ pub fn parse_foam_label_list(input: &str) -> Vec<i64> {
     labels
 }
 /// Parse an OpenFOAM `faces` file content into face vertex lists.
-#[allow(dead_code)]
 pub fn parse_foam_faces(input: &str) -> Vec<Vec<usize>> {
     let cleaned = strip_foam_comments(input);
     let mut faces = Vec::new();
@@ -262,7 +256,6 @@ pub fn parse_foam_faces(input: &str) -> Vec<Vec<usize>> {
 /// Parse an OpenFOAM boundary file into a list of `FoamPatch`.
 ///
 /// Handles both the top-level list wrapper `N ( ... )` and bare dictionary entries.
-#[allow(dead_code)]
 pub fn parse_foam_boundary(input: &str) -> Vec<FoamPatch> {
     let cleaned = strip_foam_comments(input);
     let tokens = tokenise_foam(&cleaned);
@@ -302,7 +295,6 @@ pub fn parse_foam_boundary(input: &str) -> Vec<FoamPatch> {
     patches
 }
 /// Parse a uniform or non-uniform scalar field from OpenFOAM field file text.
-#[allow(dead_code)]
 pub fn parse_foam_scalar_field(input: &str) -> FieldValues {
     let cleaned = strip_foam_comments(input);
     if let Some(pos) = cleaned.find("internalField") {
@@ -339,7 +331,6 @@ pub fn parse_foam_scalar_field(input: &str) -> FieldValues {
     }
     FieldValues::Uniform(0.0)
 }
-#[allow(dead_code)]
 pub(super) fn parse_nonuniform_scalar_list(input: &str) -> FieldValues {
     let mut vals = Vec::new();
     let mut in_list = false;
@@ -370,7 +361,6 @@ pub(super) fn parse_nonuniform_scalar_list(input: &str) -> FieldValues {
     }
     FieldValues::NonUniform(vals)
 }
-#[allow(dead_code)]
 pub(super) fn parse_nonuniform_vector_list(input: &str) -> FieldValues {
     let mut vals = Vec::new();
     let mut in_list = false;
@@ -407,7 +397,6 @@ pub(super) fn parse_nonuniform_vector_list(input: &str) -> FieldValues {
     FieldValues::NonUniformVec(vals)
 }
 /// Sort time directory names numerically.
-#[allow(dead_code)]
 pub fn sort_time_dirs(dirs: &[String]) -> Vec<String> {
     let mut numeric: Vec<(f64, String)> = dirs
         .iter()
@@ -417,12 +406,10 @@ pub fn sort_time_dirs(dirs: &[String]) -> Vec<String> {
     numeric.into_iter().map(|(_, s)| s).collect()
 }
 /// Check if a directory name is a valid OpenFOAM time directory.
-#[allow(dead_code)]
 pub fn is_time_dir(name: &str) -> bool {
     name.parse::<f64>().is_ok()
 }
 /// Find the latest time from a list of directory names.
-#[allow(dead_code)]
 pub fn latest_time(dirs: &[String]) -> Option<f64> {
     dirs.iter()
         .filter_map(|d| d.parse::<f64>().ok())
@@ -432,7 +419,6 @@ pub fn latest_time(dirs: &[String]) -> Option<f64> {
         })
 }
 /// Generate the path string for a field file at a given time.
-#[allow(dead_code)]
 pub fn field_path(case_dir: &str, time: f64, field_name: &str) -> String {
     if (time - time.round()).abs() < 1e-12 {
         format!("{}/{}/{}", case_dir, time as i64, field_name)
@@ -1022,7 +1008,6 @@ internalField   nonuniform List<vector>
 ///
 /// Filters names that parse as floating-point numbers and returns
 /// them sorted in ascending order along with their numeric values.
-#[allow(dead_code)]
 pub fn discover_time_dirs(all_entries: &[String]) -> Vec<FoamTimeDir> {
     let mut result: Vec<FoamTimeDir> = all_entries
         .iter()
@@ -1045,7 +1030,6 @@ pub fn discover_time_dirs(all_entries: &[String]) -> Vec<FoamTimeDir> {
 ///
 /// `field_map` is a list of `(dir_name, field_name)` pairs that describe
 /// which fields exist in which time directory.
-#[allow(dead_code)]
 pub fn discover_time_dirs_with_fields(
     all_entries: &[String],
     field_map: &[(String, String)],
@@ -1065,7 +1049,6 @@ pub fn discover_time_dirs_with_fields(
 ///
 /// This is a convenience wrapper that creates a `FoamField` with `NonUniform`
 /// internal values and no boundary conditions, then renders it.
-#[allow(dead_code)]
 pub fn write_scalar_field_ascii(
     field_name: &str,
     dimensions: &str,
@@ -1083,7 +1066,6 @@ pub fn write_scalar_field_ascii(
     field.to_string()
 }
 /// Write a uniform scalar field file.
-#[allow(dead_code)]
 pub fn write_uniform_scalar_field(
     field_name: &str,
     dimensions: &str,
@@ -1101,7 +1083,6 @@ pub fn write_uniform_scalar_field(
     field.to_string()
 }
 /// Write a uniform vector field file.
-#[allow(dead_code)]
 pub fn write_uniform_vector_field(
     field_name: &str,
     dimensions: &str,
@@ -1125,7 +1106,6 @@ pub fn write_uniform_vector_field(
 /// Time = 0.1
 /// smoothSolver:  Solving for Ux, Initial residual = 1e-3, Final residual = 1e-6, No Iterations 5
 /// ```
-#[allow(dead_code)]
 pub fn parse_foam_residuals(log: &str) -> Vec<FoamResidual> {
     let mut residuals = Vec::new();
     let mut current_time = 0.0_f64;
@@ -1182,27 +1162,22 @@ pub(super) fn extract_foam_int(line: &str, key: &str) -> Option<usize> {
 /// Encode a GROMACS-style dimension set for common physical quantities.
 ///
 /// Returns an OpenFOAM dimension string `[kg m s K mol A cd]`.
-#[allow(dead_code)]
 pub fn foam_dimensions(kg: i32, m: i32, s: i32, k: i32, mol: i32, a: i32, cd: i32) -> String {
     format!("[{} {} {} {} {} {} {}]", kg, m, s, k, mol, a, cd)
 }
 /// Dimension set for pressure (Pa = kg m⁻¹ s⁻²).
-#[allow(dead_code)]
 pub fn dims_pressure() -> String {
     foam_dimensions(1, -1, -2, 0, 0, 0, 0)
 }
 /// Dimension set for velocity (m s⁻¹).
-#[allow(dead_code)]
 pub fn dims_velocity() -> String {
     foam_dimensions(0, 1, -1, 0, 0, 0, 0)
 }
 /// Dimension set for temperature (K).
-#[allow(dead_code)]
 pub fn dims_temperature() -> String {
     foam_dimensions(0, 0, 0, 1, 0, 0, 0)
 }
 /// Dimension set for kinematic viscosity (m² s⁻¹).
-#[allow(dead_code)]
 pub fn dims_kinematic_viscosity() -> String {
     foam_dimensions(0, 2, -1, 0, 0, 0, 0)
 }
@@ -1441,7 +1416,6 @@ smoothSolver:  Solving for Ux, Initial residual = 9e-4, Final residual = 8e-7, N
 ///
 /// Uses the cross-product shoelace formula projected onto the best-fit plane.
 /// For convex quads and triangles this gives an exact result.
-#[allow(dead_code)]
 pub fn face_area(vertices: &[[f64; 3]]) -> f64 {
     if vertices.len() < 3 {
         return 0.0;
@@ -1460,7 +1434,6 @@ pub fn face_area(vertices: &[[f64; 3]]) -> f64 {
     0.5 * (area_vec[0] * area_vec[0] + area_vec[1] * area_vec[1] + area_vec[2] * area_vec[2]).sqrt()
 }
 /// Compute the face centroid (arithmetic mean of vertices).
-#[allow(dead_code)]
 pub fn face_centroid(vertices: &[[f64; 3]]) -> [f64; 3] {
     if vertices.is_empty() {
         return [0.0; 3];
@@ -1477,7 +1450,6 @@ pub fn face_centroid(vertices: &[[f64; 3]]) -> [f64; 3] {
 /// Compute the face normal (unit vector) using the cross-product approach.
 ///
 /// Returns a zero vector if the face is degenerate.
-#[allow(dead_code)]
 pub fn face_normal(vertices: &[[f64; 3]]) -> [f64; 3] {
     if vertices.len() < 3 {
         return [0.0; 3];
@@ -1503,7 +1475,6 @@ pub fn face_normal(vertices: &[[f64; 3]]) -> [f64; 3] {
 ///
 /// Uses the divergence theorem with 6 quad faces decomposed into 2 triangles
 /// each. For non-orthogonal cells this is approximate.
-#[allow(dead_code)]
 pub fn hex_cell_volume(corners: &[[f64; 3]; 8]) -> f64 {
     let tets: [[usize; 4]; 5] = [
         [0, 1, 3, 4],
@@ -1533,7 +1504,6 @@ pub(super) fn tet_signed_volume(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 
 /// to face-centre vector.
 ///
 /// Returns 0 if the vectors are aligned (ideal orthogonal mesh).
-#[allow(dead_code)]
 pub fn non_orthogonality(
     face_norm: [f64; 3],
     owner_centre: [f64; 3],
@@ -1557,7 +1527,6 @@ pub fn non_orthogonality(
     cos_theta.acos() * 180.0 / std::f64::consts::PI
 }
 /// Compute an approximate cell centroid as the mean of all face centroids.
-#[allow(dead_code)]
 pub fn cell_centroid_from_faces(
     face_indices: &[usize],
     all_faces: &[Vec<usize>],
@@ -1596,8 +1565,6 @@ pub fn cell_centroid_from_faces(
 /// `faces`, `owner`, `neighbour` are the standard OpenFOAM topology arrays.
 ///
 /// Returns one gradient vector `[dφ/dx, dφ/dy, dφ/dz]` per cell.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn green_gauss_gradient(
     values: &[f64],
     cell_centres: &[[f64; 3]],
@@ -1666,7 +1633,6 @@ pub fn green_gauss_gradient(
 ///
 /// Estimates initial `k` and `epsilon` from turbulence intensity `I` and
 /// a length scale `L` at a reference velocity `U_ref`.
-#[allow(dead_code)]
 pub fn k_epsilon_initial(u_ref: f64, turbulence_intensity: f64, length_scale: f64) -> (f64, f64) {
     pub(super) const C_MU: f64 = 0.09;
     let k = 1.5 * (u_ref * turbulence_intensity).powi(2);
@@ -1676,7 +1642,6 @@ pub fn k_epsilon_initial(u_ref: f64, turbulence_intensity: f64, length_scale: f6
 /// k-omega SST turbulence model initial conditions helper.
 ///
 /// Returns `(k, omega)` from turbulence intensity and length scale.
-#[allow(dead_code)]
 pub fn k_omega_initial(u_ref: f64, turbulence_intensity: f64, length_scale: f64) -> (f64, f64) {
     pub(super) const C_MU: f64 = 0.09;
     let k = 1.5 * (u_ref * turbulence_intensity).powi(2);
@@ -1686,7 +1651,6 @@ pub fn k_omega_initial(u_ref: f64, turbulence_intensity: f64, length_scale: f64)
 /// Compute turbulent viscosity from k-epsilon model.
 ///
 /// `nu_t = C_mu * k^2 / epsilon`
-#[allow(dead_code)]
 pub fn turbulent_viscosity_ke(k: f64, epsilon: f64) -> f64 {
     pub(super) const C_MU: f64 = 0.09;
     if epsilon < 1e-30 {
@@ -1697,7 +1661,6 @@ pub fn turbulent_viscosity_ke(k: f64, epsilon: f64) -> f64 {
 /// Compute turbulent viscosity from k-omega SST model.
 ///
 /// `nu_t = k / omega`
-#[allow(dead_code)]
 pub fn turbulent_viscosity_ko(k: f64, omega: f64) -> f64 {
     if omega < 1e-30 {
         return 0.0;
@@ -1708,7 +1671,6 @@ pub fn turbulent_viscosity_ko(k: f64, omega: f64) -> f64 {
 ///
 /// Works for `FoamMesh::box_mesh`-style meshes with uniform spacing.
 /// Returns `None` if the point is outside the domain.
-#[allow(dead_code)]
 pub fn find_cell_containing_point(
     p: [f64; 3],
     lx: f64,
@@ -1732,19 +1694,16 @@ pub fn find_cell_containing_point(
 /// Probe a scalar field at a given cell index.
 ///
 /// Returns the field value at the cell, or `None` if `cell_idx` is out of range.
-#[allow(dead_code)]
 pub fn probe_scalar(values: &[f64], cell_idx: usize) -> Option<f64> {
     values.get(cell_idx).copied()
 }
 /// Probe a vector field at a given cell index.
-#[allow(dead_code)]
 pub fn probe_vector(values: &[[f64; 3]], cell_idx: usize) -> Option<[f64; 3]> {
     values.get(cell_idx).copied()
 }
 /// Compute the average cell volume for a structured box mesh.
 ///
 /// For a uniform mesh, this is simply `(lx*ly*lz) / (nx*ny*nz)`.
-#[allow(dead_code)]
 pub fn average_cell_volume(lx: f64, ly: f64, lz: f64, nx: usize, ny: usize, nz: usize) -> f64 {
     if nx == 0 || ny == 0 || nz == 0 {
         return 0.0;
@@ -1754,7 +1713,6 @@ pub fn average_cell_volume(lx: f64, ly: f64, lz: f64, nx: usize, ny: usize, nz: 
 /// Compute the maximum face aspect ratio (longest edge / shortest edge) for a quad face.
 ///
 /// Returns 1.0 for a perfect square face.
-#[allow(dead_code)]
 pub fn quad_face_aspect_ratio(v0: [f64; 3], v1: [f64; 3], v2: [f64; 3], v3: [f64; 3]) -> f64 {
     let d01 = edge_len(v0, v1);
     let d12 = edge_len(v1, v2);

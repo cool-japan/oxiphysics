@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,8 +8,6 @@
 //! quasi-Monte Carlo), bootstrap confidence intervals, particle filters,
 //! and Brownian bridge processes.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -18,7 +15,6 @@ use std::f64::consts::PI;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A fast linear congruential random number generator.
-#[allow(dead_code)]
 pub struct LcgRng {
     state: u64,
 }
@@ -717,10 +713,10 @@ impl MonteCarloIntegral {
         for s in 0..n_strata {
             let mut x = vec![0.0_f64; d];
             let mut idx = s;
-            for j in 0..d {
+            for xj in x.iter_mut() {
                 let cell = idx % k;
                 idx /= k;
-                x[j] = (cell as f64 + self.rng.next_f64()) / k as f64;
+                *xj = (cell as f64 + self.rng.next_f64()) / k as f64;
             }
             let val = f(&x) * vol * n_strata as f64;
             sum += val;

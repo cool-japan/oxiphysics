@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use std::f64::consts::PI;
 
 use super::types::{Atom, HmmConfig, HomogenizationResult, NebImage, PhaseFieldParams, UnitCell};
@@ -159,9 +158,9 @@ where
     let n = 16usize;
     let h = config.micro_domain_size / n as f64;
     let mut t = vec![0.0f64; n];
-    for i in 0..n {
+    for (i, ti) in t.iter_mut().enumerate() {
         let x = (i as f64 + 0.5) * h;
-        t[i] = macro_strain * x;
+        *ti = macro_strain * x;
     }
     for _step in 0..config.micro_steps {
         let mut t_new = t.clone();
@@ -360,12 +359,12 @@ pub fn restriction_l2(fine: &[f64], ratio: usize) -> Vec<f64> {
 pub fn prolongation_linear(coarse: &[f64], ratio: usize) -> Vec<f64> {
     let n_fine = coarse.len() * ratio;
     let mut fine = vec![0.0f64; n_fine];
-    for fi in 0..n_fine {
+    for (fi, fv) in fine.iter_mut().enumerate() {
         let ci_f = fi as f64 / ratio as f64;
         let ci0 = (ci_f as usize).min(coarse.len() - 1);
         let ci1 = (ci0 + 1).min(coarse.len() - 1);
         let alpha = ci_f - ci0 as f64;
-        fine[fi] = (1.0 - alpha) * coarse[ci0] + alpha * coarse[ci1];
+        *fv = (1.0 - alpha) * coarse[ci0] + alpha * coarse[ci1];
     }
     fine
 }
@@ -380,7 +379,7 @@ pub fn prolongation_linear(coarse: &[f64], ratio: usize) -> Vec<f64> {
 /// * `h`         – Grid spacing.
 /// * `n_smooth`  – Number of Gauss-Seidel smoothing steps.
 /// * `depth`     – Remaining recursion depth (0 = direct solve).
-pub fn multigrid_vcycle(u: &mut Vec<f64>, f: &[f64], h: f64, n_smooth: usize, depth: usize) {
+pub fn multigrid_vcycle(u: &mut [f64], f: &[f64], h: f64, n_smooth: usize, depth: usize) {
     let n = u.len();
     for _ in 0..n_smooth {
         for i in 1..(n - 1) {
@@ -399,8 +398,8 @@ pub fn multigrid_vcycle(u: &mut Vec<f64>, f: &[f64], h: f64, n_smooth: usize, de
     let mut e_coarse = vec![0.0f64; nc];
     multigrid_vcycle(&mut e_coarse, &coarse_res, 2.0 * h, n_smooth, depth - 1);
     let e_fine = prolongation_linear(&e_coarse, 2);
-    for i in 0..n.min(e_fine.len()) {
-        u[i] += e_fine[i];
+    for (ui, ef) in u.iter_mut().zip(e_fine.iter()).take(n) {
+        *ui += ef;
     }
     for _ in 0..n_smooth {
         for i in 1..(n - 1) {
@@ -419,7 +418,7 @@ pub fn multigrid_vcycle(u: &mut Vec<f64>, f: &[f64], h: f64, n_smooth: usize, de
 /// * `params` – Phase-field parameters.
 /// * `dx`     – Grid spacing.
 /// * `dt`     – Time step.
-pub fn allen_cahn_step(phi: &mut Vec<f64>, params: &PhaseFieldParams, dx: f64, dt: f64) {
+pub fn allen_cahn_step(phi: &mut [f64], params: &PhaseFieldParams, dx: f64, dt: f64) {
     let n = phi.len();
     let mut dphi = vec![0.0f64; n];
     for i in 0..n {
@@ -545,8 +544,7 @@ pub fn arlequin_blend_energy(e_atomistic: f64, e_continuum: f64, weight: f64) ->
 /// * `spring_constant` – Spring constant k.
 /// * `grad_fn`         – Returns -(gradient of energy) at a configuration.
 /// * `dt`              – Step size.
-#[allow(clippy::too_many_arguments)]
-pub fn neb_step<F>(images: &mut Vec<NebImage>, spring_constant: f64, grad_fn: &F, dt: f64)
+pub fn neb_step<F>(images: &mut [NebImage], spring_constant: f64, grad_fn: &F, dt: f64)
 where
     F: Fn(&[f64]) -> (f64, Vec<f64>),
 {

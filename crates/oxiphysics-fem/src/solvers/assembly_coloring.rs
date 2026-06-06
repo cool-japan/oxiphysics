@@ -8,8 +8,6 @@
 //! same color share any DOF.  Elements within the same color can then be
 //! processed in parallel without synchronization.
 
-#![allow(dead_code)]
-
 use std::sync::Mutex;
 
 use crate::parallel_solver::{AssemblyTask, CsrMatrix};

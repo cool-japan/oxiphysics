@@ -14,7 +14,6 @@ use std::collections::HashMap;
 ///
 /// Each variant carries the numeric content; metadata (units, source) lives in
 /// the parent `MaterialRecord`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MaterialProperty {
     /// A single scalar value.
@@ -57,7 +56,6 @@ impl MaterialProperty {
 ///
 /// Typical property keys: `"density"`, `"elastic_modulus"`, `"yield_strength"`,
 /// `"thermal_conductivity"`, `"poisson_ratio"`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MaterialRecord {
     /// Human-readable material name (e.g. `"AISI 304 Stainless Steel"`).
@@ -102,7 +100,6 @@ impl MaterialRecord {
 // ── MaterialDatabase ──────────────────────────────────────────────────────────
 
 /// An in-memory collection of `MaterialRecord` entries with search capabilities.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct MaterialDatabase {
     /// All stored records.
@@ -164,7 +161,6 @@ impl MaterialDatabase {
 ///
 /// Each node has a name and optional children, representing the tree:
 /// `Metal > Ferrous > Steel > AISI 304`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MaterialCategories {
     /// Category name (leaf or node).
@@ -211,7 +207,6 @@ impl MaterialCategories {
 // ── MaterialComparison ────────────────────────────────────────────────────────
 
 /// Compare materials using performance indices and radar chart data.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MaterialComparison {
     /// Property keys used for comparison.
@@ -289,7 +284,6 @@ impl MaterialComparison {
 /// Temperature-dependent material property via piecewise linear interpolation.
 ///
 /// Tabulated as `(temperature, value)` pairs sorted by temperature.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TemperatureDependence {
     /// Sorted (temperature, value) table.
@@ -350,7 +344,6 @@ impl TemperatureDependence {
 ///
 /// Filters can be composed: call `filter_category`, `filter_min`, `filter_max`
 /// in sequence and collect results with `apply`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct MaterialFilter {
     /// Optional category prefix filter.
@@ -424,7 +417,6 @@ impl MaterialFilter {
 /// Manual JSON serialization/deserialization for a `MaterialDatabase`.
 ///
 /// Does not use `serde`; produces and parses a simple human-readable JSON format.
-#[allow(dead_code)]
 pub struct JsonMaterialDb;
 
 impl JsonMaterialDb {
@@ -646,7 +638,6 @@ fn extract_json_f64_array(json: &str, key: &str) -> Vec<f64> {
 /// Expected CSV format: first row is headers, subsequent rows are materials.
 /// At minimum, columns `Name` and `Category` must be present.
 /// All other columns are treated as scalar properties.
-#[allow(dead_code)]
 pub struct CsvMaterialDb;
 
 impl CsvMaterialDb {

@@ -7,12 +7,6 @@
 //! undercut logic, full race simulation with strategy optimisation, lap-time
 //! sector modelling, DRS zones, weather adaptation, and safety-car probability.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
-#[allow(unused_imports)]
-use std::f64::consts::PI;
-
 // ---------------------------------------------------------------------------
 // TireCompound
 // ---------------------------------------------------------------------------
@@ -914,8 +908,7 @@ pub fn fuel_consumption(throttle: f64, speed: f64, base_rate: f64) -> f64 {
 }
 
 /// Additional downforce due to fuel weight.
-#[allow(unused_variables)]
-pub fn fuel_weight_effect(fuel_kg: f64, mass: f64, g: f64) -> f64 {
+pub fn fuel_weight_effect(fuel_kg: f64, _mass: f64, g: f64) -> f64 {
     fuel_kg * g
 }
 
@@ -1145,6 +1138,7 @@ pub fn drs_zone_fraction(track: &RaceTrack) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::PI;
 
     fn default_wear(compound: TireCompound) -> TireWear {
         TireWear::new(compound)

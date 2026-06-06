@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,13 +7,11 @@
 //! (fixed, revolute, prismatic, ball, spring), PGS and TGS solvers,
 //! and an island manager for grouping connected bodies.
 #![warn(missing_docs)]
-#![allow(ambiguous_glob_reexports)]
-#![allow(dead_code)]
 
 mod error;
 pub use error::*;
 
-mod traits;
+pub mod traits;
 pub use traits::Constraint;
 
 pub mod contact;
@@ -50,7 +47,9 @@ pub mod friction;
 pub use friction::*;
 
 pub mod ccd_constraints;
-pub use ccd_constraints::{CcdConstraint, CcdConstraintSolver, estimate_linear_toi};
+pub use ccd_constraints::{
+    CcdConstraint, CcdConstraintSolver, RotationalAdvancementParams, estimate_linear_toi,
+};
 
 pub mod motor_constraints;
 pub use motor_constraints::{
@@ -62,7 +61,7 @@ pub mod six_dof_constraint;
 pub use six_dof_constraint::{AxisConfig, MotorConfig, SixDofConstraint, compute_jacobian_6dof};
 
 pub mod simd_pgs;
-pub use simd_pgs::{BatchPgsSolver, SoaConstraints, SoaContactBuilder};
+pub use simd_pgs::{BatchPgsSolver, SoaConstraintRow, SoaConstraints, SoaContactBuilder};
 
 pub mod deformable_coupling;
 pub use deformable_coupling::{
@@ -71,7 +70,8 @@ pub use deformable_coupling::{
 
 pub mod gpu_constraint_solver;
 pub use gpu_constraint_solver::{
-    CpuConstraintData, GpuConstraint, GpuConstraintSolver, GpuSolverConfig, SolveResult,
+    CpuConstraintData, GpuConstraint, GpuConstraintParams, GpuConstraintSolver, GpuSolverConfig,
+    SolveResult,
 };
 
 // ── Constraint utility functions ────────────────────────────────────────────
@@ -83,7 +83,6 @@ pub use gpu_constraint_solver::{
 /// * `error` - The positional error (scalar, e.g. penetration depth).
 /// * `beta` - Baumgarte stabilization factor (typically 0.1 to 0.3).
 /// * `dt` - Time step.
-#[allow(dead_code)]
 pub fn baumgarte_bias(error: f64, beta: f64, dt: f64) -> f64 {
     -(beta / dt) * error
 }
@@ -96,14 +95,12 @@ pub fn baumgarte_bias(error: f64, beta: f64, dt: f64) -> f64 {
 /// K = inv_mass_a + inv_mass_b + n^T * (inv_I_a * (r_a x n) x r_a + inv_I_b * (r_b x n) x r_b)
 ///
 /// This simplified version considers only the linear part.
-#[allow(dead_code)]
 pub fn effective_mass_linear(inv_mass_a: f64, inv_mass_b: f64) -> f64 {
     let sum = inv_mass_a + inv_mass_b;
     if sum.abs() < 1e-15 { 0.0 } else { 1.0 / sum }
 }
 
 /// Clamp an impulse to a range `[lo, hi]`.
-#[allow(dead_code)]
 pub fn clamp_impulse(impulse: f64, lo: f64, hi: f64) -> f64 {
     impulse.max(lo).min(hi)
 }
@@ -113,7 +110,6 @@ pub fn clamp_impulse(impulse: f64, lo: f64, hi: f64) -> f64 {
 /// Cdot = n . (v_b + omega_b x r_b - v_a - omega_a x r_a)
 ///
 /// All vectors as `[f64; 3]` arrays to avoid nalgebra dependency.
-#[allow(dead_code)]
 pub fn distance_cdot(
     normal: [f64; 3],
     v_a: [f64; 3],
@@ -134,7 +130,6 @@ pub fn distance_cdot(
 }
 
 /// Simple 3D cross product on arrays.
-#[allow(dead_code)]
 fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -144,7 +139,6 @@ fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 /// Simple 3D dot product on arrays.
-#[allow(dead_code)]
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -156,7 +150,6 @@ fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// body A by this vector (in world space) would align it with body B.
 ///
 /// Uses the skew-symmetric part of R_b * R_a^T.
-#[allow(dead_code)]
 pub fn angular_error_3x3(rot_a: [[f64; 3]; 3], rot_b: [[f64; 3]; 3]) -> [f64; 3] {
     // R_err = R_b * R_a^T
     let rat = transpose3(rot_a);
@@ -169,7 +162,6 @@ pub fn angular_error_3x3(rot_a: [[f64; 3]; 3], rot_b: [[f64; 3]; 3]) -> [f64; 3]
     ]
 }
 
-#[allow(dead_code)]
 fn transpose3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     [
         [m[0][0], m[1][0], m[2][0]],
@@ -178,7 +170,6 @@ fn transpose3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     ]
 }
 
-#[allow(dead_code)]
 fn mat_mul3(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut r = [[0.0; 3]; 3];
     for i in 0..3 {
@@ -193,7 +184,6 @@ fn mat_mul3(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 
 /// Compute the constraint force magnitude from a Lagrange multiplier
 /// and the time step: F = lambda / dt.
-#[allow(dead_code)]
 pub fn constraint_force_from_lambda(lambda: f64, dt: f64) -> f64 {
     if dt.abs() < 1e-15 { 0.0 } else { lambda / dt }
 }
@@ -207,7 +197,6 @@ pub fn constraint_force_from_lambda(lambda: f64, dt: f64) -> f64 {
 /// * `lo` / `hi` - Impulse clamp bounds.
 ///
 /// Returns the delta impulse that was applied.
-#[allow(dead_code)]
 pub fn solve_1dof_impulse(
     cdot: f64,
     eff_mass: f64,
@@ -400,7 +389,6 @@ mod constraint_util_tests {
 /// * `r` - lever arm from centre of mass to contact point (world space).
 /// * `n` - constraint axis / contact normal (world space, unit vector).
 /// * `inv_inertia_world` - 3×3 world-space inverse inertia tensor (column-major).
-#[allow(dead_code)]
 pub fn rotational_effective_mass_contribution(
     r: [f64; 3],
     n: [f64; 3],
@@ -412,7 +400,6 @@ pub fn rotational_effective_mass_contribution(
 }
 
 /// Multiply a 3×3 matrix by a 3-vector.
-#[allow(dead_code)]
 fn mat_vec_mul3(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     [
         m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
@@ -430,8 +417,6 @@ fn mat_vec_mul3(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
 /// ```
 ///
 /// Returns `1/K` (the effective mass used to scale impulses), or 0.0 if K ≈ 0.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn effective_mass_full(
     inv_mass_a: f64,
     inv_mass_b: f64,
@@ -453,7 +438,6 @@ pub fn effective_mass_full(
 /// ```text
 /// v_rel = (vb + ωb × rb) - (va + ωa × ra)
 /// ```
-#[allow(dead_code)]
 pub fn relative_velocity(
     v_a: [f64; 3],
     omega_a: [f64; 3],
@@ -487,7 +471,6 @@ pub fn relative_velocity(
 /// ```text
 /// bias = max(0, -e * v_n)   if |v_n| > restitution_threshold
 /// ```
-#[allow(dead_code)]
 pub fn restitution_bias(v_rel_normal: f64, restitution: f64, threshold: f64) -> f64 {
     if v_rel_normal < -threshold {
         -restitution * v_rel_normal
@@ -502,7 +485,6 @@ pub fn restitution_bias(v_rel_normal: f64, restitution: f64, threshold: f64) -> 
 /// Angular: ω' = ω + I⁻¹ * (r × J)
 ///
 /// `impulse_dir` should be a signed magnitude times the constraint direction.
-#[allow(dead_code)]
 pub fn apply_impulse(
     vel: [f64; 3],
     omega: [f64; 3],
@@ -537,7 +519,6 @@ pub fn apply_impulse(
 /// Normalize a quaternion `[x, y, z, w]`.
 ///
 /// Returns the input unchanged if its magnitude is below `1e-15`.
-#[allow(dead_code)]
 pub fn quat_normalize(q: [f64; 4]) -> [f64; 4] {
     let len2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
     if len2 < 1e-30 {
@@ -555,7 +536,6 @@ pub fn quat_normalize(q: [f64; 4]) -> [f64; 4] {
 /// Multiply two quaternions `p * q` (Hamilton product).
 ///
 /// Quaternion layout: `[x, y, z, w]`.
-#[allow(dead_code)]
 pub fn quat_mul(p: [f64; 4], q: [f64; 4]) -> [f64; 4] {
     let [px, py, pz, pw] = p;
     let [qx, qy, qz, qw] = q;
@@ -568,13 +548,11 @@ pub fn quat_mul(p: [f64; 4], q: [f64; 4]) -> [f64; 4] {
 }
 
 /// Conjugate (inverse for unit quaternions) of `[x, y, z, w]`.
-#[allow(dead_code)]
 pub fn quat_conjugate(q: [f64; 4]) -> [f64; 4] {
     [-q[0], -q[1], -q[2], q[3]]
 }
 
 /// Convert a quaternion `[x, y, z, w]` to a 3×3 rotation matrix (row-major).
-#[allow(dead_code)]
 pub fn quat_to_rot3(q: [f64; 4]) -> [[f64; 3]; 3] {
     let [x, y, z, w] = q;
     let x2 = 2.0 * x * x;
@@ -596,7 +574,6 @@ pub fn quat_to_rot3(q: [f64; 4]) -> [[f64; 3]; 3] {
 /// Compute the angular velocity from the time derivative of a quaternion.
 ///
 /// `ω = 2 * conj(q) ⊗ dq/dt`  (body-space angular velocity)
-#[allow(dead_code)]
 pub fn quat_to_angular_velocity(q: [f64; 4], q_dot: [f64; 4]) -> [f64; 3] {
     let q_conj = quat_conjugate(q);
     let omega_q = quat_mul(q_conj, q_dot);
@@ -606,7 +583,6 @@ pub fn quat_to_angular_velocity(q: [f64; 4], q_dot: [f64; 4]) -> [f64; 3] {
 // ── Vector Utilities ──────────────────────────────────────────────────────────
 
 /// Normalize a 3-vector. Returns `[0,0,0]` if length < 1e-15.
-#[allow(dead_code)]
 pub fn vec3_normalize(v: [f64; 3]) -> [f64; 3] {
     let len2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
     if len2 < 1e-30 {
@@ -617,25 +593,21 @@ pub fn vec3_normalize(v: [f64; 3]) -> [f64; 3] {
 }
 
 /// Length of a 3-vector.
-#[allow(dead_code)]
 pub fn vec3_len(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
 /// Scale a 3-vector.
-#[allow(dead_code)]
 pub fn vec3_scale(v: [f64; 3], s: f64) -> [f64; 3] {
     [v[0] * s, v[1] * s, v[2] * s]
 }
 
 /// Add two 3-vectors.
-#[allow(dead_code)]
 pub fn vec3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 /// Subtract two 3-vectors (a - b).
-#[allow(dead_code)]
 pub fn vec3_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -643,7 +615,6 @@ pub fn vec3_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// Compute a tangent vector perpendicular to `n`.
 ///
 /// Picks the most orthogonal world-axis and orthogonalizes against `n`.
-#[allow(dead_code)]
 pub fn perpendicular_tangent(n: [f64; 3]) -> [f64; 3] {
     let nx_abs = n[0].abs();
     let ny_abs = n[1].abs();
@@ -664,13 +635,11 @@ pub fn perpendicular_tangent(n: [f64; 3]) -> [f64; 3] {
 // ── Solver Convergence Helpers ────────────────────────────────────────────────
 
 /// Compute the L2 norm of a residual vector.
-#[allow(dead_code)]
 pub fn residual_norm(residuals: &[f64]) -> f64 {
     residuals.iter().map(|r| r * r).sum::<f64>().sqrt()
 }
 
 /// Compute the L∞ (max) norm of a residual vector.
-#[allow(dead_code)]
 pub fn residual_max(residuals: &[f64]) -> f64 {
     residuals
         .iter()
@@ -683,7 +652,6 @@ pub fn residual_max(residuals: &[f64]) -> f64 {
 ///
 /// Standard PGS uses ω = 1.0 (no relaxation).  Values in (1, 2) provide
 /// over-relaxation; values in (0, 1) provide under-relaxation.
-#[allow(dead_code)]
 pub fn sor_omega(omega: f64) -> f64 {
     omega.clamp(1e-4, 2.0 - 1e-4)
 }
@@ -704,7 +672,6 @@ pub fn sor_omega(omega: f64) -> f64 {
 /// * `beta`  - Position stabilization factor (0.1–0.3 typical).
 /// * `dt`    - Time step.
 /// * `slop`  - Allowed penetration slop before correction kicks in.
-#[allow(dead_code)]
 pub fn split_impulse_bias(error: f64, beta: f64, dt: f64, slop: f64) -> f64 {
     let correctable = (error - slop).max(0.0);
     -(beta / dt) * correctable
@@ -717,7 +684,6 @@ pub fn split_impulse_bias(error: f64, beta: f64, dt: f64, slop: f64) -> f64 {
 /// The constraint is: `n · (v_b + ω_b × r_b - v_a - ω_a × r_a) = 0`
 ///
 /// Returns `[J_va, J_ωa, J_vb, J_ωb]` as four 3-vectors.
-#[allow(dead_code)]
 pub fn contact_normal_jacobian(
     n: [f64; 3],
     r_a: [f64; 3],
@@ -738,7 +704,6 @@ pub fn contact_normal_jacobian(
 // ── Interpolation / Blending ──────────────────────────────────────────────────
 
 /// Linear interpolation between two scalars.
-#[allow(dead_code)]
 pub fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t
 }
@@ -746,14 +711,12 @@ pub fn lerp(a: f64, b: f64, t: f64) -> f64 {
 /// Smoothstep (cubic Hermite) interpolation.
 ///
 /// Maps `t` in `[0, 1]` to a smooth curve: `3t² - 2t³`.
-#[allow(dead_code)]
 pub fn smoothstep(t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
 
 /// Clamp a value to `[lo, hi]`.
-#[allow(dead_code)]
 pub fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
     x.max(lo).min(hi)
 }
@@ -865,14 +828,10 @@ mod extended_util_tests {
     fn test_quat_to_rot3_identity() {
         let id = [0.0, 0.0, 0.0, 1.0];
         let r = quat_to_rot3(id);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in r.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (r[i][j] - expected).abs() < 1e-10,
-                    "r[{i}][{j}]={}",
-                    r[i][j]
-                );
+                assert!((val - expected).abs() < 1e-10, "r[{i}][{j}]={val}",);
             }
         }
     }

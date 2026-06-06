@@ -9,8 +9,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::{Complex, ComplexMatN};
 
 impl std::ops::IndexMut<(usize, usize)> for ComplexMatN {

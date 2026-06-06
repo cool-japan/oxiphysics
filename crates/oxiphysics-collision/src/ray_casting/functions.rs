@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{
     Aabb, BatchRayResult, Capsule, ConvexMesh, Heightfield, Obb, Ray, RayHit, Sphere,
 };
@@ -109,9 +108,9 @@ pub fn ray_aabb(ray: &Ray, aabb: &Aabb) -> Option<(f64, f64)> {
     ];
     let mut t_min = ray.t_min;
     let mut t_max = ray.t_max;
-    for i in 0..3 {
-        let t1 = (aabb.min[i] - ray.origin[i]) * inv_dir[i];
-        let t2 = (aabb.max[i] - ray.origin[i]) * inv_dir[i];
+    for (i, &id) in inv_dir.iter().enumerate() {
+        let t1 = (aabb.min[i] - ray.origin[i]) * id;
+        let t2 = (aabb.max[i] - ray.origin[i]) * id;
         let (ta, tb) = if t1 < t2 { (t1, t2) } else { (t2, t1) };
         t_min = t_min.max(ta);
         t_max = t_max.min(tb);
@@ -343,7 +342,6 @@ pub fn ray_convex_mesh(
 /// checking whether the ray drops below the terrain surface.
 ///
 /// Returns `None` if no intersection is found within `max_steps` steps.
-#[allow(clippy::too_many_arguments)]
 pub fn ray_heightfield(ray: &Ray, hf: &Heightfield, max_steps: usize) -> Option<RayHit> {
     let step = hf.cell_size * 0.5;
     let mut t = ray.t_min;
@@ -471,7 +469,6 @@ pub fn batch_ray_triangles(
 /// * `cam_pos`            – Camera position in world space.
 /// * `cam_forward`        – Camera forward direction (normalised).
 /// * `cam_up`             – Camera up direction (normalised).
-#[allow(clippy::too_many_arguments)]
 pub fn pick_ray(
     screen_x: f64,
     screen_y: f64,

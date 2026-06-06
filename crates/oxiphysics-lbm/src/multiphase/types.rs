@@ -2,13 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use crate::grid::LbmGrid2D;
 use crate::lattice::CS2;
 
 /// Pseudo-potential function type for the Shan-Chen model.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PsiType {
     /// Linear: `psi(rho) = rho`.
@@ -27,7 +24,6 @@ pub enum PsiType {
 ///
 /// The pressure tensor includes a thermodynamic correction that enforces
 /// mechanical equilibrium across the interface.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FreeEnergyModel {
     /// Surface tension parameter kappa (controls interface width).
@@ -39,7 +35,6 @@ pub struct FreeEnergyModel {
 }
 impl FreeEnergyModel {
     /// Create a new free-energy model.
-    #[allow(dead_code)]
     pub fn new(kappa: f64, a: f64, b: f64) -> Self {
         Self { kappa, a, b }
     }
@@ -51,7 +46,6 @@ impl FreeEnergyModel {
     /// `p_bulk = cs² * rho + A/2 * rho² + B/4 * rho⁴`
     ///
     /// The `grad_rho_sq` argument is `|grad rho|²`.
-    #[allow(dead_code)]
     pub fn compute_free_energy_pressure(&self, rho: f64, grad_rho_sq: f64) -> f64 {
         use crate::lattice::CS2;
         let p_bulk = CS2 * rho + 0.5 * self.a * rho * rho + 0.25 * self.b * rho * rho * rho * rho;
@@ -61,7 +55,6 @@ impl FreeEnergyModel {
     /// Equilibrium density for the liquid phase (rho > 0, phi > 0).
     ///
     /// At equilibrium: `A * phi + B * phi^3 = 0` → `phi = sqrt(-A/B)`.
-    #[allow(dead_code)]
     pub fn rho_liquid(&self) -> f64 {
         if self.a < 0.0 && self.b > 0.0 {
             (-self.a / self.b).sqrt()
@@ -70,12 +63,10 @@ impl FreeEnergyModel {
         }
     }
     /// Equilibrium density for the vapour phase (symmetric: `rho_vapor = -rho_liquid`).
-    #[allow(dead_code)]
     pub fn rho_vapor(&self) -> f64 {
         -self.rho_liquid()
     }
     /// Interface width parameter: `xi = sqrt(-2 kappa / A)` (valid when A < 0).
-    #[allow(dead_code)]
     pub fn interface_width(&self) -> f64 {
         if self.a < 0.0 && self.kappa > 0.0 {
             (-2.0 * self.kappa / self.a).sqrt()
@@ -84,7 +75,6 @@ impl FreeEnergyModel {
         }
     }
     /// Surface tension: `sigma = sqrt(-8 kappa A^3 / (9 B^2))`.
-    #[allow(dead_code)]
     pub fn surface_tension(&self) -> f64 {
         if self.a < 0.0 && self.b > 0.0 && self.kappa > 0.0 {
             (-8.0 * self.kappa * self.a.powi(3) / (9.0 * self.b * self.b)).sqrt()
@@ -93,19 +83,16 @@ impl FreeEnergyModel {
         }
     }
     /// Compute the bulk free energy density: `f(phi) = A/2 * phi^2 + B/4 * phi^4`.
-    #[allow(dead_code)]
     pub fn bulk_free_energy_density(&self, phi: f64) -> f64 {
         0.5 * self.a * phi * phi + 0.25 * self.b * phi * phi * phi * phi
     }
     /// Compute the chemical potential: `mu = A * phi + B * phi^3 - kappa * lap(phi)`.
-    #[allow(dead_code)]
     pub fn chemical_potential(&self, phi: f64, laplacian_phi: f64) -> f64 {
         self.a * phi + self.b * phi * phi * phi - self.kappa * laplacian_phi
     }
     /// Compute the pressure tensor diagonal (isotropic part) for the free-energy model.
     ///
     /// `P_iso = p_bulk + kappa * phi * lap(phi) + kappa/2 * |grad phi|^2`
-    #[allow(dead_code)]
     pub fn pressure_tensor_isotropic(
         &self,
         rho: f64,
@@ -193,7 +180,6 @@ impl ShanChenModel {
     }
 }
 /// Parameters for a spinodal decomposition simulation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SpinodалDecompositionParams {
     /// Cahn-Hilliard mobility M.
@@ -207,7 +193,6 @@ pub struct SpinodалDecompositionParams {
     /// Random noise amplitude for initial perturbation.
     pub noise_amplitude: f64,
 }
-#[allow(dead_code)]
 impl SpinodалDecompositionParams {
     /// Create default parameters for spinodal decomposition.
     pub fn new(a: f64, b: f64, kappa: f64, mobility: f64) -> Self {
@@ -255,7 +240,6 @@ impl SpinodалDecompositionParams {
     }
 }
 /// State of a spherically symmetric bubble.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BubbleState {
     /// Current bubble radius (m).
@@ -273,7 +257,6 @@ pub struct BubbleState {
     /// Liquid dynamic viscosity.
     pub mu_liquid: f64,
 }
-#[allow(dead_code)]
 impl BubbleState {
     /// Create a new bubble near equilibrium.
     pub fn new(r_eq: f64, p_inf: f64, rho_liquid: f64, sigma: f64, mu_liquid: f64) -> Self {
@@ -328,7 +311,6 @@ impl BubbleState {
 /// Component A (index 0) and component B (index 1) interact via a
 /// cross-coupling constant `g_ab`.  Like-component coupling constants
 /// `g_aa` and `g_bb` are used for self-interactions (density ratio tuning).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MultiComponentSC {
     /// Like-component coupling for fluid A (g_aa; typically 0 or small).
@@ -342,7 +324,6 @@ pub struct MultiComponentSC {
 }
 impl MultiComponentSC {
     /// Create a new multi-component Shan-Chen model.
-    #[allow(dead_code)]
     pub fn new(g_aa: f64, g_bb: f64, g_cc: f64, rho_0: f64) -> Self {
         Self {
             g_aa,
@@ -352,7 +333,6 @@ impl MultiComponentSC {
         }
     }
     /// Pseudo-potential: `psi(rho) = rho_0 * (1 - exp(-rho/rho_0))`.
-    #[allow(dead_code)]
     pub fn psi(&self, rho: f64) -> f64 {
         self.rho_0 * (1.0 - (-rho / self.rho_0).exp())
     }
@@ -362,8 +342,6 @@ impl MultiComponentSC {
     ///
     /// Also includes the like-component self-interaction via `g_aa`.
     /// Returns `(Fx_A, Fy_A)`.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(dead_code)]
     pub fn interaction_force(
         &self,
         psi_a: &[f64],
@@ -432,7 +410,6 @@ impl MultiComponentSC {
     /// adjusting `g_cc`.  This returns a heuristic estimate:
     ///
     /// `rho_ratio ~ exp(2 * |g_cc| * rho_0 / 3)`
-    #[allow(dead_code)]
     pub fn density_ratio_estimate(&self) -> f64 {
         (2.0 * self.g_cc.abs() * self.rho_0 / 3.0).exp()
     }

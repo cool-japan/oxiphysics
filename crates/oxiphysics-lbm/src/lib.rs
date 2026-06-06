@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,7 +14,6 @@
 //! - **Multiphase**: Shan-Chen pseudo-potential method
 //! - **Simulation runner**: High-level orchestration
 #![warn(missing_docs)]
-#![allow(ambiguous_glob_reexports)]
 
 pub mod acoustics_lbm;
 pub mod aeroacoustics;
@@ -59,22 +57,86 @@ pub mod turbulence_model;
 pub mod wall_model;
 pub mod zou_he;
 
+pub mod acoustic_lbm;
+pub mod acoustic_streaming_lbm;
+pub mod aeroacoustics_lbm;
+pub mod biofilm_lbm;
+pub mod biofluids_lbm;
+pub mod boundary_lbm;
+pub mod cahn_hilliard;
+pub mod cahn_hilliard_lbm;
+pub mod combustion_lbm;
+pub mod compressible;
+pub mod conjugate_heat;
+pub mod curved_boundary;
+pub mod diffusion;
+pub mod droplet_dynamics;
+pub mod droplet_dynamics_lbm;
+pub mod electrokinetic_lbm;
+pub mod electrokinetics;
+pub mod electrokinetics_lbm;
+pub mod electroosmotic_lbm;
+pub mod electrostatic_lbm;
+pub mod ferrofluid_lbm;
+pub mod granular_lbm;
+pub mod heat_transfer_lbm;
+pub mod hybrid_lbm;
+pub mod immersed_boundary_lbm;
+pub mod lbm_optimization;
+pub mod lbm_particles;
+pub mod microfluidics;
+pub mod microfluidics_lbm;
+pub mod mixing_lbm;
+pub mod multiphase_lbm;
+pub mod multiscale;
+pub mod multiscale_lbm;
+pub mod neural_lbm;
+pub mod phase_field_lbm;
+pub mod phase_separation;
+pub mod plasma_lbm;
+pub mod polymer_lbm;
+pub mod porous_media_lbm;
+pub mod sediment_transport;
+pub mod sedimentation;
+pub mod suspension_lbm;
+pub mod thermal_lbm;
+pub mod turbulent_channel;
+pub mod turbulent_dispersion_lbm;
+pub mod viscoelastic_lbm;
+
 pub use boundary::{
     Boundary, BoundaryType, WallSide, apply_boundaries_2d, channel_walls, poiseuille_analytical,
     viscosity_from_omega, zou_he_pressure_outlet, zou_he_velocity_inlet,
 };
 pub use collision::{bgk_collide_2d, bgk_collide_3d};
 pub use d3q27::D3Q27Lattice;
-pub use electrokinetic::*;
-pub use error::*;
+pub use electrokinetic::{
+    BoltzmannIonDistribution, DebyeHuckel, DebyeLayerDiagnostics, DiffusioOsmosis, E_CHARGE,
+    EPSILON_0, ElectricDoubleLayerCapacitance, ElectricDoubleLayerEnergy, ElectrolyteParams,
+    ElectroosmosticFlow, ElectroosmosticPump, ElectroosmoticBodyForce, ElectrophoreticMobility,
+    ElectroviscousEffect, IonicConcentrationField, K_B, NernstPlanckSolver,
+    NonlinearPoissonBoltzmann, PoissonBoltzmann, PoissonSolver, TransientEof,
+    ZetaPotentialEstimator, poisson_boltzmann_1d, streaming_potential,
+};
+pub use error::{Error, Result};
 pub use grid::{LbmGrid2D, LbmGrid3D};
 pub use lattice::{Lattice, LatticeType};
 pub use mrt::{MrtCollision2D, MrtD3Q19, MrtRelaxation, mrt_inverse_matrix, mrt_transform_matrix};
 pub use mrt3d::TrtCollision3D;
 pub use multiphase::ShanChenModel;
-pub use phase_field::*;
-pub use porous_media::*;
-pub use reactive_flow::*;
+pub use phase_field::{AllenCahn, PhaseField, PhaseFieldLbm, PhaseFieldParams, SoyModel};
+pub use porous_media::{
+    AnisotropicPorousCell, BrinkmanExtension, BrinkmanForce, BrooksCoreyCapillary,
+    DarcyBrinkmanForchheimer, DarcyFlow, DarcyResistance, EffectiveMediumProperties,
+    ForchhheimerTerm, KozenyCarmanExtended, KozenyCarmanModel, PermeabilityTensor, PorousCell,
+    PorousHeatTransfer, PorousLbmCell, PorousLbmGrid, PorousMediaDriver, PorousMediumType,
+    RevAveraging,
+};
+pub use reactive_flow::{
+    ChemicalReaction, CombustionCell, ElementaryReaction, FlameProperties, IgnitionModel,
+    MultiSpeciesMixture, ReactionMechanism, ReactionRateLimiter, ReactiveFlowGrid,
+    Species as ReactiveSpecies, SpeciesDiffusion,
+};
 pub use simulation::LbmSimulation2D;
 pub use streaming::{stream_2d, stream_3d};
 pub use turbulence::{SmagorinskyModel, bgk_collide_smagorinsky_2d, smagorinsky_omega};
@@ -1027,10 +1089,10 @@ mod tests {
         let f_before: Vec<Vec<f64>> = (0..9).map(|i| grid.f[i].clone()).collect();
         bgk_collide_2d(&mut grid, omega);
         // At equilibrium, collision is a no-op.
-        for i in 0..9 {
-            for k in 0..nx * ny {
+        for (i, (row, row_before)) in grid.f.iter().zip(f_before.iter()).enumerate() {
+            for (k, (&fval, &fbefore)) in row.iter().zip(row_before.iter()).enumerate() {
                 assert!(
-                    (grid.f[i][k] - f_before[i][k]).abs() < 1e-12,
+                    (fval - fbefore).abs() < 1e-12,
                     "BGK disturbed equilibrium at f[{i}][{k}]"
                 );
             }
@@ -1054,14 +1116,14 @@ mod tests {
                 }
             }
         }
-        let n = nx * ny * nz;
+        let _n = nx * ny * nz;
         let q = 19;
         let f_before: Vec<Vec<f64>> = (0..q).map(|i| grid.f[i].clone()).collect();
         bgk_collide_3d(&mut grid, omega);
-        for i in 0..q {
-            for k in 0..n {
+        for (i, (row, row_before)) in grid.f.iter().zip(f_before.iter()).enumerate() {
+            for (k, (&fval, &fbefore)) in row.iter().zip(row_before.iter()).enumerate() {
                 assert!(
-                    (grid.f[i][k] - f_before[i][k]).abs() < 1e-12,
+                    (fval - fbefore).abs() < 1e-12,
                     "3D BGK disturbed equilibrium at f[{i}][{k}]"
                 );
             }
@@ -1147,10 +1209,10 @@ mod tests {
         let f_before: Vec<Vec<f64>> = (0..9).map(|i| grid.f[i].clone()).collect();
         let mrt = MrtCollision2D::new(1.0 / 6.0);
         mrt.collide_grid(&mut grid);
-        for i in 0..9 {
-            for k in 0..nx * ny {
+        for (i, (row, row_before)) in grid.f.iter().zip(f_before.iter()).enumerate() {
+            for (k, (&fval, &fbefore)) in row.iter().zip(row_before.iter()).enumerate() {
                 assert!(
-                    (grid.f[i][k] - f_before[i][k]).abs() < 1e-11,
+                    (fval - fbefore).abs() < 1e-11,
                     "MRT 2D disturbed equilibrium at [{i}][{k}]"
                 );
             }
@@ -1515,49 +1577,3 @@ mod tests {
         assert!(Error::check_grid_3d(4, 4, 0).is_err());
     }
 }
-pub mod acoustic_lbm;
-pub mod acoustic_streaming_lbm;
-pub mod aeroacoustics_lbm;
-pub mod biofilm_lbm;
-pub mod biofluids_lbm;
-pub mod boundary_lbm;
-pub mod cahn_hilliard;
-pub mod cahn_hilliard_lbm;
-pub mod combustion_lbm;
-pub mod compressible;
-pub mod conjugate_heat;
-pub mod curved_boundary;
-pub mod diffusion;
-pub mod droplet_dynamics;
-pub mod droplet_dynamics_lbm;
-pub mod electrokinetic_lbm;
-pub mod electrokinetics;
-pub mod electrokinetics_lbm;
-pub mod electroosmotic_lbm;
-pub mod electrostatic_lbm;
-pub mod ferrofluid_lbm;
-pub mod granular_lbm;
-pub mod heat_transfer_lbm;
-pub mod hybrid_lbm;
-pub mod immersed_boundary_lbm;
-pub mod lbm_optimization;
-pub mod lbm_particles;
-pub mod microfluidics;
-pub mod microfluidics_lbm;
-pub mod mixing_lbm;
-pub mod multiphase_lbm;
-pub mod multiscale;
-pub mod multiscale_lbm;
-pub mod neural_lbm;
-pub mod phase_field_lbm;
-pub mod phase_separation;
-pub mod plasma_lbm;
-pub mod polymer_lbm;
-pub mod porous_media_lbm;
-pub mod sediment_transport;
-pub mod sedimentation;
-pub mod suspension_lbm;
-pub mod thermal_lbm;
-pub mod turbulent_channel;
-pub mod turbulent_dispersion_lbm;
-pub mod viscoelastic_lbm;

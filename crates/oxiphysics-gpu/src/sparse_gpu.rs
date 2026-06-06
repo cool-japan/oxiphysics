@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,8 +5,6 @@
 //!
 //! Provides CSR, ELLPACK, Hybrid (ELL+COO), and Block-CSR formats along with
 //! iterative solvers (CG, BiCGSTAB, preconditioned CG) suitable for GPU offload.
-#![allow(missing_docs)]
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Sparse vector operations
@@ -42,8 +39,11 @@ pub fn scale_vec(x: &[f64], s: f64) -> Vec<f64> {
 
 /// Coordinate (COO) format sparse matrix for incremental assembly.
 pub struct SparseTriplet {
+    /// Row indices of non-zero entries.
     pub rows: Vec<usize>,
+    /// Column indices of non-zero entries.
     pub cols: Vec<usize>,
+    /// Values of non-zero entries.
     pub vals: Vec<f64>,
 }
 
@@ -123,7 +123,9 @@ impl Default for SparseTriplet {
 
 /// Compressed Sparse Row (CSR) matrix stored as plain `f64` arrays.
 pub struct CsrMatrix {
+    /// Number of rows.
     pub n_rows: usize,
+    /// Number of columns.
     pub n_cols: usize,
     /// Row start indices, length `n_rows + 1`.
     pub row_ptr: Vec<usize>,
@@ -178,14 +180,14 @@ impl CsrMatrix {
     /// Sparse matrix–vector product `y = A * x`.
     pub fn spmv(&self, x: &[f64]) -> Vec<f64> {
         let mut y = vec![0.0f64; self.n_rows];
-        for r in 0..self.n_rows {
+        for (r, yr) in y.iter_mut().enumerate() {
             let start = self.row_ptr[r];
             let end = self.row_ptr[r + 1];
             let mut sum = 0.0;
             for k in start..end {
                 sum += self.values[k] * x[self.col_idx[k]];
             }
-            y[r] = sum;
+            *yr = sum;
         }
         y
     }
@@ -274,8 +276,11 @@ impl CsrMatrix {
 
 /// ELLPACK-format sparse matrix: rows padded to `max_nnz_per_row`.
 pub struct EllMatrix {
+    /// Number of rows.
     pub n_rows: usize,
+    /// Number of columns.
     pub n_cols: usize,
+    /// Maximum number of non-zeros per row (padding width).
     pub max_nnz_per_row: usize,
     /// Column indices, row-major `[n_rows × max_nnz_per_row]`.
     pub col_idx: Vec<usize>,
@@ -318,7 +323,7 @@ impl EllMatrix {
     /// Sparse matrix–vector product `y = A * x`.
     pub fn spmv(&self, x: &[f64]) -> Vec<f64> {
         let mut y = vec![0.0f64; self.n_rows];
-        for r in 0..self.n_rows {
+        for (r, yr) in y.iter_mut().enumerate() {
             let mut sum = 0.0;
             for j in 0..self.max_nnz_per_row {
                 let v = self.values[r * self.max_nnz_per_row + j];
@@ -327,7 +332,7 @@ impl EllMatrix {
                     sum += v * x[c];
                 }
             }
-            y[r] = sum;
+            *yr = sum;
         }
         y
     }
@@ -339,9 +344,13 @@ impl EllMatrix {
 
 /// Hybrid ELL+COO matrix: regular rows stored in ELL, overflow in COO.
 pub struct HybridMatrix {
+    /// Regular (padded) portion stored in ELLPACK format.
     pub ell: EllMatrix,
+    /// Row indices of COO overflow entries.
     pub coo_row: Vec<usize>,
+    /// Column indices of COO overflow entries.
     pub coo_col: Vec<usize>,
+    /// Values of COO overflow entries.
     pub coo_val: Vec<f64>,
 }
 
@@ -362,8 +371,11 @@ impl HybridMatrix {
 
 /// Block-CSR matrix where every stored entry is a `block_size × block_size` dense tile.
 pub struct BlockCsrMatrix {
+    /// Size of each dense square block.
     pub block_size: usize,
+    /// Number of block rows.
     pub n_block_rows: usize,
+    /// Number of block columns.
     pub n_block_cols: usize,
     /// Block row start indices, length `n_block_rows + 1`.
     pub row_ptr: Vec<usize>,
@@ -525,16 +537,20 @@ pub fn jacobi_preconditioned_cg(
     let n = b.len();
     // Build inverse diagonal preconditioner M^{-1}
     let mut m_inv = vec![1.0f64; n];
-    for r in 0..n {
+    for (r, m) in m_inv.iter_mut().enumerate() {
         let d = a.get(r, r);
         if d.abs() > 1e-300 {
-            m_inv[r] = 1.0 / d;
+            *m = 1.0 / d;
         }
     }
 
     let mut x = vec![0.0f64; n];
     let ax = a.spmv(&x);
-    let mut r: Vec<f64> = (0..n).map(|i| b[i] - ax[i]).collect();
+    let mut r: Vec<f64> = b
+        .iter()
+        .zip(ax.iter())
+        .map(|(&bi, &axi)| bi - axi)
+        .collect();
     // z = M^{-1} r
     let z: Vec<f64> = (0..n).map(|i| m_inv[i] * r[i]).collect();
     let mut p = z.clone();
@@ -597,14 +613,14 @@ pub fn optimal_ell_row_width(nnz_distribution: &[usize]) -> usize {
 /// but structured for row-parallel dispatch.
 pub fn spmv_segmented(a: &CsrMatrix, x: &[f64]) -> Vec<f64> {
     let mut y = vec![0.0_f64; a.n_rows];
-    for r in 0..a.n_rows {
+    for (r, yr) in y.iter_mut().enumerate() {
         let start = a.row_ptr[r];
         let end = a.row_ptr[r + 1];
         let mut acc = 0.0_f64;
         for k in start..end {
             acc += a.values[k] * x[a.col_idx[k]];
         }
-        y[r] = acc;
+        *yr = acc;
     }
     y
 }
@@ -645,8 +661,8 @@ pub fn csr_to_ell(csr: &CsrMatrix) -> EllMatrix {
 pub fn extract_diagonal(a: &CsrMatrix) -> Vec<f64> {
     let n = a.n_rows.min(a.n_cols);
     let mut diag = vec![0.0_f64; n];
-    for r in 0..n {
-        diag[r] = a.get(r, r);
+    for (r, d) in diag.iter_mut().enumerate() {
+        *d = a.get(r, r);
     }
     diag
 }

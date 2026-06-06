@@ -11,7 +11,6 @@ use oxiphysics_core::math::Vec3;
 ///
 /// Each node divides space with a plane; polygons are classified as front,
 /// back, or coplanar with the plane.
-#[allow(dead_code)]
 pub struct BspNode {
     /// The dividing plane.
     pub plane: BspPlane,
@@ -22,7 +21,6 @@ pub struct BspNode {
     /// Subtree behind the plane.
     pub back: Option<Box<BspNode>>,
 }
-#[allow(dead_code)]
 impl BspNode {
     /// Create a new BSP node with the given plane, no polygons, no children.
     pub fn new(plane: BspPlane) -> Self {
@@ -133,9 +131,7 @@ impl BspNode {
 }
 /// Performs CSG boolean operations while tracking which material each
 /// resulting triangle comes from.
-#[allow(dead_code)]
 pub struct CsgWithMaterials;
-#[allow(dead_code)]
 impl CsgWithMaterials {
     /// Execute a boolean operation, returning `(result_mesh, per_triangle_materials)`.
     ///
@@ -268,7 +264,6 @@ impl CsgWithMaterials {
 }
 /// A manifold check result.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ManifoldCheckResult {
     /// Whether the mesh is manifold (every edge shared by exactly 2 triangles).
     pub is_manifold: bool,
@@ -462,7 +457,6 @@ impl MeshBoolean {
     }
 }
 /// A half-edge mesh structure for efficient topological queries.
-#[allow(dead_code)]
 pub struct HalfEdgeMesh {
     /// Vertex positions.
     pub vertices: Vec<[f64; 3]>,
@@ -476,7 +470,6 @@ impl Default for HalfEdgeMesh {
         Self::new()
     }
 }
-#[allow(dead_code)]
 impl HalfEdgeMesh {
     /// Build a half-edge mesh from a triangle mesh given as vertices + face indices.
     pub fn from_triangle_mesh(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Self {
@@ -770,7 +763,6 @@ impl HalfEdgeMesh {
 }
 /// Classification of a point relative to a BSP plane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum PlaneClass {
     /// Point is in front (positive half-space).
     Front,
@@ -781,7 +773,6 @@ pub enum PlaneClass {
 }
 /// Material properties attached to a mesh for CSG operations.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CsgMaterial {
     /// Unique material ID.
     pub id: u32,
@@ -830,7 +821,6 @@ impl BspPlane {
 ///
 /// Half-edges form the basis for traversal and boolean operations on meshes.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct HalfEdge {
     /// Index of the vertex this half-edge points to.
     pub vertex: usize,
@@ -846,9 +836,7 @@ pub struct HalfEdge {
 ///
 /// Points within `epsilon` of a plane boundary are snapped to the plane,
 /// reducing numerical sensitivity in degenerate configurations.
-#[allow(dead_code)]
 pub struct RobustMeshBoolean;
-#[allow(dead_code)]
 impl RobustMeshBoolean {
     /// Execute a robust boolean operation.
     pub fn execute(
@@ -970,9 +958,7 @@ impl RobustMeshBoolean {
 ///
 /// Validates that both inputs are manifold before operating; returns an error
 /// for non-manifold inputs.
-#[allow(dead_code)]
 pub struct ManifoldBoolean;
-#[allow(dead_code)]
 impl ManifoldBoolean {
     /// Execute a boolean operation, validating manifold correctness.
     pub fn execute(

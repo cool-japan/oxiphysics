@@ -3,8 +3,6 @@
 
 //! Stress computation utilities and contact handling.
 
-#![allow(clippy::needless_range_loop)]
-
 use super::math_helpers::{det3x3, mul3x3, transpose3x3};
 
 // ---------------------------------------------------------------------------
@@ -12,7 +10,6 @@ use super::math_helpers::{det3x3, mul3x3, transpose3x3};
 // ---------------------------------------------------------------------------
 
 /// Compute the Cauchy stress tensor sigma = (1/J) P F^T from first Piola-Kirchhoff stress P.
-#[allow(dead_code)]
 pub fn cauchy_stress(piola: [[f64; 3]; 3], f: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let j = det3x3(f);
     if j.abs() < 1e-30 {
@@ -31,7 +28,6 @@ pub fn cauchy_stress(piola: [[f64; 3]; 3], f: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 }
 
 /// Compute the von Mises stress from a Cauchy stress tensor.
-#[allow(dead_code)]
 pub fn von_mises_stress(sigma: [[f64; 3]; 3]) -> f64 {
     let s11 = sigma[0][0];
     let s22 = sigma[1][1];
@@ -47,7 +43,6 @@ pub fn von_mises_stress(sigma: [[f64; 3]; 3]) -> f64 {
 }
 
 /// Compute the Green-Lagrange strain tensor E = 0.5 (F^T F - I).
-#[allow(dead_code)]
 pub fn green_lagrange_strain(f: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let ft = transpose3x3(f);
     let ftf = mul3x3(ft, f);
@@ -66,7 +61,6 @@ pub fn green_lagrange_strain(f: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 // ---------------------------------------------------------------------------
 
 /// Simple penalty-based contact response against a ground plane.
-#[allow(dead_code)]
 pub fn apply_ground_contact(
     nodes: &mut [[f64; 3]],
     velocities: &mut [[f64; 3]],

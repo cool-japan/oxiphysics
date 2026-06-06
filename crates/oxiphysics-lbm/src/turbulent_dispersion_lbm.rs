@@ -1,4 +1,3 @@
-#![allow(clippy::if_same_then_else, clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -18,8 +17,6 @@
 //!   counter-gradient transport correction.
 //! - [`DispersionLBM`]: Full LBM passive-scalar solver with drift-diffusion
 //!   collision and PDF-based source model.
-
-#![allow(dead_code)]
 
 // ─── Physical constants ────────────────────────────────────────────────────
 
@@ -201,8 +198,8 @@ impl ScalarTransport {
         // Re-initialise g to equilibrium at rest (ux=uy=0)
         let n = self.nx * self.ny;
         for k in 0..n {
-            for i in 0..9 {
-                self.g[i][k] = W9[i] * self.concentration[k];
+            for (i, g_i) in self.g.iter_mut().enumerate() {
+                g_i[k] = W9[i] * self.concentration[k];
             }
         }
     }
@@ -264,7 +261,7 @@ impl ScalarTransport {
                     let yn_i = y as i32 + cy;
                     if yn_i < 0 || yn_i >= ny as i32 {
                         // Bounce-back: reflect in opposite direction
-                        let opp = (i + 4) % 8 + if i == 0 { 0 } else { 0 };
+                        let opp = (i + 4) % 8;
                         g_new[opp][k] += self.g[i][k];
                     } else {
                         let yn = yn_i as usize;
@@ -276,9 +273,8 @@ impl ScalarTransport {
         }
         self.g = g_new;
         // Update concentration
-        let n = nx * ny;
-        for k in 0..n {
-            self.concentration[k] = (0..9).map(|i| self.g[i][k]).sum();
+        for (k, conc_k) in self.concentration.iter_mut().enumerate() {
+            *conc_k = (0..9).map(|i| self.g[i][k]).sum();
         }
     }
 
@@ -726,8 +722,8 @@ impl DispersionLBM {
             }
         }
         if total > 0.0 {
-            for k in 0..nx * ny {
-                self.scalar.concentration[k] += mass * weights[k] / total;
+            for (c_k, &w_k) in self.scalar.concentration.iter_mut().zip(weights.iter()) {
+                *c_k += mass * w_k / total;
             }
         }
     }

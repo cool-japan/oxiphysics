@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_strip)]
 use std::io::{BufRead, BufReader, Read};
 
 use super::types::SpectrumRecord;
@@ -23,9 +22,9 @@ pub fn read_csv_spectrum<R: Read>(reader: R) -> crate::Result<SpectrumRecord> {
         if trimmed.is_empty() {
             continue;
         }
-        if trimmed.starts_with('#') {
+        if let Some(rest) = trimmed.strip_prefix('#') {
             if record.metadata.title.is_empty() {
-                record.metadata.title = trimmed[1..].trim().to_string();
+                record.metadata.title = rest.trim().to_string();
             }
             continue;
         }

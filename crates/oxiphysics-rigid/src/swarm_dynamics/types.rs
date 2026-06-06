@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use rand::RngExt;
 
@@ -846,7 +844,6 @@ pub struct SwarmFormationControl {
 }
 impl SwarmFormationControl {
     /// Create a new formation controller.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         agents: Vec<SwarmAgentFull>,
         shape: FormationShape,
@@ -889,12 +886,12 @@ impl SwarmFormationControl {
             FormationShape::V => {
                 let back = vec3_scale(fwd, -1.0);
                 let mut positions = vec![self.center; n];
-                for i in 1..n {
+                for (i, pos) in positions.iter_mut().enumerate().skip(1) {
                     let wing = (i as f64) * self.spacing;
                     let side = if i % 2 == 0 { 1.0f64 } else { -1.0f64 };
                     let lateral = vec3_scale(right, side * (i as f64 / 2.0).ceil() * self.spacing);
                     let backward = vec3_scale(back, wing * 0.5);
-                    positions[i] = vec3_add(vec3_add(self.center, lateral), backward);
+                    *pos = vec3_add(vec3_add(self.center, lateral), backward);
                 }
                 positions
             }
@@ -937,13 +934,19 @@ impl SwarmFormationControl {
     pub fn step(&mut self, dt: f64) {
         let targets = self.desired_positions();
         let n = self.agents.len().min(targets.len());
-        for i in 0..n {
+        for (i, (agent, target)) in self
+            .agents
+            .iter_mut()
+            .zip(targets.iter())
+            .enumerate()
+            .take(n)
+        {
             if i == self.leader_idx {
                 continue;
             }
-            let error = vec3_sub(targets[i], self.agents[i].position);
+            let error = vec3_sub(*target, agent.position);
             let force = vec3_scale(error, self.gain);
-            self.agents[i].apply_steering(force, dt);
+            agent.apply_steering(force, dt);
         }
     }
     /// Number of agents.
@@ -1088,15 +1091,20 @@ impl ParticleSwarmOptimizer {
         let mut rng = rand::rng();
         let global_best = self.global_best.clone();
         for p in &mut self.particles {
-            for d in 0..self.dim {
+            for (d, ((vel, pos), (pb, gb))) in p
+                .velocity
+                .iter_mut()
+                .zip(p.position.iter_mut())
+                .zip(p.personal_best.iter().zip(global_best.iter()))
+                .enumerate()
+            {
+                let _ = d;
                 let r1: f64 = rng.random_range(0.0..1.0);
                 let r2: f64 = rng.random_range(0.0..1.0);
-                let cognitive_term = self.cognitive * r1 * (p.personal_best[d] - p.position[d]);
-                let social_term = self.social * r2 * (global_best[d] - p.position[d]);
-                p.velocity[d] = self.inertia * p.velocity[d] + cognitive_term + social_term;
-            }
-            for d in 0..self.dim {
-                p.position[d] += p.velocity[d];
+                let cognitive_term = self.cognitive * r1 * (*pb - *pos);
+                let social_term = self.social * r2 * (*gb - *pos);
+                *vel = self.inertia * *vel + cognitive_term + social_term;
+                *pos += *vel;
             }
         }
         self.iteration += 1;

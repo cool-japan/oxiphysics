@@ -2,11 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use oxiphysics_core::math::{Real, Vec3};
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{Rgba, halton, value_noise_4d};
 
 /// A turbulence field that applies pseudo-random velocity perturbations to
@@ -15,7 +12,6 @@ use super::functions::{Rgba, halton, value_noise_4d};
 /// The turbulence is computed using a layered (octave) approach inspired by
 /// value noise, using deterministic integer-based hash functions.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TurbulenceField {
     /// Turbulence strength (m/s).
     pub strength: f64,
@@ -30,7 +26,6 @@ pub struct TurbulenceField {
     /// Time offset for animated turbulence.
     pub time_offset: f64,
 }
-#[allow(dead_code)]
 impl TurbulenceField {
     /// Create a new turbulence field with default parameters.
     pub fn new(strength: f64, frequency: f64) -> Self {
@@ -121,10 +116,6 @@ impl SpatialHash {
         let cell = self.cell_of(pos);
         self.table.entry(cell).or_default().push(idx);
     }
-    #[allow(dead_code)]
-    fn clear(&mut self) {
-        self.table.clear();
-    }
     /// Return all particle indices in cells overlapping the given sphere.
     fn query(&self, center: [f64; 3], radius: f64) -> Vec<usize> {
         let r_cells = (radius / self.cell_size).ceil() as i64;
@@ -192,29 +183,24 @@ impl ParticleFlags {
     /// The particle is a ghost / sensor (no collision response).
     pub const GHOST: u32 = 1 << 2;
     /// Create empty flags.
-    #[allow(dead_code)]
     pub fn none() -> Self {
         Self(0)
     }
     /// Test whether a flag is set.
-    #[allow(dead_code)]
     pub fn has(&self, flag: u32) -> bool {
         self.0 & flag != 0
     }
     /// Set a flag.
-    #[allow(dead_code)]
     pub fn set(&mut self, flag: u32) {
         self.0 |= flag;
     }
     /// Clear a flag.
-    #[allow(dead_code)]
     pub fn clear(&mut self, flag: u32) {
         self.0 &= !flag;
     }
 }
 /// Emits particles from the surface or volume of an axis-aligned box.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct BoxEmitter {
     /// Minimum corner of the box.
     pub min: [f64; 3],
@@ -231,7 +217,6 @@ pub struct BoxEmitter {
     /// Accumulated partial-particle counter.
     pub(super) accumulator: f64,
 }
-#[allow(dead_code)]
 impl BoxEmitter {
     /// Create a new box emitter with given bounds.
     pub fn new(min: [f64; 3], max: [f64; 3], velocity: [f64; 3]) -> Self {
@@ -300,7 +285,6 @@ pub struct Particle {
 }
 impl Particle {
     /// Create a new dynamic particle.
-    #[allow(dead_code)]
     pub fn new(position: [f64; 3], mass: f64, radius: f64) -> Self {
         Self {
             position,
@@ -311,19 +295,16 @@ impl Particle {
         }
     }
     /// Create a static (pinned) particle.
-    #[allow(dead_code)]
     pub fn new_static(position: [f64; 3], radius: f64) -> Self {
         let mut p = Self::new(position, 1.0, radius);
         p.flags.set(ParticleFlags::STATIC);
         p
     }
     /// Returns `true` when the static flag is set.
-    #[allow(dead_code)]
     pub fn is_static(&self) -> bool {
         self.flags.has(ParticleFlags::STATIC)
     }
     /// Kinetic energy of this particle (½mv²).
-    #[allow(dead_code)]
     pub fn kinetic_energy(&self) -> f64 {
         if self.is_static() {
             return 0.0;
@@ -334,7 +315,6 @@ impl Particle {
         0.5 * self.mass * v2
     }
     /// Linear momentum of this particle (mv).
-    #[allow(dead_code)]
     pub fn momentum(&self) -> [f64; 3] {
         if self.is_static() {
             return [0.0; 3];
@@ -348,7 +328,6 @@ impl Particle {
 }
 /// Emits particles along a line segment.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct LineEmitter {
     /// Start point of the line.
     pub start: [f64; 3],
@@ -361,7 +340,6 @@ pub struct LineEmitter {
     /// Particle radius.
     pub particle_radius: f64,
 }
-#[allow(dead_code)]
 impl LineEmitter {
     /// Create a new line emitter.
     pub fn new(start: [f64; 3], end: [f64; 3], velocity: [f64; 3]) -> Self {
@@ -397,12 +375,10 @@ impl LineEmitter {
     }
 }
 /// Handles simple elastic collision response between particles.
-#[allow(dead_code)]
 pub struct ParticleCollisionHandler {
     /// Coefficient of restitution (0 = perfectly inelastic, 1 = perfectly elastic).
     pub restitution: f64,
 }
-#[allow(dead_code)]
 impl ParticleCollisionHandler {
     /// Create a new collision handler.
     pub fn new(restitution: f64) -> Self {
@@ -472,12 +448,10 @@ impl ParticleCollisionHandler {
 ///
 /// Keys must be sorted by `t` in ascending order.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ColorOverLifetime {
     /// Sorted keyframes.
     pub keys: Vec<ColorKey>,
 }
-#[allow(dead_code)]
 impl ColorOverLifetime {
     /// Create a gradient from a list of `(t, rgba)` keyframes.
     ///
@@ -546,7 +520,6 @@ impl ColorOverLifetime {
 ///
 /// Particles originate at `apex` and travel within `half_angle` of `axis`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ConeEmitter {
     /// Cone apex (emission origin).
     pub apex: [f64; 3],
@@ -565,7 +538,6 @@ pub struct ConeEmitter {
     /// Accumulated partial-particle counter.
     pub(super) accumulator: f64,
 }
-#[allow(dead_code)]
 impl ConeEmitter {
     /// Create a new cone emitter.
     pub fn new(apex: [f64; 3], axis: [f64; 3], half_angle: f64, speed: f64) -> Self {
@@ -659,7 +631,6 @@ impl ConeEmitter {
 }
 /// A keyframe in a size-over-lifetime curve.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct SizeKey {
     /// Normalised age position (0 = birth, 1 = death).
     pub t: f32,
@@ -668,7 +639,6 @@ pub struct SizeKey {
 }
 /// A point attractor that pulls particles toward a point.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PointAttractor {
     /// Position of the attractor.
     pub position: [f64; 3],
@@ -677,7 +647,6 @@ pub struct PointAttractor {
     /// Maximum radius of influence.
     pub radius: f64,
 }
-#[allow(dead_code)]
 impl PointAttractor {
     /// Create a new attractor.
     pub fn new(position: [f64; 3], strength: f64, radius: f64) -> Self {
@@ -714,7 +683,6 @@ impl PointAttractor {
 }
 /// A container for an SPH-like soft body simulation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SphSoftBody {
     /// Particles in the simulation.
     pub particles: Vec<SphSoftBodyParticle>,
@@ -725,7 +693,6 @@ pub struct SphSoftBody {
     /// Viscosity coefficient μ.
     pub viscosity: f64,
 }
-#[allow(dead_code)]
 impl SphSoftBody {
     /// Create a new SPH soft body system.
     pub fn new(rest_density: f64, stiffness: f64, viscosity: f64) -> Self {
@@ -814,8 +781,8 @@ impl SphSoftBody {
                 let mj = self.particles[j].mass;
                 let mi = self.particles[i].mass;
                 let fmag = -mj * (pi / (rhoi * rhoi) + pj / (rhoj * rhoj)) * dw;
-                for d in 0..3 {
-                    let rhat = dx[d] / r;
+                for (d, &dxd) in dx.iter().enumerate() {
+                    let rhat = dxd / r;
                     self.particles[i].force[d] += fmag * rhat * mi;
                     self.particles[j].force[d] -= fmag * rhat * mj;
                 }
@@ -854,7 +821,6 @@ impl SphSoftBody {
 }
 /// Emits particles from a point source with configurable velocity and spread.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PointEmitter {
     /// Emission origin.
     pub origin: [f64; 3],
@@ -873,7 +839,6 @@ pub struct PointEmitter {
     /// Accumulated time since last emission.
     pub(super) accumulator: f64,
 }
-#[allow(dead_code)]
 impl PointEmitter {
     /// Create a new point emitter.
     pub fn new(origin: [f64; 3], direction: [f64; 3], speed: f64) -> Self {
@@ -918,7 +883,6 @@ impl PointEmitter {
     }
 }
 /// Converts particle data to a regular grid (scalar field).
-#[allow(dead_code)]
 pub struct ParticleToGrid {
     /// Grid origin (minimum corner).
     pub origin: [f64; 3],
@@ -927,7 +891,6 @@ pub struct ParticleToGrid {
     /// Grid dimensions \[nx, ny, nz\].
     pub dims: [usize; 3],
 }
-#[allow(dead_code)]
 impl ParticleToGrid {
     /// Create a new particle-to-grid converter.
     pub fn new(origin: [f64; 3], cell_size: f64, dims: [usize; 3]) -> Self {
@@ -986,7 +949,6 @@ impl ParticleToGrid {
 }
 /// A keyframe in a colour-over-lifetime gradient.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct ColorKey {
     /// Normalised age position (0 = birth, 1 = death).
     pub t: f32,
@@ -997,12 +959,10 @@ pub struct ColorKey {
 ///
 /// Useful for making particles grow, shrink, or pulsate.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SizeOverLifetime {
     /// Sorted keyframes.
     pub keys: Vec<SizeKey>,
 }
-#[allow(dead_code)]
 impl SizeOverLifetime {
     /// Create a size curve from a list of `(t, size)` keyframes.
     pub fn new(mut keys: Vec<(f32, f32)>) -> Self {
@@ -1104,9 +1064,7 @@ impl SoftBody {
     }
 }
 /// Sample a scalar field at arbitrary positions using particle data.
-#[allow(dead_code)]
 pub struct ParticleFieldSampler;
-#[allow(dead_code)]
 impl ParticleFieldSampler {
     /// Sample the density field at position `pos` using SPH kernel.
     ///
@@ -1158,7 +1116,6 @@ impl ParticleFieldSampler {
 }
 /// Simple k-means-style particle cluster.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ParticleCluster {
     /// Cluster centroid.
     pub centroid: [f64; 3],
@@ -1167,7 +1124,6 @@ pub struct ParticleCluster {
     /// Total mass of the cluster.
     pub total_mass: f64,
 }
-#[allow(dead_code)]
 impl ParticleCluster {
     /// Create a cluster with initial centroid and no members.
     pub fn new(centroid: [f64; 3]) -> Self {
@@ -1200,12 +1156,10 @@ impl ParticleCluster {
 }
 /// A pool of particles with lifetime management.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct LifeParticlePool {
     /// Active particles.
     pub particles: Vec<LifeParticle>,
 }
-#[allow(dead_code)]
 impl LifeParticlePool {
     /// Create an empty pool.
     pub fn new() -> Self {
@@ -1238,7 +1192,6 @@ impl LifeParticlePool {
 }
 /// Particle with a finite lifetime.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct LifeParticle {
     /// Underlying particle data.
     pub particle: Particle,
@@ -1247,7 +1200,6 @@ pub struct LifeParticle {
     /// Maximum lifetime at birth (for normalizing age).
     pub max_lifetime: f64,
 }
-#[allow(dead_code)]
 impl LifeParticle {
     /// Create a new life particle.
     pub fn new(particle: Particle, lifetime: f64) -> Self {
@@ -1275,7 +1227,6 @@ impl LifeParticle {
 }
 /// Emits particles from the surface or volume of a sphere.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SphereEmitter {
     /// Centre of the emission sphere.
     pub center: [f64; 3],
@@ -1294,7 +1245,6 @@ pub struct SphereEmitter {
     /// Accumulated partial-particle counter.
     pub(super) accumulator: f64,
 }
-#[allow(dead_code)]
 impl SphereEmitter {
     /// Create a new sphere emitter (surface mode by default).
     pub fn new(center: [f64; 3], radius: f64, speed: f64) -> Self {
@@ -1363,7 +1313,6 @@ impl SphereEmitter {
 /// accumulated force. The system integrates using Leapfrog and applies
 /// neighbour-based pressure gradients.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SphSoftBodyParticle {
     /// Position (m).
     pub position: [f64; 3],
@@ -1382,7 +1331,6 @@ pub struct SphSoftBodyParticle {
     /// Is this particle pinned (static)?
     pub pinned: bool,
 }
-#[allow(dead_code)]
 impl SphSoftBodyParticle {
     /// Create a new SPH soft body particle.
     pub fn new(position: [f64; 3], mass: f64, h: f64) -> Self {
@@ -1431,7 +1379,6 @@ impl ParticleSet {
     ///
     /// `cell_size` controls the spatial hash resolution.  A good value is the
     /// typical neighbour-query radius.
-    #[allow(dead_code)]
     pub fn new(cell_size: f64) -> Self {
         Self {
             particles: Vec::new(),
@@ -1441,7 +1388,6 @@ impl ParticleSet {
         }
     }
     /// Add a particle and return its index.
-    #[allow(dead_code)]
     pub fn add_particle(&mut self, p: Particle) -> usize {
         let idx = self.particles.len();
         self.hash.insert(p.position, idx);
@@ -1453,7 +1399,6 @@ impl ParticleSet {
     /// Note: this changes the index of the last particle.  Returns the swapped
     /// particle's old index (which is now `idx`), or `None` if `idx` was the
     /// last particle.
-    #[allow(dead_code)]
     pub fn remove_particle(&mut self, idx: usize) -> Option<usize> {
         let n = self.particles.len();
         if idx >= n {
@@ -1468,7 +1413,6 @@ impl ParticleSet {
         }
     }
     /// Rebuild the spatial hash from scratch.
-    #[allow(dead_code)]
     pub fn rebuild_hash(&mut self) {
         self.hash = SpatialHash::new(self.cell_size);
         for (i, p) in self.particles.iter().enumerate() {
@@ -1486,7 +1430,6 @@ impl ParticleSet {
     ///
     /// The query is exact: only particles whose centre is within `radius` are
     /// returned (the hash is used as a broad-phase).
-    #[allow(dead_code)]
     pub fn neighbors_within(&mut self, pos: [f64; 3], radius: f64) -> Vec<usize> {
         self.ensure_hash();
         let candidates = self.hash.query(pos, radius);
@@ -1506,7 +1449,6 @@ impl ParticleSet {
     ///
     /// The force is integrated by the caller; here we directly modify velocity
     /// using an implicit Euler half-step `Δv = F/m * dt`.
-    #[allow(dead_code)]
     pub fn apply_external_force(&mut self, idx: usize, force: [f64; 3], dt: f64) {
         let p = &mut self.particles[idx];
         if p.is_static() {
@@ -1520,7 +1462,6 @@ impl ParticleSet {
     /// Apply an instantaneous impulse `J` (kg·m/s) to particle `idx`.
     ///
     /// `Δv = J / m`
-    #[allow(dead_code)]
     pub fn apply_impulse(&mut self, idx: usize, impulse: [f64; 3]) {
         let p = &mut self.particles[idx];
         if p.is_static() {
@@ -1532,12 +1473,10 @@ impl ParticleSet {
         p.velocity[2] += impulse[2] * inv_m;
     }
     /// Total kinetic energy of the system (½ Σ mᵢ |vᵢ|²).
-    #[allow(dead_code)]
     pub fn kinetic_energy(&self) -> f64 {
         self.particles.iter().map(|p| p.kinetic_energy()).sum()
     }
     /// Total linear momentum of the system (Σ mᵢ vᵢ).
-    #[allow(dead_code)]
     pub fn total_momentum(&self) -> [f64; 3] {
         let mut m = [0.0_f64; 3];
         for p in &self.particles {
@@ -1549,7 +1488,6 @@ impl ParticleSet {
         m
     }
     /// Step all dynamic particles forward by `dt` (simple explicit Euler).
-    #[allow(dead_code)]
     pub fn step(&mut self, dt: f64) {
         for p in &mut self.particles {
             if p.is_static() || p.flags.has(ParticleFlags::ASLEEP) {

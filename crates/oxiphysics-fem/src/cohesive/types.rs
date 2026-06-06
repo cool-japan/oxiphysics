@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 /// Parameters for the bilinear (linear-softening) traction-separation law.
 ///
 /// The law has two phases:
@@ -109,7 +106,6 @@ pub struct PprParams {
 }
 impl PprParams {
     /// Create a new PPR parameter set.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         gamma_n: f64,
         gamma_t: f64,

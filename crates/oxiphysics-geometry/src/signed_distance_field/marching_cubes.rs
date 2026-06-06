@@ -3,8 +3,6 @@
 
 //! Marching Cubes isosurface extraction from a voxel SDF grid.
 
-#![allow(clippy::needless_range_loop)]
-
 use super::helpers::{add3, scale3, sub3};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -138,8 +136,8 @@ impl MarchingCubes {
                     });
 
                     let mut cube_idx = 0u8;
-                    for k in 0..8 {
-                        if vals[k] < iso_value {
+                    for (k, &val) in vals.iter().enumerate() {
+                        if val < iso_value {
                             cube_idx |= 1 << k;
                         }
                     }

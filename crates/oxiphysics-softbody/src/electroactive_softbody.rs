@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -20,49 +19,23 @@ use std::f64::consts::PI;
 
 // ── Scalar / vector helpers (no nalgebra) ────────────────────────────────────
 
-/// Add two 3-vectors.
-#[allow(dead_code)]
-fn v3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
 /// Subtract two 3-vectors (a − b).
-#[allow(dead_code)]
 fn v3_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-/// Scale a 3-vector.
-#[allow(dead_code)]
-fn v3_scale(a: [f64; 3], s: f64) -> [f64; 3] {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-
 /// Dot product of two 3-vectors.
-#[allow(dead_code)]
 fn v3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// Euclidean norm of a 3-vector.
-#[allow(dead_code)]
+#[cfg(test)]
 fn v3_norm(a: [f64; 3]) -> f64 {
     v3_dot(a, a).sqrt()
 }
 
-/// Normalize a 3-vector; returns zero vector for degenerate input.
-#[allow(dead_code)]
-fn v3_normalize(a: [f64; 3]) -> [f64; 3] {
-    let n = v3_norm(a);
-    if n < 1e-15 {
-        [0.0; 3]
-    } else {
-        v3_scale(a, 1.0 / n)
-    }
-}
-
 /// Cross product of two 3-vectors.
-#[allow(dead_code)]
 fn v3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -72,7 +45,7 @@ fn v3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 /// Clamp `x` into `[lo, hi]`.
-#[allow(dead_code)]
+#[cfg(test)]
 fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
     x.max(lo).min(hi)
 }
@@ -96,7 +69,6 @@ pub const E_PULL_IN_TYPICAL: f64 = 1.8e8; // V/m
 ///
 /// Models the neo-Hookean electromechanical coupling under uniaxial or
 /// equal-biaxial loading with Maxwell electrostatic pressure.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DeaMembraneState {
     /// Shear modulus μ (Pa).
@@ -118,7 +90,6 @@ impl DeaMembraneState {
     /// * `thickness_0`   – Undeformed film thickness (m).
     /// * `epsilon_r`     – Relative permittivity of the elastomer.
     /// * `voltage`       – Applied voltage (V).
-    #[allow(dead_code)]
     pub fn new(shear_modulus: f64, thickness_0: f64, epsilon_r: f64, voltage: f64) -> Self {
         Self {
             shear_modulus,
@@ -130,19 +101,16 @@ impl DeaMembraneState {
     }
 
     /// Current film thickness from incompressibility (λ₁ = λ₂ = stretch ⇒ λ₃ = 1/λ²).
-    #[allow(dead_code)]
     pub fn current_thickness(&self) -> f64 {
         self.thickness_0 / (self.stretch * self.stretch)
     }
 
     /// Electric field across the film E = V / t (V/m).
-    #[allow(dead_code)]
     pub fn electric_field(&self) -> f64 {
         self.voltage / self.current_thickness().max(1e-12)
     }
 
     /// Maxwell electrostatic pressure p_e = ε₀ εᵣ E² (Pa).
-    #[allow(dead_code)]
     pub fn maxwell_pressure(&self) -> f64 {
         let e = self.electric_field();
         EPSILON_0 * self.epsilon_r * e * e
@@ -150,7 +118,6 @@ impl DeaMembraneState {
 
     /// True (Cauchy) elastic stress in the plane for equal-biaxial stretch
     /// using an incompressible neo-Hookean model: σ_el = μ (λ² − 1/λ⁴).
-    #[allow(dead_code)]
     pub fn elastic_stress(&self) -> f64 {
         let l = self.stretch;
         self.shear_modulus * (l * l - 1.0 / (l * l * l * l))
@@ -159,7 +126,6 @@ impl DeaMembraneState {
     /// Electromechanical equilibrium residual.
     ///
     /// R = σ_el − p_e.  At equilibrium R = 0.
-    #[allow(dead_code)]
     pub fn equilibrium_residual(&self) -> f64 {
         self.elastic_stress() - self.maxwell_pressure()
     }
@@ -168,7 +134,6 @@ impl DeaMembraneState {
     ///
     /// Pull-in occurs when dR/dλ < 0 (the restoring elastic force cannot
     /// balance the increasing Maxwell pressure as the film thins).
-    #[allow(dead_code)]
     pub fn is_pulled_in(&self) -> bool {
         // Numerical derivative: dR/dλ
         let delta = 1e-6;
@@ -189,7 +154,6 @@ impl DeaMembraneState {
     /// Solve for the equilibrium stretch using Newton-Raphson iteration.
     ///
     /// Returns `(stretch, converged)`.  Starts from the current `stretch` value.
-    #[allow(dead_code)]
     pub fn solve_equilibrium(&mut self, max_iter: usize, tol: f64) -> (f64, bool) {
         for _ in 0..max_iter {
             let r = self.equilibrium_residual();
@@ -213,14 +177,12 @@ impl DeaMembraneState {
     }
 
     /// Actuation strain ε_act = λ² − 1 (area strain of the membrane).
-    #[allow(dead_code)]
     pub fn actuation_area_strain(&self) -> f64 {
         self.stretch * self.stretch - 1.0
     }
 
     /// Stored elastic energy density W = μ/2 (λ₁² + λ₂² + λ₃² − 3) for equal
     /// biaxial stretch (λ₃ = 1/λ²).
-    #[allow(dead_code)]
     pub fn elastic_energy_density(&self) -> f64 {
         let l = self.stretch;
         let l3 = 1.0 / (l * l);
@@ -228,7 +190,6 @@ impl DeaMembraneState {
     }
 
     /// Electrical energy stored per unit deformed volume: U_e = ε₀ εᵣ E² / 2.
-    #[allow(dead_code)]
     pub fn electrical_energy_density(&self) -> f64 {
         let e = self.electric_field();
         0.5 * EPSILON_0 * self.epsilon_r * e * e
@@ -241,7 +202,6 @@ impl DeaMembraneState {
 ///
 /// The actuator swells or shrinks in response to an applied electric field
 /// that drives ion migration, changing the local osmotic pressure.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IonicHydrogelActuator {
     /// Young's modulus of the dry polymer network (Pa).
@@ -260,7 +220,6 @@ pub struct IonicHydrogelActuator {
 
 impl IonicHydrogelActuator {
     /// Create a new ionic hydrogel actuator with given material parameters.
-    #[allow(dead_code)]
     pub fn new(
         youngs_modulus: f64,
         flory_chi: f64,
@@ -278,7 +237,6 @@ impl IonicHydrogelActuator {
     }
 
     /// Polymer volume fraction φ = 1 / Q.
-    #[allow(dead_code)]
     pub fn polymer_volume_fraction(&self) -> f64 {
         1.0 / self.swelling_ratio.max(1.0)
     }
@@ -288,7 +246,6 @@ impl IonicHydrogelActuator {
     /// Π_osm = -R T / V_m \[ ln(1 - φ) + φ + χ φ² \]
     ///
     /// Temperature fixed at 298 K; V_m = 18e-6 m³/mol (water molar volume).
-    #[allow(dead_code)]
     pub fn osmotic_pressure(&self) -> f64 {
         let r_gas = 8.314; // J/(mol·K)
         let temp = 298.0; // K
@@ -303,7 +260,6 @@ impl IonicHydrogelActuator {
     /// Π_ionic = R T ( √(C_f² + 4 c_ext²) − 2 c_ext )
     ///
     /// Accounts for the fixed-charge groups repelling co-ions.
-    #[allow(dead_code)]
     pub fn donnan_pressure(&self) -> f64 {
         let r_gas = 8.314;
         let temp = 298.0;
@@ -317,7 +273,6 @@ impl IonicHydrogelActuator {
     /// Π_el = E/3 ( Q^(−1/3) − Q^(−5/3) / 2 )
     ///
     /// (derived from the affine network model for isotropic swelling)
-    #[allow(dead_code)]
     pub fn elastic_restoring_pressure(&self) -> f64 {
         let q = self.swelling_ratio;
         (self.youngs_modulus / 3.0) * (q.powf(-1.0 / 3.0) - 0.5 * q.powf(-5.0 / 3.0))
@@ -326,7 +281,6 @@ impl IonicHydrogelActuator {
     /// Total driving pressure = Π_osm + Π_ionic − Π_el.
     ///
     /// Positive → actuator tends to swell further.
-    #[allow(dead_code)]
     pub fn net_driving_pressure(&self) -> f64 {
         self.osmotic_pressure() + self.donnan_pressure() - self.elastic_restoring_pressure()
     }
@@ -335,14 +289,12 @@ impl IonicHydrogelActuator {
     ///
     /// A mobility coefficient κ (m²/(N·s)) relates field-driven ionic flux to
     /// swelling rate: dQ/dt = κ |E| / Q.
-    #[allow(dead_code)]
     pub fn step(&mut self, dt: f64, mobility: f64) {
         let dq = mobility * self.applied_field.abs() / self.swelling_ratio.max(1.0) * dt;
         self.swelling_ratio = (self.swelling_ratio + dq).max(1.0);
     }
 
     /// Linear actuation strain ε = Q^(1/3) − 1.
-    #[allow(dead_code)]
     pub fn linear_strain(&self) -> f64 {
         self.swelling_ratio.powf(1.0 / 3.0) - 1.0
     }
@@ -359,7 +311,6 @@ impl IonicHydrogelActuator {
 /// S₃ = s₃₃ T₃ + d₃₃ E₃
 /// D₃ = d₃₃ T₃ + ε₃₃ E₃
 /// ```
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PiezoelectricSoftElement {
     /// Elastic compliance s₃₃ (m²/N).
@@ -379,7 +330,6 @@ impl PiezoelectricSoftElement {
     ///
     /// Typical PVDF: s₃₃ ≈ 24e-12 m²/N, d₃₃ ≈ -33e-12 m/V,
     /// ε₃₃ ≈ 7.4e-11 F/m.
-    #[allow(dead_code)]
     pub fn new_pvdf() -> Self {
         Self {
             compliance_33: 24.0e-12,
@@ -391,7 +341,6 @@ impl PiezoelectricSoftElement {
     }
 
     /// Create a piezoelectric element with custom parameters.
-    #[allow(dead_code)]
     pub fn new(compliance_33: f64, d33: f64, permittivity_33: f64) -> Self {
         Self {
             compliance_33,
@@ -403,13 +352,11 @@ impl PiezoelectricSoftElement {
     }
 
     /// Mechanical strain S₃ = s₃₃ T₃ + d₃₃ E₃.
-    #[allow(dead_code)]
     pub fn mechanical_strain(&self) -> f64 {
         self.compliance_33 * self.stress + self.d33 * self.electric_field
     }
 
     /// Electric displacement D₃ = d₃₃ T₃ + ε₃₃ E₃.
-    #[allow(dead_code)]
     pub fn electric_displacement(&self) -> f64 {
         self.d33 * self.stress + self.permittivity_33 * self.electric_field
     }
@@ -417,7 +364,6 @@ impl PiezoelectricSoftElement {
     /// Electromechanical coupling coefficient k₃₃.
     ///
     /// k₃₃² = d₃₃² / (s₃₃ · ε₃₃)
-    #[allow(dead_code)]
     pub fn coupling_coefficient_k33(&self) -> f64 {
         let k2 = (self.d33 * self.d33) / (self.compliance_33 * self.permittivity_33);
         k2.sqrt()
@@ -426,7 +372,6 @@ impl PiezoelectricSoftElement {
     /// Piezoelectric energy harvested per unit volume for a given strain cycle.
     ///
     /// W = 0.5 d₃₃² / s₃₃ · T₃²  (open-circuit energy density)
-    #[allow(dead_code)]
     pub fn harvested_energy_density(&self) -> f64 {
         0.5 * (self.d33 * self.d33 / self.compliance_33) * self.stress * self.stress
     }
@@ -437,7 +382,6 @@ impl PiezoelectricSoftElement {
     ///
     /// * `length` – strip length (m).
     /// * `density` – material density (kg/m³), typically ~1780 kg/m³ for PVDF.
-    #[allow(dead_code)]
     pub fn resonant_frequency(&self, length: f64, density: f64) -> f64 {
         let v = (1.0 / (density * self.compliance_33)).sqrt();
         v / (2.0 * length)
@@ -450,7 +394,6 @@ impl PiezoelectricSoftElement {
 ///
 /// Models contact-separation mode between two polymer surfaces that develop
 /// opposite surface charges when they touch and separate.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TriboelectricSoftBody {
     /// Surface charge density σ (C/m²) on polymer 1.
@@ -473,7 +416,6 @@ pub struct TriboelectricSoftBody {
 
 impl TriboelectricSoftBody {
     /// Create a new TENG model with PTFE / nylon contact pair defaults.
-    #[allow(dead_code)]
     pub fn new_ptfe_nylon() -> Self {
         Self {
             surface_charge_density: -8.0e-6, // C/m²
@@ -488,8 +430,6 @@ impl TriboelectricSoftBody {
     }
 
     /// Create a custom TENG model.
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         surface_charge_density: f64,
         epsilon_r1: f64,
@@ -512,7 +452,6 @@ impl TriboelectricSoftBody {
     }
 
     /// Effective dielectric thickness d_eff = d₁/ε₁ + d₂/ε₂.
-    #[allow(dead_code)]
     pub fn effective_dielectric_thickness(&self) -> f64 {
         self.thickness_d1 / self.epsilon_r1 + self.thickness_d2 / self.epsilon_r2
     }
@@ -520,13 +459,11 @@ impl TriboelectricSoftBody {
     /// Open-circuit voltage V_oc = σ x / ε₀  (x = air gap).
     ///
     /// This is the voltage when no current flows.
-    #[allow(dead_code)]
     pub fn open_circuit_voltage(&self) -> f64 {
         self.surface_charge_density * self.air_gap / EPSILON_0
     }
 
     /// Short-circuit charge density Q_sc = σ x / (x + d_eff).
-    #[allow(dead_code)]
     pub fn short_circuit_charge_density(&self) -> f64 {
         let d_eff = self.effective_dielectric_thickness();
         let x = self.air_gap;
@@ -534,7 +471,6 @@ impl TriboelectricSoftBody {
     }
 
     /// Instantaneous output power P = V² / R, given current air gap.
-    #[allow(dead_code)]
     pub fn output_power(&self) -> f64 {
         let v = self.open_circuit_voltage();
         v * v / self.load_resistance
@@ -545,7 +481,6 @@ impl TriboelectricSoftBody {
     /// * `max_gap` – Maximum separation distance (m).
     /// * `freq`    – Cycle frequency (Hz).
     /// * `dt`      – Time step (s).
-    #[allow(dead_code)]
     pub fn simulate_cycle(&mut self, max_gap: f64, freq: f64, dt: f64) -> f64 {
         let period = 1.0 / freq;
         let steps = (period / dt).ceil() as usize;
@@ -569,7 +504,6 @@ impl TriboelectricSoftBody {
 ///
 /// A compliant parallel-plate capacitor (e.g. carbon-black/silicone composite)
 /// where the capacitance changes with deformation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CapacitiveStrainSensor {
     /// Undeformed electrode area A₀ (m²).
@@ -584,7 +518,6 @@ pub struct CapacitiveStrainSensor {
 
 impl CapacitiveStrainSensor {
     /// Create a new capacitive sensor.
-    #[allow(dead_code)]
     pub fn new(area_0: f64, thickness_0: f64, epsilon_r: f64) -> Self {
         Self {
             area_0,
@@ -595,19 +528,16 @@ impl CapacitiveStrainSensor {
     }
 
     /// Current electrode area A = A₀ λ² (incompressible assumption).
-    #[allow(dead_code)]
     pub fn current_area(&self) -> f64 {
         self.area_0 * self.stretch * self.stretch
     }
 
     /// Current dielectric thickness t = t₀ / λ².
-    #[allow(dead_code)]
     pub fn current_thickness(&self) -> f64 {
         self.thickness_0 / (self.stretch * self.stretch)
     }
 
     /// Capacitance C = ε₀ εᵣ A / t (F).
-    #[allow(dead_code)]
     pub fn capacitance(&self) -> f64 {
         EPSILON_0 * self.epsilon_r * self.current_area() / self.current_thickness().max(1e-15)
     }
@@ -615,7 +545,6 @@ impl CapacitiveStrainSensor {
     /// Gauge factor GF = (ΔC / C₀) / ε where ε = λ − 1 is the linear strain.
     ///
     /// For an incompressible sheet, C ∝ λ⁴ so GF = 4 λ³ / (λ⁴ − 1) → 4 near λ = 1.
-    #[allow(dead_code)]
     pub fn gauge_factor(&self) -> f64 {
         let c0 = EPSILON_0 * self.epsilon_r * self.area_0 / self.thickness_0;
         let c = self.capacitance();
@@ -629,7 +558,6 @@ impl CapacitiveStrainSensor {
     /// Estimate the applied strain from a measured capacitance.
     ///
     /// Inverts C(λ) = C₀ λ⁴ numerically via bisection.
-    #[allow(dead_code)]
     pub fn strain_from_capacitance(&self, measured_c: f64) -> f64 {
         let c0 = EPSILON_0 * self.epsilon_r * self.area_0 / self.thickness_0;
         // λ⁴ = measured_c / c0
@@ -644,7 +572,6 @@ impl CapacitiveStrainSensor {
 ///
 /// Models the bending angle as a function of supplied gauge pressure using
 /// a simplified elastic beam approach.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PneumaticSoftActuator {
     /// Number of pneumatic chambers n.
@@ -663,7 +590,6 @@ pub struct PneumaticSoftActuator {
 
 impl PneumaticSoftActuator {
     /// Create a new pneumatic soft actuator.
-    #[allow(dead_code)]
     pub fn new(
         num_chambers: usize,
         chamber_length: f64,
@@ -684,7 +610,6 @@ impl PneumaticSoftActuator {
     /// moment-curvature relation for a pressurized soft beam.
     ///
     /// θ ≈ p · L_tot / (E · t²) (simplified linear model).
-    #[allow(dead_code)]
     pub fn update_bending_angle(&mut self) {
         let l_tot = self.num_chambers as f64 * self.chamber_length;
         let t = self.wall_thickness;
@@ -694,7 +619,6 @@ impl PneumaticSoftActuator {
     /// End-effector position relative to the actuator root.
     ///
     /// Assumes the actuator forms a circular arc.  Returns `[x, y, 0]`.
-    #[allow(dead_code)]
     pub fn end_effector_position(&self) -> [f64; 3] {
         let l = self.num_chambers as f64 * self.chamber_length;
         let theta = self.bending_angle;
@@ -708,7 +632,6 @@ impl PneumaticSoftActuator {
     /// Tip contact force estimate given a blocked-force stiffness k_b.
     ///
     /// F_tip = k_b · p (linear approximation).
-    #[allow(dead_code)]
     pub fn tip_force(&self, stiffness_blocked: f64) -> f64 {
         stiffness_blocked * self.pressure
     }
@@ -720,7 +643,6 @@ impl PneumaticSoftActuator {
 ///
 /// Models a segment of a tendon-driven continuum robot where the bending
 /// is achieved by pulling one or more tendons routed off-center.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TendonDrivenSegment {
     /// Segment rest length L₀ (m).
@@ -737,7 +659,6 @@ pub struct TendonDrivenSegment {
 
 impl TendonDrivenSegment {
     /// Create a new tendon-driven segment.
-    #[allow(dead_code)]
     pub fn new(rest_length: f64, flexural_stiffness: f64, tendon_offset: f64) -> Self {
         Self {
             rest_length,
@@ -749,25 +670,21 @@ impl TendonDrivenSegment {
     }
 
     /// Equilibrium bending angle: θ = T d L₀ / EI.
-    #[allow(dead_code)]
     pub fn equilibrium_angle(&self) -> f64 {
         self.tension * self.tendon_offset * self.rest_length / self.flexural_stiffness.max(1e-30)
     }
 
     /// Update bending angle to current equilibrium.
-    #[allow(dead_code)]
     pub fn update(&mut self) {
         self.bending_angle = self.equilibrium_angle();
     }
 
     /// Curvature κ = θ / L₀.
-    #[allow(dead_code)]
     pub fn curvature(&self) -> f64 {
         self.bending_angle / self.rest_length.max(1e-15)
     }
 
     /// Segment tip position `[x, y, 0]` on a 2D plane.
-    #[allow(dead_code)]
     pub fn tip_position(&self) -> [f64; 3] {
         let theta = self.bending_angle;
         let l = self.rest_length;
@@ -782,7 +699,6 @@ impl TendonDrivenSegment {
 // ── Coupled Electro-Mechanical FEM Soft Body ──────────────────────────────────
 
 /// Node in an electroactive FEM mesh.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElectroacitiveFemNode {
     /// Current position (m).
@@ -801,7 +717,6 @@ pub struct ElectroacitiveFemNode {
 
 impl ElectroacitiveFemNode {
     /// Create a free, uncharged FEM node.
-    #[allow(dead_code)]
     pub fn new(position: [f64; 3], mass: f64) -> Self {
         Self {
             position,
@@ -814,7 +729,6 @@ impl ElectroacitiveFemNode {
     }
 
     /// Create a pinned (fixed) node.
-    #[allow(dead_code)]
     pub fn new_pinned(position: [f64; 3]) -> Self {
         Self {
             position,
@@ -831,7 +745,6 @@ impl ElectroacitiveFemNode {
 ///
 /// Computes both elastic (neo-Hookean linearized) and Maxwell stress
 /// contributions to the nodal force vector.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElectroacitiveTetraElement {
     /// Indices into the node array \[i0, i1, i2, i3\].
@@ -850,7 +763,6 @@ pub struct ElectroacitiveTetraElement {
 
 impl ElectroacitiveTetraElement {
     /// Build an element from four node positions and material parameters.
-    #[allow(dead_code)]
     pub fn new(
         indices: [usize; 4],
         positions: &[[f64; 3]],
@@ -888,7 +800,6 @@ impl ElectroacitiveTetraElement {
     /// Given the nodal electric potentials, computes the electric field E inside
     /// the element and the Maxwell stress tensor P_M = ε₀ εᵣ (E⊗E − |E|²/2 I),
     /// then distributes to nodes via the shape function gradients.
-    #[allow(dead_code)]
     pub fn maxwell_nodal_forces(&self, nodes: &[ElectroacitiveFemNode]) -> [[f64; 3]; 4] {
         // Electric field E = -B₀⁻¹ ∇φ (within element, constant for linear tet)
         let n0 = &nodes[self.node_indices[0]];
@@ -944,7 +855,6 @@ impl ElectroacitiveTetraElement {
 }
 
 /// Invert a 3×3 matrix stored as rows.
-#[allow(dead_code)]
 fn invert_3x3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
         - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
@@ -976,7 +886,6 @@ fn invert_3x3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 ///
 /// Stores an array of nodes and elements and provides a single-step explicit
 /// time integrator that applies Maxwell forces.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ElectroacitiveFemBody {
     /// Nodes of the mesh.
@@ -989,7 +898,6 @@ pub struct ElectroacitiveFemBody {
 
 impl ElectroacitiveFemBody {
     /// Create an electroactive FEM body.
-    #[allow(dead_code)]
     pub fn new(
         nodes: Vec<ElectroacitiveFemNode>,
         elements: Vec<ElectroacitiveTetraElement>,
@@ -1003,7 +911,6 @@ impl ElectroacitiveFemBody {
     }
 
     /// Apply Maxwell stress forces from all elements to their nodes.
-    #[allow(dead_code)]
     pub fn apply_maxwell_forces(&mut self) {
         // Gather forces for each node
         let n = self.nodes.len();
@@ -1025,23 +932,21 @@ impl ElectroacitiveFemBody {
         for (node, &f) in self.nodes.iter_mut().zip(forces.iter()) {
             if !node.pinned {
                 let inv_m = 1.0 / node.mass.max(1e-30);
-                for d in 0..3 {
-                    node.velocity[d] += f[d] * inv_m; // treated as force × dt=1
+                for (v, fi) in node.velocity.iter_mut().zip(f.iter()) {
+                    *v += fi * inv_m;
                 }
             }
         }
     }
 
     /// Advance the body by one explicit Euler step.
-    #[allow(dead_code)]
     pub fn step(&mut self, dt: f64, gravity: [f64; 3]) {
         // Apply gravity
         for node in &mut self.nodes {
             if !node.pinned {
-                for d in 0..3 {
-                    node.velocity[d] += gravity[d] * dt;
-                    // Damping
-                    node.velocity[d] *= 1.0 - self.damping * dt;
+                for (v, g) in node.velocity.iter_mut().zip(gravity.iter()) {
+                    *v += g * dt;
+                    *v *= 1.0 - self.damping * dt;
                 }
             }
         }
@@ -1062,7 +967,6 @@ impl ElectroacitiveFemBody {
 ///
 /// Combines mechanical elasticity with electric conductivity changes due to
 /// strain (piezoresistive behaviour).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConductiveHydrogel {
     /// Initial conductivity σ₀ (S/m).
@@ -1077,7 +981,6 @@ pub struct ConductiveHydrogel {
 
 impl ConductiveHydrogel {
     /// Create a new conductive hydrogel with given properties.
-    #[allow(dead_code)]
     pub fn new(conductivity_0: f64, gauge_factor: f64, youngs_modulus: f64) -> Self {
         Self {
             conductivity_0,
@@ -1088,20 +991,17 @@ impl ConductiveHydrogel {
     }
 
     /// Current conductivity σ = σ₀ (1 − Kσ ε).
-    #[allow(dead_code)]
     pub fn conductivity(&self) -> f64 {
         self.conductivity_0 * (1.0 - self.gauge_factor * self.strain)
     }
 
     /// Resistance of a slab of length L, cross-section A: R = L / (σ A).
-    #[allow(dead_code)]
     pub fn resistance(&self, length: f64, area: f64) -> f64 {
         let sigma = self.conductivity().max(1e-15);
         length / (sigma * area)
     }
 
     /// Elastic stress σ_el = E ε.
-    #[allow(dead_code)]
     pub fn elastic_stress(&self) -> f64 {
         self.youngs_modulus * self.strain
     }
@@ -1116,20 +1016,17 @@ impl ConductiveHydrogel {
 /// * `shear_modulus` – μ (Pa).
 /// * `thickness_0`   – undeformed film thickness (m).
 /// * `epsilon_r`     – relative permittivity.
-#[allow(dead_code)]
 pub fn pull_in_voltage(shear_modulus: f64, thickness_0: f64, epsilon_r: f64) -> f64 {
     thickness_0 * (8.0 * shear_modulus / (27.0 * EPSILON_0 * epsilon_r)).sqrt()
 }
 
 /// Compute the Maxwell stress tensor component T_33 = ε₀ εᵣ E² for a
 /// field E along axis 3 (perpendicular to film plane).
-#[allow(dead_code)]
 pub fn maxwell_stress_33(electric_field: f64, epsilon_r: f64) -> f64 {
     EPSILON_0 * epsilon_r * electric_field * electric_field
 }
 
 /// Electrostatic energy per unit volume: u_e = ε₀ εᵣ E² / 2.
-#[allow(dead_code)]
 pub fn electrostatic_energy_density(electric_field: f64, epsilon_r: f64) -> f64 {
     0.5 * EPSILON_0 * epsilon_r * electric_field * electric_field
 }
@@ -1142,7 +1039,6 @@ pub fn electrostatic_energy_density(electric_field: f64, epsilon_r: f64) -> f64 
 /// * `maxwell_pressure`      – p_M (Pa).
 /// * `voltage`               – V (V).
 /// * `capacitance_0`         – C₀ (F).
-#[allow(dead_code)]
 pub fn dea_cycle_efficiency(
     actuation_area_strain: f64,
     maxwell_pressure: f64,
@@ -1160,7 +1056,6 @@ pub fn dea_cycle_efficiency(
 // ── Soft Robot Actuator Comparison ───────────────────────────────────────────
 
 /// Enumeration of soft robot actuator types for simulation comparison.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SoftActuatorType {
     /// Pneumatically pressurized PneuNet-style actuator.
@@ -1178,7 +1073,6 @@ pub enum SoftActuatorType {
 }
 
 /// Summary of a soft actuator's performance.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ActuatorPerformanceSummary {
     /// Actuator type.
@@ -1195,7 +1089,6 @@ pub struct ActuatorPerformanceSummary {
 
 impl ActuatorPerformanceSummary {
     /// Create a performance summary.
-    #[allow(dead_code)]
     pub fn new(
         actuator_type: SoftActuatorType,
         max_force: f64,
@@ -1213,7 +1106,6 @@ impl ActuatorPerformanceSummary {
     }
 
     /// Power-to-force ratio (W/N) = driving_parameter / (max_force · response_time).
-    #[allow(dead_code)]
     pub fn power_to_force_ratio(&self) -> f64 {
         let denom = self.max_force * self.response_time;
         if denom.abs() < 1e-30 {
@@ -1566,14 +1458,10 @@ mod tests {
     fn test_invert_3x3_identity() {
         let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let inv = invert_3x3(id);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in inv.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
                 let exp = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (inv[i][j] - exp).abs() < TOL,
-                    "inv[{i}][{j}] = {} ≠ {exp}",
-                    inv[i][j]
-                );
+                assert!((v - exp).abs() < TOL, "inv[{i}][{j}] = {} ≠ {exp}", v);
             }
         }
     }

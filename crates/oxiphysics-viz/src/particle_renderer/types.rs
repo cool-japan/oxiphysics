@@ -2,10 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
 /// Configuration for point-sprite particle rendering.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PointSpriteConfig {
     /// Particle radius in world-space units.
@@ -16,7 +14,6 @@ pub struct PointSpriteConfig {
     pub stretch_factor: f32,
 }
 /// A single trail point.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TrailPoint {
     /// Position.
@@ -29,7 +26,6 @@ pub struct TrailPoint {
     pub color: [f32; 4],
 }
 /// A velocity glyph arrow with base, tip, and color.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VelocityGlyph {
     /// Arrow base (particle position).
@@ -42,7 +38,6 @@ pub struct VelocityGlyph {
     pub magnitude: f32,
 }
 /// A particle trail that stores a history of positions.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ParticleTrail {
     /// Trail points (most recent last).
@@ -52,7 +47,6 @@ pub struct ParticleTrail {
     /// Maximum age before a point is removed (seconds).
     pub max_age: f32,
 }
-#[allow(dead_code)]
 impl ParticleTrail {
     /// Create a new particle trail.
     pub fn new(max_points: usize, max_age: f32) -> Self {
@@ -100,7 +94,6 @@ impl ParticleTrail {
     }
 }
 /// CPU-side buffer holding up to `max_particles` particle instances.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ParticleBuffer {
     /// Stored particle instances.
@@ -165,7 +158,6 @@ impl ParticleBuffer {
     }
 }
 /// A single velocity arrow glyph.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VelocityArrow {
     /// Tail of the arrow.
@@ -178,7 +170,6 @@ pub struct VelocityArrow {
     pub color: [f32; 4],
 }
 /// A single particle instance ready to be uploaded to a GPU buffer.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParticleInstance {
     /// World-space position \[x, y, z\].
@@ -191,7 +182,6 @@ pub struct ParticleInstance {
     pub velocity: [f32; 3],
 }
 /// Buffer of velocity arrows.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArrowBuffer {
     /// Stored arrows.
@@ -244,7 +234,6 @@ impl ArrowBuffer {
     }
 }
 /// A single metaball (implicit sphere blob).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Metaball {
     /// Centre position.
@@ -255,7 +244,6 @@ pub struct Metaball {
     pub radius: f32,
 }
 /// Maps scalar values from a given range to colors using a `ColorMap`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ScalarColorizer {
     /// Minimum value of the input range (maps to t = 0).
@@ -291,7 +279,6 @@ impl ScalarColorizer {
     }
 }
 /// A billboarded particle quad that always faces the camera.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BillboardParticle {
     /// World-space centre position.
@@ -304,7 +291,6 @@ pub struct BillboardParticle {
     pub texture_id: u32,
 }
 /// Renderer that manages a list of point sprites and generates vertex data.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PointSpriteRenderer {
     /// Configuration for all sprites.
@@ -312,7 +298,6 @@ pub struct PointSpriteRenderer {
     /// Sprite list.
     pub sprites: Vec<PointSprite>,
 }
-#[allow(dead_code)]
 impl PointSpriteRenderer {
     /// Create a new empty renderer.
     pub fn new(config: PointSpriteConfig) -> Self {
@@ -382,7 +367,6 @@ impl PointSpriteRenderer {
     }
 }
 /// Rendering statistics collected during a particle draw pass.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ParticleRenderStats {
     /// Number of particles that passed frustum culling.
@@ -393,7 +377,6 @@ pub struct ParticleRenderStats {
     pub draw_calls: usize,
 }
 /// Gaussian-splatting renderer configuration.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct SplatRenderer {
     /// Standard deviation of the Gaussian splat in world units.
@@ -401,7 +384,6 @@ pub struct SplatRenderer {
     /// Radius beyond which the splat contribution is zero.
     pub cutoff_radius: f64,
 }
-#[allow(dead_code)]
 impl SplatRenderer {
     /// Compute the Gaussian weight for a pixel at `center_uv` when splatting
     /// a particle at world position `pos` with radius `radius`.
@@ -426,13 +408,11 @@ impl SplatRenderer {
     }
 }
 /// A collection of metaballs that together form an implicit density field.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MetaballField {
     /// All contributing blobs.
     pub blobs: Vec<Metaball>,
 }
-#[allow(dead_code)]
 impl MetaballField {
     /// Create an empty metaball field.
     pub fn new() -> Self {
@@ -513,7 +493,6 @@ impl MetaballField {
         tris
     }
 }
-#[allow(dead_code)]
 impl MetaballField {
     /// Add a particle (blob) at `pos` with radius `r` and unit strength.
     pub fn add_particle(&mut self, pos: [f32; 3], r: f32) {
@@ -526,7 +505,6 @@ impl MetaballField {
 }
 /// Sorting buffer that maintains a depth-sorted index list for back-to-front
 /// alpha-blended rendering.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ParticleSortBuffer {
     /// Sorted indices into a particle array.
@@ -534,7 +512,6 @@ pub struct ParticleSortBuffer {
     /// Corresponding view-space depths (positive = in front of camera).
     pub depths: Vec<f64>,
 }
-#[allow(dead_code)]
 impl ParticleSortBuffer {
     /// Create an empty sort buffer.
     pub fn new() -> Self {
@@ -566,7 +543,6 @@ impl ParticleSortBuffer {
     }
 }
 /// A billboard particle with f64 position and radius for high-precision use.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct BillboardSprite {
     /// World-space position \[x, y, z\] in f64.
@@ -579,7 +555,6 @@ pub struct BillboardSprite {
     pub opacity: f32,
 }
 /// A sprite entry holding position, velocity, color and computed screen size.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PointSprite {
     /// World-space position.
@@ -592,7 +567,6 @@ pub struct PointSprite {
     pub size: f32,
 }
 /// Pre-defined color maps for scalar visualization.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ColorMap {
     /// Perceptually uniform blue→green→yellow palette.
@@ -651,12 +625,10 @@ impl ColorMap {
     }
 }
 /// SPH (Smoothed Particle Hydrodynamics) density field evaluator.
-#[allow(dead_code)]
 pub struct SphDensityField {
     /// Smoothing length h.
     pub h: f32,
 }
-#[allow(dead_code)]
 impl SphDensityField {
     /// Create a new SPH density field with smoothing length `h`.
     pub fn new(h: f32) -> Self {
@@ -712,12 +684,10 @@ impl SphDensityField {
 /// Level of detail system for particle rendering.
 ///
 /// `thresholds[i]` is the camera distance above which LOD level `i+1` is used.
-#[allow(dead_code)]
 pub struct LodSystem {
     /// Distance thresholds in ascending order.
     pub thresholds: Vec<f32>,
 }
-#[allow(dead_code)]
 impl LodSystem {
     /// Create a LOD system with the given distance thresholds.
     pub fn new(thresholds: Vec<f32>) -> Self {

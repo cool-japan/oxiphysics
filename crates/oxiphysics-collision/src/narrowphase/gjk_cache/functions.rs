@@ -2,36 +2,26 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[cfg(test)]
-use oxiphysics_core::math::Vec3;
-
 use super::types::{
     CachedSupport, CsoPoint, GjkCache, GjkCacheRegistry, GjkDistanceResult, GjkTermination,
     JohnsonSubResult, NarrowphaseResult, ProximityResult, ShapeDesc,
 };
 
-#[allow(dead_code)]
 pub(super) fn dot3_arr(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-#[allow(dead_code)]
 pub(super) fn sub3_arr(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
-#[allow(dead_code)]
 pub(super) fn negate3(a: [f64; 3]) -> [f64; 3] {
     [-a[0], -a[1], -a[2]]
 }
-#[allow(dead_code)]
 pub(super) fn scale3_arr(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
 }
-#[allow(dead_code)]
 pub(super) fn len3_arr(a: [f64; 3]) -> f64 {
     (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
 }
-#[allow(dead_code)]
 pub(super) fn cross3_arr(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -41,7 +31,6 @@ pub(super) fn cross3_arr(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 /// Simplified GJK do-simplex for cached intersection test.
 /// Returns `Some(new_direction)` to continue, or `None` if origin is enclosed.
-#[allow(dead_code)]
 pub(super) fn do_simplex_cached(simplex: &mut Vec<CachedSupport>) -> Option<[f64; 3]> {
     match simplex.len() {
         2 => {
@@ -123,7 +112,6 @@ pub(super) fn do_simplex_cached(simplex: &mut Vec<CachedSupport>) -> Option<[f64
     }
 }
 /// Compute the closest point on the simplex (line or triangle) to the origin.
-#[allow(dead_code)]
 pub(super) fn closest_point_on_simplex_to_origin(simplex: &[CachedSupport]) -> [f64; 3] {
     match simplex.len() {
         0 => [0.0; 3],
@@ -153,9 +141,9 @@ mod tests {
 
     use crate::narrowphase::gjk_cache::GjkWarmStart;
 
-    use crate::narrowphase::gjk_cache::functions::Vec3;
     use crate::narrowphase::gjk_cache::len3_arr;
     use crate::narrowphase::gjk_cache::negate3;
+    use oxiphysics_core::math::Vec3;
 
     use crate::narrowphase::gjk_cache::scale3_arr;
     use crate::narrowphase::gjk_cache::sub3_arr;
@@ -346,7 +334,6 @@ mod tests {
 /// Compute the closest point on a line segment AB to the origin.
 ///
 /// Returns barycentric weights (u, v) such that closest = u*A + v*B.
-#[allow(dead_code)]
 pub(super) fn johnson_segment(a: [f64; 3], b: [f64; 3]) -> ([f64; 3], f64, f64) {
     let ab = sub3_arr(b, a);
     let ab_sq = dot3_arr(ab, ab);
@@ -361,7 +348,6 @@ pub(super) fn johnson_segment(a: [f64; 3], b: [f64; 3]) -> ([f64; 3], f64, f64) 
 /// Compute the closest point on triangle ABC to the origin using Johnson's method.
 ///
 /// Returns (closest, u, v, w) with barycentric coords.
-#[allow(dead_code)]
 pub(super) fn johnson_triangle(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> ([f64; 3], f64, f64, f64) {
     let ab = sub3_arr(b, a);
     let ac = sub3_arr(c, a);
@@ -420,7 +406,6 @@ pub(super) fn johnson_triangle(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> ([f64; 
     }
 }
 /// Fallback for degenerate triangles in johnson_triangle.
-#[allow(dead_code)]
 pub(super) fn johnson_triangle_fallback(
     a: [f64; 3],
     b: [f64; 3],
@@ -440,7 +425,6 @@ pub(super) fn johnson_triangle_fallback(
 ///
 /// Handles 1-, 2-, 3-, and 4-vertex simplices.  Returns the closest point,
 /// barycentric weights, and whether the origin is inside.
-#[allow(dead_code)]
 pub fn johnson_closest_point(simplex: &[CachedSupport]) -> JohnsonSubResult {
     match simplex.len() {
         0 => JohnsonSubResult {
@@ -522,7 +506,6 @@ pub fn johnson_closest_point(simplex: &[CachedSupport]) -> JohnsonSubResult {
     }
 }
 /// Test whether the origin is inside a tetrahedron ABCD.
-#[allow(dead_code)]
 pub(super) fn origin_in_tetrahedron(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> bool {
     let ab = sub3_arr(b, a);
     let ac = sub3_arr(c, a);
@@ -544,7 +527,6 @@ pub(super) fn origin_in_tetrahedron(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f
 ///
 /// `support_fn(dir) -> CachedSupport` must return the support point on the
 /// Minkowski difference `A ⊖ B` for direction `dir`.
-#[allow(dead_code)]
 pub fn gjk_distance<F>(
     support_fn: &mut F,
     cache: &mut GjkCache,
@@ -644,7 +626,6 @@ where
     }
 }
 /// Compute witness points on shapes A and B from simplex and barycentric weights.
-#[allow(dead_code)]
 pub(super) fn barycentric_witness(
     simplex: &[CachedSupport],
     bary: &[f64; 4],
@@ -653,14 +634,13 @@ pub(super) fn barycentric_witness(
     let mut pa = [0.0_f64; 3];
     let mut pb = [0.0_f64; 3];
     let mut weight_sum = 0.0;
-    for i in 0..n {
-        let w = bary[i];
-        pa[0] += w * simplex[i].point_a[0];
-        pa[1] += w * simplex[i].point_a[1];
-        pa[2] += w * simplex[i].point_a[2];
-        pb[0] += w * simplex[i].point_b[0];
-        pb[1] += w * simplex[i].point_b[1];
-        pb[2] += w * simplex[i].point_b[2];
+    for (s, &w) in simplex[..n].iter().zip(bary[..n].iter()) {
+        pa[0] += w * s.point_a[0];
+        pa[1] += w * s.point_a[1];
+        pa[2] += w * s.point_a[2];
+        pb[0] += w * s.point_b[0];
+        pb[1] += w * s.point_b[1];
+        pb[2] += w * s.point_b[2];
         weight_sum += w;
     }
     if weight_sum > 1e-14 {
@@ -670,7 +650,6 @@ pub(super) fn barycentric_witness(
     (pa, pb)
 }
 /// Prune simplex vertices that have zero barycentric weight.
-#[allow(dead_code)]
 pub(super) fn prune_simplex_to_active(
     simplex: &mut Vec<CachedSupport>,
     _bary: &[f64; 4],
@@ -689,7 +668,6 @@ pub(super) fn prune_simplex_to_active(
 ///
 /// `support_a(dir)` returns the support of shape A in direction `dir`.
 /// `support_b(dir)` returns the support of shape B in direction `dir`.
-#[allow(dead_code)]
 pub fn gjk_proximity<FA, FB>(
     support_a: &mut FA,
     support_b: &mut FB,
@@ -727,7 +705,6 @@ where
 /// `support_a(dir)` returns the support of shape A in direction `dir`.
 /// `support_b(dir)` returns the support of shape B in direction `dir`
 /// (the caller should negate `dir` before passing to shape B's own support).
-#[allow(dead_code)]
 pub fn support_minkowski_diff<FA, FB>(
     mut support_a: FA,
     mut support_b: FB,
@@ -1172,7 +1149,6 @@ pub(super) const CACHE_VALID_DIST_SQ: f64 = 0.25;
 /// bodies' representative points (e.g., centroids).
 ///
 /// Returns `true` if the cache is still usable as a warm-start.
-#[allow(dead_code)]
 pub fn cache_still_valid(
     cached_pos_a: [f64; 3],
     cached_pos_b: [f64; 3],
@@ -1189,7 +1165,6 @@ pub fn cache_still_valid(
 ///
 /// Returns `None` for the fast path when shapes are clearly separated,
 /// `Some(result)` otherwise.
-#[allow(dead_code)]
 pub fn sphere_sphere_narrowphase(a: &ShapeDesc, b: &ShapeDesc) -> NarrowphaseResult {
     let d = sub3_arr(b.position, a.position);
     let dist = len3_arr(d);
@@ -1221,7 +1196,6 @@ pub fn sphere_sphere_narrowphase(a: &ShapeDesc, b: &ShapeDesc) -> NarrowphaseRes
     }
 }
 /// Dispatches a GJK proximity query for general convex shapes, with warm starting.
-#[allow(dead_code)]
 pub fn dispatch_gjk_query<FA, FB>(
     id_a: u64,
     id_b: u64,
@@ -1248,7 +1222,6 @@ where
 /// defined by `simplex`, using Johnson's sub-algorithm.
 ///
 /// Returns `(distance, closest_on_A, closest_on_B)`.
-#[allow(dead_code)]
 pub fn gjk_distance_from_simplex(simplex: &[CachedSupport]) -> (f64, [f64; 3], [f64; 3]) {
     let res = johnson_closest_point(simplex);
     let (pa, pb) = barycentric_witness(simplex, &res.bary);
@@ -1279,14 +1252,14 @@ mod tests_extra {
 
     use crate::narrowphase::gjk_cache::cross3_arr;
     use crate::narrowphase::gjk_cache::dot3_arr;
-    use crate::narrowphase::gjk_cache::functions::Vec3;
     use crate::narrowphase::gjk_cache::len3_arr;
     use crate::narrowphase::gjk_cache::negate3;
+    use oxiphysics_core::math::Vec3;
 
+    use super::gjk_distance_from_simplex;
     use crate::narrowphase::gjk_cache::prune_simplex_to_active;
     use crate::narrowphase::gjk_cache::scale3_arr;
     use crate::narrowphase::gjk_cache::sub3_arr;
-    use crate::narrowphase::gjk_distance_from_simplex;
 
     use crate::narrowphase::sphere_sphere_narrowphase;
 
@@ -1830,17 +1803,16 @@ mod tests_extra {
 /// the closest point to the origin, discarding redundant vertices.
 ///
 /// Returns the reduced simplex and the barycentric weights of the closest point.
-#[allow(dead_code)]
 pub fn gjk_reduce_simplex(simplex: &[CachedSupport]) -> (Vec<CachedSupport>, [f64; 4]) {
     let result = johnson_closest_point(simplex);
     let n = simplex.len().min(4);
     let mut active: Vec<CachedSupport> = Vec::new();
     let mut active_bary = [0.0_f64; 4];
     let mut k = 0usize;
-    for i in 0..n {
-        if result.bary[i] > 1e-12 {
-            active.push(simplex[i]);
-            active_bary[k] = result.bary[i];
+    for (&s, &w) in simplex[..n].iter().zip(result.bary[..n].iter()) {
+        if w > 1e-12 {
+            active.push(s);
+            active_bary[k] = w;
             k += 1;
         }
     }
@@ -1855,14 +1827,12 @@ pub fn gjk_reduce_simplex(simplex: &[CachedSupport]) -> (Vec<CachedSupport>, [f6
 /// For each support point in the simplex, the dot product of the point with
 /// a direction `d` gives a lower bound on `sup(d)`.  This is used to detect
 /// early termination.
-#[allow(dead_code)]
 pub fn gjk_lower_bound(simplex: &[CachedSupport], direction: [f64; 3]) -> f64 {
     simplex.iter().fold(f64::NEG_INFINITY, |acc, s| {
         acc.max(dot3_arr(s.minkowski_point, direction))
     })
 }
 /// Compute the distance from the origin to the closest vertex in the simplex.
-#[allow(dead_code)]
 pub fn simplex_vertex_min_dist(simplex: &[CachedSupport]) -> f64 {
     simplex
         .iter()
@@ -1870,7 +1840,6 @@ pub fn simplex_vertex_min_dist(simplex: &[CachedSupport]) -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 /// Compute the distance from the origin to the farthest vertex in the simplex.
-#[allow(dead_code)]
 pub fn simplex_vertex_max_dist(simplex: &[CachedSupport]) -> f64 {
     simplex
         .iter()

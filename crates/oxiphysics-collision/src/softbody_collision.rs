@@ -7,8 +7,6 @@
 //! cone culling, cloth-vs-SDF contacts, edge-edge contacts, and CCD for
 //! deformable meshes.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -1004,7 +1002,6 @@ impl ContactResponse {
     }
 
     /// Compute vertex impulses for deformable vs rigid contacts.
-    #[allow(clippy::too_many_arguments)]
     pub fn solve_deform_rigid(
         &self,
         contacts: &[DeformContact],

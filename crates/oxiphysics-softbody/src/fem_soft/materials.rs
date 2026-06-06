@@ -5,8 +5,6 @@
 //!
 //! Uses raw f64 arrays (no nalgebra dependency).
 
-#![allow(clippy::needless_range_loop)]
-
 use super::math_helpers::{det3x3, edge_matrix_raw, inv3x3, mul3x3, transpose3x3};
 
 // ---------------------------------------------------------------------------
@@ -15,7 +13,6 @@ use super::math_helpers::{det3x3, edge_matrix_raw, inv3x3, mul3x3, transpose3x3}
 
 /// Material properties for a soft body element.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct SoftMaterial {
     /// Young's modulus (stiffness).
     pub youngs_modulus: f64,
@@ -27,7 +24,6 @@ pub struct SoftMaterial {
 
 /// A corotational tetrahedral element using raw f64 arrays.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CorotationalElementRaw {
     /// Indices of the four nodes of the tetrahedron.
     pub node_indices: [usize; 4],
@@ -39,7 +35,6 @@ pub struct CorotationalElementRaw {
     pub material: SoftMaterial,
 }
 
-#[allow(dead_code)]
 impl CorotationalElementRaw {
     /// Create a new element from node positions.
     pub fn new(node_indices: [usize; 4], positions: &[[f64; 3]], material: SoftMaterial) -> Self {
@@ -151,7 +146,6 @@ impl CorotationalElementRaw {
 
 /// A FEM soft body using raw f64 arrays.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FemSoftBodyRaw {
     /// Node positions.
     pub nodes: Vec<[f64; 3]>,
@@ -163,7 +157,6 @@ pub struct FemSoftBodyRaw {
     pub masses: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl FemSoftBodyRaw {
     /// Create a new FEM soft body.
     pub fn new(nodes: Vec<[f64; 3]>, elements: Vec<CorotationalElementRaw>, mass: f64) -> Self {
@@ -182,29 +175,39 @@ impl FemSoftBodyRaw {
         let mut forces = vec![[0.0f64; 3]; n];
 
         // Gravity
-        for i in 0..n {
-            forces[i][0] += self.masses[i] * gravity[0];
-            forces[i][1] += self.masses[i] * gravity[1];
-            forces[i][2] += self.masses[i] * gravity[2];
+        for (force, mass) in forces.iter_mut().zip(self.masses.iter()) {
+            for (f_d, g_d) in force.iter_mut().zip(gravity.iter()) {
+                *f_d += mass * g_d;
+            }
         }
 
         // Element forces
         for elem in &self.elements {
             let f = elem.compute_forces(&self.nodes);
-            for k in 0..4 {
+            for (k, f_k) in f.iter().enumerate() {
                 let idx = elem.node_indices[k];
-                forces[idx][0] += f[k][0];
-                forces[idx][1] += f[k][1];
-                forces[idx][2] += f[k][2];
+                for (fd, fkd) in forces[idx].iter_mut().zip(f_k.iter()) {
+                    *fd += fkd;
+                }
             }
         }
 
         // Integrate
-        for i in 0..n {
-            let inv_m = 1.0 / self.masses[i];
-            for d in 0..3 {
-                self.velocities[i][d] += forces[i][d] * inv_m * dt;
-                self.nodes[i][d] += self.velocities[i][d] * dt;
+        for (i, (node, (vel, (force, mass)))) in self
+            .nodes
+            .iter_mut()
+            .zip(
+                self.velocities
+                    .iter_mut()
+                    .zip(forces.iter().zip(self.masses.iter())),
+            )
+            .enumerate()
+        {
+            let _ = i;
+            let inv_m = 1.0 / mass;
+            for (n_d, (v_d, f_d)) in node.iter_mut().zip(vel.iter_mut().zip(force.iter())) {
+                *v_d += f_d * inv_m * dt;
+                *n_d += *v_d * dt;
             }
         }
     }
@@ -246,7 +249,6 @@ impl FemSoftBodyRaw {
 /// Strain energy density: W = (mu/2)(I1 - 3) - mu ln(J) + (lambda/2)(ln J)^2
 /// where I1 = tr(F^T F), J = det(F).
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct NeoHookeanMaterial {
     /// First Lame parameter mu (shear modulus).
     pub mu: f64,
@@ -254,7 +256,6 @@ pub struct NeoHookeanMaterial {
     pub lambda: f64,
 }
 
-#[allow(dead_code)]
 impl NeoHookeanMaterial {
     /// Create from Young's modulus and Poisson's ratio.
     pub fn from_young_poisson(young: f64, poisson: f64) -> Self {
@@ -293,12 +294,7 @@ impl NeoHookeanMaterial {
             return 0.0;
         }
         // I1 = tr(F^T F)
-        let mut i1 = 0.0;
-        for i in 0..3 {
-            for k in 0..3 {
-                i1 += f[k][i] * f[k][i];
-            }
-        }
+        let i1: f64 = f.iter().flat_map(|row| row.iter()).map(|x| x * x).sum();
         let ln_j = det.abs().ln();
         0.5 * self.mu * (i1 - 3.0) - self.mu * ln_j + 0.5 * self.lambda * ln_j * ln_j
     }
@@ -306,7 +302,6 @@ impl NeoHookeanMaterial {
 
 /// A Neo-Hookean tetrahedral element using raw f64 arrays.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NeoHookeanElement {
     /// Indices of the four nodes.
     pub node_indices: [usize; 4],
@@ -318,7 +313,6 @@ pub struct NeoHookeanElement {
     pub material: NeoHookeanMaterial,
 }
 
-#[allow(dead_code)]
 impl NeoHookeanElement {
     /// Create a new element from node positions.
     pub fn new(
@@ -379,7 +373,6 @@ impl NeoHookeanElement {
 
 /// A hyperelastic FEM body using Neo-Hookean elements.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct HyperelasticBody {
     /// Node positions.
     pub nodes: Vec<[f64; 3]>,
@@ -393,7 +386,6 @@ pub struct HyperelasticBody {
     pub damping: f64,
 }
 
-#[allow(dead_code)]
 impl HyperelasticBody {
     /// Create a new hyperelastic body.
     pub fn new(
@@ -417,28 +409,33 @@ impl HyperelasticBody {
         let n = self.nodes.len();
         let mut forces = vec![[0.0f64; 3]; n];
 
-        for i in 0..n {
-            for d in 0..3 {
-                forces[i][d] += self.masses[i] * gravity[d];
+        for (force, mass) in forces.iter_mut().zip(self.masses.iter()) {
+            for (f_d, g_d) in force.iter_mut().zip(gravity.iter()) {
+                *f_d += mass * g_d;
             }
         }
 
         for elem in &self.elements {
             let f = elem.compute_forces(&self.nodes);
-            for k in 0..4 {
+            for (k, f_k) in f.iter().enumerate() {
                 let idx = elem.node_indices[k];
-                for d in 0..3 {
-                    forces[idx][d] += f[k][d];
+                for (fd, fkd) in forces[idx].iter_mut().zip(f_k.iter()) {
+                    *fd += fkd;
                 }
             }
         }
 
-        for i in 0..n {
-            let inv_m = 1.0 / self.masses[i];
-            for d in 0..3 {
-                self.velocities[i][d] += forces[i][d] * inv_m * dt;
-                self.velocities[i][d] *= 1.0 - self.damping;
-                self.nodes[i][d] += self.velocities[i][d] * dt;
+        let damping = self.damping;
+        for (node, (vel, (force, mass))) in self.nodes.iter_mut().zip(
+            self.velocities
+                .iter_mut()
+                .zip(forces.iter().zip(self.masses.iter())),
+        ) {
+            let inv_m = 1.0 / mass;
+            for (n_d, (v_d, f_d)) in node.iter_mut().zip(vel.iter_mut().zip(force.iter())) {
+                *v_d += f_d * inv_m * dt;
+                *v_d *= 1.0 - damping;
+                *n_d += *v_d * dt;
             }
         }
     }

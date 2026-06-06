@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,8 +5,6 @@
 //!
 //! The `OxiFile` format stores hierarchical groups of typed datasets with
 //! attributes, serialized to a compact binary representation.
-#![allow(missing_docs)]
-#![allow(dead_code)]
 
 use std::fs;
 use std::io::Write;
@@ -696,8 +693,7 @@ pub struct SimulationCheckpoint;
 
 impl SimulationCheckpoint {
     /// Creates a fresh `OxiFile` ready for checkpoint data.
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new() -> OxiFile {
+    pub fn create() -> OxiFile {
         OxiFile::new()
     }
 
@@ -850,13 +846,13 @@ impl BinaryMesh {
         write_u32(&mut buf, self.vertices.len() as u32);
         write_u32(&mut buf, self.triangles.len() as u32);
         for v in &self.vertices {
-            for k in 0..3 {
-                buf.extend_from_slice(&v[k].to_le_bytes());
+            for component in v.iter() {
+                buf.extend_from_slice(&component.to_le_bytes());
             }
         }
         for t in &self.triangles {
-            for k in 0..3 {
-                write_u32(&mut buf, t[k]);
+            for component in t.iter() {
+                write_u32(&mut buf, *component);
             }
         }
         buf
@@ -871,11 +867,11 @@ impl BinaryMesh {
         let mut vertices = Vec::with_capacity(n_verts);
         for _ in 0..n_verts {
             let mut xyz = [0.0_f64; 3];
-            for k in 0..3 {
+            for component in xyz.iter_mut() {
                 if pos + 8 > data.len() {
                     return Err("BinaryMesh: vertex data truncated".to_string());
                 }
-                xyz[k] = f64::from_le_bytes(
+                *component = f64::from_le_bytes(
                     data[pos..pos + 8]
                         .try_into()
                         .expect("slice length must match"),
@@ -984,8 +980,8 @@ impl BinaryParticleData {
         }
         // Positions
         for p in &self.positions {
-            for k in 0..3 {
-                buf.extend_from_slice(&p[k].to_le_bytes());
+            for component in p.iter() {
+                buf.extend_from_slice(&component.to_le_bytes());
             }
         }
         // Scalar fields
@@ -1017,11 +1013,11 @@ impl BinaryParticleData {
         let mut positions = Vec::with_capacity(n);
         for _ in 0..n {
             let mut xyz = [0.0_f64; 3];
-            for k in 0..3 {
+            for component in xyz.iter_mut() {
                 if pos + 8 > data.len() {
                     return Err("BinaryParticleData: positions truncated".to_string());
                 }
-                xyz[k] = f64::from_le_bytes(
+                *component = f64::from_le_bytes(
                     data[pos..pos + 8]
                         .try_into()
                         .expect("slice length must match"),
@@ -1073,7 +1069,6 @@ impl Default for BinaryParticleData {
 /// This is mainly useful for fields with large constant regions.
 ///
 /// Format: `u32 n_runs || \[f64 value, u32 count\] × n_runs`
-#[allow(dead_code)]
 pub fn rle_compress_f64(values: &[f64]) -> Vec<u8> {
     if values.is_empty() {
         let mut buf = Vec::new();
@@ -1105,7 +1100,6 @@ pub fn rle_compress_f64(values: &[f64]) -> Vec<u8> {
 }
 
 /// Decompress a run-length encoded f64 array.
-#[allow(dead_code)]
 pub fn rle_decompress_f64(data: &[u8]) -> Result<Vec<f64>, String> {
     let mut pos = 0usize;
     let n_runs = read_u32(data, &mut pos)? as usize;
@@ -1314,7 +1308,7 @@ mod tests {
 
     #[test]
     fn test_simulation_checkpoint_positions() {
-        let mut file = SimulationCheckpoint::new();
+        let mut file = SimulationCheckpoint::create();
         let positions = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
         SimulationCheckpoint::add_positions(&mut file, "frame0", &positions);
 
@@ -1329,7 +1323,7 @@ mod tests {
 
     #[test]
     fn test_simulation_checkpoint_round_trip() {
-        let mut file = SimulationCheckpoint::new();
+        let mut file = SimulationCheckpoint::create();
         let positions = [[0.1, 0.2, 0.3], [-1.0, 2.0, -3.0]];
         SimulationCheckpoint::add_positions(&mut file, "step1", &positions);
         SimulationCheckpoint::add_timestep_metadata(&mut file, 1, 0.01, 0.001);

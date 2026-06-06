@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{cross, mip_ray};
 
 /// Accumulates emission-absorption along a ray.
@@ -44,7 +42,6 @@ impl EmissionAbsorptionAccumulator {
     }
 }
 /// A triangle vertex produced by isosurface extraction.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct IsoVertex {
     /// Vertex position in world space.
@@ -74,7 +71,6 @@ impl Ray {
 ///
 /// In regions of high gradient (boundaries), the step size is reduced for
 /// better accuracy.  In homogeneous regions, larger steps are used.
-#[allow(dead_code)]
 pub struct AdaptiveRayMarcher {
     /// Base (minimum) step size.
     pub base_step: f32,
@@ -202,7 +198,6 @@ impl TransferFunction {
 ///
 /// The volume is subdivided into bricks of size `brick_size³`.  A brick is
 /// marked occupied if its maximum density exceeds a threshold.
-#[allow(dead_code)]
 pub struct OccupancyGrid {
     /// Number of bricks along each axis.
     pub nx: usize,
@@ -384,7 +379,6 @@ impl VolumeRenderer {
     }
 }
 /// A MIP renderer that generates images from a volume.
-#[allow(dead_code)]
 pub struct MipRenderer {
     /// Camera generating rays.
     pub camera: Camera,
@@ -421,7 +415,6 @@ impl MipRenderer {
 ///
 /// This models each voxel as both emitting (providing color) and absorbing
 /// (reducing transmittance) light along the ray.
-#[allow(dead_code)]
 pub struct DvrAccumulator {
     /// Accumulated RGBA color.
     pub color: [f32; 4],
@@ -516,7 +509,6 @@ impl RayMarcher {
     }
 }
 /// A ray marcher that uses an [`OccupancyGrid`] to skip empty bricks.
-#[allow(dead_code)]
 pub struct EmptySpaceSkippingMarcher {
     /// Step size inside occupied bricks.
     pub fine_step: f32,
@@ -655,13 +647,11 @@ impl Camera {
 }
 /// Transfer function mapping scalar density values to RGBA via linear
 /// interpolation over a list of control points (f64 density, \[f32;4\] colour).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TransferFunctionF64 {
     /// Control points sorted by density value (ascending).
     pub control_points: Vec<(f64, [f32; 4])>,
 }
-#[allow(dead_code)]
 impl TransferFunctionF64 {
     /// Create an empty transfer function.
     pub fn new() -> Self {
@@ -922,7 +912,6 @@ impl Volume {
 }
 impl Volume {
     /// Compute minimum and maximum density values in the volume.
-    #[allow(dead_code)]
     pub fn min_max(&self) -> (f32, f32) {
         let mut min_v = f32::MAX;
         let mut max_v = f32::MIN;
@@ -937,7 +926,6 @@ impl Volume {
         (min_v, max_v)
     }
     /// Compute the average density.
-    #[allow(dead_code)]
     pub fn average_density(&self) -> f32 {
         if self.values.is_empty() {
             return 0.0;
@@ -946,12 +934,10 @@ impl Volume {
         sum / self.values.len() as f32
     }
     /// Total number of voxels.
-    #[allow(dead_code)]
     pub fn voxel_count(&self) -> usize {
         self.nx * self.ny * self.nz
     }
     /// World-space cell size along each axis.
-    #[allow(dead_code)]
     pub fn cell_size(&self) -> Vec3 {
         Vec3::new(
             self.size.x / self.nx as f32,
@@ -960,14 +946,12 @@ impl Volume {
         )
     }
     /// Set all values to a constant.
-    #[allow(dead_code)]
     pub fn fill(&mut self, value: f32) {
         for v in &mut self.values {
             *v = value;
         }
     }
     /// Add a sphere of constant density to the volume.
-    #[allow(dead_code)]
     pub fn add_sphere(&mut self, center: Vec3, radius: f32, density: f32) {
         let r2 = radius * radius;
         for ix in 0..self.nx {
@@ -1030,7 +1014,6 @@ impl Volume {
     /// Compute a histogram of density values with `n_bins` bins.
     ///
     /// Returns a `Vec`u32` of length `n_bins` containing bin counts.
-    #[allow(dead_code)]
     pub fn histogram(&self, n_bins: usize) -> Vec<u32> {
         let n = n_bins.max(1);
         let (min_v, max_v) = self.min_max();
@@ -1044,7 +1027,6 @@ impl Volume {
         bins
     }
     /// Normalize the volume values so that the maximum is 1.0.
-    #[allow(dead_code)]
     pub fn normalize(&mut self) {
         let (_, max_v) = self.min_max();
         if max_v < 1e-12 {
@@ -1055,7 +1037,6 @@ impl Volume {
         }
     }
     /// Clamp all density values to `\[lo, hi\]`.
-    #[allow(dead_code)]
     pub fn clamp_values(&mut self, lo: f32, hi: f32) {
         for v in &mut self.values {
             *v = v.clamp(lo, hi);
@@ -1065,7 +1046,6 @@ impl Volume {
 /// A 3-D scalar field stored as a flat `Vec`f64`, voxel-centred layout.
 ///
 /// Index ordering: `ix * ny * nz + iy * nz + iz` (x-major).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VolumeGrid {
     /// Data array: `nx * ny * nz` values.
@@ -1079,7 +1059,6 @@ pub struct VolumeGrid {
     /// World-space voxel size (assumed isotropic).
     pub voxel_size: f64,
 }
-#[allow(dead_code)]
 impl VolumeGrid {
     /// Create a new zero-filled volume.
     pub fn new(nx: usize, ny: usize, nz: usize, voxel_size: f64) -> Self {
@@ -1154,7 +1133,6 @@ impl VolumeGrid {
     }
 }
 /// Configuration for the `ray_march` function.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct RayMarchSettings {
     /// Step size along the ray in world units.

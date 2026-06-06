@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// Elastic SPH solver managing a collection of [`ElasticParticle`]s.
@@ -56,7 +54,6 @@ impl ElasticSolver {
 }
 /// Extended SPH particle for solid/elastic mechanics with stress tensor,
 /// strain rate, and plasticity state.
-#[allow(dead_code)]
 pub struct ElasticSphParticle {
     /// Current position (m).
     pub position: [f64; 3],
@@ -97,7 +94,6 @@ impl ElasticSphParticle {
     /// * `h`              – smoothing length (m)
     /// * `youngs_modulus` – E (Pa)
     /// * `poissons_ratio` – ν (dimensionless)
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         position: [f64; 3],
         mass: f64,
@@ -161,7 +157,6 @@ impl ElasticSphParticle {
 /// - ε_p = equivalent plastic strain
 /// - ε̇* = ε̇/ε̇₀ = normalised strain rate
 /// - T* = (T − T_ref)/(T_melt − T_ref) = homologous temperature
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct JohnsonCookModel {
     /// Initial yield stress A (Pa).
@@ -196,7 +191,6 @@ impl JohnsonCookModel {
         }
     }
     /// Create a Johnson-Cook model with explicit parameters.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         a: f64,
         b: f64,
@@ -310,7 +304,6 @@ impl ElasticParticle {
     /// * `h`              – smoothing length (m)
     /// * `youngs_modulus` – E (Pa)
     /// * `poissons_ratio` – ν (dimensionless)
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         position: [f64; 3],
         mass: f64,
@@ -352,7 +345,6 @@ impl ElasticParticle {
 /// where L = ∂vᵢ/∂xⱼ is the velocity gradient.
 ///
 /// Computed via SPH summation over neighbours.
-#[allow(dead_code)]
 pub struct StrainRateTensor {
     /// The 3×3 symmetric strain-rate tensor (1/s), row-major.
     pub tensor: [[f64; 3]; 3],
@@ -373,8 +365,8 @@ impl StrainRateTensor {
         let vol = sym[0][0] + sym[1][1] + sym[2][2];
         let vol3 = vol / 3.0;
         let mut dev = sym;
-        for i in 0..3 {
-            dev[i][i] -= vol3;
+        for (i, row) in dev.iter_mut().enumerate() {
+            row[i] -= vol3;
         }
         let j2 = 0.5 * dev.iter().flatten().map(|v| v * v).sum::<f64>();
         Self {
@@ -439,8 +431,8 @@ impl StrainRateTensor {
         let vol = sym[0][0] + sym[1][1] + sym[2][2];
         let vol3 = vol / 3.0;
         let mut dev = sym;
-        for a in 0..3 {
-            dev[a][a] -= vol3;
+        for (a, row) in dev.iter_mut().enumerate() {
+            row[a] -= vol3;
         }
         let j2 = 0.5 * dev.iter().flatten().map(|v| v * v).sum::<f64>();
         Self {
@@ -456,7 +448,6 @@ impl StrainRateTensor {
     }
 }
 /// Wave speed utilities for elastic media.
-#[allow(dead_code)]
 pub struct ElasticWaveSpeed;
 impl ElasticWaveSpeed {
     /// Longitudinal (P-wave) speed: c_P = sqrt((λ + 2G)/ρ).
@@ -518,7 +509,6 @@ impl ElasticWaveSpeed {
 ///
 /// Implements the scalar damage variable D ∈ \[0, 1\] where D = 0 is intact
 /// and D = 1 is fully fractured.  Based on Grady-Kipp (1980).
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct SphFracture {
     /// Weibull modulus m (typically 5–10 for rocks, higher for metals).
@@ -600,7 +590,6 @@ impl SphFracture {
 }
 /// Elastic stress update for SPH particles using Hooke's law in a
 /// co-rotational (Jaumann) formulation to handle finite rotations.
-#[allow(dead_code)]
 pub struct SphElasticStress {
     /// Shear modulus G (Pa).
     pub shear_modulus: f64,
@@ -667,9 +656,9 @@ impl SphElasticStress {
             }
         }
         let ds = self.jaumann_stress_increment(particle.stress, eps_dot, omega, dt);
-        for i in 0..3 {
-            for j in 0..3 {
-                particle.stress[i][j] += ds[i][j];
+        for (i, ds_row) in ds.iter().enumerate() {
+            for (j, &dv) in ds_row.iter().enumerate() {
+                particle.stress[i][j] += dv;
             }
         }
         let tr = particle.stress[0][0] + particle.stress[1][1] + particle.stress[2][2];

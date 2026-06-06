@@ -16,20 +16,11 @@
 //! - [`DistortionCompensation`]: inverse distortion pre-deformation and scaling factors
 //! - [`BuildProcessOptimization`]: scan speed/power optimisation for residual-stress minimisation
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
 // Physical constants
 // ---------------------------------------------------------------------------
-
-/// Boltzmann constant (J K⁻¹).
-const K_B: f64 = 1.380_649e-23;
-
-/// Stefan-Boltzmann constant (W m⁻² K⁻⁴).
-const SIGMA_SB: f64 = 5.670_374_419e-8;
 
 /// Reference temperature for residual stress (K) — ambient.
 const T_AMBIENT: f64 = 298.15;

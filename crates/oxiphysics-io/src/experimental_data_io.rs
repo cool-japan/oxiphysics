@@ -11,9 +11,6 @@
 //! - Dynamic Mechanical Analysis (DMA) frequency sweeps and master curves
 //! - Simulation vs experiment comparison metrics
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::collections::HashMap;
 use std::fmt;
 

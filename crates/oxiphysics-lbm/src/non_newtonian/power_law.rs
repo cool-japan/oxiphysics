@@ -65,20 +65,17 @@ impl PowerLawFluid {
     /// Compute the shear stress at the given shear rate.
     ///
     /// `stress = K * |gamma|^n`
-    #[allow(dead_code)]
     pub fn stress(&self, shear_rate: f64) -> f64 {
         let gamma = shear_rate.abs();
         self.consistency_k * gamma.powf(self.n)
     }
 
     /// Alias: viscosity at the given shear rate (same as `effective_viscosity`).
-    #[allow(dead_code)]
     pub fn viscosity(&self, shear_rate: f64) -> f64 {
         self.effective_viscosity(shear_rate)
     }
 
     /// Returns `true` if the fluid is shear-thinning (n < 1).
-    #[allow(dead_code)]
     pub fn is_shear_thinning(&self) -> bool {
         self.n < 1.0
     }
@@ -107,7 +104,6 @@ impl LocalViscosityModel for PowerLawFluid {
 /// * `n < 1` -- shear-thinning
 /// * `n = 1` -- Newtonian (reduces to mu = k)
 /// * `n > 1` -- shear-thickening
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct PowerLaw {
     /// Consistency coefficient k (Pa*s^n in physical units).
@@ -116,7 +112,6 @@ pub struct PowerLaw {
     pub n: f64,
 }
 
-#[allow(dead_code)]
 impl PowerLaw {
     /// Create a new power-law fluid.
     pub fn new(k: f64, n: f64) -> Self {

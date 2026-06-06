@@ -629,7 +629,6 @@ mod new_struct_tests {
 /// * `stiffness` - Spring stiffness in N/m.
 ///
 /// Returns the force vector `[fx, fy, fz]` applied to the rigid body.
-#[allow(dead_code)]
 pub fn spring_attachment(proxy: &DeformableProxy, rigid_pos: [f64; 3], stiffness: f64) -> [f64; 3] {
     let centre = proxy.rigid_com;
     let delta = [
@@ -654,7 +653,6 @@ pub fn spring_attachment(proxy: &DeformableProxy, rigid_pos: [f64; 3], stiffness
 /// * `n_dofs` - Number of physical degrees of freedom.
 /// * `n_modes_full` - Total number of modes available.
 /// * `n_modes` - Number of modes to retain.
-#[allow(dead_code)]
 pub fn modal_truncation(
     modal_matrix: &[f64],
     n_dofs: usize,
@@ -688,7 +686,6 @@ pub fn modal_truncation(
 /// * `n_modes` - Number of fixed-interface normal modes to retain.
 ///
 /// Returns `(reduced_size, constraint_modes_count)`.
-#[allow(dead_code)]
 pub fn craig_bampton(
     n_interior_dofs: usize,
     n_boundary_dofs: usize,
@@ -710,7 +707,6 @@ pub fn craig_bampton(
 /// # Arguments
 ///
 /// * `node_positions` - Flat list `\[x0, y0, z0, x1, y1, z1, …\]`.
-#[allow(dead_code)]
 pub fn rigid_body_modes(node_positions: &[f64]) -> Vec<f64> {
     assert_eq!(
         node_positions.len() % 3,
@@ -751,7 +747,6 @@ pub fn rigid_body_modes(node_positions: &[f64]) -> Vec<f64> {
 /// * `substructures` - Slice of `(n_interior_dofs, n_boundary_dofs, n_modes)`.
 ///
 /// Returns the total reduced system DOF count.
-#[allow(dead_code)]
 pub fn component_synthesis(substructures: &[(usize, usize, usize)]) -> usize {
     substructures
         .iter()

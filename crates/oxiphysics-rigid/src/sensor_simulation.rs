@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,9 +16,6 @@
 //! - [`ForceSensor`] — 6-DOF force/torque sensor with calibration matrix.
 //! - [`simulate_force_sensor`] — 6-DOF force/torque measurement with noise.
 //! - [`sensor_fusion_complementary`] — complementary filter combining IMU and GPS.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -275,8 +271,8 @@ impl ForceSensor {
     /// Construct an ideal force sensor (identity calibration, low noise).
     pub fn ideal(seed: u64) -> Self {
         let mut cal = [[0.0f64; 6]; 6];
-        for i in 0..6 {
-            cal[i][i] = 1.0;
+        for (i, row) in cal.iter_mut().enumerate() {
+            row[i] = 1.0;
         }
         Self::new(cal, 0.01, 0.001, seed)
     }
@@ -284,8 +280,8 @@ impl ForceSensor {
     /// Construct a typical industrial force/torque sensor.
     pub fn industrial(seed: u64) -> Self {
         let mut cal = [[0.0f64; 6]; 6];
-        for i in 0..6 {
-            cal[i][i] = 1.0;
+        for (i, row) in cal.iter_mut().enumerate() {
+            row[i] = 1.0;
         }
         // Small off-diagonal cross-talk terms
         cal[0][1] = 0.002;
@@ -312,12 +308,18 @@ pub fn simulate_force_sensor(sensor: &mut ForceSensor, true_wrench: [f64; 6]) ->
 
     // Apply calibration matrix
     let mut calibrated = [0.0f64; 6];
-    for row in 0..6 {
-        let mut sum = 0.0;
-        for col in 0..6 {
-            sum += sensor.calibration[row][col] * true_wrench[col];
-        }
-        calibrated[row] = sum;
+    for (row, (cal_r, calib_r)) in sensor
+        .calibration
+        .iter()
+        .zip(calibrated.iter_mut())
+        .enumerate()
+    {
+        let _ = row;
+        *calib_r = cal_r
+            .iter()
+            .zip(true_wrench.iter())
+            .map(|(c, t)| c * t)
+            .sum();
     }
 
     // Add noise (forces: indices 0-2, torques: indices 3-5)
@@ -589,8 +591,8 @@ mod tests {
         let mut s = ForceSensor::new(
             {
                 let mut c = [[0.0f64; 6]; 6];
-                for k in 0..6 {
-                    c[k][k] = 1.0;
+                for (k, row) in c.iter_mut().enumerate() {
+                    row[k] = 1.0;
                 }
                 c
             },
@@ -621,14 +623,14 @@ mod tests {
     #[test]
     fn force_sensor_calibration_scales_output() {
         let mut cal = [[0.0f64; 6]; 6];
-        for k in 0..6 {
-            cal[k][k] = 2.0;
+        for (k, row) in cal.iter_mut().enumerate() {
+            row[k] = 2.0;
         }
         let mut s = ForceSensor::new(cal, 0.0, 0.0, 0);
         let wrench = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
         let meas = simulate_force_sensor(&mut s, wrench);
-        for i in 0..6 {
-            assert!((meas[i] - 2.0).abs() < 1e-9);
+        for (i, &m) in meas.iter().enumerate() {
+            assert!((m - 2.0).abs() < 1e-9, "channel {i}");
         }
     }
 

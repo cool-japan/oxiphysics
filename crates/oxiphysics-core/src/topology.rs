@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! This module provides simplicial complexes, persistent homology, cubical
 //! complexes, Morse theory, and topological data analysis (TDA) tools for
 //! use in physics simulation and data analysis.
-
-#![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -291,8 +288,8 @@ impl PersistentHomology {
         }
         let mut result = Vec::new();
         let mut killed: HashSet<usize> = HashSet::new();
-        for j in 0..n {
-            if let Some(i) = low[j] {
+        for (j, lj) in low.iter().enumerate() {
+            if let Some(i) = *lj {
                 let (birth, simplex_i) = &self.filtration[i];
                 let (death, _) = &self.filtration[j];
                 let dim = simplex_i.len().saturating_sub(1);
@@ -303,8 +300,8 @@ impl PersistentHomology {
             }
         }
         // Surviving generators.
-        for i in 0..n {
-            if !killed.contains(&i) && boundary[i].is_empty() {
+        for (i, bi) in boundary.iter().enumerate() {
+            if !killed.contains(&i) && bi.is_empty() {
                 let (birth, simplex) = &self.filtration[i];
                 let dim = simplex.len().saturating_sub(1);
                 result.push((dim, *birth, f64::INFINITY));
@@ -726,7 +723,7 @@ fn rank_over_z(matrix: &[Vec<i32>]) -> usize {
     for col in 0..cols {
         // Find pivot.
         let mut found = None;
-        for row in pivot_row..rows {
+        for (row, _) in m.iter().enumerate().take(rows).skip(pivot_row) {
             if m[row][col].abs() > 1e-10 {
                 found = Some(row);
                 break;
@@ -741,9 +738,10 @@ fn rank_over_z(matrix: &[Vec<i32>]) -> usize {
             for row in 0..rows {
                 if row != pivot_row && m[row][col].abs() > 1e-10 {
                     let factor = m[row][col];
-                    for c in 0..cols {
-                        let val = factor * m[pivot_row][c];
-                        m[row][c] -= val;
+                    let pivot_row_data: Vec<f64> =
+                        m[pivot_row].iter().take(cols).copied().collect();
+                    for (c, mv) in m[row].iter_mut().enumerate().take(cols) {
+                        *mv -= factor * pivot_row_data[c];
                     }
                 }
             }

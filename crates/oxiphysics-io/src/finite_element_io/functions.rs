@@ -3,7 +3,6 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::types::{DirichletBc, ElementTypeMapping, FeElementType, MultiPointConstraint};
-#[allow(unused_imports)]
 use std::fmt::Write as _;
 
 /// Degree of freedom index (1=Tx, 2=Ty, 3=Tz, 4=Rx, 5=Ry, 6=Rz).

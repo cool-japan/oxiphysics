@@ -14,8 +14,6 @@
 //! - [`KirigamiCut`] — slit kirigami auxetic behaviour
 //! - [`OrigamiAnalysis`] — Gaussian curvature and Poisson's ratio of folded surfaces
 
-#![allow(dead_code)]
-
 use oxiphysics_core::math::Vec3;
 use std::f64::consts::PI;
 

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
 use oxiphysics_core::math::Vec3;
 
@@ -121,7 +120,6 @@ impl XpbdBody {
 }
 impl XpbdBody {
     /// Step with statistics collection.
-    #[allow(dead_code)]
     pub fn step_with_stats(
         &mut self,
         dt: f64,
@@ -193,19 +191,16 @@ impl XpbdBody {
         stats
     }
     /// Number of particles.
-    #[allow(dead_code)]
     pub fn particle_count(&self) -> usize {
         self.positions.len()
     }
     /// Number of all constraints (distance + volume + bending).
-    #[allow(dead_code)]
     pub fn constraint_count(&self) -> usize {
         self.distance_constraints.len()
             + self.volume_constraints.len()
             + self.bending_constraints.len()
     }
     /// Add a bending constraint between four particles. Rest angle is read from positions.
-    #[allow(dead_code)]
     pub fn add_bending_constraint(
         &mut self,
         p0: usize,
@@ -224,7 +219,6 @@ impl XpbdBody {
         ));
     }
     /// Centre of mass position, weighted by mass.
-    #[allow(dead_code)]
     pub fn centre_of_mass(&self) -> Vec3 {
         let mut total_mass = 0.0;
         let mut com = Vec3::zeros();
@@ -240,7 +234,6 @@ impl XpbdBody {
         }
     }
     /// Maximum velocity magnitude across all particles.
-    #[allow(dead_code)]
     pub fn max_velocity(&self) -> f64 {
         self.velocities
             .iter()
@@ -511,7 +504,6 @@ impl XpbdVolumeConstraint {
 ///
 /// Implements Rayleigh damping as a constraint: damps the relative velocity
 /// along the constraint gradient.
-#[allow(dead_code)]
 pub struct XpbdDampingConstraint {
     /// Index of particle A.
     pub particle_a: usize,
@@ -520,7 +512,6 @@ pub struct XpbdDampingConstraint {
     /// Damping coefficient beta (s/m). Higher = more damping.
     pub damping_beta: f64,
 }
-#[allow(dead_code)]
 impl XpbdDampingConstraint {
     /// Create a new damping constraint.
     pub fn new(a: usize, b: usize, damping_beta: f64) -> Self {
@@ -564,7 +555,6 @@ impl XpbdDampingConstraint {
     }
 }
 /// Statistics collected during XPBD solving.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct XpbdSolverStats {
     /// Total number of constraint projections performed.
@@ -589,7 +579,6 @@ pub struct XpbdSolverStats {
 ///
 /// This is a position-level constraint, not a standard XPBD Lagrange multiplier
 /// constraint.  It applies a direct position correction α per iteration.
-#[allow(dead_code)]
 pub struct XpbdShapeMatchingConstraint {
     /// Particle indices in this cluster.
     pub particles: Vec<usize>,
@@ -600,7 +589,6 @@ pub struct XpbdShapeMatchingConstraint {
     /// Stiffness (0 = no correction, 1 = full correction each iteration).
     pub stiffness: f64,
 }
-#[allow(dead_code)]
 impl XpbdShapeMatchingConstraint {
     /// Build a shape-matching constraint from a list of particle indices,
     /// their current positions (used as rest config), and masses.
@@ -714,7 +702,6 @@ impl XpbdShapeMatchingConstraint {
 /// desired constraint residual tolerance, or to decide whether a step needs
 /// refinement based on the kinetic energy.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct SubstepConfig {
     /// Minimum number of substeps per frame.
     pub min_substeps: usize,
@@ -725,7 +712,6 @@ pub struct SubstepConfig {
     /// Number of constraint-projection iterations per substep.
     pub iterations: usize,
 }
-#[allow(dead_code)]
 impl SubstepConfig {
     /// Create a default substep configuration.
     pub fn default_config() -> Self {
@@ -763,7 +749,6 @@ impl SubstepConfig {
 }
 /// Self-collision pair detected between two particles.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct SelfCollisionPair {
     /// Index of first particle.
     pub i: usize,
@@ -778,7 +763,6 @@ pub struct SelfCollisionPair {
 /// using a position-based approach: if two particles are within `contact_dist`
 /// of each other, they are pushed apart symmetrically.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct XpbdSelfCollision {
     /// Per-particle radius (m).
     pub radii: Vec<f64>,
@@ -789,7 +773,6 @@ pub struct XpbdSelfCollision {
     /// Defaults to the sum of the two particle radii.
     pub thickness: f64,
 }
-#[allow(dead_code)]
 impl XpbdSelfCollision {
     /// Create a self-collision handler with uniform particle radius.
     pub fn new_uniform(n_particles: usize, radius: f64, compliance: f64) -> Self {

@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
-#[allow(unused_imports)]
-use super::functions::*;
 /// Extended piezoelectric constitutive relations.
 ///
 /// In matrix form:
@@ -192,7 +189,6 @@ impl ElectrostaticSolver {
     }
 }
 /// Piezoelectric sensor: converts mechanical strain to voltage.
-#[allow(dead_code)]
 pub struct PiezoSensor {
     /// Material properties.
     pub material: PiezoCoupling,
@@ -207,7 +203,6 @@ pub struct PiezoSensor {
 }
 impl PiezoSensor {
     /// Create a new piezoelectric sensor.
-    #[allow(dead_code)]
     pub fn new(
         e_mod: f64,
         nu: f64,
@@ -231,26 +226,22 @@ impl PiezoSensor {
     /// Short-circuit charge for a given applied stress T33 (Pa).
     ///
     /// Q = d33 * T33 * A
-    #[allow(dead_code)]
     pub fn short_circuit_charge(&self, stress_33: f64) -> f64 {
         self.material.d33() * stress_33 * self.area
     }
     /// Open-circuit voltage for stress T33.
     ///
     /// V_oc = Q / C = d33 * T33 * t / ε^T
-    #[allow(dead_code)]
     pub fn open_circuit_voltage(&self, stress_33: f64) -> f64 {
         self.material.d33() * stress_33 * self.thickness / self.permittivity.max(1e-60)
     }
     /// Capacitance: C = ε^T * A / t.
-    #[allow(dead_code)]
     pub fn capacitance(&self) -> f64 {
         self.permittivity * self.area / self.thickness.max(1e-30)
     }
     /// Power output for sinusoidal stress at frequency f_hz.
     ///
     /// P = V²_rms / R = (V_oc / sqrt(2))² / R
-    #[allow(dead_code)]
     pub fn power_output(&self, stress_33_amplitude: f64, _f_hz: f64) -> f64 {
         let v_oc = self.open_circuit_voltage(stress_33_amplitude);
         let v_rms = v_oc / 2.0_f64.sqrt();
@@ -264,7 +255,6 @@ impl PiezoSensor {
 /// {D} = [d]{T}   + [ε^T]{E}
 /// ```
 /// where s^E is compliance at constant E and ε^T is permittivity at constant T.
-#[allow(dead_code)]
 pub struct PiezoD {
     /// Compliance matrix s^E (6×6).
     pub compliance: [[f64; 6]; 6],
@@ -275,15 +265,14 @@ pub struct PiezoD {
 }
 impl PiezoD {
     /// Create from d33, d31, d15 coefficients and material constants.
-    #[allow(dead_code)]
     pub fn from_pzt(e_mod: f64, nu: f64, eps_r: f64, d33: f64, d31: f64, d15: f64) -> Self {
         let s11 = 1.0 / e_mod;
         let s12 = -nu / e_mod;
         let s44 = 2.0 * (1.0 + nu) / e_mod;
         let mut s = [[0.0_f64; 6]; 6];
-        for i in 0..3 {
-            for j in 0..3 {
-                s[i][j] = if i == j { s11 } else { s12 };
+        for (i, row) in s.iter_mut().enumerate().take(3) {
+            for (j, val) in row.iter_mut().enumerate().take(3) {
+                *val = if i == j { s11 } else { s12 };
             }
         }
         s[3][3] = s44;
@@ -309,25 +298,23 @@ impl PiezoD {
     }
     /// Compute strain from stress {T} and electric field {E}.
     /// S = s^E * T + d^T * E  (6-vector)
-    #[allow(dead_code)]
     pub fn strain(&self, stress: &[f64; 6], e_field: &[f64; 3]) -> [f64; 6] {
         let mut s = [0.0_f64; 6];
-        for i in 0..6 {
+        for (i, si) in s.iter_mut().enumerate() {
             let s_comp: f64 = (0..6).map(|j| self.compliance[i][j] * stress[j]).sum();
             let d_comp: f64 = (0..3).map(|k| self.d_matrix[k][i] * e_field[k]).sum();
-            s[i] = s_comp + d_comp;
+            *si = s_comp + d_comp;
         }
         s
     }
     /// Compute electric displacement from stress and electric field.
     /// D = d * T + ε^T * E  (3-vector)
-    #[allow(dead_code)]
     pub fn electric_displacement(&self, stress: &[f64; 6], e_field: &[f64; 3]) -> [f64; 3] {
         let mut d = [0.0_f64; 3];
-        for i in 0..3 {
+        for (i, di) in d.iter_mut().enumerate() {
             let dt: f64 = (0..6).map(|j| self.d_matrix[i][j] * stress[j]).sum();
             let de: f64 = (0..3).map(|j| self.permittivity_t[i][j] * e_field[j]).sum();
-            d[i] = dt + de;
+            *di = dt + de;
         }
         d
     }
@@ -346,7 +333,6 @@ pub struct ElectromechanicalElement {
 ///
 /// For an isotropic material with two electrostriction coefficients M1, M2:
 /// ε_ij = M1 * E_i * E_j + M2 * δ_ij * |E|²
-#[allow(dead_code)]
 pub struct ElectrostrictiveMaterial {
     /// Electrostriction coefficient M1 (m²/V²).
     pub m1: f64,
@@ -355,12 +341,10 @@ pub struct ElectrostrictiveMaterial {
 }
 impl ElectrostrictiveMaterial {
     /// Create a new electrostrictive material.
-    #[allow(dead_code)]
     pub fn new(m1: f64, m2: f64) -> Self {
         Self { m1, m2 }
     }
     /// Compute the electrostrictive strain tensor (3×3) for a given E field.
-    #[allow(dead_code)]
     pub fn strain_tensor(&self, e_field: &[f64; 3]) -> [[f64; 3]; 3] {
         let e_sq: f64 = e_field.iter().map(|e| e * e).sum();
         let mut eps = [[0.0_f64; 3]; 3];
@@ -373,7 +357,6 @@ impl ElectrostrictiveMaterial {
         eps
     }
     /// Electrostrictive energy density: U_e = (M1/2)|E|⁴ (simplified).
-    #[allow(dead_code)]
     pub fn energy_density(&self, e_field: &[f64; 3]) -> f64 {
         let e_sq: f64 = e_field.iter().map(|e| e * e).sum();
         0.5 * (self.m1 + 3.0 * self.m2) * e_sq * e_sq
@@ -383,7 +366,6 @@ impl ElectrostrictiveMaterial {
 ///
 /// A soft dielectric membrane that deforms under electric field.
 /// Uses the neo-Hookean + electrostatic energy formulation.
-#[allow(dead_code)]
 pub struct DielectricElastomer {
     /// Shear modulus (Pa).
     pub mu: f64,
@@ -396,7 +378,6 @@ pub struct DielectricElastomer {
 }
 impl DielectricElastomer {
     /// Create a new DEA.
-    #[allow(dead_code)]
     pub fn new(mu: f64, kappa: f64, eps_r: f64, thickness: f64) -> Self {
         const EPS0: f64 = 8.854_187_817e-12;
         Self {
@@ -409,7 +390,6 @@ impl DielectricElastomer {
     /// Maxwell stress tensor for a given electric field E (3-vector).
     ///
     /// T_ij^{Maxwell} = ε (E_i E_j - δ_ij |E|²/2)
-    #[allow(dead_code)]
     pub fn maxwell_stress_tensor(&self, e_field: &[f64; 3]) -> [[f64; 3]; 3] {
         let e_sq: f64 = e_field.iter().map(|e| e * e).sum();
         let mut t = [[0.0_f64; 3]; 3];
@@ -424,7 +404,6 @@ impl DielectricElastomer {
     /// Equivalent pressure from the Maxwell stress in the z-direction.
     ///
     /// p_Maxwell = ε E_z² (compressive, drives thinning)
-    #[allow(dead_code)]
     pub fn maxwell_pressure(&self, voltage: f64) -> f64 {
         let e_z = voltage / self.thickness.max(1e-30);
         self.permittivity * e_z * e_z
@@ -433,7 +412,6 @@ impl DielectricElastomer {
     ///
     /// ε_z = -p_Maxwell / (2 * mu + kappa * ...)  (linearised)
     /// Simplified: ε_z ≈ -ε E² / (4 mu)
-    #[allow(dead_code)]
     pub fn actuation_strain(&self, voltage: f64) -> f64 {
         let p = self.maxwell_pressure(voltage);
         -p / (4.0 * self.mu.max(1e-30))
@@ -441,7 +419,6 @@ impl DielectricElastomer {
     /// Electrostatic energy stored in the DEA per unit volume.
     ///
     /// U_e = ε E² / 2
-    #[allow(dead_code)]
     pub fn electrostatic_energy_density(&self, voltage: f64) -> f64 {
         let e = voltage / self.thickness.max(1e-30);
         0.5 * self.permittivity * e * e
@@ -482,11 +459,11 @@ impl PiezoMaterial {
         let lam = e_mod * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
         let mu = e_mod / (2.0 * (1.0 + nu));
         let mut c = [[0.0_f64; 6]; 6];
-        for i in 0..3 {
-            for j in 0..3 {
-                c[i][j] = lam;
+        for (i, row) in c.iter_mut().enumerate().take(3) {
+            for val in row.iter_mut().take(3) {
+                *val = lam;
             }
-            c[i][i] = lam + 2.0 * mu;
+            row[i] = lam + 2.0 * mu;
         }
         c[3][3] = mu;
         c[4][4] = mu;
@@ -616,11 +593,10 @@ impl PiezoFemAssembler {
             }
         }
         let mut b = [[0.0_f64; 12]; 6];
-        for i in 0..4 {
+        for (i, &[dndx, dndy, dndz]) in dn.iter().enumerate() {
             let col_u = 3 * i;
             let col_v = 3 * i + 1;
             let col_w = 3 * i + 2;
-            let [dndx, dndy, dndz] = dn[i];
             b[0][col_u] = dndx;
             b[1][col_v] = dndy;
             b[2][col_w] = dndz;
@@ -710,10 +686,10 @@ impl PiezoFemAssembler {
             }
         }
         let mut cb = [[0.0_f64; 12]; 6];
-        for r in 0..6 {
+        for (r, _) in (0..6usize).enumerate() {
             for c in 0..12 {
                 let mut s = 0.0;
-                for k in 0..6 {
+                for (k, _) in (0..6usize).enumerate() {
                     s += mat.elastic_stiffness[r][k] * b[k][c];
                 }
                 cb[r][c] = s;
@@ -730,10 +706,10 @@ impl PiezoFemAssembler {
             }
         }
         let mut ebp = [[0.0_f64; 4]; 6];
-        for r in 0..6 {
+        for (r, _) in (0..6usize).enumerate() {
             for c in 0..4 {
                 let mut s = 0.0;
-                for k in 0..3 {
+                for (k, _) in (0..3usize).enumerate() {
                     s += mat.piezo_coupling[r][k] * bp[k][c];
                 }
                 ebp[r][c] = s;
@@ -750,10 +726,10 @@ impl PiezoFemAssembler {
             }
         }
         let mut eps_bp = [[0.0_f64; 4]; 3];
-        for r in 0..3 {
+        for (r, _) in (0..3usize).enumerate() {
             for c in 0..4 {
                 let mut s = 0.0;
-                for k in 0..3 {
+                for (k, _) in (0..3usize).enumerate() {
                     s += mat.permittivity[r][k] * bp[k][c];
                 }
                 eps_bp[r][c] = s;
@@ -825,8 +801,9 @@ impl ElectrostaticElement {
         for r in 0..4 {
             for c in 0..4 {
                 let mut s = 0.0;
-                for k_idx in 0..3 {
-                    s += bp[k_idx][r] * bp[k_idx][c];
+                for (k_idx, bprow) in bp.iter().enumerate().take(3) {
+                    s += bprow[r] * bprow[c];
+                    let _ = k_idx;
                 }
                 k[r][c] = self.permittivity * s * vol;
             }
@@ -1032,7 +1009,6 @@ impl MemsActuator {
 ///
 /// Assembles the full global stiffness matrix from a list of elements.
 /// DOF ordering: `[u1,v1,w1,φ1, u2,v2,w2,φ2, …]` (4 DOFs per node).
-#[allow(dead_code)]
 pub struct GlobalPiezoAssembler {
     /// Inner element-level assembler.
     pub local: PiezoFemAssembler,
@@ -1043,7 +1019,6 @@ pub struct GlobalPiezoAssembler {
 }
 impl GlobalPiezoAssembler {
     /// Create a new global assembler from an existing local assembler.
-    #[allow(dead_code)]
     pub fn new(local: PiezoFemAssembler) -> Self {
         let n_nodes = local.nodes.len();
         let n_dof = n_nodes * 4;
@@ -1055,7 +1030,6 @@ impl GlobalPiezoAssembler {
         }
     }
     /// Assemble the global stiffness matrix from all elements.
-    #[allow(dead_code)]
     pub fn assemble(&mut self) {
         let n_elems = self.local.elements.len();
         for ei in 0..n_elems {
@@ -1079,7 +1053,6 @@ impl GlobalPiezoAssembler {
         }
     }
     /// Apply a Dirichlet boundary condition: set DOF `idx` to value `val`.
-    #[allow(dead_code)]
     pub fn apply_dirichlet(&mut self, idx: usize, _val: f64) {
         if idx >= self.n_dof {
             return;
@@ -1093,7 +1066,6 @@ impl GlobalPiezoAssembler {
     /// Extract the mechanical sub-block K_uu from the global matrix.
     ///
     /// Returns K_uu as a dense matrix of size (3*n_nodes) × (3*n_nodes).
-    #[allow(dead_code)]
     pub fn extract_k_uu(&self) -> Vec<Vec<f64>> {
         let n_nodes = self.local.nodes.len();
         let n_mech = 3 * n_nodes;
@@ -1116,15 +1088,14 @@ impl GlobalPiezoAssembler {
     /// Extract the electrical sub-block K_pp from the global matrix.
     ///
     /// Returns K_pp as a dense matrix of size n_nodes × n_nodes.
-    #[allow(dead_code)]
     pub fn extract_k_pp(&self) -> Vec<Vec<f64>> {
         let n_nodes = self.local.nodes.len();
         let mut kpp = vec![vec![0.0; n_nodes]; n_nodes];
-        for na in 0..n_nodes {
+        for (na, kpp_row) in kpp.iter_mut().enumerate().take(n_nodes) {
             let row_global = na * 4 + 3;
-            for nb in 0..n_nodes {
+            for (nb, kpp_val) in kpp_row.iter_mut().enumerate().take(n_nodes) {
                 let col_global = nb * 4 + 3;
-                kpp[na][nb] = self.k_global[row_global][col_global];
+                *kpp_val = self.k_global[row_global][col_global];
             }
         }
         kpp

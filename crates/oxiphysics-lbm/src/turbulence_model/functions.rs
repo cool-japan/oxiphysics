@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_range_contains)]
 use super::types::{KOmegaParams, SstParams};
 
 /// Compute turbulent kinematic viscosity: ν_t = k / ω.
@@ -73,7 +72,6 @@ pub fn gamma_re_theta_model(tu: f64, re_theta: f64) -> f64 {
 /// gradient tensor.
 ///
 /// `|S| = sqrt(2 * S_ij * S_ij)` where `S_ij = 0.5 * (∂u_i/∂x_j + ∂u_j/∂x_i)`.
-#[allow(dead_code)]
 pub fn strain_rate_magnitude(velocity_gradient: [f64; 9]) -> f64 {
     let g = velocity_gradient;
     let mut sum = 0.0f64;
@@ -88,7 +86,6 @@ pub fn strain_rate_magnitude(velocity_gradient: [f64; 9]) -> f64 {
 /// Compute the rotation-rate tensor magnitude |Ω|.
 ///
 /// `|Ω| = sqrt(2 * Ω_ij * Ω_ij)` where `Ω_ij = 0.5 * (∂u_i/∂x_j - ∂u_j/∂x_i)`.
-#[allow(dead_code)]
 pub fn rotation_rate_magnitude(velocity_gradient: [f64; 9]) -> f64 {
     let g = velocity_gradient;
     let mut sum = 0.0f64;
@@ -103,7 +100,6 @@ pub fn rotation_rate_magnitude(velocity_gradient: [f64; 9]) -> f64 {
 /// Compute the turbulent kinetic energy dissipation rate from k and ω.
 ///
 /// ε = β* · k · ω  (Wilcox k-ω relation)
-#[allow(dead_code)]
 pub fn dissipation_rate_from_komega(k: f64, omega: f64) -> f64 {
     let params = KOmegaParams::wilcox_1988();
     params.beta_star * k * omega
@@ -112,7 +108,6 @@ pub fn dissipation_rate_from_komega(k: f64, omega: f64) -> f64 {
 /// and proportional to the strain rate for Smagorinsky.
 ///
 /// Returns `(nu_sgs, |S|)`.
-#[allow(dead_code)]
 pub fn sgs_validation(cs: f64, delta: f64, velocity_gradient: [f64; 9]) -> (f64, f64) {
     let s_mag = strain_rate_magnitude(velocity_gradient);
     let nu_sgs = (cs * delta) * (cs * delta) * s_mag;
@@ -123,7 +118,6 @@ pub fn sgs_validation(cs: f64, delta: f64, velocity_gradient: [f64; 9]) -> (f64,
 /// `Π_sgs = -2 * ν_t * S_ij * S_ij`
 ///
 /// where S_ij is the resolved strain-rate tensor.
-#[allow(dead_code)]
 pub fn sgs_energy_flux(nu_sgs: f64, s_mag: f64) -> f64 {
     -nu_sgs * s_mag * s_mag
 }
@@ -132,7 +126,6 @@ pub fn sgs_energy_flux(nu_sgs: f64, s_mag: f64) -> f64 {
 /// Instead of point-wise Cs², computes a plane-average to avoid numerical
 /// instability.  `l_m_samples` and `m_m_samples` are the LM and MM numerator/
 /// denominator samples over the averaging plane.
-#[allow(dead_code)]
 pub fn plane_averaged_dynamic_constant(l_m_samples: &[f64], m_m_samples: &[f64]) -> f64 {
     assert_eq!(l_m_samples.len(), m_m_samples.len());
     let lm_sum: f64 = l_m_samples.iter().sum();
@@ -145,7 +138,6 @@ pub fn plane_averaged_dynamic_constant(l_m_samples: &[f64], m_m_samples: &[f64])
 /// Temporal smoothing of the dynamic constant using an exponential filter.
 ///
 /// `Cs²_smooth = (1-alpha) * Cs²_old + alpha * Cs²_new`
-#[allow(dead_code)]
 pub fn temporal_smoothing(cs2_old: f64, cs2_new: f64, alpha: f64) -> f64 {
     let cs2 = (1.0 - alpha) * cs2_old + alpha * cs2_new;
     cs2.max(0.0)
@@ -153,7 +145,6 @@ pub fn temporal_smoothing(cs2_old: f64, cs2_new: f64, alpha: f64) -> f64 {
 /// Compute the Germano identity residual.
 ///
 /// `|L_ij - M_ij * Cs²|` (Frobenius norm over the 3×3 tensor)
-#[allow(dead_code)]
 pub fn germano_identity_residual(l_tensor: [f64; 9], m_tensor: [f64; 9], cs2: f64) -> f64 {
     let mut sum = 0.0f64;
     for i in 0..9 {
@@ -168,7 +159,6 @@ pub fn germano_identity_residual(l_tensor: [f64; 9], m_tensor: [f64; 9], cs2: f6
 /// 4 sigma_omega2 k / (CDkw d^2)).
 ///
 /// Simplified version using only wall distance `d` and turbulence quantities.
-#[allow(dead_code)]
 pub fn sst_f1(k: f64, omega: f64, nu: f64, d: f64, params: &SstParams) -> f64 {
     if d <= 0.0 || omega <= 0.0 {
         return 1.0;
@@ -182,7 +172,6 @@ pub fn sst_f1(k: f64, omega: f64, nu: f64, d: f64, params: &SstParams) -> f64 {
 /// SST eddy viscosity: ν_t = a1 * k / max(a1 * ω, |S| * F2).
 ///
 /// `F2` is the SST outer blending function.
-#[allow(dead_code)]
 pub fn sst_eddy_viscosity(k: f64, omega: f64, s_mag: f64, f2: f64) -> f64 {
     let a1 = 0.31;
     let denom = (a1 * omega).max(s_mag * f2);
@@ -192,7 +181,6 @@ pub fn sst_eddy_viscosity(k: f64, omega: f64, s_mag: f64, f2: f64) -> f64 {
     a1 * k / denom
 }
 /// SST F2 blending function.
-#[allow(dead_code)]
 pub fn sst_f2(k: f64, omega: f64, nu: f64, d: f64) -> f64 {
     if d <= 0.0 || omega <= 0.0 {
         return 1.0;
@@ -209,7 +197,6 @@ pub fn sst_f2(k: f64, omega: f64, nu: f64, d: f64) -> f64 {
 ///
 /// Values >> 1 indicate a turbulent region; values << 1 indicate laminar or
 /// DNS-resolved flow.
-#[allow(dead_code)]
 pub fn eddy_viscosity_ratio(nu_t: f64, nu: f64) -> f64 {
     if nu <= 0.0 {
         return 0.0;
@@ -220,7 +207,6 @@ pub fn eddy_viscosity_ratio(nu_t: f64, nu: f64) -> f64 {
 ///
 /// Given `y_plus` and friction velocity `u_tau`, compute dimensional
 /// wall distance: `y = y_plus * nu / u_tau`.
-#[allow(dead_code)]
 pub fn wall_distance_from_y_plus(y_plus: f64, nu: f64, u_tau: f64) -> f64 {
     if u_tau <= 0.0 {
         return 0.0;
@@ -230,7 +216,6 @@ pub fn wall_distance_from_y_plus(y_plus: f64, nu: f64, u_tau: f64) -> f64 {
 /// Compute y+ from dimensional quantities.
 ///
 /// `y⁺ = y * u_tau / ν`
-#[allow(dead_code)]
 pub fn y_plus(y: f64, u_tau: f64, nu: f64) -> f64 {
     if nu <= 0.0 {
         return 0.0;
@@ -1252,7 +1237,10 @@ mod tests_advanced_turbulence {
     #[test]
     fn test_ddes_shielding_fd_range() {
         let fd = ddes_shielding_fd(1e-4, 1e-5, 0.1, 0.01, 0.41);
-        assert!(fd >= 0.0 && fd <= 1.0 + 1e-10, "F_d out of [0,1]: {fd}");
+        assert!(
+            (0.0..=(1.0 + 1e-10)).contains(&fd),
+            "F_d out of [0,1]: {fd}"
+        );
     }
     #[test]
     fn test_ddes_shielding_fd_at_wall() {

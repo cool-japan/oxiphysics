@@ -3,18 +3,14 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 
 /// Conjugate Gradient solver for symmetric positive definite systems.
-#[allow(dead_code)]
 pub struct ConjugateGradient {
     /// Maximum number of iterations.
     pub max_iter: usize,
     /// Convergence tolerance on the residual norm.
     pub tol: f64,
 }
-#[allow(dead_code)]
 impl ConjugateGradient {
     /// Create a new CG solver.
     pub fn new(max_iter: usize, tol: f64) -> Self {
@@ -66,12 +62,10 @@ pub enum SolverError {
     DimensionMismatch,
 }
 /// Dense Cholesky factorisation (lower-triangular `L` such that `A = L Lᵀ`).
-#[allow(dead_code)]
 pub struct CholeskyDense {
     /// Dimension of the system.
     pub n: usize,
 }
-#[allow(dead_code)]
 impl CholeskyDense {
     /// Create a new Cholesky solver.
     pub fn new(n: usize) -> Self {
@@ -132,7 +126,6 @@ impl CholeskyDense {
 ///
 /// Attach to any iterative solver to track convergence and detect stagnation
 /// or divergence.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConvergenceMonitor {
     /// Residual history (one entry per iteration).
@@ -142,7 +135,6 @@ pub struct ConvergenceMonitor {
     /// Maximum allowed iterations.
     pub max_iter: usize,
 }
-#[allow(dead_code)]
 impl ConvergenceMonitor {
     /// Create a new convergence monitor.
     pub fn new(tol: f64, max_iter: usize) -> Self {
@@ -188,7 +180,6 @@ impl ConvergenceMonitor {
     }
 }
 /// Gauss-Seidel (successive over-relaxation) solver for dense systems.
-#[allow(dead_code)]
 pub struct GaussSeidel {
     /// Maximum number of iterations.
     pub max_iter: usize,
@@ -197,7 +188,6 @@ pub struct GaussSeidel {
     /// Relaxation parameter (1.0 = standard Gauss-Seidel, >1 = over-relaxation).
     pub omega: f64,
 }
-#[allow(dead_code)]
 impl GaussSeidel {
     /// Create a new Gauss-Seidel solver.
     pub fn new(max_iter: usize, tol: f64, omega: f64) -> Self {
@@ -277,7 +267,6 @@ impl GaussSeidel {
     }
 }
 /// Statistics returned by iterative solvers.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SolverStats {
     /// Number of iterations performed.

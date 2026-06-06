@@ -430,7 +430,6 @@ pub fn polygon2d_difference(a: &[[f64; 2]], b: &[[f64; 2]]) -> Vec<[f64; 2]> {
     result
 }
 /// Compute a convex hull of 2-D points using the gift-wrapping algorithm.
-#[allow(dead_code)]
 pub(super) fn convex_hull_2d(pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
     if pts.len() < 3 {
         return pts.to_vec();
@@ -472,7 +471,6 @@ pub(super) fn dist_sq_2d(a: [f64; 2], b: [f64; 2]) -> f64 {
     (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
 }
 /// Check whether a mesh is 2-manifold.
-#[allow(dead_code)]
 pub fn check_manifold(tris: &[[usize; 3]]) -> ManifoldCheckResult {
     let mut edge_count: std::collections::HashMap<(usize, usize), usize> =
         std::collections::HashMap::new();
@@ -938,7 +936,6 @@ mod tests {
 ///
 /// Returns `(front_polygon, back_polygon)`.  Either may be empty if the
 /// polygon lies entirely on one side.
-#[allow(dead_code)]
 pub fn split_polygon_by_plane(
     polygon: &[[f64; 3]],
     plane: &BspPlane,
@@ -978,14 +975,12 @@ pub fn split_polygon_by_plane(
 ///
 /// The clip polygon must be wound counter-clockwise.
 /// Returns the clipped polygon.
-#[allow(dead_code)]
 pub fn weiler_atherton_clip(subject: &[[f64; 2]], clip: &[[f64; 2]]) -> Vec<[f64; 2]> {
     clip_polygon_2d(subject, clip)
 }
 /// Compute intersection points of two polygons.
 ///
 /// Returns all edge-edge intersection points between the two polygon boundaries.
-#[allow(dead_code)]
 pub fn polygon_intersection_points(a: &[[f64; 2]], b: &[[f64; 2]]) -> Vec<[f64; 2]> {
     let mut result = Vec::new();
     let na = a.len();
@@ -1006,7 +1001,6 @@ pub fn polygon_intersection_points(a: &[[f64; 2]], b: &[[f64; 2]]) -> Vec<[f64; 
 /// Compute the intersection of two 2D line segments.
 ///
 /// Returns the intersection point if segments properly intersect, or `None`.
-#[allow(dead_code)]
 pub fn segment_segment_intersect_2d(
     p1: [f64; 2],
     p2: [f64; 2],
@@ -1036,7 +1030,6 @@ pub fn segment_segment_intersect_2d(
 /// for convex polygons.
 ///
 /// Returns the offset polygon or an empty vector if degenerate.
-#[allow(dead_code)]
 pub fn offset_polygon_2d(polygon: &[[f64; 2]], delta: f64) -> Vec<[f64; 2]> {
     let n = polygon.len();
     if n < 3 {
@@ -1075,7 +1068,6 @@ pub fn offset_polygon_2d(polygon: &[[f64; 2]], delta: f64) -> Vec<[f64; 2]> {
 /// Compute the intersection of two infinite 2D lines (given as two points each).
 ///
 /// Returns `None` if the lines are parallel.
-#[allow(dead_code)]
 pub fn line_line_intersect_2d(
     a0: [f64; 2],
     a1: [f64; 2],
@@ -1120,7 +1112,6 @@ pub(super) fn solid_angle_triangle(p: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f6
 /// - other values indicate the point lies on the surface
 ///
 /// This is more robust than ray casting for points near mesh boundaries.
-#[allow(dead_code)]
 pub fn winding_number_3d(p: [f64; 3], verts: &[[f64; 3]], tris: &[[usize; 3]]) -> f64 {
     let mut total = 0.0f64;
     for tri in tris {
@@ -1134,7 +1125,6 @@ pub fn winding_number_3d(p: [f64; 3], verts: &[[f64; 3]], tris: &[[usize; 3]]) -
 /// Test whether a point is strictly inside a closed mesh using the winding number.
 ///
 /// Returns `true` if the winding number is close to ±1 (i.e., the point is enclosed).
-#[allow(dead_code)]
 pub fn winding_number_inside(p: [f64; 3], verts: &[[f64; 3]], tris: &[[usize; 3]]) -> bool {
     let wn = winding_number_3d(p, verts, tris);
     wn.abs() > 0.5
@@ -1142,7 +1132,6 @@ pub fn winding_number_inside(p: [f64; 3], verts: &[[f64; 3]], tris: &[[usize; 3]
 /// Compute the signed area of a 2D polygon (positive for CCW winding).
 ///
 /// Uses the shoelace (Gauss) formula.
-#[allow(dead_code)]
 pub fn polygon2d_signed_area(poly: &[[f64; 2]]) -> f64 {
     let n = poly.len();
     if n < 3 {
@@ -1157,14 +1146,12 @@ pub fn polygon2d_signed_area(poly: &[[f64; 2]]) -> f64 {
     area * 0.5
 }
 /// Compute the unsigned area of a 2D polygon.
-#[allow(dead_code)]
 pub fn polygon2d_area(poly: &[[f64; 2]]) -> f64 {
     polygon2d_signed_area(poly).abs()
 }
 /// Compute the centroid of a 2D polygon.
 ///
 /// Uses the formula based on vertex cross products.
-#[allow(dead_code)]
 pub fn polygon2d_centroid(poly: &[[f64; 2]]) -> Option<[f64; 2]> {
     let n = poly.len();
     if n < 3 {
@@ -1188,7 +1175,6 @@ pub fn polygon2d_centroid(poly: &[[f64; 2]]) -> Option<[f64; 2]> {
 /// Test whether a 2D point is inside a (possibly non-convex) polygon.
 ///
 /// Uses ray casting in the +X direction.
-#[allow(dead_code)]
 pub fn point_in_polygon_2d(p: [f64; 2], poly: &[[f64; 2]]) -> bool {
     let n = poly.len();
     if n < 3 {
@@ -1209,7 +1195,6 @@ pub fn point_in_polygon_2d(p: [f64; 2], poly: &[[f64; 2]]) -> bool {
     inside
 }
 /// Compute the perimeter of a 2D polygon.
-#[allow(dead_code)]
 pub fn polygon2d_perimeter(poly: &[[f64; 2]]) -> f64 {
     let n = poly.len();
     if n < 2 {
@@ -1227,7 +1212,6 @@ pub fn polygon2d_perimeter(poly: &[[f64; 2]]) -> f64 {
 /// Test whether a 2D polygon is convex.
 ///
 /// Returns `true` if all cross products of consecutive edges have the same sign.
-#[allow(dead_code)]
 pub fn polygon2d_is_convex(poly: &[[f64; 2]]) -> bool {
     let n = poly.len();
     if n < 3 {

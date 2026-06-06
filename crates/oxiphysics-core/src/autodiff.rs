@@ -45,13 +45,11 @@ pub fn dual(x: f64, dx: f64) -> Dual {
 
 impl Dual {
     /// Create a dual number representing the constant `c` (derivative = 0).
-    #[allow(dead_code)]
     pub fn constant(c: f64) -> Self {
         Dual { v: c, dv: 0.0 }
     }
 
     /// Create a dual number representing the variable `x` with seed `dx = 1`.
-    #[allow(dead_code)]
     pub fn variable(x: f64) -> Self {
         Dual { v: x, dv: 1.0 }
     }
@@ -123,7 +121,6 @@ impl Dual {
     }
 
     /// Tangent: `tan(u)' = u' / cos²(u)`.
-    #[allow(dead_code)]
     pub fn tan(self) -> Self {
         let c = self.v.cos();
         Dual {
@@ -133,7 +130,6 @@ impl Dual {
     }
 
     /// Hyperbolic sine: `sinh(u)' = cosh(u) * u'`.
-    #[allow(dead_code)]
     pub fn sinh(self) -> Self {
         Dual {
             v: self.v.sinh(),
@@ -142,7 +138,6 @@ impl Dual {
     }
 
     /// Hyperbolic cosine: `cosh(u)' = sinh(u) * u'`.
-    #[allow(dead_code)]
     pub fn cosh(self) -> Self {
         Dual {
             v: self.v.cosh(),
@@ -331,7 +326,6 @@ pub fn jacobian_row(f: impl Fn(&[Dual]) -> Dual, xs: &[f64]) -> Vec<f64> {
 // ---------------------------------------------------------------------------
 
 /// A vector of [`Dual`] numbers for multivariate forward-mode differentiation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DualVec {
     /// The dual components.
@@ -340,7 +334,6 @@ pub struct DualVec {
 
 impl DualVec {
     /// Construct from a slice of `(value, derivative)` pairs.
-    #[allow(dead_code)]
     pub fn from_pairs(pairs: &[(f64, f64)]) -> Self {
         DualVec {
             components: pairs.iter().map(|&(v, dv)| Dual { v, dv }).collect(),
@@ -348,7 +341,6 @@ impl DualVec {
     }
 
     /// Construct a variable vector: component `i` has seed 1, others 0.
-    #[allow(dead_code)]
     pub fn variable(xs: &[f64], seed_idx: usize) -> Self {
         DualVec {
             components: xs
@@ -360,13 +352,11 @@ impl DualVec {
     }
 
     /// Length of the vector.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.components.len()
     }
 
     /// Returns `true` if the vector is empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.components.is_empty()
     }
@@ -406,7 +396,6 @@ pub fn newton_step(f: impl Fn(Dual) -> Dual, x: f64) -> f64 {
 
 /// Stores the value of a function and its first three derivatives at a point,
 /// enabling Taylor polynomial evaluation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TaylorExpand {
     /// The expansion center `x₀`.

@@ -2,20 +2,13 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions_2::*;
-use oxiphysics_core::Transform;
-use oxiphysics_core::math::{Real, Vec3};
-
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     add3, add3w, cross3, dot3, joint_displacement, mat3_mul_vec, scale3, scale3w,
 };
+use oxiphysics_core::Transform;
+use oxiphysics_core::math::{Real, Vec3};
 
 /// Joint type for a 2-D articulated chain.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum JointType {
     /// Revolute (rotation) joint.
@@ -94,7 +87,6 @@ impl ScrewJoint {
     }
 }
 /// A single link with joint information in a 2-D chain.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArticulatedLink2D {
     /// Body properties.
@@ -111,7 +103,6 @@ pub struct ArticulatedLink2D {
     pub parent: Option<usize>,
 }
 /// Per-link external force (generalised force along the revolute z axis, N·m).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ExternalForce {
     /// Link index.
@@ -238,7 +229,6 @@ impl JointDof {
     }
 }
 /// Body properties for a single link in a 2-D articulated chain.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LinkBody {
     /// Mass of the link \[kg\].
@@ -257,7 +247,6 @@ pub struct LinkBody {
     pub linear_velocity: [f64; 2],
 }
 /// Per-link intermediate data for the ABA forward pass.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct AbaLinkData {
     /// Articulated-body inertia (scalar, 1-D approximation).
@@ -277,7 +266,6 @@ pub struct AbaLinkData {
 ///      [ m*c×ᵀ               m*I₃ ]
 /// ```
 /// where `c×` is the skew-symmetric cross-product matrix of the CoM offset.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SpatialInertia6 {
     /// Link mass \[kg\].
@@ -314,7 +302,6 @@ impl SpatialInertia6 {
     }
 }
 /// Wrench: force and torque pair in 3-D.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Wrench {
     /// Force vector (N).
@@ -610,7 +597,6 @@ impl SpatialVec {
     }
 }
 /// Open 2-D kinematic chain of articulated rigid bodies.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArticulatedChain2D {
     /// All links in insertion order.
@@ -702,12 +688,14 @@ impl ArticulatedChain2D {
                 origins.push(tip);
             }
         }
-        let mut cols = Vec::with_capacity(n);
-        for i in 0..n {
-            let dx = ee[0] - joint_origins[i][0];
-            let dy = ee[1] - joint_origins[i][1];
-            cols.push([-dy, dx]);
-        }
+        let cols: Vec<[f64; 2]> = joint_origins
+            .iter()
+            .map(|jo| {
+                let dx = ee[0] - jo[0];
+                let dy = ee[1] - jo[1];
+                [-dy, dx]
+            })
+            .collect();
         cols
     }
     /// Newton-Euler inverse dynamics: given joint accelerations and gravity,
@@ -717,10 +705,10 @@ impl ArticulatedChain2D {
     pub fn inverse_dynamics(&self, joint_accelerations: &[f64], gravity: [f64; 2]) -> Vec<f64> {
         let n = self.links.len();
         let mut torques = vec![0.0_f64; n];
-        for i in 0..n {
+        for (i, torque) in torques.iter_mut().enumerate() {
             let mut tau = 0.0;
-            for j in i..n {
-                tau += self.links[j].body.inertia * joint_accelerations[j];
+            for (j, &ja_j) in joint_accelerations.iter().enumerate().skip(i).take(n - i) {
+                tau += self.links[j].body.inertia * ja_j;
                 let angle_j = {
                     let mut a = 0.0;
                     for k in 0..=j {
@@ -743,7 +731,7 @@ impl ArticulatedChain2D {
                 };
                 tau += self.links[j].body.mass * g_perp * r;
             }
-            torques[i] = tau;
+            *torque = tau;
         }
         torques
     }

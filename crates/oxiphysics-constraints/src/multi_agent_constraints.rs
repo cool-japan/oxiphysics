@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,8 +10,6 @@
 //! formation reconfiguration constraints, bearing-only constraints,
 //! range constraints, coverage constraints, Nash equilibrium constraints,
 //! and the social force model.
-
-#![allow(dead_code)]
 
 // ── Internal math helpers ─────────────────────────────────────────────────────
 
@@ -43,10 +40,6 @@ fn vec2_normalize(v: [f64; 2]) -> [f64; 2] {
     } else {
         [v[0] / len, v[1] / len]
     }
-}
-
-fn vec2_dist(a: [f64; 2], b: [f64; 2]) -> f64 {
-    vec2_len(vec2_sub(a, b))
 }
 
 fn vec3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -82,6 +75,7 @@ fn vec3_dist(a: [f64; 3], b: [f64; 3]) -> f64 {
     vec3_len(vec3_sub(a, b))
 }
 
+#[cfg(test)]
 fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
     x.max(lo).min(hi)
 }
@@ -318,7 +312,7 @@ impl AdmmAgent {
 /// ```text
 /// z = (1/N) Σ_i (x_i + u_i)
 /// ```
-pub fn admm_z_update(agents: &mut Vec<AdmmAgent>) {
+pub fn admm_z_update(agents: &mut [AdmmAgent]) {
     if agents.is_empty() {
         return;
     }
@@ -326,12 +320,12 @@ pub fn admm_z_update(agents: &mut Vec<AdmmAgent>) {
     let dim = agents[0].dim;
     let mut z_avg = vec![0.0_f64; dim];
     for ag in agents.iter() {
-        for k in 0..dim {
-            z_avg[k] += ag.x[k] + ag.u[k];
+        for (z, (x, u)) in z_avg.iter_mut().zip(ag.x.iter().zip(ag.u.iter())) {
+            *z += x + u;
         }
     }
-    for k in 0..dim {
-        z_avg[k] /= n as f64;
+    for z in z_avg.iter_mut() {
+        *z /= n as f64;
     }
     for ag in agents.iter_mut() {
         ag.z.clone_from(&z_avg);
@@ -341,9 +335,8 @@ pub fn admm_z_update(agents: &mut Vec<AdmmAgent>) {
 /// Run a full ADMM consensus optimization for `max_iter` iterations.
 ///
 /// Returns the converged z value and iteration count.
-#[allow(clippy::too_many_arguments)]
 pub fn admm_solve(
-    agents: &mut Vec<AdmmAgent>,
+    agents: &mut [AdmmAgent],
     rho: f64,
     max_iter: usize,
     tol: f64,
@@ -903,12 +896,13 @@ pub fn greedy_task_assignment(cost_matrix: &[Vec<f64>]) -> Vec<TaskAssignment> {
     let mut assigned_tasks = vec![false; num_tasks];
     let mut assignments = Vec::new();
 
-    for i in 0..num_agents {
+    for (i, cost_row) in cost_matrix.iter().enumerate() {
+        let _ = i;
         let mut best_task = None;
         let mut best_cost = f64::MAX;
-        for j in 0..num_tasks {
-            if !assigned_tasks[j] && cost_matrix[i][j] < best_cost {
-                best_cost = cost_matrix[i][j];
+        for (j, cost) in cost_row.iter().enumerate() {
+            if !assigned_tasks[j] && *cost < best_cost {
+                best_cost = *cost;
                 best_task = Some(j);
             }
         }

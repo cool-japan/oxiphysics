@@ -13,8 +13,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
 use super::types::Interval;
@@ -67,9 +65,19 @@ impl Mul for Interval {
 impl Div for Interval {
     type Output = Self;
     /// Interval division. Panics if the divisor contains zero.
-    #[allow(clippy::suspicious_arithmetic_impl)]
+    ///
+    /// Computes `[a,b] / [c,d]` directly via the four-corners rule on
+    /// `[a,b] * [1/d, 1/c]`, equivalent to multiplication by the reciprocal.
     fn div(self, rhs: Self) -> Self {
-        self * rhs.reciprocal()
+        let rec = rhs.reciprocal();
+        let c1 = self.lo * rec.lo;
+        let c2 = self.lo * rec.hi;
+        let c3 = self.hi * rec.lo;
+        let c4 = self.hi * rec.hi;
+        Self {
+            lo: c1.min(c2).min(c3).min(c4),
+            hi: c1.max(c2).max(c3).max(c4),
+        }
     }
 }
 

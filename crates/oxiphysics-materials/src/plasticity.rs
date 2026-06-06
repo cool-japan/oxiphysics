@@ -22,7 +22,6 @@
 /// where σ_y0 is the initial yield stress, H is the hardening modulus,
 /// and ε_p is the equivalent plastic strain.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct IsotropicHardening {
     /// Initial yield stress σ_y0 (Pa).
     pub sigma_y0: f64,
@@ -30,7 +29,6 @@ pub struct IsotropicHardening {
     pub hardening_modulus: f64,
 }
 
-#[allow(dead_code)]
 impl IsotropicHardening {
     /// Create a new linear isotropic hardening model.
     pub fn new(sigma_y0: f64, hardening_modulus: f64) -> Self {
@@ -74,7 +72,6 @@ impl IsotropicHardening {
 ///
 /// Stress saturates to σ_∞ as ε_p → ∞.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct VoceHardening {
     /// Initial yield stress (Pa).
     pub sigma_y0: f64,
@@ -84,7 +81,6 @@ pub struct VoceHardening {
     pub b: f64,
 }
 
-#[allow(dead_code)]
 impl VoceHardening {
     /// Create a Voce hardening model.
     pub fn new(sigma_y0: f64, sigma_inf: f64, b: f64) -> Self {
@@ -120,7 +116,6 @@ impl VoceHardening {
 /// where C is the kinematic hardening modulus and α is the backstress.
 /// The yield function becomes: f(σ - α) - σ_y0 = 0.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PragerKinematic {
     /// Initial yield stress σ_y0 (Pa).
     pub sigma_y0: f64,
@@ -128,7 +123,6 @@ pub struct PragerKinematic {
     pub c_kinematic: f64,
 }
 
-#[allow(dead_code)]
 impl PragerKinematic {
     /// Create a Prager kinematic hardening model.
     pub fn new(sigma_y0: f64, c_kinematic: f64) -> Self {
@@ -192,7 +186,6 @@ impl PragerKinematic {
 ///
 /// Yield surface: f = ||σ - α||_vM - (σ_y0 + R) = 0
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Chaboche {
     /// Initial yield stress (Pa).
     pub sigma_y0: f64,
@@ -206,7 +199,6 @@ pub struct Chaboche {
     pub gamma_kin: f64,
 }
 
-#[allow(dead_code)]
 impl Chaboche {
     /// Create a Chaboche model.
     pub fn new(sigma_y0: f64, q: f64, b_iso: f64, c_kin: f64, gamma_kin: f64) -> Self {
@@ -274,7 +266,6 @@ impl Chaboche {
 /// Given a trial elastic stress, compute the corrected plastic stress
 /// via the radial return algorithm.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct J2ReturnMapping {
     /// Shear modulus G (Pa).
     pub shear_modulus: f64,
@@ -286,7 +277,6 @@ pub struct J2ReturnMapping {
     pub hardening_modulus: f64,
 }
 
-#[allow(dead_code)]
 impl J2ReturnMapping {
     /// Create a J2 return mapping integrator.
     pub fn new(
@@ -304,10 +294,9 @@ impl J2ReturnMapping {
     }
 
     /// Create from Young's modulus and Poisson's ratio.
-    #[allow(non_snake_case)]
-    pub fn from_young_poisson(E: f64, nu: f64, sigma_y0: f64, h: f64) -> Self {
-        let g = E / (2.0 * (1.0 + nu));
-        let k = E / (3.0 * (1.0 - 2.0 * nu));
+    pub fn from_young_poisson(e: f64, nu: f64, sigma_y0: f64, h: f64) -> Self {
+        let g = e / (2.0 * (1.0 + nu));
+        let k = e / (3.0 * (1.0 - 2.0 * nu));
         Self::new(g, k, sigma_y0, h)
     }
 
@@ -404,7 +393,6 @@ impl J2ReturnMapping {
 ///   k = 6 c cos φ / (√3 (3 - sin φ))
 ///   I₁ = tr(σ), J₂ = ½ dev:dev
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct DruckerPragerModel {
     /// Internal friction angle φ (radians).
     pub friction_angle: f64,
@@ -416,7 +404,6 @@ pub struct DruckerPragerModel {
     pub bulk_modulus: f64,
 }
 
-#[allow(dead_code)]
 impl DruckerPragerModel {
     /// Create a Drucker-Prager model.
     pub fn new(friction_angle: f64, cohesion: f64, shear_modulus: f64, bulk_modulus: f64) -> Self {
@@ -429,11 +416,10 @@ impl DruckerPragerModel {
     }
 
     /// Create from φ (degrees), c (Pa), Young's modulus (Pa), Poisson's ratio.
-    #[allow(non_snake_case, clippy::too_many_arguments)]
-    pub fn from_mohr_coulomb_degrees(phi_deg: f64, cohesion: f64, E: f64, nu: f64) -> Self {
+    pub fn from_mohr_coulomb_degrees(phi_deg: f64, cohesion: f64, e: f64, nu: f64) -> Self {
         let phi = phi_deg.to_radians();
-        let g = E / (2.0 * (1.0 + nu));
-        let k = E / (3.0 * (1.0 - 2.0 * nu));
+        let g = e / (2.0 * (1.0 + nu));
+        let k = e / (3.0 * (1.0 - 2.0 * nu));
         Self::new(phi, cohesion, g, k)
     }
 
@@ -503,7 +489,6 @@ impl DruckerPragerModel {
 ///   M = critical state stress ratio q/p' at failure
 ///   p'_c = pre-consolidation pressure (hardening variable)
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct ModifiedCamClay {
     /// Critical state stress ratio M = q/p at critical state.
     pub m: f64,
@@ -519,10 +504,8 @@ pub struct ModifiedCamClay {
     pub pc0: f64,
 }
 
-#[allow(dead_code)]
 impl ModifiedCamClay {
     /// Create a Modified Cam-Clay model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(m: f64, kappa: f64, lambda: f64, e0: f64, poisson_ratio: f64, pc0: f64) -> Self {
         Self {
             m,
@@ -599,7 +582,6 @@ impl ModifiedCamClay {
 ///
 /// Both stress and plastic strain increment in Voigt notation \[xx,yy,zz,xy,yz,xz\].
 /// Shear components have factor 2 for engineering notation (γ = 2 ε).
-#[allow(dead_code)]
 pub fn plastic_dissipation(stress: &[f64; 6], delta_eps_p: &[f64; 6]) -> f64 {
     // Normal components
     let normal =
@@ -613,7 +595,6 @@ pub fn plastic_dissipation(stress: &[f64; 6], delta_eps_p: &[f64; 6]) -> f64 {
 /// Cumulative plastic dissipation over a loading history.
 ///
 /// Returns ∑ σ_n : Δε_p_n summed over the provided increments.
-#[allow(dead_code)]
 pub fn cumulative_dissipation(
     stresses: &[[f64; 6]],
     plastic_strain_increments: &[[f64; 6]],
@@ -635,7 +616,6 @@ pub fn cumulative_dissipation(
 ///   f_L = σ_y / max(σ_vonMises)
 ///
 /// Returns the fraction of reference load at which yielding first occurs.
-#[allow(dead_code)]
 pub fn limit_load_factor_lower_bound(
     elastic_stresses_voigt: &[[f64; 6]],
     yield_stress: f64,
@@ -654,7 +634,6 @@ pub fn limit_load_factor_lower_bound(
 }
 
 /// Von Mises stress from Voigt notation \[xx, yy, zz, xy, yz, xz\].
-#[allow(dead_code)]
 pub fn von_mises_stress_voigt(s: &[f64; 6]) -> f64 {
     let (sxx, syy, szz, sxy, syz, sxz) = (s[0], s[1], s[2], s[3], s[4], s[5]);
     let term1 = (sxx - syy).powi(2) + (syy - szz).powi(2) + (szz - sxx).powi(2);
@@ -668,7 +647,6 @@ pub fn von_mises_stress_voigt(s: &[f64; 6]) -> f64 {
 ///
 /// Used to represent combined elastic-plastic behavior.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct RambergOsgood {
     /// Young's modulus E (Pa).
     pub young_modulus: f64,
@@ -680,7 +658,6 @@ pub struct RambergOsgood {
     pub alpha: f64,
 }
 
-#[allow(dead_code)]
 impl RambergOsgood {
     /// Create a Ramberg-Osgood model.
     pub fn new(young_modulus: f64, sigma_ref: f64, n: f64, alpha: f64) -> Self {
@@ -742,7 +719,6 @@ impl RambergOsgood {
 /// H is the hardening modulus, and I_dev is the deviatoric projector.
 ///
 /// For the elastic step, returns the elastic stiffness C_e.
-#[allow(dead_code)]
 pub struct J2ConsistentTangent {
     /// Shear modulus G (Pa).
     pub shear_modulus: f64,
@@ -752,7 +728,6 @@ pub struct J2ConsistentTangent {
     pub hardening_modulus: f64,
 }
 
-#[allow(dead_code)]
 impl J2ConsistentTangent {
     /// Create a new J2 consistent tangent calculator.
     pub fn new(shear_modulus: f64, bulk_modulus: f64, hardening_modulus: f64) -> Self {
@@ -764,10 +739,9 @@ impl J2ConsistentTangent {
     }
 
     /// Create from Young's modulus and Poisson's ratio.
-    #[allow(non_snake_case)]
-    pub fn from_young_poisson(E: f64, nu: f64, hardening_modulus: f64) -> Self {
-        let g = E / (2.0 * (1.0 + nu));
-        let k = E / (3.0 * (1.0 - 2.0 * nu));
+    pub fn from_young_poisson(e: f64, nu: f64, hardening_modulus: f64) -> Self {
+        let g = e / (2.0 * (1.0 + nu));
+        let k = e / (3.0 * (1.0 - 2.0 * nu));
         Self::new(g, k, hardening_modulus)
     }
 
@@ -888,7 +862,6 @@ impl J2ConsistentTangent {
 /// Apex stress: p_apex = k / (3α),  q_apex = 0
 ///
 /// where α and k are the DP parameters.
-#[allow(dead_code)]
 pub struct DruckerPragerApexReturn {
     /// DP friction parameter α.
     pub alpha: f64,
@@ -900,7 +873,6 @@ pub struct DruckerPragerApexReturn {
     pub shear_modulus: f64,
 }
 
-#[allow(dead_code)]
 impl DruckerPragerApexReturn {
     /// Create from DP parameters.
     pub fn new(alpha: f64, k_dp: f64, bulk_modulus: f64, shear_modulus: f64) -> Self {
@@ -979,7 +951,6 @@ impl DruckerPragerApexReturn {
 /// - Elastic wall (swelling line)
 /// - Normal consolidation line (NCL)
 /// - Critical state line (CSL)
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct CamClayPreconsolidation {
     /// Compression index Cc (slope of NCL in e-log₁₀p space).
@@ -992,7 +963,6 @@ pub struct CamClayPreconsolidation {
     pub pc0: f64,
 }
 
-#[allow(dead_code)]
 impl CamClayPreconsolidation {
     /// Create a new Cam-Clay preconsolidation model.
     pub fn new(cc: f64, cs: f64, e0: f64, pc0: f64) -> Self {

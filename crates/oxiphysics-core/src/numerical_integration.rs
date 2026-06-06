@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,9 +7,6 @@
 //! Gauss-Legendre quadrature (5-point and variable-point), adaptive Simpson,
 //! Monte Carlo integration, Clenshaw-Curtis, double-exponential (tanh-sinh),
 //! and multidimensional trapezoid rules.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -240,7 +236,7 @@ pub fn clenshaw_curtis(f: impl Fn(f64) -> f64, n: usize) -> f64 {
     // Weights via exact formula for Clenshaw-Curtis
     let mut sum = 0.0;
     let nf = n as f64;
-    for j in 0..=n {
+    for (j, &vj) in vals.iter().enumerate() {
         let cj = if j == 0 || j == n { 1.0 } else { 2.0 };
         let mut w = 0.0_f64;
         for k in (0..=(n / 2)).map(|m| 2 * m) {
@@ -253,7 +249,7 @@ pub fn clenshaw_curtis(f: impl Fn(f64) -> f64, n: usize) -> f64 {
             w += bk / denom * cos_term;
         }
         w /= nf;
-        sum += cj * w * vals[j];
+        sum += cj * w * vj;
     }
     sum
 }

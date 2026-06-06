@@ -2,14 +2,13 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::f64::consts::PI;
 
+use super::functions::{
+    add, cross, dot, len, normalize, ray_aabb, ray_sphere, ray_triangle, reflect_ray, scale, sub,
+};
+
 /// The result of a successful ray-primitive intersection test.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct RayHit {
     /// Parameter `t` along the ray at the hit point.
@@ -40,7 +39,6 @@ impl RayHit {
     }
 }
 /// Result of a batch ray-casting pass.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BatchRayResult {
     /// Per-ray closest hit, or `None` if the ray missed.
@@ -50,7 +48,6 @@ pub struct BatchRayResult {
 ///
 /// Each ray may spawn up to two children: a reflected ray and/or a
 /// refracted ray.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RayTreeNode {
     /// The ray for this node.
@@ -77,7 +74,6 @@ impl RayTreeNode {
     }
 }
 /// Capsule: a cylinder with hemispherical caps.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Capsule {
     /// Centre of the first (bottom) hemisphere.
@@ -105,7 +101,6 @@ impl Capsule {
 ///
 /// Stored as a centre, a rotation matrix (columns are OBB axes), and
 /// half-extents along each local axis.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Obb {
     /// Centre of the OBB.
@@ -134,7 +129,6 @@ impl Obb {
     }
 }
 /// Sphere primitive defined by a centre and radius.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Sphere {
     /// Centre of the sphere.
@@ -162,7 +156,6 @@ impl Sphere {
     }
 }
 /// A simple scene containing spheres and triangle meshes for ray casting.
-#[allow(dead_code)]
 pub struct Scene {
     /// Spheres in the scene.
     pub spheres: Vec<Sphere>,
@@ -229,7 +222,6 @@ impl Scene {
     }
 }
 /// A flat BVH built over a list of triangle primitives.
-#[allow(dead_code)]
 pub struct Bvh {
     /// Flat node array; node 0 is the root.
     pub nodes: Vec<BvhNode>,
@@ -367,7 +359,6 @@ impl Bvh {
 ///
 /// The support function finds the vertex that is most extreme along a
 /// given direction.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConvexMesh {
     /// Vertex list in world space.
@@ -405,7 +396,6 @@ impl ConvexMesh {
     }
 }
 /// Axis-Aligned Bounding Box.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Aabb {
     /// Minimum corner.
@@ -465,7 +455,6 @@ impl Aabb {
 /// A flat recursive ray tree for a single primary ray.
 ///
 /// Supports up to `max_depth` bounces with reflection and refraction.
-#[allow(dead_code)]
 pub struct RayTree {
     /// Flat array of ray tree nodes.
     pub nodes: Vec<RayTreeNode>,
@@ -542,7 +531,6 @@ impl RayTree {
 }
 /// A ray with associated differentials, used for texture anti-aliasing
 /// (ray differentials method, Igehy 1999).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct RayDifferential {
     /// Primary ray.
@@ -593,7 +581,6 @@ impl RayDifferential {
     }
 }
 /// A node in a flat BVH.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BvhNode {
     /// AABB of this node.
@@ -636,7 +623,6 @@ impl BvhNode {
 /// A height field stored as a grid of height values.
 ///
 /// The grid covers `[0, width] × [0, height]` in the XZ plane.
-#[allow(dead_code)]
 pub struct Heightfield {
     /// Height values at grid cells (row-major: `heights[row * cols + col]`).
     pub heights: Vec<f64>,
@@ -687,7 +673,6 @@ impl Heightfield {
 ///
 /// The direction should be a unit vector for correct distance computations;
 /// use [`Ray::new_normalised`] to construct one automatically.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ray {
     /// Ray origin.

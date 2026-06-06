@@ -9,9 +9,6 @@
 //! (minmod, superbee, van Leer), and a simple finite-volume time-stepping
 //! helper.  All kernels use Rayon for data-parallel execution.
 
-#![allow(dead_code)]
-#![allow(non_snake_case)]
-
 use rayon::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -446,7 +443,6 @@ pub fn cfl_dt(vel: &VectorFluxGrid3D, cfl_factor: f64) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Conservative variable vector for the Euler equations: \[rho, rho*u, rho*v, rho*w, E\].
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct EulerState {
     /// Density.
@@ -463,7 +459,6 @@ pub struct EulerState {
 
 impl EulerState {
     /// Create from primitives `(rho, u, v, w, p)` with ratio of specific heats `gamma`.
-    #[allow(dead_code)]
     pub fn from_primitives(rho: f64, u: f64, v: f64, w: f64, p: f64, gamma: f64) -> Self {
         let ke = 0.5 * rho * (u * u + v * v + w * w);
         let e = p / (gamma - 1.0) + ke;
@@ -477,7 +472,6 @@ impl EulerState {
     }
 
     /// Reconstruct velocity components.
-    #[allow(dead_code)]
     pub fn velocity(&self) -> [f64; 3] {
         let rho = if self.rho.abs() > 1e-30 {
             self.rho
@@ -488,7 +482,6 @@ impl EulerState {
     }
 
     /// Reconstruct pressure from conserved variables.
-    #[allow(dead_code)]
     pub fn pressure(&self, gamma: f64) -> f64 {
         let u = self.velocity();
         let ke = 0.5 * self.rho * (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
@@ -496,7 +489,6 @@ impl EulerState {
     }
 
     /// Sound speed.
-    #[allow(dead_code)]
     pub fn sound_speed(&self, gamma: f64) -> f64 {
         let p = self.pressure(gamma);
         let rho = if self.rho.abs() > 1e-30 {
@@ -508,7 +500,6 @@ impl EulerState {
     }
 
     /// x-direction Euler flux vector.
-    #[allow(dead_code)]
     pub fn flux_x(&self, gamma: f64) -> [f64; 5] {
         let u = self.velocity();
         let p = self.pressure(gamma);
@@ -522,7 +513,6 @@ impl EulerState {
     }
 
     /// Linear interpolation between two states.
-    #[allow(dead_code)]
     pub fn lerp(&self, other: &EulerState, t: f64) -> EulerState {
         EulerState {
             rho: self.rho + t * (other.rho - self.rho),
@@ -541,7 +531,6 @@ impl EulerState {
 /// Van Albada slope limiter: smooth TVD limiter with quadratic shape.
 ///
 /// `φ(r) = (r² + r) / (r² + 1)` for `r = a/b`.
-#[allow(dead_code)]
 pub fn van_albada(a: f64, b: f64) -> f64 {
     if a * b <= 0.0 {
         return 0.0;
@@ -562,7 +551,6 @@ pub fn van_albada(a: f64, b: f64) -> f64 {
 /// Uses: `u_L = u[i]   + 0.5 * phi(delta_m, delta_p) * delta_m`
 ///       `u_R = u[i+1] - 0.5 * phi(delta_p, delta_m) * delta_p`
 /// where `delta_m = u[i] - u[i-1]`, `delta_p = u[i+1] - u[i]`.
-#[allow(dead_code)]
 pub fn muscl_reconstruct(u: &[f64], i: usize, limiter: fn(f64, f64) -> f64) -> (f64, f64) {
     let n = u.len();
     let u_im = if i == 0 { u[0] } else { u[i - 1] };
@@ -585,7 +573,6 @@ pub fn muscl_reconstruct(u: &[f64], i: usize, limiter: fn(f64, f64) -> f64) -> (
 /// Apply MUSCL reconstruction across all interfaces in a 1-D array.
 ///
 /// Returns a `Vec<(f64, f64)>` of `(u_L, u_R)` at interfaces `0..n-1`.
-#[allow(dead_code)]
 pub fn muscl_reconstruct_all(u: &[f64], limiter: fn(f64, f64) -> f64) -> Vec<(f64, f64)> {
     let n = u.len();
     if n < 2 {
@@ -603,7 +590,6 @@ pub fn muscl_reconstruct_all(u: &[f64], limiter: fn(f64, f64) -> f64) -> Vec<(f6
 /// Godunov flux for a scalar advection equation `u_t + a * u_x = 0`.
 ///
 /// Uses upwinding: the Godunov flux is `F = a * u_L` if `a >= 0`, else `a * u_R`.
-#[allow(dead_code)]
 pub fn godunov_flux_advection(u_l: f64, u_r: f64, wave_speed: f64) -> f64 {
     if wave_speed >= 0.0 {
         wave_speed * u_l
@@ -615,7 +601,6 @@ pub fn godunov_flux_advection(u_l: f64, u_r: f64, wave_speed: f64) -> f64 {
 /// Godunov-type flux for Burgers' equation `u_t + (u²/2)_x = 0`.
 ///
 /// Handles the sonic point (where the characteristic speed changes sign).
-#[allow(dead_code)]
 pub fn godunov_flux_burgers(u_l: f64, u_r: f64) -> f64 {
     // Rankine-Hugoniot shock speed: s = (u_l + u_r) / 2
     // Entropy fix: rarefaction fans may straddle u=0
@@ -647,7 +632,6 @@ pub fn godunov_flux_burgers(u_l: f64, u_r: f64) -> f64 {
 ///
 /// For `u_t + f(u)_x = 0` with `f(u) = a * u`:
 /// `F_Roe = 0.5*(f_L + f_R) - 0.5*|a_Roe|*(u_R - u_L)`
-#[allow(dead_code)]
 pub fn roe_flux_scalar(u_l: f64, u_r: f64, a_roe: f64) -> f64 {
     let f_l = a_roe * u_l;
     let f_r = a_roe * u_r;
@@ -658,7 +642,6 @@ pub fn roe_flux_scalar(u_l: f64, u_r: f64, a_roe: f64) -> f64 {
 ///
 /// Returns the interface flux `[F_rho, F_rhou, F_e]` using the Roe-average state.
 /// `gamma` is the ratio of specific heats (1.4 for air).
-#[allow(dead_code)]
 pub fn roe_flux_euler_1d(
     rho_l: f64,
     u_l: f64,
@@ -735,7 +718,6 @@ pub fn roe_flux_euler_1d(
 ///
 /// Wave speed estimates `s_l` and `s_r` are the left and right running speeds.
 /// `f_l = f(u_l)`, `f_r = f(u_r)`.
-#[allow(dead_code)]
 pub fn hll_flux(u_l: f64, u_r: f64, f_l: f64, f_r: f64, s_l: f64, s_r: f64) -> f64 {
     if s_l >= 0.0 {
         f_l
@@ -749,7 +731,6 @@ pub fn hll_flux(u_l: f64, u_r: f64, f_l: f64, f_r: f64, s_l: f64, s_r: f64) -> f
 /// Estimate HLL wave speeds for the 1-D Euler equations.
 ///
 /// Uses Davis' estimates: `s_l = min(u_l - a_l, u_r - a_r)`, `s_r = max(u_l + a_l, u_r + a_r)`.
-#[allow(dead_code)]
 pub fn hll_wave_speeds(u_l: f64, a_l: f64, u_r: f64, a_r: f64) -> (f64, f64) {
     let s_l = (u_l - a_l).min(u_r - a_r);
     let s_r = (u_l + a_l).max(u_r + a_r);
@@ -759,7 +740,6 @@ pub fn hll_wave_speeds(u_l: f64, a_l: f64, u_r: f64, a_r: f64) -> (f64, f64) {
 /// HLL flux for 1-D Euler equations.
 ///
 /// Returns `[F_rho, F_rhou, F_e]`.
-#[allow(dead_code)]
 pub fn hll_flux_euler_1d(
     rho_l: f64,
     u_l: f64,
@@ -796,7 +776,6 @@ pub fn hll_flux_euler_1d(
 ///
 /// The HLLC flux restores the contact wave missing in HLL.
 /// Returns `[F_rho, F_rhou, F_e]`.
-#[allow(dead_code)]
 pub fn hllc_flux_euler_1d(
     rho_l: f64,
     u_l: f64,
@@ -856,7 +835,6 @@ pub fn hllc_flux_euler_1d(
 ///
 /// Eigenvalues `lambda = [a, -a]` (rightward and leftward waves).
 /// Returns `(w_plus, w_minus)` — the characteristic amplitudes.
-#[allow(dead_code)]
 pub fn characteristic_decompose_2wave(u0: f64, u1: f64, a: f64) -> (f64, f64) {
     let w_plus = 0.5 * (u0 + u1 / a);
     let w_minus = 0.5 * (u0 - u1 / a);
@@ -864,7 +842,6 @@ pub fn characteristic_decompose_2wave(u0: f64, u1: f64, a: f64) -> (f64, f64) {
 }
 
 /// Reconstruct conservative variables from characteristic variables.
-#[allow(dead_code)]
 pub fn characteristic_recompose_2wave(w_plus: f64, w_minus: f64, a: f64) -> (f64, f64) {
     let u0 = w_plus + w_minus;
     let u1 = a * (w_plus - w_minus);
@@ -876,7 +853,6 @@ pub fn characteristic_recompose_2wave(w_plus: f64, w_minus: f64, a: f64) -> (f64
 /// Projects to characteristic variables, limits each wave separately, then
 /// reconstructs in physical space.  This is important for multi-component
 /// systems to prevent spurious oscillations across contact waves.
-#[allow(dead_code)]
 pub fn characteristic_limited_reconstruct(
     u0: &[f64],
     u1: &[f64],
@@ -934,7 +910,6 @@ pub fn characteristic_limited_reconstruct(
 /// `phi_n^(2) = phi_n^(1) + dt * L(phi_n^(1))` (corrector)
 ///
 /// where `L` is the upwind advection operator.
-#[allow(dead_code)]
 pub fn tvd_rk2_advect(phi: &FluxGrid3D, vel: &VectorFluxGrid3D, dt: f64) -> FluxGrid3D {
     // Stage 1: phi^(1) = phi + dt * L(phi)
     let phi_1 = advect_upwind_3d(phi, vel, dt);
@@ -957,7 +932,6 @@ pub fn tvd_rk2_advect(phi: &FluxGrid3D, vel: &VectorFluxGrid3D, dt: f64) -> Flux
 /// Compute the minmod limiter in ratio form: `phi(r) = max(0, min(1, r))`.
 ///
 /// Input `r = delta_{i-1/2} / delta_{i+1/2}` (ratio of consecutive differences).
-#[allow(dead_code)]
 pub fn minmod_ratio(r: f64) -> f64 {
     if r <= 0.0 {
         0.0
@@ -969,7 +943,6 @@ pub fn minmod_ratio(r: f64) -> f64 {
 }
 
 /// Superbee limiter in ratio form: `phi(r) = max(0, max(min(2r,1), min(r,2)))`.
-#[allow(dead_code)]
 pub fn superbee_ratio(r: f64) -> f64 {
     if r <= 0.0 {
         0.0
@@ -979,7 +952,6 @@ pub fn superbee_ratio(r: f64) -> f64 {
 }
 
 /// Van Leer limiter in ratio form: `phi(r) = (r + |r|) / (1 + |r|)`.
-#[allow(dead_code)]
 pub fn van_leer_ratio(r: f64) -> f64 {
     (r + r.abs()) / (1.0 + r.abs())
 }

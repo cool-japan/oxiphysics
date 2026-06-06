@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,7 +10,8 @@
 //! critical-point extraction, separatrix tracing, and vector field arrow
 //! generation.
 
-#![allow(dead_code)]
+/// Separatrix pair: (forward streamline, backward streamline), each as list of 3D points.
+pub type SeparatrixPair = (Vec<[f64; 3]>, Vec<[f64; 3]>);
 
 use rand::RngExt as _;
 // ─────────────────────────────────────────────────────────────────────────────
@@ -133,12 +133,6 @@ fn normalize3(a: [f64; 3]) -> [f64; 3] {
     }
 }
 
-/// Dot product of two 3-vectors.
-#[inline]
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
 /// Cross product of two 3-vectors.
 #[inline]
 fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -149,13 +143,19 @@ fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+/// Dot product of two 3-vectors.
+#[cfg(test)]
+#[inline]
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // interpolate_velocity
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Interpolate the velocity at a continuous position `pos` in grid units
 /// using trilinear interpolation.
-#[allow(clippy::too_many_arguments)]
 pub fn interpolate_velocity(field: &FlowField3D, pos: [f64; 3]) -> [f64; 3] {
     let [x, y, z] = pos;
     let x0 = x.floor() as i64;
@@ -360,10 +360,9 @@ pub fn vorticity(field: &FlowField3D) -> FlowField3D {
 pub fn vorticity_magnitude(field: &FlowField3D) -> Vec<f64> {
     let vor = vorticity(field);
     let n = vor.len();
-    let mut mag = vec![0.0_f64; n];
-    for i in 0..n {
-        mag[i] = (vor.u[i] * vor.u[i] + vor.v[i] * vor.v[i] + vor.w[i] * vor.w[i]).sqrt();
-    }
+    let mag: Vec<f64> = (0..n)
+        .map(|i| (vor.u[i] * vor.u[i] + vor.v[i] * vor.v[i] + vor.w[i] * vor.w[i]).sqrt())
+        .collect();
     mag
 }
 
@@ -468,7 +467,6 @@ pub fn q_criterion(field: &FlowField3D) -> Vec<f64> {
 /// The lambda-2 criterion identifies vortex cores as regions where the second
 /// eigenvalue of `S^2 + Omega^2` is negative, where `S` and `Omega` are the
 /// symmetric and anti-symmetric parts of the velocity gradient tensor.
-#[allow(clippy::too_many_arguments)]
 pub fn lambda2_criterion(field: &FlowField3D) -> Vec<f64> {
     let nx = field.nx;
     let ny = field.ny;
@@ -922,7 +920,7 @@ pub fn trace_separatrices(
     saddle_points: &[CriticalPoint],
     dt: f64,
     n_steps: usize,
-) -> Vec<(Vec<[f64; 3]>, Vec<[f64; 3]>)> {
+) -> Vec<SeparatrixPair> {
     let eps = field.dx * 0.01; // small offset from critical point
     let mut result = Vec::new();
 
@@ -978,10 +976,9 @@ pub fn strain_rate_magnitude(field: &FlowField3D) -> Vec<f64> {
 pub fn enstrophy(field: &FlowField3D) -> Vec<f64> {
     let vor = vorticity(field);
     let n = vor.len();
-    let mut out = vec![0.0_f64; n];
-    for i in 0..n {
-        out[i] = 0.5 * (vor.u[i] * vor.u[i] + vor.v[i] * vor.v[i] + vor.w[i] * vor.w[i]);
-    }
+    let out: Vec<f64> = (0..n)
+        .map(|i| 0.5 * (vor.u[i] * vor.u[i] + vor.v[i] * vor.v[i] + vor.w[i] * vor.w[i]))
+        .collect();
     out
 }
 
@@ -991,21 +988,20 @@ pub fn enstrophy(field: &FlowField3D) -> Vec<f64> {
 pub fn helicity(field: &FlowField3D) -> Vec<f64> {
     let vor = vorticity(field);
     let n = field.len();
-    let mut out = vec![0.0_f64; n];
-    for i in 0..n {
-        out[i] = field.u[i] * vor.u[i] + field.v[i] * vor.v[i] + field.w[i] * vor.w[i];
-    }
+    let out: Vec<f64> = (0..n)
+        .map(|i| field.u[i] * vor.u[i] + field.v[i] * vor.v[i] + field.w[i] * vor.w[i])
+        .collect();
     out
 }
 
 /// Compute the speed (velocity magnitude) field.
 pub fn speed_field(field: &FlowField3D) -> Vec<f64> {
     let n = field.len();
-    let mut out = vec![0.0_f64; n];
-    for i in 0..n {
-        out[i] =
-            (field.u[i] * field.u[i] + field.v[i] * field.v[i] + field.w[i] * field.w[i]).sqrt();
-    }
+    let out: Vec<f64> = (0..n)
+        .map(|i| {
+            (field.u[i] * field.u[i] + field.v[i] * field.v[i] + field.w[i] * field.w[i]).sqrt()
+        })
+        .collect();
     out
 }
 
@@ -1018,7 +1014,6 @@ mod tests {
     use super::*;
 
     /// Build a uniform flow field with constant velocity `(u0, v0, w0)`.
-    #[allow(clippy::too_many_arguments)]
     fn uniform_field(
         nx: usize,
         ny: usize,

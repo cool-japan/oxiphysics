@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,9 +5,6 @@
 //!
 //! This module provides infrastructure for reactive molecular dynamics where
 //! bonds can form and break dynamically during simulation.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 /// Boltzmann constant in eV/K.
 pub const KB_EV: f64 = 8.617333262e-5;
@@ -409,8 +405,8 @@ impl EemCharges {
         let mut mat = vec![vec![0.0f64; n + 1]; n + 1];
 
         // Diagonal: hardness
-        for i in 0..n {
-            mat[i][i] = 2.0 * self.hardnesses[i];
+        for (i, row) in mat.iter_mut().enumerate().take(n) {
+            row[i] = 2.0 * self.hardnesses[i];
         }
 
         // Off-diagonal: Coulomb 1/r_ij
@@ -426,9 +422,11 @@ impl EemCharges {
         }
 
         // Lagrange constraint for total charge
-        for i in 0..n {
-            mat[i][n] = 1.0;
-            mat[n][i] = 1.0;
+        for row in mat.iter_mut().take(n) {
+            row[n] = 1.0;
+        }
+        for v in mat[n].iter_mut().take(n) {
+            *v = 1.0;
         }
         mat[n][n] = 0.0;
 
@@ -446,8 +444,8 @@ impl EemCharges {
 
         let mut mat = self.build_matrix(positions);
         let mut rhs = vec![0.0f64; n + 1];
-        for i in 0..n {
-            rhs[i] = -self.electronegativities[i];
+        for (rhs_i, &en) in rhs.iter_mut().zip(self.electronegativities.iter()) {
+            *rhs_i = -en;
         }
         rhs[n] = self.total_charge;
 
@@ -469,9 +467,10 @@ impl EemCharges {
             }
             for row in (col + 1)..=(n) {
                 let factor = mat[row][col] / diag;
-                for c in col..=(n) {
-                    let val = mat[col][c];
-                    mat[row][c] -= factor * val;
+                let col_row: Vec<f64> = mat[col].clone();
+                for (mat_rc, &col_c) in mat[row].iter_mut().skip(col).zip(col_row.iter().skip(col))
+                {
+                    *mat_rc -= factor * col_c;
                 }
                 rhs[row] -= factor * rhs[col];
             }
@@ -621,10 +620,8 @@ impl FireMinimizer {
             (ndt, na, np)
         } else {
             // Reset velocities to zero
-            for i in 0..n {
-                for d in 0..3 {
-                    velocities[i][d] = 0.0;
-                }
+            for vel in velocities.iter_mut().take(n) {
+                *vel = [0.0; 3];
             }
             (dt * self.f_dec, self.alpha_start, 0)
         };
@@ -738,8 +735,8 @@ impl NudgedElasticBand {
             .sqrt()
             .max(1e-30);
         for t in &mut tau {
-            for d in 0..3 {
-                t[d] /= norm;
+            for td in t.iter_mut() {
+                *td /= norm;
             }
         }
         tau
@@ -786,14 +783,12 @@ impl NudgedElasticBand {
         if !self.climbing_image || energies.len() < 3 {
             return;
         }
-        let mut max_e = f64::NEG_INFINITY;
-        let mut max_idx = 1;
-        for i in 1..(energies.len() - 1) {
-            if energies[i] > max_e {
-                max_e = energies[i];
-                max_idx = i;
-            }
-        }
+        let max_idx = energies[1..energies.len() - 1]
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i + 1)
+            .unwrap_or(1);
         self.climbing_idx = Some(max_idx);
     }
 

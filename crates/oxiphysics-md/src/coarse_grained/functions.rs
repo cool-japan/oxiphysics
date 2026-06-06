@@ -51,14 +51,12 @@ pub fn normalize(a: [f64; 3]) -> [f64; 3] {
 /// Compute LJ interaction energy between a MARTINI W bead pair.
 ///
 /// Uses sigma = 0.47 nm, epsilon = 5.0 kJ/mol (MARTINI W-W).
-#[allow(dead_code)]
 pub fn cg_water_energy(r: f64) -> f64 {
     MartiniLj::energy(r, 0.47, 5.0)
 }
 /// Build a simple cubic CG water box with `n` beads per side.
 ///
 /// Returns bead positions arranged on a cubic grid with spacing `spacing` nm.
-#[allow(dead_code)]
 pub fn build_cg_water_box(n: usize, spacing: f64) -> Vec<CgWaterBead> {
     let mut beads = Vec::with_capacity(n * n * n);
     for ix in 0..n {
@@ -79,7 +77,6 @@ pub fn build_cg_water_box(n: usize, spacing: f64) -> Vec<CgWaterBead> {
 ///
 /// This simple scheme places N atomic positions around a CG bead centroid
 /// on a sphere of radius `r_aa` nm.
-#[allow(dead_code)]
 pub fn backmap_bead(bead_pos: [f64; 3], n_atoms: usize, r_aa: f64) -> Vec<[f64; 3]> {
     if n_atoms == 0 {
         return Vec::new();
@@ -103,7 +100,6 @@ pub fn backmap_bead(bead_pos: [f64; 3], n_atoms: usize, r_aa: f64) -> Vec<[f64; 
 }
 /// Estimate all-atom positions from multiple CG beads, distributing `atoms_per_bead`
 /// atoms around each bead centroid.
-#[allow(dead_code)]
 pub fn backmap_molecule(
     bead_positions: &[[f64; 3]],
     atoms_per_bead: usize,
@@ -117,7 +113,6 @@ pub fn backmap_molecule(
     all_positions
 }
 /// Compute the radius of gyration of a set of CG beads.
-#[allow(dead_code)]
 pub fn cg_radius_of_gyration(beads: &[CgBead]) -> f64 {
     if beads.is_empty() {
         return 0.0;
@@ -149,7 +144,6 @@ pub fn cg_radius_of_gyration(beads: &[CgBead]) -> f64 {
     (sum_mr2 / total_mass).sqrt()
 }
 /// Compute the end-to-end distance of a linear CG polymer chain.
-#[allow(dead_code)]
 pub fn end_to_end_distance(beads: &[CgBead]) -> f64 {
     if beads.len() < 2 {
         return 0.0;
@@ -159,7 +153,6 @@ pub fn end_to_end_distance(beads: &[CgBead]) -> f64 {
     length(sub(last.pos, first.pos))
 }
 /// Compute the total kinetic energy of a set of CG beads.
-#[allow(dead_code)]
 pub fn cg_kinetic_energy(beads: &[CgBead]) -> f64 {
     beads
         .iter()

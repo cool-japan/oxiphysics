@@ -2,14 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, VecDeque};
 
 use super::types::{AStarState, Graph, State, UnionFind};
 
 /// Returns nodes visited in BFS order starting from `start`.
-#[allow(dead_code)]
 pub fn bfs(graph: &Graph, start: usize) -> Vec<usize> {
     let adj = graph.adjacency_list();
     let mut visited = vec![false; graph.n_nodes];
@@ -29,7 +27,6 @@ pub fn bfs(graph: &Graph, start: usize) -> Vec<usize> {
     order
 }
 /// Returns nodes visited in DFS order starting from `start` (iterative).
-#[allow(dead_code)]
 pub fn dfs(graph: &Graph, start: usize) -> Vec<usize> {
     let adj = graph.adjacency_list();
     let mut visited = vec![false; graph.n_nodes];
@@ -52,7 +49,6 @@ pub fn dfs(graph: &Graph, start: usize) -> Vec<usize> {
 /// Returns the connected components of the graph (treating all edges as undirected).
 ///
 /// Uses union-find. Each component is a sorted list of node indices.
-#[allow(dead_code)]
 pub fn connected_components(graph: &Graph) -> Vec<Vec<usize>> {
     let mut uf = UnionFind::new(graph.n_nodes);
     for &(a, b, _) in &graph.edges {
@@ -71,7 +67,6 @@ pub fn connected_components(graph: &Graph) -> Vec<Vec<usize>> {
     result
 }
 /// Returns `true` if the graph is connected (treating all edges as undirected).
-#[allow(dead_code)]
 pub fn is_connected(graph: &Graph) -> bool {
     if graph.n_nodes == 0 {
         return true;
@@ -81,13 +76,12 @@ pub fn is_connected(graph: &Graph) -> bool {
 /// Topological sort using Kahn's algorithm.
 ///
 /// Returns `None` if the graph contains a cycle.
-#[allow(dead_code)]
 pub fn topological_sort(graph: &Graph) -> Option<Vec<usize>> {
     let n = graph.n_nodes;
     let mut in_degree = vec![0usize; n];
     let adj = graph.adjacency_list();
-    for node in 0..n {
-        for &(nbr, _) in &adj[node] {
+    for adj_node in adj.iter() {
+        for &(nbr, _) in adj_node {
             in_degree[nbr] += 1;
         }
     }
@@ -110,7 +104,6 @@ pub fn topological_sort(graph: &Graph) -> Option<Vec<usize>> {
 /// Unreachable nodes have distance `f64::INFINITY`.
 ///
 /// **Panics** if any edge weight is negative.
-#[allow(dead_code)]
 pub fn dijkstra(graph: &Graph, start: usize) -> Vec<f64> {
     let adj = graph.adjacency_list();
     let mut dist = vec![f64::INFINITY; graph.n_nodes];
@@ -141,7 +134,6 @@ pub fn dijkstra(graph: &Graph, start: usize) -> Vec<f64> {
 ///
 /// Returns `None` if a negative-weight cycle is reachable from `start`.
 /// Otherwise returns the distance vector (same format as `dijkstra`).
-#[allow(dead_code)]
 pub fn bellman_ford(graph: &Graph, start: usize) -> Option<Vec<f64>> {
     let n = graph.n_nodes;
     let mut dist = vec![f64::INFINITY; n];
@@ -165,7 +157,6 @@ pub fn bellman_ford(graph: &Graph, start: usize) -> Option<Vec<f64>> {
 /// Returns the path as a vector of node indices from source to `end`.
 /// Returns an empty vector if `end` is unreachable (i.e., `prev[end]` chain doesn't reach a node
 /// with `prev[node] == None` that was the source).
-#[allow(dead_code)]
 pub fn path_reconstruct(prev: &[Option<usize>], end: usize) -> Vec<usize> {
     let mut path = Vec::new();
     let mut cur = end;
@@ -183,7 +174,6 @@ pub fn path_reconstruct(prev: &[Option<usize>], end: usize) -> Vec<usize> {
 ///
 /// Returns the MST as a list of `(a, b, weight)` edge triples.
 /// For disconnected graphs, returns a spanning forest.
-#[allow(dead_code)]
 pub fn kruskal_mst(graph: &Graph) -> Vec<(usize, usize, f64)> {
     let mut sorted_edges = graph.edges.clone();
     sorted_edges.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(Ordering::Equal));
@@ -197,7 +187,6 @@ pub fn kruskal_mst(graph: &Graph) -> Vec<(usize, usize, f64)> {
     mst
 }
 /// Returns the total weight of an MST (or any edge list).
-#[allow(dead_code)]
 pub fn mst_total_weight(mst_edges: &[(usize, usize, f64)]) -> f64 {
     mst_edges.iter().map(|&(_, _, w)| w).sum()
 }
@@ -205,7 +194,6 @@ pub fn mst_total_weight(mst_edges: &[(usize, usize, f64)]) -> f64 {
 ///
 /// Each overlap becomes an undirected edge with weight `1.0`.
 /// The node count is inferred as `max_node_index + 1`.
-#[allow(dead_code)]
 pub fn contact_graph_from_overlaps(overlaps: &[(usize, usize)]) -> Graph {
     let n = overlaps
         .iter()
@@ -220,7 +208,6 @@ pub fn contact_graph_from_overlaps(overlaps: &[(usize, usize)]) -> Graph {
     g
 }
 /// Returns the number of connected components (physics "islands").
-#[allow(dead_code)]
 pub fn island_count(graph: &Graph) -> usize {
     connected_components(graph).len()
 }
@@ -228,7 +215,6 @@ pub fn island_count(graph: &Graph) -> usize {
 ///
 /// `A[i][j]` is the sum of weights of edges between node `i` and node `j`.
 /// `D[i][i]` is the weighted degree of node `i`.
-#[allow(dead_code)]
 pub fn laplacian_matrix(graph: &Graph) -> Vec<Vec<f64>> {
     let n = graph.n_nodes;
     let mut l = vec![vec![0.0f64; n]; n];
@@ -292,8 +278,8 @@ pub fn astar(
 pub fn floyd_warshall(graph: &Graph) -> Vec<Vec<f64>> {
     let n = graph.n_nodes;
     let mut dist = vec![vec![f64::INFINITY; n]; n];
-    for i in 0..n {
-        dist[i][i] = 0.0;
+    for (i, row) in dist.iter_mut().enumerate() {
+        row[i] = 0.0;
     }
     for &(u, v, w) in &graph.edges {
         if w < dist[u][v] {
@@ -323,12 +309,7 @@ pub fn kosaraju_scc(graph: &Graph) -> Vec<Vec<usize>> {
     let adj = graph.adjacency_list();
     let mut visited = vec![false; n];
     let mut finish_stack: Vec<usize> = Vec::with_capacity(n);
-    fn dfs1(
-        node: usize,
-        adj: &[Vec<(usize, f64)>],
-        visited: &mut Vec<bool>,
-        stack: &mut Vec<usize>,
-    ) {
+    fn dfs1(node: usize, adj: &[Vec<(usize, f64)>], visited: &mut [bool], stack: &mut Vec<usize>) {
         let mut call_stack = vec![(node, 0usize)];
         while let Some((v, idx)) = call_stack.last_mut() {
             let v = *v;
@@ -473,13 +454,13 @@ pub fn prim_mst(graph: &Graph) -> Vec<(usize, usize, f64)> {
             }
         }
     }
-    let mut mst = Vec::new();
-    for v in 0..graph.n_nodes {
-        if let Some(u) = parent[v] {
-            mst.push((u, v, key[v]));
-        }
-    }
-    mst
+
+    parent
+        .iter()
+        .zip(key.iter())
+        .enumerate()
+        .filter_map(|(v, (p, &kv))| p.map(|u| (u, v, kv)))
+        .collect()
 }
 /// Edmonds-Karp max-flow algorithm (BFS augmenting paths).
 ///
@@ -575,7 +556,7 @@ pub fn count_back_edges(graph: &Graph) -> usize {
     let n = graph.n_nodes;
     let mut color = vec![0u8; n];
     let mut back_edges = 0usize;
-    fn dfs_color(v: usize, adj: &[Vec<(usize, f64)>], color: &mut Vec<u8>, back: &mut usize) {
+    fn dfs_color(v: usize, adj: &[Vec<(usize, f64)>], color: &mut [u8], back: &mut usize) {
         color[v] = 1;
         for &(w, _) in &adj[v] {
             if color[w] == 1 {
@@ -648,10 +629,10 @@ pub fn adjacency_matrix(graph: &Graph) -> Vec<Vec<f64>> {
 pub fn distance_matrix_to_graph(dist: &[Vec<f64>], threshold: f64) -> Graph {
     let n = dist.len();
     let mut g = Graph::new(n);
-    for i in 0..n {
-        for j in 0..n {
-            if i != j && dist[i][j] < threshold {
-                g.add_edge(i, j, dist[i][j]);
+    for (i, row) in dist.iter().enumerate() {
+        for (j, &d) in row.iter().enumerate() {
+            if i != j && d < threshold {
+                g.add_edge(i, j, d);
             }
         }
     }
@@ -749,8 +730,8 @@ pub fn kahn_topological_sort(graph: &Graph) -> Option<Vec<usize>> {
     let n = graph.n_nodes;
     let mut in_degree = vec![0usize; n];
     let adj = graph.adjacency_list();
-    for u in 0..n {
-        for &(v, _w) in &adj[u] {
+    for adj_u in adj.iter() {
+        for &(v, _w) in adj_u {
             in_degree[v] += 1;
         }
     }
@@ -871,7 +852,7 @@ pub fn betweenness_centrality(graph: &Graph) -> Vec<f64> {
 pub fn closeness_centrality(graph: &Graph) -> Vec<f64> {
     let n = graph.n_nodes;
     let mut cc = vec![0.0f64; n];
-    for u in 0..n {
+    for (u, cc_u) in cc.iter_mut().enumerate() {
         let dist = dijkstra(graph, u);
         let (sum, reachable) = dist
             .iter()
@@ -884,10 +865,10 @@ pub fn closeness_centrality(graph: &Graph) -> Vec<f64> {
                 }
             });
         if reachable == 0 || sum == 0.0 {
-            cc[u] = 0.0;
+            *cc_u = 0.0;
         } else {
             let raw = (reachable as f64) / sum;
-            cc[u] = raw * (reachable as f64) / ((n - 1) as f64);
+            *cc_u = raw * (reachable as f64) / ((n - 1) as f64);
         }
     }
     cc
@@ -909,8 +890,8 @@ pub fn bipartite_matching(graph: &Graph, left: &[usize], right: &[usize]) -> Vec
         u: usize,
         adj: &[Vec<(usize, f64)>],
         right_idx: &[usize],
-        match_r: &mut Vec<Option<usize>>,
-        visited: &mut Vec<bool>,
+        match_r: &mut [Option<usize>],
+        visited: &mut [bool],
     ) -> bool {
         for &(v, _w) in &adj[u] {
             let ri = right_idx[v];
@@ -1224,13 +1205,13 @@ mod tests {
     fn test_floyd_warshall_diagonal_zero() {
         let g = triangle_graph();
         let dist = floyd_warshall(&g);
-        for i in 0..3 {
+        for (i, row) in dist.iter().enumerate() {
             assert!(
-                (dist[i][i] - 0.0).abs() < 1e-12,
+                (row[i] - 0.0).abs() < 1e-12,
                 "dist[{}][{}]={}",
                 i,
                 i,
-                dist[i][i]
+                row[i]
             );
         }
     }
@@ -1590,9 +1571,9 @@ mod tests {
     fn test_floyd_warshall_symmetric_undirected() {
         let g = triangle_graph();
         let dist = floyd_warshall(&g);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((dist[i][j] - dist[j][i]).abs() < 1e-10);
+        for (i, row_i) in dist.iter().enumerate() {
+            for (j, row_j) in dist.iter().enumerate() {
+                assert!((row_i[j] - row_j[i]).abs() < 1e-10);
             }
         }
     }

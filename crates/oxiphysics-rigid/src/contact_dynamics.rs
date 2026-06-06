@@ -7,8 +7,6 @@
 //! island/sleeping management, warm-starting, Baumgarte stabilization,
 //! restitution models, soft contacts, rolling resistance, and material tables.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -478,7 +476,6 @@ impl FrictionModel {
     }
 
     /// Clamp anisotropic friction: separate limits per tangent axis.
-    #[allow(clippy::too_many_arguments)]
     pub fn clamp_impulse_anisotropic(
         &self,
         normal_impulse: f64,
@@ -760,7 +757,6 @@ impl PositionCorrection {
     }
 
     /// Apply position correction to a pair of solver bodies at a contact point.
-    #[allow(clippy::too_many_arguments)]
     pub fn correct_position(
         &self,
         ba: &mut SolverBody,

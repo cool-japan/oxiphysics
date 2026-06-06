@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_div_ceil)]
 use oxiphysics_core::math::Vec3;
 use std::io::Write;
 
@@ -130,7 +129,6 @@ pub fn write_xdmf_temporal<W: Write>(
     Ok(())
 }
 /// Write an XDMF file referencing HDF5 geometry and attributes.
-#[allow(dead_code)]
 pub fn write_xdmf_with_attributes(
     path: &str,
     hdf5_path: &str,
@@ -187,7 +185,6 @@ pub fn write_xdmf_with_attributes(
 /// Parse topology information from XDMF XML content.
 ///
 /// Returns a list of `(topology_type, n_elements)` pairs found in the document.
-#[allow(dead_code)]
 pub fn parse_xdmf_topology(content: &str) -> Vec<(String, usize)> {
     let mut result = Vec::new();
     for line in content.lines() {
@@ -215,7 +212,6 @@ pub fn parse_xdmf_topology(content: &str) -> Vec<(String, usize)> {
     result
 }
 /// Write a structured uniform-grid XDMF file.
-#[allow(dead_code)]
 pub fn write_xdmf_uniform_grid(path: &str, params: &XdmfUniformGrid) -> std::io::Result<()> {
     let [nx, ny, nz] = params.dimensions;
     let [ox, oy, oz] = params.origin;
@@ -252,7 +248,6 @@ pub fn write_xdmf_uniform_grid(path: &str, params: &XdmfUniformGrid) -> std::io:
     Ok(())
 }
 /// Generate an XDMF ``DataItem` element referencing an HDF5 file.
-#[allow(dead_code)]
 pub fn write_xdmf_hdf5_reference(filename: &str, dataset_path: &str) -> String {
     format!(
         "<DataItem Format=\"HDF\" Dimensions=\"1\">\n  {}:{}\n</DataItem>",
@@ -270,7 +265,6 @@ pub fn write_xdmf_hdf5_reference(filename: &str, dataset_path: &str) -> String {
 ///   </DataItem>
 /// </Attribute>
 /// ```
-#[allow(dead_code)]
 pub fn xdmf_vector_attribute(name: &str, vectors: &[[f64; 3]]) -> String {
     let n = vectors.len();
     let mut s = String::new();
@@ -293,7 +287,6 @@ pub fn xdmf_vector_attribute(name: &str, vectors: &[[f64; 3]]) -> String {
 ///
 /// Each tensor is stored as 6 unique components: `\[xx, yy, zz, xy, xz, yz\]`.
 /// XDMF AttributeType is `"Tensor6"`.
-#[allow(dead_code)]
 pub fn xdmf_tensor6_attribute(name: &str, tensors: &[[f64; 6]]) -> String {
     let n = tensors.len();
     let mut s = String::new();
@@ -320,7 +313,6 @@ pub fn xdmf_tensor6_attribute(name: &str, tensors: &[[f64; 6]]) -> String {
 /// `nodes` are 3-D point coordinates; `connectivity` is a flat list of
 /// node indices, grouped by element (length must be a multiple of
 /// `topo.nodes_per_element()`).
-#[allow(dead_code)]
 pub fn write_xdmf_unstructured<W: Write>(
     writer: &mut W,
     topo: XdmfTopologyType,
@@ -393,7 +385,6 @@ pub fn write_xdmf_unstructured<W: Write>(
 /// Produce a scalar XDMF ``DataItem` XML string (inline, Format="XML").
 ///
 /// Useful for embedding small fields directly in the XDMF document.
-#[allow(dead_code)]
 pub fn xdmf_scalar_data_item(values: &[f64]) -> String {
     let mut s = format!(
         "<DataItem Format=\"XML\" Dimensions=\"{}\">\n  ",
@@ -409,7 +400,6 @@ pub fn xdmf_scalar_data_item(values: &[f64]) -> String {
     s
 }
 /// Produce a 3-component vector XDMF ``DataItem` XML string.
-#[allow(dead_code)]
 pub fn xdmf_vector_data_item(vectors: &[[f64; 3]]) -> String {
     let n = vectors.len();
     let mut s = format!("<DataItem Format=\"XML\" Dimensions=\"{} 3\">\n", n);
@@ -420,17 +410,14 @@ pub fn xdmf_vector_data_item(vectors: &[[f64; 3]]) -> String {
     s
 }
 /// Generate a ``Time` element for a temporal grid.
-#[allow(dead_code)]
 pub fn xdmf_time_element(t: f64) -> String {
     format!("<Time Value=\"{}\"/>", t)
 }
 /// Compute the total node count across all steps in a mesh time series.
-#[allow(dead_code)]
 pub fn total_node_count(series: &XdmfMeshTimeSeries) -> usize {
     series.steps.iter().map(|s| s.nodes.len()).sum()
 }
 /// Return the step index with the most elements (peak mesh density).
-#[allow(dead_code)]
 pub fn peak_element_step(series: &XdmfMeshTimeSeries) -> Option<usize> {
     series
         .steps
@@ -866,9 +853,10 @@ mod tests {
         ts.timesteps = vec![0.0, 1.0, 2.0];
         ts.hdf5_paths = vec!["a.h5".into(), "b.h5".into(), "c.h5".into()];
         ts.attribute_names = vec!["temperature".into()];
-        let path = "/tmp/test_write_collection.xmf";
-        ts.write_collection(path, 10, 5, "Triangle").unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_write_collection.xmf");
+        ts.write_collection(path.to_str().unwrap_or(""), 10, 5, "Triangle")
+            .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         let count = content.matches("<Time Value=").count();
         assert_eq!(count, 3, "expected 3 timestep entries, got {}", count);
         assert!(content.contains("CollectionType=\"Temporal\""));
@@ -897,9 +885,9 @@ mod tests {
             origin: [0.0, 0.0, 0.0],
             spacing: [1.0, 1.0, 1.0],
         };
-        let path = "/tmp/test_uniform_grid.xmf";
-        write_xdmf_uniform_grid(path, &params).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_uniform_grid.xmf");
+        write_xdmf_uniform_grid(path.to_str().unwrap_or(""), &params).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("<Grid"), "missing Grid tag");
         assert!(content.contains("volume"), "missing grid name");
         assert!(content.contains("3DCoRectMesh"), "missing topology type");
@@ -913,9 +901,17 @@ mod tests {
             n_components: 1,
             hdf5_path: "data.h5:/pressure".to_string(),
         }];
-        let path = "/tmp/test_xdmf_with_attrs.xmf";
-        write_xdmf_with_attributes(path, "data.h5", 20, 10, "Tetrahedron", &attrs).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_xdmf_with_attrs.xmf");
+        write_xdmf_with_attributes(
+            path.to_str().unwrap_or(""),
+            "data.h5",
+            20,
+            10,
+            "Tetrahedron",
+            &attrs,
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("pressure"));
         assert!(content.contains("Tetrahedron"));
         assert!(content.contains("data.h5:/coordinates"));
@@ -974,9 +970,9 @@ mod tests_xdmf_ext {
     fn write_xml_to_file_creates_file() {
         let mut ts = XdmfTimeSeries::new();
         ts.add_frame(0.0, vec![[0.0; 3]; 2]);
-        let path = "/tmp/test_write_xml_ext.xmf";
-        ts.write_xml_to_file(path).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_write_xml_ext.xmf");
+        ts.write_xml_to_file(path.to_str().unwrap_or("")).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("<Xdmf"));
     }
     #[test]
@@ -1027,7 +1023,6 @@ mod tests_xdmf_ext {
 /// Write a full 3×3 tensor attribute (9 components per node).
 ///
 /// XDMF represents this as `AttributeType="Tensor"` with `Dimensions="N 9"`.
-#[allow(dead_code)]
 pub fn xdmf_tensor9_attribute(name: &str, tensors: &[[f64; 9]]) -> String {
     let n = tensors.len();
     let mut s = String::new();
@@ -1054,7 +1049,6 @@ pub fn xdmf_tensor9_attribute(name: &str, tensors: &[[f64; 9]]) -> String {
     s
 }
 /// Validate that an XDMF string contains required version and domain tags.
-#[allow(dead_code)]
 pub fn xdmf_is_well_formed(xml: &str) -> bool {
     xml.contains("<Xdmf")
         && xml.contains("Version=")
@@ -1063,12 +1057,10 @@ pub fn xdmf_is_well_formed(xml: &str) -> bool {
         && xml.contains("</Xdmf>")
 }
 /// Count the number of `<Grid` elements in an XDMF document.
-#[allow(dead_code)]
 pub fn xdmf_count_grids(xml: &str) -> usize {
     xml.matches("<Grid").count()
 }
 /// Count the number of `<Attribute` elements in an XDMF document.
-#[allow(dead_code)]
 pub fn xdmf_count_attributes(xml: &str) -> usize {
     xml.matches("<Attribute").count()
 }
@@ -1310,9 +1302,10 @@ mod tests_xdmf_new {
         ts.timesteps = vec![0.0, 1.0];
         ts.hdf5_paths = vec!["step0.h5".into(), "step1.h5".into()];
         ts.attribute_names = vec!["density".into(), "pressure".into()];
-        let path = "/tmp/test_hdf5_series_attrs.xmf";
-        ts.write_collection(path, 100, 50, "Tetrahedron").unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_hdf5_series_attrs.xmf");
+        ts.write_collection(path.to_str().unwrap_or(""), 100, 50, "Tetrahedron")
+            .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("density"));
         assert!(content.contains("pressure"));
         let time_count = content.matches("<Time Value=").count();
@@ -1431,7 +1424,6 @@ mod tests_xdmf_new {
     }
 }
 #[cfg(test)]
-#[allow(dead_code)]
 mod tests_xdmf_extra {
     use super::*;
     use crate::xdmf::types::*;
@@ -1738,9 +1730,17 @@ mod tests_xdmf_extra {
             n_components: 1,
             hdf5_path: "data.h5:/pressure".to_string(),
         }];
-        let path = "/tmp/test_xdmf_attrs_extra.xmf";
-        write_xdmf_with_attributes(path, "data.h5", 5, 2, "Triangle", &attrs).unwrap();
-        let s = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_xdmf_attrs_extra.xmf");
+        write_xdmf_with_attributes(
+            path.to_str().unwrap_or(""),
+            "data.h5",
+            5,
+            2,
+            "Triangle",
+            &attrs,
+        )
+        .unwrap();
+        let s = std::fs::read_to_string(&path).unwrap();
         assert!(s.contains("pressure"));
         assert!(s.contains("Scalar"));
     }
@@ -1778,7 +1778,6 @@ mod tests_xdmf_extra {
 /// Write an XDMF XML block for one time step with multiple fields.
 ///
 /// All fields are embedded inline (`Format="XML"`).
-#[allow(dead_code)]
 pub fn write_xdmf_timestep_fields<W: std::io::Write>(
     writer: &mut W,
     time: f64,
@@ -1835,7 +1834,6 @@ pub fn write_xdmf_timestep_fields<W: std::io::Write>(
     Ok(())
 }
 /// Collect all patches into a mapping element_id → patch_name (first match).
-#[allow(dead_code)]
 pub fn patch_element_map(patches: &[XdmfMeshPatch]) -> std::collections::HashMap<usize, String> {
     let mut map = std::collections::HashMap::new();
     for patch in patches {
@@ -1846,7 +1844,6 @@ pub fn patch_element_map(patches: &[XdmfMeshPatch]) -> std::collections::HashMap
     map
 }
 /// Format a flat array of `[f64; 3]` positions as a space-separated XDMF data string.
-#[allow(dead_code)]
 pub fn format_xdmf_geometry_inline(nodes: &[[f64; 3]]) -> String {
     nodes
         .iter()
@@ -1855,7 +1852,6 @@ pub fn format_xdmf_geometry_inline(nodes: &[[f64; 3]]) -> String {
         .join("\n")
 }
 /// Format a flat `Vec`f64` as a single space-separated line suitable for XDMF DataItem.
-#[allow(dead_code)]
 pub fn format_xdmf_data_inline(data: &[f64]) -> String {
     data.iter()
         .map(|v| v.to_string())
@@ -1866,7 +1862,6 @@ pub fn format_xdmf_data_inline(data: &[f64]) -> String {
 ///
 /// `hdf5_file` is the HDF5 file path; `dataset` is the dataset path inside
 /// the file; `dims` is a space-separated dimension string like `"100 3"`.
-#[allow(dead_code)]
 pub fn xdmf_hdf5_dataitem(hdf5_file: &str, dataset: &str, dims: &str, number_type: &str) -> String {
     format!(
         "<DataItem Format=\"HDF\" Dimensions=\"{dims}\" NumberType=\"{number_type}\" Precision=\"8\">{hdf5_file}:{dataset}</DataItem>"
@@ -1876,7 +1871,6 @@ pub fn xdmf_hdf5_dataitem(hdf5_file: &str, dataset: &str, dims: &str, number_typ
 ///
 /// Returns `Ok(())` if the string looks like valid XDMF, or `Err(msg)` describing
 /// the first missing element.
-#[allow(dead_code)]
 pub fn validate_xdmf_structure(xml: &str) -> Result<(), String> {
     let required = ["<?xml", "<Xdmf", "<Domain>", "</Domain>", "</Xdmf>"];
     for tag in &required {
@@ -1887,7 +1881,6 @@ pub fn validate_xdmf_structure(xml: &str) -> Result<(), String> {
     Ok(())
 }
 /// Indent all lines in an XDMF string by `level * 2` spaces.
-#[allow(dead_code)]
 pub fn indent_xdmf(xml: &str, level: usize) -> String {
     let prefix = " ".repeat(level * 2);
     xml.lines()

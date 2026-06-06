@@ -39,8 +39,6 @@
 //! assert!(stats.converged, "PCG did not converge");
 //! ```
 
-#![allow(dead_code)]
-
 use rayon::prelude::*;
 use std::sync::Mutex;
 
@@ -119,33 +117,31 @@ impl CsrMatrix {
     }
 
     /// Sequential sparse matrix–vector product (for comparison / small matrices).
-    #[allow(clippy::needless_range_loop)]
     pub fn spmv(&self, x: &[f64], y: &mut [f64]) {
         debug_assert_eq!(x.len(), self.ncols);
         debug_assert_eq!(y.len(), self.nrows);
-        for i in 0..self.nrows {
+        for (i, yi) in y.iter_mut().enumerate().take(self.nrows) {
             let row_start = self.row_offsets[i];
             let row_end = self.row_offsets[i + 1];
             let mut sum = 0.0;
             for k in row_start..row_end {
                 sum += self.values[k] * x[self.col_indices[k]];
             }
-            y[i] = sum;
+            *yi = sum;
         }
     }
 
     /// Diagonal (Jacobi) preconditioner: returns `1 / A[i,i]` for each row.
     ///
     /// Uses `1.0` for rows with zero diagonal to avoid division by zero.
-    #[allow(clippy::needless_range_loop)]
     pub fn diagonal_preconditioner(&self) -> Vec<f64> {
         let mut diag = vec![1.0f64; self.nrows];
-        for i in 0..self.nrows {
+        for (i, diag_i) in diag.iter_mut().enumerate().take(self.nrows) {
             for k in self.row_offsets[i]..self.row_offsets[i + 1] {
                 if self.col_indices[k] == i {
                     let d = self.values[k];
                     if d.abs() > 1e-15 {
-                        diag[i] = 1.0 / d;
+                        *diag_i = 1.0 / d;
                     }
                     break;
                 }
@@ -296,7 +292,10 @@ impl ParallelAssembler {
 
         let values: Vec<f64> = values_locked
             .into_iter()
-            .map(|m| m.into_inner().unwrap())
+            .map(|m| {
+                m.into_inner()
+                    .expect("mutex not poisoned after parallel assembly")
+            })
             .collect();
 
         CsrMatrix {
@@ -327,7 +326,10 @@ impl ParallelAssembler {
             });
         rhs_locked
             .into_iter()
-            .map(|m| m.into_inner().unwrap())
+            .map(|m| {
+                m.into_inner()
+                    .expect("mutex not poisoned after parallel rhs assembly")
+            })
             .collect()
     }
 
@@ -908,7 +910,6 @@ impl GmresWithAmg {
     }
 
     /// Solve `A * x = b` using AMG-preconditioned GMRES.
-    #[allow(clippy::too_many_arguments)]
     pub fn solve(&self, a: &CsrMatrix, b: &[f64], x: &mut [f64]) -> PcgStats {
         let n = a.nrows;
         let b_norm = dot_par(b, b).sqrt().max(1e-300);

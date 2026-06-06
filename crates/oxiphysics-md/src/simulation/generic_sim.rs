@@ -72,7 +72,6 @@ where
     B: Barostat,
 {
     /// Create a new MD simulation.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         atoms: AtomSet,
         force_field: F,

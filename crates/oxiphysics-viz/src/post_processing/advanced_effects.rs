@@ -5,8 +5,6 @@
 //! high-quality FXAA, bokeh depth-of-field, lens flare, chromatic aberration,
 //! vignette, and screen-space reflection.
 
-#![allow(dead_code)]
-
 use std::f32::consts::PI;
 
 use super::core::{Image, PostColor};
@@ -21,7 +19,6 @@ use super::image_filters::FxaaFilter;
 /// then all levels are summed and added back to the original.  The result
 /// more closely resembles the out-of-camera glow seen in real lens systems
 /// than a single-pass approach.
-#[allow(dead_code)]
 pub struct BloomFilterKernel {
     /// Luminance threshold; only pixels above this value contribute.
     pub threshold: f32,
@@ -31,7 +28,6 @@ pub struct BloomFilterKernel {
     pub sigmas: Vec<f32>,
 }
 
-#[allow(dead_code)]
 impl BloomFilterKernel {
     /// Create a default three-level bloom kernel.
     pub fn default_three_level() -> Self {
@@ -102,13 +98,11 @@ impl BloomFilterKernel {
 /// the positive Z axis.  Each sample is placed on the hemisphere surface with
 /// an importance weight biased towards the origin, following the SSAO
 /// algorithm described by Crytek.
-#[allow(dead_code)]
 pub struct SsaoKernel {
     /// Generated sample positions, each in `[-1,1]^3` (unit hemisphere +Z).
     pub samples: Vec<[f32; 3]>,
 }
 
-#[allow(dead_code)]
 impl SsaoKernel {
     /// Generate `n` deterministic hemisphere samples using a Halton-like
     /// sequence to avoid clustering.
@@ -158,7 +152,6 @@ impl SsaoKernel {
 /// This extends [`FxaaFilter`] by adding a sub-pixel aliasing correction
 /// term and iterating along detected edges to find the nearest endpoint,
 /// producing smoother anti-aliasing on diagonal lines.
-#[allow(dead_code)]
 pub struct FxaaHighQuality {
     /// Edge threshold (same as [`FxaaFilter::edge_threshold`]).
     pub edge_threshold: f32,
@@ -170,7 +163,6 @@ pub struct FxaaHighQuality {
     pub search_steps: u32,
 }
 
-#[allow(dead_code)]
 impl FxaaHighQuality {
     /// Create with recommended defaults.
     pub fn new() -> Self {
@@ -225,7 +217,6 @@ impl Default for FxaaHighQuality {
 /// The hexagonal bokeh shape is approximated by three rectangular blur passes
 /// (0°, 60°, 120° orientations) and blended together.  This gives the
 /// characteristic hexagonal disc blur without requiring a full scatter kernel.
-#[allow(dead_code)]
 pub struct DepthOfFieldBokeh {
     /// Focus depth (normalised `[0, 1]`).
     pub focus_depth: f32,
@@ -237,7 +228,6 @@ pub struct DepthOfFieldBokeh {
     pub samples: usize,
 }
 
-#[allow(dead_code)]
 impl DepthOfFieldBokeh {
     /// Compute the circle-of-confusion (CoC) radius for a pixel at `depth`.
     pub fn coc_radius(&self, depth: f32) -> f32 {
@@ -306,7 +296,6 @@ impl DepthOfFieldBokeh {
 ///
 /// Anamorphic streaks simulate the horizontal elongation seen in
 /// anamorphic cinema lenses.  They extend along the X-axis only.
-#[allow(dead_code)]
 pub struct LensFlareStar {
     /// Position of the light source in normalised screen space `[0, 1]²`.
     pub light_pos: [f32; 2],
@@ -320,7 +309,6 @@ pub struct LensFlareStar {
     pub streak_length: f32,
 }
 
-#[allow(dead_code)]
 impl LensFlareStar {
     /// Compute the additive flare contribution at normalised screen position `uv`.
     ///
@@ -392,13 +380,11 @@ impl LensFlareStar {
 ///
 /// At the image centre there is no fringing; towards the corners the red and
 /// blue channels are displaced outward by `max_shift` pixels.
-#[allow(dead_code)]
 pub struct ChromaticAberrationRadial {
     /// Maximum channel displacement in pixels at the image corner.
     pub max_shift: f32,
 }
 
-#[allow(dead_code)]
 impl ChromaticAberrationRadial {
     /// Apply radial chromatic aberration to `image`.
     pub fn apply(&self, image: &Image) -> Image {
@@ -459,7 +445,6 @@ impl ChromaticAberrationRadial {
 /// principal ray to the optical axis.  For a flat sensor `tan(θ) = r / f`
 /// where `r` is the distance from the sensor centre and `f` is the focal
 /// length.
-#[allow(dead_code)]
 pub struct VignetteLens {
     /// Equivalent focal length divisor (higher = slower falloff).
     pub focal_divisor: f32,
@@ -467,7 +452,6 @@ pub struct VignetteLens {
     pub strength: f32,
 }
 
-#[allow(dead_code)]
 impl VignetteLens {
     /// Vignette factor in `[0, 1]` at normalised radius `r` from centre.
     ///
@@ -514,7 +498,6 @@ impl VignetteLens {
 /// the actual ray-march would be executed on a GPU in a real renderer.
 /// Here we expose a helper that estimates the reflection direction for a
 /// pixel and composites a mirror pass from the existing image.
-#[allow(dead_code)]
 pub struct ScreenSpaceReflection {
     /// Number of ray-march steps.
     pub num_steps: usize,
@@ -526,7 +509,6 @@ pub struct ScreenSpaceReflection {
     pub intensity: f32,
 }
 
-#[allow(dead_code)]
 impl ScreenSpaceReflection {
     /// Approximate SSR using a vertical screen-space mirror.
     ///

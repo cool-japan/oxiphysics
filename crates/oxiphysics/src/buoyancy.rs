@@ -48,9 +48,6 @@
 //! assert!(bf.submerged_fraction > 0.0); // partially submerged
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
@@ -345,7 +342,6 @@ impl BuoyancyWorld {
     }
 
     /// Register a fluid volume with explicit drag coefficients.
-    #[allow(clippy::too_many_arguments)]
     pub fn add_fluid_with_drag(
         &mut self,
         min: [f64; 3],

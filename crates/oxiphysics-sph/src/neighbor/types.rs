@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::if_same_then_else, clippy::needless_range_loop)]
 use oxiphysics_core::math::Vec3;
 use std::collections::HashMap;
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{CellKey, CellKey3};
 
 /// Manages the skin distance for Verlet-list amortised rebuilds.
@@ -17,7 +14,6 @@ use super::functions::{CellKey, CellKey3};
 /// triggered when the *maximum* cumulative displacement of any particle
 /// exceeds `r_skin / 2`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SkinManager {
     /// Interaction cut-off radius.
     pub r_cut: f64,
@@ -30,7 +26,6 @@ pub struct SkinManager {
     /// Total number of update calls.
     pub update_count: usize,
 }
-#[allow(dead_code)]
 impl SkinManager {
     /// Initialise from a set of particle positions.
     pub fn new(positions: &[[f64; 3]], r_cut: f64, r_skin: f64) -> Self {
@@ -100,7 +95,6 @@ impl SkinManager {
 /// convention when computing distances.  Builds in O(N) time and queries in
 /// O(N/M) time where M is the number of cells.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PbcLinkedCellList {
     /// Box dimensions \[Lx, Ly, Lz\].
     pub box_size: [f64; 3],
@@ -115,7 +109,6 @@ pub struct PbcLinkedCellList {
     /// Stored positions (wrapped into box).
     pub(super) positions: Vec<[f64; 3]>,
 }
-#[allow(dead_code)]
 impl PbcLinkedCellList {
     /// Build from positions in a periodic box.
     pub fn build(positions: &[[f64; 3]], cell_size: f64, box_size: [f64; 3]) -> Self {
@@ -219,7 +212,6 @@ impl PbcLinkedCellList {
 /// Particles are binned into cells of size `cell_size`.  To find neighbours
 /// of particle `i`, iterate over particles in the 27 surrounding cells.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct LinkedCellList {
     /// Cell size (usually = cut-off radius).
     pub(super) cell_size: f64,
@@ -234,7 +226,6 @@ pub struct LinkedCellList {
     /// or `usize::MAX` if last.
     pub(super) next: Vec<usize>,
 }
-#[allow(dead_code)]
 impl LinkedCellList {
     /// Build the linked-cell list from positions.
     ///
@@ -366,10 +357,10 @@ impl LinkedCellList {
     pub fn compute_occupancy_histogram(&self) -> OccupancyHistogram {
         let total_cells = self.head.len();
         let mut counts = vec![0_usize; total_cells];
-        for c in 0..total_cells {
+        for (c, cnt) in counts.iter_mut().enumerate() {
             let mut p = self.head[c];
             while p != usize::MAX {
-                counts[c] += 1;
+                *cnt += 1;
                 p = self.next[p];
             }
         }
@@ -388,7 +379,6 @@ impl LinkedCellList {
 }
 /// Statistics computed over a set of neighbor lists.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NeighborStats {
     /// Total number of particles.
     pub n_particles: usize,
@@ -405,7 +395,6 @@ pub struct NeighborStats {
     /// Total neighbor pairs (sum of all per-particle counts).
     pub total_pairs: usize,
 }
-#[allow(dead_code)]
 impl NeighborStats {
     /// Compute statistics from per-particle neighbor lists.
     pub fn compute(neighbor_lists: &[Vec<usize>]) -> Self {
@@ -452,7 +441,6 @@ impl NeighborStats {
 /// Wraps a [`LinkedCellList`]-based neighbor list and tracks cumulative
 /// displacement since the last rebuild.  A rebuild is triggered when *any*
 /// particle exceeds `r_rebuild = r_skin / 2`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NeighborListCache {
     /// Cut-off radius for neighbor interactions.
@@ -466,7 +454,6 @@ pub struct NeighborListCache {
     /// Number of rebuilds performed.
     pub rebuild_count: usize,
 }
-#[allow(dead_code)]
 impl NeighborListCache {
     /// Build the cache from the given positions.
     pub fn new(positions: &[[f64; 3]], r_cut: f64, r_skin: f64) -> Self {
@@ -626,7 +613,6 @@ impl SpatialHash3D {
 ///
 /// Internally uses a global spatial hash with cell size = `max(h)` to bound
 /// the search radius.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AdaptiveNeighborSearch {
     /// Particle positions.
@@ -638,7 +624,6 @@ pub struct AdaptiveNeighborSearch {
     /// Spatial hash cells.
     pub(super) cells: std::collections::HashMap<(i32, i32, i32), Vec<usize>>,
 }
-#[allow(dead_code)]
 impl AdaptiveNeighborSearch {
     /// Build the adaptive neighbor search structure.
     ///
@@ -729,7 +714,6 @@ impl AdaptiveNeighborSearch {
 }
 /// Per-particle neighbor count together with global statistics.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NeighborCountStats {
     /// Per-particle neighbor count.
     pub counts: Vec<usize>,
@@ -742,7 +726,6 @@ pub struct NeighborCountStats {
     /// Standard deviation.
     pub std_dev: f64,
 }
-#[allow(dead_code)]
 impl NeighborCountStats {
     /// Compute from per-particle neighbor lists.
     pub fn from_neighbor_lists(neighbor_lists: &[Vec<usize>]) -> Self {
@@ -801,7 +784,6 @@ pub struct OccupancyHistogram {
     pub peak_occupancy: usize,
 }
 /// Node in a simple octree for neighbor search.
-#[allow(dead_code, clippy::vec_box)]
 #[derive(Debug, Clone)]
 pub(super) enum OctreeNode {
     Leaf {
@@ -815,8 +797,8 @@ pub(super) enum OctreeNode {
         /// Bounding box of this node.
         bounds_lo: [f64; 3],
         bounds_hi: [f64; 3],
-        /// Up to 8 children (octants), stored as Box`OctreeNode`.
-        children: Vec<Box<OctreeNode>>,
+        /// Up to 8 children (octants).
+        children: Vec<OctreeNode>,
     },
 }
 /// Verlet neighbour list with a skin radius for amortised rebuilds.
@@ -825,7 +807,6 @@ pub(super) enum OctreeNode {
 /// is triggered when any particle has moved more than `r_skin / 2` since
 /// the last build (guaranteeing no missed neighbours).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct VerletList {
     /// Cut-off radius.
     pub(super) r_cut: f64,
@@ -836,7 +817,6 @@ pub struct VerletList {
     /// Neighbour lists (excluding self).
     pub(super) neighbor_lists: Vec<Vec<usize>>,
 }
-#[allow(dead_code)]
 impl VerletList {
     /// Build a new Verlet list from the given positions.
     pub fn build(positions: &[[f64; 3]], r_cut: f64, r_skin: f64) -> Self {
@@ -945,7 +925,6 @@ impl VerletList {
 /// Not as efficient as LinkedCellList for large simulations, but useful for
 /// non-uniform particle distributions.  Builds a balanced octree and queries
 /// it for particles within radius `h`.
-#[allow(dead_code)]
 pub struct OctreeNeighborSearch {
     /// Stored positions (copy).
     pub(super) positions: Vec<[f64; 3]>,
@@ -953,10 +932,7 @@ pub struct OctreeNeighborSearch {
     pub(super) h: f64,
     /// Root of the octree.
     pub(super) root: Option<Box<OctreeNode>>,
-    /// Maximum particles per leaf before subdivision.
-    pub(super) max_leaf_size: usize,
 }
-#[allow(dead_code)]
 impl OctreeNeighborSearch {
     /// Build an octree from positions with the given smoothing radius.
     pub fn build(positions: &[[f64; 3]], h: f64) -> Self {
@@ -967,7 +943,6 @@ impl OctreeNeighborSearch {
                 positions: Vec::new(),
                 h,
                 root: None,
-                max_leaf_size,
             };
         }
         let mut lo = positions[0];
@@ -992,7 +967,6 @@ impl OctreeNeighborSearch {
             positions: positions.to_vec(),
             h,
             root: Some(root),
-            max_leaf_size,
         }
     }
     fn build_node(
@@ -1040,7 +1014,7 @@ impl OctreeNeighborSearch {
                 if iy == 0 { mid[1] } else { hi[1] },
                 if iz == 0 { mid[2] } else { hi[2] },
             ];
-            children.push(Self::build_node(
+            children.push(*Self::build_node(
                 positions,
                 oct_indices,
                 child_lo,
@@ -1227,7 +1201,6 @@ impl SpatialHash {
 /// // Should give (0,1), (0,2), (1,2) — each once.
 /// assert_eq!(pairs.len(), 3);
 /// ```
-#[allow(dead_code)]
 pub struct NeighborPairIterator<'a> {
     /// Reference to per-particle neighbor lists.
     pub(super) lists: &'a [Vec<usize>],
@@ -1236,7 +1209,6 @@ pub struct NeighborPairIterator<'a> {
     /// Current position within `lists[i]`.
     pub(super) j_idx: usize,
 }
-#[allow(dead_code)]
 impl<'a> NeighborPairIterator<'a> {
     /// Create a new iterator over unique (i, j) pairs with i < j.
     pub fn new(lists: &'a [Vec<usize>]) -> Self {
@@ -1268,7 +1240,6 @@ impl<'a> NeighborPairIterator<'a> {
 /// assert!(nbrs.contains(&1), "PBC neighbor should be found");
 /// assert!(!nbrs.contains(&2), "Distant particle should not be found");
 /// ```
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PeriodicSpatialHash {
     /// Smoothing radius / cell size.
@@ -1277,24 +1248,14 @@ pub struct PeriodicSpatialHash {
     pub(super) box_size: [f64; 3],
     /// Particle positions (stored as-is, wrapping is applied on query).
     pub(super) positions: Vec<[f64; 3]>,
-    /// Cell → particle index mapping.
-    pub(super) cells: std::collections::HashMap<(i32, i32, i32), Vec<usize>>,
 }
-#[allow(dead_code)]
 impl PeriodicSpatialHash {
     /// Build the hash from `positions` in a periodic box of size `box_size`.
     pub fn build(positions: &[[f64; 3]], h: f64, box_size: [f64; 3]) -> Self {
-        let mut cells: std::collections::HashMap<(i32, i32, i32), Vec<usize>> =
-            std::collections::HashMap::new();
-        for (i, pos) in positions.iter().enumerate() {
-            let key = Self::cell_key_of(pos, h);
-            cells.entry(key).or_default().push(i);
-        }
         Self {
             h,
             box_size,
             positions: positions.to_vec(),
-            cells,
         }
     }
     /// Return sorted neighbor indices (excluding self) of particle `i` under PBC.
@@ -1339,23 +1300,12 @@ impl PeriodicSpatialHash {
         }
         dr
     }
-    /// Integer cell key for a position.
-    #[inline]
-    fn cell_key_of(pos: &[f64; 3], h: f64) -> (i32, i32, i32) {
-        (
-            (pos[0] / h).floor() as i32,
-            (pos[1] / h).floor() as i32,
-            (pos[2] / h).floor() as i32,
-        )
-    }
 }
 /// Z-order (Morton) curve utilities for improving memory-access locality.
 ///
 /// Particles sorted by their Z-order index tend to be spatially close in memory,
 /// greatly improving cache performance in SPH force loops.
-#[allow(dead_code)]
 pub struct ZOrderCurve;
-#[allow(dead_code)]
 impl ZOrderCurve {
     /// Compute the 3D Morton code for integer coordinates `(x, y, z)`.
     ///
@@ -1409,7 +1359,6 @@ impl ZOrderCurve {
 /// This layout is ideal for parallel GPU kernels because each particle
 /// reads a contiguous slice.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FlatNeighborList {
     /// Packed neighbor IDs.
     pub flat_neighbors: Vec<usize>,
@@ -1419,7 +1368,6 @@ pub struct FlatNeighborList {
     /// Number of particles.
     pub n_particles: usize,
 }
-#[allow(dead_code)]
 impl FlatNeighborList {
     /// Build a flat neighbor list from per-particle neighbor lists.
     pub fn from_neighbor_lists(neighbor_lists: &[Vec<usize>]) -> Self {
@@ -1471,14 +1419,12 @@ impl FlatNeighborList {
 /// # Parallel Extension
 /// Replace the inner `map` with `par_iter().map(...)` from rayon to get
 /// an O(N / num_threads) build time.
-#[allow(dead_code)]
 pub struct ParallelReadyNeighborBuilder {
     /// Cut-off radius for neighbor interactions.
     pub r_cut: f64,
     /// Skin radius for Verlet list.
     pub r_skin: f64,
 }
-#[allow(dead_code)]
 impl ParallelReadyNeighborBuilder {
     /// Create a new builder.
     pub fn new(r_cut: f64, r_skin: f64) -> Self {
@@ -1505,7 +1451,6 @@ impl ParallelReadyNeighborBuilder {
 /// Occupancy statistics for a spatial hash grid.
 ///
 /// Useful for diagnosing load-balance issues and choosing optimal cell sizes.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HashGridStats {
     /// Total number of cells (including empty ones).
@@ -1519,7 +1464,6 @@ pub struct HashGridStats {
     /// Occupancy variance (over non-empty cells).
     pub cell_occupancy_variance: f64,
 }
-#[allow(dead_code)]
 impl HashGridStats {
     /// Compute statistics from a `LinkedCellList`.
     pub fn from_linked_cell(lcl: &LinkedCellList, positions: &[[f64; 3]]) -> Self {
@@ -1537,7 +1481,7 @@ impl HashGridStats {
         let mut occupancies: Vec<usize> = Vec::new();
         let mut cell_map: std::collections::HashMap<(i32, i32, i32), usize> =
             std::collections::HashMap::new();
-        let cell_size = if n > 0 { 1.0 } else { 1.0 };
+        let cell_size = 1.0_f64;
         let h_guess = if n >= 2 {
             let d = (positions[0][0] - positions[1][0]).hypot(positions[0][1] - positions[1][1]);
             d.max(1e-9)

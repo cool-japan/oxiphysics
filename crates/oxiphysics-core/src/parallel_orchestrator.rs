@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -24,8 +23,6 @@
 //! workspace dependency, intra-wave parallelism can be enabled behind a feature
 //! flag (e.g. `parallel-rayon`) by replacing the sequential loop with
 //! `rayon::scope` or `rayon::join`.
-
-#![allow(dead_code)]
 
 use std::fmt;
 use std::time::Instant;
@@ -345,8 +342,8 @@ pub fn topological_sort(
     let mut current_wave: Vec<usize> = Vec::new();
 
     // Seed with all stages that have no dependencies.
-    for i in 0..n {
-        if in_degree[i] == 0 {
+    for (i, &deg) in in_degree.iter().enumerate() {
+        if deg == 0 {
             current_wave.push(i);
         }
     }

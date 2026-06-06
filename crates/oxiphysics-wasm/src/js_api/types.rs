@@ -62,7 +62,6 @@ pub struct JsEventQueue {
 impl JsEventQueue {
     /// Create a new event queue with an optional event cap.
     /// `max_events = 0` means unlimited.
-    #[allow(dead_code)]
     pub fn new(max_events: usize) -> Self {
         Self {
             events: Vec::new(),
@@ -70,7 +69,6 @@ impl JsEventQueue {
         }
     }
     /// Push an event onto the queue (drops oldest event if at capacity).
-    #[allow(dead_code)]
     pub fn push(&mut self, event: JsPhysicsEvent) {
         if self.max_events > 0 && self.events.len() >= self.max_events {
             self.events.remove(0);
@@ -78,38 +76,31 @@ impl JsEventQueue {
         self.events.push(event);
     }
     /// Drain all events and return them.
-    #[allow(dead_code)]
     pub fn drain(&mut self) -> Vec<JsPhysicsEvent> {
         std::mem::take(&mut self.events)
     }
     /// Number of queued events.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.events.len()
     }
     /// Whether the queue is empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
     }
     /// Serialize all queued events to a JSON array without draining.
-    #[allow(dead_code)]
     pub fn to_json(&self) -> String {
         serde_json::to_string(&self.events).unwrap_or_else(|_| "[]".to_string())
     }
     /// Drain all events and serialize to JSON in one operation.
-    #[allow(dead_code)]
     pub fn drain_to_json(&mut self) -> String {
         let events = self.drain();
         serde_json::to_string(&events).unwrap_or_else(|_| "[]".to_string())
     }
     /// Push a step_complete event automatically.
-    #[allow(dead_code)]
     pub fn push_step_complete(&mut self, time: f64) {
         self.push(JsPhysicsEvent::step_complete(time));
     }
     /// Push all contact events from the engine into the queue.
-    #[allow(dead_code)]
     pub fn collect_contacts_from_engine(&mut self, engine: &WasmPhysicsEngine) {
         for event in engine_collect_contact_events(engine) {
             self.push(event);
@@ -305,7 +296,6 @@ pub struct JsPhysicsEvent {
 }
 impl JsPhysicsEvent {
     /// Create a "step_complete" event.
-    #[allow(dead_code)]
     pub fn step_complete(time: f64) -> Self {
         Self {
             category: "step".to_string(),
@@ -317,7 +307,6 @@ impl JsPhysicsEvent {
         }
     }
     /// Create a contact-begin event.
-    #[allow(dead_code)]
     pub fn contact_begin(body_a: u32, body_b: u32, impulse: f64, time: f64) -> Self {
         Self {
             category: "contact".to_string(),
@@ -329,7 +318,6 @@ impl JsPhysicsEvent {
         }
     }
     /// Create a contact-end event.
-    #[allow(dead_code)]
     pub fn contact_end(body_a: u32, body_b: u32, time: f64) -> Self {
         Self {
             category: "contact".to_string(),
@@ -341,7 +329,6 @@ impl JsPhysicsEvent {
         }
     }
     /// Create a body-slept event.
-    #[allow(dead_code)]
     pub fn body_slept(handle: u32, time: f64) -> Self {
         Self {
             category: "sleep".to_string(),
@@ -353,7 +340,6 @@ impl JsPhysicsEvent {
         }
     }
     /// Create a body-woke event.
-    #[allow(dead_code)]
     pub fn body_woke(handle: u32, time: f64) -> Self {
         Self {
             category: "wake".to_string(),
@@ -365,7 +351,6 @@ impl JsPhysicsEvent {
         }
     }
     /// Serialize to JSON.
-    #[allow(dead_code)]
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
     }
@@ -393,7 +378,6 @@ pub struct WasmScratchBuffer {
 }
 impl WasmScratchBuffer {
     /// Allocate a scratch buffer for `capacity` f64 values.
-    #[allow(dead_code)]
     pub fn new(capacity: usize) -> Self {
         Self {
             buffer: Vec::with_capacity(capacity),
@@ -402,41 +386,34 @@ impl WasmScratchBuffer {
     }
     /// Fill the buffer with the current body positions.
     /// Returns a slice into the internal buffer.
-    #[allow(dead_code)]
     pub fn fill_positions<'a>(&'a mut self, engine: &WasmPhysicsEngine) -> &'a [f64] {
         self.buffer.clear();
         self.buffer.extend_from_slice(&engine.get_all_positions());
         &self.buffer
     }
     /// Fill the buffer with all transforms (pos + quat, 7 per body).
-    #[allow(dead_code)]
     pub fn fill_transforms<'a>(&'a mut self, engine: &WasmPhysicsEngine) -> &'a [f64] {
         self.buffer.clear();
         self.buffer.extend_from_slice(&engine.get_all_transforms());
         &self.buffer
     }
     /// Return the current buffer contents without refilling.
-    #[allow(dead_code)]
     pub fn as_slice(&self) -> &[f64] {
         &self.buffer
     }
     /// Current number of values in the buffer.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.buffer.len()
     }
     /// Whether the buffer is empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }
     /// Capacity of the pre-allocated buffer.
-    #[allow(dead_code)]
     pub fn capacity(&self) -> usize {
         self.capacity
     }
     /// Reset the buffer without deallocating.
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.buffer.clear();
     }
@@ -504,12 +481,10 @@ pub struct JsExtendedState {
 }
 impl JsExtendedState {
     /// Serialize to JSON.
-    #[allow(dead_code)]
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
     }
     /// Deserialize from JSON.
-    #[allow(dead_code)]
     pub fn from_json(json: &str) -> Option<Self> {
         serde_json::from_str(json).ok()
     }

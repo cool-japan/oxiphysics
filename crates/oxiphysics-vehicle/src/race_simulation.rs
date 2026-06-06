@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -12,8 +11,6 @@
 //! - [`LapSimulator`]  — point-mass lap simulator producing time and speed profile.
 //! - Free functions for aerodynamic downforce, tractive force, tire degradation,
 //!   pit-stop strategy, and WLTC-style fuel consumption.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // TrackPoint
@@ -212,7 +209,7 @@ impl LapSimulator {
 
         // Clamp to tractive limit using a simple forward pass
         let mut prev_speed = 0.0_f64;
-        for i in 0..n {
+        for (i, speed) in speeds.iter_mut().enumerate() {
             // Distance to next point
             let dist = if i + 1 < n {
                 let dx = self.track.points[i + 1].x - self.track.points[i].x;
@@ -225,14 +222,14 @@ impl LapSimulator {
             let f_max = tractive_force_limit(self.max_power, prev_speed.max(1.0));
             let a_max = f_max / self.vehicle_mass;
             let accel_limited = (prev_speed * prev_speed + 2.0 * a_max * dist).sqrt();
-            speeds[i] = speeds[i].min(accel_limited);
-            prev_speed = speeds[i];
+            *speed = speed.min(accel_limited);
+            prev_speed = *speed;
         }
 
         // Compute lap time from speeds and distances
         let mut lap_time = 0.0_f64;
-        for i in 0..n {
-            let v = speeds[i].max(1.0); // avoid divide-by-zero
+        for (i, &v_raw) in speeds.iter().enumerate() {
+            let v = v_raw.max(1.0); // avoid divide-by-zero
             let dist = if i + 1 < n {
                 let dx = self.track.points[i + 1].x - self.track.points[i].x;
                 let dy = self.track.points[i + 1].y - self.track.points[i].y;

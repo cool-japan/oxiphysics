@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use crate::lattice::{CS2, equilibrium_d2q9, macros_from_d2q9};
 
 use super::grid_extended::{FullGrid3D, NodeFlag};
@@ -19,7 +18,6 @@ pub fn equilibrium_2d(w: f64, rho: f64, ux: f64, uy: f64, cx: f64, cy: f64) -> f
 /// Compute equilibrium distribution for a single direction (3D).
 ///
 /// feq_i = w_i * rho * (1 + (e_i · u)/cs² + (e_i · u)²/(2 cs⁴) − u·u/(2 cs²))
-#[allow(clippy::too_many_arguments)]
 pub fn equilibrium_3d(
     w: f64,
     rho: f64,
@@ -614,7 +612,6 @@ mod flat_grid_tests {
 /// `f[cell_idx * Q + alpha]` with Q velocities and `n = nx * ny` cells.
 ///
 /// Returns `(min_rho, max_rho, min_umag, max_umag)`.
-#[allow(dead_code)]
 pub fn grid_stats_2d(f: &[f64], nx: usize, ny: usize) -> (f64, f64, f64, f64) {
     let n = nx * ny;
     let mut min_rho = f64::INFINITY;
@@ -658,7 +655,6 @@ pub fn grid_stats_2d(f: &[f64], nx: usize, ny: usize) -> (f64, f64, f64, f64) {
 /// `f[cell_idx * 19 + alpha]` with `n = nx * ny * nz` cells.
 ///
 /// Returns `(min_rho, max_rho, min_umag, max_umag)`.
-#[allow(dead_code)]
 pub fn grid_stats_3d(f: &[f64], nx: usize, ny: usize, nz: usize) -> (f64, f64, f64, f64) {
     let n = nx * ny * nz;
     let mut min_rho = f64::INFINITY;
@@ -704,7 +700,6 @@ pub fn grid_stats_3d(f: &[f64], nx: usize, ny: usize, nz: usize) -> (f64, f64, f
 /// Save the state of a 2D flagged grid to a `Vec`f64` checkpoint buffer.
 ///
 /// Format: `\[nx as f64, ny as f64, omega, f\[0\\], f\[1\], ...]`
-#[allow(dead_code)]
 pub fn checkpoint_save_2d(grid: &FlaggedGrid2D) -> Vec<f64> {
     let mut buf = Vec::with_capacity(3 + grid.f.len());
     buf.push(grid.nx as f64);
@@ -720,7 +715,6 @@ pub fn checkpoint_save_2d(grid: &FlaggedGrid2D) -> Vec<f64> {
 /// # Panics
 ///
 /// Panics if the buffer size does not match the grid's expected distribution size.
-#[allow(dead_code)]
 pub fn checkpoint_restore_2d(grid: &mut FlaggedGrid2D, buf: &[f64]) {
     let expected = 3 + grid.nx * grid.ny * 9;
     assert_eq!(
@@ -734,7 +728,6 @@ pub fn checkpoint_restore_2d(grid: &mut FlaggedGrid2D, buf: &[f64]) {
 /// Save the state of a 3D full grid to a `Vec`f64` checkpoint buffer.
 ///
 /// Format: `[nx as f64, ny as f64, nz as f64, omega, f[0\], ...]`
-#[allow(dead_code)]
 pub fn checkpoint_save_3d(grid: &FullGrid3D) -> Vec<f64> {
     let mut buf = Vec::with_capacity(4 + grid.f.len());
     buf.push(grid.nx as f64);
@@ -749,7 +742,6 @@ pub fn checkpoint_save_3d(grid: &FullGrid3D) -> Vec<f64> {
 /// # Panics
 ///
 /// Panics if the buffer size does not match the grid's expected distribution size.
-#[allow(dead_code)]
 pub fn checkpoint_restore_3d(grid: &mut FullGrid3D, buf: &[f64]) {
     let expected = 4 + grid.nx * grid.ny * grid.nz * 19;
     assert_eq!(
@@ -763,7 +755,6 @@ pub fn checkpoint_restore_3d(grid: &mut FullGrid3D, buf: &[f64]) {
 /// Extract the x-velocity profile along a vertical slice at column `x`.
 ///
 /// Returns `Vec`f64` of length `ny` where entry `j` is `ux` at `(x, j)`.
-#[allow(dead_code)]
 pub fn extract_ux_profile_2d(grid: &FlaggedGrid2D, x: usize) -> Vec<f64> {
     let nx = grid.nx;
     let ny = grid.ny;
@@ -773,10 +764,10 @@ pub fn extract_ux_profile_2d(grid: &FlaggedGrid2D, x: usize) -> Vec<f64> {
         let base = idx * 9;
         let mut rho = 0.0_f64;
         let mut mx = 0.0_f64;
-        for a in 0..9 {
+        for (a, c9a) in C9.iter().enumerate() {
             let fi = grid.f[base + a];
             rho += fi;
-            mx += fi * C9[a][0] as f64;
+            mx += fi * c9a[0] as f64;
         }
         profile.push(if rho.abs() > 1e-15 { mx / rho } else { 0.0 });
     }
@@ -785,7 +776,6 @@ pub fn extract_ux_profile_2d(grid: &FlaggedGrid2D, x: usize) -> Vec<f64> {
 /// Extract the y-velocity profile along a horizontal slice at row `y`.
 ///
 /// Returns `Vec`f64` of length `nx` where entry `j` is `uy` at `(j, y)`.
-#[allow(dead_code)]
 pub fn extract_uy_profile_2d(grid: &FlaggedGrid2D, y: usize) -> Vec<f64> {
     let nx = grid.nx;
     let mut profile = Vec::with_capacity(nx);
@@ -794,17 +784,16 @@ pub fn extract_uy_profile_2d(grid: &FlaggedGrid2D, y: usize) -> Vec<f64> {
         let base = idx * 9;
         let mut rho = 0.0_f64;
         let mut my = 0.0_f64;
-        for a in 0..9 {
+        for (a, c9a) in C9.iter().enumerate() {
             let fi = grid.f[base + a];
             rho += fi;
-            my += fi * C9[a][1] as f64;
+            my += fi * c9a[1] as f64;
         }
         profile.push(if rho.abs() > 1e-15 { my / rho } else { 0.0 });
     }
     profile
 }
 /// Compute total kinetic energy of the flow: `KE = 0.5 * sum_k rho_k * |u_k|^2`.
-#[allow(dead_code)]
 pub fn kinetic_energy_2d(grid: &FlaggedGrid2D) -> f64 {
     let n = grid.nx * grid.ny;
     let mut ke = 0.0_f64;
@@ -813,11 +802,11 @@ pub fn kinetic_energy_2d(grid: &FlaggedGrid2D) -> f64 {
         let mut rho = 0.0_f64;
         let mut mx = 0.0_f64;
         let mut my = 0.0_f64;
-        for a in 0..9 {
+        for (a, c9a) in C9.iter().enumerate() {
             let fi = grid.f[base + a];
             rho += fi;
-            mx += fi * C9[a][0] as f64;
-            my += fi * C9[a][1] as f64;
+            mx += fi * c9a[0] as f64;
+            my += fi * c9a[1] as f64;
         }
         if rho.abs() > 1e-15 {
             let ux = mx / rho;
@@ -828,7 +817,6 @@ pub fn kinetic_energy_2d(grid: &FlaggedGrid2D) -> f64 {
     ke
 }
 /// Compute total kinetic energy of a 3D FullGrid3D.
-#[allow(dead_code)]
 pub fn kinetic_energy_3d(grid: &FullGrid3D) -> f64 {
     let n = grid.nx * grid.ny * grid.nz;
     let mut ke = 0.0_f64;
@@ -838,12 +826,12 @@ pub fn kinetic_energy_3d(grid: &FullGrid3D) -> f64 {
         let mut mx = 0.0_f64;
         let mut my = 0.0_f64;
         let mut mz = 0.0_f64;
-        for a in 0..19 {
+        for (a, c19a) in C19.iter().enumerate() {
             let fi = grid.f[base + a];
             rho += fi;
-            mx += fi * C19[a][0] as f64;
-            my += fi * C19[a][1] as f64;
-            mz += fi * C19[a][2] as f64;
+            mx += fi * c19a[0] as f64;
+            my += fi * c19a[1] as f64;
+            mz += fi * c19a[2] as f64;
         }
         if rho.abs() > 1e-15 {
             let ux = mx / rho;
@@ -855,7 +843,6 @@ pub fn kinetic_energy_3d(grid: &FullGrid3D) -> f64 {
     ke
 }
 /// Compute maximum velocity magnitude across all fluid cells (D2Q9 grid).
-#[allow(dead_code)]
 pub fn max_velocity_magnitude_2d(grid: &FlaggedGrid2D) -> f64 {
     let n = grid.nx * grid.ny;
     let mut max_mag = 0.0_f64;
@@ -867,11 +854,11 @@ pub fn max_velocity_magnitude_2d(grid: &FlaggedGrid2D) -> f64 {
         let mut rho = 0.0_f64;
         let mut mx = 0.0_f64;
         let mut my = 0.0_f64;
-        for a in 0..9 {
+        for (a, c9a) in C9.iter().enumerate() {
             let fi = grid.f[base + a];
             rho += fi;
-            mx += fi * C9[a][0] as f64;
-            my += fi * C9[a][1] as f64;
+            mx += fi * c9a[0] as f64;
+            my += fi * c9a[1] as f64;
         }
         if rho.abs() > 1e-15 {
             let ux = mx / rho;
@@ -889,7 +876,6 @@ pub fn max_velocity_magnitude_2d(grid: &FlaggedGrid2D) -> f64 {
 /// `f_i += w_i * (c_i · F) / cs^2 * dt`
 ///
 /// This is the simplest (Ladd-style) body force scheme.
-#[allow(dead_code)]
 pub fn apply_body_force_2d(grid: &mut FlaggedGrid2D, fx: f64, fy: f64) {
     use crate::lattice::CS2;
     let n = grid.nx * grid.ny;
@@ -907,7 +893,6 @@ pub fn apply_body_force_2d(grid: &mut FlaggedGrid2D, fx: f64, fy: f64) {
     }
 }
 /// Apply a uniform body force `[fx, fy, fz]` to all fluid cells (3D D3Q19).
-#[allow(dead_code)]
 pub fn apply_body_force_3d(grid: &mut FullGrid3D, fx: f64, fy: f64, fz: f64) {
     let n = grid.nx * grid.ny * grid.nz;
     for idx in 0..n {
@@ -927,7 +912,6 @@ pub fn apply_body_force_3d(grid: &mut FullGrid3D, fx: f64, fy: f64, fz: f64) {
 /// Compute the L2 norm of the density difference between two snapshots.
 ///
 /// Useful for convergence monitoring: `||rho_new - rho_old||_2 / n`.
-#[allow(dead_code)]
 pub fn density_l2_diff_2d(f_new: &[f64], f_old: &[f64], nx: usize, ny: usize) -> f64 {
     let n = nx * ny;
     let mut sum_sq = 0.0_f64;
@@ -945,7 +929,6 @@ pub fn density_l2_diff_2d(f_new: &[f64], f_old: &[f64], nx: usize, ny: usize) ->
     (sum_sq / n as f64).sqrt()
 }
 /// Compute L2 norm of velocity magnitude difference between two 2D snapshots.
-#[allow(dead_code)]
 pub fn velocity_l2_diff_2d(f_new: &[f64], f_old: &[f64], nx: usize, ny: usize) -> f64 {
     let n = nx * ny;
     let mut sum_sq = 0.0_f64;
@@ -1760,7 +1743,6 @@ mod grid_extended_tests {
     }
 }
 /// Compute L2 norm of velocity magnitude difference between two population arrays.
-#[allow(dead_code)]
 pub fn velocity_l2_norm_diff(a: &[[f64; 9]], b: &[[f64; 9]]) -> f64 {
     let mut sum = 0.0f64;
     for (na, nb) in a.iter().zip(b.iter()) {
@@ -1773,7 +1755,6 @@ pub fn velocity_l2_norm_diff(a: &[[f64; 9]], b: &[[f64; 9]]) -> f64 {
     sum.sqrt()
 }
 /// Compute the mean kinetic energy over a population array.
-#[allow(dead_code)]
 pub fn mean_kinetic_energy(pop: &[[f64; 9]]) -> f64 {
     let ke: f64 = pop
         .iter()
@@ -1787,7 +1768,6 @@ pub fn mean_kinetic_energy(pop: &[[f64; 9]]) -> f64 {
 /// Compute enstrophy (sum of squared vorticity) on a 2D grid from velocity fields.
 ///
 /// Uses centered finite differences with periodic wrapping.
-#[allow(dead_code)]
 pub fn enstrophy_2d(pop: &[[f64; 9]], nx: usize, ny: usize) -> f64 {
     let mut enst = 0.0f64;
     for y in 0..ny {
@@ -1807,12 +1787,10 @@ pub fn enstrophy_2d(pop: &[[f64; 9]], nx: usize, ny: usize) -> f64 {
     enst
 }
 /// Count fluid cells (non-wall) in a `CellularGrid2D`.
-#[allow(dead_code)]
 pub fn count_fluid_cells(grid: &CellularGrid2D) -> usize {
     grid.wall.iter().filter(|&&w| !w).count()
 }
 /// Compute mean density over all fluid cells.
-#[allow(dead_code)]
 pub fn mean_density(grid: &CellularGrid2D) -> f64 {
     let fluid: Vec<f64> = grid
         .pop
@@ -1829,15 +1807,13 @@ pub fn mean_density(grid: &CellularGrid2D) -> f64 {
 /// Apply zero-gradient (Neumann) outflow at the east boundary `x = nx-1`.
 ///
 /// Copies populations from `x = nx-2` to `x = nx-1`.
-#[allow(dead_code)]
-pub fn outflow_neumann_east(pop: &mut Vec<[f64; 9]>, nx: usize, ny: usize) {
+pub fn outflow_neumann_east(pop: &mut [[f64; 9]], nx: usize, ny: usize) {
     for y in 0..ny {
         pop[y * nx + (nx - 1)] = pop[y * nx + (nx - 2)];
     }
 }
 /// Apply constant-density (Dirichlet) pressure inlet at the west boundary.
-#[allow(dead_code)]
-pub fn pressure_inlet_west(pop: &mut Vec<[f64; 9]>, nx: usize, ny: usize, rho_in: f64) {
+pub fn pressure_inlet_west(pop: &mut [[f64; 9]], nx: usize, ny: usize, rho_in: f64) {
     for y in 0..ny {
         let idx = y * nx;
         let (_, ux, uy) = macros_from_d2q9(&pop[idx]);
@@ -1845,8 +1821,7 @@ pub fn pressure_inlet_west(pop: &mut Vec<[f64; 9]>, nx: usize, ny: usize, rho_in
     }
 }
 /// Apply constant-density outlet at the east boundary.
-#[allow(dead_code)]
-pub fn pressure_outlet_east(pop: &mut Vec<[f64; 9]>, nx: usize, ny: usize, rho_out: f64) {
+pub fn pressure_outlet_east(pop: &mut [[f64; 9]], nx: usize, ny: usize, rho_out: f64) {
     for y in 0..ny {
         let idx = y * nx + (nx - 1);
         let (_, ux, uy) = macros_from_d2q9(&pop[idx]);

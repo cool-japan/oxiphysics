@@ -2,13 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::f64::consts::PI;
 
 use super::functions::KB;
-#[allow(unused_imports)]
-use super::functions::*;
 
 /// Radial distribution function g(r) for a set of positions in a periodic box.
 #[derive(Debug, Clone)]
@@ -46,7 +42,7 @@ impl RadialDistributionFunction {
 /// Mean squared displacement MSD(t) computed from a set of particle trajectories.
 #[derive(Debug, Clone)]
 pub struct MeanSquaredDisplacement {
-    /// Time values (same units as `dt` passed to [`compute_msd`]).
+    /// Time values (same units as `dt` passed to `compute_msd`).
     pub times: Vec<f64>,
     /// MSD values ⟨|r(t) − r(0)|²⟩ in units of length².
     pub msd: Vec<f64>,
@@ -92,7 +88,6 @@ impl MeanSquaredDisplacement {
 }
 /// Heat flux autocorrelation function J(t) = ⟨J(t)·J(0)⟩ / ⟨J(0)²⟩.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct HeatFluxAcf {
     /// Lag times.
     pub times: Vec<f64>,
@@ -101,7 +96,6 @@ pub struct HeatFluxAcf {
     /// Unnormalised ⟨J(0)²⟩ value used for normalisation.
     pub j0_sq: f64,
 }
-#[allow(dead_code)]
 impl HeatFluxAcf {
     /// Number of lag-time points.
     pub fn len(&self) -> usize {

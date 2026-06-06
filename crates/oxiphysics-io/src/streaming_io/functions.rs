@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{
     RingBuffer, SimulationChunk, StreamingXYZReader, StreamingXYZWriter, TrajectorySampler,
 };
@@ -765,15 +764,15 @@ mod chunk_tests {
     }
     #[test]
     fn test_write_read_roundtrip() {
-        let path = "/tmp/oxiphysics_chunk_test.bin";
-        let _ = std::fs::remove_file(path);
-        let mut writer = ChunkedWriter::new(path, 100);
+        let path = std::env::temp_dir().join("oxiphysics_chunk_test.bin");
+        let _ = std::fs::remove_file(&path);
+        let mut writer = ChunkedWriter::new(path.to_str().unwrap_or(""), 100);
         for i in 0..3 {
             let c = make_chunk(i, 5);
             writer.write_chunk(&c).unwrap();
         }
         assert_eq!(writer.frame_count(), 3);
-        let reader = ChunkedReader::open(path).unwrap();
+        let reader = ChunkedReader::open(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(reader.total_frames(), 3);
         let c = reader.read_chunk(1).unwrap();
         assert_eq!(c.frame_id, 1);
@@ -781,9 +780,9 @@ mod chunk_tests {
     }
     #[test]
     fn test_frame_count_increases_with_writes() {
-        let path = "/tmp/oxiphysics_chunk_count.bin";
-        let _ = std::fs::remove_file(path);
-        let mut writer = ChunkedWriter::new(path, 10);
+        let path = std::env::temp_dir().join("oxiphysics_chunk_count.bin");
+        let _ = std::fs::remove_file(&path);
+        let mut writer = ChunkedWriter::new(path.to_str().unwrap_or(""), 10);
         assert_eq!(writer.frame_count(), 0);
         writer.write_chunk(&make_chunk(0, 2)).unwrap();
         assert_eq!(writer.frame_count(), 1);
@@ -792,44 +791,44 @@ mod chunk_tests {
     }
     #[test]
     fn test_reader_total_frames_correct() {
-        let path = "/tmp/oxiphysics_chunk_total.bin";
-        let _ = std::fs::remove_file(path);
-        let mut writer = ChunkedWriter::new(path, 10);
+        let path = std::env::temp_dir().join("oxiphysics_chunk_total.bin");
+        let _ = std::fs::remove_file(&path);
+        let mut writer = ChunkedWriter::new(path.to_str().unwrap_or(""), 10);
         for i in 0..5 {
             writer.write_chunk(&make_chunk(i, 1)).unwrap();
         }
-        let reader = ChunkedReader::open(path).unwrap();
+        let reader = ChunkedReader::open(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(reader.total_frames(), 5);
     }
     #[test]
     fn test_reader_out_of_range() {
-        let path = "/tmp/oxiphysics_chunk_oor.bin";
-        let _ = std::fs::remove_file(path);
-        let mut writer = ChunkedWriter::new(path, 10);
+        let path = std::env::temp_dir().join("oxiphysics_chunk_oor.bin");
+        let _ = std::fs::remove_file(&path);
+        let mut writer = ChunkedWriter::new(path.to_str().unwrap_or(""), 10);
         writer.write_chunk(&make_chunk(0, 1)).unwrap();
-        let reader = ChunkedReader::open(path).unwrap();
+        let reader = ChunkedReader::open(path.to_str().unwrap_or("")).unwrap();
         assert!(reader.read_chunk(99).is_err());
     }
     #[test]
     fn test_finalize_ok() {
-        let path = "/tmp/oxiphysics_finalize.bin";
-        let _ = std::fs::remove_file(path);
-        let mut writer = ChunkedWriter::new(path, 10);
+        let path = std::env::temp_dir().join("oxiphysics_finalize.bin");
+        let _ = std::fs::remove_file(&path);
+        let mut writer = ChunkedWriter::new(path.to_str().unwrap_or(""), 10);
         writer.write_chunk(&make_chunk(0, 1)).unwrap();
         assert!(writer.finalize().is_ok());
     }
     #[test]
     fn test_stream_positions_to_csv_creates_file() {
         let chunks = vec![make_chunk(0, 3), make_chunk(1, 3)];
-        let path = "/tmp/oxiphysics_pos_stream.csv";
-        assert!(stream_positions_to_csv(&chunks, path).is_ok());
+        let path = std::env::temp_dir().join("oxiphysics_pos_stream.csv");
+        assert!(stream_positions_to_csv(&chunks, path.to_str().unwrap_or("")).is_ok());
     }
     #[test]
     fn test_stream_positions_to_csv_row_count() {
         let chunks = vec![make_chunk(0, 4), make_chunk(1, 4)];
-        let path = "/tmp/oxiphysics_pos_rows.csv";
-        stream_positions_to_csv(&chunks, path).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_pos_rows.csv");
+        stream_positions_to_csv(&chunks, path.to_str().unwrap_or("")).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content.lines().count(), 9);
     }
     #[test]
@@ -979,20 +978,12 @@ pub fn write_frame_streaming(
         .open(&writer.path)?;
     writeln!(file, "{}", positions.len())?;
     writeln!(file, "Frame {}", writer.frames_written)?;
-    let n = positions.len().min(symbols.len());
-    for i in 0..n {
-        writeln!(
-            file,
-            "{} {:.6} {:.6} {:.6}",
-            symbols[i], positions[i][0], positions[i][1], positions[i][2]
-        )?;
+    let n = symbols.len().min(positions.len());
+    for (sym, pos) in symbols.iter().zip(positions.iter()) {
+        writeln!(file, "{} {:.6} {:.6} {:.6}", sym, pos[0], pos[1], pos[2])?;
     }
-    for i in n..positions.len() {
-        writeln!(
-            file,
-            "X {:.6} {:.6} {:.6}",
-            positions[i][0], positions[i][1], positions[i][2]
-        )?;
+    for pos in positions.iter().skip(n) {
+        writeln!(file, "X {:.6} {:.6} {:.6}", pos[0], pos[1], pos[2])?;
     }
     writer.frames_written += 1;
     Ok(())
@@ -1077,8 +1068,9 @@ mod streaming_xyz_tests {
     }
     #[test]
     fn test_streaming_xyz_reader_struct() {
+        let tmpdir = std::env::temp_dir();
         let r = StreamingXYZReader {
-            path: "/tmp/dummy.xyz".to_string(),
+            path: tmpdir.join("dummy.xyz").to_str().unwrap_or("").to_string(),
             current_frame: 0,
             n_atoms: 0,
             buffer: Vec::new(),
@@ -1087,103 +1079,105 @@ mod streaming_xyz_tests {
     }
     #[test]
     fn test_open_streaming_xyz_missing_file() {
-        let result = open_streaming_xyz("/tmp/nonexistent_xyz_file_12345.xyz");
+        let path = std::env::temp_dir().join("nonexistent_xyz_file_12345.xyz");
+        let result = open_streaming_xyz(path.to_str().unwrap_or(""));
         assert!(result.is_err());
     }
     #[test]
     fn test_open_streaming_xyz_existing() {
-        let path = "/tmp/test_streaming_open.xyz";
-        write_test_xyz(path, 2, 3);
-        let r = open_streaming_xyz(path).expect("open");
-        assert_eq!(r.path, path);
-        let _ = fs::remove_file(path);
+        let path = std::env::temp_dir().join("test_streaming_open.xyz");
+        write_test_xyz(path.to_str().unwrap_or(""), 2, 3);
+        let r = open_streaming_xyz(path.to_str().unwrap_or("")).expect("open");
+        assert_eq!(r.path, path.to_str().unwrap_or(""));
+        let _ = fs::remove_file(&path);
     }
     #[test]
     fn test_next_frame_xyz_reads_first_frame() {
-        let path = "/tmp/test_next_frame.xyz";
-        write_test_xyz(path, 3, 2);
-        let mut reader = open_streaming_xyz(path).expect("open");
+        let path = std::env::temp_dir().join("test_next_frame.xyz");
+        write_test_xyz(path.to_str().unwrap_or(""), 3, 2);
+        let mut reader = open_streaming_xyz(path.to_str().unwrap_or("")).expect("open");
         let frame = next_frame_xyz(&mut reader);
         assert!(frame.is_some());
         let (pos, sym) = frame.unwrap();
         assert_eq!(pos.len(), 2);
         assert_eq!(sym.len(), 2);
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
     #[test]
     fn test_next_frame_xyz_advances_counter() {
-        let path = "/tmp/test_next_frame_adv.xyz";
-        write_test_xyz(path, 3, 2);
-        let mut reader = open_streaming_xyz(path).expect("open");
+        let path = std::env::temp_dir().join("test_next_frame_adv.xyz");
+        write_test_xyz(path.to_str().unwrap_or(""), 3, 2);
+        let mut reader = open_streaming_xyz(path.to_str().unwrap_or("")).expect("open");
         next_frame_xyz(&mut reader);
         assert_eq!(reader.current_frame, 1);
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
     #[test]
     fn test_next_frame_xyz_all_frames() {
-        let path = "/tmp/test_all_frames.xyz";
-        write_test_xyz(path, 4, 3);
-        let mut reader = open_streaming_xyz(path).expect("open");
+        let path = std::env::temp_dir().join("test_all_frames.xyz");
+        write_test_xyz(path.to_str().unwrap_or(""), 4, 3);
+        let mut reader = open_streaming_xyz(path.to_str().unwrap_or("")).expect("open");
         let mut count = 0;
         while next_frame_xyz(&mut reader).is_some() {
             count += 1;
         }
         assert_eq!(count, 4);
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
     #[test]
     fn test_next_frame_xyz_none_at_eof() {
-        let path = "/tmp/test_eof.xyz";
-        write_test_xyz(path, 2, 2);
-        let mut reader = open_streaming_xyz(path).expect("open");
+        let path = std::env::temp_dir().join("test_eof.xyz");
+        write_test_xyz(path.to_str().unwrap_or(""), 2, 2);
+        let mut reader = open_streaming_xyz(path.to_str().unwrap_or("")).expect("open");
         next_frame_xyz(&mut reader);
         next_frame_xyz(&mut reader);
         let result = next_frame_xyz(&mut reader);
         assert!(result.is_none());
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
     #[test]
     fn test_streaming_xyz_writer_struct() {
+        let tmpdir = std::env::temp_dir();
         let w = StreamingXYZWriter {
-            path: "/tmp/dummy.xyz".to_string(),
+            path: tmpdir.join("dummy.xyz").to_str().unwrap_or("").to_string(),
             frames_written: 0,
         };
         assert_eq!(w.frames_written, 0);
     }
     #[test]
     fn test_open_streaming_writer_creates_file() {
-        let path = "/tmp/test_stream_write.xyz";
-        let w = open_streaming_writer(path).expect("open writer");
+        let path = std::env::temp_dir().join("test_stream_write.xyz");
+        let w = open_streaming_writer(path.to_str().unwrap_or("")).expect("open writer");
         assert_eq!(w.frames_written, 0);
-        assert!(std::path::Path::new(path).exists());
-        let _ = fs::remove_file(path);
+        assert!(path.exists());
+        let _ = fs::remove_file(&path);
     }
     #[test]
     fn test_write_frame_streaming_increments() {
-        let path = "/tmp/test_write_frame.xyz";
-        let mut w = open_streaming_writer(path).expect("open writer");
+        let path = std::env::temp_dir().join("test_write_frame.xyz");
+        let mut w = open_streaming_writer(path.to_str().unwrap_or("")).expect("open writer");
         let pos = vec![[1.0_f64, 2.0, 3.0], [4.0, 5.0, 6.0]];
         let sym = vec!["C", "H"];
         write_frame_streaming(&mut w, &pos, &sym).expect("write frame");
         assert_eq!(w.frames_written, 1);
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
     #[test]
     fn test_write_read_streaming_roundtrip() {
-        let path = "/tmp/test_stream_roundtrip.xyz";
-        let mut w = open_streaming_writer(path).expect("writer");
+        let path = std::env::temp_dir().join("test_stream_roundtrip.xyz");
+        let mut w = open_streaming_writer(path.to_str().unwrap_or("")).expect("writer");
         let pos1 = vec![[1.0_f64, 2.0, 3.0]];
         let pos2 = vec![[4.0_f64, 5.0, 6.0]];
         write_frame_streaming(&mut w, &pos1, &["C"]).expect("frame 1");
         write_frame_streaming(&mut w, &pos2, &["N"]).expect("frame 2");
-        let mut r = open_streaming_xyz(path).expect("reader");
+        let mut r = open_streaming_xyz(path.to_str().unwrap_or("")).expect("reader");
         let (p1, s1) = next_frame_xyz(&mut r).expect("frame 1");
         let (p2, s2) = next_frame_xyz(&mut r).expect("frame 2");
         assert!((p1[0][0] - 1.0).abs() < 1e-4);
         assert!((p2[0][0] - 4.0).abs() < 1e-4);
         assert_eq!(s1[0], "C");
         assert_eq!(s2[0], "N");
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
     #[test]
     fn test_trajectory_sampler_new() {
@@ -1230,21 +1224,21 @@ mod streaming_xyz_tests {
     }
     #[test]
     fn test_streaming_statistics_basic() {
-        let path = "/tmp/test_streaming_stats.xyz";
-        write_test_xyz(path, 3, 2);
-        let mut reader = open_streaming_xyz(path).expect("open");
+        let path = std::env::temp_dir().join("test_streaming_stats.xyz");
+        write_test_xyz(path.to_str().unwrap_or(""), 3, 2);
+        let mut reader = open_streaming_xyz(path.to_str().unwrap_or("")).expect("open");
         let (count, mean, _std) = streaming_statistics(&mut reader);
         assert_eq!(count, 3);
         assert!(mean[0] >= 0.0);
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
     #[test]
     fn test_streaming_statistics_empty_file() {
-        let path = "/tmp/test_stats_empty.xyz";
-        fs::write(path, "").expect("write empty");
-        let mut reader = open_streaming_xyz(path).expect("open");
+        let path = std::env::temp_dir().join("test_stats_empty.xyz");
+        fs::write(&path, "").expect("write empty");
+        let mut reader = open_streaming_xyz(path.to_str().unwrap_or("")).expect("open");
         let (count, _mean, _std) = streaming_statistics(&mut reader);
         assert_eq!(count, 0);
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 }

@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     KB, cg_angle_energy, cg_bond_energy, interpolate_table, martini_lj_energy, martini_lj_force,
 };
@@ -126,8 +123,8 @@ impl RdfCalculator {
         for i in 0..n {
             for j in (i + 1)..n {
                 let mut dr2 = 0.0;
-                for d in 0..3 {
-                    let mut dx = positions[j][d] - positions[i][d];
+                for (pi, qi) in positions[i].iter().zip(positions[j].iter()) {
+                    let mut dx = qi - pi;
                     dx -= self.box_length * (dx / self.box_length).round();
                     dr2 += dx * dx;
                 }
@@ -286,8 +283,8 @@ impl MartiniMappingScheme {
             total_m += m;
         }
         if total_m > 0.0 {
-            for d in 0..3 {
-                com[d] /= total_m;
+            for v in &mut com {
+                *v /= total_m;
             }
         }
         com
@@ -349,8 +346,8 @@ impl CgMapping {
                     }
                 }
                 if total_mass > 0.0 {
-                    for d in 0..3 {
-                        com[d] /= total_mass;
+                    for v in &mut com {
+                        *v /= total_mass;
                     }
                 }
                 com
@@ -380,8 +377,8 @@ impl CgMapping {
                     }
                 }
                 if total_mass > 0.0 {
-                    for d in 0..3 {
-                        com_vel[d] /= total_mass;
+                    for v in &mut com_vel {
+                        *v /= total_mass;
                     }
                 }
                 com_vel
@@ -443,14 +440,14 @@ impl CgSystem {
         let mut com = [0.0f64; 3];
         let mut total_m = 0.0f64;
         for bead in &self.beads {
-            for d in 0..3 {
-                com[d] += bead.mass * bead.position[d];
+            for (d, c) in com.iter_mut().enumerate() {
+                *c += bead.mass * bead.position[d];
             }
             total_m += bead.mass;
         }
         if total_m > 0.0 {
-            for d in 0..3 {
-                com[d] /= total_m;
+            for v in &mut com {
+                *v /= total_m;
             }
         }
         com
@@ -1048,8 +1045,8 @@ impl BackMapper {
             }
         }
         if total_mass > 0.0 {
-            for d in 0..3 {
-                com[d] /= total_mass;
+            for v in &mut com {
+                *v /= total_mass;
             }
         }
         com
@@ -1234,7 +1231,6 @@ impl ForceMatchAccumulator {
     }
 }
 /// Simple CG velocity-Verlet integrator configuration.
-#[allow(dead_code)]
 pub struct CgIntegratorConfig {
     /// Time step (ps).
     pub dt: f64,
@@ -1249,7 +1245,6 @@ pub struct CgIntegratorConfig {
 }
 impl CgIntegratorConfig {
     /// Create a default config.
-    #[allow(dead_code)]
     pub fn new(dt: f64, n_steps: usize, temperature: f64) -> Self {
         Self {
             dt,
@@ -1260,7 +1255,6 @@ impl CgIntegratorConfig {
         }
     }
     /// kT in kJ/mol.
-    #[allow(dead_code)]
     pub fn kt(&self) -> f64 {
         self.kb * self.temperature
     }
@@ -1442,7 +1436,6 @@ pub struct EnmContact {
     pub gamma: f64,
 }
 /// CG velocity-Verlet integrator state.
-#[allow(dead_code)]
 pub struct CgIntegratorState {
     /// Positions of each bead \[n_beads × 3\].
     pub positions: Vec<[f64; 3]>,
@@ -1459,7 +1452,6 @@ pub struct CgIntegratorState {
 }
 impl CgIntegratorState {
     /// Create a new integrator state.
-    #[allow(dead_code)]
     pub fn new(positions: Vec<[f64; 3]>, velocities: Vec<[f64; 3]>, masses: Vec<f64>) -> Self {
         let n = positions.len();
         Self {
@@ -1472,7 +1464,6 @@ impl CgIntegratorState {
         }
     }
     /// Perform a single velocity-Verlet half-step for velocities (v += 0.5*a*dt).
-    #[allow(dead_code)]
     pub fn velocity_half_step(&mut self, dt: f64) {
         let n = self.positions.len();
         for i in 0..n {
@@ -1487,7 +1478,6 @@ impl CgIntegratorState {
         }
     }
     /// Perform a full position update step (x += v*dt).
-    #[allow(dead_code)]
     pub fn position_step(&mut self, dt: f64) {
         let n = self.positions.len();
         for i in 0..n {
@@ -1499,7 +1489,6 @@ impl CgIntegratorState {
     /// Kinetic energy (kJ/mol) assuming velocities in nm/ps, masses in g/mol (≈ amu×kJ factor).
     ///
     /// Uses K = ½ Σ m_i |v_i|², with a unit-conversion factor of 1/1000 (amu nm²/ps² → kJ/mol).
-    #[allow(dead_code)]
     pub fn kinetic_energy(&self) -> f64 {
         let unit = 1.0 / 1000.0;
         self.masses
@@ -1509,7 +1498,6 @@ impl CgIntegratorState {
             .sum()
     }
     /// Instantaneous temperature (K) from equipartition.
-    #[allow(dead_code)]
     pub fn instantaneous_temperature(&self, n_dof: f64) -> f64 {
         let kb = 0.008_314_462_618_f64;
         if n_dof <= 0.0 || kb <= 0.0 {
@@ -1518,7 +1506,6 @@ impl CgIntegratorState {
         2.0 * self.kinetic_energy() / (n_dof * kb)
     }
     /// Rescale velocities to achieve target temperature (velocity rescaling thermostat).
-    #[allow(dead_code)]
     pub fn rescale_velocities(&mut self, target_temp: f64, n_dof: f64) {
         let current_temp = self.instantaneous_temperature(n_dof);
         if current_temp < 1e-12 {
@@ -1526,8 +1513,8 @@ impl CgIntegratorState {
         }
         let scale = (target_temp / current_temp).sqrt();
         for v in &mut self.velocities {
-            for d in 0..3 {
-                v[d] *= scale;
+            for x in v.iter_mut() {
+                *x *= scale;
             }
         }
     }
@@ -1535,7 +1522,6 @@ impl CgIntegratorState {
     ///
     /// # Arguments
     /// * `box_lengths` – simulation box lengths \[lx, ly, lz\] (nm).
-    #[allow(dead_code)]
     pub fn apply_pbc(&mut self, box_lengths: [f64; 3]) {
         for pos in &mut self.positions {
             for d in 0..3 {
@@ -1547,7 +1533,6 @@ impl CgIntegratorState {
         }
     }
     /// Centre-of-mass position of the system.
-    #[allow(dead_code)]
     pub fn centre_of_mass(&self) -> [f64; 3] {
         let mut com = [0.0_f64; 3];
         let total_mass: f64 = self.masses.iter().sum();
@@ -1560,13 +1545,12 @@ impl CgIntegratorState {
                 com[d] += m * pos[d];
             }
         }
-        for d in 0..3 {
-            com[d] /= total_mass;
+        for v in &mut com {
+            *v /= total_mass;
         }
         com
     }
     /// Centre-of-mass velocity.
-    #[allow(dead_code)]
     pub fn centre_of_mass_velocity(&self) -> [f64; 3] {
         let mut com_vel = [0.0_f64; 3];
         let total_mass: f64 = self.masses.iter().sum();
@@ -1579,13 +1563,12 @@ impl CgIntegratorState {
                 com_vel[d] += m * vel[d];
             }
         }
-        for d in 0..3 {
-            com_vel[d] /= total_mass;
+        for v in &mut com_vel {
+            *v /= total_mass;
         }
         com_vel
     }
     /// Remove centre-of-mass translation (zero net momentum).
-    #[allow(dead_code)]
     pub fn remove_com_velocity(&mut self) {
         let com_vel = self.centre_of_mass_velocity();
         for vel in &mut self.velocities {

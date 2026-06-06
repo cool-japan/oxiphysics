@@ -1,10 +1,7 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! Broadphase AABB kernels for parallel overlap detection.
-
-#![allow(dead_code)]
 
 use crate::compute::ComputeKernel;
 use std::collections::HashMap;
@@ -61,7 +58,6 @@ impl AabbOverlapKernel {
     }
 }
 
-#[allow(clippy::needless_range_loop)]
 impl ComputeKernel for AabbOverlapKernel {
     fn name(&self) -> &str {
         "AabbOverlapKernel"
@@ -304,7 +300,6 @@ fn spread_bits(mut v: u64) -> u64 {
 ///
 /// Input layout per object: `[min_x, max_x, min_y, max_y, min_z, max_z]`.
 /// Returns pairs of indices `(i, j)` (sorted, deduped) that overlap.
-#[allow(clippy::needless_range_loop)]
 pub fn sort_and_sweep_flat(aabbs: &[f64]) -> Vec<(usize, usize)> {
     let n = aabbs.len() / 6;
     if n == 0 {
@@ -320,11 +315,9 @@ pub fn sort_and_sweep_flat(aabbs: &[f64]) -> Vec<(usize, usize)> {
     });
 
     let mut pairs = Vec::new();
-    for i in 0..n {
-        let si = order[i];
+    for (i, &si) in order.iter().enumerate() {
         let max_x_i = aabbs[si * 6 + 1];
-        for j in (i + 1)..n {
-            let sj = order[j];
+        for &sj in order.iter().skip(i + 1) {
             if aabbs[sj * 6] > max_x_i {
                 break; // Early out: rest cannot overlap in X
             }
@@ -715,7 +708,7 @@ pub fn lbvh_query_pairs(nodes: &[BvhGpuNode]) -> Vec<(u32, u32)> {
 /// For each internal node, recomputes its AABB as the union of its children.
 /// Assumes a flat node array where children always have higher indices
 /// (which is guaranteed by `build_bvh_recursive`).
-pub fn refit_bvh(nodes: &mut Vec<BvhGpuNode>) {
+pub fn refit_bvh(nodes: &mut [BvhGpuNode]) {
     // Process nodes in reverse order (children before parents)
     let n = nodes.len();
     for i in (0..n).rev() {
@@ -752,7 +745,6 @@ pub fn refit_bvh(nodes: &mut Vec<BvhGpuNode>) {
 // ---------------------------------------------------------------------------
 
 /// Compute the surface area of an `AabbGpu`.
-#[allow(dead_code)]
 pub fn aabb_surface_area(aabb: &AabbGpu) -> f32 {
     let dx = aabb.max[0] - aabb.min[0];
     let dy = aabb.max[1] - aabb.min[1];
@@ -766,7 +758,6 @@ pub fn aabb_surface_area(aabb: &AabbGpu) -> f32 {
 ///       `+ sum_{leaf nodes} SA(leaf) / SA(root) * num_primitives`
 ///
 /// A lower SAH cost indicates a better-quality BVH.
-#[allow(dead_code)]
 pub fn bvh_sah_cost(nodes: &[BvhGpuNode], cost_traversal: f32, cost_primitive: f32) -> f32 {
     if nodes.is_empty() {
         return 0.0;
@@ -790,7 +781,6 @@ pub fn bvh_sah_cost(nodes: &[BvhGpuNode], cost_traversal: f32, cost_primitive: f
 /// Compute the depth of the BVH tree.
 ///
 /// Returns the maximum node depth from root (depth 0) to the deepest leaf.
-#[allow(dead_code)]
 pub fn bvh_depth(nodes: &[BvhGpuNode]) -> usize {
     if nodes.is_empty() {
         return 0;
@@ -816,7 +806,6 @@ pub fn bvh_depth(nodes: &[BvhGpuNode]) -> usize {
 }
 
 /// Count the number of leaf nodes in the BVH.
-#[allow(dead_code)]
 pub fn bvh_leaf_count(nodes: &[BvhGpuNode]) -> usize {
     nodes.iter().filter(|n| n.is_leaf()).count()
 }
@@ -835,7 +824,6 @@ pub fn bvh_leaf_count(nodes: &[BvhGpuNode]) -> usize {
 /// `aabbs`: updated AABB array (all bodies).
 ///
 /// Returns the updated pair list.
-#[allow(dead_code)]
 pub fn sap_incremental_update(
     existing: &CompactPairList,
     aabbs: &[AabbGpu],
@@ -876,7 +864,6 @@ pub fn sap_incremental_update(
 /// returns the bin index (from 0 to `num_bins-1`) that minimises the SAH cost.
 ///
 /// Returns `None` if all primitives have the same centroid along the axis.
-#[allow(dead_code)]
 pub fn sah_best_split(
     aabbs: &[AabbGpu],
     indices: &[usize],
@@ -1006,7 +993,6 @@ pub fn sah_best_split(
 /// 3. Recursively build BVH on sorted order (binary radix tree).
 ///
 /// Returns a flat node array with node 0 as the root.
-#[allow(dead_code)]
 pub fn build_lbvh(aabbs: &[AabbGpu], cell_size: f32, origin: [f32; 3]) -> Vec<BvhGpuNode> {
     if aabbs.is_empty() {
         return Vec::new();
@@ -1205,7 +1191,6 @@ mod tests {
 
     // ── New expanded tests ──
 
-    #[allow(clippy::nonminimal_bool)]
     #[test]
     fn test_sort_and_sweep_flat_finds_pair() {
         #[rustfmt::skip]
@@ -1216,11 +1201,7 @@ mod tests {
         ];
         let pairs = sort_and_sweep_flat(&aabbs);
         assert!(pairs.contains(&(0, 1)), "should find (0,1)");
-        assert!(
-            !pairs
-                .iter()
-                .any(|&(a, b)| a == 0 && b == 2 || a == 1 && b == 2)
-        );
+        assert!(!pairs.iter().any(|&(a, b)| (a == 0 || a == 1) && b == 2));
     }
 
     #[test]

@@ -2,18 +2,15 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::types::*;
 use oxiphysics_core::Transform;
 use oxiphysics_core::math::{Real, Vec3};
 use oxiphysics_geometry::{BoxShape, Sphere};
 
+use super::functions::shape_cast_sphere_sphere;
+
 /// Shape-cast a capsule against a sphere (linear sweep).
 ///
 /// Returns the TOI `t ∈ [0, 1]` at which the sweep-capsule first touches the sphere.
-#[allow(dead_code)]
 pub fn shape_cast_capsule_sphere(
     capsule: &oxiphysics_geometry::Capsule,
     cap_pos: &Vec3,
@@ -42,7 +39,6 @@ pub fn shape_cast_capsule_sphere(
 /// Linearly sweep two boxes and find first time of contact.
 ///
 /// Uses AABB-style conservative advancement.
-#[allow(dead_code)]
 pub fn shape_cast_box_box(
     box_a: &BoxShape,
     pos_a: &Vec3,
@@ -81,7 +77,6 @@ pub fn shape_cast_box_box(
     }
 }
 /// Compute the interpolated normal at a continuous (x, z) position on the heightfield.
-#[allow(dead_code)]
 pub fn heightfield_interpolated_normal(
     hf: &oxiphysics_geometry::HeightField,
     x: f64,
@@ -114,11 +109,10 @@ pub fn heightfield_interpolated_normal(
 }
 #[cfg(test)]
 mod tests_specialized_extended {
-    use super::*;
-    use oxiphysics_geometry::Capsule;
-    use oxiphysics_geometry::Cylinder;
-    use oxiphysics_geometry::HeightField;
-    use oxiphysics_geometry::Torus;
+    use super::super::*;
+    use oxiphysics_core::Transform;
+    use oxiphysics_core::math::Vec3;
+    use oxiphysics_geometry::{BoxShape, Capsule, Cylinder, HeightField, Sphere, Torus};
     #[test]
     fn test_cylinder_precise_parallel_overlap() {
         let c1 = Cylinder::new(1.0, 2.0);

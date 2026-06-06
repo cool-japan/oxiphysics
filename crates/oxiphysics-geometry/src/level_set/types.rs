@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{MC_EDGE_CORNERS, MC_EDGE_TABLE, MC_TRI_TABLE};
 
@@ -875,8 +873,8 @@ impl IsosurfaceExtraction {
             field.node_pos(ix, iy + 1, iz + 1),
         ];
         let mut cube_idx = 0u8;
-        for i in 0..8 {
-            if v[i] < self.isovalue {
+        for (i, &vi) in v.iter().enumerate() {
+            if vi < self.isovalue {
                 cube_idx |= 1 << i;
             }
         }

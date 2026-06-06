@@ -15,9 +15,6 @@
 //! - [`grasp_quality`] — smallest singular value of the grasp matrix.
 //! - [`form_closure_check`] — necessary condition for form closure.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────

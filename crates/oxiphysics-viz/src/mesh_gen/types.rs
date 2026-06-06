@@ -2,13 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// A triangulated parametric mesh (f64 precision).
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct ParamMesh {
     /// Vertices.
     pub vertices: Vec<ParamVertex>,
@@ -17,7 +12,6 @@ pub struct ParamMesh {
 }
 impl ParamMesh {
     /// Create an empty mesh.
-    #[allow(dead_code)]
     pub fn empty() -> Self {
         ParamMesh {
             vertices: Vec::new(),
@@ -25,17 +19,14 @@ impl ParamMesh {
         }
     }
     /// Number of triangles.
-    #[allow(dead_code)]
     pub fn triangle_count(&self) -> usize {
         self.indices.len() / 3
     }
     /// Number of vertices.
-    #[allow(dead_code)]
     pub fn vertex_count(&self) -> usize {
         self.vertices.len()
     }
     /// Compute the axis-aligned bounding box.
-    #[allow(dead_code)]
     pub fn bounding_box(&self) -> ([f64; 3], [f64; 3]) {
         let mut lo = [f64::INFINITY; 3];
         let mut hi = [f64::NEG_INFINITY; 3];
@@ -52,7 +43,6 @@ impl ParamMesh {
         (lo, hi)
     }
     /// Surface area (sum of triangle areas).
-    #[allow(dead_code)]
     pub fn surface_area(&self) -> f64 {
         let mut area = 0.0;
         let n = self.indices.len() / 3;
@@ -76,7 +66,6 @@ impl ParamMesh {
         area
     }
     /// Translate all vertex positions by `delta`.
-    #[allow(dead_code)]
     pub fn translate(&mut self, delta: [f64; 3]) {
         for v in &mut self.vertices {
             v.pos[0] += delta[0];
@@ -85,7 +74,6 @@ impl ParamMesh {
         }
     }
     /// Scale all vertex positions by `s` relative to the origin.
-    #[allow(dead_code)]
     pub fn scale(&mut self, s: f64) {
         for v in &mut self.vertices {
             v.pos[0] *= s;
@@ -96,7 +84,6 @@ impl ParamMesh {
 }
 /// One vertex on a parametric surface: position, normal, UV.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ParamVertex {
     /// Position in world space.
     pub pos: [f64; 3],
@@ -109,7 +96,6 @@ pub struct ParamVertex {
 ///
 /// Suitable for tangent-space computation, GPU upload, and mesh operations.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct MeshData {
     /// Vertex positions (world space).
     pub positions: Vec<[f64; 3]>,
@@ -120,7 +106,6 @@ pub struct MeshData {
     /// Triangle indices (triples).
     pub indices: Vec<[usize; 3]>,
 }
-#[allow(dead_code)]
 impl MeshData {
     /// Create an empty `MeshData`.
     pub fn empty() -> Self {

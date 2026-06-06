@@ -1,4 +1,3 @@
-#![allow(clippy::manual_strip)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -42,34 +41,51 @@ pub struct PdbAtom {
     pub is_hetatm: bool,
 }
 
+/// All named fields for constructing a [`PdbAtom`] via [`PdbAtom::new`].
+///
+/// Groups the 11 record fields so the constructor stays within the
+/// argument-count limit.
+#[derive(Debug, Clone)]
+pub struct PdbAtomData {
+    /// Atom serial number.
+    pub serial: u32,
+    /// Atom name (e.g., `"CA"`, `"N"`).
+    pub name: String,
+    /// Residue name (e.g., `"ALA"`, `"GLY"`).
+    pub res_name: String,
+    /// Chain identifier.
+    pub chain_id: char,
+    /// Residue sequence number.
+    pub res_seq: u32,
+    /// X coordinate \[Å\]
+    pub x: f64,
+    /// Y coordinate \[Å\]
+    pub y: f64,
+    /// Z coordinate \[Å\]
+    pub z: f64,
+    /// Occupancy factor.
+    pub occupancy: f64,
+    /// Temperature (B) factor.
+    pub temp_factor: f64,
+    /// Element symbol.
+    pub element: String,
+}
+
 impl PdbAtom {
-    /// Create a `PdbAtom` from all required fields.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        serial: u32,
-        name: String,
-        res_name: String,
-        chain_id: char,
-        res_seq: u32,
-        x: f64,
-        y: f64,
-        z: f64,
-        occupancy: f64,
-        temp_factor: f64,
-        element: String,
-    ) -> Self {
+    /// Create a `PdbAtom` from a [`PdbAtomData`] record.
+    pub fn new(data: PdbAtomData) -> Self {
         PdbAtom {
-            serial,
-            name,
-            res_name,
-            chain_id,
-            res_seq,
-            x,
-            y,
-            z,
-            occupancy,
-            temp_factor,
-            element,
+            serial: data.serial,
+            name: data.name,
+            res_name: data.res_name,
+            chain_id: data.chain_id,
+            res_seq: data.res_seq,
+            x: data.x,
+            y: data.y,
+            z: data.z,
+            occupancy: data.occupancy,
+            temp_factor: data.temp_factor,
+            element: data.element,
             is_hetatm: false,
         }
     }
@@ -80,7 +96,6 @@ impl PdbAtom {
     }
 
     /// Compute distance to another atom.
-    #[allow(dead_code)]
     pub fn distance_to(&self, other: &PdbAtom) -> f64 {
         let dx = self.x - other.x;
         let dy = self.y - other.y;
@@ -91,7 +106,6 @@ impl PdbAtom {
 
 /// A CONECT record: bonds between atoms.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ConectRecord {
     /// Serial number of the atom.
     pub atom_serial: u32,
@@ -101,7 +115,6 @@ pub struct ConectRecord {
 
 /// A CRYST1 record: unit cell parameters.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Cryst1Record {
     /// Unit cell lengths a, b, c in angstroms.
     pub a: f64,
@@ -138,7 +151,6 @@ impl Default for Cryst1Record {
 
 /// A PDB model: a collection of atoms with optional remarks, title, and metadata.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PdbModel {
     /// All ATOM/HETATM records.
     pub atoms: Vec<PdbAtom>,
@@ -156,7 +168,6 @@ pub struct PdbModel {
 
 /// A multi-model PDB file.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PdbFile {
     /// All models in the PDB file.
     pub models: Vec<PdbModel>,
@@ -171,7 +182,6 @@ pub struct PdbFile {
 /// Parse a single ATOM or HETATM line into a [`PdbAtom`].
 ///
 /// Returns `None` if the line is not an ATOM/HETATM record or is too short to parse.
-#[allow(dead_code)]
 pub fn parse_atom_line(line: &str) -> Option<PdbAtom> {
     let record = &line[..line.len().min(6)];
     let is_hetatm = record == "HETATM";
@@ -206,7 +216,7 @@ pub fn parse_atom_line(line: &str) -> Option<PdbAtom> {
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
 
-    let mut atom = PdbAtom::new(
+    let mut atom = PdbAtom::new(PdbAtomData {
         serial,
         name,
         res_name,
@@ -218,13 +228,12 @@ pub fn parse_atom_line(line: &str) -> Option<PdbAtom> {
         occupancy,
         temp_factor,
         element,
-    );
+    });
     atom.is_hetatm = is_hetatm;
     Some(atom)
 }
 
 /// Parse a CONECT record line.
-#[allow(dead_code)]
 pub fn parse_conect_line(line: &str) -> Option<ConectRecord> {
     if !line.starts_with("CONECT") {
         return None;
@@ -243,7 +252,6 @@ pub fn parse_conect_line(line: &str) -> Option<ConectRecord> {
 }
 
 /// Parse a CRYST1 record line.
-#[allow(dead_code)]
 pub fn parse_cryst1_line(line: &str) -> Option<Cryst1Record> {
     if !line.starts_with("CRYST1") {
         return None;
@@ -278,7 +286,6 @@ pub fn parse_cryst1_line(line: &str) -> Option<Cryst1Record> {
 /// Parse PDB file content (as a `&str`) into a [`PdbModel`].
 ///
 /// Handles TITLE, REMARK, ATOM, HETATM, CONECT, and CRYST1 records.
-#[allow(dead_code)]
 pub fn parse_pdb(content: &str) -> Result<PdbModel> {
     let mut atoms = Vec::new();
     let mut remarks = Vec::new();
@@ -316,7 +323,6 @@ pub fn parse_pdb(content: &str) -> Result<PdbModel> {
 }
 
 /// Parse a multi-model PDB file.
-#[allow(dead_code)]
 pub fn parse_multi_model_pdb(content: &str) -> Result<PdbFile> {
     let mut models = Vec::new();
     let mut file_remarks = Vec::new();
@@ -335,9 +341,9 @@ pub fn parse_multi_model_pdb(content: &str) -> Result<PdbFile> {
             file_remarks.push(line.get(6..).unwrap_or("").trim().to_string());
         } else if line.starts_with("CRYST1") {
             file_cryst1 = parse_cryst1_line(line);
-        } else if line.starts_with("MODEL") {
+        } else if let Some(rest) = line.strip_prefix("MODEL") {
             in_model = true;
-            current_model_num = line[5..].trim().parse::<u32>().ok();
+            current_model_num = rest.trim().parse::<u32>().ok();
             current_atoms.clear();
             current_conect.clear();
         } else if line.starts_with("ENDMDL") {
@@ -392,7 +398,6 @@ pub fn parse_multi_model_pdb(content: &str) -> Result<PdbFile> {
 }
 
 /// Write a [`PdbModel`] to a PDB fixed-column format string.
-#[allow(dead_code)]
 pub fn write_pdb(model: &PdbModel) -> String {
     let mut out = String::new();
 
@@ -464,7 +469,6 @@ pub fn write_pdb(model: &PdbModel) -> String {
 }
 
 /// Write a multi-model PDB file.
-#[allow(dead_code)]
 pub fn write_multi_model_pdb(pdb_file: &PdbFile) -> String {
     let mut out = String::new();
 
@@ -539,7 +543,6 @@ pub fn write_multi_model_pdb(pdb_file: &PdbFile) -> String {
 }
 
 /// Filter atoms by chain ID.
-#[allow(dead_code)]
 pub fn filter_by_chain(atoms: &[PdbAtom], chain: char) -> Vec<PdbAtom> {
     atoms
         .iter()
@@ -549,7 +552,6 @@ pub fn filter_by_chain(atoms: &[PdbAtom], chain: char) -> Vec<PdbAtom> {
 }
 
 /// Get all unique chain IDs from a list of atoms.
-#[allow(dead_code)]
 pub fn unique_chain_ids(atoms: &[PdbAtom]) -> Vec<char> {
     let mut chains: Vec<char> = atoms.iter().map(|a| a.chain_id).collect();
     chains.sort_unstable();
@@ -558,7 +560,6 @@ pub fn unique_chain_ids(atoms: &[PdbAtom]) -> Vec<char> {
 }
 
 /// Get all unique residue names from a list of atoms.
-#[allow(dead_code)]
 pub fn unique_residue_names(atoms: &[PdbAtom]) -> Vec<String> {
     let mut names: Vec<String> = atoms.iter().map(|a| a.res_name.clone()).collect();
     names.sort();
@@ -567,7 +568,6 @@ pub fn unique_residue_names(atoms: &[PdbAtom]) -> Vec<String> {
 }
 
 /// Compute the center of mass of atoms (equal mass).
-#[allow(dead_code)]
 pub fn center_of_mass(atoms: &[PdbAtom]) -> [f64; 3] {
     if atoms.is_empty() {
         return [0.0; 3];
@@ -635,7 +635,6 @@ impl PdbReader {
 
 /// A SEQRES record describing the primary sequence of a chain.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SeqresRecord {
     /// Chain identifier.
     pub chain_id: char,
@@ -645,7 +644,6 @@ pub struct SeqresRecord {
     pub residues: Vec<String>,
 }
 
-#[allow(dead_code)]
 impl SeqresRecord {
     /// Return the sequence as a dash-separated string of 3-letter codes.
     pub fn sequence_string(&self) -> String {
@@ -659,7 +657,6 @@ impl SeqresRecord {
 }
 
 /// Parse all SEQRES records from PDB content.
-#[allow(dead_code)]
 pub fn parse_seqres(content: &str) -> Vec<SeqresRecord> {
     // Group SEQRES lines by chain ID
     let mut chains: std::collections::HashMap<char, (u32, Vec<String>)> =
@@ -706,7 +703,6 @@ pub fn parse_seqres(content: &str) -> Vec<SeqresRecord> {
 }
 
 /// Convert 3-letter amino acid code to 1-letter code.
-#[allow(dead_code)]
 fn aa3_to_1(aa: &str) -> char {
     match aa {
         "ALA" => 'A',
@@ -739,7 +735,6 @@ fn aa3_to_1(aa: &str) -> char {
 
 /// Type of secondary structure element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum SecStructType {
     /// Alpha helix (HELIX record).
     Helix,
@@ -751,7 +746,6 @@ pub enum SecStructType {
 
 /// A secondary structure record (HELIX, SHEET, or TURN).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SecStructRecord {
     /// Type of secondary structure.
     pub record_type: SecStructType,
@@ -768,7 +762,6 @@ pub struct SecStructRecord {
 }
 
 /// Parse HELIX, SHEET, and TURN records from PDB content.
-#[allow(dead_code)]
 pub fn parse_secondary_structure(content: &str) -> Vec<SecStructRecord> {
     let mut records = Vec::new();
 
@@ -854,7 +847,6 @@ pub fn parse_secondary_structure(content: &str) -> Vec<SecStructRecord> {
 
 /// A chain of atoms within a biological assembly.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AssemblyChain {
     /// Chain identifier.
     pub chain_id: char,
@@ -865,7 +857,6 @@ pub struct AssemblyChain {
 /// A biological assembly: one or more copies of the asymmetric unit
 /// arranged by crystallographic symmetry.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct BiologicalAssembly {
     /// Assembly number (as in REMARK 350).
     pub id: u32,
@@ -873,7 +864,6 @@ pub struct BiologicalAssembly {
     pub chains: Vec<AssemblyChain>,
 }
 
-#[allow(dead_code)]
 impl BiologicalAssembly {
     /// Build a biological assembly from a `PdbModel` using the identity transform.
     pub fn from_model_with_identity(model: &PdbModel, id: u32) -> Self {
@@ -941,7 +931,6 @@ impl BiologicalAssembly {
 ///
 /// Stored as a 3×4 matrix: `[[r00,r01,r02,tx\],[r10,r11,r12,ty],[r20,r21,r22,tz]]`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SymmetryOperation {
     /// The 3×4 transformation matrix.
     pub matrix: [[f64; 4]; 3],
@@ -949,7 +938,6 @@ pub struct SymmetryOperation {
     pub description: String,
 }
 
-#[allow(dead_code)]
 impl SymmetryOperation {
     /// The identity operation.
     pub fn identity() -> Self {
@@ -1007,7 +995,6 @@ impl SymmetryOperation {
 }
 
 /// Parse REMARK 290 crystallographic symmetry operations from PDB content.
-#[allow(dead_code)]
 pub fn parse_symmetry_operations(content: &str) -> Vec<SymmetryOperation> {
     let mut ops = Vec::new();
     let mut in_remark_290 = false;
@@ -1055,7 +1042,6 @@ pub fn parse_symmetry_operations(content: &str) -> Vec<SymmetryOperation> {
 
 /// Result of validating a PDB model.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct PdbValidationResult {
     /// Fatal errors (model should not be used as-is).
     pub errors: Vec<String>,
@@ -1063,7 +1049,6 @@ pub struct PdbValidationResult {
     pub warnings: Vec<String>,
 }
 
-#[allow(dead_code)]
 impl PdbValidationResult {
     /// Whether validation passed with no errors.
     pub fn is_valid(&self) -> bool {
@@ -1083,7 +1068,6 @@ impl PdbValidationResult {
 /// - Atoms with extreme coordinates (warning)
 /// - Missing occupancy (warning)
 /// - Empty model (warning)
-#[allow(dead_code)]
 pub fn validate_pdb_model(model: &PdbModel) -> PdbValidationResult {
     let mut result = PdbValidationResult::default();
 
@@ -1137,7 +1121,6 @@ pub fn validate_pdb_model(model: &PdbModel) -> PdbValidationResult {
 }
 
 /// Validate a full multi-model PDB file.
-#[allow(dead_code)]
 pub fn validate_pdb_file(pdb_file: &PdbFile) -> Vec<PdbValidationResult> {
     pdb_file.models.iter().map(validate_pdb_model).collect()
 }
@@ -1155,48 +1138,48 @@ mod tests {
         y: f64,
         z: f64,
     ) -> PdbAtom {
-        PdbAtom::new(
+        PdbAtom::new(PdbAtomData {
             serial,
-            name.to_string(),
-            res.to_string(),
-            chain,
-            serial,
+            name: name.to_string(),
+            res_name: res.to_string(),
+            chain_id: chain,
+            res_seq: serial,
             x,
             y,
             z,
-            1.0,
-            0.0,
-            String::new(),
-        )
+            occupancy: 1.0,
+            temp_factor: 0.0,
+            element: String::new(),
+        })
     }
 
     #[test]
     fn test_pdb_write_and_read_roundtrip() {
-        let path = "/tmp/oxiphy_test.pdb";
+        let path = std::env::temp_dir().join("oxiphy_test.pdb");
         let atoms = vec![
             make_atom(1, "CA", "ALA", 'A', 1.234, 5.678, 9.012),
             make_atom(2, "N", "GLY", 'A', -1.0, 2.5, 3.75),
         ];
-        PdbWriter::write_frame(path, &atoms).unwrap();
-        let read_atoms = PdbReader::read(path).unwrap();
+        PdbWriter::write_frame(path.to_str().unwrap_or(""), &atoms).unwrap();
+        let read_atoms = PdbReader::read(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(read_atoms.len(), 2);
         assert!((read_atoms[0].x - 1.234).abs() < 0.01);
         assert!((read_atoms[1].z - 3.75).abs() < 0.01);
         assert_eq!(read_atoms[0].name, "CA");
         assert_eq!(read_atoms[1].res_name, "GLY");
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn test_pdb_write_read_roundtrip() {
-        let path = "/tmp/oxiphy_test_rt3.pdb";
+        let path = std::env::temp_dir().join("oxiphy_test_rt3.pdb");
         let atoms = vec![
             make_atom(1, "N", "ALA", 'A', 10.111, 20.222, 30.333),
             make_atom(2, "CA", "ALA", 'A', -5.555, 0.001, 15.999),
             make_atom(3, "C", "GLY", 'B', 0.0, 0.0, 0.0),
         ];
-        PdbWriter::write_frame(path, &atoms).unwrap();
-        let read_atoms = PdbReader::read(path).unwrap();
+        PdbWriter::write_frame(path.to_str().unwrap_or(""), &atoms).unwrap();
+        let read_atoms = PdbReader::read(path.to_str().unwrap_or("")).unwrap();
 
         assert_eq!(read_atoms.len(), 3, "expected 3 atoms");
 
@@ -1210,20 +1193,20 @@ mod tests {
         assert!((read_atoms[2].y - 0.0).abs() < 0.001);
         assert!((read_atoms[2].z - 0.0).abs() < 0.001);
 
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn test_pdb_column_widths() {
-        let path = "/tmp/oxiphy_test_cols.pdb";
+        let path = std::env::temp_dir().join("oxiphy_test_cols.pdb");
         let atoms = vec![make_atom(1, "CA", "ALA", 'A', 1.0, 2.0, 3.0)];
-        PdbWriter::write_frame(path, &atoms).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        PdbWriter::write_frame(path.to_str().unwrap_or(""), &atoms).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         let line = content.lines().next().unwrap();
         assert!(line.starts_with("ATOM  "));
         let x_str = &line[30..38];
         assert!(x_str.trim().parse::<f64>().is_ok());
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1467,19 +1450,19 @@ END
 
     #[test]
     fn test_occupancy_bfactor_roundtrip() {
-        let atom = PdbAtom::new(
-            1,
-            "CA".into(),
-            "ALA".into(),
-            'A',
-            1,
-            1.0,
-            2.0,
-            3.0,
-            0.50,
-            30.0,
-            "C".into(),
-        );
+        let atom = PdbAtom::new(PdbAtomData {
+            serial: 1,
+            name: "CA".into(),
+            res_name: "ALA".into(),
+            chain_id: 'A',
+            res_seq: 1,
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+            occupancy: 0.50,
+            temp_factor: 30.0,
+            element: "C".into(),
+        });
         let model = PdbModel {
             atoms: vec![atom],
             remarks: Vec::new(),

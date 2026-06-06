@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::EmFrfResult;
 
 /// Compute the electromechanical FRF for a single-DOF piezoelectric system.
@@ -16,7 +15,6 @@ use super::types::EmFrfResult;
 /// ```
 ///
 /// For sensor mode (Q = 0, F given), returns mechanical and voltage response.
-#[allow(clippy::too_many_arguments)]
 pub fn electromechanical_frf_1dof(
     omega: f64,
     mass: f64,
@@ -152,8 +150,8 @@ mod tests {
     #[test]
     fn mat6_vec6_identity() {
         let mut identity = [[0.0_f64; 6]; 6];
-        for i in 0..6 {
-            identity[i][i] = 1.0;
+        for (i, row) in identity.iter_mut().enumerate() {
+            row[i] = 1.0;
         }
         let v = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let result = mat6_vec6_mul(&identity, &v);
@@ -162,8 +160,8 @@ mod tests {
     #[test]
     fn mat3_vec3_identity() {
         let mut identity = [[0.0_f64; 3]; 3];
-        for i in 0..3 {
-            identity[i][i] = 1.0;
+        for (i, row) in identity.iter_mut().enumerate() {
+            row[i] = 1.0;
         }
         let v = [7.0, 8.0, 9.0];
         let result = mat3_vec3_mul(&identity, &v);
@@ -395,20 +393,19 @@ pub(super) fn inv3(m: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
 /// Build the strain-displacement matrix B\[6\]\[24\] at a Gauss point.
 ///
 /// `dndx[8][3]` contains dN_I/dX_j in physical coordinates.
-#[allow(clippy::too_many_arguments)]
 pub fn hex8_b_matrix(dndx: &[[f64; 3]; 8]) -> [[f64; 24]; 6] {
     let mut b = [[0.0_f64; 24]; 6];
-    for i in 0..8 {
+    for (i, dn) in dndx.iter().enumerate() {
         let col_base = i * 3;
-        b[0][col_base] = dndx[i][0];
-        b[1][col_base + 1] = dndx[i][1];
-        b[2][col_base + 2] = dndx[i][2];
-        b[3][col_base + 1] = dndx[i][2];
-        b[3][col_base + 2] = dndx[i][1];
-        b[4][col_base] = dndx[i][2];
-        b[4][col_base + 2] = dndx[i][0];
-        b[5][col_base] = dndx[i][1];
-        b[5][col_base + 1] = dndx[i][0];
+        b[0][col_base] = dn[0];
+        b[1][col_base + 1] = dn[1];
+        b[2][col_base + 2] = dn[2];
+        b[3][col_base + 1] = dn[2];
+        b[3][col_base + 2] = dn[1];
+        b[4][col_base] = dn[2];
+        b[4][col_base + 2] = dn[0];
+        b[5][col_base] = dn[1];
+        b[5][col_base + 1] = dn[0];
     }
     b
 }
@@ -455,13 +452,9 @@ mod piezo_expanded_tests {
                 "N[{node}] at own node = {}",
                 n[node]
             );
-            for other in 0..8 {
+            for (other, &nv) in n.iter().enumerate() {
                 if other != node {
-                    assert!(
-                        n[other].abs() < 1e-13,
-                        "N[{other}] at node {node} = {}",
-                        n[other]
-                    );
+                    assert!(nv.abs() < 1e-13, "N[{other}] at node {node} = {}", nv);
                 }
             }
         }
@@ -667,8 +660,6 @@ mod piezo_expanded_tests {
 /// * `density` - mass density (kg/m^3)
 /// * `cross_area` - cross-section area (m^2)
 /// * `length` - beam length (m)
-#[allow(clippy::too_many_arguments)]
-#[allow(non_snake_case)]
 pub fn piezo_beam_resonance_frequency(
     e_modulus: f64,
     moment_of_inertia: f64,
@@ -691,8 +682,6 @@ pub fn piezo_beam_resonance_frequency(
 ///
 /// Characteristic values lambda_n for clamped-free beam:
 /// mode 1: 1.875, mode 2: 4.694, mode 3: 7.855, mode 4: 10.996
-#[allow(clippy::too_many_arguments)]
-#[allow(non_snake_case)]
 pub fn piezo_beam_resonance_mode_n(
     e_modulus: f64,
     moment_of_inertia: f64,

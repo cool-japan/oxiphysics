@@ -16,8 +16,6 @@
 //! - **Thermal shell analysis**: thermal load vector
 //! - **Shell contact**: gap function, penalty stiffness
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ============================================================================
@@ -38,7 +36,6 @@ pub const KIRCHHOFF_DOF_PER_NODE: usize = 5;
 // ============================================================================
 
 /// 3-D shell node: position, normal vector, and thickness.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ShellNode {
     /// Nodal coordinates (x, y, z) \[m\].
@@ -79,7 +76,6 @@ impl ShellNode {
 /// Compute the unit normal to a flat triangle defined by three nodes.
 ///
 /// Uses the cross product of two edge vectors.  Returns the unit normal.
-#[allow(dead_code)]
 pub fn triangle_normal(p1: [f64; 3], p2: [f64; 3], p3: [f64; 3]) -> [f64; 3] {
     let e1 = vec3_sub(p2, p1);
     let e2 = vec3_sub(p3, p1);
@@ -93,7 +89,6 @@ pub fn triangle_normal(p1: [f64; 3], p2: [f64; 3], p3: [f64; 3]) -> [f64; 3] {
 }
 
 /// Compute the area of a triangle from three 3-D points.
-#[allow(dead_code)]
 pub fn triangle_area(p1: [f64; 3], p2: [f64; 3], p3: [f64; 3]) -> f64 {
     let e1 = vec3_sub(p2, p1);
     let e2 = vec3_sub(p3, p1);
@@ -109,7 +104,6 @@ pub fn triangle_area(p1: [f64; 3], p2: [f64; 3], p3: [f64; 3]) -> f64 {
 ///
 /// Based on classical thin-shell theory (no transverse shear deformation).
 /// Suitable for shells with t/L < 1/20.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct KirchhoffShell {
     /// Young's modulus \[Pa\].
@@ -194,7 +188,6 @@ impl KirchhoffShell {
 ///
 /// Includes 5 DOF per node: (u, v, w, θx, θy).
 /// Transverse shear deformation is included using a shear correction factor.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MindlinShell {
     /// Young's modulus \[Pa\].
@@ -285,7 +278,6 @@ impl MindlinShell {
 /// {M} = \[B\] {ε0} + \[D\] {κ}
 ///
 /// Returns the coupling matrix B (3×3) = e * \[A_m\].
-#[allow(dead_code)]
 pub fn membrane_bending_coupling(shell: &KirchhoffShell, eccentricity: f64) -> [[f64; 3]; 3] {
     let dm = shell.membrane_matrix();
     let e = eccentricity;
@@ -302,7 +294,6 @@ pub fn membrane_bending_coupling(shell: &KirchhoffShell, eccentricity: f64) -> [
 /// their gradients (∂u/∂x, ∂u/∂y, ∂v/∂x, ∂v/∂y).
 ///
 /// Returns {εx, εy, γxy}.
-#[allow(dead_code)]
 pub fn membrane_strain(du_dx: f64, dv_dy: f64, du_dy: f64, dv_dx: f64) -> [f64; 3] {
     [du_dx, dv_dy, du_dy + dv_dx]
 }
@@ -310,7 +301,6 @@ pub fn membrane_strain(du_dx: f64, dv_dy: f64, du_dy: f64, dv_dx: f64) -> [f64; 
 /// Compute bending curvatures from rotation gradients (Mindlin formulation).
 ///
 /// κx = -∂θx/∂x, κy = -∂θy/∂y, κxy = -(∂θx/∂y + ∂θy/∂x).
-#[allow(dead_code)]
 pub fn bending_curvature(dthx_dx: f64, dthy_dy: f64, dthx_dy: f64, dthy_dx: f64) -> [f64; 3] {
     [-dthx_dx, -dthy_dy, -(dthx_dy + dthy_dx)]
 }
@@ -325,7 +315,6 @@ pub fn bending_curvature(dthx_dx: f64, dthy_dy: f64, dthx_dy: f64, dthy_dx: f64)
 /// k_drill = α * G * t * A  where α is a small parameter (≈ 0.001).
 ///
 /// `area` is the element area, `alpha` is the penalty parameter.
-#[allow(dead_code)]
 pub fn drilling_dof_stiffness(shell: &MindlinShell, area: f64, alpha: f64) -> f64 {
     alpha * shell.shear_modulus() * shell.thickness * area
 }
@@ -333,7 +322,6 @@ pub fn drilling_dof_stiffness(shell: &MindlinShell, area: f64, alpha: f64) -> f6
 /// Compute the in-plane rotation (drilling) strain from displacement gradients.
 ///
 /// ω_z = (∂v/∂x - ∂u/∂y) / 2  (antisymmetric part of in-plane strain).
-#[allow(dead_code)]
 pub fn drilling_strain(du_dy: f64, dv_dx: f64) -> f64 {
     (dv_dx - du_dy) / 2.0
 }
@@ -349,7 +337,6 @@ pub fn drilling_strain(du_dy: f64, dv_dx: f64) -> f64 {
 ///
 /// `gamma_ab` = shear strain at the 4 tying points (A, B, C, D) on edges.
 /// Returns the interpolated shear strain at parametric point (xi, eta).
-#[allow(dead_code)]
 pub fn mitc4_shear_strain(
     gamma_a: f64,
     gamma_b: f64,
@@ -369,7 +356,6 @@ pub fn mitc4_shear_strain(
 /// Reduced integration weight for 1-point quadrature on a 2-D element.
 ///
 /// Returns (xi, eta, weight) = (0, 0, 4) for the single Gauss point.
-#[allow(dead_code)]
 pub fn reduced_integration_point() -> (f64, f64, f64) {
     (0.0, 0.0, 4.0)
 }
@@ -377,7 +363,6 @@ pub fn reduced_integration_point() -> (f64, f64, f64) {
 /// Full 2×2 Gauss quadrature points and weights on \[-1,1\]².
 ///
 /// Returns array of (xi, eta, weight) tuples.
-#[allow(dead_code)]
 pub fn gauss_2x2() -> [(f64, f64, f64); 4] {
     let g = 1.0 / 3.0_f64.sqrt();
     [(-g, -g, 1.0), (g, -g, 1.0), (g, g, 1.0), (-g, g, 1.0)]
@@ -387,7 +372,6 @@ pub fn gauss_2x2() -> [(f64, f64, f64); 4] {
 ///
 /// The shear locking parameter β = (G * k * t² ) / (D * L²).
 /// Values β >> 1 indicate severe shear locking risk.
-#[allow(dead_code)]
 pub fn shear_locking_parameter(shell: &MindlinShell, element_size: f64) -> f64 {
     let d = shell.flexural_rigidity();
     let gs = shell.transverse_shear_stiffness();
@@ -399,7 +383,6 @@ pub fn shear_locking_parameter(shell: &MindlinShell, element_size: f64) -> f64 {
 // ============================================================================
 
 /// A single laminate ply with material properties and orientation.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ply {
     /// Ply thickness \[m\].
@@ -480,7 +463,6 @@ impl Ply {
 }
 
 /// Laminate stacking: multiple plies forming a composite shell.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Laminate {
     /// Ordered list of plies from bottom (z_0) to top (z_n).
@@ -597,7 +579,6 @@ impl Laminate {
 /// k_geo = Nx * (∂w/∂x)² + 2 Ny * (∂w/∂y)² + 2 Nxy * (∂w/∂x)(∂w/∂y)
 ///
 /// Returns the scalar geometric stiffness contribution.
-#[allow(dead_code)]
 pub fn geometric_stiffness_integrand(nx: f64, ny: f64, nxy: f64, dw_dx: f64, dw_dy: f64) -> f64 {
     nx * dw_dx * dw_dx + ny * dw_dy * dw_dy + 2.0 * nxy * dw_dx * dw_dy
 }
@@ -608,7 +589,6 @@ pub fn geometric_stiffness_integrand(nx: f64, ny: f64, nxy: f64, dw_dx: f64, dw_
 /// Uses the Euler buckling formula:
 /// λ_cr = π² D / (Nx * a²) * (m + n² * a²/b²)²
 /// for mode (m, n) = (1, 1).
-#[allow(dead_code)]
 pub fn plate_buckling_factor(shell: &KirchhoffShell, nx_applied: f64, a: f64, b: f64) -> f64 {
     let d = shell.flexural_rigidity();
     let k_cr = (1.0 + (a / b).powi(2)).powi(2);
@@ -620,7 +600,6 @@ pub fn plate_buckling_factor(shell: &KirchhoffShell, nx_applied: f64, a: f64, b:
 /// p_cr = 2E / (sqrt(3(1-ν²))) * (t/R)² for long cylinders.
 ///
 /// `radius` is the shell radius, `t` the thickness.
-#[allow(dead_code)]
 pub fn cylinder_buckling_pressure(e: f64, nu: f64, t: f64, radius: f64) -> f64 {
     2.0 * e / (3.0_f64 * (1.0 - nu * nu)).sqrt() * (t / radius).powi(2)
 }
@@ -629,7 +608,6 @@ pub fn cylinder_buckling_pressure(e: f64, nu: f64, t: f64, radius: f64) -> f64 {
 ///
 /// Given stiffness `k` and geometric stiffness `kg` (both scalars for 1-D),
 /// returns λ_cr = k / kg.
-#[allow(dead_code)]
 pub fn critical_load_multiplier(k: f64, kg: f64) -> f64 {
     if kg.abs() < 1.0e-30 {
         f64::INFINITY
@@ -651,7 +629,6 @@ pub fn critical_load_multiplier(k: f64, kg: f64) -> f64 {
 /// MT = D_11 * α * ΔT_z  where ΔT_z = ΔT / t.
 ///
 /// Returns (NT, MT) pair (membrane and bending thermal loads).
-#[allow(dead_code)]
 pub fn thermal_load_resultants(
     shell: &KirchhoffShell,
     delta_t_mid: f64,
@@ -669,7 +646,6 @@ pub fn thermal_load_resultants(
 /// Compute the thermal strain in a shell ply at temperature change ΔT.
 ///
 /// Returns {αΔT, αΔT, 0} for an isotropic material.
-#[allow(dead_code)]
 pub fn thermal_strain_isotropic(alpha: f64, delta_t: f64) -> [f64; 3] {
     [alpha * delta_t, alpha * delta_t, 0.0]
 }
@@ -678,7 +654,6 @@ pub fn thermal_strain_isotropic(alpha: f64, delta_t: f64) -> [f64; 3] {
 /// laminate with uniform temperature change ΔT.
 ///
 /// N_th = \[A\] {ε_th}.
-#[allow(dead_code)]
 pub fn laminate_thermal_force(laminate: &Laminate, alpha: f64, delta_t: f64) -> [f64; 3] {
     let a = laminate.a_matrix();
     let eps_th = thermal_strain_isotropic(alpha, delta_t);
@@ -699,7 +674,6 @@ pub fn laminate_thermal_force(laminate: &Laminate, alpha: f64, delta_t: f64) -> 
 ///
 /// Returns the signed gap distance g = (x2 - x1) · n_contact.
 /// Positive gap means no contact; negative or zero means penetration.
-#[allow(dead_code)]
 pub fn shell_contact_gap(x1: [f64; 3], x2: [f64; 3], n_contact: [f64; 3]) -> f64 {
     let diff = vec3_sub(x2, x1);
     vec3_dot(diff, n_contact)
@@ -709,7 +683,6 @@ pub fn shell_contact_gap(x1: [f64; 3], x2: [f64; 3], n_contact: [f64; 3]) -> f64
 ///
 /// f_contact = -k_penalty * min(g, 0) * n_contact.
 /// If gap g > 0, no contact force; if g < 0, apply penalty.
-#[allow(dead_code)]
 pub fn shell_contact_force(gap: f64, k_penalty: f64, n_contact: [f64; 3]) -> [f64; 3] {
     if gap >= 0.0 {
         [0.0; 3]
@@ -723,7 +696,6 @@ pub fn shell_contact_force(gap: f64, k_penalty: f64, n_contact: [f64; 3]) -> [f6
 /// k_Hertz = (4/3) * E* * sqrt(R_eff)
 /// where E* = E / (2(1-ν²)) is the combined modulus and
 /// R_eff = R1*R2/(R1+R2) is the effective radius.
-#[allow(dead_code)]
 pub fn hertz_contact_stiffness(e: f64, nu: f64, r1: f64, r2: f64) -> f64 {
     let e_star = e / (2.0 * (1.0 - nu * nu));
     let r_eff = if (r1 + r2).abs() < 1.0e-30 {
@@ -737,7 +709,6 @@ pub fn hertz_contact_stiffness(e: f64, nu: f64, r1: f64, r2: f64) -> f64 {
 /// Augmented Lagrangian contact update for shell contact.
 ///
 /// Updates the Lagrange multiplier: λ_new = max(0, λ + k_penalty * gap).
-#[allow(dead_code)]
 pub fn augmented_lagrangian_update(lambda: f64, k_penalty: f64, gap: f64) -> f64 {
     (lambda + k_penalty * gap).max(0.0)
 }
@@ -747,31 +718,26 @@ pub fn augmented_lagrangian_update(lambda: f64, k_penalty: f64, gap: f64) -> f64
 // ============================================================================
 
 /// Add two 3-D vectors.
-#[allow(dead_code)]
 pub fn vec3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 /// Subtract two 3-D vectors: a - b.
-#[allow(dead_code)]
 pub fn vec3_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 /// Scale a 3-D vector by a scalar.
-#[allow(dead_code)]
 pub fn vec3_scale(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
 }
 
 /// Dot product of two 3-D vectors.
-#[allow(dead_code)]
 pub fn vec3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// Cross product of two 3-D vectors.
-#[allow(dead_code)]
 pub fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -781,13 +747,11 @@ pub fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 /// Euclidean norm of a 3-D vector.
-#[allow(dead_code)]
 pub fn vec3_norm(a: [f64; 3]) -> f64 {
     (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
 }
 
 /// Matrix-vector product: (3×3) matrix times (3) vector.
-#[allow(dead_code)]
 pub fn mat3x3_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     let mut result = [0.0f64; 3];
     for i in 0..3 {
@@ -799,7 +763,6 @@ pub fn mat3x3_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
 }
 
 /// Matrix product: (3×3) × (3×3).
-#[allow(dead_code)]
 pub fn mat3x3_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut c = [[0.0f64; 3]; 3];
     for i in 0..3 {
@@ -813,13 +776,11 @@ pub fn mat3x3_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 }
 
 /// Trace (sum of diagonal) of a 3×3 matrix.
-#[allow(dead_code)]
 pub fn mat3x3_trace(m: [[f64; 3]; 3]) -> f64 {
     m[0][0] + m[1][1] + m[2][2]
 }
 
 /// Compute the Frobenius norm of a 3×3 matrix.
-#[allow(dead_code)]
 pub fn mat3x3_frobenius(m: [[f64; 3]; 3]) -> f64 {
     m.iter()
         .flat_map(|row| row.iter())
@@ -835,7 +796,6 @@ pub fn mat3x3_frobenius(m: [[f64; 3]; 3]) -> f64 {
 /// Interpolate shell thickness between two nodes using linear shape functions.
 ///
 /// N1 = (1 - xi) / 2,  N2 = (1 + xi) / 2.
-#[allow(dead_code)]
 pub fn interpolate_thickness(t1: f64, t2: f64, xi: f64) -> f64 {
     0.5 * (1.0 - xi) * t1 + 0.5 * (1.0 + xi) * t2
 }
@@ -843,7 +803,6 @@ pub fn interpolate_thickness(t1: f64, t2: f64, xi: f64) -> f64 {
 /// Compute the shear strain energy in a Mindlin shell element.
 ///
 /// U_s = (1/2) * κ * G * t * (γxz² + γyz²) * area.
-#[allow(dead_code)]
 pub fn shear_strain_energy(shell: &MindlinShell, gamma_xz: f64, gamma_yz: f64, area: f64) -> f64 {
     let gs = shell.transverse_shear_stiffness();
     0.5 * gs * (gamma_xz * gamma_xz + gamma_yz * gamma_yz) * area
@@ -852,7 +811,6 @@ pub fn shear_strain_energy(shell: &MindlinShell, gamma_xz: f64, gamma_yz: f64, a
 /// Compute the bending strain energy for a Kirchhoff shell.
 ///
 /// U_b = (1/2) {κ}^T \[D_b\] {κ} * area.
-#[allow(dead_code)]
 pub fn bending_strain_energy(shell: &KirchhoffShell, curvature: [f64; 3], area: f64) -> f64 {
     let db = shell.bending_matrix();
     let db_kappa = mat3x3_vec(db, curvature);
@@ -867,7 +825,6 @@ pub fn bending_strain_energy(shell: &KirchhoffShell, curvature: [f64; 3], area: 
 /// Compute the membrane strain energy.
 ///
 /// U_m = (1/2) {ε}^T \[D_m\] {ε} * area.
-#[allow(dead_code)]
 pub fn membrane_strain_energy(shell: &KirchhoffShell, strain: [f64; 3], area: f64) -> f64 {
     let dm = shell.membrane_matrix();
     let dm_eps = mat3x3_vec(dm, strain);
@@ -882,7 +839,6 @@ pub fn membrane_strain_energy(shell: &KirchhoffShell, strain: [f64; 3], area: f6
 /// Compute the natural frequency of a simply-supported rectangular Kirchhoff plate.
 ///
 /// ω_mn = π² * sqrt(D / (ρ * t)) * (m²/a² + n²/b²).
-#[allow(dead_code)]
 pub fn plate_natural_frequency(shell: &KirchhoffShell, a: f64, b: f64, m: u32, n: u32) -> f64 {
     let d = shell.flexural_rigidity();
     let rho_t = shell.density * shell.thickness;
@@ -893,7 +849,6 @@ pub fn plate_natural_frequency(shell: &KirchhoffShell, a: f64, b: f64, m: u32, n
 /// uniformly-loaded plate (Navier series, single term approximation).
 ///
 /// w_max ≈ 16 q0 a⁴ / (π⁶ D * (1 + (a/b)²)²) for square plate.
-#[allow(dead_code)]
 pub fn plate_center_deflection(shell: &KirchhoffShell, q0: f64, a: f64, b: f64) -> f64 {
     let d = shell.flexural_rigidity();
     let ratio = a / b;
@@ -903,7 +858,6 @@ pub fn plate_center_deflection(shell: &KirchhoffShell, q0: f64, a: f64, b: f64) 
 /// Compute the effective in-plane stiffness of a symmetric laminate \[A11_eff\].
 ///
 /// Returns the effective A11/h for use in membrane analysis.
-#[allow(dead_code)]
 pub fn effective_a11(laminate: &Laminate) -> f64 {
     let h = laminate.total_thickness();
     if h < 1.0e-14 {
@@ -915,7 +869,6 @@ pub fn effective_a11(laminate: &Laminate) -> f64 {
 /// Compute the thermal expansion coefficient of a symmetric laminate in x-direction.
 ///
 /// α_eff_x ≈ Σ_k Q̄11^k * α_k * t_k / (A11 * h).
-#[allow(dead_code)]
 pub fn laminate_effective_alpha(laminate: &Laminate, alpha_plies: &[f64]) -> f64 {
     if laminate.plies.len() != alpha_plies.len() {
         return 0.0;
@@ -935,7 +888,6 @@ pub fn laminate_effective_alpha(laminate: &Laminate, alpha_plies: &[f64]) -> f64
 }
 
 /// Compute the force resultant norm |{N}| = sqrt(Nx² + Ny² + Nxy²).
-#[allow(dead_code)]
 pub fn force_resultant_norm(n: [f64; 3]) -> f64 {
     (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt()
 }
@@ -943,7 +895,6 @@ pub fn force_resultant_norm(n: [f64; 3]) -> f64 {
 /// Transform a stress resultant vector from global to ply local coordinates.
 ///
 /// Uses rotation matrix T for angle θ.
-#[allow(dead_code)]
 pub fn transform_stress_to_ply(n_global: [f64; 3], angle_rad: f64) -> [f64; 3] {
     let c = angle_rad.cos();
     let s = angle_rad.sin();
@@ -958,7 +909,6 @@ pub fn transform_stress_to_ply(n_global: [f64; 3], angle_rad: f64) -> [f64; 3] {
 ///
 /// FI = (σ1/F1t)² + (σ2/F2t)² - (σ1*σ2)/(F1t*F2t) + (τ12/F6)²
 /// Values FI ≥ 1 indicate failure.
-#[allow(dead_code)]
 pub fn tsai_wu_failure_index(
     sigma1: f64,
     sigma2: f64,

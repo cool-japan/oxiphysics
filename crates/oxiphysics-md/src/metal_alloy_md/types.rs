@@ -2,11 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// Stores per-atom initial positions for MSD tracking.
 #[derive(Debug, Clone)]
 pub struct DiffusionTracker {
@@ -172,8 +168,8 @@ impl AlloySystem {
             force_inc[i] = vadd(force_inc[i], fvec);
             force_inc[j] = vsub(force_inc[j], fvec);
         }
-        for k in 0..n {
-            self.atoms[k].force = vadd(self.atoms[k].force, force_inc[k]);
+        for (k, inc) in force_inc.iter().enumerate().take(n) {
+            self.atoms[k].force = vadd(self.atoms[k].force, *inc);
         }
     }
     /// Compute total potential energy (eV).
@@ -267,12 +263,12 @@ impl SimBox {
     /// Apply minimum image convention.
     pub fn min_image(&self, dr: [f64; 3]) -> [f64; 3] {
         let mut out = dr;
-        for i in 0..3 {
-            while out[i] > 0.5 * self.lengths[i] {
-                out[i] -= self.lengths[i];
+        for (out_k, &len) in out.iter_mut().zip(self.lengths.iter()) {
+            while *out_k > 0.5 * len {
+                *out_k -= len;
             }
-            while out[i] < -0.5 * self.lengths[i] {
-                out[i] += self.lengths[i];
+            while *out_k < -0.5 * len {
+                *out_k += len;
             }
         }
         out
@@ -280,12 +276,12 @@ impl SimBox {
     /// Wrap position into box.
     pub fn wrap(&self, pos: [f64; 3]) -> [f64; 3] {
         let mut out = pos;
-        for i in 0..3 {
-            while out[i] >= self.lengths[i] {
-                out[i] -= self.lengths[i];
+        for (out_k, &len) in out.iter_mut().zip(self.lengths.iter()) {
+            while *out_k >= len {
+                *out_k -= len;
             }
-            while out[i] < 0.0 {
-                out[i] += self.lengths[i];
+            while *out_k < 0.0 {
+                *out_k += len;
             }
         }
         out

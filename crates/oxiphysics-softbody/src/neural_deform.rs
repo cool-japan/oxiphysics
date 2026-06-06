@@ -14,9 +14,6 @@
 //! - Blend-shapes ([`blend_shapes`]), delta-mush Laplacian smoothing
 //!   ([`delta_mush_smooth`]), and linear blend skinning ([`linear_blend_skinning`]).
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

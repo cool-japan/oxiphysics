@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! Provides medial axis extraction from boundary point sets, straight skeleton
 //! computation for 2D polygons, simplified Voronoi-based 2D skeletons, and
 //! centerline extraction for tubular structures.
-
-#![allow(dead_code)]
 
 /// Method used to compute the skeleton / medial axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -598,8 +595,8 @@ pub fn distance_transform(img: &BinaryImage) -> Vec<f64> {
     let mut dt = vec![0.0_f64; n];
 
     // Initialise: foreground = big, background = 0
-    for i in 0..n {
-        dt[i] = if img.data[i] { big } else { 0.0 };
+    for (i, dt_val) in dt.iter_mut().enumerate().take(n) {
+        *dt_val = if img.data[i] { big } else { 0.0 };
     }
 
     // Forward pass: row-wise left-to-right, top-to-bottom

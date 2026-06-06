@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::items_after_test_module)]
-
 use super::types::{
     ElementTypeStats, ExtendedQualityReport, FullQualityReport, MeshComparison, MeshQualityReport,
     QualityCheckResult, QualitySuggestion, QualityThresholds, TriangleMesh,
@@ -30,7 +28,6 @@ pub(super) fn norm(a: [f32; 3]) -> f32 {
     dot(a, a).sqrt()
 }
 /// Compute the area of a triangle given its three vertex positions.
-#[allow(dead_code)]
 pub fn triangle_area(v0: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> f32 {
     let ab = sub(v1, v0);
     let ac = sub(v2, v0);
@@ -38,7 +35,6 @@ pub fn triangle_area(v0: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> f32 {
 }
 /// Compute the aspect ratio of a triangle: longest edge / shortest altitude.
 /// Returns 1.0 for an equilateral triangle.
-#[allow(dead_code)]
 pub fn triangle_aspect_ratio(v0: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> f32 {
     let e0 = norm(sub(v1, v0));
     let e1 = norm(sub(v2, v1));
@@ -55,26 +51,22 @@ pub fn triangle_aspect_ratio(v0: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> f32 {
 ///
 /// Skewness = (theta_max - theta_equi) / (180 - theta_equi)
 /// where theta_equi = 60 degrees. Returns 0 for equilateral, 1 for degenerate.
-#[allow(dead_code)]
 pub fn triangle_skewness(v0: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> f32 {
     let theta_max = triangle_max_angle_deg(v0, v1, v2);
     let theta_equi = 60.0_f32;
     (theta_max - theta_equi) / (180.0 - theta_equi)
 }
 /// Compute the minimum interior angle of a triangle in degrees.
-#[allow(dead_code)]
 pub fn triangle_min_angle_deg(v0: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> f32 {
     let angles = triangle_angles_deg(v0, v1, v2);
     angles[0].min(angles[1]).min(angles[2])
 }
 /// Compute the maximum interior angle of a triangle in degrees.
-#[allow(dead_code)]
 pub fn triangle_max_angle_deg(v0: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> f32 {
     let angles = triangle_angles_deg(v0, v1, v2);
     angles[0].max(angles[1]).max(angles[2])
 }
 /// Compute the inscribed circle radius: r = area / s (s = semi-perimeter).
-#[allow(dead_code)]
 pub fn triangle_inscribed_radius(v0: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> f32 {
     let a = norm(sub(v2, v1));
     let b = norm(sub(v0, v2));
@@ -86,7 +78,6 @@ pub fn triangle_inscribed_radius(v0: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> f3
     triangle_area(v0, v1, v2) / s
 }
 /// Compute the circumscribed circle radius: R = a*b*c / (4*area).
-#[allow(dead_code)]
 pub fn triangle_circumscribed_radius(v0: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> f32 {
     let a = norm(sub(v2, v1));
     let b = norm(sub(v0, v2));
@@ -124,7 +115,6 @@ pub(super) fn triangle_angles_deg(v0: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> [
     ]
 }
 /// Compute a quality report for the given triangle mesh.
-#[allow(dead_code)]
 pub fn compute_quality_report(mesh: &TriangleMesh) -> MeshQualityReport {
     if mesh.triangles.is_empty() {
         return MeshQualityReport {
@@ -173,7 +163,6 @@ pub fn compute_quality_report(mesh: &TriangleMesh) -> MeshQualityReport {
 }
 /// Compute the axis-aligned bounding box of a mesh.
 /// Returns (min_corner, max_corner).
-#[allow(dead_code)]
 pub fn mesh_bounding_box(mesh: &TriangleMesh) -> ([f32; 3], [f32; 3]) {
     if mesh.vertices.is_empty() {
         return ([0.0; 3], [0.0; 3]);
@@ -193,7 +182,6 @@ pub fn mesh_bounding_box(mesh: &TriangleMesh) -> ([f32; 3], [f32; 3]) {
     (mn, mx)
 }
 /// Compute the total surface area of the mesh.
-#[allow(dead_code)]
 pub fn mesh_surface_area(mesh: &TriangleMesh) -> f32 {
     mesh.triangles
         .iter()
@@ -206,7 +194,6 @@ pub fn mesh_surface_area(mesh: &TriangleMesh) -> f32 {
         .sum()
 }
 /// Compute the average edge length of the mesh.
-#[allow(dead_code)]
 pub fn mesh_average_edge_length(mesh: &TriangleMesh) -> f32 {
     if mesh.triangles.is_empty() {
         return 0.0;
@@ -224,7 +211,6 @@ pub fn mesh_average_edge_length(mesh: &TriangleMesh) -> f32 {
     total / (mesh.triangles.len() as f32 * 3.0)
 }
 /// Compute the signed volume of a closed mesh using the divergence theorem.
-#[allow(dead_code)]
 pub fn mesh_volume_signed(mesh: &TriangleMesh) -> f32 {
     mesh.triangles
         .iter()
@@ -238,7 +224,6 @@ pub fn mesh_volume_signed(mesh: &TriangleMesh) -> f32 {
         .sum()
 }
 /// Compute the number of adjacent triangles per vertex (vertex valence).
-#[allow(dead_code)]
 pub fn vertex_valence(mesh: &TriangleMesh) -> Vec<u32> {
     let mut valence = vec![0_u32; mesh.vertices.len()];
     for tri in &mesh.triangles {
@@ -249,7 +234,6 @@ pub fn vertex_valence(mesh: &TriangleMesh) -> Vec<u32> {
     valence
 }
 /// Remove duplicate vertices within the given tolerance, remapping triangle indices.
-#[allow(dead_code)]
 pub fn remove_duplicate_vertices(mesh: &TriangleMesh, tolerance: f32) -> TriangleMesh {
     let mut new_verts: Vec<[f32; 3]> = Vec::new();
     let mut remap: Vec<u32> = Vec::with_capacity(mesh.vertices.len());
@@ -281,7 +265,6 @@ pub fn remove_duplicate_vertices(mesh: &TriangleMesh, tolerance: f32) -> Triangl
     TriangleMesh::from_raw(new_verts, new_tris)
 }
 /// Remove triangles with area < 1e-10 (degenerate triangles).
-#[allow(dead_code)]
 pub fn remove_degenerate_triangles(mesh: &TriangleMesh) -> TriangleMesh {
     let tris: Vec<[u32; 3]> = mesh
         .triangles
@@ -297,7 +280,6 @@ pub fn remove_degenerate_triangles(mesh: &TriangleMesh) -> TriangleMesh {
     TriangleMesh::from_raw(mesh.vertices.clone(), tris)
 }
 /// Flip the normals of a mesh by reversing the winding order of all triangles.
-#[allow(dead_code)]
 pub fn flip_normals(mesh: &TriangleMesh) -> TriangleMesh {
     let tris: Vec<[u32; 3]> = mesh
         .triangles
@@ -307,7 +289,6 @@ pub fn flip_normals(mesh: &TriangleMesh) -> TriangleMesh {
     TriangleMesh::from_raw(mesh.vertices.clone(), tris)
 }
 /// Check a mesh against quality thresholds.
-#[allow(dead_code)]
 pub fn check_quality(mesh: &TriangleMesh, thresholds: &QualityThresholds) -> QualityCheckResult {
     let mut n_bad_ar = 0_u32;
     let mut n_bad_skew = 0_u32;
@@ -354,7 +335,6 @@ pub fn check_quality(mesh: &TriangleMesh, thresholds: &QualityThresholds) -> Qua
     }
 }
 /// Generate quality improvement suggestions for a mesh.
-#[allow(dead_code)]
 pub fn suggest_improvements(
     mesh: &TriangleMesh,
     thresholds: &QualityThresholds,
@@ -409,7 +389,6 @@ pub fn suggest_improvements(
     suggestions
 }
 /// Compute element type statistics for a mesh.
-#[allow(dead_code)]
 pub fn element_type_stats(mesh: &TriangleMesh) -> ElementTypeStats {
     let mut stats = ElementTypeStats {
         total: mesh.triangles.len() as u32,
@@ -440,7 +419,6 @@ pub fn element_type_stats(mesh: &TriangleMesh) -> ElementTypeStats {
     stats
 }
 /// Compare two meshes and return the differences.
-#[allow(dead_code)]
 pub fn compare_meshes(mesh_a: &TriangleMesh, mesh_b: &TriangleMesh) -> MeshComparison {
     let rep_a = compute_quality_report(mesh_a);
     let rep_b = compute_quality_report(mesh_b);
@@ -454,7 +432,6 @@ pub fn compare_meshes(mesh_a: &TriangleMesh, mesh_b: &TriangleMesh) -> MeshCompa
     }
 }
 /// Compute an extended quality report with histograms.
-#[allow(dead_code)]
 pub fn compute_extended_quality_report(mesh: &TriangleMesh) -> ExtendedQualityReport {
     let basic = compute_quality_report(mesh);
     let n = mesh.triangles.len();
@@ -504,7 +481,6 @@ pub fn compute_extended_quality_report(mesh: &TriangleMesh) -> ExtendedQualityRe
 }
 /// Compute the Euler characteristic: V - E + F.
 /// For a closed surface, this should be 2.
-#[allow(dead_code)]
 pub fn euler_characteristic(mesh: &TriangleMesh) -> i64 {
     let v = mesh.vertex_count() as i64;
     let f = mesh.triangle_count() as i64;
@@ -514,7 +490,6 @@ pub fn euler_characteristic(mesh: &TriangleMesh) -> i64 {
 /// Compute the ratio of inradius to circumradius for each triangle.
 /// For an equilateral triangle, this ratio is 0.5.
 /// Closer to 0 means lower quality.
-#[allow(dead_code)]
 pub fn radius_ratio_quality(mesh: &TriangleMesh) -> Vec<f32> {
     mesh.triangles
         .iter()
@@ -533,13 +508,78 @@ pub fn radius_ratio_quality(mesh: &TriangleMesh) -> Vec<f32> {
         .collect()
 }
 /// Compute mean radius ratio for the mesh (higher = better quality).
-#[allow(dead_code)]
 pub fn mean_radius_ratio(mesh: &TriangleMesh) -> f32 {
     let ratios = radius_ratio_quality(mesh);
     if ratios.is_empty() {
         return 0.0;
     }
     ratios.iter().sum::<f32>() / ratios.len() as f32
+}
+/// Compute a full quality report for a mesh.
+pub fn compute_full_quality_report(mesh: &TriangleMesh) -> FullQualityReport {
+    let basic = compute_quality_report(mesh);
+    let stats = element_type_stats(mesh);
+    let n = mesh.triangles.len();
+    if n == 0 {
+        return FullQualityReport {
+            basic,
+            global_min_angle_deg: 0.0,
+            global_max_angle_deg: 0.0,
+            mean_angle_deg: 60.0,
+            min_jacobian: 0.0,
+            max_jacobian: 0.0,
+            mean_jacobian: 0.0,
+            element_type_counts: Vec::new(),
+            n_poorly_shaped: 0,
+            total_surface_area: 0.0,
+        };
+    }
+    let mut g_min_angle = f32::INFINITY;
+    let mut g_max_angle = f32::NEG_INFINITY;
+    let mut sum_angle = 0.0_f32;
+    let mut min_jac = f32::INFINITY;
+    let mut max_jac = f32::NEG_INFINITY;
+    let mut sum_jac = 0.0_f32;
+    let mut n_poorly = 0_u32;
+    for tri in &mesh.triangles {
+        let v0 = mesh.vertices[tri[0] as usize];
+        let v1 = mesh.vertices[tri[1] as usize];
+        let v2 = mesh.vertices[tri[2] as usize];
+        let min_a = triangle_min_angle_deg(v0, v1, v2);
+        let max_a = triangle_max_angle_deg(v0, v1, v2);
+        let mean_a = (min_a + max_a) / 2.0;
+        g_min_angle = g_min_angle.min(min_a);
+        g_max_angle = g_max_angle.max(max_a);
+        sum_angle += mean_a;
+        let area = triangle_area(v0, v1, v2);
+        let jac = 2.0 * area;
+        min_jac = min_jac.min(jac);
+        max_jac = max_jac.max(jac);
+        sum_jac += jac;
+        let ar = triangle_aspect_ratio(v0, v1, v2);
+        if ar > 5.0 || min_a < 15.0 {
+            n_poorly += 1;
+        }
+    }
+    let element_type_counts = vec![
+        ("equilateral".to_string(), stats.n_equilateral),
+        ("right".to_string(), stats.n_right),
+        ("obtuse".to_string(), stats.n_obtuse),
+        ("acute".to_string(), stats.n_acute),
+        ("degenerate".to_string(), stats.n_degenerate),
+    ];
+    FullQualityReport {
+        global_min_angle_deg: if n > 0 { g_min_angle } else { 0.0 },
+        global_max_angle_deg: if n > 0 { g_max_angle } else { 0.0 },
+        mean_angle_deg: if n > 0 { sum_angle / n as f32 } else { 60.0 },
+        min_jacobian: if n > 0 { min_jac } else { 0.0 },
+        max_jacobian: if n > 0 { max_jac } else { 0.0 },
+        mean_jacobian: if n > 0 { sum_jac / n as f32 } else { 0.0 },
+        element_type_counts,
+        n_poorly_shaped: n_poorly,
+        total_surface_area: mesh_surface_area(mesh),
+        basic,
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -942,72 +982,5 @@ mod tests {
         let ratios = radius_ratio_quality(&m);
         assert!(ratios[0] < 0.5);
         assert!(ratios[0] > 0.0);
-    }
-}
-/// Compute a full quality report for a mesh.
-#[allow(dead_code)]
-pub fn compute_full_quality_report(mesh: &TriangleMesh) -> FullQualityReport {
-    let basic = compute_quality_report(mesh);
-    let stats = element_type_stats(mesh);
-    let n = mesh.triangles.len();
-    if n == 0 {
-        return FullQualityReport {
-            basic,
-            global_min_angle_deg: 0.0,
-            global_max_angle_deg: 0.0,
-            mean_angle_deg: 60.0,
-            min_jacobian: 0.0,
-            max_jacobian: 0.0,
-            mean_jacobian: 0.0,
-            element_type_counts: Vec::new(),
-            n_poorly_shaped: 0,
-            total_surface_area: 0.0,
-        };
-    }
-    let mut g_min_angle = f32::INFINITY;
-    let mut g_max_angle = f32::NEG_INFINITY;
-    let mut sum_angle = 0.0_f32;
-    let mut min_jac = f32::INFINITY;
-    let mut max_jac = f32::NEG_INFINITY;
-    let mut sum_jac = 0.0_f32;
-    let mut n_poorly = 0_u32;
-    for tri in &mesh.triangles {
-        let v0 = mesh.vertices[tri[0] as usize];
-        let v1 = mesh.vertices[tri[1] as usize];
-        let v2 = mesh.vertices[tri[2] as usize];
-        let min_a = triangle_min_angle_deg(v0, v1, v2);
-        let max_a = triangle_max_angle_deg(v0, v1, v2);
-        let mean_a = (min_a + max_a) / 2.0;
-        g_min_angle = g_min_angle.min(min_a);
-        g_max_angle = g_max_angle.max(max_a);
-        sum_angle += mean_a;
-        let area = triangle_area(v0, v1, v2);
-        let jac = 2.0 * area;
-        min_jac = min_jac.min(jac);
-        max_jac = max_jac.max(jac);
-        sum_jac += jac;
-        let ar = triangle_aspect_ratio(v0, v1, v2);
-        if ar > 5.0 || min_a < 15.0 {
-            n_poorly += 1;
-        }
-    }
-    let element_type_counts = vec![
-        ("equilateral".to_string(), stats.n_equilateral),
-        ("right".to_string(), stats.n_right),
-        ("obtuse".to_string(), stats.n_obtuse),
-        ("acute".to_string(), stats.n_acute),
-        ("degenerate".to_string(), stats.n_degenerate),
-    ];
-    FullQualityReport {
-        global_min_angle_deg: if n > 0 { g_min_angle } else { 0.0 },
-        global_max_angle_deg: if n > 0 { g_max_angle } else { 0.0 },
-        mean_angle_deg: if n > 0 { sum_angle / n as f32 } else { 60.0 },
-        min_jacobian: if n > 0 { min_jac } else { 0.0 },
-        max_jacobian: if n > 0 { max_jac } else { 0.0 },
-        mean_jacobian: if n > 0 { sum_jac / n as f32 } else { 0.0 },
-        element_type_counts,
-        n_poorly_shaped: n_poorly,
-        total_surface_area: mesh_surface_area(mesh),
-        basic,
     }
 }

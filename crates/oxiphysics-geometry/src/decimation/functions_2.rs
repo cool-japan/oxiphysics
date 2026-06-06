@@ -2,18 +2,15 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests_decimation_extended {
-    use super::*;
     use crate::decimation::DecimationMetrics;
     use crate::decimation::EdgeFeature;
     use crate::decimation::EdgePriorityQueue;
     use crate::decimation::MeshEdge;
     use crate::decimation::NormalCone;
     use crate::decimation::ProgressiveMeshSimple;
+    use crate::decimation::*;
 
     use crate::decimation::SimpleMesh;
     fn small_mesh() -> SimpleMesh {

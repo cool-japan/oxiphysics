@@ -1,6 +1,6 @@
 # oxiphysics-io
 
-**Status: Alpha** | Version 0.1.1 | 2026-05-17
+**Status: Alpha** | Version 0.1.2 | 2026-06-06
 
 Multi-format file I/O and serialization for the OxiPhysics engine. Pure Rust with zero unsafe code.
 
@@ -47,6 +47,6 @@ let obj = ObjReader::open("model.obj")?.read()?;
 ## Statistics
 
 - **5,978** public items
-- **4,849** tests
+- **4,879** tests
 - **0** stubs — fully implemented
 

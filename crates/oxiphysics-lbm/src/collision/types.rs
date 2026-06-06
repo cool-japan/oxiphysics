@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use crate::lattice::{CS2, D3Q19_VELOCITIES, D3Q19_WEIGHTS};
 
 use super::functions::*;
@@ -22,7 +21,6 @@ impl BgkOverrelaxation {
     /// Construct from kinematic viscosity ν and overrelaxation σ.
     ///
     /// Uses the standard LBM relation ν = cs² (τ − 0.5), τ = 1/ω.
-    #[allow(dead_code)]
     pub fn new(nu: f64, sigma: f64) -> Self {
         let tau = 3.0 * nu + 0.5;
         Self {
@@ -31,24 +29,20 @@ impl BgkOverrelaxation {
         }
     }
     /// Perform the overrelaxed BGK collision step.
-    #[allow(dead_code)]
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         collide_bgk_overrelaxation(f, rho, u, self.omega, self.sigma)
     }
     /// Return the effective kinematic viscosity (ν = cs²(τ − 0.5)).
-    #[allow(dead_code)]
     pub fn effective_viscosity(&self) -> f64 {
         let tau = 1.0 / self.omega;
         (1.0 / 3.0) * (tau - 0.5)
     }
     /// Stability check: returns true when σω < 2.
-    #[allow(dead_code)]
     pub fn is_stable(&self) -> bool {
         self.sigma * self.omega < 2.0
     }
 }
 /// BGK collision parameters.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BgkCollision {
     /// Relaxation rate omega = 1/tau.
@@ -57,14 +51,12 @@ pub struct BgkCollision {
 }
 impl BgkCollision {
     /// Create a new BGK collision operator with the given relaxation rate.
-    #[allow(dead_code)]
     pub fn new(omega: f64) -> Self {
         Self { omega }
     }
     /// Create a BGK operator from kinematic viscosity.
     ///
     /// `omega = 1 / (3*nu + 0.5)`
-    #[allow(dead_code)]
     pub fn from_viscosity(nu: f64) -> Self {
         Self {
             omega: 1.0 / (3.0 * nu + 0.5),
@@ -73,7 +65,6 @@ impl BgkCollision {
     /// Apply BGK collision to a single D3Q19 distribution.
     ///
     /// Returns the post-collision distribution `f* = f - omega*(f - feq)`.
-    #[allow(dead_code)]
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         collide_bgk(f, rho, u, self.omega)
     }
@@ -86,7 +77,6 @@ impl BgkCollision {
 ///
 /// The *magic parameter* `lambda = (tau_plus - 0.5)(tau_minus - 0.5) = 3/16`
 /// eliminates numerical slip at no-slip walls in Poiseuille flow.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TrtCollision {
     /// Symmetric relaxation rate (viscosity-controlling).
@@ -99,7 +89,6 @@ impl TrtCollision {
     ///
     /// `omega_plus = 1 / (3*nu + 0.5)`,
     /// `omega_minus` derived from the optimal magic parameter `3/16`.
-    #[allow(dead_code)]
     pub fn from_viscosity(nu: f64) -> Self {
         let omega_plus = 1.0 / (3.0 * nu + 0.5);
         let tau_plus = 1.0 / omega_plus;
@@ -110,7 +99,6 @@ impl TrtCollision {
         }
     }
     /// Create a TRT operator with explicit relaxation rates.
-    #[allow(dead_code)]
     pub fn new(omega_plus: f64, omega_minus: f64) -> Self {
         Self {
             omega_plus,
@@ -118,13 +106,11 @@ impl TrtCollision {
         }
     }
     /// Apply TRT collision to a single D3Q19 distribution.
-    #[allow(dead_code)]
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         collide_trt(f, rho, u, self.omega_plus, self.omega_minus)
     }
 }
 /// Which collision scheme is active in a hybrid operator.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollisionMode {
     /// Standard BGK (stable region).
@@ -151,7 +137,6 @@ impl CumulantCollision {
     /// Construct from shear viscosity ν.
     ///
     /// Bulk relaxation defaults to 1.0 (minimal bulk viscosity).
-    #[allow(dead_code)]
     pub fn from_viscosity(nu: f64) -> Self {
         let tau = 3.0 * nu + 0.5;
         Self {
@@ -160,7 +145,6 @@ impl CumulantCollision {
         }
     }
     /// Construct with explicit bulk viscosity ζ.
-    #[allow(dead_code)]
     pub fn from_viscosities(nu: f64, zeta: f64) -> Self {
         let tau = 3.0 * nu + 0.5;
         let tau_b = 3.0 * (zeta + 2.0 * nu / 3.0) + 0.5;
@@ -175,7 +159,6 @@ impl CumulantCollision {
     /// 2. Compute central moments from shifted distribution.
     /// 3. Relax stress cumulants; zero out higher-order cumulants.
     /// 4. Reconstruct central moments, shift back.
-    #[allow(dead_code)]
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         let feq = compute_equilibrium_d3q19(rho, u);
         let cm = compute_central_moments_cumulant(f, u);
@@ -196,18 +179,16 @@ impl CumulantCollision {
         cm_out[7] = cm[7] - self.omega * (cm[7] - cm_eq[7]);
         cm_out[8] = cm[8] - self.omega * (cm[8] - cm_eq[8]);
         cm_out[9] = cm[9] - self.omega * (cm[9] - cm_eq[9]);
-        for i in 10..19 {
-            cm_out[i] = 0.0;
+        for cm_out_i in cm_out[10..19].iter_mut() {
+            *cm_out_i = 0.0;
         }
         central_moments_to_f_cumulant(&cm_out, rho, u)
     }
     /// Return effective shear viscosity.
-    #[allow(dead_code)]
     pub fn shear_viscosity(&self) -> f64 {
         (1.0 / 3.0) * (1.0 / self.omega - 0.5)
     }
     /// Return effective bulk viscosity.
-    #[allow(dead_code)]
     pub fn bulk_viscosity(&self) -> f64 {
         (1.0 / 3.0) * (1.0 / self.omega_b - 0.5) * (2.0 / 3.0)
     }
@@ -227,7 +208,6 @@ pub struct RegularizedCollisionFull {
 }
 impl RegularizedCollisionFull {
     /// Construct from kinematic viscosity ν.
-    #[allow(dead_code)]
     pub fn from_viscosity(nu: f64) -> Self {
         let tau = 3.0 * nu + 0.5;
         Self { omega: 1.0 / tau }
@@ -239,19 +219,17 @@ impl RegularizedCollisionFull {
     /// 2. Extract Π^(1) from f − feq.
     /// 3. Reconstruct f^(1) from Π^(1) via Hermite expansion.
     /// 4. Apply BGK: f_out = feq + (1 − ω) f^(1).
-    #[allow(dead_code)]
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         let feq = compute_equilibrium_d3q19(rho, u);
         let pi1 = compute_pi1_tensor(f, &feq);
         let f1 = regularized_f1_d3q19(&pi1, rho);
         let mut f_out = [0.0f64; 19];
-        for i in 0..19 {
-            f_out[i] = feq[i] + (1.0 - self.omega) * f1[i];
+        for (f_out_i, (&feqi, &f1_i)) in f_out.iter_mut().zip(feq.iter().zip(f1.iter())) {
+            *f_out_i = feqi + (1.0 - self.omega) * f1_i;
         }
         f_out
     }
     /// Return the effective viscosity.
-    #[allow(dead_code)]
     pub fn effective_viscosity(&self) -> f64 {
         (1.0 / 3.0) * (1.0 / self.omega - 0.5)
     }
@@ -260,7 +238,6 @@ impl RegularizedCollisionFull {
 ///
 /// Uses BGK in stable regions (low non-equilibrium ratio) and entropic
 /// collision when the non-equilibrium magnitude exceeds a threshold.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HybridCollision {
     /// BGK operator.
@@ -272,7 +249,6 @@ pub struct HybridCollision {
 }
 impl HybridCollision {
     /// Create a hybrid operator from kinematic viscosity.
-    #[allow(dead_code)]
     pub fn from_viscosity(nu: f64, neq_threshold: f64) -> Self {
         let omega = 1.0 / (3.0 * nu + 0.5);
         Self {
@@ -282,7 +258,6 @@ impl HybridCollision {
         }
     }
     /// Apply the hybrid collision.
-    #[allow(dead_code)]
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         let ratio = non_equilibrium_ratio(f, rho, u);
         if ratio > self.neq_threshold {
@@ -292,7 +267,6 @@ impl HybridCollision {
         }
     }
     /// Check which collision mode would be used for a given distribution.
-    #[allow(dead_code)]
     pub fn active_mode(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> CollisionMode {
         let ratio = non_equilibrium_ratio(f, rho, u);
         if ratio > self.neq_threshold {
@@ -312,7 +286,6 @@ impl HybridCollision {
 /// where `k` is the kinetic (equilibrium-driven) part and `s + g` are the
 /// non-equilibrium parts.  The entropy condition is applied only to the ghost
 /// part, improving stability over standard ELBM.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct KbcCollision {
     /// Viscosity-controlling relaxation rate.
@@ -322,7 +295,6 @@ pub struct KbcCollision {
 }
 impl KbcCollision {
     /// Create a KBC collision operator from kinematic viscosity.
-    #[allow(dead_code)]
     pub fn new(nu: f64) -> Self {
         let omega_s = 1.0 / (3.0 * nu + 0.5);
         Self {
@@ -334,7 +306,6 @@ impl KbcCollision {
     ///
     /// Computes the mirror state `f* = feq + (feq - f)` and uses it to
     /// find an alpha ∈ \[0, 2\] satisfying H(f + alpha*(feq - f)) ≤ H(f).
-    #[allow(dead_code)]
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         let feq = compute_equilibrium_d3q19(rho, u);
         let ds: [f64; 19] = std::array::from_fn(|i| feq[i] - f[i]);
@@ -370,7 +341,6 @@ pub struct RecursiveRegularized {
 }
 impl RecursiveRegularized {
     /// Construct from kinematic viscosity ν.
-    #[allow(dead_code)]
     pub fn from_viscosity(nu: f64) -> Self {
         let tau = 3.0 * nu + 0.5;
         Self { omega: 1.0 / tau }
@@ -381,20 +351,18 @@ impl RecursiveRegularized {
     /// 2. Extract Q^(1) (third-order moment contribution) recursively.
     /// 3. Reconstruct f^(1) including Q correction.
     /// 4. Apply BGK relaxation.
-    #[allow(dead_code)]
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         let feq = compute_equilibrium_d3q19(rho, u);
         let pi1 = compute_pi1_tensor(f, &feq);
         let q1 = compute_q1_recursive(&pi1, u, 1.0 / self.omega - 0.5);
         let f1 = regularized_f1_with_q_d3q19(&pi1, &q1);
         let mut f_out = [0.0f64; 19];
-        for i in 0..19 {
-            f_out[i] = feq[i] + (1.0 - self.omega) * f1[i];
+        for (f_out_i, (&feqi, &f1_i)) in f_out.iter_mut().zip(feq.iter().zip(f1.iter())) {
+            *f_out_i = feqi + (1.0 - self.omega) * f1_i;
         }
         f_out
     }
     /// Return effective viscosity.
-    #[allow(dead_code)]
     pub fn effective_viscosity(&self) -> f64 {
         (1.0 / 3.0) * (1.0 / self.omega - 0.5)
     }
@@ -408,7 +376,6 @@ impl RecursiveRegularized {
 /// `H(f + alpha * (feq - f)) <= H(f)`
 ///
 /// where `H(f) = sum_i f_i * ln(f_i / w_i)`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EntropicCollision {
     /// Nominal relaxation rate (used as the starting guess for alpha).
@@ -420,7 +387,6 @@ pub struct EntropicCollision {
 }
 impl EntropicCollision {
     /// Create an entropic collision operator.
-    #[allow(dead_code)]
     pub fn new(omega: f64) -> Self {
         Self {
             omega,
@@ -432,13 +398,12 @@ impl EntropicCollision {
     ///
     /// Computes `alpha` adaptively, then applies:
     /// `f*_i = f_i + alpha * omega * (feq_i - f_i)`
-    #[allow(dead_code)]
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         let feq = compute_equilibrium_d3q19(rho, u);
         let alpha = self.find_alpha(f, &feq);
         let mut f_out = [0.0f64; 19];
-        for i in 0..19 {
-            f_out[i] = f[i] + alpha * self.omega * (feq[i] - f[i]);
+        for (f_out_i, (&fi, &feqi)) in f_out.iter_mut().zip(f.iter().zip(feq.iter())) {
+            *f_out_i = fi + alpha * self.omega * (feqi - fi);
         }
         f_out
     }
@@ -450,11 +415,8 @@ impl EntropicCollision {
         let h_f = self.entropy(f);
         for _ in 0..self.max_iter {
             let mut f_trial = [0.0f64; 19];
-            for i in 0..19 {
-                f_trial[i] = f[i] + alpha * self.omega * (feq[i] - f[i]);
-                if f_trial[i] < 1e-30 {
-                    f_trial[i] = 1e-30;
-                }
+            for (f_trial_i, (&fi, &feqi)) in f_trial.iter_mut().zip(f.iter().zip(feq.iter())) {
+                *f_trial_i = (fi + alpha * self.omega * (feqi - fi)).max(1e-30);
             }
             let h_trial = self.entropy(&f_trial);
             let delta_h = h_trial - h_f;
@@ -473,13 +435,13 @@ impl EntropicCollision {
     ///
     /// `H(f) = sum_i f_i * ln(f_i / w_i)`
     fn entropy(&self, f: &[f64; 19]) -> f64 {
-        let mut h = 0.0f64;
-        for i in 0..19 {
-            let fi = f[i].max(1e-30);
-            let wi = D3Q19_WEIGHTS[i];
-            h += fi * (fi / wi).ln();
-        }
-        h
+        f.iter()
+            .zip(D3Q19_WEIGHTS.iter())
+            .map(|(&fi_raw, &wi)| {
+                let fi = fi_raw.max(1e-30);
+                fi * (fi / wi).ln()
+            })
+            .sum()
     }
 }
 /// Multiple-Relaxation-Time (MRT) collision operator for D3Q19.
@@ -489,7 +451,6 @@ impl EntropicCollision {
 /// `m = M f`, collision: `m* = m - S(m - m_eq)`, post-collision: `f* = M^{-1} m*`.
 ///
 /// Uses a simplified 19-moment basis from Lallemand & Luo (2000).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MrtCollision {
     /// Diagonal relaxation matrix entries s\[0..19\].
@@ -497,14 +458,12 @@ pub struct MrtCollision {
 }
 impl MrtCollision {
     /// Create an MRT operator with given relaxation rates.
-    #[allow(dead_code)]
     pub fn new(s: [f64; 19]) -> Self {
         Self { s }
     }
     /// Create an MRT operator from kinematic viscosity.
     ///
     /// Uses the standard Lallemand-Luo relaxation rates for D3Q19.
-    #[allow(dead_code)]
     pub fn from_viscosity(nu: f64) -> Self {
         let omega = 1.0 / (3.0 * nu + 0.5);
         let mut s = [1.0f64; 19];
@@ -534,13 +493,12 @@ impl MrtCollision {
     /// This simplified implementation uses the decomposed form:
     /// `f* = f - M^{-1} S (m - m_eq)`
     /// approximated via the regularized collision with per-mode relaxation.
-    #[allow(dead_code)]
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         let feq = compute_equilibrium_d3q19(rho, u);
         let mut pi_neq = [[0.0f64; 3]; 3];
-        for i in 0..19 {
+        for (i, (&fi, &feqi)) in f.iter().zip(feq.iter()).enumerate() {
             let c = D3Q19_VELOCITIES[i];
-            let f_neq = f[i] - feq[i];
+            let f_neq = fi - feqi;
             for a in 0..3 {
                 for b in 0..3 {
                     pi_neq[a][b] += f_neq * c[a] as f64 * c[b] as f64;
@@ -548,8 +506,11 @@ impl MrtCollision {
             }
         }
         let omega_s = self.s[9];
+        let omega_g = (self.s[16] + self.s[17] + self.s[18]) / 3.0;
         let mut f_out = [0.0f64; 19];
-        for i in 0..19 {
+        for (i, (f_out_i, (&fi, &feqi))) in
+            f_out.iter_mut().zip(f.iter().zip(feq.iter())).enumerate()
+        {
             let w = D3Q19_WEIGHTS[i];
             let c = D3Q19_VELOCITIES[i];
             let mut stress_contrib = 0.0f64;
@@ -562,14 +523,12 @@ impl MrtCollision {
                 }
             }
             let f_neq_stress = w / (2.0 * CS2 * CS2) * stress_contrib;
-            let f_neq_ghost = (f[i] - feq[i]) - f_neq_stress;
-            let omega_g = (self.s[16] + self.s[17] + self.s[18]) / 3.0;
-            f_out[i] = feq[i] + (1.0 - omega_s) * f_neq_stress + (1.0 - omega_g) * f_neq_ghost;
+            let f_neq_ghost = (fi - feqi) - f_neq_stress;
+            *f_out_i = feqi + (1.0 - omega_s) * f_neq_stress + (1.0 - omega_g) * f_neq_ghost;
         }
         f_out
     }
     /// Compute the effective viscosity from the stress relaxation rate.
-    #[allow(dead_code)]
     pub fn effective_viscosity(&self) -> f64 {
         let omega_s = self.s[9];
         if omega_s <= 0.0 || omega_s >= 2.0 {
@@ -587,7 +546,6 @@ impl MrtCollision {
 /// `f*_i = feq_i + (1 - omega) * f_neq_reg_i`
 ///
 /// where `f_neq_reg_i` is reconstructed from the stress tensor only.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RegularizedCollision {
     /// Relaxation rate omega.
@@ -595,25 +553,22 @@ pub struct RegularizedCollision {
 }
 impl RegularizedCollision {
     /// Create a regularized collision operator.
-    #[allow(dead_code)]
     pub fn new(omega: f64) -> Self {
         Self { omega }
     }
     /// Create from kinematic viscosity.
-    #[allow(dead_code)]
     pub fn from_viscosity(nu: f64) -> Self {
         Self {
             omega: 1.0 / (3.0 * nu + 0.5),
         }
     }
     /// Apply regularized collision.
-    #[allow(dead_code)]
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         let feq = compute_equilibrium_d3q19(rho, u);
         let mut pi = [[0.0f64; 3]; 3];
-        for i in 0..19 {
+        for (i, (&fi, &feqi)) in f.iter().zip(feq.iter()).enumerate() {
             let c = D3Q19_VELOCITIES[i];
-            let f_neq = f[i] - feq[i];
+            let f_neq = fi - feqi;
             for a in 0..3 {
                 for b in 0..3 {
                     pi[a][b] += f_neq * c[a] as f64 * c[b] as f64;
@@ -621,7 +576,7 @@ impl RegularizedCollision {
             }
         }
         let mut f_out = [0.0f64; 19];
-        for i in 0..19 {
+        for (i, (f_out_i, &feqi)) in f_out.iter_mut().zip(feq.iter()).enumerate() {
             let w = D3Q19_WEIGHTS[i];
             let c = D3Q19_VELOCITIES[i];
             let mut q_i = 0.0;
@@ -634,7 +589,7 @@ impl RegularizedCollision {
                 }
             }
             let f_neq_reg = w / (2.0 * CS2 * CS2) * q_i;
-            f_out[i] = feq[i] + (1.0 - self.omega) * f_neq_reg;
+            *f_out_i = feqi + (1.0 - self.omega) * f_neq_reg;
         }
         f_out
     }
@@ -656,7 +611,6 @@ pub struct HybridRecursiveRegularized {
 }
 impl HybridRecursiveRegularized {
     /// Construct from kinematic viscosity ν and sensor threshold.
-    #[allow(dead_code)]
     pub fn new(nu: f64, sigma_threshold: f64) -> Self {
         let tau = 3.0 * nu + 0.5;
         Self {
@@ -665,7 +619,6 @@ impl HybridRecursiveRegularized {
         }
     }
     /// Perform HRR collision.
-    #[allow(dead_code)]
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         let feq = compute_equilibrium_d3q19(rho, u);
         let pi1 = compute_pi1_tensor(f, &feq);
@@ -684,15 +637,19 @@ impl HybridRecursiveRegularized {
             0.0_f64.max(1.0 - sensor / self.sigma_threshold)
         };
         let mut f_out = [0.0f64; 19];
-        for i in 0..19 {
-            let f_rr = feq[i] + (1.0 - self.omega) * f1_rr[i];
-            let f_bgk = f[i] - self.omega * (f[i] - feq[i]);
-            f_out[i] = sigma * f_rr + (1.0 - sigma) * f_bgk;
+        for (i, (f_out_i, ((&fi, &feqi), &f1_rr_i))) in f_out
+            .iter_mut()
+            .zip(f.iter().zip(feq.iter()).zip(f1_rr.iter()))
+            .enumerate()
+        {
+            let _ = i;
+            let f_rr = feqi + (1.0 - self.omega) * f1_rr_i;
+            let f_bgk = fi - self.omega * (fi - feqi);
+            *f_out_i = sigma * f_rr + (1.0 - sigma) * f_bgk;
         }
         f_out
     }
     /// Evaluate the non-equilibrium sensor value at a given state.
-    #[allow(dead_code)]
     pub fn sensor(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> f64 {
         let feq = compute_equilibrium_d3q19(rho, u);
         let neq_mag: f64 = f.iter().zip(feq.iter()).map(|(a, b)| (a - b).abs()).sum();
@@ -704,7 +661,6 @@ impl HybridRecursiveRegularized {
         }
     }
     /// Return effective viscosity.
-    #[allow(dead_code)]
     pub fn effective_viscosity(&self) -> f64 {
         (1.0 / 3.0) * (1.0 / self.omega - 0.5)
     }
@@ -713,7 +669,6 @@ impl HybridRecursiveRegularized {
 ///
 /// This improved version computes raw moments, shifts to central moments,
 /// relaxes each central moment to its equilibrium, then transforms back.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CentralMomentCollision {
     /// Relaxation rates for each of the 19 moment groups.
@@ -722,7 +677,6 @@ pub struct CentralMomentCollision {
 }
 impl CentralMomentCollision {
     /// Create from kinematic viscosity with standard moment relaxation rates.
-    #[allow(dead_code)]
     pub fn from_viscosity(nu: f64) -> Self {
         let omega_s = 1.0 / (3.0 * nu + 0.5);
         let mut s = [1.0f64; 19];
@@ -736,8 +690,8 @@ impl CentralMomentCollision {
         s[7] = omega_s;
         s[8] = omega_s;
         s[9] = omega_s;
-        for i in 10..19 {
-            s[i] = 1.0;
+        for s_i in s[10..19].iter_mut() {
+            *s_i = 1.0;
         }
         Self { s }
     }
@@ -745,20 +699,25 @@ impl CentralMomentCollision {
     ///
     /// Computes raw moments → shifts to central moments →
     /// relaxes → un-shifts → inverse transform back to populations.
-    #[allow(dead_code)]
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         let feq = compute_equilibrium_d3q19(rho, u);
         let inv_rho = if rho > 1e-15 { 1.0 / rho } else { 1.0 };
         let cm_f = compute_central_moments(f, u, inv_rho);
         let cm_feq = compute_central_moments(&feq, u, inv_rho);
         let mut cm_post = [0.0f64; 19];
-        for i in 0..19 {
-            cm_post[i] = cm_f[i] - self.s[i] * (cm_f[i] - cm_feq[i]);
+        for (cm_post_i, ((&cm_fi, &cm_feqi), &si)) in cm_post
+            .iter_mut()
+            .zip(cm_f.iter().zip(cm_feq.iter()).zip(self.s.iter()))
+        {
+            *cm_post_i = cm_fi - si * (cm_fi - cm_feqi);
         }
         let mut f_out = feq;
-        for i in 0..19 {
-            let neq_cm = cm_post[i] - cm_feq[i];
-            f_out[i] += neq_cm * D3Q19_WEIGHTS[i];
+        for (f_out_i, ((&cm_post_i, &cm_feqi), &wi)) in f_out
+            .iter_mut()
+            .zip(cm_post.iter().zip(cm_feq.iter()).zip(D3Q19_WEIGHTS.iter()))
+        {
+            let neq_cm = cm_post_i - cm_feqi;
+            *f_out_i += neq_cm * wi;
         }
         f_out
     }
@@ -770,7 +729,6 @@ impl CentralMomentCollision {
 ///
 /// This is a simplified version that uses the same relaxation rate for
 /// stress-related moments and a separate rate for higher-order moments.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CascadedCollision {
     /// Relaxation rate for stress (viscosity-related) moments.
@@ -780,12 +738,10 @@ pub struct CascadedCollision {
 }
 impl CascadedCollision {
     /// Create a cascaded collision operator.
-    #[allow(dead_code)]
     pub fn new(omega_s: f64, omega_q: f64) -> Self {
         Self { omega_s, omega_q }
     }
     /// Create from kinematic viscosity with default ghost relaxation.
-    #[allow(dead_code)]
     pub fn from_viscosity(nu: f64) -> Self {
         let omega_s = 1.0 / (3.0 * nu + 0.5);
         Self {
@@ -797,13 +753,12 @@ impl CascadedCollision {
     ///
     /// For simplicity, this implementation applies BGK-like relaxation
     /// but separates stress and higher-order moment relaxation.
-    #[allow(dead_code)]
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         let feq = compute_equilibrium_d3q19(rho, u);
         let mut pi_neq = [[0.0f64; 3]; 3];
-        for i in 0..19 {
+        for (i, (&fi, &feqi)) in f.iter().zip(feq.iter()).enumerate() {
             let c = D3Q19_VELOCITIES[i];
-            let f_neq = f[i] - feq[i];
+            let f_neq = fi - feqi;
             for a in 0..3 {
                 for b in 0..3 {
                     pi_neq[a][b] += f_neq * c[a] as f64 * c[b] as f64;
@@ -811,7 +766,9 @@ impl CascadedCollision {
             }
         }
         let mut f_out = [0.0f64; 19];
-        for i in 0..19 {
+        for (i, (f_out_i, (&fi, &feqi))) in
+            f_out.iter_mut().zip(f.iter().zip(feq.iter())).enumerate()
+        {
             let w = D3Q19_WEIGHTS[i];
             let c = D3Q19_VELOCITIES[i];
             let mut stress_contrib = 0.0;
@@ -824,10 +781,10 @@ impl CascadedCollision {
                 }
             }
             let f_neq_stress = w / (2.0 * CS2 * CS2) * stress_contrib;
-            let f_neq_total = f[i] - feq[i];
+            let f_neq_total = fi - feqi;
             let f_neq_ghost = f_neq_total - f_neq_stress;
-            f_out[i] =
-                feq[i] + (1.0 - self.omega_s) * f_neq_stress + (1.0 - self.omega_q) * f_neq_ghost;
+            *f_out_i =
+                feqi + (1.0 - self.omega_s) * f_neq_stress + (1.0 - self.omega_q) * f_neq_ghost;
         }
         f_out
     }
@@ -850,7 +807,6 @@ pub struct RawMomentCollision {
 }
 impl RawMomentCollision {
     /// Construct from shear viscosity ν and bulk viscosity ζ.
-    #[allow(dead_code)]
     pub fn from_viscosity(nu: f64, zeta: f64) -> Self {
         let tau_v = 3.0 * nu + 0.5;
         let tau_b = 3.0 * (zeta + 2.0 * nu / 3.0) + 0.5;
@@ -864,20 +820,20 @@ impl RawMomentCollision {
     ///
     /// Uses the D3Q19 raw moment representation.  Hydrodynamic moments
     /// (density, momentum) are conserved; stress moments relax at ω_v.
-    #[allow(dead_code)]
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         let feq = compute_equilibrium_d3q19(rho, u);
         let m = compute_raw_moments_d3q19(f);
         let meq = compute_raw_moments_d3q19(&feq);
         let mut m_out = [0.0f64; 19];
-        for i in 0..19 {
+        for (i, (m_out_i, (&mi, &meqi))) in
+            m_out.iter_mut().zip(m.iter().zip(meq.iter())).enumerate()
+        {
             let rate = raw_moment_rate(i, self.omega_v, self.omega_b, self.omega_g);
-            m_out[i] = m[i] - rate * (m[i] - meq[i]);
+            *m_out_i = mi - rate * (mi - meqi);
         }
         raw_moments_to_f_d3q19(&m_out)
     }
     /// Return effective shear viscosity.
-    #[allow(dead_code)]
     pub fn shear_viscosity(&self) -> f64 {
         (1.0 / 3.0) * (1.0 / self.omega_v - 0.5)
     }

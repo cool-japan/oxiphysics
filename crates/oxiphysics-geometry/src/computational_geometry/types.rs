@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::should_implement_trait)]
-#[allow(unused_imports)]
+// TODO(P4): public API churn — Point2::add/sub should become ops::Add/Sub impls
 use super::functions::*;
 use super::functions::{FaceId, HalfEdgeId, Point3, VertexId};
-#[allow(unused_imports)]
-use super::functions_2::*;
 
 /// A Voronoi cell: the site point and its circumcenter-based Voronoi vertices.
 #[derive(Debug, Clone)]
@@ -435,14 +432,6 @@ impl Point2 {
     pub fn new(x: f64, y: f64) -> Self {
         Self { x, y }
     }
-    /// Subtract another point, yielding a vector.
-    pub fn sub(self, other: Self) -> Self {
-        Self::new(self.x - other.x, self.y - other.y)
-    }
-    /// Add another point / vector.
-    pub fn add(self, other: Self) -> Self {
-        Self::new(self.x + other.x, self.y + other.y)
-    }
     /// Scale by a scalar.
     pub fn scale(self, t: f64) -> Self {
         Self::new(self.x * t, self.y * t)
@@ -457,7 +446,7 @@ impl Point2 {
     }
     /// Euclidean distance squared to another point.
     pub fn dist_sq(self, other: Self) -> f64 {
-        let d = self.sub(other);
+        let d = self - other;
         d.dot(d)
     }
     /// Euclidean distance to another point.
@@ -466,7 +455,19 @@ impl Point2 {
     }
     /// 2D cross product of vectors (p1-p0) and (p2-p0).
     pub fn cross2(p0: Self, p1: Self, p2: Self) -> f64 {
-        p1.sub(p0).cross(p2.sub(p0))
+        (p1 - p0).cross(p2 - p0)
+    }
+}
+impl std::ops::Sub for Point2 {
+    type Output = Self;
+    fn sub(self, other: Self) -> Self {
+        Self::new(self.x - other.x, self.y - other.y)
+    }
+}
+impl std::ops::Add for Point2 {
+    type Output = Self;
+    fn add(self, other: Self) -> Self {
+        Self::new(self.x + other.x, self.y + other.y)
     }
 }
 /// A manifold polygon mesh represented with the half-edge data structure.

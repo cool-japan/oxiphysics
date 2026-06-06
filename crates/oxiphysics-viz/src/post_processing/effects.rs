@@ -4,8 +4,6 @@
 //! Basic post-processing effects: Gaussian blur, depth-of-field, bloom,
 //! tone mapping, SSAO, vignette, and the composable pipeline.
 
-#![allow(dead_code)]
-
 use std::f32::consts::PI;
 
 use super::core::{Image, PostColor};

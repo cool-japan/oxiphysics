@@ -90,7 +90,6 @@ impl DfsphSolver {
     }
 
     /// Reset all internal buffers to zero.
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         for v in &mut self.alpha {
             *v = 0.0;
@@ -112,7 +111,6 @@ impl DfsphSolver {
     /// Compute the alpha factor for each particle.
     ///
     /// `alpha_i = rho_i / (|sum_j m_j grad W_ij|^2 + sum_j |m_j grad W_ij|^2)`
-    #[allow(clippy::needless_range_loop)]
     pub fn compute_alpha(
         &mut self,
         particles: &ParticleSet,
@@ -121,11 +119,11 @@ impl DfsphSolver {
         h: f64,
     ) {
         let n = particles.len();
-        for i in 0..n {
+        for (i, nbrs) in neighbors.iter().enumerate().take(n) {
             let mut sum_grad = Vec3::zeros();
             let mut sum_grad_sq = 0.0;
 
-            for &j in &neighbors[i] {
+            for &j in nbrs {
                 let rij = particles.positions[i] - particles.positions[j];
                 let r = rij.norm();
                 if r < 1e-14 {
@@ -157,7 +155,6 @@ impl DfsphSolver {
     /// Correct density error iteratively.
     ///
     /// Returns the number of iterations performed.
-    #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
     pub fn correct_density_error(
         &mut self,
         particles: &mut ParticleSet,
@@ -173,9 +170,9 @@ impl DfsphSolver {
         for iter in 0..params.max_density_iterations {
             // Predict density: rho* = rho_i + dt * sum_j m_j (v_i - v_j) . grad W_ij
             let mut max_error: f64 = 0.0;
-            for i in 0..n {
+            for (i, nbrs) in neighbors.iter().enumerate().take(n) {
                 let mut drho = 0.0;
-                for &j in &neighbors[i] {
+                for &j in nbrs {
                     let rij = particles.positions[i] - particles.positions[j];
                     let r = rij.norm();
                     if r < 1e-14 {
@@ -204,9 +201,9 @@ impl DfsphSolver {
                 };
             }
 
-            for i in 0..n {
+            for (i, nbrs) in neighbors.iter().enumerate().take(n) {
                 let rhoi = particles.densities[i].max(1e-14);
-                for &j in &neighbors[i] {
+                for &j in nbrs {
                     let rij = particles.positions[i] - particles.positions[j];
                     let r = rij.norm();
                     if r < 1e-14 {
@@ -263,7 +260,6 @@ impl DfsphSolver {
     /// Compute adaptive timestep with additional viscosity constraint.
     ///
     /// Adds `dt_visc = 0.125 * h^2 / nu` to the set of constraints.
-    #[allow(dead_code)]
     pub fn compute_adaptive_dt_with_viscosity(
         &self,
         velocities: &[Vec3],
@@ -285,7 +281,6 @@ impl DfsphSolver {
     /// Correct divergence error iteratively.
     ///
     /// Returns the number of iterations performed.
-    #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
     pub fn correct_divergence_error(
         &mut self,
         particles: &mut ParticleSet,
@@ -299,9 +294,9 @@ impl DfsphSolver {
         for iter in 0..params.max_divergence_iterations {
             // Compute density derivative: drho/dt = sum_j m_j (v_i - v_j) . grad W_ij
             let mut max_div: f64 = 0.0;
-            for i in 0..n {
+            for (i, nbrs) in neighbors.iter().enumerate().take(n) {
                 let mut drho_dt = 0.0;
-                for &j in &neighbors[i] {
+                for &j in nbrs {
                     let rij = particles.positions[i] - particles.positions[j];
                     let r = rij.norm();
                     if r < 1e-14 {
@@ -329,9 +324,9 @@ impl DfsphSolver {
                 };
             }
 
-            for i in 0..n {
+            for (i, nbrs) in neighbors.iter().enumerate().take(n) {
                 let rhoi = particles.densities[i].max(1e-14);
-                for &j in &neighbors[i] {
+                for &j in nbrs {
                     let rij = particles.positions[i] - particles.positions[j];
                     let r = rij.norm();
                     if r < 1e-14 {
@@ -360,7 +355,6 @@ impl DfsphSolver {
 /// `div(v)_i = sum_j m_j / rho_j * (v_j - v_i) . grad_W_ij`
 ///
 /// Returns a vector of divergence values.
-#[allow(dead_code)]
 pub fn compute_velocity_divergence(
     particles: &ParticleSet,
     neighbors: &[Vec<usize>],
@@ -395,7 +389,6 @@ pub fn compute_velocity_divergence(
 /// `curl(v)_i = sum_j m_j / rho_j * (v_j - v_i) x grad_W_ij`
 ///
 /// Returns a vector of vorticity vectors.
-#[allow(dead_code)]
 pub fn compute_velocity_curl(
     particles: &ParticleSet,
     neighbors: &[Vec<usize>],
@@ -432,7 +425,6 @@ pub fn compute_velocity_curl(
 /// Compute the maximum relative density error.
 ///
 /// `max_error = max_i |rho_i - rho0| / rho0`
-#[allow(dead_code)]
 pub fn max_density_error(densities: &[f64], rho0: f64) -> f64 {
     densities
         .iter()
@@ -443,7 +435,6 @@ pub fn max_density_error(densities: &[f64], rho0: f64) -> f64 {
 /// Compute the average relative density error.
 ///
 /// `avg_error = (1/N) * sum_i |rho_i - rho0| / rho0`
-#[allow(dead_code)]
 pub fn avg_density_error(densities: &[f64], rho0: f64) -> f64 {
     if densities.is_empty() {
         return 0.0;
@@ -458,7 +449,6 @@ pub fn avg_density_error(densities: &[f64], rho0: f64) -> f64 {
 /// Compute the RMS density error.
 ///
 /// `rms_error = sqrt((1/N) * sum_i ((rho_i - rho0) / rho0)^2)`
-#[allow(dead_code)]
 pub fn rms_density_error(densities: &[f64], rho0: f64) -> f64 {
     if densities.is_empty() {
         return 0.0;
@@ -478,7 +468,6 @@ pub fn rms_density_error(densities: &[f64], rho0: f64) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Track convergence of the DFSPH iteration.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConvergenceHistory {
     /// Error values at each iteration.
@@ -491,7 +480,6 @@ impl Default for ConvergenceHistory {
     }
 }
 
-#[allow(dead_code)]
 impl ConvergenceHistory {
     /// Create a new convergence history.
     pub fn new() -> Self {
@@ -537,7 +525,6 @@ impl ConvergenceHistory {
 // ---------------------------------------------------------------------------
 
 /// Adaptive time step controller using error estimation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AdaptiveTimeStep {
     /// Current time step size.
@@ -552,7 +539,6 @@ pub struct AdaptiveTimeStep {
     pub max_growth: f64,
 }
 
-#[allow(dead_code)]
 impl AdaptiveTimeStep {
     /// Create a new adaptive time step controller.
     pub fn new(dt_init: f64, dt_min: f64, dt_max: f64) -> Self {
@@ -590,7 +576,6 @@ impl AdaptiveTimeStep {
 /// Compute kinetic energy of the particle system.
 ///
 /// `KE = 0.5 * sum_i m_i * |v_i|^2`
-#[allow(dead_code)]
 pub fn kinetic_energy(particles: &ParticleSet) -> f64 {
     let mut ke = 0.0;
     for i in 0..particles.len() {
@@ -602,7 +587,6 @@ pub fn kinetic_energy(particles: &ParticleSet) -> f64 {
 /// Compute potential energy of the particle system under gravity.
 ///
 /// `PE = sum_i m_i * g . x_i`
-#[allow(dead_code)]
 pub fn potential_energy(particles: &ParticleSet, gravity: Vec3) -> f64 {
     let mut pe = 0.0;
     for i in 0..particles.len() {
@@ -612,7 +596,6 @@ pub fn potential_energy(particles: &ParticleSet, gravity: Vec3) -> f64 {
 }
 
 /// Perform a single DFSPH time step.
-#[allow(clippy::too_many_arguments)]
 pub fn step(
     particles: &mut ParticleSet,
     neighbors: &[Vec<usize>],
@@ -650,7 +633,6 @@ pub fn step(
 
 /// Tracks per-step solver statistics for DFSPH convergence monitoring.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct DfsphSolverStats {
     /// Number of time steps processed.
     pub num_steps: u64,
@@ -668,7 +650,6 @@ pub struct DfsphSolverStats {
     pub divergence_error_history: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl DfsphSolverStats {
     /// Create a new stats tracker.
     pub fn new() -> Self {
@@ -728,7 +709,6 @@ impl DfsphSolver {
     /// Correct density error with warm-start (use current kappa as initial guess).
     ///
     /// Returns the number of iterations performed.
-    #[allow(clippy::too_many_arguments, clippy::needless_range_loop, dead_code)]
     pub fn correct_density_error_warm_start(
         &mut self,
         particles: &mut ParticleSet,
@@ -744,7 +724,6 @@ impl DfsphSolver {
 
     /// Apply divergence-free velocity correction and return the max divergence
     /// error after correction.
-    #[allow(clippy::too_many_arguments, clippy::needless_range_loop, dead_code)]
     pub fn correct_divergence_and_measure(
         &mut self,
         particles: &mut ParticleSet,
@@ -757,9 +736,9 @@ impl DfsphSolver {
         let h = params.smoothing_length;
         let n = particles.len();
         let mut max_div = 0.0f64;
-        for i in 0..n {
+        for (i, nbrs) in neighbors.iter().enumerate().take(n) {
             let mut drho_dt = 0.0;
-            for &j in &neighbors[i] {
+            for &j in nbrs {
                 let rij = particles.positions[i] - particles.positions[j];
                 let r = rij.norm();
                 if r < 1e-14 {
@@ -779,7 +758,6 @@ impl DfsphSolver {
     ///
     /// This extends `predict_velocities` with a simple XSPH viscosity correction:
     /// v*_i += ε * Σ_j (m_j / rho_j) * (v_j - v_i) * W_ij
-    #[allow(clippy::needless_range_loop, dead_code)]
     pub fn predict_velocities_with_xsph(
         particles: &mut ParticleSet,
         neighbors: &[Vec<usize>],
@@ -795,8 +773,8 @@ impl DfsphSolver {
         // Then: XSPH correction.
         let n = particles.len();
         let mut xsph_corr = vec![Vec3::zeros(); n];
-        for i in 0..n {
-            for &j in &neighbors[i] {
+        for (i, nbrs) in neighbors.iter().enumerate().take(n) {
+            for &j in nbrs {
                 let rij = particles.positions[i] - particles.positions[j];
                 let r = rij.norm();
                 if r < 1e-14 {
@@ -808,8 +786,8 @@ impl DfsphSolver {
                 xsph_corr[i] += (particles.masses[j] / rhoj) * w * vij;
             }
         }
-        for i in 0..n {
-            particles.velocities[i] += xsph_epsilon * xsph_corr[i];
+        for (i, corr) in xsph_corr.iter().enumerate() {
+            particles.velocities[i] += xsph_epsilon * corr;
         }
     }
 }

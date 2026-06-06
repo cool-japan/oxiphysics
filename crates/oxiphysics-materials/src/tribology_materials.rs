@@ -18,38 +18,6 @@
 
 use std::f64::consts::PI;
 
-// ── Helper arithmetic (no nalgebra) ──────────────────────────────────────────
-
-/// Add two 3-vectors component-wise.
-#[allow(dead_code)]
-fn v3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-/// Subtract two 3-vectors (a − b).
-#[allow(dead_code)]
-fn v3_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-/// Scale a 3-vector by scalar s.
-#[allow(dead_code)]
-fn v3_scale(a: [f64; 3], s: f64) -> [f64; 3] {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-
-/// Dot product of two 3-vectors.
-#[allow(dead_code)]
-fn v3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-/// Euclidean norm of a 3-vector.
-#[allow(dead_code)]
-fn v3_norm(a: [f64; 3]) -> f64 {
-    v3_dot(a, a).sqrt()
-}
-
 // ══════════════════════════════════════════════════════════════════════════════
 // § 1.  Archard Wear Law
 // ══════════════════════════════════════════════════════════════════════════════
@@ -450,7 +418,6 @@ impl GreenwoodWilliamson {
 }
 
 /// Standard Gaussian probability density function.
-#[allow(dead_code)]
 fn gaussian_pdf(x: f64, mean: f64, std: f64) -> f64 {
     let z = (x - mean) / std;
     (-0.5 * z * z).exp() / (std * (2.0 * PI).sqrt())

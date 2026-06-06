@@ -12,10 +12,7 @@ use crate::traits::Constraint;
 use oxiphysics_core::BodyHandle;
 use oxiphysics_rigid::RigidBodySet;
 
-use super::functions::JOINT_BAUMGARTE;
-#[allow(unused_imports)]
-use super::functions::*;
-use super::functions::{apply_pair_impulse, read_body, small_rotation_quat};
+use super::functions::{JOINT_BAUMGARTE, apply_pair_impulse, read_body, small_rotation_quat};
 use super::types::ConeJoint;
 
 impl Constraint for ConeJoint {

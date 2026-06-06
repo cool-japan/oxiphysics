@@ -3,8 +3,6 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::collections::VecDeque;
 
 /// Beta distribution with shape parameters `alpha` and `beta`.

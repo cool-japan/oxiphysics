@@ -516,7 +516,6 @@ impl PhysicsWorld {
     }
 
     /// Shorthand: add a dynamic box body (half-extents `hx, hy, hz`).
-    #[allow(clippy::too_many_arguments)]
     fn add_box_body(
         &mut self,
         mass: f64,
@@ -533,7 +532,6 @@ impl PhysicsWorld {
     }
 
     /// Shorthand: add a dynamic capsule body.
-    #[allow(clippy::too_many_arguments)]
     fn add_capsule_body(
         &mut self,
         mass: f64,
@@ -680,7 +678,6 @@ impl PhysicsWorld {
     }
 
     /// Apply a force `(fx, fy, fz)` at world-space point `(px, py, pz)`.
-    #[allow(clippy::too_many_arguments)]
     fn apply_force_at(
         &mut self,
         handle: u32,
@@ -816,7 +813,6 @@ impl PhysicsWorld {
     // -----------------------------------------------------------------------
 
     /// Handles of bodies whose centre lies within the given AABB.
-    #[allow(clippy::too_many_arguments)]
     fn bodies_in_aabb(
         &self,
         xmin: f64,
@@ -833,7 +829,6 @@ impl PhysicsWorld {
     /// Cast a ray from `(ox, oy, oz)` in direction `(dx, dy, dz)`.
     ///
     /// Returns `(handle, distance)` of the nearest sphere hit, or `None`.
-    #[allow(clippy::too_many_arguments)]
     fn raycast(
         &self,
         ox: f64,

@@ -7,9 +7,6 @@
 //! wear model, Sommerfeld number, elasto-hydrodynamic film thickness,
 //! flash temperature, and hydrodynamic lift for tribological analysis.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────

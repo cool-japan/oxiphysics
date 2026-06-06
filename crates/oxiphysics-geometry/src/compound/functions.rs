@@ -2,11 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::ChildShapeKind;
 
 /// Compute the 3×3 inertia tensor of a sphere about its own center.
-#[allow(dead_code)]
 pub fn sphere_inertia(mass: f64, r: f64) -> [[f64; 3]; 3] {
     let i = 2.0 / 5.0 * mass * r * r;
     [[i, 0.0, 0.0], [0.0, i, 0.0], [0.0, 0.0, i]]
@@ -14,7 +12,6 @@ pub fn sphere_inertia(mass: f64, r: f64) -> [[f64; 3]; 3] {
 /// Compute the 3×3 inertia tensor of an axis-aligned box about its own center.
 ///
 /// `hx`, `hy`, `hz` are the half-extents.
-#[allow(dead_code)]
 pub fn box_inertia(mass: f64, hx: f64, hy: f64, hz: f64) -> [[f64; 3]; 3] {
     let i_xx = mass / 3.0 * (hy * hy + hz * hz);
     let i_yy = mass / 3.0 * (hx * hx + hz * hz);
@@ -22,7 +19,6 @@ pub fn box_inertia(mass: f64, hx: f64, hy: f64, hz: f64) -> [[f64; 3]; 3] {
     [[i_xx, 0.0, 0.0], [0.0, i_yy, 0.0], [0.0, 0.0, i_zz]]
 }
 /// Ray-sphere intersection. Returns (toi, normal).
-#[allow(dead_code)]
 pub(super) fn ray_sphere(
     origin: [f64; 3],
     dir: [f64; 3],
@@ -57,7 +53,6 @@ pub(super) fn ray_sphere(
     Some((t, n))
 }
 /// Ray-box intersection (axis-aligned, centered at origin). Returns (toi, normal).
-#[allow(dead_code)]
 pub(super) fn ray_box(
     origin: [f64; 3],
     dir: [f64; 3],
@@ -100,7 +95,6 @@ pub(super) fn ray_box(
     Some((tmin, normal))
 }
 /// Ray-capsule intersection (Y-axis aligned, centered at origin).
-#[allow(dead_code)]
 pub(super) fn ray_capsule(
     origin: [f64; 3],
     dir: [f64; 3],
@@ -611,8 +605,8 @@ mod tests {
     #[test]
     fn test_sphere_inertia_helper() {
         let i = sphere_inertia(5.0, 2.0);
-        for k in 0..3 {
-            assert!((i[k][k] - 8.0).abs() < 1e-10, "I[{k}][{k}]={}", i[k][k]);
+        for (k, row) in i.iter().enumerate() {
+            assert!((row[k] - 8.0).abs() < 1e-10, "I[{k}][{k}]={}", row[k]);
         }
         assert!(i[0][1].abs() < 1e-15);
     }

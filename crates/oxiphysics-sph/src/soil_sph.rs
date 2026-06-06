@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,8 +15,6 @@
 //! - **Large deformation geomechanics** with updated Lagrangian formulation
 //! - **Debris flow** rheology (Bingham / Herschel-Bulkley)
 //! - **Retaining wall interaction** contact model
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -108,20 +105,21 @@ fn tensor_deviatoric(t: &Tensor3) -> Tensor3 {
 /// Second invariant J2 of a symmetric tensor (deviatoric).
 fn tensor_j2(s: &Tensor3) -> f64 {
     let mut j2 = 0.0;
-    for i in 0..3 {
-        for j in 0..3 {
-            j2 += s[i][j] * s[i][j];
+    for row in s.iter() {
+        for &v in row.iter() {
+            j2 += v * v;
         }
     }
     0.5 * j2
 }
 
 /// Frobenius norm of a tensor.
+#[cfg(test)]
 fn tensor_frobenius(t: &Tensor3) -> f64 {
     let mut s = 0.0;
-    for i in 0..3 {
-        for j in 0..3 {
-            s += t[i][j] * t[i][j];
+    for row in t.iter() {
+        for &v in row.iter() {
+            s += v * v;
         }
     }
     s.sqrt()
@@ -528,14 +526,13 @@ pub struct SlopeStabilityResult {
     pub slip_radius: f64,
 }
 
+/// Slice descriptor: (base_x, base_y, height, width, base_angle_rad, cohesion, friction_angle, pore_pressure).
+type BishopSlice = (f64, f64, f64, f64, f64, f64, f64, f64);
+
 /// Simplified Bishop method for a slope defined by particle columns.
 ///
 /// `slices` contains (base_x, base_y, height, width, base_angle_rad, cohesion, friction_angle, pore_pressure).
-#[allow(clippy::too_many_arguments)]
-pub fn bishop_simplified(
-    slices: &[(f64, f64, f64, f64, f64, f64, f64, f64)],
-    _unit_weight: f64,
-) -> f64 {
+pub fn bishop_simplified(slices: &[BishopSlice], _unit_weight: f64) -> f64 {
     // Iterative Bishop simplified method
     let mut fos = 1.5; // initial guess
     for _iter in 0..50 {
@@ -721,7 +718,6 @@ pub fn rankine_passive_coefficient(friction_angle: f64) -> f64 {
 }
 
 /// Coulomb active earth pressure coefficient.
-#[allow(clippy::too_many_arguments)]
 pub fn coulomb_active_coefficient(phi: f64, delta: f64, beta: f64, alpha: f64) -> f64 {
     let num = (phi + alpha).sin().powi(2);
     let t1 = alpha.sin().powi(2) * (alpha - delta).sin();
@@ -959,7 +955,7 @@ impl SoilSphSolver {
         let n = self.particles.len();
         // Collect neighbor refs to avoid borrow issues
         let neighbors: Vec<Vec<usize>> = self.neighbors.clone();
-        for i in 0..n {
+        for (i, _) in neighbors.iter().enumerate().take(n) {
             self.particles[i].density = compute_density(i, &self.particles, &neighbors[i]);
         }
     }
@@ -972,7 +968,7 @@ impl SoilSphSolver {
         let k = self.params.bulk_modulus();
         let dt = self.config.dt;
 
-        for i in 0..n {
+        for (i, _) in neighbors.iter().enumerate().take(n) {
             if self.particles[i].is_boundary {
                 continue;
             }
@@ -1020,7 +1016,7 @@ impl SoilSphSolver {
             self.particles[i].acceleration = self.config.gravity;
         }
 
-        for i in 0..n {
+        for (i, _) in neighbors.iter().enumerate().take(n) {
             if self.particles[i].is_boundary {
                 self.particles[i].acceleration = vec3_zero();
                 continue;
@@ -1177,13 +1173,13 @@ impl DeformationTracker {
             // (I + L*dt) * F
             let mut f_new = tensor_zero();
             for a in 0..3 {
-                for b in 0..3 {
+                for (b, fb) in f_new[a].iter_mut().enumerate() {
                     let mut val = 0.0;
-                    for k in 0..3 {
-                        let i_plus_ldt = if a == k { 1.0 } else { 0.0 } + l[a][k] * dt;
+                    for (k, lak) in l[a].iter().enumerate() {
+                        let i_plus_ldt = if a == k { 1.0 } else { 0.0 } + lak * dt;
                         val += i_plus_ldt * self.gradients[i][k][b];
                     }
-                    f_new[a][b] = val;
+                    *fb = val;
                 }
             }
             self.gradients[i] = f_new;

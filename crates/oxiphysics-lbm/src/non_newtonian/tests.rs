@@ -5,8 +5,8 @@
 
 use super::*;
 
-#[allow(clippy::module_inception)]
-mod tests {
+#[cfg(test)]
+mod non_newtonian_tests {
     use super::*;
 
     // -----------------------------------------------------------------------

@@ -11,7 +11,6 @@
 // ---------------------------------------------------------------------------
 
 /// Boltzmann constant in reduced / amu · Å² · ps⁻² units (kJ mol⁻¹ K⁻¹).
-#[allow(dead_code)]
 pub const KB_REDUCED: f64 = 8.314_462_618e-3; // kJ mol⁻¹ K⁻¹
 
 // ---------------------------------------------------------------------------
@@ -20,7 +19,6 @@ pub const KB_REDUCED: f64 = 8.314_462_618e-3; // kJ mol⁻¹ K⁻¹
 
 /// Statistical-mechanical ensemble for the MD run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum Ensemble {
     /// Micro-canonical: constant N, V, E.
     NVE,
@@ -36,7 +34,6 @@ pub enum Ensemble {
 
 /// Configuration parameters for a self-contained MD run.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct MdConfig {
     /// Time step (ps).
     pub dt: f64,
@@ -74,7 +71,6 @@ impl Default for MdConfig {
 
 /// Dynamical state of a self-contained MD system.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct MdState {
     /// Atom positions (Å).
     pub positions: Vec<[f64; 3]>,
@@ -100,7 +96,6 @@ pub struct MdState {
 
 impl MdState {
     /// Create a new state from atom data (forces initialised to zero).
-    #[allow(dead_code)]
     pub fn new(positions: Vec<[f64; 3]>, velocities: Vec<[f64; 3]>, masses: Vec<f64>) -> Self {
         let n = positions.len();
         assert_eq!(velocities.len(), n, "velocity count mismatch");
@@ -120,7 +115,6 @@ impl MdState {
     }
 
     /// Number of atoms.
-    #[allow(dead_code)]
     #[inline]
     pub fn n_atoms(&self) -> usize {
         self.positions.len()

@@ -1,4 +1,3 @@
-#![allow(clippy::should_implement_trait)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -258,10 +257,9 @@ fn truncate(s: &str, n: usize) -> &str {
 
 // ─── GroFile from_str / to_string ────────────────────────────────────────────
 
-#[allow(dead_code)]
 impl GroFile {
     /// Parse a GRO file from a string.
-    pub fn from_str(data: &str) -> Result<Self, String> {
+    pub fn parse(data: &str) -> Result<Self, String> {
         let cursor = std::io::Cursor::new(data.as_bytes());
         Self::read(cursor)
     }
@@ -274,6 +272,13 @@ impl GroFile {
     }
 }
 
+impl std::str::FromStr for GroFile {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
 // ============================================================================
 // GroFrame type alias
 // ============================================================================
@@ -282,7 +287,6 @@ impl GroFile {
 ///
 /// This is a re-export-compatible type alias for [`GroFile`], providing
 /// the name used in the task specification.
-#[allow(dead_code)]
 pub type GroFrame = GroFile;
 
 // ============================================================================
@@ -303,7 +307,7 @@ impl GroTrajectory {
     }
 
     /// Parse multiple GRO frames concatenated in a single string.
-    pub fn from_str(data: &str) -> Result<Self, String> {
+    pub fn parse(data: &str) -> Result<Self, String> {
         let mut frames = Vec::new();
         let mut remaining = data;
 
@@ -323,7 +327,7 @@ impl GroTrajectory {
                 break;
             }
             let frame_text: String = lines[..frame_lines].join("\n");
-            let frame = GroFile::from_str(&frame_text)?;
+            let frame = GroFile::parse(&frame_text)?;
             frames.push(frame);
 
             // Advance
@@ -369,6 +373,13 @@ impl GroTrajectory {
     }
 }
 
+impl std::str::FromStr for GroTrajectory {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
 // ============================================================================
 // GroWriter
 // ============================================================================
@@ -377,12 +388,10 @@ impl GroTrajectory {
 ///
 /// Wraps a `GroFile` and forces all atoms to have their velocity field set
 /// before serialisation, padding missing velocities with zero.
-#[allow(dead_code)]
 pub struct GroWriter {
     inner: GroFile,
 }
 
-#[allow(dead_code)]
 impl GroWriter {
     /// Create a new `GroWriter` from an existing `GroFile`.
     pub fn new(gro: GroFile) -> Self {
@@ -436,7 +445,6 @@ impl GroWriter {
 ///
 /// Atoms from `other` are appended after `base`, with residue IDs offset by
 /// the maximum residue ID in `base` + 1.
-#[allow(dead_code)]
 pub fn merge_gro_files(base: &GroFile, other: &GroFile) -> GroFile {
     let max_res_id = base.atoms.iter().map(|a| a.residue_id).max().unwrap_or(0);
     let max_atom_id = base.atoms.iter().map(|a| a.atom_id).max().unwrap_or(0);
@@ -467,7 +475,6 @@ pub fn merge_gro_files(base: &GroFile, other: &GroFile) -> GroFile {
 }
 
 /// Translate all atom positions by `delta`.
-#[allow(dead_code)]
 pub fn translate_gro(gro: &mut GroFile, delta: [f64; 3]) {
     for atom in &mut gro.atoms {
         atom.position[0] += delta[0];
@@ -477,7 +484,6 @@ pub fn translate_gro(gro: &mut GroFile, delta: [f64; 3]) {
 }
 
 /// Compute the centre of geometry of all atoms.
-#[allow(dead_code)]
 pub fn gro_centre_of_geometry(gro: &GroFile) -> [f64; 3] {
     if gro.atoms.is_empty() {
         return [0.0; 3];
@@ -493,14 +499,12 @@ pub fn gro_centre_of_geometry(gro: &GroFile) -> [f64; 3] {
 }
 
 /// Translate the system so that the centre of geometry is at the origin.
-#[allow(dead_code)]
 pub fn centre_gro(gro: &mut GroFile) {
     let cog = gro_centre_of_geometry(gro);
     translate_gro(gro, [-cog[0], -cog[1], -cog[2]]);
 }
 
 /// Wrap all atom positions into the periodic box `[0, box_x) x [0, box_y) x [0, box_z)`.
-#[allow(dead_code)]
 pub fn wrap_into_box(gro: &mut GroFile) {
     for atom in &mut gro.atoms {
         for d in 0..3 {
@@ -513,7 +517,6 @@ pub fn wrap_into_box(gro: &mut GroFile) {
 }
 
 /// Filter atoms by residue name, returning a new `GroFile`.
-#[allow(dead_code)]
 pub fn filter_by_residue(gro: &GroFile, residue_name: &str) -> GroFile {
     let atoms: Vec<GroAtom> = gro
         .atoms
@@ -529,7 +532,6 @@ pub fn filter_by_residue(gro: &GroFile, residue_name: &str) -> GroFile {
 }
 
 /// Compute all pairwise distances between atoms.
-#[allow(dead_code)]
 pub fn gro_pairwise_distances(gro: &GroFile) -> Vec<f64> {
     let n = gro.atoms.len();
     let mut dists = Vec::with_capacity(n * (n - 1) / 2);
@@ -632,7 +634,7 @@ mod tests_gro_trajectory {
     #[test]
     fn test_gro_trajectory_single_frame() {
         let text = make_gro_text(3);
-        let traj = GroTrajectory::from_str(&text).expect("parse");
+        let traj = GroTrajectory::parse(&text).expect("parse");
         assert_eq!(traj.n_frames(), 1);
         assert_eq!(traj.frames[0].atoms.len(), 3);
     }
@@ -641,7 +643,7 @@ mod tests_gro_trajectory {
     fn test_gro_trajectory_two_frames() {
         let mut text = make_gro_text(2);
         text.push_str(&make_gro_text(2));
-        let traj = GroTrajectory::from_str(&text).expect("parse");
+        let traj = GroTrajectory::parse(&text).expect("parse");
         assert_eq!(traj.n_frames(), 2);
     }
 
@@ -649,7 +651,7 @@ mod tests_gro_trajectory {
     fn test_gro_trajectory_atom_path() {
         let mut text = make_gro_text(2);
         text.push_str(&make_gro_text(2));
-        let traj = GroTrajectory::from_str(&text).expect("parse");
+        let traj = GroTrajectory::parse(&text).expect("parse");
         let path = traj.atom_trajectory(0);
         assert_eq!(path.len(), 2);
     }
@@ -657,14 +659,14 @@ mod tests_gro_trajectory {
     #[test]
     fn test_gro_trajectory_mean_box() {
         let text = make_gro_text(1);
-        let traj = GroTrajectory::from_str(&text).expect("parse");
+        let traj = GroTrajectory::parse(&text).expect("parse");
         let mb = traj.mean_box();
         assert!((mb[0] - 3.0).abs() < 1e-5);
     }
 
     #[test]
     fn test_gro_trajectory_empty() {
-        let traj = GroTrajectory::from_str("").expect("parse");
+        let traj = GroTrajectory::parse("").expect("parse");
         assert_eq!(traj.n_frames(), 0);
         assert_eq!(traj.mean_box(), [0.0; 3]);
     }
@@ -852,7 +854,7 @@ mod tests_gro_utilities {
         let frame: GroFrame = GroFile::from_xyz(&[[0.0, 0.0, 0.0]], [3.0, 3.0, 3.0]);
         assert_eq!(frame.atoms.len(), 1);
         let s = frame.to_gro_string().expect("to_gro_string");
-        let parsed: GroFrame = GroFile::from_str(&s).expect("parse");
+        let parsed: GroFrame = GroFile::parse(&s).expect("parse");
         assert_eq!(parsed.atoms.len(), 1);
     }
 }
@@ -883,7 +885,7 @@ mod tests_gro_extra {
     #[test]
     fn gro_file_from_str_basic() {
         let data = minimal_gro("Water box", 2);
-        let gro = GroFile::from_str(&data).expect("parse");
+        let gro = GroFile::parse(&data).expect("parse");
         assert_eq!(gro.atoms.len(), 2);
         assert_eq!(gro.title.trim(), "Water box");
     }
@@ -891,16 +893,16 @@ mod tests_gro_extra {
     #[test]
     fn gro_file_box_vectors_parsed() {
         let data = minimal_gro("test", 1);
-        let gro = GroFile::from_str(&data).expect("parse");
+        let gro = GroFile::parse(&data).expect("parse");
         assert!((gro.box_vectors[0] - 5.0).abs() < 1e-9);
     }
 
     #[test]
     fn gro_file_roundtrip_via_string() {
         let data = minimal_gro("Round trip", 3);
-        let gro = GroFile::from_str(&data).expect("parse");
+        let gro = GroFile::parse(&data).expect("parse");
         let s = gro.to_gro_string().expect("to_gro_string");
-        let gro2 = GroFile::from_str(&s).expect("reparse");
+        let gro2 = GroFile::parse(&s).expect("reparse");
         assert_eq!(gro2.atoms.len(), 3);
     }
 
@@ -930,14 +932,14 @@ mod tests_gro_extra {
     #[test]
     fn gro_file_atoms_have_correct_residue_name() {
         let data = minimal_gro("check", 2);
-        let gro = GroFile::from_str(&data).expect("parse");
+        let gro = GroFile::parse(&data).expect("parse");
         assert_eq!(gro.atoms[0].residue_name, "SOL");
     }
 
     #[test]
     fn gro_file_atom_id_sequential() {
         let data = minimal_gro("seq", 4);
-        let gro = GroFile::from_str(&data).expect("parse");
+        let gro = GroFile::parse(&data).expect("parse");
         for (i, atom) in gro.atoms.iter().enumerate() {
             assert_eq!(atom.atom_id, (i + 1) as i32);
         }

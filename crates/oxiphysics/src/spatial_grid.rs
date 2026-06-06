@@ -31,9 +31,6 @@
 //! assert!(!hits.contains(&2));
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------

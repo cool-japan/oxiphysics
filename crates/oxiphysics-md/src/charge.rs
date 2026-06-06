@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -13,8 +12,6 @@
 //! - [`compute_total_coulomb_energy`]: High-level pair-sum driver
 //! - Charge equilibration (QEq) / electronegativity equalization
 //! - Fixed charge assignment and partial charge computation
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -244,8 +241,8 @@ impl ChargeGroup {
             }
         }
         if total_q > 1e-30 {
-            for d in 0..3 {
-                coc[d] /= total_q;
+            for c in &mut coc {
+                *c /= total_q;
             }
         }
         coc
@@ -417,9 +414,8 @@ impl ChargeEquilibration {
     /// E = sum_i \[ chi_i * q_i + (1/2) * J_ii * q_i^2 \]
     pub fn energy_isolated(&self, charges: &[f64]) -> f64 {
         let mut e = 0.0;
-        for i in 0..charges.len() {
-            e += self.electronegativities[i] * charges[i]
-                + 0.5 * self.hardnesses[i] * charges[i] * charges[i];
+        for (i, &q) in charges.iter().enumerate() {
+            e += self.electronegativities[i] * q + 0.5 * self.hardnesses[i] * q * q;
         }
         e
     }
@@ -989,9 +985,9 @@ mod tests {
         let charges = vec![1.6e-19, -1.6e-19];
         let forces = compute_total_coulomb_forces(&positions, &charges);
         // Newton's third law: F_0 + F_1 = 0
-        for d in 0..3 {
+        for (d, (&f0d, &f1d)) in forces[0].iter().zip(forces[1].iter()).enumerate() {
             assert!(
-                (forces[0][d] + forces[1][d]).abs() < 1e-10,
+                (f0d + f1d).abs() < 1e-10,
                 "Newton's 3rd law violated: d={d}"
             );
         }
@@ -1030,7 +1026,6 @@ mod tests {
 /// * `radius`     – effective Born radius in meters.
 /// * `epsilon_r`  – relative permittivity of the solvent.
 /// * `coulomb_k`  – Coulomb constant k = 1/(4πε₀) in appropriate units.
-#[allow(dead_code)]
 pub fn born_solvation_energy(charge: f64, radius: f64, epsilon_r: f64, coulomb_k: f64) -> f64 {
     if radius.abs() < 1e-30 || epsilon_r.abs() < 1e-30 {
         return 0.0;
@@ -1046,7 +1041,6 @@ pub fn born_solvation_energy(charge: f64, radius: f64, epsilon_r: f64, coulomb_k
 ///
 /// The Drude charge `q_d` is displaced from the core by `displacement`.
 /// The spring energy is U_spring = 0.5 * k_spring * |displacement|^2.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DrudeOscillator {
     /// Index of the core atom.
@@ -1061,7 +1055,6 @@ pub struct DrudeOscillator {
 
 impl DrudeOscillator {
     /// Create a new Drude oscillator on `core_idx`.
-    #[allow(dead_code)]
     pub fn new(core_idx: usize, q_drude: f64, k_spring: f64) -> Self {
         Self {
             core_idx,
@@ -1072,14 +1065,12 @@ impl DrudeOscillator {
     }
 
     /// Spring potential energy for the current displacement.
-    #[allow(dead_code)]
     pub fn spring_energy(&self) -> f64 {
         let r2 = self.displacement.iter().map(|&d| d * d).sum::<f64>();
         0.5 * self.k_spring * r2
     }
 
     /// Restoring force on the Drude particle (pointing toward core).
-    #[allow(dead_code)]
     pub fn restoring_force(&self) -> [f64; 3] {
         [
             -self.k_spring * self.displacement[0],
@@ -1089,7 +1080,6 @@ impl DrudeOscillator {
     }
 
     /// Position of the Drude particle given core position.
-    #[allow(dead_code)]
     pub fn drude_position(&self, core_pos: [f64; 3]) -> [f64; 3] {
         [
             core_pos[0] + self.displacement[0],
@@ -1099,7 +1089,6 @@ impl DrudeOscillator {
     }
 
     /// Isotropic polarisability α = q_d^2 / k_spring.
-    #[allow(dead_code)]
     pub fn polarisability(&self) -> f64 {
         self.q_drude * self.q_drude / self.k_spring
     }
@@ -1110,7 +1099,6 @@ impl DrudeOscillator {
 // ---------------------------------------------------------------------------
 
 /// Compute the monopole (total charge) of a charge distribution.
-#[allow(dead_code)]
 pub fn multipole_monopole(charges: &[f64]) -> f64 {
     charges.iter().sum()
 }
@@ -1118,7 +1106,6 @@ pub fn multipole_monopole(charges: &[f64]) -> f64 {
 /// Compute the dipole moment vector of a charge distribution.
 ///
 /// p = sum_i q_i * r_i
-#[allow(dead_code)]
 pub fn multipole_dipole(positions: &[[f64; 3]], charges: &[f64]) -> [f64; 3] {
     let mut p = [0.0f64; 3];
     for (i, pos) in positions.iter().enumerate() {
@@ -1135,7 +1122,6 @@ pub fn multipole_dipole(positions: &[[f64; 3]], charges: &[f64]) -> [f64; 3] {
 /// Q_ab = sum_i q_i * (3 * r_ia * r_ib - delta_ab * |r_i|^2)
 ///
 /// Returns a 3×3 matrix as `[[f64; 3\]; 3]`.
-#[allow(dead_code)]
 pub fn multipole_quadrupole(positions: &[[f64; 3]], charges: &[f64]) -> [[f64; 3]; 3] {
     let mut q = [[0.0f64; 3]; 3];
     for (i, pos) in positions.iter().enumerate() {
@@ -1161,7 +1147,6 @@ pub fn multipole_quadrupole(positions: &[[f64; 3]], charges: &[f64]) -> [[f64; 3
 ///
 /// U_rf = -k_rf * q_i * q_j * r_ij^2
 /// where k_rf = (epsilon - 1) / ((2*epsilon + 1) * rc^3) * coulomb_k
-#[allow(dead_code)]
 pub fn reaction_field_correction(
     r_ij_sq: f64,
     q_i: f64,
@@ -1178,7 +1163,6 @@ pub fn reaction_field_correction(
 }
 
 /// Total pairwise energy including reaction field correction.
-#[allow(dead_code)]
 pub fn coulomb_plus_reaction_field(
     r: f64,
     q_i: f64,
@@ -1205,7 +1189,6 @@ pub fn coulomb_plus_reaction_field(
 ///
 /// The image charge is `-q` at distance `d` on the other side of the interface.
 /// Returns the image charge value.
-#[allow(dead_code)]
 pub fn image_charge_planar(q: f64) -> f64 {
     -q
 }
@@ -1213,7 +1196,6 @@ pub fn image_charge_planar(q: f64) -> f64 {
 /// Interaction energy between a point charge `q` and its image in a grounded plane.
 ///
 /// E = k * q * (-q) / (2*d) = -k * q^2 / (2*d)
-#[allow(dead_code)]
 pub fn image_charge_energy_planar(q: f64, d: f64, coulomb_k: f64) -> f64 {
     if d.abs() < 1e-30 {
         return 0.0;
@@ -1228,7 +1210,6 @@ pub fn image_charge_energy_planar(q: f64, d: f64, coulomb_k: f64) -> f64 {
 /// Scale all charges by `lambda` (0 = uncharged, 1 = fully charged).
 ///
 /// Used in alchemical free energy calculations to gradually introduce charges.
-#[allow(dead_code)]
 pub fn scale_charges(charges: &[f64], lambda: f64) -> Vec<f64> {
     charges.iter().map(|&q| q * lambda).collect()
 }
@@ -1236,7 +1217,6 @@ pub fn scale_charges(charges: &[f64], lambda: f64) -> Vec<f64> {
 /// Compute the Coulomb energy derivative with respect to lambda.
 ///
 /// dU/d_lambda = U(lambda=1) (for linear charge scaling)
-#[allow(dead_code)]
 pub fn coulomb_energy_lambda_derivative(
     positions: &[[f64; 3]],
     charges: &[f64],
@@ -1256,7 +1236,6 @@ pub fn coulomb_energy_lambda_derivative(
 /// E_restraint = a * sum_i (sqrt(q_i^2 + b^2) - b)
 ///
 /// where `a` and `b` are fitting parameters.
-#[allow(dead_code)]
 pub fn resp_restraint_energy(charges: &[f64], a: f64, b: f64) -> f64 {
     charges
         .iter()
@@ -1267,7 +1246,6 @@ pub fn resp_restraint_energy(charges: &[f64], a: f64, b: f64) -> f64 {
 /// Gradient of the RESP restraint with respect to charge `q`.
 ///
 /// dE/dq_i = a * q_i / sqrt(q_i^2 + b^2)
-#[allow(dead_code)]
 pub fn resp_restraint_gradient(charges: &[f64], a: f64, b: f64) -> Vec<f64> {
     charges
         .iter()
@@ -1680,8 +1658,8 @@ mod tests_extended {
             acc[2] += forces[i][2];
             acc
         });
-        for d in 0..3 {
-            assert!(net[d].abs() < 1e-10, "Net force[{d}] = {}", net[d]);
+        for (d, v) in net.iter().enumerate() {
+            assert!(v.abs() < 1e-10, "Net force[{d}] = {v}");
         }
     }
 }

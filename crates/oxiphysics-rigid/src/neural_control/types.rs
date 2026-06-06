@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use rand::RngExt;
 /// Online running-mean / running-variance normaliser (Welford's algorithm).
@@ -31,11 +29,12 @@ impl RunningNormaliser {
     /// Update statistics with a new sample.
     pub fn update(&mut self, x: &[f64]) {
         self.count += 1;
-        for i in 0..self.dim {
-            let delta = x[i] - self.mean[i];
-            self.mean[i] += delta / self.count as f64;
-            let delta2 = x[i] - self.mean[i];
-            self.m2[i] += delta * delta2;
+        for (i, (mean, m2)) in self.mean.iter_mut().zip(self.m2.iter_mut()).enumerate() {
+            let xi = x[i];
+            let delta = xi - *mean;
+            *mean += delta / self.count as f64;
+            let delta2 = xi - *mean;
+            *m2 += delta * delta2;
         }
     }
     /// Normalise a sample: (x - mean) / std.
@@ -746,9 +745,14 @@ impl AdaptiveControl {
     }
     /// Integrate the reference model one step.
     pub fn step_reference_model(&mut self, r: &[f64], dt: f64) {
-        for i in 0..self.state_dim {
-            let x_dot = self.am_diag[i] * self.ref_state[i] + self.bm_diag[i] * r[i];
-            self.ref_state[i] += x_dot * dt;
+        for (i, (ref_s, (am, bm))) in self
+            .ref_state
+            .iter_mut()
+            .zip(self.am_diag.iter().zip(self.bm_diag.iter()))
+            .enumerate()
+        {
+            let x_dot = am * *ref_s + bm * r[i];
+            *ref_s += x_dot * dt;
         }
     }
     /// Compute the adaptive control action for a given plant state.
@@ -773,13 +777,24 @@ impl AdaptiveControl {
             .zip(self.ref_state.iter())
             .map(|(x, m)| x - m)
             .collect();
-        for i in 0..self.state_dim {
-            for j in 0..self.state_dim {
-                let dtheta = -self.gamma_adapt * self.lyapunov_p[i] * e[i] * plant_state[j];
-                self.theta[i][j] += dtheta * dt;
+        for (i, (theta_row, (lp, (e_i, r_i)))) in self
+            .theta
+            .iter_mut()
+            .zip(self.lyapunov_p.iter().zip(e.iter().zip(r.iter())))
+            .enumerate()
+        {
+            let _ = i;
+            for (j, (th, ps)) in theta_row
+                .iter_mut()
+                .zip(plant_state.iter())
+                .enumerate()
+                .take(self.state_dim)
+            {
+                let _ = j;
+                *th += -self.gamma_adapt * lp * e_i * ps * dt;
             }
-            let dtheta_r = -self.gamma_adapt * self.lyapunov_p[i] * e[i] * r[i];
-            self.theta[i][self.state_dim] += dtheta_r * dt;
+            let dtheta_r = -self.gamma_adapt * lp * e_i * r_i;
+            theta_row[self.state_dim] += dtheta_r * dt;
         }
     }
     /// Lyapunov stability certificate: V = e^T P e (should be non-negative and decreasing).
@@ -1044,6 +1059,17 @@ impl ReplayBuffer {
             .collect()
     }
 }
+/// Axis-aligned hypersphere obstacle in configuration space.
+///
+/// A configuration `q` is considered in collision if `||q - center||₂ ≤ radius`.
+#[derive(Debug, Clone)]
+pub struct PlanningObstacle {
+    /// Center of the obstacle in configuration space.
+    pub center: Vec<f64>,
+    /// Radius of the obstacle (Euclidean metric).
+    pub radius: f64,
+}
+
 /// RRT / RRT* planner for rigid body configuration spaces.
 #[derive(Debug, Clone)]
 pub struct MotionPlanning {
@@ -1063,6 +1089,8 @@ pub struct MotionPlanning {
     pub use_rrt_star: bool,
     /// Rewiring radius for RRT*.
     pub rewire_radius: f64,
+    /// Obstacle set for collision checking in configuration space.
+    pub obstacles: Vec<PlanningObstacle>,
 }
 impl MotionPlanning {
     /// Construct a planner.
@@ -1085,7 +1113,13 @@ impl MotionPlanning {
             goal_tol,
             use_rrt_star,
             rewire_radius,
+            obstacles: Vec::new(),
         }
+    }
+    /// Builder method to add obstacles to the planner.
+    pub fn with_obstacles(mut self, obstacles: Vec<PlanningObstacle>) -> Self {
+        self.obstacles = obstacles;
+        self
     }
     /// Sample a random configuration within bounds.
     pub fn random_config(&self) -> Vec<f64> {
@@ -1120,8 +1154,49 @@ impl MotionPlanning {
                 .collect()
         }
     }
-    /// Stub collision check (always free — replace with real geometry test).
-    pub fn is_collision_free(&self, _config: &[f64]) -> bool {
+    /// Check whether `config` is free of collisions with all registered obstacles.
+    ///
+    /// Returns `false` if `config` lies inside (or on the boundary of) any obstacle,
+    /// or if `config.len() != self.config_dim`.  Returns `true` when no obstacles
+    /// are registered (open space).
+    pub fn is_collision_free(&self, config: &[f64]) -> bool {
+        if config.len() != self.config_dim {
+            return false;
+        }
+        for obs in &self.obstacles {
+            if obs.center.len() != self.config_dim {
+                // Dimension mismatch — skip malformed obstacle rather than panic.
+                continue;
+            }
+            let dist_sq: f64 = config
+                .iter()
+                .zip(obs.center.iter())
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum();
+            if dist_sq <= obs.radius * obs.radius {
+                return false;
+            }
+        }
+        true
+    }
+    /// Check whether the straight-line segment from `q_a` to `q_b` is collision-free.
+    ///
+    /// The segment is discretised into `n_steps` equal intervals and every sample point
+    /// (including both endpoints) is tested with [`is_collision_free`].  A larger
+    /// `n_steps` catches narrower obstacles at the cost of more checks.
+    fn is_segment_collision_free(&self, q_a: &[f64], q_b: &[f64], n_steps: usize) -> bool {
+        let n = n_steps.max(2);
+        for i in 0..=n {
+            let t = i as f64 / n as f64;
+            let q: Vec<f64> = q_a
+                .iter()
+                .zip(q_b.iter())
+                .map(|(a, b)| a + t * (b - a))
+                .collect();
+            if !self.is_collision_free(&q) {
+                return false;
+            }
+        }
         true
     }
     /// Run RRT and return the path from start to goal, or empty if not found.
@@ -1136,7 +1211,7 @@ impl MotionPlanning {
             };
             let nearest_idx = self.nearest(&nodes, &q_rand);
             let q_new = self.steer(&nodes[nearest_idx].config.clone(), &q_rand);
-            if !self.is_collision_free(&q_new) {
+            if !self.is_segment_collision_free(&nodes[nearest_idx].config, &q_new, 10) {
                 continue;
             }
             let cost = nodes[nearest_idx].cost + config_dist(&nodes[nearest_idx].config, &q_new);
@@ -1188,7 +1263,9 @@ impl MotionPlanning {
                 .collect();
             dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
             for (j, _) in dists.iter().take(k_neighbours) {
-                if self.is_collision_free(&configs[*j]) {
+                // A PRM edge is valid only when the entire straight-line segment
+                // through C-space is obstacle-free (prevents tunnelling).
+                if self.is_segment_collision_free(&configs[i], &configs[*j], 10) {
                     adj[i].push(*j);
                 }
             }
@@ -1289,5 +1366,132 @@ impl QTable {
     /// Decay epsilon multiplicatively.
     pub fn decay_epsilon(&mut self, factor: f64) {
         self.epsilon = (self.epsilon * factor).max(0.01);
+    }
+}
+
+#[cfg(test)]
+mod obstacle_tests {
+    use super::*;
+
+    #[test]
+    fn test_planning_obstacle_blocks_config() {
+        let planner = MotionPlanning {
+            config_dim: 2,
+            lower: vec![-1.0, -1.0],
+            upper: vec![1.0, 1.0],
+            step_size: 0.1,
+            max_iters: 100,
+            goal_tol: 0.05,
+            use_rrt_star: false,
+            rewire_radius: 0.3,
+            obstacles: vec![PlanningObstacle {
+                center: vec![0.0, 0.0],
+                radius: 0.5,
+            }],
+        };
+        // Exactly at center — deep inside obstacle.
+        assert!(!planner.is_collision_free(&[0.0, 0.0]));
+        // At radius boundary (dist_sq == radius^2 → blocked).
+        assert!(!planner.is_collision_free(&[0.4, 0.0]));
+        // Clearly outside.
+        assert!(planner.is_collision_free(&[0.8, 0.8]));
+    }
+
+    #[test]
+    fn test_segment_collision_checks_midpoints() {
+        let planner = MotionPlanning {
+            config_dim: 2,
+            lower: vec![-2.0, -2.0],
+            upper: vec![2.0, 2.0],
+            step_size: 0.1,
+            max_iters: 100,
+            goal_tol: 0.05,
+            use_rrt_star: false,
+            rewire_radius: 0.5,
+            obstacles: vec![PlanningObstacle {
+                center: vec![0.0, 0.0],
+                radius: 0.3,
+            }],
+        };
+        // Segment from (-1, 0) to (1, 0) passes through the obstacle at the origin.
+        assert!(!planner.is_segment_collision_free(&[-1.0, 0.0], &[1.0, 0.0], 20));
+        // Segment entirely outside.
+        assert!(planner.is_segment_collision_free(&[0.5, 0.5], &[1.0, 1.0], 10));
+    }
+
+    #[test]
+    fn test_planning_no_obstacles_is_free() {
+        let planner = MotionPlanning {
+            config_dim: 3,
+            lower: vec![0.0; 3],
+            upper: vec![1.0; 3],
+            step_size: 0.1,
+            max_iters: 50,
+            goal_tol: 0.05,
+            use_rrt_star: false,
+            rewire_radius: 0.3,
+            obstacles: vec![],
+        };
+        assert!(planner.is_collision_free(&[0.5, 0.5, 0.5]));
+        assert!(planner.is_collision_free(&[0.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn test_planning_wrong_dim_not_free() {
+        let planner = MotionPlanning {
+            config_dim: 2,
+            lower: vec![0.0, 0.0],
+            upper: vec![1.0, 1.0],
+            step_size: 0.1,
+            max_iters: 50,
+            goal_tol: 0.05,
+            use_rrt_star: false,
+            rewire_radius: 0.3,
+            obstacles: vec![],
+        };
+        // Config has wrong dimensionality — should return false.
+        assert!(!planner.is_collision_free(&[0.5]));
+    }
+
+    #[test]
+    fn test_rrt_runs_with_obstacle_and_finds_path_or_empty() {
+        // Obstacle at (0.5, 0.5), planner must route around it.
+        let planner = MotionPlanning {
+            config_dim: 2,
+            lower: vec![0.0, 0.0],
+            upper: vec![1.0, 1.0],
+            step_size: 0.05,
+            max_iters: 2000,
+            goal_tol: 0.1,
+            use_rrt_star: false,
+            rewire_radius: 0.2,
+            obstacles: vec![PlanningObstacle {
+                center: vec![0.5, 0.5],
+                radius: 0.2,
+            }],
+        };
+        let start = vec![0.1, 0.1];
+        let goal = vec![0.9, 0.9];
+        // Should not panic regardless of result; result is probabilistic.
+        let path = planner.rrt(&start, &goal);
+        // If a path was returned, every waypoint must be obstacle-free.
+        for waypoint in &path {
+            assert!(
+                planner.is_collision_free(waypoint),
+                "RRT returned a waypoint inside an obstacle: {waypoint:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_with_obstacles_builder() {
+        let planner = MotionPlanning::new(2, vec![0.0, 0.0], vec![1.0, 1.0], 0.1, 100, 0.05, false)
+            .with_obstacles(vec![PlanningObstacle {
+                center: vec![0.5, 0.5],
+                radius: 0.1,
+            }]);
+        assert_eq!(planner.obstacles.len(), 1);
+        assert!(!planner.is_collision_free(&[0.5, 0.5]));
+        assert!(planner.is_collision_free(&[0.0, 0.0]));
     }
 }

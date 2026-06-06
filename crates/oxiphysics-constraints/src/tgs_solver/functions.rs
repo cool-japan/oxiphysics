@@ -24,7 +24,6 @@ pub(super) const MAX_SUBSTEPS: usize = 64;
 ///
 /// Prevents tunnelling by limiting the velocity component along a direction
 /// to a maximum value that would not exceed the contact distance in one step.
-#[allow(dead_code)]
 pub fn clamp_speculative_velocity(velocity: &mut Vec3, normal: &Vec3, distance: f64, dt: f64) {
     if dt < 1e-12 {
         return;
@@ -43,7 +42,6 @@ pub fn clamp_speculative_velocity(velocity: &mut Vec3, normal: &Vec3, distance: 
 ///
 /// Given current separation `distance`, relative velocity `rel_vel`, and
 /// time step `dt`, returns the predicted minimum distance.
-#[allow(dead_code)]
 pub fn predicted_closest_approach(distance: f64, rel_vel: f64, dt: f64) -> f64 {
     distance + rel_vel * dt
 }
@@ -55,7 +53,6 @@ pub fn predicted_closest_approach(distance: f64, rel_vel: f64, dt: f64) -> f64 {
 /// `penetration` – overlap depth in metres (positive = overlapping).
 /// `beta`        – Baumgarte coefficient ∈ (0, 1].
 /// `dt`          – current substep size in seconds.
-#[allow(dead_code)]
 pub fn baumgarte_bias(penetration: f64, beta: f64, dt: f64) -> f64 {
     if dt < 1e-12 {
         return 0.0;
@@ -68,7 +65,6 @@ pub fn baumgarte_bias(penetration: f64, beta: f64, dt: f64) -> f64 {
 /// `erp = beta * dt / (1 + beta * dt)`
 ///
 /// Commonly used in ODE-style constraint formulation.
-#[allow(dead_code)]
 pub fn compute_erp(beta: f64, dt: f64) -> f64 {
     let denom = 1.0 + beta * dt;
     if denom.abs() < 1e-20 {
@@ -81,7 +77,6 @@ pub fn compute_erp(beta: f64, dt: f64) -> f64 {
 /// `cfm = 1 / (compliance * dt * dt + damping * dt)`
 ///
 /// CFM regularizes the constraint to prevent infinite stiffness.
-#[allow(dead_code)]
 pub fn compute_cfm(compliance: f64, damping: f64, dt: f64) -> f64 {
     let denom = compliance * dt * dt + damping * dt;
     if denom.abs() < 1e-20 {
@@ -98,7 +93,6 @@ pub fn compute_cfm(compliance: f64, damping: f64, dt: f64) -> f64 {
 /// `ha`, `hb`     – handles of the two bodies.
 /// `normal`       – contact normal from B to A.
 /// `penetration`  – overlap depth.
-#[allow(dead_code)]
 pub fn apply_position_correction(
     bodies: &mut RigidBodySet,
     ha: oxiphysics_core::BodyHandle,
@@ -125,7 +119,6 @@ pub fn apply_position_correction(
     }
 }
 /// Apply position correction with a custom beta parameter.
-#[allow(dead_code)]
 pub fn apply_position_correction_custom(
     bodies: &mut RigidBodySet,
     ha: oxiphysics_core::BodyHandle,
@@ -157,7 +150,6 @@ pub fn apply_position_correction_custom(
 ///
 /// `penetration` – current overlap.
 /// `dt` – time step.
-#[allow(dead_code)]
 pub fn separation_velocity(penetration: f64, dt: f64) -> f64 {
     if dt < 1e-12 || penetration < PENETRATION_SLOP {
         return 0.0;
@@ -1002,7 +994,6 @@ mod tests {
 ///
 /// Given penetration depths and effective masses, applies a fraction
 /// of the correction per iteration using the Baumgarte formula.
-#[allow(dead_code)]
 pub fn drift_correction_step(
     penetrations: &[f64],
     eff_masses: &[f64],

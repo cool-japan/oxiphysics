@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::ptr_arg)]
 use super::types::{
     ForceBuffer, HarmonicAngle, HarmonicBond, LjPotential, NeighborList, VirialStressTensorKernel,
     VirialTensor,
@@ -54,7 +53,6 @@ pub fn compute_coulomb_force(r: f64, qi: f64, qj: f64, k_e: f64) -> (f64, f64) {
     (energy, force_mag)
 }
 /// Compute LJ forces using a neighbor list.
-#[allow(clippy::needless_range_loop)]
 pub fn compute_lj_forces_neighborlist(
     positions: &[[f64; 3]],
     lj: &LjPotential,
@@ -90,7 +88,6 @@ pub fn compute_lj_forces_neighborlist(
     }
 }
 /// Compute Coulomb forces using a neighbor list.
-#[allow(clippy::needless_range_loop)]
 pub fn compute_coulomb_forces_neighborlist(
     positions: &[[f64; 3]],
     charges: &[f64],
@@ -128,7 +125,6 @@ pub fn compute_coulomb_forces_neighborlist(
 ///
 /// Returns a `Vec<[f64;3]>` of forces, one per particle.
 /// Interactions beyond `cutoff` are ignored.
-#[allow(clippy::needless_range_loop)]
 pub fn compute_all_lj_forces(
     positions: &[[f64; 3]],
     _masses: &[f64],
@@ -164,7 +160,6 @@ pub fn compute_all_lj_forces(
 /// Compute Coulomb forces for all particle pairs within `cutoff`.
 ///
 /// Returns a `Vec<[f64;3]>` of forces, one per particle.
-#[allow(clippy::needless_range_loop)]
 pub fn compute_all_coulomb_forces(
     positions: &[[f64; 3]],
     charges: &[f64],
@@ -367,7 +362,7 @@ pub fn kinetic_temperature(velocities: &[[f64; 3]], masses: &[f64], k_boltzmann:
 ///
 /// Does nothing if the current temperature is below a floor value.
 pub fn temperature_scale(
-    velocities: &mut Vec<[f64; 3]>,
+    velocities: &mut [[f64; 3]],
     masses: &[f64],
     t_target: f64,
     k_boltzmann: f64,
@@ -674,19 +669,14 @@ mod tests {
         assert!((buf.energies[1] - 1.0).abs() < 1e-15);
         assert!((buf.total_energy() - 2.0).abs() < 1e-15);
     }
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_force_buffer_total_force_zero() {
         let mut buf = ForceBuffer::new(3);
         buf.add_pair(0, 1, [3.0, -1.0, 2.0], 1.0, [1.0, 0.0, 0.0]);
         buf.add_pair(1, 2, [-1.0, 2.0, 0.5], 0.5, [0.0, 1.0, 0.0]);
         let total = buf.total_force();
-        for k in 0..3 {
-            assert!(
-                total[k].abs() < 1e-10,
-                "total force[{k}] should be 0, got {}",
-                total[k]
-            );
+        for (k, &tk) in total.iter().enumerate() {
+            assert!(tk.abs() < 1e-10, "total force[{k}] should be 0, got {}", tk);
         }
     }
     #[test]
@@ -719,7 +709,6 @@ mod tests {
         assert!((buf.virial[1][0] - 3.0).abs() < 1e-15);
         assert!((buf.total_virial() - 6.0).abs() < 1e-15);
     }
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_lj_forces_neighborlist() {
         let lj = LjPotential::new(1.0, 1.0);
@@ -728,11 +717,11 @@ mod tests {
         let mut buf = ForceBuffer::new(3);
         compute_lj_forces_neighborlist(&positions, &lj, &nlist, &mut buf);
         let total = buf.total_force();
-        for k in 0..3 {
-            assert!(total[k].abs() < 1e-10, "total[{k}] = {}", total[k]);
+        for (k, &tk) in total.iter().enumerate() {
+            assert!(tk.abs() < 1e-10, "total[{k}] = {}", tk);
         }
-        for k in 0..3 {
-            assert!(buf.forces[2][k].abs() < 1e-15);
+        for &fk in buf.forces[2].iter() {
+            assert!(fk.abs() < 1e-15);
         }
     }
     #[test]
@@ -747,7 +736,6 @@ mod tests {
         let total = buf.total_force();
         assert!(total[0].abs() < 1e-10);
     }
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_lj_forces_neighborlist_matches_brute_force() {
         let lj = LjPotential::new(1.0, 1.0);
@@ -758,13 +746,13 @@ mod tests {
         let nlist = NeighborList::build_brute_force(&positions, cutoff, 0.0);
         let mut buf = ForceBuffer::new(3);
         compute_lj_forces_neighborlist(&positions, &lj, &nlist, &mut buf);
-        for i in 0..3 {
-            for k in 0..3 {
+        for (i, (buf_row, bf_row)) in buf.forces.iter().zip(forces_bf.iter()).enumerate() {
+            for (k, (&buf_val, &bf_val)) in buf_row.iter().zip(bf_row.iter()).enumerate() {
                 assert!(
-                    (buf.forces[i][k] - forces_bf[i][k]).abs() < 1e-10,
+                    (buf_val - bf_val).abs() < 1e-10,
                     "mismatch at particle {i}, dim {k}: nlist={}, brute={}",
-                    buf.forces[i][k],
-                    forces_bf[i][k]
+                    buf_val,
+                    bf_val
                 );
             }
         }
@@ -970,7 +958,6 @@ mod tests {
             "virial tensor should have 6 components"
         );
     }
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_bond_force_equilibrium_no_force() {
         let r0 = 1.5_f64;
@@ -978,22 +965,15 @@ mod tests {
         let bonds = vec![HarmonicBond::new(0, 1, 100.0, r0)];
         let (forces, energy) = compute_bond_forces(&positions, &bonds);
         assert_eq!(forces.len(), 2);
-        for dim in 0..3 {
-            assert!(
-                forces[0][dim].abs() < 1e-10,
-                "force at equilibrium should be 0"
-            );
-            assert!(
-                forces[1][dim].abs() < 1e-10,
-                "force at equilibrium should be 0"
-            );
+        for (&f0d, &f1d) in forces[0].iter().zip(forces[1].iter()) {
+            assert!(f0d.abs() < 1e-10, "force at equilibrium should be 0");
+            assert!(f1d.abs() < 1e-10, "force at equilibrium should be 0");
         }
         assert!(
             energy.abs() < 1e-10,
             "energy at equilibrium should be 0, got {energy}"
         );
     }
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_bond_force_compressed() {
         let r0 = 2.0_f64;
@@ -1004,9 +984,9 @@ mod tests {
         let (forces, energy) = compute_bond_forces(&positions, &bonds);
         assert!(forces[0][0] < 0.0, "atom 0 should be pushed away from bond");
         assert!(forces[1][0] > 0.0, "atom 1 should be pushed away from bond");
-        for dim in 0..3 {
+        for (dim, (&f0d, &f1d)) in forces[0].iter().zip(forces[1].iter()).enumerate() {
             assert!(
-                (forces[0][dim] + forces[1][dim]).abs() < 1e-10,
+                (f0d + f1d).abs() < 1e-10,
                 "Newton III violated at dim {dim}"
             );
         }

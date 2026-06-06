@@ -3,9 +3,6 @@
 //! This module contains method implementations for `RigidBody`.
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use oxiphysics_geometry::Shape;
 
 use super::rigidbody_type::RigidBody;

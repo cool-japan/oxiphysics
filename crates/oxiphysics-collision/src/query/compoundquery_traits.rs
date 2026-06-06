@@ -1,5 +1,3 @@
-#[allow(unused_imports)]
-use super::functions::*;
 // # CompoundQuery - Trait Implementations
 //
 // This module contains trait implementations for `CompoundQuery`.

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{
     ContactPoint, IsoMeshResult, RayMarchResult, SdfCollisionResult, SdfGrid, Triangle,
 };
@@ -262,8 +261,8 @@ pub fn extract_isosurface(grid: &SdfGrid) -> IsoMeshResult {
                     grid.cell_center(corners[i][0], corners[i][1], corners[i][2])
                 });
                 let mut cube_idx: usize = 0;
-                for i in 0..8 {
-                    if vals[i] < 0.0 {
+                for (i, &val) in vals.iter().enumerate() {
+                    if val < 0.0 {
                         cube_idx |= 1 << i;
                     }
                 }

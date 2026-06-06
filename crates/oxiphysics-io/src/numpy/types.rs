@@ -2,25 +2,21 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::type_complexity)]
-#[allow(unused_imports)]
+/// A numpy array result: shape + typed data.
+type NpArrayResult<T> = Option<Result<(Vec<usize>, Vec<T>), String>>;
 use super::functions::*;
 use super::functions::{NPY_MAGIC, NPY_MAJOR, NPY_MINOR};
-#[allow(unused_imports)]
-use super::functions_2::*;
 
 /// A non-owning view into a contiguous slice of `f64` data with shape metadata.
 ///
 /// Useful for reading a row, column, or arbitrary slab from a multi-dimensional
 /// array without copying data.
-#[allow(dead_code)]
 pub struct NpySlice<'a> {
     /// Underlying data slice.
     pub data: &'a [f64],
     /// Shape of this view.
     pub shape: Vec<usize>,
 }
-#[allow(dead_code)]
 impl<'a> NpySlice<'a> {
     /// Create a new view.
     pub fn new(data: &'a [f64], shape: Vec<usize>) -> std::result::Result<Self, String> {
@@ -67,7 +63,6 @@ impl<'a> NpySlice<'a> {
 }
 /// A masked NumPy-style array: elements where `mask[i]` is `true` are considered
 /// invalid/missing (following NumPy `ma` conventions).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NpyMaskedArray {
     /// Underlying data.
@@ -79,7 +74,6 @@ pub struct NpyMaskedArray {
     /// Shape of the array.
     pub shape: Vec<usize>,
 }
-#[allow(dead_code)]
 impl NpyMaskedArray {
     /// Create a masked array from data and mask.
     pub fn new(
@@ -165,7 +159,6 @@ impl NpyMaskedArray {
 }
 /// A simple structured / record array: multiple named columns each stored
 /// as a flat `Vec`f64` (all fields promoted to f64 for simplicity).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NpyRecordArray {
     /// Field definitions.
@@ -175,7 +168,6 @@ pub struct NpyRecordArray {
     /// Number of records (rows).
     pub n_records: usize,
 }
-#[allow(dead_code)]
 impl NpyRecordArray {
     /// Create an empty record array with given field schema.
     pub fn new(fields: Vec<NpyField>) -> Self {
@@ -381,7 +373,6 @@ impl NpyArray {
     /// in record order (all fields of record 0, then record 1, …).
     ///
     /// Returns the NPY bytes suitable for writing to a `.npy` file.
-    #[allow(dead_code)]
     pub fn save_structured(
         fields: &[(&str, &str)],
         n_records: usize,
@@ -420,13 +411,11 @@ impl NpyArray {
 ///
 /// Unlike `NpzWriter`, this type stores fully parsed `NpyArray` values and
 /// supports reading them back without specifying the dtype at call time.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct NpzArchive {
     /// Named arrays stored in the archive.
     pub arrays: Vec<(String, NpyArray)>,
 }
-#[allow(dead_code)]
 impl NpzArchive {
     /// Create an empty archive.
     pub fn new() -> Self {
@@ -516,7 +505,6 @@ impl NpzArchive {
 impl NpzArchive {
     /// Add a pre-built `NpyArray` under `name`, replacing any existing entry
     /// with that name.
-    #[allow(dead_code)]
     pub fn add_array(&mut self, name: &str, array: NpyArray) {
         self.arrays.retain(|(n, _)| n.as_str() != name);
         self.arrays.push((name.to_string(), array));
@@ -525,24 +513,20 @@ impl NpzArchive {
     ///
     /// This is an alias for [`NpzArchive::from_bytes`] with a more descriptive
     /// name to match the "load_all" specification.
-    #[allow(dead_code)]
     pub fn load_all(data: &[u8]) -> std::result::Result<Self, String> {
         Self::from_bytes(data)
     }
     /// Return an iterator over `(name, &NpyArray)` pairs.
-    #[allow(dead_code)]
     pub fn iter(&self) -> impl Iterator<Item = (&str, &NpyArray)> {
         self.arrays.iter().map(|(n, a)| (n.as_str(), a))
     }
     /// Merge another archive into `self`, overwriting duplicate names.
-    #[allow(dead_code)]
     pub fn merge(&mut self, other: NpzArchive) {
         for (name, array) in other.arrays {
             self.add_array(&name, array);
         }
     }
     /// Return the total number of elements across all stored arrays.
-    #[allow(dead_code)]
     pub fn total_elements(&self) -> usize {
         self.arrays.iter().map(|(_, a)| a.numel()).sum()
     }
@@ -646,28 +630,28 @@ impl NpzWriter {
         Ok(NpzWriter { files })
     }
     /// Retrieve a `f64` array by name, returning `(shape, data)`.
-    pub fn get_f64(&self, name: &str) -> Option<Result<(Vec<usize>, Vec<f64>), String>> {
+    pub fn get_f64(&self, name: &str) -> NpArrayResult<f64> {
         self.files
             .iter()
             .find(|(n, _)| n == name)
             .map(|(_, npy)| read_npy_f64(npy))
     }
     /// Retrieve an `f32` array by name, returning `(shape, data)`.
-    pub fn get_f32(&self, name: &str) -> Option<Result<(Vec<usize>, Vec<f32>), String>> {
+    pub fn get_f32(&self, name: &str) -> NpArrayResult<f32> {
         self.files
             .iter()
             .find(|(n, _)| n == name)
             .map(|(_, npy)| read_npy_f32(npy))
     }
     /// Retrieve an `i32` array by name, returning `(shape, data)`.
-    pub fn get_i32(&self, name: &str) -> Option<Result<(Vec<usize>, Vec<i32>), String>> {
+    pub fn get_i32(&self, name: &str) -> NpArrayResult<i32> {
         self.files
             .iter()
             .find(|(n, _)| n == name)
             .map(|(_, npy)| read_npy_i32(npy))
     }
     /// Retrieve an `i64` array by name, returning `(shape, data)`.
-    pub fn get_i64(&self, name: &str) -> Option<Result<(Vec<usize>, Vec<i64>), String>> {
+    pub fn get_i64(&self, name: &str) -> NpArrayResult<i64> {
         self.files
             .iter()
             .find(|(n, _)| n == name)
@@ -675,7 +659,6 @@ impl NpzWriter {
     }
 }
 /// A field definition in a structured / record array.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NpyField {
     /// Field name (column name).
@@ -685,7 +668,6 @@ pub struct NpyField {
     /// Number of elements per record (1 for scalar, >1 for vector fields).
     pub count: usize,
 }
-#[allow(dead_code)]
 impl NpyField {
     /// Create a scalar field definition.
     pub fn scalar(name: &str, dtype: NpyDtype) -> Self {

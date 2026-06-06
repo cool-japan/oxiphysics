@@ -151,13 +151,11 @@ pub type PathResult<T> = std::result::Result<T, PathError>;
 
 impl VehicleError {
     /// Construct a [`VehicleError::General`] from any displayable value.
-    #[allow(dead_code)]
     pub fn general(msg: impl std::fmt::Display) -> Self {
         VehicleError::General(msg.to_string())
     }
 
     /// Construct an [`VehicleError::InvalidParameter`].
-    #[allow(dead_code)]
     pub fn invalid_param(name: impl Into<String>, reason: impl Into<String>) -> Self {
         VehicleError::InvalidParameter {
             name: name.into(),
@@ -166,7 +164,6 @@ impl VehicleError {
     }
 
     /// Return `true` if this is a parameter validation error.
-    #[allow(dead_code)]
     pub fn is_invalid_parameter(&self) -> bool {
         matches!(self, VehicleError::InvalidParameter { .. })
     }
@@ -174,7 +171,6 @@ impl VehicleError {
 
 impl SensorError {
     /// Construct a [`SensorError::NoData`].
-    #[allow(dead_code)]
     pub fn no_data(sensor: impl Into<String>, reason: impl Into<String>) -> Self {
         SensorError::NoData {
             sensor: sensor.into(),
@@ -185,7 +181,6 @@ impl SensorError {
 
 impl PathError {
     /// Construct a [`PathError::TooFewWaypoints`].
-    #[allow(dead_code)]
     pub fn too_few(count: usize, required: usize) -> Self {
         PathError::TooFewWaypoints { count, required }
     }
@@ -296,14 +291,25 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unnecessary_literal_unwrap)]
     fn result_aliases_compile() {
         let v: VehicleResult<i32> = Ok(42);
-        assert_eq!(v.unwrap(), 42);
+        if let Ok(x) = v {
+            assert_eq!(x, 42);
+        } else {
+            panic!("expected Ok");
+        }
         let s: SensorResult<f64> = Ok(3.125);
-        assert!((s.unwrap() - 3.125).abs() < 1e-12);
+        if let Ok(x) = s {
+            assert!((x - 3.125).abs() < 1e-12);
+        } else {
+            panic!("expected Ok");
+        }
         let t: TelemetryResult<bool> = Ok(true);
-        assert!(t.unwrap());
+        if let Ok(x) = t {
+            assert!(x);
+        } else {
+            panic!("expected Ok");
+        }
         let p: PathResult<()> = Ok(());
         assert!(p.is_ok());
     }

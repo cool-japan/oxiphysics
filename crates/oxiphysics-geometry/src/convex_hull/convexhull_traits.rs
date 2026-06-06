@@ -8,8 +8,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use crate::shape::{RayHit, Shape};
 use oxiphysics_core::Aabb;
 use oxiphysics_core::math::{Mat3, Real, Vec3};

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
 /// First-order muscle activation dynamics model.
 ///
@@ -698,7 +697,6 @@ pub struct MuscleAttachment {
 }
 impl MuscleAttachment {
     /// Create a new muscle attachment.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: &str,
         mtu: MusculotendonUnit,

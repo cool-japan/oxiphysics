@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use crate::lattice::{D2Q9_VELOCITIES, D2Q9_WEIGHTS};
 
 use super::functions::*;
@@ -15,7 +14,6 @@ use super::functions::*;
 /// Reference: de Vahl Davis, G. (1983). Natural convection of air in a square
 /// cavity: A benchmark numerical solution. *Int. J. Numer. Methods Fluids* 3,
 /// 249–264.
-#[allow(dead_code)]
 pub struct DeVahlDavisSetup {
     /// Number of lattice nodes per side (square cavity).
     pub n: usize,
@@ -28,7 +26,6 @@ pub struct DeVahlDavisSetup {
     /// Prandtl number (air ≈ 0.71).
     pub pr: f64,
 }
-#[allow(dead_code)]
 impl DeVahlDavisSetup {
     /// Create a new de Vahl Davis cavity setup.
     pub fn new(n: usize, t_hot: f64, t_cold: f64, ra: f64, pr: f64) -> Self {
@@ -126,9 +123,7 @@ impl DeVahlDavisSetup {
     }
 }
 /// Utilities for computing the Nusselt number from thermal LBM data.
-#[allow(dead_code)]
 pub struct NusseltComputation;
-#[allow(dead_code)]
 impl NusseltComputation {
     /// Compute local Nusselt number at the bottom wall from a 2D temperature
     /// field stored as `temperature[y * nx + x]`.
@@ -203,10 +198,7 @@ impl NusseltComputation {
         let h = ny as f64;
         let delta_t = (t_hot - t_cold).abs().max(1e-30);
         let n = nx * ny;
-        let mut sum_uy_t = 0.0;
-        for k in 0..n {
-            sum_uy_t += uy[k] * temperature[k];
-        }
+        let sum_uy_t: f64 = uy.iter().zip(temperature.iter()).map(|(u, t)| u * t).sum();
         let avg_uy_t = sum_uy_t / n as f64;
         1.0 + avg_uy_t * h / (alpha * delta_t)
     }
@@ -214,7 +206,6 @@ impl NusseltComputation {
 /// Configuration for natural convection in a differentially heated cavity.
 ///
 /// Left wall hot, right wall cold, top and bottom insulated.
-#[allow(dead_code)]
 pub struct NaturalConvectionSetup {
     /// Number of lattice nodes in x.
     pub nx: usize,
@@ -229,7 +220,6 @@ pub struct NaturalConvectionSetup {
     /// Prandtl number.
     pub pr: f64,
 }
-#[allow(dead_code)]
 impl NaturalConvectionSetup {
     /// Create a new natural convection setup.
     pub fn new(nx: usize, ny: usize, t_hot: f64, t_cold: f64, ra: f64, pr: f64) -> Self {
@@ -346,7 +336,6 @@ impl ThermalD2Q9 {
     /// ```text
     /// g_eq_i = w_i * T * (1 + (e_i · u)/cs² + (e_i · u)²/(2cs⁴) − u²/(2cs²))
     /// ```
-    #[allow(dead_code)]
     pub fn equilibrium_second_order(&self, temp: f64, u: [f64; 2], i: usize) -> f64 {
         let w = D2Q9_WEIGHTS[i];
         let c = D2Q9_VELOCITIES[i];
@@ -358,13 +347,16 @@ impl ThermalD2Q9 {
     ///
     /// `velocities` is a flat slice of `[ux, uy]` per node (length = nx*ny).
     pub fn collide(&mut self, velocities: &[[f64; 2]]) {
-        let n = self.nx * self.ny;
-        for k in 0..n {
+        let tau_t = self.tau_t;
+        for (k, g_k) in self.g.iter_mut().enumerate() {
             let t = self.temperature[k];
             let u = velocities[k];
-            for i in 0..9 {
-                let geq = self.equilibrium(t, u, i);
-                self.g[k][i] -= (self.g[k][i] - geq) / self.tau_t;
+            for (i, g_ki) in g_k.iter_mut().enumerate() {
+                let w = D2Q9_WEIGHTS[i];
+                let c = D2Q9_VELOCITIES[i];
+                let e_dot_u = c[0] as f64 * u[0] + c[1] as f64 * u[1];
+                let geq = w * t * (1.0 + e_dot_u / CS2);
+                *g_ki -= (*g_ki - geq) / tau_t;
             }
         }
     }
@@ -390,9 +382,8 @@ impl ThermalD2Q9 {
     }
     /// Compute macroscopic temperature: `T = Σ_i g_i` (zeroth moment).
     pub fn compute_temperature(&mut self) {
-        let n = self.nx * self.ny;
-        for k in 0..n {
-            self.temperature[k] = self.g[k].iter().sum();
+        for (temp_k, g_k) in self.temperature.iter_mut().zip(self.g.iter()) {
+            *temp_k = g_k.iter().sum();
         }
     }
     /// Apply fixed-temperature boundary condition at the bottom wall (`y = 0`)
@@ -424,7 +415,6 @@ impl ThermalD2Q9 {
         }
     }
     /// Apply fixed-temperature BC on the left wall (`x = 0`).
-    #[allow(dead_code)]
     pub fn apply_temperature_bc_left(&mut self, t_left: f64, velocities: &[[f64; 2]]) {
         for y in 0..self.ny {
             let k = self.idx(0, y);
@@ -436,7 +426,6 @@ impl ThermalD2Q9 {
         }
     }
     /// Apply fixed-temperature BC on the right wall (`x = nx-1`).
-    #[allow(dead_code)]
     pub fn apply_temperature_bc_right(&mut self, t_right: f64, velocities: &[[f64; 2]]) {
         let x_right = self.nx - 1;
         for y in 0..self.ny {
@@ -450,7 +439,6 @@ impl ThermalD2Q9 {
     }
     /// Apply insulated (zero-flux) boundary at the bottom wall using
     /// bounce-back on the thermal distributions.
-    #[allow(dead_code)]
     pub fn apply_insulated_bc_bottom(&mut self) {
         const OPP: [usize; 9] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
         for x in 0..self.nx {
@@ -469,13 +457,11 @@ impl ThermalD2Q9 {
         self.compute_temperature();
     }
     /// Compute the average temperature over the entire domain.
-    #[allow(dead_code)]
     pub fn average_temperature(&self) -> f64 {
         let n = self.nx * self.ny;
         self.temperature.iter().sum::<f64>() / n as f64
     }
     /// Compute the temperature variance over the domain.
-    #[allow(dead_code)]
     pub fn temperature_variance(&self) -> f64 {
         let avg = self.average_temperature();
         let n = self.nx * self.ny;
@@ -486,22 +472,20 @@ impl ThermalD2Q9 {
             / n as f64
     }
     /// Compute heat flux in x-direction at a node: q_x = Σ_i e_ix * g_i.
-    #[allow(dead_code)]
     pub fn heat_flux_x(&self, k: usize) -> f64 {
-        let mut qx = 0.0;
-        for i in 0..9 {
-            qx += D2Q9_VELOCITIES[i][0] as f64 * self.g[k][i];
-        }
-        qx
+        self.g[k]
+            .iter()
+            .enumerate()
+            .map(|(i, &gi)| D2Q9_VELOCITIES[i][0] as f64 * gi)
+            .sum()
     }
     /// Compute heat flux in y-direction at a node: q_y = Σ_i e_iy * g_i.
-    #[allow(dead_code)]
     pub fn heat_flux_y(&self, k: usize) -> f64 {
-        let mut qy = 0.0;
-        for i in 0..9 {
-            qy += D2Q9_VELOCITIES[i][1] as f64 * self.g[k][i];
-        }
-        qy
+        self.g[k]
+            .iter()
+            .enumerate()
+            .map(|(i, &gi)| D2Q9_VELOCITIES[i][1] as f64 * gi)
+            .sum()
     }
 }
 /// High-level combined thermal LBM simulation object using the
@@ -520,7 +504,6 @@ impl ThermalD2Q9 {
 /// 2. Each time step: call `step_thermal(&velocities)`.
 /// 3. Apply BCs: `apply_bc_bottom(T_hot)`, `apply_bc_top(T_cold)`.
 /// 4. Read `thermal.temperature[k]` for coupling to the flow solver.
-#[allow(dead_code)]
 pub struct ThermalLbm {
     /// Underlying D2Q9 thermal distribution field.
     pub thermal: ThermalD2Q9,
@@ -533,7 +516,6 @@ pub struct ThermalLbm {
     /// Time step counter.
     pub step_count: usize,
 }
-#[allow(dead_code)]
 impl ThermalLbm {
     /// Create a new `ThermalLbm` with uniform initial temperature `t_init`.
     pub fn new(nx: usize, ny: usize, tau_t: f64, t_init: f64) -> Self {
@@ -717,7 +699,6 @@ impl BoussinesqCoupling {
     /// Compute buoyancy forces for the entire domain.
     ///
     /// Returns a `Vec<[f64; 2]>` of forces, one per cell.
-    #[allow(dead_code)]
     pub fn compute_forces(&self, densities: &[f64], temperatures: &[f64]) -> Vec<[f64; 2]> {
         densities
             .iter()
@@ -794,22 +775,22 @@ impl RayleighBenardSetup {
     pub fn nusselt_number(&self, temperature: &[Vec<f64>]) -> f64 {
         let h = self.ny as f64;
         let delta_t = (self.t_hot - self.t_cold).abs().max(1e-30);
-        let mut grad_sum = 0.0_f64;
-        for x in 0..self.nx {
-            grad_sum += temperature[1][x] - temperature[0][x];
-        }
+        let grad_sum: f64 = temperature[1]
+            .iter()
+            .zip(temperature[0].iter())
+            .map(|(&t1, &t0)| t1 - t0)
+            .sum();
         let avg_grad = grad_sum / self.nx as f64;
         (-avg_grad).abs() * h / delta_t
     }
     /// Initialize a linear temperature profile from hot (bottom) to cold (top).
-    #[allow(dead_code)]
     pub fn initial_temperature_profile(&self) -> Vec<Vec<f64>> {
         let mut temperature = vec![vec![0.0; self.nx]; self.ny];
-        for y in 0..self.ny {
+        for (y, row) in temperature.iter_mut().enumerate() {
             let frac = y as f64 / (self.ny - 1).max(1) as f64;
             let t = self.t_hot + (self.t_cold - self.t_hot) * frac;
-            for x in 0..self.nx {
-                temperature[y][x] = t;
+            for cell in row.iter_mut() {
+                *cell = t;
             }
         }
         temperature
@@ -820,7 +801,6 @@ impl RayleighBenardSetup {
 /// Models heat conduction in a solid region that is thermally coupled
 /// to the fluid region at the interface.  The solid has its own thermal
 /// diffusivity `alpha_s` and a separate temperature field.
-#[allow(dead_code)]
 pub struct ConjugateHeatTransfer {
     /// Temperature field in the solid domain.
     pub solid_temperature: Vec<f64>,
@@ -833,7 +813,6 @@ pub struct ConjugateHeatTransfer {
     /// Boolean mask: `true` if the cell is solid.
     pub is_solid: Vec<bool>,
 }
-#[allow(dead_code)]
 impl ConjugateHeatTransfer {
     /// Create a new conjugate heat transfer field.
     ///

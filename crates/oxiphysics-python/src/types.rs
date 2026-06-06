@@ -9,8 +9,6 @@
 //! - Serialize/Deserialize support
 //! - Arrays instead of nalgebra types where applicable
 
-#![allow(missing_docs)]
-
 use oxiphysics_core::math::Vec3;
 use oxiphysics_core::{Aabb, Transform};
 use serde::{Deserialize, Serialize};

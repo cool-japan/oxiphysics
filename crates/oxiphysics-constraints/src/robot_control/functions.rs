@@ -1,8 +1,6 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
 use super::types::SerialManipulator;
@@ -256,11 +254,11 @@ pub(super) fn invert3x3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 pub(super) fn null_space_joint_limit_gradient(robot: &SerialManipulator) -> Vec<f64> {
     let n = robot.dof();
     let mut g = vec![0.0f64; n];
-    for i in 0..n {
+    for (i, gi) in g.iter_mut().enumerate() {
         let (lo, hi) = robot.joint_limits[i];
         let mid = (lo + hi) * 0.5;
         let range = (hi - lo).max(1e-10);
-        g[i] = -(robot.joint_angles[i] - mid) / (range * range);
+        *gi = -(robot.joint_angles[i] - mid) / (range * range);
     }
     g
 }
@@ -572,32 +570,13 @@ mod tests {
         }
     }
 }
-#[allow(dead_code)]
 pub(super) fn dot_n(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
-#[allow(dead_code)]
-pub(super) fn norm_n(v: &[f64]) -> f64 {
-    dot_n(v, v).sqrt()
-}
-#[allow(dead_code)]
 pub(super) fn scale_vec(v: &[f64], s: f64) -> Vec<f64> {
     v.iter().map(|x| x * s).collect()
 }
-#[allow(dead_code)]
-pub(super) fn add_vec(a: &[f64], b: &[f64]) -> Vec<f64> {
-    a.iter().zip(b.iter()).map(|(x, y)| x + y).collect()
-}
-#[allow(dead_code)]
-pub(super) fn sub_vec(a: &[f64], b: &[f64]) -> Vec<f64> {
-    a.iter().zip(b.iter()).map(|(x, y)| x - y).collect()
-}
-#[allow(dead_code)]
-pub(super) fn clamp_vec(v: &[f64], lo: f64, hi: f64) -> Vec<f64> {
-    v.iter().map(|x| x.max(lo).min(hi)).collect()
-}
 /// Simple Gauss-Seidel solver for small dense systems A*x = b.
-#[allow(dead_code)]
 pub(super) fn gauss_seidel_solve(a: &[Vec<f64>], b: &[f64], max_iter: usize) -> Vec<f64> {
     let n = b.len();
     let mut x = vec![0.0; n];
@@ -619,7 +598,6 @@ pub(super) fn gauss_seidel_solve(a: &[Vec<f64>], b: &[f64], max_iter: usize) -> 
 /// Invert a dense square matrix (n×n, row-major) using Gauss-Jordan.
 ///
 /// Returns the inverse as a flat Vec of length n×n, or identity on failure.
-#[allow(dead_code)]
 pub(super) fn invert_dense_matrix(a: &[f64], n: usize) -> Vec<f64> {
     let mut aug = vec![0.0; n * 2 * n];
     for i in 0..n {

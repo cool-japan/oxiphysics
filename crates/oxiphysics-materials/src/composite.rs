@@ -7,8 +7,6 @@
 //! composite model, Classical Laminate Theory (CLT), and Mori-Tanaka particle
 //! composite scheme.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -809,7 +807,6 @@ fn transform_strain_to_material(global_strain: [f64; 3], angle_deg: f64) -> [f64
 ///
 /// `midplane_strain` is \[eps_x0, eps_y0, gamma_xy0\].
 /// `curvature` is \[kappa_x, kappa_y, kappa_xy\].
-#[allow(dead_code)]
 pub fn ply_by_ply_stress(
     laminate: &Laminate,
     midplane_strain: [f64; 3],
@@ -856,7 +853,6 @@ pub fn ply_by_ply_stress(
 // ---------------------------------------------------------------------------
 
 /// Result of progressive failure analysis.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ProgressiveFailureResult {
     /// Load factor at first ply failure.
@@ -873,7 +869,6 @@ pub struct ProgressiveFailureResult {
 ///
 /// Applies increasing load factor to the given strain until all plies fail.
 /// Returns the load factor at first ply failure and ultimate failure.
-#[allow(dead_code)]
 pub fn progressive_failure_analysis(
     laminate: &Laminate,
     base_strain: [f64; 3],
@@ -943,7 +938,6 @@ pub fn progressive_failure_analysis(
 ///
 /// `alpha` is \[alpha_1, alpha_2\] CTE in material coords.
 /// `delta_t` is the temperature change.
-#[allow(dead_code)]
 pub fn thermal_strain(alpha: [f64; 2], delta_t: f64) -> [f64; 3] {
     [alpha[0] * delta_t, alpha[1] * delta_t, 0.0]
 }
@@ -955,7 +949,6 @@ pub fn thermal_strain(alpha: [f64; 2], delta_t: f64) -> [f64; 3] {
 ///
 /// `alpha` is \[alpha_1, alpha_2\] CTE for the ply material.
 /// `delta_t` is the cure temperature change (e.g., from cure temp to room temp).
-#[allow(dead_code)]
 pub fn thermal_residual_stresses(
     laminate: &Laminate,
     alpha: [f64; 2],
@@ -1048,7 +1041,6 @@ pub fn thermal_residual_stresses(
 ///
 /// Uses equilibrium-based approach: tau_xz at interface is proportional
 /// to the jump in Q_bar * strain derivative.
-#[allow(dead_code)]
 pub fn interlaminar_shear_estimate(
     laminate: &Laminate,
     midplane_strain: [f64; 3],

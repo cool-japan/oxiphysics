@@ -12,7 +12,6 @@ use oxiphysics_core::math::{Real, Vec3};
 // ── CollisionPair ─────────────────────────────────────────────────────────────
 
 /// A pair of colliding object indices.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CollisionPair {
     /// Index of the first object.
@@ -23,13 +22,11 @@ pub struct CollisionPair {
 
 impl CollisionPair {
     /// Create a new collision pair.
-    #[allow(dead_code)]
     pub fn new(a: usize, b: usize) -> Self {
         Self { a, b }
     }
 
     /// Return a canonicalized pair with `a <= b`.
-    #[allow(dead_code)]
     pub fn canonical(a: usize, b: usize) -> Self {
         if a <= b {
             Self { a, b }
@@ -39,13 +36,11 @@ impl CollisionPair {
     }
 
     /// Returns `true` if the given index is one of the pair's members.
-    #[allow(dead_code)]
     pub fn contains(&self, idx: usize) -> bool {
         self.a == idx || self.b == idx
     }
 
     /// Returns the other member of the pair (panics if `idx` is not in the pair).
-    #[allow(dead_code)]
     pub fn other(&self, idx: usize) -> usize {
         if self.a == idx {
             self.b
@@ -66,7 +61,6 @@ impl CollisionPair {
 ///
 /// Used by the contact manifold generator to determine which features are in
 /// contact, enabling warm-starting and persistent manifold tracking.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FeatureId {
     /// A vertex feature with the given local index.
@@ -81,25 +75,21 @@ pub enum FeatureId {
 
 impl FeatureId {
     /// Returns `true` if this is a vertex feature.
-    #[allow(dead_code)]
     pub fn is_vertex(self) -> bool {
         matches!(self, FeatureId::Vertex(_))
     }
 
     /// Returns `true` if this is an edge feature.
-    #[allow(dead_code)]
     pub fn is_edge(self) -> bool {
         matches!(self, FeatureId::Edge(_))
     }
 
     /// Returns `true` if this is a face feature.
-    #[allow(dead_code)]
     pub fn is_face(self) -> bool {
         matches!(self, FeatureId::Face(_))
     }
 
     /// Extract the raw index, or `None` if `Unknown`.
-    #[allow(dead_code)]
     pub fn index(self) -> Option<u32> {
         match self {
             FeatureId::Vertex(i) | FeatureId::Edge(i) | FeatureId::Face(i) => Some(i),
@@ -111,7 +101,6 @@ impl FeatureId {
 // ── Contact ───────────────────────────────────────────────────────────────────
 
 /// A single contact point between two objects.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Contact {
     /// Contact point on body A in world space.
@@ -126,7 +115,6 @@ pub struct Contact {
 
 impl Contact {
     /// Create a new contact point.
-    #[allow(dead_code)]
     pub fn new(point_a: Vec3, point_b: Vec3, normal: Vec3, depth: Real) -> Self {
         Self {
             point_a,
@@ -137,7 +125,6 @@ impl Contact {
     }
 
     /// The midpoint of the two contact points.
-    #[allow(dead_code)]
     pub fn point(&self) -> Vec3 {
         (self.point_a + self.point_b) * 0.5
     }
@@ -147,7 +134,6 @@ impl Contact {
 ///
 /// This is the richer variant used by the persistent manifold and warm-starting
 /// system.  The simpler [`Contact`] is kept for backward compatibility.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RichContact {
     /// Contact point on body A in world space.
@@ -172,7 +158,6 @@ pub struct RichContact {
 
 impl RichContact {
     /// Create a `RichContact` with feature and impulse fields zeroed.
-    #[allow(dead_code)]
     pub fn new(point_a: Vec3, point_b: Vec3, normal: Vec3, depth: Real) -> Self {
         Self {
             point_a,
@@ -188,13 +173,11 @@ impl RichContact {
     }
 
     /// Create from a plain [`Contact`], zeroing feature IDs and impulses.
-    #[allow(dead_code)]
     pub fn from_contact(c: &Contact) -> Self {
         Self::new(c.point_a, c.point_b, c.normal, c.depth)
     }
 
     /// Downgrade to a plain [`Contact`] (drops feature IDs and impulses).
-    #[allow(dead_code)]
     pub fn to_contact(&self) -> Contact {
         Contact {
             point_a: self.point_a,
@@ -205,7 +188,6 @@ impl RichContact {
     }
 
     /// The midpoint of the two contact points.
-    #[allow(dead_code)]
     pub fn point(&self) -> Vec3 {
         (self.point_a + self.point_b) * 0.5
     }
@@ -213,7 +195,6 @@ impl RichContact {
     /// Build a pair of orthogonal tangent vectors from the contact normal.
     ///
     /// Returns `(t1, t2)` forming a right-handed frame with `self.normal`.
-    #[allow(dead_code)]
     pub fn tangent_basis(&self) -> (Vec3, Vec3) {
         let n = self.normal;
         // Choose a reference vector not parallel to n
@@ -228,7 +209,6 @@ impl RichContact {
     }
 
     /// Returns `true` if the contact is a penetrating contact (depth > 0).
-    #[allow(dead_code)]
     pub fn is_penetrating(&self) -> bool {
         self.depth > 0.0
     }
@@ -240,7 +220,6 @@ impl RichContact {
 pub const MAX_CONTACTS: usize = 4;
 
 /// A manifold holding multiple contact points.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ContactManifold {
     /// The collision pair.
@@ -253,7 +232,6 @@ pub struct ContactManifold {
 
 impl ContactManifold {
     /// Create a new empty contact manifold for the given pair.
-    #[allow(dead_code)]
     pub fn new(pair: CollisionPair) -> Self {
         Self {
             pair,
@@ -266,7 +244,6 @@ impl ContactManifold {
     ///
     /// When the manifold is full the contact with the shallowest penetration
     /// depth is replaced if the new contact is deeper.
-    #[allow(dead_code)]
     pub fn add_contact(&mut self, contact: Contact) {
         if self.contacts.len() < MAX_CONTACTS {
             self.contacts.push(contact);
@@ -290,19 +267,16 @@ impl ContactManifold {
     }
 
     /// Returns `true` if there are no contacts.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.contacts.is_empty()
     }
 
     /// Number of contact points.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.contacts.len()
     }
 
     /// Maximum penetration depth across all contact points.
-    #[allow(dead_code)]
     pub fn max_depth(&self) -> Real {
         self.contacts
             .iter()
@@ -311,7 +285,6 @@ impl ContactManifold {
     }
 
     /// Average contact normal. Returns the zero vector if no contacts.
-    #[allow(dead_code)]
     pub fn average_normal(&self) -> Vec3 {
         if self.contacts.is_empty() {
             return Vec3::zeros();
@@ -331,13 +304,11 @@ impl ContactManifold {
     }
 
     /// Remove contacts whose depth is below `threshold` (e.g., bodies separated).
-    #[allow(dead_code)]
     pub fn prune_shallow(&mut self, threshold: Real) {
         self.contacts.retain(|c| c.depth >= threshold);
     }
 
     /// Increment the manifold age counter.
-    #[allow(dead_code)]
     pub fn tick(&mut self) {
         self.age = self.age.saturating_add(1);
     }
@@ -347,7 +318,6 @@ impl ContactManifold {
 
 /// A manifold holding [`RichContact`] points that carry feature IDs and
 /// solver impulses.  Used by the warm-starting / persistent manifold system.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RichContactManifold {
     /// The collision pair.
@@ -360,7 +330,6 @@ pub struct RichContactManifold {
 
 impl RichContactManifold {
     /// Create a new empty manifold.
-    #[allow(dead_code)]
     pub fn new(pair: CollisionPair) -> Self {
         Self {
             pair,
@@ -370,7 +339,6 @@ impl RichContactManifold {
     }
 
     /// Add a contact, capping at [`MAX_CONTACTS`].
-    #[allow(dead_code)]
     pub fn add_contact(&mut self, contact: RichContact) {
         if self.contacts.len() < MAX_CONTACTS {
             self.contacts.push(contact);
@@ -393,7 +361,6 @@ impl RichContactManifold {
     }
 
     /// Transfer accumulated impulses from `old` matching on feature IDs (warm-starting).
-    #[allow(dead_code)]
     pub fn warm_start_from(&mut self, old: &RichContactManifold) {
         for c in &mut self.contacts {
             if let Some(prev) = old
@@ -409,19 +376,16 @@ impl RichContactManifold {
     }
 
     /// Returns `true` if there are no contacts.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.contacts.is_empty()
     }
 
     /// Number of contact points.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.contacts.len()
     }
 
     /// Maximum penetration depth.
-    #[allow(dead_code)]
     pub fn max_depth(&self) -> Real {
         self.contacts
             .iter()
@@ -430,7 +394,6 @@ impl RichContactManifold {
     }
 
     /// Increment the age counter.
-    #[allow(dead_code)]
     pub fn tick(&mut self) {
         self.age = self.age.saturating_add(1);
     }
@@ -439,7 +402,6 @@ impl RichContactManifold {
 // ── PhysicsMaterial ───────────────────────────────────────────────────────────
 
 /// Physical surface properties used by the constraint solver.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct PhysicsMaterial {
     /// Coefficient of restitution in \[0, 1\]; 0 = perfectly inelastic.
@@ -462,7 +424,6 @@ impl Default for PhysicsMaterial {
 
 impl PhysicsMaterial {
     /// Create a material with explicit parameters.
-    #[allow(dead_code)]
     pub fn new(restitution: Real, friction_static: Real, friction_dynamic: Real) -> Self {
         Self {
             restitution,
@@ -473,7 +434,6 @@ impl PhysicsMaterial {
 
     /// Combine two materials using geometric-mean mixing for friction and
     /// the minimum for restitution (conservative).
-    #[allow(dead_code)]
     pub fn combine(a: &Self, b: &Self) -> Self {
         Self {
             restitution: a.restitution.min(b.restitution),
@@ -489,7 +449,6 @@ impl PhysicsMaterial {
 ///
 /// Body A collides with body B if and only if:
 /// `A.mask & B.category != 0`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CollisionFilter {
     /// Categories this body belongs to (bit flags).
@@ -509,25 +468,21 @@ impl Default for CollisionFilter {
 
 impl CollisionFilter {
     /// Create a filter with explicit category and mask.
-    #[allow(dead_code)]
     pub fn new(category: u32, mask: u32) -> Self {
         Self { category, mask }
     }
 
     /// Returns `true` if `self` and `other` should collide.
-    #[allow(dead_code)]
     pub fn should_collide(&self, other: &CollisionFilter) -> bool {
         (self.mask & other.category) != 0 && (other.mask & self.category) != 0
     }
 
     /// A filter that collides with everything (default).
-    #[allow(dead_code)]
     pub fn all() -> Self {
         Self::default()
     }
 
     /// A filter that collides with nothing.
-    #[allow(dead_code)]
     pub fn none() -> Self {
         Self {
             category: 0,
@@ -539,7 +494,6 @@ impl CollisionFilter {
 // ── CollisionEvent ────────────────────────────────────────────────────────────
 
 /// High-level event emitted by the collision pipeline for game logic.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum CollisionEvent {
     /// Two bodies began touching this frame.
@@ -564,7 +518,6 @@ pub enum CollisionEvent {
 
 impl CollisionEvent {
     /// Return the pair of indices involved in the event.
-    #[allow(dead_code)]
     pub fn pair(&self) -> (usize, usize) {
         match self {
             CollisionEvent::ContactStarted(p) | CollisionEvent::ContactEnded(p) => (p.a, p.b),
@@ -574,7 +527,6 @@ impl CollisionEvent {
     }
 
     /// Returns `true` if this event starts a contact or trigger.
-    #[allow(dead_code)]
     pub fn is_enter(&self) -> bool {
         matches!(
             self,
@@ -583,7 +535,6 @@ impl CollisionEvent {
     }
 
     /// Returns `true` if this event ends a contact or trigger.
-    #[allow(dead_code)]
     pub fn is_exit(&self) -> bool {
         !self.is_enter()
     }
@@ -596,7 +547,6 @@ impl CollisionEvent {
 /// Bodies in the same island share constraints and are solved together.  The
 /// sentinel value [`IslandId::NONE`] marks a body that has not been assigned to
 /// any island.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IslandId(pub u32);
 
@@ -605,19 +555,16 @@ impl IslandId {
     pub const NONE: Self = IslandId(u32::MAX);
 
     /// Returns `true` if this is the sentinel value.
-    #[allow(dead_code)]
     pub fn is_none(self) -> bool {
         self == Self::NONE
     }
 
     /// Returns `true` if this is a valid island id.
-    #[allow(dead_code)]
     pub fn is_some(self) -> bool {
         self != Self::NONE
     }
 
     /// Raw integer index.
-    #[allow(dead_code)]
     pub fn index(self) -> usize {
         self.0 as usize
     }
@@ -642,7 +589,6 @@ impl std::fmt::Display for IslandId {
 // ── RigidBodyKind ─────────────────────────────────────────────────────────────
 
 /// Classifies how a rigid body participates in dynamics.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RigidBodyKind {
     /// Fully simulated: responds to forces, collisions, and constraints.
@@ -657,19 +603,16 @@ pub enum RigidBodyKind {
 
 impl RigidBodyKind {
     /// Returns `true` if the body can be moved by the solver.
-    #[allow(dead_code)]
     pub fn is_movable(self) -> bool {
         matches!(self, RigidBodyKind::Dynamic | RigidBodyKind::Kinematic)
     }
 
     /// Returns `true` if the body generates contact forces.
-    #[allow(dead_code)]
     pub fn generates_contacts(self) -> bool {
         !matches!(self, RigidBodyKind::Sensor)
     }
 
     /// Returns `true` if the body participates in island building.
-    #[allow(dead_code)]
     pub fn is_island_member(self) -> bool {
         matches!(self, RigidBodyKind::Dynamic)
     }
@@ -681,7 +624,6 @@ impl RigidBodyKind {
 ///
 /// Groups are computed from the contact graph each frame to allow the solver to
 /// partition work and detect sleeping candidates.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BodyGroup {
     /// Island this group belongs to (may span multiple groups).
@@ -694,7 +636,6 @@ pub struct BodyGroup {
 
 impl BodyGroup {
     /// Create a new group from a list of body indices.
-    #[allow(dead_code)]
     pub fn new(island: IslandId, bodies: Vec<usize>) -> Self {
         Self {
             island,
@@ -704,25 +645,21 @@ impl BodyGroup {
     }
 
     /// Number of bodies in the group.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.bodies.len()
     }
 
     /// Returns `true` if the group has no members.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.bodies.is_empty()
     }
 
     /// Returns `true` if `body_idx` is a member of this group.
-    #[allow(dead_code)]
     pub fn contains(&self, body_idx: usize) -> bool {
         self.bodies.contains(&body_idx)
     }
 
     /// Mark all bodies as sleeping/not-sleeping.
-    #[allow(dead_code)]
     pub fn set_sleeping(&mut self, sleeping: bool) {
         self.all_sleeping = sleeping;
     }
@@ -733,7 +670,6 @@ impl BodyGroup {
 /// A position-level contact constraint ready to be fed to a constraint solver.
 ///
 /// Carries the pair, penetration depth, normal, and warm-start impulse.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ContactConstraint {
     /// The colliding pair.
@@ -758,7 +694,6 @@ pub struct ContactConstraint {
 
 impl ContactConstraint {
     /// Create a constraint with zero warm-start impulses and default material.
-    #[allow(dead_code)]
     pub fn new(pair: CollisionPair, normal: Vec3, depth: Real, point: Vec3) -> Self {
         Self {
             pair,
@@ -774,7 +709,6 @@ impl ContactConstraint {
     }
 
     /// Build a pair of tangent vectors for friction from the contact normal.
-    #[allow(dead_code)]
     pub fn tangent_basis(&self) -> (Vec3, Vec3) {
         let n = self.normal;
         let ref_vec = if n.x.abs() < 0.9 {
@@ -788,13 +722,11 @@ impl ContactConstraint {
     }
 
     /// Returns `true` if the contact is currently penetrating.
-    #[allow(dead_code)]
     pub fn is_penetrating(&self) -> bool {
         self.depth > 0.0
     }
 
     /// Zero all accumulated impulses (invalidates warm-start data).
-    #[allow(dead_code)]
     pub fn clear_impulses(&mut self) {
         self.impulse_n = 0.0;
         self.impulse_t1 = 0.0;
@@ -807,7 +739,6 @@ impl ContactConstraint {
 /// A velocity-level (impulse-based) contact constraint.
 ///
 /// Pre-computed quantities that remain constant during the solver iteration.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ContactVelocityConstraint {
     /// The colliding pair.
@@ -834,7 +765,6 @@ pub struct ContactVelocityConstraint {
 
 impl ContactVelocityConstraint {
     /// Create a velocity constraint with zeroed impulses.
-    #[allow(dead_code)]
     pub fn new(pair: CollisionPair, normal: Vec3) -> Self {
         Self {
             pair,
@@ -851,7 +781,6 @@ impl ContactVelocityConstraint {
     }
 
     /// Returns `true` if there is any accumulated impulse.
-    #[allow(dead_code)]
     pub fn has_impulse(&self) -> bool {
         self.impulse_n.abs() > 1e-12
             || self.impulse_t1.abs() > 1e-12
@@ -859,7 +788,6 @@ impl ContactVelocityConstraint {
     }
 
     /// The total impulse magnitude (for debugging/telemetry).
-    #[allow(dead_code)]
     pub fn impulse_magnitude(&self) -> Real {
         (self.impulse_n * self.impulse_n
             + self.impulse_t1 * self.impulse_t1
@@ -868,7 +796,6 @@ impl ContactVelocityConstraint {
     }
 
     /// Warm-start: copy impulses from a previous-frame constraint.
-    #[allow(dead_code)]
     pub fn warm_start_from(&mut self, prev: &ContactVelocityConstraint) {
         self.impulse_n = prev.impulse_n;
         self.impulse_t1 = prev.impulse_t1;
@@ -879,7 +806,6 @@ impl ContactVelocityConstraint {
 // ── ContactBatch ──────────────────────────────────────────────────────────────
 
 /// A batch of velocity constraints to be solved together (same island).
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct ContactBatch {
     /// All velocity constraints in the batch.
@@ -890,7 +816,6 @@ pub struct ContactBatch {
 
 impl ContactBatch {
     /// Create an empty batch for the given island.
-    #[allow(dead_code)]
     pub fn new(island: IslandId) -> Self {
         Self {
             constraints: Vec::new(),
@@ -899,31 +824,26 @@ impl ContactBatch {
     }
 
     /// Add a constraint to the batch.
-    #[allow(dead_code)]
     pub fn push(&mut self, c: ContactVelocityConstraint) {
         self.constraints.push(c);
     }
 
     /// Number of constraints.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.constraints.len()
     }
 
     /// Returns `true` if no constraints are present.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.constraints.is_empty()
     }
 
     /// Total accumulated normal impulse across all constraints.
-    #[allow(dead_code)]
     pub fn total_normal_impulse(&self) -> Real {
         self.constraints.iter().map(|c| c.impulse_n).sum()
     }
 
     /// Clear all impulses (invalidates warm-start data for this batch).
-    #[allow(dead_code)]
     pub fn clear_impulses(&mut self) {
         for c in &mut self.constraints {
             c.impulse_n = 0.0;
@@ -939,7 +859,6 @@ impl ContactBatch {
 ///
 /// Up to 32 categories are supported.  The matrix is symmetric: if `(i, j)` is
 /// set then `(j, i)` is also set.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CollisionMatrix {
     pub(super) rows: [u32; 32],
@@ -953,7 +872,6 @@ impl Default for CollisionMatrix {
 
 impl CollisionMatrix {
     /// Create a matrix where every category collides with every other.
-    #[allow(dead_code)]
     pub fn all_collide() -> Self {
         Self {
             rows: [u32::MAX; 32],
@@ -961,13 +879,11 @@ impl CollisionMatrix {
     }
 
     /// Create a matrix where no categories collide.
-    #[allow(dead_code)]
     pub fn none_collide() -> Self {
         Self { rows: [0u32; 32] }
     }
 
     /// Enable collision between categories `a` and `b` (symmetric).
-    #[allow(dead_code)]
     pub fn enable(&mut self, a: u8, b: u8) {
         let a = (a & 31) as usize;
         let b = (b & 31) as usize;
@@ -976,7 +892,6 @@ impl CollisionMatrix {
     }
 
     /// Disable collision between categories `a` and `b` (symmetric).
-    #[allow(dead_code)]
     pub fn disable(&mut self, a: u8, b: u8) {
         let a = (a & 31) as usize;
         let b = (b & 31) as usize;
@@ -985,7 +900,6 @@ impl CollisionMatrix {
     }
 
     /// Returns `true` if categories `a` and `b` should collide.
-    #[allow(dead_code)]
     pub fn should_collide(&self, a: u8, b: u8) -> bool {
         let a = (a & 31) as usize;
         let b = (b & 31) as usize;
@@ -996,7 +910,6 @@ impl CollisionMatrix {
 // ── ContactStats ──────────────────────────────────────────────────────────────
 
 /// Per-frame contact statistics collected by the pipeline.
-#[allow(dead_code)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ContactStats {
     /// Total number of broadphase pairs tested.
@@ -1013,7 +926,6 @@ pub struct ContactStats {
 
 impl ContactStats {
     /// Create a zeroed stats block.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -1021,7 +933,6 @@ impl ContactStats {
     /// Returns the ratio of narrowphase work to broadphase pairs.
     ///
     /// A value close to 1 means the broadphase is poor at rejection.
-    #[allow(dead_code)]
     pub fn narrowphase_ratio(&self) -> f64 {
         if self.broadphase_pairs == 0 {
             return 0.0;
@@ -1030,7 +941,6 @@ impl ContactStats {
     }
 
     /// Reset all counters.
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         *self = Self::default();
     }

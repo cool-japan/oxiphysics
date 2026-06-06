@@ -308,7 +308,6 @@ pub(super) struct WasmRigidBody {
     pub(super) angular_vel: [f64; 3],
     pub(super) mass: f64,
     pub(super) inv_mass: f64,
-    pub(super) inertia: [f64; 3],
     pub(super) inv_inertia: [f64; 3],
     pub(super) force_accum: [f64; 3],
     pub(super) torque_accum: [f64; 3],
@@ -316,16 +315,15 @@ pub(super) struct WasmRigidBody {
     pub(super) angular_damping: f64,
     pub(super) sleeping: bool,
     pub(super) sleep_time: f64,
-    pub(super) ccd_enabled: bool,
     pub(super) gravity_scale: f64,
     pub(super) user_data: u64,
 }
 impl WasmRigidBody {
     pub(super) fn new_dynamic(handle: WasmRigidBodyHandle, position: [f64; 3], mass: f64) -> Self {
         let inv_mass = if mass > 1e-15 { 1.0 / mass } else { 0.0 };
-        let inertia = [mass * 0.4; 3];
-        let inv_inertia = [if inertia[0] > 1e-15 {
-            1.0 / inertia[0]
+        let inertia_diag = mass * 0.4;
+        let inv_inertia = [if inertia_diag > 1e-15 {
+            1.0 / inertia_diag
         } else {
             0.0
         }; 3];
@@ -338,7 +336,6 @@ impl WasmRigidBody {
             angular_vel: [0.0; 3],
             mass,
             inv_mass,
-            inertia,
             inv_inertia,
             force_accum: [0.0; 3],
             torque_accum: [0.0; 3],
@@ -346,7 +343,6 @@ impl WasmRigidBody {
             angular_damping: 0.0,
             sleeping: false,
             sleep_time: 0.0,
-            ccd_enabled: false,
             gravity_scale: 1.0,
             user_data: 0,
         }
@@ -361,7 +357,6 @@ impl WasmRigidBody {
             angular_vel: [0.0; 3],
             mass: 0.0,
             inv_mass: 0.0,
-            inertia: [0.0; 3],
             inv_inertia: [0.0; 3],
             force_accum: [0.0; 3],
             torque_accum: [0.0; 3],
@@ -369,7 +364,6 @@ impl WasmRigidBody {
             angular_damping: 0.0,
             sleeping: true,
             sleep_time: f64::INFINITY,
-            ccd_enabled: false,
             gravity_scale: 0.0,
             user_data: 0,
         }

@@ -1,4 +1,3 @@
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -36,9 +35,6 @@
 //! - Morrow, J. (1968). Cyclic plastic strain energy and fatigue of metals.
 //!   *ASTM STP 378*, 45–87.
 //! - Rainflow counting: ASTM E1049-85 (2017).
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ---------------------------------------------------------------------------
 // Enums & structs
@@ -791,7 +787,7 @@ mod tests {
     #[test]
     fn test_surface_factor_clamped() {
         let ka = surface_finish_factor(4.51, -0.265, 100.0);
-        assert!(ka >= 0.0 && ka <= 1.0);
+        assert!((0.0..=1.0).contains(&ka));
     }
 
     #[test]

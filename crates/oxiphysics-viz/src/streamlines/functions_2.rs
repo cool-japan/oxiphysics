@@ -2,15 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::types::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::Color;
+    use crate::streamlines::*;
     use oxiphysics_core::math::Vec3;
     #[test]
     fn test_streamline_arc_length_uniform() {

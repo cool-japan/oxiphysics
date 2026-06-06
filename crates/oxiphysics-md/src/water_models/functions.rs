@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
 use super::types::{WaterGeometry, WaterModelSummary, WaterModelType, WaterMolecule, WaterParams};
@@ -174,7 +173,6 @@ pub fn create_water_box(
     molecules
 }
 /// Generate comparison summaries for all standard 3-site and 4-site models.
-#[allow(dead_code)]
 pub fn compare_water_models() -> Vec<WaterModelSummary> {
     let models = [
         WaterModelType::Tip3p,
@@ -211,7 +209,6 @@ pub fn compare_water_models() -> Vec<WaterModelSummary> {
 ///
 /// # Returns
 /// `(r_centers, g_oo)` vectors of length `n_bins`.
-#[allow(dead_code)]
 pub fn oxygen_rdf(
     oxygens: &[[f64; 3]],
     box_l: f64,
@@ -264,7 +261,6 @@ pub fn oxygen_rdf(
 /// - O-H···O angle > `angle_min` (degrees)
 ///
 /// Simple implementation: counts OO pairs within cutoff (not full angle check).
-#[allow(dead_code)]
 pub fn count_hydrogen_bonds_simple(molecules: &[WaterMolecule], box_l: f64, r_oo_max: f64) -> f64 {
     let n = molecules.len();
     if n == 0 {
@@ -293,7 +289,6 @@ pub fn count_hydrogen_bonds_simple(molecules: &[WaterMolecule], box_l: f64, r_oo
 ///
 /// where the sum is over the 4 nearest neighbours j, k.
 /// Returns values close to 1 for perfect tetrahedral order, ~0 for random.
-#[allow(dead_code)]
 pub fn tetrahedral_order_parameter(oxygens: &[[f64; 3]], box_l: f64) -> Vec<f64> {
     let n = oxygens.len();
     if n < 5 {
@@ -377,7 +372,6 @@ pub fn water_dimer_binding_energy(
 ///
 /// Places molecule B at distance `r_oo` Å from molecule A along the x-axis,
 /// oriented for an ideal linear hydrogen bond (H-bond donor A to acceptor B).
-#[allow(dead_code)]
 pub fn spce_dimer_energy_at_separation(r_oo: f64) -> f64 {
     let coulomb_k = 1389.35_f64;
     let params = WaterParams::spce();
@@ -406,7 +400,6 @@ pub fn spce_dimer_energy_at_separation(r_oo: f64) -> f64 {
 /// * `temperature`– temperature (K).
 ///
 /// Returns an approximate dielectric constant (dimensionless).
-#[allow(dead_code)]
 pub fn clausius_mossotti_dielectric(
     mu_debye: f64,
     n_mol: f64,
@@ -427,7 +420,6 @@ pub fn clausius_mossotti_dielectric(
 ///
 /// Computes the Kirkwood g_K factor from a list of molecular dipole vectors
 /// (in Debye or any consistent units).  g_K > 1 indicates parallel alignment.
-#[allow(dead_code)]
 pub fn kirkwood_g_factor(dipoles: &[[f64; 3]]) -> f64 {
     let n = dipoles.len();
     if n == 0 {
@@ -465,7 +457,6 @@ pub fn kirkwood_g_factor(dipoles: &[[f64; 3]]) -> f64 {
 ///
 /// # Returns
 /// `(r_centers, g_oh)` vectors of length `n_bins`.
-#[allow(dead_code)]
 pub fn oh_rdf(
     oxygens: &[[f64; 3]],
     hydrogens: &[[f64; 3]],
@@ -480,11 +471,11 @@ pub fn oh_rdf(
     }
     let bw = r_max / n_bins as f64;
     let mut hist = vec![0u64; n_bins];
-    for i in 0..n_o {
-        for j in 0..n_h {
-            let mut dx = hydrogens[j][0] - oxygens[i][0];
-            let mut dy = hydrogens[j][1] - oxygens[i][1];
-            let mut dz = hydrogens[j][2] - oxygens[i][2];
+    for o in oxygens.iter().take(n_o) {
+        for h in hydrogens.iter().take(n_h) {
+            let mut dx = h[0] - o[0];
+            let mut dy = h[1] - o[1];
+            let mut dz = h[2] - o[2];
             dx -= box_l * (dx / box_l).round();
             dy -= box_l * (dy / box_l).round();
             dz -= box_l * (dz / box_l).round();
@@ -520,7 +511,6 @@ pub fn oh_rdf(
 /// * `box_l`     – cubic box length (Å).
 /// * `r_max`     – maximum r (Å).
 /// * `n_bins`    – histogram bins.
-#[allow(dead_code)]
 pub fn hh_rdf(
     hydrogens: &[[f64; 3]],
     box_l: f64,
@@ -573,7 +563,6 @@ pub fn hh_rdf(
 /// `rho ≈ 0.64 * (M_water) / (N_A * V_mol)` where `V_mol = (4/3) π (sigma/2)³`.
 ///
 /// Returns density in g/cm³.
-#[allow(dead_code)]
 pub fn water_model_estimated_density(params: &WaterParams, packing_fraction: f64) -> f64 {
     let sigma_cm = params.sigma_o * 1e-8_f64;
     let r = sigma_cm / 2.0;
@@ -590,7 +579,6 @@ pub fn water_model_estimated_density(params: &WaterParams, packing_fraction: f64
 /// the molecular polarisability, and `mu` is the model dipole moment.
 ///
 /// Returns energy in kJ/mol.
-#[allow(dead_code)]
 pub fn spce_polarisation_correction(mu_model_debye: f64) -> f64 {
     let mu_gas = 1.85_f64;
     let alpha_a3 = 1.608_f64;

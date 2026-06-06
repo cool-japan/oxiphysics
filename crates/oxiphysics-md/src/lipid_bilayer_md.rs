@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -31,9 +30,6 @@
 //!
 //! Units: nm for length, kJ/mol for energy, ps for time, K for temperature.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -63,11 +59,6 @@ pub const AREA_PER_LIPID_DPPC: f64 = 0.64;
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[inline]
-fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-#[inline]
 fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -91,15 +82,6 @@ fn norm3(a: [f64; 3]) -> f64 {
 fn normalize3(a: [f64; 3]) -> [f64; 3] {
     let n = norm3(a).max(1e-30);
     scale3(a, 1.0 / n)
-}
-
-#[inline]
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 /// Apply minimum image convention for a cubic box.
@@ -513,17 +495,17 @@ impl BilayerSystem {
         for bead in &self.beads {
             let m = bead.mass();
             total_mass += m;
-            for d in 0..3 {
-                com_vel[d] += m * bead.vel[d];
+            for (cv, &bv) in com_vel.iter_mut().zip(bead.vel.iter()) {
+                *cv += m * bv;
             }
         }
         if total_mass > 0.0 {
-            for d in 0..3 {
-                com_vel[d] /= total_mass;
+            for v in &mut com_vel {
+                *v /= total_mass;
             }
             for bead in &mut self.beads {
-                for d in 0..3 {
-                    bead.vel[d] -= com_vel[d];
+                for (bv, &cv) in bead.vel.iter_mut().zip(com_vel.iter()) {
+                    *bv -= cv;
                 }
             }
         }
@@ -577,9 +559,9 @@ impl BilayerSystem {
                 energy += e;
 
                 let fvec = scale3(dr, f_over_r);
-                for d in 0..3 {
-                    self.beads[i].force[d] -= fvec[d];
-                    self.beads[j].force[d] += fvec[d];
+                for (d, &fv) in fvec.iter().enumerate() {
+                    self.beads[i].force[d] -= fv;
+                    self.beads[j].force[d] += fv;
                 }
             }
         }
@@ -608,9 +590,9 @@ impl BilayerSystem {
                 energy += bp.energy(r);
                 let f_mag = bp.force_magnitude(r);
                 let fvec = scale3(normalize3(dr), f_mag);
-                for d in 0..3 {
-                    self.beads[i].force[d] -= fvec[d];
-                    self.beads[j].force[d] += fvec[d];
+                for (d, &fv) in fvec.iter().enumerate() {
+                    self.beads[i].force[d] -= fv;
+                    self.beads[j].force[d] += fv;
                 }
             }
         }
@@ -652,8 +634,8 @@ impl BilayerSystem {
                 .clamp(0.5, 2.0)
                 .sqrt();
             for bead in &mut self.beads {
-                for d in 0..3 {
-                    bead.vel[d] *= lambda;
+                for v in &mut bead.vel {
+                    *v *= lambda;
                 }
             }
         }
@@ -1575,17 +1557,17 @@ pub fn voronoi_area_per_lipid(positions: &[[f64; 3]], lx: f64, ly: f64) -> Vec<f
         return Vec::new();
     }
     let mut areas = vec![lx * ly / n as f64; n]; // default to average
-    for i in 0..n {
-        let xi = positions[i][0];
-        let yi = positions[i][1];
+    for (i, (&pos_i, area_i)) in positions.iter().zip(areas.iter_mut()).enumerate().take(n) {
+        let xi = pos_i[0];
+        let yi = pos_i[1];
         let mut min_dist = f64::MAX;
-        for j in 0..n {
+        for (j, &pos_j) in positions.iter().enumerate().take(n) {
             if i == j {
                 continue;
             }
-            let dx = (positions[j][0] - xi).abs();
+            let dx = (pos_j[0] - xi).abs();
             let dx = dx.min(lx - dx);
-            let dy = (positions[j][1] - yi).abs();
+            let dy = (pos_j[1] - yi).abs();
             let dy = dy.min(ly - dy);
             let d2 = dx * dx + dy * dy;
             if d2 < min_dist {
@@ -1593,7 +1575,7 @@ pub fn voronoi_area_per_lipid(positions: &[[f64; 3]], lx: f64, ly: f64) -> Vec<f
             }
         }
         // Approximate cell area as π r² / 2 (hexagonal packing)
-        areas[i] = PI * min_dist * 0.5;
+        *area_i = PI * min_dist * 0.5;
     }
     areas
 }

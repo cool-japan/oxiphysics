@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -21,7 +20,6 @@
 //! - **Erosion and deposition** models
 //! - **Residence time distribution** analysis
 
-#[allow(unused_imports)]
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -274,7 +272,6 @@ pub fn stokes_drag_force(
 /// Compute the drag force using the Schiller-Naumann correlation.
 ///
 /// Returns the drag force vector `[fx, fy, fz]`.
-#[allow(clippy::too_many_arguments)]
 pub fn drag_force_schiller_naumann(
     fluid_vel: &[f64; 3],
     particle_vel: &[f64; 3],
@@ -313,7 +310,6 @@ pub fn drag_force_schiller_naumann(
 /// where omega is the fluid vorticity (approximately du/dy for 2D shear).
 ///
 /// Returns the lift force vector `[fx, fy, fz]`.
-#[allow(clippy::too_many_arguments)]
 pub fn saffman_lift_force(
     fluid_vel: &[f64; 3],
     particle_vel: &[f64; 3],
@@ -347,7 +343,6 @@ pub fn saffman_lift_force(
 /// where omega_rel = omega_f - omega_p.
 ///
 /// Returns the Magnus force vector `[fx, fy, fz]`.
-#[allow(clippy::too_many_arguments)]
 pub fn magnus_force(
     fluid_vel: &[f64; 3],
     particle_vel: &[f64; 3],
@@ -507,9 +502,9 @@ pub fn compute_dem_collisions(particles: &mut [LagrangianParticle], params: &Dem
             }
         }
     }
-    for (i, p) in particles.iter_mut().enumerate() {
-        for k in 0..3 {
-            p.force[k] += forces[i][k];
+    for (p, pf) in particles.iter_mut().zip(forces.iter()) {
+        for (fk, &pfk) in p.force.iter_mut().zip(pf.iter()) {
+            *fk += pfk;
         }
     }
 }
@@ -587,7 +582,6 @@ pub fn lognormal_cdf(d: f64, mu: f64, sigma: f64) -> f64 {
 }
 
 /// Approximate error function using Abramowitz & Stegun formula.
-#[allow(dead_code)]
 fn erf_approx(x: f64) -> f64 {
     let sign = x.signum();
     let x = x.abs();
@@ -635,7 +629,6 @@ pub fn lognormal_diameters(mu: f64, sigma: f64, n_particles: usize) -> Vec<f64> 
 }
 
 /// Approximate inverse error function using a rational approximation.
-#[allow(dead_code)]
 fn erfinv_approx(x: f64) -> f64 {
     if x.abs() >= 1.0 {
         return x.signum() * 6.0;
@@ -682,7 +675,6 @@ pub fn stokes_settling_velocity(diameter: f64, rho_p: f64, rho_f: f64, mu: f64, 
 /// Compute the settling velocity with drag correction (Schiller-Naumann).
 ///
 /// Iterative solution for particles with Re_p > 1.
-#[allow(clippy::too_many_arguments)]
 pub fn settling_velocity_corrected(
     diameter: f64,
     rho_p: f64,
@@ -957,12 +949,12 @@ pub fn verlet_step(p: &mut LagrangianParticle, old_force: &[f64; 3], dt: f64) {
     }
     let inv_mass = 1.0 / p.mass;
     // Position: x += v*dt + 0.5*(F/m)*dt^2
-    for i in 0..3 {
-        p.pos[i] += p.vel[i] * dt + 0.5 * old_force[i] * inv_mass * dt * dt;
+    for ((pos_k, &vel_k), &of_k) in p.pos.iter_mut().zip(p.vel.iter()).zip(old_force.iter()) {
+        *pos_k += vel_k * dt + 0.5 * of_k * inv_mass * dt * dt;
     }
     // Velocity: v += 0.5*(F_old + F_new)/m * dt
-    for i in 0..3 {
-        p.vel[i] += 0.5 * (old_force[i] + p.force[i]) * inv_mass * dt;
+    for ((vel_k, &of_k), &nf_k) in p.vel.iter_mut().zip(old_force.iter()).zip(p.force.iter()) {
+        *vel_k += 0.5 * (of_k + nf_k) * inv_mass * dt;
     }
     p.residence_time += dt;
 }
@@ -988,14 +980,14 @@ pub fn track_particles_2d(
 
         // Stokes drag
         let drag = stokes_drag_force(&fluid_vel, &p.vel, p.diameter, fluid.mu);
-        for i in 0..3 {
-            p.force[i] += drag[i];
+        for (fk, &dk) in p.force.iter_mut().zip(drag.iter()) {
+            *fk += dk;
         }
 
         // Buoyancy + gravity
         let buoy = buoyancy_force(p, fluid);
-        for i in 0..3 {
-            p.force[i] += buoy[i];
+        for (fk, &bk) in p.force.iter_mut().zip(buoy.iter()) {
+            *fk += bk;
         }
 
         // Integrate

@@ -1,9 +1,6 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 /// Complete race track layout.
 #[derive(Debug, Clone)]
 pub struct TrackLayout {

@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -18,7 +17,6 @@ pub type ConstraintIndex = usize;
 ///
 /// Each constraint has a number of freedoms it removes (`dof_removed`),
 /// which equals `6 - f_i` in Grübler's formula.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConstraintEdge {
     /// First body index.
@@ -90,14 +88,14 @@ impl ConstraintGraph {
         let mut parent: Vec<usize> = (0..n).collect();
         let mut rank: Vec<u32> = vec![0; n];
 
-        fn find(parent: &mut Vec<usize>, x: usize) -> usize {
+        fn find(parent: &mut [usize], x: usize) -> usize {
             if parent[x] != x {
                 parent[x] = find(parent, parent[x]);
             }
             parent[x]
         }
 
-        fn union(parent: &mut Vec<usize>, rank: &mut Vec<u32>, a: usize, b: usize) {
+        fn union(parent: &mut [usize], rank: &mut [u32], a: usize, b: usize) {
             let ra = find(parent, a);
             let rb = find(parent, b);
             if ra == rb {

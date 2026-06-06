@@ -51,7 +51,6 @@ pub(super) fn quote_field(field: &str, delimiter: char) -> String {
 /// Infer the column type for a slice of string values.
 ///
 /// Empty strings are treated as missing values and do not affect type inference.
-#[allow(dead_code)]
 pub fn infer_column_type(values: &[&str]) -> ColumnType {
     let non_empty: Vec<&str> = values
         .iter()
@@ -81,7 +80,6 @@ pub fn infer_column_type(values: &[&str]) -> ColumnType {
 /// Infer types for all columns in a [`CsvTable`].
 ///
 /// Returns a `Vec<(column_name, ColumnType)>` in column order.
-#[allow(dead_code)]
 pub fn infer_table_types(table: &CsvTable) -> Vec<(String, ColumnType)> {
     table
         .headers
@@ -103,12 +101,11 @@ pub fn infer_table_types(table: &CsvTable) -> Vec<(String, ColumnType)> {
 /// ```no_run
 /// use oxiphysics_io::csv::{CsvTable, csv_merge};
 ///
-/// let a = CsvTable::from_str("x,y\n1,2\n", ',').unwrap();
-/// let b = CsvTable::from_str("x,y\n3,4\n", ',').unwrap();
+/// let a = CsvTable::parse("x,y\n1,2\n", ',').unwrap();
+/// let b = CsvTable::parse("x,y\n3,4\n", ',').unwrap();
 /// let merged = csv_merge(&a, &b).unwrap();
 /// assert_eq!(merged.row_count(), 2);
 /// ```
-#[allow(dead_code)]
 pub fn csv_merge(left: &CsvTable, right: &CsvTable) -> std::result::Result<CsvTable, Error> {
     if left.headers != right.headers {
         return Err(Error::Parse(format!(
@@ -131,15 +128,14 @@ pub fn csv_merge(left: &CsvTable, right: &CsvTable) -> std::result::Result<CsvTa
 /// ```no_run
 /// use oxiphysics_io::csv::{CsvTable, csv_join};
 ///
-/// let left  = CsvTable::from_str("id,x\n1,10\n2,20\n3,30\n", ',').unwrap();
-/// let right = CsvTable::from_str("id,y\n1,100\n3,300\n", ',').unwrap();
+/// let left  = CsvTable::parse("id,x\n1,10\n2,20\n3,30\n", ',').unwrap();
+/// let right = CsvTable::parse("id,y\n1,100\n3,300\n", ',').unwrap();
 /// let joined = csv_join(&left, &right, "id").unwrap();
 /// assert_eq!(joined.row_count(), 2);
 /// let x_col = joined.column_f64("x").unwrap();
 /// assert!((x_col[0] - 10.0).abs() < 1e-10);
 /// assert!((x_col[1] - 30.0).abs() < 1e-10);
 /// ```
-#[allow(dead_code)]
 pub fn csv_join(
     left: &CsvTable,
     right: &CsvTable,
@@ -206,12 +202,11 @@ pub fn csv_join(
 /// use oxiphysics_io::csv::{CsvTable, csv_pivot, PivotAgg};
 ///
 /// let data = "region,product,sales\nNorth,A,10\nNorth,B,20\nSouth,A,30\nSouth,B,40\n";
-/// let table = CsvTable::from_str(data, ',').unwrap();
+/// let table = CsvTable::parse(data, ',').unwrap();
 /// let pivot = csv_pivot(&table, "region", "product", "sales", PivotAgg::Sum).unwrap();
 /// assert!(pivot.headers.contains(&"A".to_string()));
 /// assert!(pivot.headers.contains(&"B".to_string()));
 /// ```
-#[allow(dead_code)]
 pub fn csv_pivot(
     table: &CsvTable,
     row_col: &str,
@@ -283,14 +278,13 @@ pub fn csv_pivot(
 /// ```no_run
 /// use oxiphysics_io::csv::{CsvTable, csv_diff};
 ///
-/// let a = CsvTable::from_str("id,v\n1,10\n2,20\n3,30\n", ',').unwrap();
-/// let b = CsvTable::from_str("id,v\n1,10\n2,99\n4,40\n", ',').unwrap();
+/// let a = CsvTable::parse("id,v\n1,10\n2,20\n3,30\n", ',').unwrap();
+/// let b = CsvTable::parse("id,v\n1,10\n2,99\n4,40\n", ',').unwrap();
 /// let diff = csv_diff(&a, &b, "id").unwrap();
 /// assert_eq!(diff.removed.len(), 1); // id=3
 /// assert_eq!(diff.added.len(), 1);   // id=4
 /// assert_eq!(diff.changed.len(), 1); // id=2 changed v
 /// ```
-#[allow(dead_code)]
 pub fn csv_diff(
     left: &CsvTable,
     right: &CsvTable,
@@ -352,23 +346,27 @@ mod tests {
     use std::io::Write;
     #[test]
     fn test_csv_write_and_read_roundtrip() {
-        let path = "/tmp/oxiphy_test.csv";
+        let path = std::env::temp_dir().join("oxiphy_test.csv");
         {
-            let mut w = CsvWriter::new(path, &["time", "energy", "temperature"]).unwrap();
+            let mut w = CsvWriter::new(
+                path.to_str().unwrap_or(""),
+                &["time", "energy", "temperature"],
+            )
+            .unwrap();
             w.write_row(&[0.0, 100.0, 300.0]).unwrap();
             w.write_row(&[1.0, 99.5, 299.8]).unwrap();
             w.write_row(&[2.0, 99.0, 299.5]).unwrap();
         }
-        let (headers, rows) = CsvReader::read(path).unwrap();
+        let (headers, rows) = CsvReader::read(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(headers, vec!["time", "energy", "temperature"]);
         assert_eq!(rows.len(), 3);
         assert!((rows[0][0] - 0.0).abs() < 1e-10);
         assert!((rows[2][2] - 299.5).abs() < 1e-10);
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_csv_write_read() {
-        let path = "/tmp/oxiphy_test_positions.csv";
+        let path = std::env::temp_dir().join("oxiphy_test_positions.csv");
         let particle_positions: Vec<[f64; 3]> = vec![
             [1.0, 2.0, 3.0],
             [4.5, 5.5, 6.5],
@@ -376,12 +374,12 @@ mod tests {
             [0.0, 0.0, 0.0],
         ];
         {
-            let mut w = CsvWriter::new(path, &["x", "y", "z"]).unwrap();
+            let mut w = CsvWriter::new(path.to_str().unwrap_or(""), &["x", "y", "z"]).unwrap();
             for pos in &particle_positions {
                 w.write_row(pos).unwrap();
             }
         }
-        let (headers, rows) = CsvReader::read(path).unwrap();
+        let (headers, rows) = CsvReader::read(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(headers, vec!["x", "y", "z"]);
         assert_eq!(rows.len(), 4, "expected 4 rows");
         for (i, expected) in particle_positions.iter().enumerate() {
@@ -407,18 +405,18 @@ mod tests {
                 expected[2]
             );
         }
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_csv_with_empty_data() {
-        let path = "/tmp/oxiphy_test_empty.csv";
+        let path = std::env::temp_dir().join("oxiphy_test_empty.csv");
         {
-            let _w = CsvWriter::new(path, &["x", "y"]).unwrap();
+            let _w = CsvWriter::new(path.to_str().unwrap_or(""), &["x", "y"]).unwrap();
         }
-        let (headers, rows) = CsvReader::read(path).unwrap();
+        let (headers, rows) = CsvReader::read(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(headers, vec!["x", "y"]);
         assert!(rows.is_empty());
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_in_memory_writer_header() {
@@ -455,7 +453,7 @@ mod tests {
     #[test]
     fn test_in_memory_reader_basic() {
         let data = "x,y,z\n1.0,2.0,3.0\n4.0,5.0,6.0\n";
-        let reader = InMemoryCsvReader::from_str(data).unwrap();
+        let reader = data.parse::<InMemoryCsvReader>().unwrap();
         assert_eq!(reader.get_row_count(), 2);
         let x = reader.get_column_f64("x").unwrap();
         assert!((x[0] - 1.0).abs() < 1e-10);
@@ -464,7 +462,7 @@ mod tests {
     #[test]
     fn test_in_memory_reader_missing_values() {
         let data = "a,b\n1.0,\n,3.0\n";
-        let reader = InMemoryCsvReader::from_str(data).unwrap();
+        let reader = data.parse::<InMemoryCsvReader>().unwrap();
         let a = reader.get_column_f64("a").unwrap();
         let b = reader.get_column_f64("b").unwrap();
         assert!((a[0] - 1.0).abs() < 1e-10);
@@ -475,7 +473,7 @@ mod tests {
     #[test]
     fn test_in_memory_reader_comment_lines() {
         let data = "# This is a comment\nx,y\n# Another comment\n1.0,2.0\n3.0,4.0\n";
-        let reader = InMemoryCsvReader::from_str(data).unwrap();
+        let reader = data.parse::<InMemoryCsvReader>().unwrap();
         assert_eq!(reader.get_row_count(), 2);
         assert_eq!(reader.headers(), &["x", "y"]);
     }
@@ -488,19 +486,19 @@ mod tests {
     }
     #[test]
     fn test_in_memory_reader_empty_input() {
-        assert!(InMemoryCsvReader::from_str("").is_err());
-        assert!(InMemoryCsvReader::from_str("# only comments\n").is_err());
+        assert!("".parse::<InMemoryCsvReader>().is_err());
+        assert!("# only comments\n".parse::<InMemoryCsvReader>().is_err());
     }
     #[test]
     fn test_in_memory_reader_column_not_found() {
         let data = "x,y\n1.0,2.0\n";
-        let reader = InMemoryCsvReader::from_str(data).unwrap();
+        let reader = data.parse::<InMemoryCsvReader>().unwrap();
         assert!(reader.get_column_f64("z").is_err());
     }
     #[test]
     fn test_column_stats() {
         let data = "v\n1.0\n2.0\n3.0\n4.0\n5.0\n";
-        let reader = InMemoryCsvReader::from_str(data).unwrap();
+        let reader = data.parse::<InMemoryCsvReader>().unwrap();
         let (min, max, mean, std) = reader.column_stats("v").unwrap();
         assert!((min - 1.0).abs() < 1e-10);
         assert!((max - 5.0).abs() < 1e-10);
@@ -510,7 +508,7 @@ mod tests {
     #[test]
     fn test_column_stats_with_missing() {
         let data = "v\n2.0\n\n4.0\n";
-        let reader = InMemoryCsvReader::from_str(data).unwrap();
+        let reader = data.parse::<InMemoryCsvReader>().unwrap();
         let (min, max, mean, _std) = reader.column_stats("v").unwrap();
         assert!((min - 2.0).abs() < 1e-10);
         assert!((max - 4.0).abs() < 1e-10);
@@ -521,7 +519,7 @@ mod tests {
         let writer = InMemoryCsvWriter::new(&["time", "energy"], ',').with_precision(4);
         let rows = vec![vec![0.0, 100.0], vec![0.5, 99.5], vec![1.0, 99.0]];
         let csv_str = writer.write_all(&rows);
-        let reader = InMemoryCsvReader::from_str(&csv_str).unwrap();
+        let reader = csv_str.parse::<InMemoryCsvReader>().unwrap();
         assert_eq!(reader.get_row_count(), 3);
         let time = reader.get_column_f64("time").unwrap();
         let energy = reader.get_column_f64("energy").unwrap();
@@ -531,7 +529,7 @@ mod tests {
     #[test]
     fn test_quoted_fields() {
         let data = "name,value\n\"hello,world\",42.0\n";
-        let reader = InMemoryCsvReader::from_str(data).unwrap();
+        let reader = data.parse::<InMemoryCsvReader>().unwrap();
         assert_eq!(reader.get_row_count(), 1);
         let value = reader.get_column_f64("value").unwrap();
         assert!((value[0] - 42.0).abs() < 1e-10);
@@ -587,14 +585,14 @@ mod tests {
     #[test]
     fn test_csv_table_from_str() {
         let data = "x,y\n1,2\n3,4\n";
-        let table = CsvTable::from_str(data, ',').unwrap();
+        let table = CsvTable::parse(data, ',').unwrap();
         assert_eq!(table.row_count(), 2);
         assert_eq!(table.col_count(), 2);
     }
     #[test]
     fn test_csv_table_column_f64() {
         let data = "x,y\n1.5,2.5\n3.5,4.5\n";
-        let table = CsvTable::from_str(data, ',').unwrap();
+        let table = CsvTable::parse(data, ',').unwrap();
         let x = table.column_f64("x").unwrap();
         assert!((x[0] - 1.5).abs() < 1e-10);
         assert!((x[1] - 3.5).abs() < 1e-10);
@@ -602,7 +600,7 @@ mod tests {
     #[test]
     fn test_csv_table_to_csv_string() {
         let data = "a,b\n1,2\n3,4\n";
-        let table = CsvTable::from_str(data, ',').unwrap();
+        let table = CsvTable::parse(data, ',').unwrap();
         let out = table.to_csv_string(',');
         assert!(out.starts_with("a,b\n"));
         assert!(out.contains("1,2"));
@@ -610,7 +608,7 @@ mod tests {
     #[test]
     fn test_csv_table_quote_field_with_delimiter() {
         let data = "name,val\n\"x,y\",5\n";
-        let table = CsvTable::from_str(data, ',').unwrap();
+        let table = CsvTable::parse(data, ',').unwrap();
         let names = table.column_values("name").unwrap();
         assert_eq!(names[0], "x,y");
     }
@@ -687,28 +685,28 @@ mod tests {
     #[test]
     fn test_typed_reader_i64() {
         let data = "id,val\n1,10\n2,20\n";
-        let reader = TypedCsvReader::from_str(data).unwrap();
+        let reader = data.parse::<TypedCsvReader>().unwrap();
         let ids = reader.column_as_i64("id").unwrap();
         assert_eq!(ids, vec![1, 2]);
     }
     #[test]
     fn test_typed_reader_f64() {
         let data = "x\n1.5\n2.5\n";
-        let reader = TypedCsvReader::from_str(data).unwrap();
+        let reader = data.parse::<TypedCsvReader>().unwrap();
         let x = reader.column_as_f64("x").unwrap();
         assert!((x[0] - 1.5).abs() < 1e-10);
     }
     #[test]
     fn test_typed_reader_bool() {
         let data = "active\ntrue\nfalse\nyes\nno\n";
-        let reader = TypedCsvReader::from_str(data).unwrap();
+        let reader = data.parse::<TypedCsvReader>().unwrap();
         let active = reader.column_as_bool("active").unwrap();
         assert_eq!(active, vec![true, false, true, false]);
     }
     #[test]
     fn test_typed_reader_column_type() {
         let data = "id,name,score\n1,Alice,9.5\n2,Bob,8.0\n";
-        let reader = TypedCsvReader::from_str(data).unwrap();
+        let reader = data.parse::<TypedCsvReader>().unwrap();
         assert_eq!(reader.column_type("id").unwrap(), ColumnType::Integer);
         assert_eq!(reader.column_type("name").unwrap(), ColumnType::Text);
         assert_eq!(reader.column_type("score").unwrap(), ColumnType::Float);
@@ -716,14 +714,14 @@ mod tests {
     #[test]
     fn test_typed_reader_headers_and_count() {
         let data = "a,b\n1,2\n3,4\n5,6\n";
-        let reader = TypedCsvReader::from_str(data).unwrap();
+        let reader = data.parse::<TypedCsvReader>().unwrap();
         assert_eq!(reader.row_count(), 3);
         assert_eq!(reader.headers(), &["a", "b"]);
     }
     #[test]
     fn test_csv_merge_basic() {
-        let a = CsvTable::from_str("x,y\n1,2\n", ',').unwrap();
-        let b = CsvTable::from_str("x,y\n3,4\n", ',').unwrap();
+        let a = CsvTable::parse("x,y\n1,2\n", ',').unwrap();
+        let b = CsvTable::parse("x,y\n3,4\n", ',').unwrap();
         let merged = csv_merge(&a, &b).unwrap();
         assert_eq!(merged.row_count(), 2);
         let x = merged.column_f64("x").unwrap();
@@ -732,21 +730,21 @@ mod tests {
     }
     #[test]
     fn test_csv_merge_header_mismatch() {
-        let a = CsvTable::from_str("x,y\n1,2\n", ',').unwrap();
-        let b = CsvTable::from_str("x,z\n3,4\n", ',').unwrap();
+        let a = CsvTable::parse("x,y\n1,2\n", ',').unwrap();
+        let b = CsvTable::parse("x,z\n3,4\n", ',').unwrap();
         assert!(csv_merge(&a, &b).is_err());
     }
     #[test]
     fn test_csv_merge_empty_right() {
-        let a = CsvTable::from_str("x\n1\n2\n", ',').unwrap();
+        let a = CsvTable::parse("x\n1\n2\n", ',').unwrap();
         let b = CsvTable::new(vec!["x".to_string()]);
         let merged = csv_merge(&a, &b).unwrap();
         assert_eq!(merged.row_count(), 2);
     }
     #[test]
     fn test_csv_join_basic() {
-        let left = CsvTable::from_str("id,x\n1,10\n2,20\n3,30\n", ',').unwrap();
-        let right = CsvTable::from_str("id,y\n1,100\n3,300\n", ',').unwrap();
+        let left = CsvTable::parse("id,x\n1,10\n2,20\n3,30\n", ',').unwrap();
+        let right = CsvTable::parse("id,y\n1,100\n3,300\n", ',').unwrap();
         let joined = csv_join(&left, &right, "id").unwrap();
         assert_eq!(joined.row_count(), 2);
         let y = joined.column_f64("y").unwrap();
@@ -755,21 +753,21 @@ mod tests {
     }
     #[test]
     fn test_csv_join_no_matches() {
-        let left = CsvTable::from_str("id,x\n1,10\n", ',').unwrap();
-        let right = CsvTable::from_str("id,y\n9,99\n", ',').unwrap();
+        let left = CsvTable::parse("id,x\n1,10\n", ',').unwrap();
+        let right = CsvTable::parse("id,y\n9,99\n", ',').unwrap();
         let joined = csv_join(&left, &right, "id").unwrap();
         assert_eq!(joined.row_count(), 0);
     }
     #[test]
     fn test_csv_join_key_not_found() {
-        let left = CsvTable::from_str("id,x\n1,10\n", ',').unwrap();
-        let right = CsvTable::from_str("id,y\n1,100\n", ',').unwrap();
+        let left = CsvTable::parse("id,x\n1,10\n", ',').unwrap();
+        let right = CsvTable::parse("id,y\n1,100\n", ',').unwrap();
         assert!(csv_join(&left, &right, "missing").is_err());
     }
     #[test]
     fn test_csv_pivot_sum() {
         let data = "region,product,sales\nNorth,A,10\nNorth,B,20\nSouth,A,30\nSouth,B,40\n";
-        let table = CsvTable::from_str(data, ',').unwrap();
+        let table = CsvTable::parse(data, ',').unwrap();
         let pivot = csv_pivot(&table, "region", "product", "sales", PivotAgg::Sum).unwrap();
         assert_eq!(pivot.row_count(), 2);
         assert!(pivot.headers.contains(&"A".to_string()));
@@ -778,7 +776,7 @@ mod tests {
     #[test]
     fn test_csv_pivot_count() {
         let data = "cat,sub,v\nA,X,1\nA,X,2\nA,Y,3\nB,X,4\n";
-        let table = CsvTable::from_str(data, ',').unwrap();
+        let table = CsvTable::parse(data, ',').unwrap();
         let pivot = csv_pivot(&table, "cat", "sub", "v", PivotAgg::Count).unwrap();
         let x_col = pivot.column_values("X").unwrap();
         assert_eq!(x_col[0], "2");
@@ -786,7 +784,7 @@ mod tests {
     #[test]
     fn test_csv_pivot_mean() {
         let data = "g,c,v\nA,X,10\nA,X,20\n";
-        let table = CsvTable::from_str(data, ',').unwrap();
+        let table = CsvTable::parse(data, ',').unwrap();
         let pivot = csv_pivot(&table, "g", "c", "v", PivotAgg::Mean).unwrap();
         let x_col = pivot.column_values("X").unwrap();
         let mean: f64 = x_col[0].parse().unwrap();
@@ -794,8 +792,8 @@ mod tests {
     }
     #[test]
     fn test_csv_diff_basic() {
-        let a = CsvTable::from_str("id,v\n1,10\n2,20\n3,30\n", ',').unwrap();
-        let b = CsvTable::from_str("id,v\n1,10\n2,99\n4,40\n", ',').unwrap();
+        let a = CsvTable::parse("id,v\n1,10\n2,20\n3,30\n", ',').unwrap();
+        let b = CsvTable::parse("id,v\n1,10\n2,99\n4,40\n", ',').unwrap();
         let diff = csv_diff(&a, &b, "id").unwrap();
         assert_eq!(diff.removed.len(), 1);
         assert_eq!(diff.added.len(), 1);
@@ -804,8 +802,8 @@ mod tests {
     }
     #[test]
     fn test_csv_diff_no_changes() {
-        let a = CsvTable::from_str("id,v\n1,10\n2,20\n", ',').unwrap();
-        let b = CsvTable::from_str("id,v\n1,10\n2,20\n", ',').unwrap();
+        let a = CsvTable::parse("id,v\n1,10\n2,20\n", ',').unwrap();
+        let b = CsvTable::parse("id,v\n1,10\n2,20\n", ',').unwrap();
         let diff = csv_diff(&a, &b, "id").unwrap();
         assert_eq!(diff.removed.len(), 0);
         assert_eq!(diff.added.len(), 0);
@@ -813,29 +811,29 @@ mod tests {
     }
     #[test]
     fn test_csv_diff_header_mismatch() {
-        let a = CsvTable::from_str("id,v\n1,10\n", ',').unwrap();
-        let b = CsvTable::from_str("id,w\n1,10\n", ',').unwrap();
+        let a = CsvTable::parse("id,v\n1,10\n", ',').unwrap();
+        let b = CsvTable::parse("id,w\n1,10\n", ',').unwrap();
         assert!(csv_diff(&a, &b, "id").is_err());
     }
     #[test]
     fn test_csv_diff_all_added() {
         let a = CsvTable::new(vec!["id".to_string(), "v".to_string()]);
-        let b = CsvTable::from_str("id,v\n1,10\n", ',').unwrap();
+        let b = CsvTable::parse("id,v\n1,10\n", ',').unwrap();
         let diff = csv_diff(&a, &b, "id").unwrap();
         assert_eq!(diff.added.len(), 1);
         assert_eq!(diff.removed.len(), 0);
     }
     #[test]
     fn test_csv_stream_parser_file() {
-        let path = "/tmp/oxiphy_stream_test.csv";
+        let path = std::env::temp_dir().join("oxiphy_stream_test.csv");
         {
-            let mut f = File::create(path).unwrap();
+            let mut f = File::create(&path).unwrap();
             writeln!(f, "x,y,z").unwrap();
             writeln!(f, "1,2,3").unwrap();
             writeln!(f, "4,5,6").unwrap();
             writeln!(f, "7,8,9").unwrap();
         }
-        let mut parser = CsvStreamParser::open(path, ',').unwrap();
+        let mut parser = CsvStreamParser::open(path.to_str().unwrap_or(""), ',').unwrap();
         assert_eq!(parser.headers(), &["x", "y", "z"]);
         let mut count = 0;
         while let Some(rec) = parser.next_record().unwrap() {
@@ -843,26 +841,26 @@ mod tests {
             assert_eq!(rec.len(), 3);
         }
         assert_eq!(count, 3);
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_csv_stream_parser_large() {
-        let path = "/tmp/oxiphy_stream_large.csv";
+        let path = std::env::temp_dir().join("oxiphy_stream_large.csv");
         let nrows = 500_usize;
         {
-            let mut f = File::create(path).unwrap();
+            let mut f = File::create(&path).unwrap();
             writeln!(f, "i,v").unwrap();
             for i in 0..nrows {
                 writeln!(f, "{},{}", i, i as f64 * 1.5).unwrap();
             }
         }
-        let mut parser = CsvStreamParser::open(path, ',').unwrap();
+        let mut parser = CsvStreamParser::open(path.to_str().unwrap_or(""), ',').unwrap();
         let mut count = 0usize;
         while let Some(_rec) = parser.next_record().unwrap() {
             count += 1;
         }
         assert_eq!(count, nrows);
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_csv_record_accessors() {
@@ -889,7 +887,7 @@ mod tests {
     #[test]
     fn test_infer_table_types_mixed() {
         let data = "id,name,score\n1,Alice,9.5\n2,Bob,8.0\n";
-        let table = CsvTable::from_str(data, ',').unwrap();
+        let table = CsvTable::parse(data, ',').unwrap();
         let types = infer_table_types(&table);
         assert_eq!(types[0].1, ColumnType::Integer);
         assert_eq!(types[1].1, ColumnType::Text);

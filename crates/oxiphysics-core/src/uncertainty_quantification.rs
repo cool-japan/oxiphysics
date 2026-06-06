@@ -1,4 +1,3 @@
-#![allow(clippy::if_same_then_else, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,9 +14,6 @@
 //! - Bootstrap confidence intervals
 //! - Bayesian inference via Metropolis-Hastings MCMC
 //! - Probability of failure estimation
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::{FRAC_1_SQRT_2, PI};
 
@@ -97,7 +93,7 @@ pub fn std_dev(data: &[f64]) -> f64 {
 /// Sort a slice in-place and return the p-th percentile (linear interpolation).
 ///
 /// `p` should be in \[0, 100\].
-pub fn percentile(data: &mut Vec<f64>, p: f64) -> f64 {
+pub fn percentile(data: &mut [f64], p: f64) -> f64 {
     if data.is_empty() {
         return 0.0;
     }
@@ -577,11 +573,7 @@ fn pce_multi_indices_rec(
         result.push(current.clone());
         return;
     }
-    let max_here = if dim == n_dims - 1 {
-        remaining
-    } else {
-        remaining
-    };
+    let max_here = remaining;
     for d in 0..=max_here {
         current.push(d);
         if dim + 1 < n_dims {
@@ -847,7 +839,6 @@ pub fn stochastic_collocation(
     (mean_acc, var)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn collocation_recurse(
     nodes: &[CollocationNode],
     n_dims: usize,

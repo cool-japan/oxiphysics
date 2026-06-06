@@ -2,13 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
-
 /// Result of load balancing: a set of ranges assigned to workers.
-#[allow(dead_code)]
 pub struct LoadBalancePlan {
     /// Ranges for each worker.
     pub ranges: Vec<std::ops::Range<usize>>,
@@ -17,12 +11,10 @@ pub struct LoadBalancePlan {
 }
 impl LoadBalancePlan {
     /// Number of workers in this plan.
-    #[allow(dead_code)]
     pub fn num_workers(&self) -> usize {
         self.ranges.len()
     }
     /// Maximum weight across workers (a measure of imbalance).
-    #[allow(dead_code)]
     pub fn max_weight(&self) -> f64 {
         self.weights
             .iter()
@@ -30,7 +22,6 @@ impl LoadBalancePlan {
             .fold(f64::NEG_INFINITY, f64::max)
     }
     /// Imbalance ratio: max_weight / avg_weight. 1.0 is perfect balance.
-    #[allow(dead_code)]
     pub fn imbalance_ratio(&self) -> f64 {
         if self.weights.is_empty() {
             return 1.0;
@@ -48,11 +39,9 @@ impl LoadBalancePlan {
 /// Internally backed by a `Vec`T` with a front/back cursor pair.  "Stealing"
 /// takes from the front (like a deque), while the owner pushes/pops from the
 /// back.
-#[allow(dead_code)]
 pub struct WorkStealQueue<T> {
     pub(super) items: std::collections::VecDeque<T>,
 }
-#[allow(dead_code)]
 impl<T: Send> WorkStealQueue<T> {
     /// Create an empty work-steal queue.
     pub fn new() -> Self {
@@ -85,7 +74,6 @@ impl<T: Send> WorkStealQueue<T> {
 ///
 /// Models GPU-like work group sizing where the total work is divided into
 /// groups of a fixed size, potentially with padding in the last group.
-#[allow(dead_code)]
 pub struct WorkGroupConfig {
     /// Preferred work group size (e.g. 64, 128, 256).
     pub preferred_size: usize,
@@ -96,7 +84,6 @@ pub struct WorkGroupConfig {
 }
 impl WorkGroupConfig {
     /// Create a new config with preferred group size.
-    #[allow(dead_code)]
     pub fn new(preferred_size: usize) -> Self {
         Self {
             preferred_size: preferred_size.max(1),
@@ -105,7 +92,6 @@ impl WorkGroupConfig {
         }
     }
     /// Create a default config suitable for CPU-side Rayon parallelism.
-    #[allow(dead_code)]
     pub fn cpu_default() -> Self {
         let threads = rayon::current_num_threads().max(1);
         Self {
@@ -118,7 +104,6 @@ impl WorkGroupConfig {
     ///
     /// Returns a size in `\[min_size, max_size\]` that balances occupancy.
     /// Prefers `preferred_size` but adjusts if `total` is small.
-    #[allow(dead_code)]
     pub fn optimal_size(&self, total: usize) -> usize {
         if total == 0 {
             return self.min_size;
@@ -145,13 +130,11 @@ impl WorkGroupConfig {
         best_size
     }
     /// Compute the number of work groups needed for `total` items.
-    #[allow(dead_code)]
     pub fn num_groups(&self, total: usize) -> usize {
         let size = self.optimal_size(total);
         total.div_ceil(size)
     }
     /// Return ranges for each work group covering `0..total`.
-    #[allow(dead_code)]
     pub fn group_ranges(&self, total: usize) -> Vec<std::ops::Range<usize>> {
         let size = self.optimal_size(total);
         (0..total)
@@ -162,7 +145,6 @@ impl WorkGroupConfig {
 }
 /// Load balancing strategy for distributing work across threads.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub enum LoadBalanceStrategy {
     /// Static: divide work evenly by index count.
     Static,

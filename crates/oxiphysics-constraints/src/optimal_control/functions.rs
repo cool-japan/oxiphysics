@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::too_many_arguments)]
 /// Multiply two n×n matrices stored row-major. Returns C = A * B.
 pub(super) fn mat_mul(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
     let mut c = vec![0.0; n * n];
@@ -23,10 +22,6 @@ pub(super) fn mat_add(a: &[f64], b: &[f64], _n: usize) -> Vec<f64> {
 /// Subtract: C = A - B.
 pub(super) fn mat_sub(a: &[f64], b: &[f64], _n: usize) -> Vec<f64> {
     a.iter().zip(b.iter()).map(|(x, y)| x - y).collect()
-}
-/// Scale: B = s * A.
-pub(super) fn mat_scale(a: &[f64], s: f64) -> Vec<f64> {
-    a.iter().map(|x| x * s).collect()
 }
 /// Transpose n×n matrix.
 pub(super) fn mat_transpose(a: &[f64], n: usize) -> Vec<f64> {
@@ -63,20 +58,6 @@ pub(super) fn dot(a: &[f64], b: &[f64]) -> f64 {
 /// Frobenius norm of a matrix or vector.
 pub(super) fn frob_norm(a: &[f64]) -> f64 {
     a.iter().map(|x| x * x).sum::<f64>().sqrt()
-}
-/// Invert a 2×2 matrix stored row-major.  Returns None if singular.
-pub(super) fn inv2(m: &[f64]) -> Option<Vec<f64>> {
-    let det = m[0] * m[3] - m[1] * m[2];
-    if det.abs() < 1e-15 {
-        return None;
-    }
-    let inv_det = 1.0 / det;
-    Some(vec![
-        m[3] * inv_det,
-        -m[1] * inv_det,
-        -m[2] * inv_det,
-        m[0] * inv_det,
-    ])
 }
 /// Invert a general n×n matrix via Gaussian elimination with partial pivoting.
 /// Returns `None` if the matrix is singular to within tolerance.

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 //! Swarm robotics constraints: formation control, consensus, coverage.
@@ -9,32 +8,22 @@
 
 // ── Helper math ───────────────────────────────────────────────────────────────
 
-#[allow(dead_code)]
 fn vec3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-#[allow(dead_code)]
 fn vec3_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-#[allow(dead_code)]
 fn vec3_scale(v: [f64; 3], s: f64) -> [f64; 3] {
     [v[0] * s, v[1] * s, v[2] * s]
 }
 
-#[allow(dead_code)]
-fn vec3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-#[allow(dead_code)]
 fn vec3_len(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
-#[allow(dead_code)]
 fn vec3_normalize(v: [f64; 3]) -> [f64; 3] {
     let len = vec3_len(v);
     if len < 1e-15 {
@@ -44,7 +33,6 @@ fn vec3_normalize(v: [f64; 3]) -> [f64; 3] {
     }
 }
 
-#[allow(dead_code)]
 fn vec3_dist(a: [f64; 3], b: [f64; 3]) -> f64 {
     vec3_len(vec3_sub(a, b))
 }
@@ -53,7 +41,6 @@ fn vec3_dist(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 /// A single agent in a swarm with position, velocity, heading, and sensor radius.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct SwarmAgent {
     /// World-space position \[x, y, z\].
     pub position: [f64; 3],
@@ -69,7 +56,6 @@ pub struct SwarmAgent {
 
 impl SwarmAgent {
     /// Create a new swarm agent.
-    #[allow(dead_code)]
     pub fn new(id: usize, position: [f64; 3], sensor_radius: f64) -> Self {
         Self {
             position,
@@ -81,7 +67,6 @@ impl SwarmAgent {
     }
 
     /// Return agents within `self.sensor_radius` from `agents` slice.
-    #[allow(dead_code)]
     pub fn neighbors<'a>(&self, agents: &'a [SwarmAgent]) -> Vec<&'a SwarmAgent> {
         agents
             .iter()
@@ -92,7 +77,6 @@ impl SwarmAgent {
     }
 
     /// Integrate position by one timestep `dt` using current velocity.
-    #[allow(dead_code)]
     pub fn integrate(&mut self, dt: f64) {
         self.position = vec3_add(self.position, vec3_scale(self.velocity, dt));
         // Update heading from velocity projection onto XY plane.
@@ -102,7 +86,6 @@ impl SwarmAgent {
     }
 
     /// Apply a steering acceleration, clamped to `max_speed`.
-    #[allow(dead_code)]
     pub fn apply_steering(&mut self, steering: [f64; 3], max_speed: f64, dt: f64) {
         let new_vel = vec3_add(self.velocity, vec3_scale(steering, dt));
         let speed = vec3_len(new_vel);
@@ -118,7 +101,6 @@ impl SwarmAgent {
 
 /// Parameters for Reynolds flocking (separation, alignment, cohesion).
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct FlockingBehavior {
     /// Separation radius (repulsion below this distance).
     pub r_separation: f64,
@@ -136,7 +118,6 @@ pub struct FlockingBehavior {
 
 impl FlockingBehavior {
     /// Create a new FlockingBehavior with default weights.
-    #[allow(dead_code)]
     pub fn new(r_separation: f64) -> Self {
         Self {
             r_separation,
@@ -151,7 +132,6 @@ impl FlockingBehavior {
     /// Compute separation steering: steer away from too-close neighbors.
     ///
     /// Returns a steering vector away from neighbors closer than `r_separation`.
-    #[allow(dead_code)]
     pub fn separation(&self, agent: &SwarmAgent, neighbors: &[&SwarmAgent]) -> [f64; 3] {
         let mut steer = [0.0_f64; 3];
         let mut count = 0usize;
@@ -178,7 +158,6 @@ impl FlockingBehavior {
     }
 
     /// Compute alignment steering: match average velocity of neighbors.
-    #[allow(dead_code)]
     pub fn alignment(&self, agent: &SwarmAgent, neighbors: &[&SwarmAgent]) -> [f64; 3] {
         if neighbors.is_empty() {
             return [0.0; 3];
@@ -194,7 +173,6 @@ impl FlockingBehavior {
     }
 
     /// Compute cohesion steering: steer toward average position of neighbors.
-    #[allow(dead_code)]
     pub fn cohesion(&self, agent: &SwarmAgent, neighbors: &[&SwarmAgent]) -> [f64; 3] {
         if neighbors.is_empty() {
             return [0.0; 3];
@@ -214,7 +192,6 @@ impl FlockingBehavior {
     }
 
     /// Compute total flocking steering force for one agent.
-    #[allow(dead_code)]
     pub fn compute_steering(&self, agent: &SwarmAgent, neighbors: &[&SwarmAgent]) -> [f64; 3] {
         let sep = vec3_scale(self.separation(agent, neighbors), self.w_separation);
         let ali = vec3_scale(self.alignment(agent, neighbors), self.w_alignment);
@@ -224,27 +201,25 @@ impl FlockingBehavior {
     }
 
     /// Step an entire swarm by `dt` applying flocking rules.
-    #[allow(dead_code)]
-    pub fn step_swarm(&self, agents: &mut Vec<SwarmAgent>, dt: f64) {
+    pub fn step_swarm(&self, agents: &mut [SwarmAgent], dt: f64) {
         // Gather all positions and velocities first (avoid borrow issues).
-        let snapshots: Vec<SwarmAgent> = agents.clone();
-        for i in 0..agents.len() {
+        let snapshots: Vec<SwarmAgent> = agents.to_vec();
+        for (i, agent) in agents.iter_mut().enumerate() {
             let nbs: Vec<&SwarmAgent> = snapshots
                 .iter()
                 .filter(|a| {
-                    a.id != agents[i].id
-                        && vec3_dist(a.position, agents[i].position) <= agents[i].sensor_radius
+                    a.id != agent.id && vec3_dist(a.position, agent.position) <= agent.sensor_radius
                 })
                 .collect();
-            let steering = self.compute_steering(&agents[i], &nbs);
-            agents[i].apply_steering(steering, self.max_speed, dt);
-            agents[i].integrate(dt);
+            let steering = self.compute_steering(agent, &nbs);
+            agent.apply_steering(steering, self.max_speed, dt);
+            agent.integrate(dt);
+            let _ = i;
         }
     }
 }
 
 /// Clamp a vector's magnitude to `max`.
-#[allow(dead_code)]
 fn clamp_vec3_magnitude(v: [f64; 3], max: f64) -> [f64; 3] {
     let mag = vec3_len(v);
     if mag > max && mag > 1e-15 {
@@ -258,7 +233,6 @@ fn clamp_vec3_magnitude(v: [f64; 3], max: f64) -> [f64; 3] {
 
 /// Formation type for rigid structure control.
 #[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)]
 pub enum FormationType {
     /// Virtual structure: agents track offsets from a virtual center.
     VirtualStructure,
@@ -268,7 +242,6 @@ pub enum FormationType {
 
 /// Rigid formation maintenance controller.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct FormationControl {
     /// Type of formation control.
     pub formation_type: FormationType,
@@ -284,7 +257,6 @@ pub struct FormationControl {
 
 impl FormationControl {
     /// Create a new formation controller.
-    #[allow(dead_code)]
     pub fn new(formation_type: FormationType, offsets: Vec<[f64; 3]>, gain: f64) -> Self {
         Self {
             formation_type,
@@ -296,7 +268,6 @@ impl FormationControl {
     }
 
     /// Compute desired positions for all agents.
-    #[allow(dead_code)]
     pub fn desired_positions(&self) -> Vec<[f64; 3]> {
         self.offsets
             .iter()
@@ -305,7 +276,6 @@ impl FormationControl {
     }
 
     /// Compute the steering force for agent `i` to reach its formation position.
-    #[allow(dead_code)]
     pub fn formation_steering(&self, agent: &SwarmAgent, agent_index: usize) -> [f64; 3] {
         if agent_index >= self.offsets.len() {
             return [0.0; 3];
@@ -316,7 +286,6 @@ impl FormationControl {
     }
 
     /// Formation tracking error: mean distance of agents to desired positions.
-    #[allow(dead_code)]
     pub fn tracking_error(&self, agents: &[SwarmAgent]) -> f64 {
         let n = agents.len().min(self.offsets.len());
         if n == 0 {
@@ -332,13 +301,11 @@ impl FormationControl {
     }
 
     /// Step the virtual center forward by `dt`.
-    #[allow(dead_code)]
     pub fn advance_center(&mut self, dt: f64) {
         self.virtual_center = vec3_add(self.virtual_center, vec3_scale(self.virtual_velocity, dt));
     }
 
     /// Step agents toward their formation positions.
-    #[allow(dead_code)]
     pub fn step(&mut self, agents: &mut [SwarmAgent], dt: f64) {
         self.advance_center(dt);
         for (i, agent) in agents.iter_mut().enumerate() {
@@ -362,7 +329,6 @@ impl FormationControl {
 /// Each agent updates its state as:
 /// `x_dot_i = Σ_{j ∈ N_i} (x_j - x_i)`
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct ConsensusProtocol {
     /// Current scalar state values for each agent.
     pub states: Vec<f64>,
@@ -374,7 +340,6 @@ pub struct ConsensusProtocol {
 
 impl ConsensusProtocol {
     /// Create a fully-connected consensus protocol.
-    #[allow(dead_code)]
     pub fn new_fully_connected(initial_states: Vec<f64>, gain: f64) -> Self {
         let n = initial_states.len();
         let neighbors: Vec<Vec<usize>> = (0..n)
@@ -388,7 +353,6 @@ impl ConsensusProtocol {
     }
 
     /// Create a consensus protocol with explicit neighbor graph.
-    #[allow(dead_code)]
     pub fn new(initial_states: Vec<f64>, neighbors: Vec<Vec<usize>>, gain: f64) -> Self {
         Self {
             states: initial_states,
@@ -400,7 +364,6 @@ impl ConsensusProtocol {
     /// Perform one consensus update step with timestep `dt`.
     ///
     /// `x_i += dt * gain * Σ_{j ∈ N_i} (x_j - x_i)`
-    #[allow(dead_code)]
     pub fn step(&mut self, dt: f64) {
         let old = self.states.clone();
         for i in 0..self.states.len() {
@@ -413,7 +376,6 @@ impl ConsensusProtocol {
     }
 
     /// Check convergence: max deviation from mean < `tol`.
-    #[allow(dead_code)]
     pub fn is_converged(&self, tol: f64) -> bool {
         let mean = self.states.iter().sum::<f64>() / self.states.len() as f64;
         self.states.iter().all(|&x| (x - mean).abs() < tol)
@@ -423,7 +385,6 @@ impl ConsensusProtocol {
     /// graph Laplacian (Fiedler value), computed via power iteration on L.
     ///
     /// Returns an approximation for small graphs using Gershgorin bound.
-    #[allow(dead_code)]
     pub fn laplacian_second_eigenvalue_approx(&self) -> f64 {
         let n = self.states.len();
         if n < 2 {
@@ -443,7 +404,6 @@ impl ConsensusProtocol {
     }
 
     /// Return the mean of all agent states.
-    #[allow(dead_code)]
     pub fn mean_state(&self) -> f64 {
         self.states.iter().sum::<f64>() / self.states.len() as f64
     }
@@ -456,7 +416,6 @@ impl ConsensusProtocol {
 /// Each agent moves toward the centroid of its Voronoi cell within
 /// a bounded region.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct CoverageControl {
     /// Region bounds: \[\[x_min, x_max\], \[y_min, y_max\]\].
     pub bounds: [[f64; 2]; 2],
@@ -468,7 +427,6 @@ pub struct CoverageControl {
 
 impl CoverageControl {
     /// Create a new coverage controller.
-    #[allow(dead_code)]
     pub fn new(bounds: [[f64; 2]; 2], n_samples: usize, gain: f64) -> Self {
         Self {
             bounds,
@@ -480,7 +438,6 @@ impl CoverageControl {
     /// Compute the Voronoi centroid for agent `idx` using grid sampling.
     ///
     /// The centroid is the average of all grid points closest to agent `idx`.
-    #[allow(dead_code)]
     pub fn voronoi_centroid(&self, agents: &[SwarmAgent], idx: usize) -> [f64; 3] {
         let grid_side = (self.n_samples as f64).sqrt() as usize + 1;
         let dx = (self.bounds[0][1] - self.bounds[0][0]) / grid_side as f64;
@@ -519,7 +476,6 @@ impl CoverageControl {
     /// Compute coverage quality: max distance from any point to nearest agent.
     ///
     /// Sampled over a coarse grid.
-    #[allow(dead_code)]
     pub fn coverage_quality(&self, agents: &[SwarmAgent]) -> f64 {
         if agents.is_empty() {
             return f64::INFINITY;
@@ -546,9 +502,8 @@ impl CoverageControl {
     }
 
     /// Move each agent toward its Voronoi centroid by one step.
-    #[allow(dead_code)]
-    pub fn step(&self, agents: &mut Vec<SwarmAgent>, dt: f64) {
-        let snap: Vec<SwarmAgent> = agents.clone();
+    pub fn step(&self, agents: &mut [SwarmAgent], dt: f64) {
+        let snap: Vec<SwarmAgent> = agents.to_vec();
         for (i, agent) in agents.iter_mut().enumerate() {
             let centroid = self.voronoi_centroid(&snap, i);
             let err = vec3_sub(centroid, agent.position);
@@ -563,7 +518,6 @@ impl CoverageControl {
 
 /// A task that can be assigned to an agent.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct Task {
     /// Task identifier.
     pub id: usize,
@@ -575,7 +529,6 @@ pub struct Task {
 
 /// Result of a task allocation.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct AllocationResult {
     /// For each task, the assigned agent index (if any).
     pub task_to_agent: Vec<Option<usize>>,
@@ -587,7 +540,6 @@ pub struct AllocationResult {
 ///
 /// Bid = utility - cost, where cost = distance from agent to task.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct TaskAllocation {
     /// Cost weight for distance.
     pub cost_weight: f64,
@@ -595,7 +547,6 @@ pub struct TaskAllocation {
 
 impl TaskAllocation {
     /// Create a new task allocator.
-    #[allow(dead_code)]
     pub fn new(cost_weight: f64) -> Self {
         Self { cost_weight }
     }
@@ -603,7 +554,6 @@ impl TaskAllocation {
     /// Compute bid of agent `i` for task `t`.
     ///
     /// `bid = utility - cost_weight * distance(agent, task)`
-    #[allow(dead_code)]
     pub fn bid(&self, agent: &SwarmAgent, task: &Task) -> f64 {
         let cost = self.cost_weight * vec3_dist(agent.position, task.position);
         task.utility - cost
@@ -612,7 +562,6 @@ impl TaskAllocation {
     /// Greedy auction: assign each task to the highest-bidding unassigned agent.
     ///
     /// Each agent may receive at most one task.
-    #[allow(dead_code)]
     pub fn allocate(&self, agents: &[SwarmAgent], tasks: &[Task]) -> AllocationResult {
         let mut task_to_agent: Vec<Option<usize>> = vec![None; tasks.len()];
         let mut agent_to_task: Vec<Option<usize>> = vec![None; agents.len()];
@@ -641,7 +590,6 @@ impl TaskAllocation {
     }
 
     /// Count the number of assigned tasks.
-    #[allow(dead_code)]
     pub fn assigned_count(result: &AllocationResult) -> usize {
         result.task_to_agent.iter().filter(|a| a.is_some()).count()
     }
@@ -651,7 +599,6 @@ impl TaskAllocation {
 
 /// A particle in PSO (Particle Swarm Optimization).
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct Particle {
     /// Current position in search space.
     pub position: [f64; 3],
@@ -665,7 +612,6 @@ pub struct Particle {
 
 impl Particle {
     /// Create a new particle at the given position.
-    #[allow(dead_code)]
     pub fn new(position: [f64; 3]) -> Self {
         Self {
             position,
@@ -682,7 +628,6 @@ impl Particle {
 /// `v_i = w*v_i + c1*r1*(p_best - x_i) + c2*r2*(g_best - x_i)`
 /// `x_i += v_i`
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct SwarmSearch {
     /// PSO particles.
     pub particles: Vec<Particle>,
@@ -702,7 +647,6 @@ pub struct SwarmSearch {
 
 impl SwarmSearch {
     /// Create a new PSO with given particles.
-    #[allow(dead_code)]
     pub fn new(
         particles: Vec<Particle>,
         inertia: f64,
@@ -729,7 +673,6 @@ impl SwarmSearch {
     /// Evaluate a fitness function for all particles and update bests.
     ///
     /// `fitness_fn` maps position to scalar fitness (lower = better).
-    #[allow(dead_code)]
     pub fn evaluate<F: Fn([f64; 3]) -> f64>(&mut self, fitness_fn: &F) {
         for particle in &mut self.particles {
             let f = fitness_fn(particle.position);
@@ -747,7 +690,6 @@ impl SwarmSearch {
     /// Perform one PSO update step using deterministic r1=r2=0.5.
     ///
     /// For reproducibility in tests, uses fixed r1=r2=0.5.
-    #[allow(dead_code)]
     pub fn step_deterministic(&mut self) {
         let r1 = 0.5;
         let r2 = 0.5;
@@ -769,7 +711,6 @@ impl SwarmSearch {
     }
 
     /// Perform one PSO update step using provided random values r1, r2.
-    #[allow(dead_code)]
     pub fn step_with_random(&mut self, r1: f64, r2: f64) {
         for particle in &mut self.particles {
             for d in 0..3 {
@@ -787,13 +728,11 @@ impl SwarmSearch {
     }
 
     /// Return the current global best position.
-    #[allow(dead_code)]
     pub fn best_position(&self) -> [f64; 3] {
         self.global_best
     }
 
     /// Return the current global best fitness.
-    #[allow(dead_code)]
     pub fn best_fitness(&self) -> f64 {
         self.global_best_fitness
     }
@@ -803,7 +742,6 @@ impl SwarmSearch {
 
 /// A pheromone/trace cell in the stigmergy environment grid.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct PheromoneCell {
     /// Pheromone concentration.
     pub concentration: f64,
@@ -813,7 +751,6 @@ pub struct PheromoneCell {
 
 impl PheromoneCell {
     /// Create a new pheromone cell.
-    #[allow(dead_code)]
     pub fn new(concentration: f64, decay_rate: f64) -> Self {
         Self {
             concentration,
@@ -822,7 +759,6 @@ impl PheromoneCell {
     }
 
     /// Decay the pheromone by one timestep `dt`.
-    #[allow(dead_code)]
     pub fn decay(&mut self, dt: f64) {
         self.concentration *= (-self.decay_rate * dt).exp();
         if self.concentration < 1e-12 {
@@ -831,7 +767,6 @@ impl PheromoneCell {
     }
 
     /// Deposit additional pheromone.
-    #[allow(dead_code)]
     pub fn deposit(&mut self, amount: f64) {
         self.concentration += amount;
     }
@@ -842,7 +777,6 @@ impl PheromoneCell {
 /// Agents deposit pheromone traces at their positions; the environment
 /// diffuses and decays traces over time.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct EmergentBehavior {
     /// 2D grid of pheromone cells (row-major, \[y\]\[x\]).
     pub grid: Vec<Vec<PheromoneCell>>,
@@ -856,7 +790,6 @@ pub struct EmergentBehavior {
 
 impl EmergentBehavior {
     /// Create a new stigmergy environment.
-    #[allow(dead_code)]
     pub fn new(bounds: [[f64; 2]; 2], resolution: usize, decay_rate: f64, diffusion: f64) -> Self {
         let grid = (0..resolution)
             .map(|_| {
@@ -874,7 +807,6 @@ impl EmergentBehavior {
     }
 
     /// Convert world position to grid indices `(ix, iy)`, clamped to grid.
-    #[allow(dead_code)]
     pub fn world_to_grid(&self, pos: [f64; 3]) -> (usize, usize) {
         let nx = self.grid[0].len();
         let ny = self.grid.len();
@@ -886,21 +818,18 @@ impl EmergentBehavior {
     }
 
     /// Deposit pheromone at agent's position.
-    #[allow(dead_code)]
     pub fn deposit_at(&mut self, pos: [f64; 3], amount: f64) {
         let (ix, iy) = self.world_to_grid(pos);
         self.grid[iy][ix].deposit(amount);
     }
 
     /// Read pheromone concentration at position.
-    #[allow(dead_code)]
     pub fn concentration_at(&self, pos: [f64; 3]) -> f64 {
         let (ix, iy) = self.world_to_grid(pos);
         self.grid[iy][ix].concentration
     }
 
     /// Decay and diffuse all cells by `dt`.
-    #[allow(dead_code)]
     pub fn step(&mut self, dt: f64) {
         // Decay
         for row in &mut self.grid {
@@ -941,7 +870,6 @@ impl EmergentBehavior {
     }
 
     /// Total pheromone in the grid.
-    #[allow(dead_code)]
     pub fn total_pheromone(&self) -> f64 {
         self.grid
             .iter()

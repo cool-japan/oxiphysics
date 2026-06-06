@@ -262,21 +262,7 @@ pub fn is_positive_semidefinite(t: &Tensor3) -> bool {
     let eig = eig3(t);
     eig.values[2] >= -1e-12
 }
-/// Construct a random SPD tensor for testing.
-#[allow(dead_code)]
-pub(super) fn random_spd(seed: u64) -> Tensor3 {
-    let mut state = seed;
-    let mut next = || {
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        ((state >> 33) as f64) / (u32::MAX as f64)
-    };
-    let l1 = next() * 2.0 + 0.5;
-    let l2 = next() * 1.5 + 0.3;
-    let l3 = next() * 1.0 + 0.1;
-    [l1, l2, l3, 0.0, 0.0, 0.0]
-}
+
 #[cfg(test)]
 mod tests {
     use super::*;

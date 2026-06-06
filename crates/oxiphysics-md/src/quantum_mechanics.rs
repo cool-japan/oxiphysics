@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -21,8 +20,6 @@
 //! - Tully, J. C. (1990). J. Chem. Phys. 93, 1061.
 //! - Wigner, E. (1932). Phys. Rev. 40, 749.
 //! - Miller, W. H. (1975). J. Chem. Phys. 62, 1899.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -209,10 +206,10 @@ impl HamiltonianMatrix {
             let mut p = 0;
             let mut q = 1;
             let mut max_val = a[0][1].abs();
-            for i in 0..n {
-                for j in (i + 1)..n {
-                    if a[i][j].abs() > max_val {
-                        max_val = a[i][j].abs();
+            for (i, row) in a.iter().enumerate() {
+                for (j, &aij) in row.iter().enumerate().skip(i + 1) {
+                    if aij.abs() > max_val {
+                        max_val = aij.abs();
                         p = i;
                         q = j;
                     }
@@ -240,13 +237,18 @@ impl HamiltonianMatrix {
             a[p][q] = 0.0;
             a[q][p] = 0.0;
 
-            for r in 0..n {
+            for (r, row_r) in a.iter_mut().enumerate() {
                 if r != p && r != q {
-                    let arp = a[r][p];
-                    let arq = a[r][q];
-                    a[r][p] = c * arp - s * arq;
+                    let arp = row_r[p];
+                    let arq = row_r[q];
+                    row_r[p] = c * arp - s * arq;
+                    row_r[q] = s * arp + c * arq;
+                }
+            }
+            // Update symmetric counterparts a[p][r] and a[q][r].
+            for (r, _) in (0..n).enumerate() {
+                if r != p && r != q {
                     a[p][r] = a[r][p];
-                    a[r][q] = s * arp + c * arq;
                     a[q][r] = a[r][q];
                 }
             }
@@ -291,13 +293,12 @@ impl HamiltonianMatrix {
     pub fn commutator_real(&self, rho: &[Vec<f64>]) -> Vec<Vec<f64>> {
         let n = self.n;
         let mut result = vec![vec![0.0; n]; n];
-        for i in 0..n {
+        for (i, res_row) in result.iter_mut().enumerate() {
             for j in 0..n {
-                let mut val = 0.0;
-                for k in 0..n {
-                    val += self.data[i][k] * rho[k][j] - rho[i][k] * self.data[k][j];
-                }
-                result[i][j] = val;
+                let val = (0..n)
+                    .map(|k| self.data[i][k] * rho[k][j] - rho[i][k] * self.data[k][j])
+                    .sum();
+                res_row[j] = val;
             }
         }
         result
@@ -685,8 +686,8 @@ impl DensityMatrix {
     pub fn mixed(n: usize) -> Self {
         let mut rho = vec![vec![(0.0, 0.0); n]; n];
         let val = 1.0 / n as f64;
-        for i in 0..n {
-            rho[i][i] = (val, 0.0);
+        for (i, row) in rho.iter_mut().enumerate() {
+            row[i] = (val, 0.0);
         }
         Self { rho, n }
     }
@@ -737,13 +738,13 @@ impl DensityMatrix {
         let rho3 = add_complex_matrix(&self.rho, &scale_complex_matrix(&k3, dt), n);
         let k4 = von_neumann_rhs_impl(h, &rho3, n);
 
-        for i in 0..n {
-            for j in 0..n {
-                let re = self.rho[i][j].0
+        for (i, rho_row) in self.rho.iter_mut().enumerate() {
+            for (j, rho_ij) in rho_row.iter_mut().enumerate() {
+                let re = rho_ij.0
                     + dt / 6.0 * (k1[i][j].0 + 2.0 * k2[i][j].0 + 2.0 * k3[i][j].0 + k4[i][j].0);
-                let im = self.rho[i][j].1
+                let im = rho_ij.1
                     + dt / 6.0 * (k1[i][j].1 + 2.0 * k2[i][j].1 + 2.0 * k3[i][j].1 + k4[i][j].1);
-                self.rho[i][j] = (re, im);
+                *rho_ij = (re, im);
             }
         }
     }
@@ -768,17 +769,17 @@ impl DensityMatrix {
 
         // -1/2 {L†L, ρ} = -1/2 (L†L ρ + ρ L†L)
         // L†L = |jump_op_idx><jump_op_idx|
-        for j in 0..n {
+        for (j, drho_kj) in drho[jump_op_idx].iter_mut().enumerate() {
             let re = -0.5 * gamma * (self.rho[jump_op_idx][j].0 + self.rho[j][jump_op_idx].0);
             let im = -0.5 * gamma * (self.rho[jump_op_idx][j].1 + self.rho[j][jump_op_idx].1);
-            drho[jump_op_idx][j].0 += re;
-            drho[jump_op_idx][j].1 += im;
+            drho_kj.0 += re;
+            drho_kj.1 += im;
         }
 
-        for i in 0..n {
-            for j in 0..n {
-                self.rho[i][j].0 += drho[i][j].0;
-                self.rho[i][j].1 += drho[i][j].1;
+        for (rho_row, drho_row) in self.rho.iter_mut().zip(drho.iter()) {
+            for (rho_ij, &drho_ij) in rho_row.iter_mut().zip(drho_row.iter()) {
+                rho_ij.0 += drho_ij.0;
+                rho_ij.1 += drho_ij.1;
             }
         }
     }
@@ -796,17 +797,16 @@ fn von_neumann_rhs_impl(
     n: usize,
 ) -> Vec<Vec<(f64, f64)>> {
     let mut result = vec![vec![(0.0, 0.0); n]; n];
-    for i in 0..n {
-        for j in 0..n {
-            let mut comm_re = 0.0_f64;
-            let mut comm_im = 0.0_f64;
-            for k in 0..n {
-                // [H, ρ]_{ij} = Σ_k (H_{ik} ρ_{kj} - ρ_{ik} H_{kj})
-                comm_re += h.data[i][k] * rho[k][j].0 - rho[i][k].0 * h.data[k][j];
-                comm_im += h.data[i][k] * rho[k][j].1 - rho[i][k].1 * h.data[k][j];
-            }
+    for (i, res_row) in result.iter_mut().enumerate() {
+        for (j, res_ij) in res_row.iter_mut().enumerate() {
+            let comm_re: f64 = (0..n)
+                .map(|k| h.data[i][k] * rho[k][j].0 - rho[i][k].0 * h.data[k][j])
+                .sum();
+            let comm_im: f64 = (0..n)
+                .map(|k| h.data[i][k] * rho[k][j].1 - rho[i][k].1 * h.data[k][j])
+                .sum();
             // -i/ℏ [H, ρ] → multiply by -i/ℏ: (re,im) * (-i) = (im, -re) then / ℏ
-            result[i][j] = (comm_im / HBAR, -comm_re / HBAR);
+            *res_ij = (comm_im / HBAR, -comm_re / HBAR);
         }
     }
     result
@@ -838,9 +838,9 @@ fn scale_complex_matrix(a: &[Vec<(f64, f64)>], s: f64) -> Vec<Vec<(f64, f64)>> {
 fn complex_mul_sum_row(rho: &[Vec<(f64, f64)>], i: usize, k: usize, n: usize) -> (f64, f64) {
     let mut re = 0.0;
     let mut im = 0.0;
-    for m in 0..n {
-        let (a_re, a_im) = rho[i][m];
-        let (b_re, b_im) = rho[m][k];
+    for (rho_im, rho_mk) in rho[i].iter().zip(rho.iter().map(|row| row[k])).take(n) {
+        let (a_re, a_im) = *rho_im;
+        let (b_re, b_im) = rho_mk;
         re += a_re * b_re - a_im * b_im;
         im += a_re * b_im + a_im * b_re;
     }

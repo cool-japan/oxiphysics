@@ -6,7 +6,6 @@
 //! Defines physical material properties such as density, friction,
 //! and restitution, along with a library for managing named materials.
 #![warn(missing_docs)]
-#![allow(ambiguous_glob_reexports)]
 
 mod error;
 pub use error::*;
@@ -89,15 +88,23 @@ pub use combination::{
     ThermalContactResistance, combine_friction, combine_modulus, combine_restitution,
     hertz_contact_force, hertz_effective_modulus, hertz_effective_radius, maxwell_diffusivity,
 };
-pub use composite::*;
-pub use creep::*;
+pub use composite::{
+    HalpinTsai, HashinResult, IsotropicConstituent, Laminate, MoriTanaka, OrthotropicPly,
+    PlyFailureResult, PlyStrength, PlyStress, ProgressiveFailureResult, PuckResult, hashin_failure,
+    hashin_shtrikman_lower, hashin_shtrikman_upper, interlaminar_shear_estimate,
+    max_stress_failure, ply_by_ply_stress, progressive_failure_analysis, reuss_modulus,
+    thermal_residual_stresses, tsai_wu_failure, voigt_density, voigt_modulus, voigt_poisson,
+};
+pub use creep::functions::*;
+pub use creep::types::*;
 pub use elastic::{LinearElastic, NeoHookean};
 pub use eos::{
     EosWithEnergy, EquationOfState, IdealGasEos, MieGruneisenEos as MieGruneisenEosShock,
     PolynomialEos, StiffenedGasEos, TaitEos, TillotsonEos, VanDerWaalsEos,
 };
 pub use hyperelastic::{DruckerPrager, J2Plasticity, JwlEos, MieGruneisenEos, MooneyRivlin, Ogden};
-pub use phase_transform::*;
+pub use phase_transform::functions::*;
+pub use phase_transform::types::*;
 pub use viscoelastic::{KelvinVoigt, Maxwell, StandardLinearSolid};
 
 use serde::{Deserialize, Serialize};
@@ -221,7 +228,6 @@ impl Material {
 }
 
 /// Linearly interpolate between two material property values.
-#[allow(dead_code)]
 pub fn lerp_property(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t
 }
@@ -231,7 +237,6 @@ pub fn lerp_property(a: f64, b: f64, t: f64) -> f64 {
 /// e_eff = e * max(0, 1 - k * |v_rel|)
 ///
 /// where `k` controls velocity-dependence (typically small, e.g. 0.01).
-#[allow(dead_code)]
 pub fn velocity_dependent_restitution(e: f64, v_rel: f64, k: f64) -> f64 {
     (e * (1.0 - k * v_rel.abs())).max(0.0)
 }
@@ -239,13 +244,11 @@ pub fn velocity_dependent_restitution(e: f64, v_rel: f64, k: f64) -> f64 {
 /// Compute the critical damping coefficient for a spring-mass system.
 ///
 /// c_crit = 2 * sqrt(k * m)
-#[allow(dead_code)]
 pub fn critical_damping(stiffness: f64, mass: f64) -> f64 {
     2.0 * (stiffness * mass).sqrt()
 }
 
 /// Compute the damping ratio: zeta = c / c_crit.
-#[allow(dead_code)]
 pub fn damping_ratio(damping: f64, stiffness: f64, mass: f64) -> f64 {
     let c_crit = critical_damping(stiffness, mass);
     if c_crit.abs() < 1e-15 {
@@ -256,7 +259,6 @@ pub fn damping_ratio(damping: f64, stiffness: f64, mass: f64) -> f64 {
 }
 
 /// Compute the natural frequency of a spring-mass system: omega_n = sqrt(k/m).
-#[allow(dead_code)]
 pub fn natural_frequency(stiffness: f64, mass: f64) -> f64 {
     if mass.abs() < 1e-15 {
         0.0
@@ -267,9 +269,40 @@ pub fn natural_frequency(stiffness: f64, mass: f64) -> f64 {
 
 // ─── Extended Material with Full Physical Properties ──────────────────────────
 
+/// All scalar properties required to construct an [`ExtendedMaterial`].
+///
+/// Grouping the 12 physical quantities into a single struct lets callers use
+/// named-field syntax instead of a long positional argument list.
+#[derive(Debug, Clone)]
+pub struct ExtendedMaterialProps {
+    /// Density \[kg/m³\]
+    pub density: f64,
+    /// Young's modulus \[Pa\]
+    pub young_modulus: f64,
+    /// Poisson's ratio \[-\]
+    pub poisson_ratio: f64,
+    /// Yield strength \[Pa\]
+    pub yield_strength: f64,
+    /// Ultimate tensile strength \[Pa\]
+    pub ultimate_strength: f64,
+    /// Thermal conductivity \[W/(m·K)\]
+    pub thermal_conductivity: f64,
+    /// Specific heat capacity at constant pressure \[J/(kg·K)\]
+    pub specific_heat: f64,
+    /// Thermal expansion coefficient \[1/K\]
+    pub thermal_expansion: f64,
+    /// Melting point \[K\]
+    pub melting_point: f64,
+    /// Speed of sound \[m/s\]
+    pub speed_of_sound: f64,
+    /// Electrical resistivity \[Ω·m\]
+    pub electrical_resistivity: f64,
+    /// Emissivity (0 = perfect reflector, 1 = blackbody)
+    pub emissivity: f64,
+}
+
 /// Extended material with full physical, mechanical, thermal, acoustic, and
 /// optical properties for simulation of complex multi-physics problems.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ExtendedMaterial {
     /// Material name
@@ -301,37 +334,23 @@ pub struct ExtendedMaterial {
 }
 
 impl ExtendedMaterial {
-    /// Create a new extended material with all properties.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        name: impl Into<String>,
-        density: f64,
-        young_modulus: f64,
-        poisson_ratio: f64,
-        yield_strength: f64,
-        ultimate_strength: f64,
-        thermal_conductivity: f64,
-        specific_heat: f64,
-        thermal_expansion: f64,
-        melting_point: f64,
-        speed_of_sound: f64,
-        electrical_resistivity: f64,
-        emissivity: f64,
-    ) -> Self {
+    /// Create a new extended material from a name and an [`ExtendedMaterialProps`]
+    /// parameter struct.
+    pub fn new(name: impl Into<String>, props: ExtendedMaterialProps) -> Self {
         Self {
             name: name.into(),
-            density,
-            young_modulus,
-            poisson_ratio,
-            yield_strength,
-            ultimate_strength,
-            thermal_conductivity,
-            specific_heat,
-            thermal_expansion,
-            melting_point,
-            speed_of_sound,
-            electrical_resistivity,
-            emissivity,
+            density: props.density,
+            young_modulus: props.young_modulus,
+            poisson_ratio: props.poisson_ratio,
+            yield_strength: props.yield_strength,
+            ultimate_strength: props.ultimate_strength,
+            thermal_conductivity: props.thermal_conductivity,
+            specific_heat: props.specific_heat,
+            thermal_expansion: props.thermal_expansion,
+            melting_point: props.melting_point,
+            speed_of_sound: props.speed_of_sound,
+            electrical_resistivity: props.electrical_resistivity,
+            emissivity: props.emissivity,
         }
     }
 
@@ -415,18 +434,20 @@ impl ExtendedMaterial {
     pub fn steel() -> Self {
         Self::new(
             "steel_s355",
-            7850.0,
-            200.0e9,
-            0.30,
-            355.0e6,
-            490.0e6,
-            50.0,
-            486.0,
-            12.0e-6,
-            1808.0,
-            5960.0,
-            1.7e-7,
-            0.28,
+            ExtendedMaterialProps {
+                density: 7850.0,
+                young_modulus: 200.0e9,
+                poisson_ratio: 0.30,
+                yield_strength: 355.0e6,
+                ultimate_strength: 490.0e6,
+                thermal_conductivity: 50.0,
+                specific_heat: 486.0,
+                thermal_expansion: 12.0e-6,
+                melting_point: 1808.0,
+                speed_of_sound: 5960.0,
+                electrical_resistivity: 1.7e-7,
+                emissivity: 0.28,
+            },
         )
     }
 
@@ -434,18 +455,20 @@ impl ExtendedMaterial {
     pub fn aluminium_6061() -> Self {
         Self::new(
             "aluminium_6061",
-            2700.0,
-            68.9e9,
-            0.33,
-            276.0e6,
-            310.0e6,
-            167.0,
-            896.0,
-            23.6e-6,
-            933.0,
-            6320.0,
-            4.0e-8,
-            0.09,
+            ExtendedMaterialProps {
+                density: 2700.0,
+                young_modulus: 68.9e9,
+                poisson_ratio: 0.33,
+                yield_strength: 276.0e6,
+                ultimate_strength: 310.0e6,
+                thermal_conductivity: 167.0,
+                specific_heat: 896.0,
+                thermal_expansion: 23.6e-6,
+                melting_point: 933.0,
+                speed_of_sound: 6320.0,
+                electrical_resistivity: 4.0e-8,
+                emissivity: 0.09,
+            },
         )
     }
 
@@ -453,18 +476,20 @@ impl ExtendedMaterial {
     pub fn titanium_6al4v() -> Self {
         Self::new(
             "titanium_6al4v",
-            4430.0,
-            114.0e9,
-            0.34,
-            880.0e6,
-            950.0e6,
-            6.7,
-            560.0,
-            8.6e-6,
-            1878.0,
-            6070.0,
-            1.7e-6,
-            0.35,
+            ExtendedMaterialProps {
+                density: 4430.0,
+                young_modulus: 114.0e9,
+                poisson_ratio: 0.34,
+                yield_strength: 880.0e6,
+                ultimate_strength: 950.0e6,
+                thermal_conductivity: 6.7,
+                specific_heat: 560.0,
+                thermal_expansion: 8.6e-6,
+                melting_point: 1878.0,
+                speed_of_sound: 6070.0,
+                electrical_resistivity: 1.7e-6,
+                emissivity: 0.35,
+            },
         )
     }
 
@@ -472,18 +497,20 @@ impl ExtendedMaterial {
     pub fn cfrp_quasi_isotropic() -> Self {
         Self::new(
             "cfrp_quasi_iso",
-            1550.0,
-            70.0e9,
-            0.30,
-            600.0e6,
-            700.0e6,
-            5.0,
-            800.0,
-            2.0e-6,
-            3800.0,
-            3000.0,
-            1e4,
-            0.95,
+            ExtendedMaterialProps {
+                density: 1550.0,
+                young_modulus: 70.0e9,
+                poisson_ratio: 0.30,
+                yield_strength: 600.0e6,
+                ultimate_strength: 700.0e6,
+                thermal_conductivity: 5.0,
+                specific_heat: 800.0,
+                thermal_expansion: 2.0e-6,
+                melting_point: 3800.0,
+                speed_of_sound: 3000.0,
+                electrical_resistivity: 1e4,
+                emissivity: 0.95,
+            },
         )
     }
 
@@ -491,18 +518,20 @@ impl ExtendedMaterial {
     pub fn borosilicate_glass() -> Self {
         Self::new(
             "borosilicate_glass",
-            2230.0,
-            64.0e9,
-            0.20,
-            40.0e6,
-            40.0e6,
-            1.2,
-            830.0,
-            3.3e-6,
-            1100.0,
-            5640.0,
-            1e12,
-            0.92,
+            ExtendedMaterialProps {
+                density: 2230.0,
+                young_modulus: 64.0e9,
+                poisson_ratio: 0.20,
+                yield_strength: 40.0e6,
+                ultimate_strength: 40.0e6,
+                thermal_conductivity: 1.2,
+                specific_heat: 830.0,
+                thermal_expansion: 3.3e-6,
+                melting_point: 1100.0,
+                speed_of_sound: 5640.0,
+                electrical_resistivity: 1e12,
+                emissivity: 0.92,
+            },
         )
     }
 }
@@ -510,7 +539,6 @@ impl ExtendedMaterial {
 // ─── Material Mixture and Interpolation ───────────────────────────────────────
 
 /// Material mixing rules for composite and alloy properties.
-#[allow(dead_code)]
 pub struct MaterialMixture;
 
 impl MaterialMixture {
@@ -586,7 +614,6 @@ impl MaterialMixture {
 // ─── Material Selection Utilities ─────────────────────────────────────────────
 
 /// Multi-criterion material selection index (Ashby-type).
-#[allow(dead_code)]
 pub struct MaterialIndex;
 
 impl MaterialIndex {
@@ -641,19 +668,16 @@ impl MaterialIndex {
 /// - K = bulk modulus \[Pa\]
 /// - G = shear modulus \[Pa\]
 /// - λ = Lamé's first parameter \[Pa\]
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn elastic_moduli_from_E_nu(E: f64, nu: f64) -> (f64, f64, f64) {
-    let K = E / (3.0 * (1.0 - 2.0 * nu));
-    let G = E / (2.0 * (1.0 + nu));
-    let lambda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
-    (K, G, lambda)
+pub fn elastic_moduli_from_e_nu(e: f64, nu: f64) -> (f64, f64, f64) {
+    let k = e / (3.0 * (1.0 - 2.0 * nu));
+    let g = e / (2.0 * (1.0 + nu));
+    let lambda = e * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
+    (k, g, lambda)
 }
 
 /// Convert (K, G) → (E, ν, λ).
 ///
 /// Returns `(E, nu, lambda)`.
-#[allow(dead_code)]
 pub fn elastic_moduli_from_kg(k: f64, g: f64) -> (f64, f64, f64) {
     let e = 9.0 * k * g / (3.0 * k + g);
     let nu = (3.0 * k - 2.0 * g) / (2.0 * (3.0 * k + g));
@@ -664,7 +688,6 @@ pub fn elastic_moduli_from_kg(k: f64, g: f64) -> (f64, f64, f64) {
 /// Convert (λ, G) → (E, ν, K).
 ///
 /// Returns `(E, nu, K)`.
-#[allow(dead_code)]
 pub fn elastic_moduli_from_lame(lambda: f64, g: f64) -> (f64, f64, f64) {
     let e = g * (3.0 * lambda + 2.0 * g) / (lambda + g);
     let nu = lambda / (2.0 * (lambda + g));
@@ -675,7 +698,6 @@ pub fn elastic_moduli_from_lame(lambda: f64, g: f64) -> (f64, f64, f64) {
 /// Check physical admissibility of (E, ν):
 /// - E > 0
 /// - -1 < ν < 0.5 (for isotropic solids; auxetic materials allow ν < 0)
-#[allow(dead_code)]
 pub fn elastic_moduli_admissible(e: f64, nu: f64) -> bool {
     e > 0.0 && nu > -1.0 && nu < 0.5
 }
@@ -685,35 +707,30 @@ pub fn elastic_moduli_admissible(e: f64, nu: f64) -> bool {
 /// Longitudinal (P-wave) speed: c_p = sqrt((K + 4G/3) / ρ) \[m/s\].
 ///
 /// This is the speed of dilatational waves in an infinite elastic solid.
-#[allow(dead_code)]
 pub fn p_wave_speed(bulk_modulus: f64, shear_modulus: f64, density: f64) -> f64 {
     let m = bulk_modulus + 4.0 * shear_modulus / 3.0;
     (m / density).sqrt()
 }
 
 /// Shear (S-wave) speed: c_s = sqrt(G / ρ) \[m/s\].
-#[allow(dead_code)]
 pub fn s_wave_speed(shear_modulus: f64, density: f64) -> f64 {
     (shear_modulus / density).sqrt()
 }
 
 /// Rayleigh surface wave speed (Viktorov approximation):
 /// c_R ≈ c_s · (0.862 + 1.14·ν) / (1 + ν).
-#[allow(dead_code)]
 pub fn rayleigh_wave_speed(shear_modulus: f64, density: f64, poisson_ratio: f64) -> f64 {
     let cs = s_wave_speed(shear_modulus, density);
     cs * (0.862 + 1.14 * poisson_ratio) / (1.0 + poisson_ratio)
 }
 
 /// Bar (longitudinal in thin rod) wave speed: c_bar = sqrt(E / ρ) \[m/s\].
-#[allow(dead_code)]
 pub fn bar_wave_speed(young_modulus: f64, density: f64) -> f64 {
     (young_modulus / density).sqrt()
 }
 
 /// Reflection coefficient at normal incidence between two media:
 /// R = ((Z₂ - Z₁) / (Z₂ + Z₁))² (intensity).
-#[allow(dead_code)]
 pub fn acoustic_reflection_coefficient(z1: f64, z2: f64) -> f64 {
     if (z1 + z2).abs() < f64::EPSILON {
         return 0.0;
@@ -724,7 +741,6 @@ pub fn acoustic_reflection_coefficient(z1: f64, z2: f64) -> f64 {
 
 /// Transmission coefficient at normal incidence:
 /// T = 1 - R = 4·Z₁·Z₂ / (Z₁ + Z₂)².
-#[allow(dead_code)]
 pub fn acoustic_transmission_coefficient(z1: f64, z2: f64) -> f64 {
     1.0 - acoustic_reflection_coefficient(z1, z2)
 }
@@ -735,13 +751,11 @@ pub fn acoustic_transmission_coefficient(z1: f64, z2: f64) -> f64 {
 /// σ = -E · α · ΔT  \[Pa\].
 ///
 /// Negative = compression when ΔT > 0 (material wants to expand but is constrained).
-#[allow(dead_code)]
 pub fn thermal_stress_constrained(young_modulus: f64, alpha: f64, delta_t: f64) -> f64 {
     -young_modulus * alpha * delta_t
 }
 
 /// Free thermal strain: ε_th = α · ΔT (dimensionless).
-#[allow(dead_code)]
 pub fn thermal_strain(alpha: f64, delta_t: f64) -> f64 {
     alpha * delta_t
 }
@@ -750,7 +764,6 @@ pub fn thermal_strain(alpha: f64, delta_t: f64) -> f64 {
 /// σ_mismatch = E_eff · (α₂ - α₁) · ΔT / (1 - ν_eff)
 ///
 /// where E_eff and ν_eff are harmonic averages.
-#[allow(dead_code)]
 pub fn bimaterial_mismatch_stress(
     e1: f64,
     nu1: f64,
@@ -768,7 +781,6 @@ pub fn bimaterial_mismatch_stress(
 // ─── Material Search / Filter Utilities ───────────────────────────────────────
 
 /// Filter a slice of `ExtendedMaterial` by minimum Young's modulus.
-#[allow(dead_code)]
 pub fn filter_by_min_stiffness(
     materials: &[ExtendedMaterial],
     min_e: f64,
@@ -780,7 +792,6 @@ pub fn filter_by_min_stiffness(
 }
 
 /// Filter by maximum density (lightweight materials).
-#[allow(dead_code)]
 pub fn filter_by_max_density(
     materials: &[ExtendedMaterial],
     max_rho: f64,
@@ -789,7 +800,6 @@ pub fn filter_by_max_density(
 }
 
 /// Find the material with the highest specific stiffness (E/ρ).
-#[allow(dead_code)]
 pub fn highest_specific_stiffness(materials: &[ExtendedMaterial]) -> Option<&ExtendedMaterial> {
     materials.iter().max_by(|a, b| {
         a.specific_stiffness()
@@ -799,7 +809,6 @@ pub fn highest_specific_stiffness(materials: &[ExtendedMaterial]) -> Option<&Ext
 }
 
 /// Find the material with the best thermal shock resistance.
-#[allow(dead_code)]
 pub fn best_thermal_shock_resistance(materials: &[ExtendedMaterial]) -> Option<&ExtendedMaterial> {
     materials.iter().max_by(|a, b| {
         a.thermal_shock_resistance()
@@ -811,7 +820,6 @@ pub fn best_thermal_shock_resistance(materials: &[ExtendedMaterial]) -> Option<&
 /// Rank materials by an Ashby beam-stiffness index E^(1/2)/ρ.
 ///
 /// Returns indices into the input slice sorted best → worst.
-#[allow(dead_code)]
 pub fn rank_by_beam_stiffness_index(materials: &[ExtendedMaterial]) -> Vec<usize> {
     let mut indices: Vec<usize> = (0..materials.len()).collect();
     indices.sort_by(|&a, &b| {
@@ -827,7 +835,6 @@ pub fn rank_by_beam_stiffness_index(materials: &[ExtendedMaterial]) -> Vec<usize
 // ─── Simple Material Catalogue ────────────────────────────────────────────────
 
 /// Return a small catalogue of extended materials for testing and demonstration.
-#[allow(dead_code)]
 pub fn standard_material_catalogue() -> Vec<ExtendedMaterial> {
     vec![
         ExtendedMaterial::steel(),
@@ -865,33 +872,24 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_linear_elastic_stress_strain_symmetry() {
         let mat = LinearElastic::new(200.0e9, 0.3);
         let c = mat.stress_strain_matrix_3d();
-        for i in 0..6 {
-            for j in 0..6 {
-                assert!(
-                    (c[i][j] - c[j][i]).abs() < 1.0e-6,
-                    "C[{i}][{j}] != C[{j}][{i}]"
-                );
+        for (i, row) in c.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - c[j][i]).abs() < 1.0e-6, "C[{i}][{j}] != C[{j}][{i}]");
             }
         }
     }
 
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_neo_hookean_identity_zero_stress() {
         let mat = NeoHookean::new(1.0e6, 1.0e9);
         let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let p = mat.first_piola_kirchhoff_stress(&identity);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(
-                    p[i][j].abs() < 1.0e-6,
-                    "P[{i}][{j}] = {} should be ~0",
-                    p[i][j]
-                );
+        for (i, row) in p.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!(val.abs() < 1.0e-6, "P[{i}][{j}] = {val} should be ~0");
             }
         }
     }
@@ -1324,7 +1322,7 @@ mod tests {
     fn test_elastic_moduli_round_trip() {
         let e = 200.0e9_f64;
         let nu = 0.3_f64;
-        let (k, g, _lambda) = elastic_moduli_from_E_nu(e, nu);
+        let (k, g, _lambda) = elastic_moduli_from_e_nu(e, nu);
         let (e2, nu2, _) = elastic_moduli_from_kg(k, g);
         assert!((e2 - e).abs() / e < 1e-10, "E round-trip: {e2} vs {e}");
         assert!((nu2 - nu).abs() < 1e-10, "ν round-trip: {nu2} vs {nu}");
@@ -1362,7 +1360,7 @@ mod tests {
     #[test]
     fn test_p_wave_speed_steel() {
         // Steel: K ≈ 166.7e9, G ≈ 76.9e9, ρ = 7850
-        let (k, g, _) = elastic_moduli_from_E_nu(200.0e9, 0.3);
+        let (k, g, _) = elastic_moduli_from_e_nu(200.0e9, 0.3);
         let cp = p_wave_speed(k, g, 7850.0);
         // Expected ~5960 m/s
         assert!(cp > 5000.0 && cp < 7000.0, "P-wave speed = {cp}");

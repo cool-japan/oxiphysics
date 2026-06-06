@@ -128,7 +128,6 @@ pub fn should_branch(crack_speed: f64, c_rayleigh: f64, threshold_fraction: f64)
 }
 /// Generate two branching directions at ±`branch_angle_deg` degrees from the
 /// current crack direction.
-#[allow(clippy::too_many_arguments)]
 pub fn branch_directions(current_dir: [f64; 3], branch_angle_deg: f64) -> ([f64; 3], [f64; 3]) {
     let theta = branch_angle_deg.to_radians();
     let cos_t = theta.cos();
@@ -448,7 +447,6 @@ mod tests {
 /// ```
 ///
 /// Returns `true` if the crack will propagate.
-#[allow(dead_code)]
 pub fn griffith_criterion(sigma: f64, crack_half_length: f64, k_ic: f64) -> bool {
     if crack_half_length <= 0.0 || sigma <= 0.0 {
         return false;
@@ -460,7 +458,6 @@ pub fn griffith_criterion(sigma: f64, crack_half_length: f64, k_ic: f64) -> bool
 /// applied stress `sigma` (Griffith critical crack size).
 ///
 /// `a_c = (K_Ic / (sigma * sqrt(pi)))^2`
-#[allow(dead_code)]
 pub fn griffith_critical_crack_size(sigma: f64, k_ic: f64) -> f64 {
     if sigma < 1e-15 {
         return f64::INFINITY;
@@ -472,7 +469,6 @@ pub fn griffith_critical_crack_size(sigma: f64, k_ic: f64) -> f64 {
 ///
 /// `G = K_I^2 / E` (plane stress)
 /// `G = K_I^2 * (1 - nu^2) / E` (plane strain)
-#[allow(dead_code)]
 pub fn energy_release_rate(
     k_i: f64,
     youngs_modulus: f64,
@@ -494,7 +490,6 @@ pub fn energy_release_rate(
 /// speed cR. The branching probability increases from 0 at v = 0.4*cR to 1 at v = cR.
 ///
 /// `P_branch = clamp((v_crack/cR - 0.4) / 0.6, 0, 1)`
-#[allow(dead_code)]
 pub fn branching_probability(crack_velocity: f64, rayleigh_wave_speed: f64) -> f64 {
     if rayleigh_wave_speed < 1e-15 {
         return 0.0;
@@ -508,7 +503,6 @@ pub fn branching_probability(crack_velocity: f64, rayleigh_wave_speed: f64) -> f
 /// `cR ≈ cs * (0.862 + 1.14*nu) / (1 + nu)`
 ///
 /// where cs = sqrt(G/rho) is the shear wave speed and G = E / (2*(1+nu)).
-#[allow(dead_code)]
 pub fn rayleigh_wave_speed_scalar(youngs_modulus: f64, poisson_ratio: f64, density: f64) -> f64 {
     if density < 1e-15 || youngs_modulus < 1e-15 {
         return 0.0;
@@ -521,7 +515,6 @@ pub fn rayleigh_wave_speed_scalar(youngs_modulus: f64, poisson_ratio: f64, densi
 /// Stochastically determine whether branching occurs based on probability and a threshold.
 ///
 /// Returns `true` if a random sample `r` ∈ \[0,1) is less than `prob`.
-#[allow(dead_code)]
 pub fn sample_branching(prob: f64, random_sample: f64) -> bool {
     random_sample < prob
 }

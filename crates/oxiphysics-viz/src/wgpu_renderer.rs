@@ -76,9 +76,6 @@
 //! assert_eq!(fb.width, 1280);
 //! ```
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use crate::hdr_framebuffer::{HdrFramebuffer, ToneMapMethod, ToneMapper};
 use oxiphysics_gpu::compute::{WgpuBackend, WgpuBufferHandle};
 
@@ -341,7 +338,6 @@ enum MeshEntry {
         indices: Vec<u32>,
         /// Per-vertex normals `[nx, ny, nz, 0]`.
         normals: Vec<[f32; 4]>,
-        n_triangles: usize,
     },
 }
 
@@ -351,7 +347,6 @@ enum MeshEntry {
 struct GpuRenderTarget {
     color_buf: WgpuBufferHandle,
     depth_buf: WgpuBufferHandle,
-    n_pixels: usize,
 }
 
 // ── GpuRenderer ───────────────────────────────────────────────────────────────
@@ -403,7 +398,6 @@ impl GpuRenderer {
                 let tgt = GpuRenderTarget {
                     color_buf,
                     depth_buf,
-                    n_pixels: n,
                 };
                 (Some(b), Some(tgt))
             }
@@ -492,7 +486,6 @@ impl GpuRenderer {
                 positions: vertices.to_vec(),
                 indices: indices.to_vec(),
                 normals,
-                n_triangles: n_tri,
             });
         }
 
@@ -586,7 +579,6 @@ impl GpuRenderer {
                 positions,
                 indices,
                 normals,
-                n_triangles: _,
             } => {
                 // Software rasterisation path — no GPU required.
                 let positions = positions.clone();
@@ -600,10 +592,12 @@ impl GpuRenderer {
                     &positions,
                     &indices,
                     &normals,
-                    &mvp,
-                    &mv,
-                    self.light,
-                    self.config.ambient,
+                    MeshRenderParams {
+                        mvp: &mvp,
+                        mv: &mv,
+                        light: self.light,
+                        ambient: self.config.ambient,
+                    },
                 );
             }
         }
@@ -833,6 +827,18 @@ fn mat4_vec4_mul(m: &[f32; 16], v: [f32; 4]) -> [f32; 4] {
     ]
 }
 
+/// Per-frame render parameters that do not belong to the geometry buffers.
+struct MeshRenderParams<'a> {
+    /// Combined model-view-projection matrix (column-major).
+    mvp: &'a [f32; 16],
+    /// Model-view matrix for lighting in view space (column-major).
+    mv: &'a [f32; 16],
+    /// Active directional light.
+    light: GpuLight,
+    /// Ambient intensity \[0, 1\].
+    ambient: f32,
+}
+
 /// Software rasteriser: rasterise mesh triangles into `color_buf` / `depth_buf`
 /// using Phong shading and a barycentric scan-line fill.
 ///
@@ -843,11 +849,7 @@ fn mat4_vec4_mul(m: &[f32; 16], v: [f32; 4]) -> [f32; 4] {
 /// * `positions` – per-vertex `[x, y, z, w]`.
 /// * `indices`   – triangle index triples.
 /// * `normals`   – per-vertex `[nx, ny, nz, 0]` in model space.
-/// * `mvp`       – combined model-view-projection (column-major).
-/// * `mv`        – model-view matrix (column-major, for lighting in view space).
-/// * `light`     – active directional light.
-/// * `ambient`   – ambient intensity.
-#[allow(clippy::too_many_arguments)]
+/// * `rp`        – per-frame render parameters (matrices, light, ambient).
 fn draw_mesh_cpu(
     color_buf: &mut [[f32; 4]],
     depth_buf: &mut [f32],
@@ -856,11 +858,12 @@ fn draw_mesh_cpu(
     positions: &[[f32; 4]],
     indices: &[u32],
     normals: &[[f32; 4]],
-    mvp: &[f32; 16],
-    mv: &[f32; 16],
-    light: GpuLight,
-    ambient: f32,
+    rp: MeshRenderParams<'_>,
 ) {
+    let mvp = rp.mvp;
+    let mv = rp.mv;
+    let light = rp.light;
+    let ambient = rp.ambient;
     let n_tri = indices.len() / 3;
     let wf = w as f32;
     let hf = h as f32;
@@ -1139,9 +1142,7 @@ mod tests {
                 positions,
                 indices,
                 normals,
-                n_triangles,
             } => {
-                assert_eq!(*n_triangles, 1);
                 assert_eq!(positions.len(), v.len());
                 assert_eq!(indices.len(), i.len());
                 assert_eq!(normals.len(), v.len());

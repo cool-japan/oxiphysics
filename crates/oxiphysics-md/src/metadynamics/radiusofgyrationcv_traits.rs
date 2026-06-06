@@ -9,8 +9,6 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::CollectiveVariable;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::RadiusOfGyrationCV;
 
 impl CollectiveVariable for RadiusOfGyrationCV {

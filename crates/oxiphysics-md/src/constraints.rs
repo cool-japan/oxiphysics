@@ -704,7 +704,6 @@ impl SettleWater {
 ///
 /// The positions are passed in as a flat list of N atoms; the resulting
 /// matrix has shape `[n_constraints][3*n_atoms]`.
-#[allow(dead_code)]
 pub fn holonomic_constraint_matrix_with_positions(
     constraints: &[BondConstraint],
     positions: &[Vec3],
@@ -734,7 +733,6 @@ pub fn holonomic_constraint_matrix_with_positions(
 /// Compute the holonomic constraint Jacobian using unit bond vectors along x.
 ///
 /// This version is for atoms placed on a line (useful for benchmarks/tests).
-#[allow(dead_code)]
 pub fn holonomic_constraint_matrix(
     constraints: &[BondConstraint],
     n_atoms: usize,
@@ -835,7 +833,6 @@ impl PenaltyConstraint {
 ///
 /// This is the same as `Shake::rattle` but exposed as a free function for
 /// use without the full `Shake` struct.
-#[allow(dead_code)]
 pub fn rattle_velocities(
     constraints: &[BondConstraint],
     positions: &[Vec3],

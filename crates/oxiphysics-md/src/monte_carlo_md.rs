@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -20,7 +19,6 @@ use rand::RngExt;
 /// Monte Carlo particle system.
 ///
 /// Holds particle positions and accumulated energy for NVT or NpT Monte Carlo.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct McSystem {
     /// Particle positions `[[x, y, z\], ...]`.
@@ -71,9 +69,8 @@ impl McSystem {
     /// Apply minimum image convention for a displacement vector.
     pub fn min_image(&self, dr: [f64; 3]) -> [f64; 3] {
         let mut result = dr;
-        for k in 0..3 {
-            let l = self.box_lengths[k];
-            result[k] -= l * (result[k] / l).round();
+        for (r, &l) in result.iter_mut().zip(self.box_lengths.iter()) {
+            *r -= l * (*r / l).round();
         }
         result
     }
@@ -159,7 +156,6 @@ impl McSystem {
 /// - `system`: the MC system (modified in place)
 /// - `mu`: chemical potential (in units of kT)
 /// - `energy_fn`: total energy function
-#[allow(dead_code)]
 pub fn grand_canonical_step<F>(system: &mut McSystem, mu: f64, energy_fn: F)
 where
     F: Fn(&[[f64; 3]], &[f64; 3]) -> f64,
@@ -221,7 +217,6 @@ where
 /// - `sys_a`, `sys_b`: the two replicas (modified in place if swap accepted)
 ///
 /// Returns `true` if the swap was accepted.
-#[allow(dead_code)]
 pub fn replica_exchange_mc(sys_a: &mut McSystem, sys_b: &mut McSystem) -> bool {
     let mut rng = rand::rng();
     let e_a = sys_a.energy;
@@ -257,7 +252,6 @@ pub fn replica_exchange_mc(sys_a: &mut McSystem, sys_b: &mut McSystem) -> bool {
 /// - `kt_new`: new target temperature
 ///
 /// Returns the reweighted histogram (unnormalized).
-#[allow(dead_code)]
 pub fn histogram_reweighting(
     histogram: &[f64],
     bin_centers: &[f64],
@@ -291,7 +285,6 @@ pub fn histogram_reweighting(
 ///
 /// The Wang-Landau algorithm estimates the density of states g(E) by
 /// iteratively updating a modification factor until the histogram is flat.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WangLandau {
     /// Log density of states ln(g(E)) for each energy bin.
@@ -379,7 +372,6 @@ impl WangLandau {
 /// - `n_bins`: number of histogram bins
 ///
 /// Returns `(r_values, g_r)` where `r_values` are bin centers.
-#[allow(dead_code)]
 pub fn radial_distribution(
     frames: &[Vec<[f64; 3]>],
     box_lengths: &[f64; 3],

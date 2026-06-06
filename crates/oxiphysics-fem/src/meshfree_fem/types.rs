@@ -27,7 +27,6 @@ pub struct RkpmShape {
     pub neighbours: Vec<usize>,
 }
 /// Result of a convergence rate estimation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConvergenceRate {
     /// Estimated order of convergence for L2 norm.
@@ -51,7 +50,6 @@ pub struct StressState {
 }
 impl StressState {
     /// Von Mises equivalent stress for plane stress.
-    #[allow(dead_code)]
     pub fn von_mises(&self) -> f64 {
         (self.sigma_xx * self.sigma_xx + self.sigma_yy * self.sigma_yy
             - self.sigma_xx * self.sigma_yy
@@ -59,7 +57,6 @@ impl StressState {
             .sqrt()
     }
     /// Principal stresses (max, min).
-    #[allow(dead_code)]
     pub fn principal(&self) -> (f64, f64) {
         let avg = (self.sigma_xx + self.sigma_yy) / 2.0;
         let diff = (self.sigma_xx - self.sigma_yy) / 2.0;
@@ -81,7 +78,6 @@ pub struct RbfInterpolant {
 }
 impl RbfInterpolant {
     /// Evaluate the interpolant at a given point.
-    #[allow(dead_code)]
     pub fn eval(&self, pt: Point2) -> f64 {
         let mut val = 0.0;
         for (i, centre) in self.centres.iter().enumerate() {
@@ -92,7 +88,6 @@ impl RbfInterpolant {
     }
 }
 /// Summary of a convergence study for display / reporting.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConvergenceStudySummary {
     /// All data points in the study.
@@ -116,7 +111,6 @@ pub struct CouplingInterface {
 }
 impl CouplingInterface {
     /// Create a new coupling interface.
-    #[allow(dead_code)]
     pub fn new(method: CouplingMethod, penalty: f64) -> Self {
         Self {
             nodes: Vec::new(),
@@ -125,14 +119,12 @@ impl CouplingInterface {
         }
     }
     /// Add a coupling node.
-    #[allow(dead_code)]
     pub fn add_node(&mut self, node: CouplingNode) {
         self.nodes.push(node);
     }
     /// Compute the coupling constraint matrix for direct coupling.
     ///
     /// Returns a penalty contribution to be added to the combined stiffness.
-    #[allow(dead_code)]
     pub fn compute_penalty_coupling(&self, ndof_meshfree: usize, ndof_fem: usize) -> Vec<f64> {
         let ndof_total = ndof_meshfree + ndof_fem;
         let mut coupling_k = vec![0.0; ndof_total * ndof_total];
@@ -156,7 +148,6 @@ impl CouplingInterface {
     ///
     /// In the overlap region, the total energy is partitioned:
     ///   E_total = w * E_meshfree + (1-w) * E_fem
-    #[allow(dead_code)]
     pub fn compute_bridging_weights(&mut self, overlap_width: f64) {
         for cn in &mut self.nodes {
             cn.blend_weight = cn.blend_weight.clamp(0.0, 1.0);
@@ -164,7 +155,6 @@ impl CouplingInterface {
         }
     }
     /// Number of coupling nodes.
-    #[allow(dead_code)]
     pub fn num_coupling_nodes(&self) -> usize {
         self.nodes.len()
     }
@@ -182,12 +172,10 @@ pub struct SupportDomain {
 }
 impl SupportDomain {
     /// Create a new support domain from a set of nodes and a dilation factor.
-    #[allow(dead_code)]
     pub fn new(nodes: Vec<MeshfreeNode>, dilation: f64) -> Self {
         Self { nodes, dilation }
     }
     /// Find indices of all nodes whose support covers `pt`.
-    #[allow(dead_code)]
     pub fn neighbours(&self, pt: Point2) -> Vec<usize> {
         self.nodes
             .iter()
@@ -204,7 +192,6 @@ impl SupportDomain {
     }
     /// Find indices of all nodes whose support covers `pt`, returning
     /// `(index, distance)` pairs sorted by distance.
-    #[allow(dead_code)]
     pub fn neighbours_sorted(&self, pt: Point2) -> Vec<(usize, f64)> {
         let mut pairs: Vec<(usize, f64)> = self
             .nodes
@@ -223,7 +210,6 @@ impl SupportDomain {
         pairs
     }
     /// Return the number of nodes in the cloud.
-    #[allow(dead_code)]
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
@@ -332,7 +318,6 @@ pub struct TriCell {
 }
 impl TriCell {
     /// Area of the triangle.
-    #[allow(dead_code)]
     pub fn area(&self) -> f64 {
         let v = self.vertices;
         0.5 * ((v[1][0] - v[0][0]) * (v[2][1] - v[0][1])
@@ -340,7 +325,6 @@ impl TriCell {
             .abs()
     }
     /// Centroid of the triangle.
-    #[allow(dead_code)]
     pub fn centroid(&self) -> Point2 {
         let v = self.vertices;
         [
@@ -360,7 +344,6 @@ pub struct EfgMaterial {
     pub thickness: f64,
 }
 /// A single data point in a convergence study.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConvergencePoint {
     /// Characteristic node spacing h.

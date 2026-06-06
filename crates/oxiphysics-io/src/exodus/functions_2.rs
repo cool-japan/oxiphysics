@@ -2,13 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use crate::exodus::types::*;
 #[cfg(test)]
 mod tests_expanded {
-    use super::*;
+    use crate::exodus::*;
     #[test]
     fn test_tet4_quality_unit_tet() {
         let mesh = build_unit_tet_mesh("q");
@@ -275,7 +271,7 @@ mod tests_expanded {
 }
 #[cfg(test)]
 mod tests_exodus_writer {
-    use super::*;
+    use crate::exodus::*;
     #[test]
     fn test_nodal_var_step_contains_name() {
         let s = ExodusWriter::write_nodal_variable_step("temperature", 0, 0.0, &[300.0, 310.0]);

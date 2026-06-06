@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::too_many_arguments)]
 use crate::primitives::Color;
 use oxiphysics_core::math::Vec3;
 
@@ -429,7 +428,6 @@ pub fn compute_ftle_2d(
 /// Generate seed points for streamline tracing according to the given strategy.
 ///
 /// The bounding box is `[min, max]` (inclusive).
-#[allow(dead_code)]
 pub fn generate_seeds(min: [f64; 3], max: [f64; 3], strategy: SeedStrategy) -> Vec<Vec3> {
     match strategy {
         SeedStrategy::UniformGrid { nx, ny, nz } => {
@@ -493,7 +491,6 @@ pub fn generate_seeds(min: [f64; 3], max: [f64; 3], strategy: SeedStrategy) -> V
 /// (blue → cyan → green → yellow → red).
 ///
 /// `t` should be in `[0, 1]` (normalised magnitude).
-#[allow(dead_code)]
 pub fn velocity_color(t: f64) -> Color {
     let t = t.clamp(0.0, 1.0) as f32;
     let (r, g, b) = if t < 0.25 {
@@ -515,7 +512,6 @@ pub fn velocity_color(t: f64) -> Color {
 ///
 /// Returns one colour per point (same length as `sl.points`).
 /// If `velocity_magnitudes` is empty, all colours are white.
-#[allow(dead_code)]
 pub fn color_by_velocity(sl: &Streamline, min_mag: f64, max_mag: f64) -> Vec<Color> {
     if sl.velocity_magnitudes.is_empty() {
         return vec![Color::white(); sl.points.len()];
@@ -533,7 +529,6 @@ pub fn color_by_velocity(sl: &Streamline, min_mag: f64, max_mag: f64) -> Vec<Col
 /// - `color`: colour applied to all arrows.
 ///
 /// Returns an empty `Vec` if the streamline has fewer than 2 points.
-#[allow(dead_code)]
 pub fn arrow_glyphs_along_streamline(
     sl: &Streamline,
     interval: f64,
@@ -578,7 +573,6 @@ pub fn arrow_glyphs_along_streamline(
 /// 4. Repeat until no new candidates can be placed.
 ///
 /// `velocity_field` maps `[x, y, z]` to `[vx, vy, vz]` (z component ignored for 2-D).
-#[allow(dead_code)]
 pub fn compute_jobard_lefer(
     params: &JobardLeferParams,
     velocity_field: &dyn Fn([f64; 3]) -> [f64; 3],

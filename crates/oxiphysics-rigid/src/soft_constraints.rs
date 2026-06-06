@@ -17,8 +17,6 @@
 //! - [`PenaltyMethod`] — helper for violation-to-force conversion
 //! - [`RigidBodyState`] — minimal state used by this module (no nalgebra)
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // 3-D vector helpers (plain arrays, no nalgebra)
 // ---------------------------------------------------------------------------
@@ -63,6 +61,7 @@ fn vec3_neg(a: [f64; 3]) -> [f64; 3] {
     [-a[0], -a[1], -a[2]]
 }
 
+#[cfg(test)]
 #[inline]
 fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [

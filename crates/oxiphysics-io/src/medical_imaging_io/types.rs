@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use std::collections::VecDeque;
 
@@ -348,7 +346,6 @@ impl VolumeProcessing {
         let dims = volume.dims;
         let n = dims[0] * dims[1] * dims[2];
         let kernel = build_gaussian_kernel(sigma, radius);
-        let klen = kernel.len();
         let khalf = radius;
         let mut temp1 = vec![0.0f32; n];
         for z in 0..dims[2] {
@@ -356,12 +353,12 @@ impl VolumeProcessing {
                 for x in 0..dims[0] {
                     let mut sum = 0.0f32;
                     let mut wsum = 0.0f32;
-                    for ki in 0..klen {
+                    for (ki, &kv) in kernel.iter().enumerate() {
                         let sx = x as isize + ki as isize - khalf as isize;
                         if sx >= 0 && (sx as usize) < dims[0] {
                             let idx = coords_to_index(sx as usize, y, z, dims);
-                            sum += volume.data[idx] * kernel[ki];
-                            wsum += kernel[ki];
+                            sum += volume.data[idx] * kv;
+                            wsum += kv;
                         }
                     }
                     let idx = coords_to_index(x, y, z, dims);
@@ -375,12 +372,12 @@ impl VolumeProcessing {
                 for y in 0..dims[1] {
                     let mut sum = 0.0f32;
                     let mut wsum = 0.0f32;
-                    for ki in 0..klen {
+                    for (ki, &kv) in kernel.iter().enumerate() {
                         let sy = y as isize + ki as isize - khalf as isize;
                         if sy >= 0 && (sy as usize) < dims[1] {
                             let idx = coords_to_index(x, sy as usize, z, dims);
-                            sum += temp1[idx] * kernel[ki];
-                            wsum += kernel[ki];
+                            sum += temp1[idx] * kv;
+                            wsum += kv;
                         }
                     }
                     let idx = coords_to_index(x, y, z, dims);
@@ -394,12 +391,12 @@ impl VolumeProcessing {
                 for z in 0..dims[2] {
                     let mut sum = 0.0f32;
                     let mut wsum = 0.0f32;
-                    for ki in 0..klen {
+                    for (ki, &kv) in kernel.iter().enumerate() {
                         let sz = z as isize + ki as isize - khalf as isize;
                         if sz >= 0 && (sz as usize) < dims[2] {
                             let idx = coords_to_index(x, y, sz as usize, dims);
-                            sum += temp2[idx] * kernel[ki];
-                            wsum += kernel[ki];
+                            sum += temp2[idx] * kv;
+                            wsum += kv;
                         }
                     }
                     let idx = coords_to_index(x, y, z, dims);

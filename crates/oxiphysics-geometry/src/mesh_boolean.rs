@@ -15,8 +15,6 @@
 //! - **Mesh stitching** — combining split surfaces into a watertight result.
 //! - **Result cleanup** — degenerate triangle removal, vertex welding.
 
-#![allow(dead_code)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Vector helpers (no nalgebra in non-core crates)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -26,9 +24,6 @@ type V3 = [f64; 3];
 
 /// Small tolerance for geometric tests.
 const GEO_EPS: f64 = 1e-10;
-
-/// Tolerance for co-planar detection.
-const COPLANAR_EPS: f64 = 1e-8;
 
 /// Tolerance for vertex welding.
 const WELD_EPS: f64 = 1e-9;

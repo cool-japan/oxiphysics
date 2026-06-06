@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 //! Electrostatic LBM: Poisson equation solver, charge transport.
@@ -12,8 +11,6 @@
 //! - Space charge transport (Nernst-Planck equations)
 //! - Coulomb explosion dynamics
 //! - Simplified plasma LBM
-
-#![allow(dead_code)]
 
 /// Physical constants used throughout the module.
 pub mod constants {
@@ -35,9 +32,6 @@ const W5: [f64; 5] = [1.0 / 3.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0];
 /// D2Q5 velocity vectors: cx\[i\], cy\[i\].
 const CX5: [i32; 5] = [0, 1, 0, -1, 0];
 const CY5: [i32; 5] = [0, 0, 1, 0, -1];
-
-/// Opposite direction table for D2Q5.
-const OPP5: [usize; 5] = [0, 3, 4, 1, 2];
 
 // ─── PoissonLbm ──────────────────────────────────────────────────────────────
 
@@ -90,21 +84,15 @@ impl PoissonLbm {
         y * self.nx + x
     }
 
-    /// Distribution function index for cell (x, y) and direction q.
-    #[inline]
-    fn fidx(&self, x: usize, y: usize, q: usize) -> usize {
-        (y * self.nx + x) * 5 + q
-    }
-
     /// Initialize distributions from the current φ field.
     pub fn init_from_phi(&mut self) {
         for y in 0..self.ny {
             for x in 0..self.nx {
                 let cell = self.idx(x, y);
                 let p = self.phi[cell];
-                for q in 0..5_usize {
+                for (q, w5_q) in W5.iter().enumerate() {
                     let fi = cell * 5 + q;
-                    self.f[fi] = W5[q] * p;
+                    self.f[fi] = w5_q * p;
                 }
             }
         }
@@ -120,8 +108,8 @@ impl PoissonLbm {
     pub fn set_phi(&mut self, x: usize, y: usize, val: f64) {
         let cell = self.idx(x, y);
         self.phi[cell] = val;
-        for q in 0..5_usize {
-            self.f[cell * 5 + q] = W5[q] * val;
+        for (q, w5_q) in W5.iter().enumerate() {
+            self.f[cell * 5 + q] = w5_q * val;
         }
     }
 
@@ -140,8 +128,8 @@ impl PoissonLbm {
                 let phi_loc: f64 = (0..5).map(|q| self.f[i * 5 + q]).sum();
                 self.phi[i] = phi_loc;
                 let src = self.rho_charge[i] / eps;
-                for q in 0..5_usize {
-                    let feq = W5[q] * (phi_loc + 0.5 * src);
+                for (q, w5_q) in W5.iter().enumerate() {
+                    let feq = w5_q * (phi_loc + 0.5 * src);
                     self.f[i * 5 + q] += omega * (feq - self.f[i * 5 + q]);
                 }
             }
@@ -348,7 +336,6 @@ impl ChargeTransportLbm {
     /// * `temperature` - lattice temperature (K)
     /// * `omega` - BGK relaxation rate
     /// * `dx` - cell spacing (m)
-    #[allow(clippy::too_many_arguments)]
     pub fn new(nx: usize, ny: usize, mobility: f64, temperature: f64, omega: f64, dx: f64) -> Self {
         let vt = constants::K_BOLTZMANN * temperature / constants::ELEM_CHARGE;
         let n = nx * ny;
@@ -390,8 +377,8 @@ impl ChargeTransportLbm {
         for y in 0..self.ny {
             for x in 0..self.nx {
                 let i = y * self.nx + x;
-                for q in 0..5_usize {
-                    self.f[i * 5 + q] = W5[q] * self.n[i];
+                for (q, w5_q) in W5.iter().enumerate() {
+                    self.f[i * 5 + q] = w5_q * self.n[i];
                 }
             }
         }
@@ -482,7 +469,6 @@ impl SemiconductorLbm {
     /// * `mobility_e` - electron mobility (m²/V·s)
     /// * `mobility_h` - hole mobility (m²/V·s)
     /// * `dx` - cell spacing (m)
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         nx: usize,
         na: f64,
@@ -792,7 +778,6 @@ impl PlasmaLbm {
     /// * `temperature` - plasma temperature (K)
     /// * `dx` - cell spacing (m)
     /// * `epsilon_r` - relative permittivity of background medium
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         nx: usize,
         ny: usize,
@@ -1270,12 +1255,15 @@ mod tests {
 
     /// Physical constants have correct orders of magnitude.
     #[test]
-    #[allow(clippy::assertions_on_constants)]
     fn test_constants_magnitude() {
-        assert!(constants::EPSILON_0 > 8e-12 && constants::EPSILON_0 < 9e-12);
-        assert!(constants::ELEM_CHARGE > 1.6e-19 && constants::ELEM_CHARGE < 1.7e-19);
-        assert!(constants::K_BOLTZMANN > 1.3e-23 && constants::K_BOLTZMANN < 1.4e-23);
-        assert!((constants::VT_300K - 0.02585).abs() < 0.001);
+        let eps0 = constants::EPSILON_0;
+        let elem = constants::ELEM_CHARGE;
+        let kb = constants::K_BOLTZMANN;
+        let vt = constants::VT_300K;
+        assert!(eps0 > 8e-12 && eps0 < 9e-12);
+        assert!(elem > 1.6e-19 && elem < 1.7e-19);
+        assert!(kb > 1.3e-23 && kb < 1.4e-23);
+        assert!((vt - 0.02585).abs() < 0.001);
     }
 
     /// V_T at 300 K matches kT/q.

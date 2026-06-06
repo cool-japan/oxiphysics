@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -13,8 +12,6 @@
 //! - Self-collision for cloth meshes
 //! - Friction response
 //! - Collision group bitmask filtering
-
-#![allow(dead_code)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -69,11 +66,6 @@ fn vec3_normalize(v: [f64; 3]) -> Option<[f64; 3]> {
     }
 }
 
-#[inline]
-fn vec3_neg(v: [f64; 3]) -> [f64; 3] {
-    [-v[0], -v[1], -v[2]]
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // SoftBodyAabb
 // ─────────────────────────────────────────────────────────────────────────────
@@ -108,9 +100,9 @@ impl SoftBodyAabb {
     pub fn refit(&mut self, positions: &[[f64; 3]]) {
         *self = Self::empty();
         for &p in positions {
-            for i in 0..3 {
-                self.min[i] = self.min[i].min(p[i]);
-                self.max[i] = self.max[i].max(p[i]);
+            for (i, &pi) in p.iter().enumerate() {
+                self.min[i] = self.min[i].min(pi);
+                self.max[i] = self.max[i].max(pi);
             }
         }
     }

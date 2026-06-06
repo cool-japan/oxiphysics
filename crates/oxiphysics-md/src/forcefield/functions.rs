@@ -3,13 +3,13 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use crate::atom::AtomSet;
-use crate::neighbor::{PeriodicBox, distance_pbc};
+use crate::neighbor::PeriodicBox;
 use crate::potential::Potential;
 
 use super::types::{
     AngleTerm, Bond, CgenffForceField, DihedralTerm, GromosForceField, ImproperDihedral,
-    IntraEnergyDecomposition, LjAtomType, MixingRule, OneFourPair, OneFourScaling, UreyBradleyTerm,
-    ValidationError, ValidationSeverity,
+    IntraEnergyDecomposition, LjAtomType, MixingRule, UreyBradleyTerm, ValidationError,
+    ValidationSeverity,
 };
 
 /// Trait for force fields that compute forces on atoms.
@@ -82,32 +82,6 @@ pub fn generate_cross_parameters(
         }
     }
     params
-}
-/// Compute 1-4 LJ interaction energy for a set of 1-4 pairs.
-///
-/// Uses V = scale * 4*eps*((sigma/r)^12 - (sigma/r)^6).
-#[allow(dead_code)]
-pub(super) fn compute_14_lj_energy(
-    pairs: &[OneFourPair],
-    positions: &[oxiphysics_core::math::Vec3],
-    sigma: f64,
-    epsilon: f64,
-    scaling: &OneFourScaling,
-    pbox: &PeriodicBox,
-) -> f64 {
-    let mut energy = 0.0;
-    for pair in pairs {
-        let (_, dist) = distance_pbc(&positions[pair.i], &positions[pair.l], pbox);
-        if dist < 1e-15 {
-            continue;
-        }
-        let sr = sigma / dist;
-        let sr6 = sr.powi(6);
-        let sr12 = sr6 * sr6;
-        let e = 4.0 * epsilon * (sr12 - sr6);
-        energy += scaling.scale_lj(e);
-    }
-    energy
 }
 /// Validate basic force field parameters.
 ///
@@ -497,7 +471,6 @@ mod tests {
     }
 }
 /// Compute intramolecular energy decomposition for a CHARMM force field setup.
-#[allow(dead_code)]
 pub fn decompose_intramolecular_energy(
     atoms: &crate::atom::AtomSet,
     bonds: &[Bond],
@@ -643,7 +616,6 @@ pub fn validate_cgenff(ff: &CgenffForceField, n_atoms: usize) -> Vec<ValidationE
 /// Compute the dihedral (torsion) angle φ for atoms I-J-K-L (radians, −π…+π).
 ///
 /// Standard definition: angle between the I-J-K plane and the J-K-L plane.
-#[allow(dead_code)]
 pub fn dihedral_angle(ri: [f64; 3], rj: [f64; 3], rk: [f64; 3], rl: [f64; 3]) -> f64 {
     let b1 = [rj[0] - ri[0], rj[1] - ri[1], rj[2] - ri[2]];
     let b2 = [rk[0] - rj[0], rk[1] - rj[1], rk[2] - rj[2]];

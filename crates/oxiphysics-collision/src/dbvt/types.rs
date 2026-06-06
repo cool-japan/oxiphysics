@@ -4,8 +4,6 @@
 
 use oxiphysics_core::math::Vec3;
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{FAT_MARGIN, NodeIdx};
 
 /// A node in the dynamic BVH tree.
@@ -49,7 +47,6 @@ impl DbvtNode {
     }
 }
 /// One entry in a k-nearest result: (leaf data, squared distance to query point).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NearestLeaf {
     /// Leaf payload data.
@@ -152,22 +149,10 @@ impl BvhAabb {
             max: self.max + d,
         }
     }
-    /// Return `true` if `point` is inside (or on the boundary of) this AABB.
-    #[inline]
-    #[allow(dead_code)]
-    fn contains_point(&self, point: &Vec3) -> bool {
-        point.x >= self.min.x
-            && point.x <= self.max.x
-            && point.y >= self.min.y
-            && point.y <= self.max.y
-            && point.z >= self.min.z
-            && point.z <= self.max.z
-    }
 }
 impl BvhAabb {
     /// Return the axis (0=X, 1=Y, 2=Z) along which the AABB is widest.
     #[inline]
-    #[allow(dead_code)]
     pub fn longest_axis(&self) -> usize {
         let d = self.max - self.min;
         if d.x >= d.y && d.x >= d.z {
@@ -180,7 +165,6 @@ impl BvhAabb {
     }
     /// Return `true` if `self` and `other` are the same AABB (within `eps`).
     #[inline]
-    #[allow(dead_code)]
     pub fn approx_eq(&self, other: &Self, eps: f64) -> bool {
         (self.min.x - other.min.x).abs() <= eps
             && (self.min.y - other.min.y).abs() <= eps
@@ -193,7 +177,6 @@ impl BvhAabb {
     ///
     /// Returns `0.0` if `point` is inside the AABB.
     #[inline]
-    #[allow(dead_code)]
     pub fn point_dist_sq(&self, point: Vec3) -> f64 {
         let dx = (point.x - self.min.x.max(self.max.x.min(point.x))).powi(2);
         let dy = (point.y - self.min.y.max(self.max.y.min(point.y))).powi(2);
@@ -202,7 +185,6 @@ impl BvhAabb {
     }
     /// Translate the AABB by `offset`.
     #[inline]
-    #[allow(dead_code)]
     pub fn translate(&self, offset: Vec3) -> Self {
         Self {
             min: self.min + offset,
@@ -211,7 +193,6 @@ impl BvhAabb {
     }
     /// Scale the AABB uniformly around its center by `factor`.
     #[inline]
-    #[allow(dead_code)]
     pub fn scale(&self, factor: f64) -> Self {
         let c = self.center();
         let he = self.half_extents() * factor;
@@ -225,7 +206,6 @@ impl BvhAabb {
     /// Test a ray `origin + t*dir` against this AABB for `t ∈ [t_min, t_max]`.
     ///
     /// Returns the entry `t` value if the ray hits, or `None` otherwise.
-    #[allow(dead_code)]
     pub fn ray_intersect(&self, origin: Vec3, dir: Vec3, t_min: f64, t_max: f64) -> Option<f64> {
         let orig = [origin.x, origin.y, origin.z];
         let d = [dir.x, dir.y, dir.z];
@@ -257,7 +237,6 @@ impl BvhAabb {
     }
 }
 /// Statistics collected from a DBVT query pass.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct DbvtStats {
     /// Number of leaf nodes in the tree.
@@ -274,13 +253,11 @@ pub struct DbvtStats {
 /// A view frustum represented by six half-space planes (inward normals).
 ///
 /// Each plane `(n, d)` passes the test when `n · p >= d`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BvhFrustum {
     /// Six planes: (inward_normal, offset).
     pub planes: [(Vec3, f64); 6],
 }
-#[allow(dead_code)]
 impl BvhFrustum {
     /// Construct a frustum from six plane definitions.
     pub fn new(planes: [(Vec3, f64); 6]) -> Self {
@@ -301,7 +278,6 @@ impl BvhFrustum {
     }
 }
 /// A capsule shape: a line segment swept by a sphere.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct BvhCapsule {
     /// Start point of the central segment.
@@ -795,7 +771,6 @@ impl DynamicBvh {
     /// Compute BVH quality metrics via a single DFS traversal.
     ///
     /// Returns `None` if the tree is empty.
-    #[allow(dead_code)]
     pub fn quality_metrics(&self) -> Option<BvhQuality> {
         let root = self.root?;
         let root_sa = self.nodes[root].aabb.surface_area();
@@ -854,7 +829,6 @@ impl DynamicBvh {
     /// Return `true` if the SAH cost is above `threshold` (tree quality degraded).
     ///
     /// Useful as a trigger to rebuild the tree from scratch.
-    #[allow(dead_code)]
     pub fn quality_degraded(&self, threshold: f64) -> bool {
         match self.quality_metrics() {
             Some(q) => q.sah_cost > threshold,
@@ -867,7 +841,6 @@ impl DynamicBvh {
     ///
     /// Uses a stack-based traversal that prunes subtrees whose AABB is
     /// fully outside any frustum plane.
-    #[allow(dead_code)]
     pub fn frustum_query(&self, frustum: &BvhFrustum) -> Vec<u32> {
         let mut results = Vec::new();
         let Some(root) = self.root else {
@@ -899,7 +872,6 @@ impl DynamicBvh {
     /// Return the `k` closest leaves (by AABB-center distance) to `point`.
     ///
     /// Result is sorted nearest-first.
-    #[allow(dead_code)]
     pub fn k_nearest(&self, point: Vec3, k: usize) -> Vec<NearestLeaf> {
         if k == 0 {
             return Vec::new();
@@ -939,7 +911,6 @@ impl DynamicBvh {
     ///   data_or_neg1, height, is_leaf, is_on_free_list, PADDING]`
     ///
     /// The first element of the buffer is the total number of nodes (as f64).
-    #[allow(dead_code)]
     pub fn serialize(&self) -> Vec<f64> {
         const STRIDE: usize = 14;
         let mut buf = Vec::with_capacity(1 + self.nodes.len() * STRIDE);
@@ -967,7 +938,6 @@ impl DynamicBvh {
         buf
     }
     /// Return the root node index, or `None` if the tree is empty.
-    #[allow(dead_code)]
     pub fn root(&self) -> Option<NodeIdx> {
         self.root
     }
@@ -978,7 +948,6 @@ impl DynamicBvh {
     ///
     /// The resulting fat AABB covers both the current and predicted positions.
     /// Returns `true` if the tree was modified (re-insertion occurred).
-    #[allow(dead_code)]
     pub fn move_proxy(
         &mut self,
         leaf: NodeIdx,
@@ -1018,7 +987,6 @@ impl DynamicBvh {
     /// affected internal nodes.
     ///
     /// Returns `true` if a rotation was performed.
-    #[allow(dead_code)]
     pub fn try_rotate(&mut self, idx: NodeIdx) -> bool {
         let node = &self.nodes[idx];
         if node.is_leaf() {
@@ -1104,7 +1072,6 @@ impl DynamicBvh {
     /// Perform one bottom-up pass of SAH-improving rotations across the tree.
     ///
     /// Visits every non-leaf node from leaves upward and attempts `try_rotate`.
-    #[allow(dead_code)]
     pub fn optimize_rotations(&mut self) {
         let internal: Vec<NodeIdx> = self
             .nodes
@@ -1126,7 +1093,6 @@ impl DynamicBvh {
     /// Refit only the ancestors of a specific leaf node.
     ///
     /// More efficient than `refit_all` when only one leaf changed.
-    #[allow(dead_code)]
     pub fn refit_leaf_ancestors(&mut self, leaf: NodeIdx) {
         assert!(
             self.nodes[leaf].is_leaf(),
@@ -1142,7 +1108,6 @@ impl DynamicBvh {
     /// **Only use this when `new_aabb` is contained within the current fat AABB**;
     /// otherwise the tree's AABBs may become incorrect.  For unconstrained moves
     /// use [`DynamicBvh::update`] or [`DynamicBvh::move_proxy`].
-    #[allow(dead_code)]
     pub fn update_leaf_inplace(&mut self, leaf: NodeIdx, new_aabb: BvhAabb) {
         assert!(
             self.nodes[leaf].is_leaf(),
@@ -1155,7 +1120,6 @@ impl DynamicBvh {
     ///
     /// Defined as `sum(SA(internal_node)) / SA(root)`.
     /// Lower is better; returns `0.0` for trees with 0 or 1 nodes.
-    #[allow(dead_code)]
     pub fn sah_cost(&self) -> f64 {
         let Some(root) = self.root else {
             return 0.0;
@@ -1189,7 +1153,6 @@ impl DynamicBvh {
     /// name without changing existing code.
     ///
     /// Returns `0.0` for an empty or degenerate tree.
-    #[allow(dead_code)]
     pub fn compute_sah_cost(&self) -> f64 {
         self.sah_cost()
     }
@@ -1201,7 +1164,6 @@ impl DynamicBvh {
     /// children are processed.
     ///
     /// Returns the number of rotations that were accepted.
-    #[allow(dead_code)]
     pub fn balance_rotation(&mut self) -> usize {
         let internal: Vec<NodeIdx> = self
             .nodes
@@ -1226,7 +1188,6 @@ impl DynamicBvh {
     /// This is a named alias for `frustum_query` following the algorithm
     /// expansion spec.  Uses a stack-based traversal that prunes fully-outside
     /// subtrees for O(k + log n) complexity where k is the number of hits.
-    #[allow(dead_code)]
     pub fn traverse_frustum(&self, frustum: &BvhFrustum) -> Vec<u32> {
         self.frustum_query(frustum)
     }
@@ -1235,7 +1196,6 @@ impl DynamicBvh {
     /// Return the depth of a given node in the tree (root = 0).
     ///
     /// Returns `None` if `idx` is on the free list.
-    #[allow(dead_code)]
     pub fn node_depth(&self, idx: NodeIdx) -> Option<usize> {
         if self.free_list.contains(&idx) {
             return None;
@@ -1249,7 +1209,6 @@ impl DynamicBvh {
         Some(depth)
     }
     /// Return the leaf node index whose `data` matches `target`, or `None`.
-    #[allow(dead_code)]
     pub fn find_leaf(&self, target: u32) -> Option<NodeIdx> {
         let root = self.root?;
         self.find_leaf_recursive(root, target)
@@ -1276,7 +1235,6 @@ impl DynamicBvh {
         None
     }
     /// Collect all leaf data in DFS pre-order (left-first).
-    #[allow(dead_code)]
     pub fn leaf_data_preorder(&self) -> Vec<u32> {
         let Some(root) = self.root else {
             return Vec::new();
@@ -1301,12 +1259,10 @@ impl DynamicBvh {
         }
     }
     /// Return the AABB of the root node, or `None` if the tree is empty.
-    #[allow(dead_code)]
     pub fn root_aabb(&self) -> Option<BvhAabb> {
         self.root.map(|r| self.nodes[r].aabb)
     }
     /// Compute the maximum tree depth by traversal.
-    #[allow(dead_code)]
     pub fn max_depth(&self) -> usize {
         let Some(root) = self.root else {
             return 0;
@@ -1330,7 +1286,6 @@ impl DynamicBvh {
         max_d
     }
     /// Return the number of internal nodes (non-leaf, non-free).
-    #[allow(dead_code)]
     pub fn n_internal(&self) -> usize {
         self.nodes
             .iter()
@@ -1345,7 +1300,6 @@ impl DynamicBvh {
     ///
     /// Uses the AABB-vs-sphere test: the sphere overlaps an AABB iff the
     /// squared distance from `center` to the nearest point on the AABB is ≤ `radius²`.
-    #[allow(dead_code)]
     pub fn query_sphere(&self, center: Vec3, radius: f64) -> Vec<u32> {
         let radius_sq = radius * radius;
         let mut results = Vec::new();
@@ -1379,7 +1333,6 @@ impl DynamicBvh {
         }
     }
     /// Return `true` if any leaf's fat AABB overlaps the given sphere.
-    #[allow(dead_code)]
     pub fn any_in_sphere(&self, center: Vec3, radius: f64) -> bool {
         !self.query_sphere(center, radius).is_empty()
     }
@@ -1390,7 +1343,6 @@ impl DynamicBvh {
     /// Implemented as AABB-vs-segment-distance test: an AABB intersects the
     /// capsule iff the minimum distance from the AABB to the line segment is
     /// ≤ `capsule.radius`.
-    #[allow(dead_code)]
     pub fn query_capsule(&self, capsule: BvhCapsule) -> Vec<u32> {
         let mut results = Vec::new();
         if let Some(root) = self.root {
@@ -1438,7 +1390,6 @@ impl DynamicBvh {
     /// Removes all nodes, collects leaf data and AABBs, then re-inserts them.
     /// This is a full O(n log n) rebuild; use only when the tree is severely
     /// degraded (e.g. after many updates without rotations).
-    #[allow(dead_code)]
     pub fn rebuild(&mut self) {
         let leaves: Vec<(BvhAabb, u32)> = self
             .nodes
@@ -1466,7 +1417,6 @@ impl DynamicBvh {
     }
     /// Return a snapshot of all leaf `(data, fat_aabb)` pairs without
     /// modifying the tree.
-    #[allow(dead_code)]
     pub fn leaf_snapshot(&self) -> Vec<(u32, BvhAabb)> {
         self.nodes
             .iter()
@@ -1477,7 +1427,6 @@ impl DynamicBvh {
     }
     /// Return the fat AABB for a given leaf `idx`, or `None` if it is not
     /// a valid leaf.
-    #[allow(dead_code)]
     pub fn leaf_aabb(&self, idx: NodeIdx) -> Option<BvhAabb> {
         if idx < self.nodes.len() && self.nodes[idx].is_leaf() && !self.free_list.contains(&idx) {
             Some(self.nodes[idx].aabb)
@@ -1488,7 +1437,6 @@ impl DynamicBvh {
     /// Remove all leaves whose data value satisfies `pred`.
     ///
     /// Returns the number of leaves removed.
-    #[allow(dead_code)]
     pub fn remove_where(&mut self, pred: impl Fn(u32) -> bool) -> usize {
         let to_remove: Vec<NodeIdx> = self
             .nodes
@@ -1508,7 +1456,6 @@ impl DynamicBvh {
     /// Replace the data value of a leaf without changing its AABB.
     ///
     /// Returns `true` if the leaf was found and updated.
-    #[allow(dead_code)]
     pub fn relabel_leaf(&mut self, leaf: NodeIdx, new_data: u32) -> bool {
         if leaf < self.nodes.len() && self.nodes[leaf].is_leaf() && !self.free_list.contains(&leaf)
         {
@@ -1521,7 +1468,6 @@ impl DynamicBvh {
 }
 impl DynamicBvh {
     /// Return the number of leaves in the subtree rooted at `idx`.
-    #[allow(dead_code)]
     pub fn subtree_leaf_count(&self, idx: NodeIdx) -> usize {
         let node = &self.nodes[idx];
         if node.is_leaf() {
@@ -1533,7 +1479,6 @@ impl DynamicBvh {
     }
     /// Return `true` if the heights stored in nodes are consistent with the
     /// actual tree structure.
-    #[allow(dead_code)]
     pub fn validate_heights(&self) -> bool {
         let Some(root) = self.root else {
             return true;
@@ -1561,7 +1506,6 @@ impl DynamicBvh {
     }
 }
 /// Quality metrics for the BVH tree.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BvhQuality {
     /// SAH cost of the tree: sum of (SA(node) / SA(root)) for all internal nodes.

@@ -3,17 +3,14 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 /// Compute the minimum of a slice of floats.
-#[allow(dead_code)]
 pub(super) fn slice_min(data: &[f64]) -> f64 {
     data.iter().cloned().fold(f64::MAX, f64::min)
 }
 /// Compute the maximum of a slice of floats.
-#[allow(dead_code)]
 pub(super) fn slice_max(data: &[f64]) -> f64 {
     data.iter().cloned().fold(f64::MIN, f64::max)
 }
 /// Map a value in `[lo, hi]` to `[0, 1]`.
-#[allow(dead_code)]
 pub(super) fn normalize(v: f64, lo: f64, hi: f64) -> f64 {
     if (hi - lo).abs() < 1e-12 {
         0.5

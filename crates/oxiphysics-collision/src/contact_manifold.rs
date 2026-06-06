@@ -9,8 +9,6 @@
 //! contacts, contact manifolds for spheres/boxes/capsules, and manifold
 //! quality metrics.
 
-#![allow(dead_code)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Vec3 helpers (no nalgebra – plain [f64; 3])
 // ─────────────────────────────────────────────────────────────────────────────
@@ -639,7 +637,6 @@ pub fn closest_points_on_segments(
 }
 
 /// Generates a contact manifold between two capsules.
-#[allow(clippy::too_many_arguments)]
 pub fn manifold_capsule_capsule(
     body_a: usize,
     body_b: usize,

@@ -2,10 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::f64::consts::PI;
 
 /// Mother wavelet type for CWT.
@@ -118,11 +115,11 @@ impl LiftingHaar {
         let half = n / 2;
         let mut even: Vec<f64> = (0..half).map(|i| data[2 * i]).collect();
         let mut odd: Vec<f64> = (0..half).map(|i| data[2 * i + 1]).collect();
-        for i in 0..half {
-            odd[i] -= even[i];
+        for (o, e) in odd.iter_mut().zip(even.iter()) {
+            *o -= *e;
         }
-        for i in 0..half {
-            even[i] += odd[i] / 2.0;
+        for (e, o) in even.iter_mut().zip(odd.iter()) {
+            *e += *o / 2.0;
         }
         data[..half].copy_from_slice(&even);
         data[half..2 * half].copy_from_slice(&odd);
@@ -136,15 +133,15 @@ impl LiftingHaar {
         let half = n / 2;
         let mut even: Vec<f64> = data[..half].to_vec();
         let mut odd: Vec<f64> = data[half..half * 2].to_vec();
-        for i in 0..half {
-            even[i] -= odd[i] / 2.0;
+        for (e, o) in even.iter_mut().zip(odd.iter()) {
+            *e -= *o / 2.0;
         }
-        for i in 0..half {
-            odd[i] += even[i];
+        for (o, e) in odd.iter_mut().zip(even.iter()) {
+            *o += *e;
         }
-        for i in 0..half {
-            data[2 * i] = even[i];
-            data[2 * i + 1] = odd[i];
+        for (i, (e, o)) in even.iter().zip(odd.iter()).enumerate() {
+            data[2 * i] = *e;
+            data[2 * i + 1] = *o;
         }
     }
 }

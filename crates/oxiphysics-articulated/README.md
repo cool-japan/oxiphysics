@@ -19,7 +19,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxiphysics-articulated = "0.1.1"
+oxiphysics-articulated = "0.1.2"
 ```
 
 Construct a model and run inverse or forward dynamics:

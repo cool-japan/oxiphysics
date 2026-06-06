@@ -11,9 +11,6 @@
 //! - [`lindhard_electronic_stopping`]: Electronic stopping power (Lindhard model)
 //! - [`orowan_strengthening`]: Radiation-induced obstacle strengthening
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -71,7 +68,6 @@ pub enum ZircaloyGrade {
 /// Kinchin-Pease approximation, cascade statistics, recombination,
 /// and void swelling correlations relevant to structural materials
 /// in fission and fusion reactors.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RadiationDamage {
     /// Threshold displacement energy Ed \[eV\] for the host lattice atom.
@@ -194,7 +190,6 @@ impl RadiationDamage {
 /// Computes thermal-mechanical properties relevant to fuel performance:
 /// thermal conductivity, fission gas release, pellet-cladding gap, and
 /// centerline temperature under linear heat rate.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FuelPellet {
     /// Fuel composition.
@@ -297,7 +292,6 @@ impl FuelPellet {
 ///
 /// Provides crystallographic and electronic properties derived from
 /// experimental data and relativistic DFT calculations.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ActinideMaterial {
     /// Actinide element.
@@ -397,7 +391,6 @@ impl ActinideMaterial {
 /// Computes mechanical and corrosion properties relevant to in-reactor
 /// and out-of-reactor cladding performance: yield strength, creep rate,
 /// oxidation kinetics, and hydrogen pickup.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ZircaloyClad {
     /// Zircaloy alloy grade.

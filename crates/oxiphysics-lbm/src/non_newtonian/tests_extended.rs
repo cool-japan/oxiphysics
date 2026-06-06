@@ -1,4 +1,3 @@
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -322,7 +321,7 @@ mod extended_nn_tests {
             tm.advance(5.0, 0.01);
         }
         assert!(
-            tm.lambda >= 0.0 && tm.lambda <= 1.0,
+            (0.0..=1.0).contains(&tm.lambda),
             "λ out of [0,1]: {}",
             tm.lambda
         );
@@ -915,7 +914,10 @@ mod non_newtonian_extended_tests {
     fn test_thixotropic_model_steady_state_lambda_bound() {
         let tm = ThixotropicModel::new(1.0, 0.01, 0.5, 0.5, 1.0);
         let ss = tm.steady_state_lambda(1.0);
-        assert!(ss >= 0.0 && ss <= 1.0, "Steady state lambda in [0,1]: {ss}");
+        assert!(
+            (0.0..=1.0).contains(&ss),
+            "Steady state lambda in [0,1]: {ss}"
+        );
     }
 
     // --- metzner_reed_reynolds ---

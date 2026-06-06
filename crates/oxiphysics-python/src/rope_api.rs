@@ -5,9 +5,6 @@
 //!
 //! Exposes rope/chain distance constraints with Verlet integration to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::rope::Rope;
 use pyo3::prelude::*;
 

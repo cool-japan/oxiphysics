@@ -2,10 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::items_after_test_module)]
 /// Compute the penalty contact force on a node that has penetrated a half-space.
-#[allow(dead_code)]
 pub fn nodal_contact_force(
     node_pos: [f64; 3],
     obstacle_normal: [f64; 3],
@@ -21,12 +18,10 @@ pub fn nodal_contact_force(
     ]
 }
 /// Compute the signed gap from a node to a plane.
-#[allow(dead_code)]
 pub fn gap_function_node_to_plane(node: [f64; 3], plane_normal: [f64; 3], plane_d: f64) -> f64 {
     plane_normal[0] * node[0] + plane_normal[1] * node[1] + plane_normal[2] * node[2] + plane_d
 }
 /// Compute the signed gap and contact normal from a node to the nearest point on a line segment.
-#[allow(dead_code)]
 pub fn gap_function_node_to_segment(node: [f64; 3], p0: [f64; 3], p1: [f64; 3]) -> (f64, [f64; 3]) {
     let ab = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
     let ap = [node[0] - p0[0], node[1] - p0[1], node[2] - p0[2]];
@@ -55,7 +50,6 @@ pub fn gap_function_node_to_segment(node: [f64; 3], p0: [f64; 3], p1: [f64; 3]) 
 ///
 /// Returns pairs `(i, j)` where `i < j` and the nodes are within `cutoff`.
 /// Nodes are not paired with themselves.
-#[allow(dead_code)]
 pub fn self_contact_candidate_pairs(nodes: &[[f64; 3]], cutoff: f64) -> Vec<(usize, usize)> {
     let mut pairs = Vec::new();
     let n = nodes.len();
@@ -79,7 +73,6 @@ pub fn self_contact_candidate_pairs(nodes: &[[f64; 3]], cutoff: f64) -> Vec<(usi
 /// The normal is the outward unit normal of the triangle.
 ///
 /// Returns `(gap, normal)` where `gap > 0` means the node is on the outside.
-#[allow(dead_code)]
 pub fn node_to_triangle_gap(
     node: [f64; 3],
     v0: [f64; 3],
@@ -103,7 +96,6 @@ pub fn node_to_triangle_gap(
     (gap, normal)
 }
 /// Compute the area of a triangle from three vertices.
-#[allow(dead_code)]
 pub fn triangle_area(v0: [f64; 3], v1: [f64; 3], v2: [f64; 3]) -> f64 {
     let e0 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
     let e1 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
@@ -116,7 +108,6 @@ pub fn triangle_area(v0: [f64; 3], v1: [f64; 3], v2: [f64; 3]) -> f64 {
 }
 /// Compute the 3×3 penalty contact stiffness matrix for a single node-to-plane
 /// contact pair: `K = k_n * n ⊗ n`.
-#[allow(dead_code)]
 pub fn penalty_contact_stiffness(k_n: f64, normal: [f64; 3]) -> [[f64; 3]; 3] {
     let mut ke = [[0.0f64; 3]; 3];
     for i in 0..3 {
@@ -130,7 +121,6 @@ pub fn penalty_contact_stiffness(k_n: f64, normal: [f64; 3]) -> [[f64; 3]; 3] {
 ///
 /// Counts nodes in contact (gap < 0) and multiplies by the average element
 /// area to estimate the contact patch area.
-#[allow(dead_code)]
 pub fn contact_patch_area(gaps: &[f64], element_area: f64) -> f64 {
     let n_contact = gaps.iter().filter(|&&g| g < 0.0).count();
     n_contact as f64 * element_area
@@ -141,14 +131,12 @@ pub fn contact_patch_area(gaps: &[f64], element_area: f64) -> f64 {
 ///
 /// where `R* = (1/R1 + 1/R2)^-1` (here `R1 = R2 = r`) and
 /// `E* = ((1-nu1^2)/E1 + (1-nu2^2)/E2)^-1`.
-#[allow(dead_code)]
 pub fn hertz_contact_radius(force: f64, radius: f64, e1: f64, e2: f64, nu1: f64, nu2: f64) -> f64 {
     let r_star = radius / 2.0;
     let e_star = 1.0 / ((1.0 - nu1 * nu1) / e1 + (1.0 - nu2 * nu2) / e2);
     (3.0 * force * r_star / (4.0 * e_star)).powf(1.0 / 3.0)
 }
 /// Hertz maximum contact pressure: `p0 = 3F / (2 * pi * a^2)`.
-#[allow(dead_code)]
 pub fn hertz_max_pressure(force: f64, radius: f64, e1: f64, e2: f64, nu1: f64, nu2: f64) -> f64 {
     let a = hertz_contact_radius(force, radius, e1, e2, nu1, nu2);
     if a < 1e-30 {
@@ -157,7 +145,6 @@ pub fn hertz_max_pressure(force: f64, radius: f64, e1: f64, e2: f64, nu1: f64, n
     3.0 * force / (2.0 * std::f64::consts::PI * a * a)
 }
 /// Hertz contact indentation depth (approach): `delta = a^2 / R*`.
-#[allow(dead_code)]
 pub fn hertz_indentation(force: f64, radius: f64, e1: f64, e2: f64, nu1: f64, nu2: f64) -> f64 {
     let r_star = radius / 2.0;
     let a = hertz_contact_radius(force, radius, e1, e2, nu1, nu2);
@@ -166,7 +153,6 @@ pub fn hertz_indentation(force: f64, radius: f64, e1: f64, e2: f64, nu1: f64, nu
 /// Update gap function after large deformation using current node position.
 ///
 /// The deformed gap accounts for rigid-body rotation of the contact surface.
-#[allow(dead_code)]
 pub fn deformed_gap_plane(
     node_pos: [f64; 3],
     deformed_normal: [f64; 3],
@@ -182,8 +168,6 @@ pub fn deformed_gap_plane(
 /// Compute the incremental contact force for a large-deformation step.
 ///
 /// Accounts for the change in normal direction between timesteps.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn large_deformation_contact_force(
     gap: f64,
     normal_old: [f64; 3],
@@ -195,6 +179,181 @@ pub fn large_deformation_contact_force(
     let f_mag = lambda + penalty * pen;
     let n = if gap < 0.0 { normal_new } else { normal_old };
     [f_mag * n[0], f_mag * n[1], f_mag * n[2]]
+}
+/// Project a point onto a line segment \[a, b\], returning the projected point.
+pub fn project_point_to_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    let ab_sq = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    if ab_sq < 1e-30 {
+        return a;
+    }
+    let t = ((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / ab_sq).clamp(0.0, 1.0);
+    [a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]]
+}
+/// 1D Gaussian quadrature points and weights on \[-1, 1\].
+pub(super) fn gauss_quad_1d(n: usize) -> (Vec<f64>, Vec<f64>) {
+    match n {
+        1 => (vec![0.0], vec![2.0]),
+        2 => (
+            vec![-1.0 / 3.0_f64.sqrt(), 1.0 / 3.0_f64.sqrt()],
+            vec![1.0, 1.0],
+        ),
+        3 => (
+            vec![-0.7745966692, 0.0, 0.7745966692],
+            vec![0.5555555556, 0.8888888889, 0.5555555556],
+        ),
+        4 => (
+            vec![-0.8611363116, -0.3399810435, 0.3399810435, 0.8611363116],
+            vec![0.3478548451, 0.6521451549, 0.6521451549, 0.3478548451],
+        ),
+        _ => {
+            let pts: Vec<f64> = (0..n)
+                .map(|i| -1.0 + (2.0 * i as f64 + 1.0) / n as f64)
+                .collect();
+            let w = 2.0 / n as f64;
+            let wts = vec![w; n];
+            (pts, wts)
+        }
+    }
+}
+/// Gap function for node against a quadrilateral face (4-node bilinear).
+///
+/// Returns signed distance from node to bilinear surface.
+pub fn gap_function_node_to_quad(
+    node: [f64; 3],
+    v0: [f64; 3],
+    v1: [f64; 3],
+    v2: [f64; 3],
+    v3: [f64; 3],
+) -> (f64, [f64; 3]) {
+    let (g1, n1) = node_to_triangle_gap_fem(node, v0, v1, v2);
+    let (g2, n2) = node_to_triangle_gap_fem(node, v0, v2, v3);
+    let g = 0.5 * (g1 + g2);
+    let n = [
+        0.5 * (n1[0] + n2[0]),
+        0.5 * (n1[1] + n2[1]),
+        0.5 * (n1[2] + n2[2]),
+    ];
+    (g, n)
+}
+/// Compute gap from node to triangle (signed distance to triangle plane).
+pub(super) fn node_to_triangle_gap_fem(
+    node: [f64; 3],
+    v0: [f64; 3],
+    v1: [f64; 3],
+    v2: [f64; 3],
+) -> (f64, [f64; 3]) {
+    let e0 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+    let e1 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+    let n = [
+        e0[1] * e1[2] - e0[2] * e1[1],
+        e0[2] * e1[0] - e0[0] * e1[2],
+        e0[0] * e1[1] - e0[1] * e1[0],
+    ];
+    let n_len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if n_len < 1e-30 {
+        return (0.0, [0.0, 0.0, 0.0]);
+    }
+    let normal = [n[0] / n_len, n[1] / n_len, n[2] / n_len];
+    let pv = [node[0] - v0[0], node[1] - v0[1], node[2] - v0[2]];
+    let gap = pv[0] * normal[0] + pv[1] * normal[1] + pv[2] * normal[2];
+    (gap, normal)
+}
+/// Compute contact traction (force per unit area) from penalty parameters.
+pub fn contact_traction(
+    gap: f64,
+    tangential_disp: f64,
+    penalty_normal: f64,
+    penalty_tangential: f64,
+    friction_coeff: f64,
+) -> (f64, f64) {
+    let t_n = penalty_normal * (-gap).max(0.0);
+    let t_t_trial = penalty_tangential * tangential_disp;
+    let limit = friction_coeff * t_n;
+    let t_t = if t_t_trial.abs() <= limit {
+        t_t_trial
+    } else {
+        limit * t_t_trial.signum()
+    };
+    (t_n, t_t)
+}
+/// Reconstruct contact pressure distribution from nodal contact forces.
+///
+/// Uses a simple inverse-distance weighting to smooth nodal forces
+/// onto a spatial pressure field.
+pub fn contact_pressure_field(
+    query_points: &[[f64; 3]],
+    contact_nodes: &[[f64; 3]],
+    nodal_forces: &[f64],
+    element_area: f64,
+) -> Vec<f64> {
+    if contact_nodes.is_empty() || element_area < 1e-30 {
+        return vec![0.0; query_points.len()];
+    }
+    let nodal_pressures: Vec<f64> = nodal_forces.iter().map(|&f| f / element_area).collect();
+    query_points
+        .iter()
+        .map(|&q| {
+            let mut sum_w = 0.0;
+            let mut sum_wp = 0.0;
+            for (node, &p) in contact_nodes.iter().zip(nodal_pressures.iter()) {
+                let dx = q[0] - node[0];
+                let dy = q[1] - node[1];
+                let dz = q[2] - node[2];
+                let dist2 = dx * dx + dy * dy + dz * dz;
+                let w = if dist2 < 1e-30 { 1e30 } else { 1.0 / dist2 };
+                sum_w += w;
+                sum_wp += w * p;
+            }
+            if sum_w < 1e-30 { 0.0 } else { sum_wp / sum_w }
+        })
+        .collect()
+}
+/// Assemble the contact contribution into a global stiffness matrix.
+///
+/// For each contact pair, adds the penalty stiffness contribution
+/// to the relevant diagonal entries.
+///
+/// `n_dofs` × `n_dofs` sparse matrix (stored as flat Vec).
+pub fn assemble_contact_stiffness(
+    n_dofs: usize,
+    contact_pairs: &[(usize, usize)],
+    gaps: &[f64],
+    penalty: f64,
+) -> Vec<f64> {
+    let mut k = vec![0.0f64; n_dofs * n_dofs];
+    for (&(i, j), &gap) in contact_pairs.iter().zip(gaps.iter()) {
+        if gap >= 0.0 {
+            continue;
+        }
+        if i < n_dofs {
+            k[i * n_dofs + i] += penalty;
+        }
+        if j < n_dofs {
+            k[j * n_dofs + j] += penalty;
+        }
+        if i < n_dofs && j < n_dofs {
+            k[i * n_dofs + j] -= penalty;
+            k[j * n_dofs + i] -= penalty;
+        }
+    }
+    k
+}
+/// Assemble the contact force vector from penalty contact.
+pub fn assemble_contact_force(
+    n_dofs: usize,
+    contact_nodes: &[usize],
+    gaps: &[f64],
+    penalty: f64,
+) -> Vec<f64> {
+    let mut f = vec![0.0f64; n_dofs];
+    for (&node, &gap) in contact_nodes.iter().zip(gaps.iter()) {
+        if gap < 0.0 && node < n_dofs {
+            f[node] += penalty * (-gap);
+        }
+    }
+    f
 }
 #[cfg(test)]
 mod tests {
@@ -295,20 +454,20 @@ mod tests {
         let tc = TiedContact::new(pairs, 1000.0);
         let disp = [0.05, 0.02, 0.01];
         let (f_s, f_m) = tc.tied_force(disp, disp);
-        for i in 0..3 {
-            assert_eq!(f_s[i], 0.0, "zero gap should give zero force");
-            assert_eq!(f_m[i], 0.0);
+        for (i, (&fs_v, &fm_v)) in f_s.iter().zip(f_m.iter()).enumerate() {
+            assert_eq!(fs_v, 0.0, "zero gap should give zero force at [{i}]");
+            assert_eq!(fm_v, 0.0, "zero gap master force should be zero at [{i}]");
         }
     }
     #[test]
     fn test_tied_stiffness_symmetry() {
         let tc = TiedContact::new(vec![], 1000.0);
         let ke = tc.tied_stiffness();
-        for i in 0..6 {
-            for j in 0..6 {
+        for (i, row) in ke.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
                 assert!(
-                    (ke[i][j] - ke[j][i]).abs() < 1e-12,
-                    "stiffness should be symmetric"
+                    (v - ke[j][i]).abs() < 1e-12,
+                    "stiffness should be symmetric at ({i},{j})"
                 );
             }
         }
@@ -353,8 +512,8 @@ mod tests {
         let normal = [0.0, 0.0, 1.0];
         let tang_disp = [0.1, 0.0, 0.0];
         let (f_n, f_t, _) = sc.contact_forces(gap, normal, tang_disp);
-        for i in 0..3 {
-            assert_eq!(f_n[i], 0.0, "no normal force when separated");
+        for (i, &v) in f_n.iter().enumerate() {
+            assert_eq!(v, 0.0, "no normal force when separated at [{i}]");
         }
         let f_t_mag = (f_t[0] * f_t[0] + f_t[1] * f_t[1] + f_t[2] * f_t[2]).sqrt();
         assert!(f_t_mag < 1e-10, "no friction when separated");
@@ -555,10 +714,10 @@ mod tests {
         };
         let normal = [0.0, 0.0, 1.0];
         let ke = penalty_contact_stiffness(pc.stiffness, normal);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in ke.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
                 assert!(
-                    (ke[i][j] - ke[j][i]).abs() < 1e-12,
+                    (v - ke[j][i]).abs() < 1e-12,
                     "Stiffness not symmetric at ({i},{j})"
                 );
             }
@@ -596,187 +755,4 @@ mod tests {
         let p0 = hertz_max_pressure(1000.0, 0.01, 200e9, 200e9, 0.3, 0.3);
         assert!(p0 > 0.0, "Hertz max pressure should be positive: {p0}");
     }
-}
-/// Project a point onto a line segment \[a, b\], returning the projected point.
-#[allow(dead_code)]
-pub fn project_point_to_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
-    let ab_sq = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
-    if ab_sq < 1e-30 {
-        return a;
-    }
-    let t = ((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / ab_sq).clamp(0.0, 1.0);
-    [a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]]
-}
-/// 1D Gaussian quadrature points and weights on \[-1, 1\].
-#[allow(dead_code)]
-pub(super) fn gauss_quad_1d(n: usize) -> (Vec<f64>, Vec<f64>) {
-    match n {
-        1 => (vec![0.0], vec![2.0]),
-        2 => (
-            vec![-1.0 / 3.0_f64.sqrt(), 1.0 / 3.0_f64.sqrt()],
-            vec![1.0, 1.0],
-        ),
-        3 => (
-            vec![-0.7745966692, 0.0, 0.7745966692],
-            vec![0.5555555556, 0.8888888889, 0.5555555556],
-        ),
-        4 => (
-            vec![-0.8611363116, -0.3399810435, 0.3399810435, 0.8611363116],
-            vec![0.3478548451, 0.6521451549, 0.6521451549, 0.3478548451],
-        ),
-        _ => {
-            let pts: Vec<f64> = (0..n)
-                .map(|i| -1.0 + (2.0 * i as f64 + 1.0) / n as f64)
-                .collect();
-            let w = 2.0 / n as f64;
-            let wts = vec![w; n];
-            (pts, wts)
-        }
-    }
-}
-/// Gap function for node against a quadrilateral face (4-node bilinear).
-///
-/// Returns signed distance from node to bilinear surface.
-#[allow(dead_code)]
-pub fn gap_function_node_to_quad(
-    node: [f64; 3],
-    v0: [f64; 3],
-    v1: [f64; 3],
-    v2: [f64; 3],
-    v3: [f64; 3],
-) -> (f64, [f64; 3]) {
-    let (g1, n1) = node_to_triangle_gap_fem(node, v0, v1, v2);
-    let (g2, n2) = node_to_triangle_gap_fem(node, v0, v2, v3);
-    let g = 0.5 * (g1 + g2);
-    let n = [
-        0.5 * (n1[0] + n2[0]),
-        0.5 * (n1[1] + n2[1]),
-        0.5 * (n1[2] + n2[2]),
-    ];
-    (g, n)
-}
-/// Compute gap from node to triangle (signed distance to triangle plane).
-#[allow(dead_code)]
-pub(super) fn node_to_triangle_gap_fem(
-    node: [f64; 3],
-    v0: [f64; 3],
-    v1: [f64; 3],
-    v2: [f64; 3],
-) -> (f64, [f64; 3]) {
-    let e0 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
-    let e1 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
-    let n = [
-        e0[1] * e1[2] - e0[2] * e1[1],
-        e0[2] * e1[0] - e0[0] * e1[2],
-        e0[0] * e1[1] - e0[1] * e1[0],
-    ];
-    let n_len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-    if n_len < 1e-30 {
-        return (0.0, [0.0, 0.0, 0.0]);
-    }
-    let normal = [n[0] / n_len, n[1] / n_len, n[2] / n_len];
-    let pv = [node[0] - v0[0], node[1] - v0[1], node[2] - v0[2]];
-    let gap = pv[0] * normal[0] + pv[1] * normal[1] + pv[2] * normal[2];
-    (gap, normal)
-}
-/// Compute contact traction (force per unit area) from penalty parameters.
-#[allow(dead_code)]
-pub fn contact_traction(
-    gap: f64,
-    tangential_disp: f64,
-    penalty_normal: f64,
-    penalty_tangential: f64,
-    friction_coeff: f64,
-) -> (f64, f64) {
-    let t_n = penalty_normal * (-gap).max(0.0);
-    let t_t_trial = penalty_tangential * tangential_disp;
-    let limit = friction_coeff * t_n;
-    let t_t = if t_t_trial.abs() <= limit {
-        t_t_trial
-    } else {
-        limit * t_t_trial.signum()
-    };
-    (t_n, t_t)
-}
-/// Reconstruct contact pressure distribution from nodal contact forces.
-///
-/// Uses a simple inverse-distance weighting to smooth nodal forces
-/// onto a spatial pressure field.
-#[allow(dead_code)]
-pub fn contact_pressure_field(
-    query_points: &[[f64; 3]],
-    contact_nodes: &[[f64; 3]],
-    nodal_forces: &[f64],
-    element_area: f64,
-) -> Vec<f64> {
-    if contact_nodes.is_empty() || element_area < 1e-30 {
-        return vec![0.0; query_points.len()];
-    }
-    let nodal_pressures: Vec<f64> = nodal_forces.iter().map(|&f| f / element_area).collect();
-    query_points
-        .iter()
-        .map(|&q| {
-            let mut sum_w = 0.0;
-            let mut sum_wp = 0.0;
-            for (node, &p) in contact_nodes.iter().zip(nodal_pressures.iter()) {
-                let dx = q[0] - node[0];
-                let dy = q[1] - node[1];
-                let dz = q[2] - node[2];
-                let dist2 = dx * dx + dy * dy + dz * dz;
-                let w = if dist2 < 1e-30 { 1e30 } else { 1.0 / dist2 };
-                sum_w += w;
-                sum_wp += w * p;
-            }
-            if sum_w < 1e-30 { 0.0 } else { sum_wp / sum_w }
-        })
-        .collect()
-}
-/// Assemble the contact contribution into a global stiffness matrix.
-///
-/// For each contact pair, adds the penalty stiffness contribution
-/// to the relevant diagonal entries.
-///
-/// `n_dofs` × `n_dofs` sparse matrix (stored as flat Vec).
-#[allow(dead_code)]
-pub fn assemble_contact_stiffness(
-    n_dofs: usize,
-    contact_pairs: &[(usize, usize)],
-    gaps: &[f64],
-    penalty: f64,
-) -> Vec<f64> {
-    let mut k = vec![0.0f64; n_dofs * n_dofs];
-    for (&(i, j), &gap) in contact_pairs.iter().zip(gaps.iter()) {
-        if gap >= 0.0 {
-            continue;
-        }
-        if i < n_dofs {
-            k[i * n_dofs + i] += penalty;
-        }
-        if j < n_dofs {
-            k[j * n_dofs + j] += penalty;
-        }
-        if i < n_dofs && j < n_dofs {
-            k[i * n_dofs + j] -= penalty;
-            k[j * n_dofs + i] -= penalty;
-        }
-    }
-    k
-}
-/// Assemble the contact force vector from penalty contact.
-#[allow(dead_code)]
-pub fn assemble_contact_force(
-    n_dofs: usize,
-    contact_nodes: &[usize],
-    gaps: &[f64],
-    penalty: f64,
-) -> Vec<f64> {
-    let mut f = vec![0.0f64; n_dofs];
-    for (&node, &gap) in contact_nodes.iter().zip(gaps.iter()) {
-        if gap < 0.0 && node < n_dofs {
-            f[node] += penalty * (-gap);
-        }
-    }
-    f
 }

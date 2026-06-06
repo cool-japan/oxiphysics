@@ -63,7 +63,6 @@ pub trait Constraint {
 /// Motor constraints combine a regular constraint with a controller that
 /// continuously updates the impulse target (e.g. a revolute joint with a
 /// servo-motor set to a target angle or angular velocity).
-#[allow(dead_code)]
 pub trait MotorConstraintTrait: Constraint {
     /// Set the target position (angle, distance, …) for the motor.
     fn set_target_position(&mut self, pos: f64);
@@ -81,7 +80,6 @@ pub trait MotorConstraintTrait: Constraint {
 ///
 /// A limit constraint becomes active when the joint coordinate hits its lower
 /// or upper bound, and applies a one-sided impulse to prevent violation.
-#[allow(dead_code)]
 pub trait LimitConstraintTrait: Constraint {
     /// Set the lower bound for the joint coordinate.
     fn set_lower_limit(&mut self, limit: f64);
@@ -107,7 +105,6 @@ pub trait LimitConstraintTrait: Constraint {
 /// Δλ = -(C + α̃ λ) / (∇C^T M⁻¹ ∇C + α̃)
 /// α̃  = α / (dt²)
 /// ```
-#[allow(dead_code)]
 pub trait SoftConstraint: Constraint {
     /// Returns the compliance α \[m/N or rad/(N·m)\].
     ///
@@ -151,7 +148,6 @@ pub trait SoftConstraint: Constraint {
 /// Observer trait for solver introspection and profiling.
 ///
 /// Implement this to collect per-constraint statistics during the solve.
-#[allow(dead_code)]
 pub trait ConstraintDiagnostics {
     /// Called at the start of `prepare`.
     fn on_prepare_begin(&self) {}
@@ -172,13 +168,11 @@ pub trait ConstraintDiagnostics {
 /// Object-safe clone helper for `Box<dyn Constraint>`.
 ///
 /// Implement this on concrete types to enable boxed-constraint cloning.
-#[allow(dead_code)]
 pub trait ConstraintClone {
     /// Return a heap-allocated copy of this constraint.
     fn clone_box(&self) -> Box<dyn Constraint>;
 }
 /// Extension trait providing priority information for a constraint.
-#[allow(dead_code)]
 pub trait PrioritizedConstraint: Constraint {
     /// Return the solve priority for this constraint.
     fn priority(&self) -> ConstraintPriority {
@@ -189,7 +183,6 @@ pub trait PrioritizedConstraint: Constraint {
 ///
 /// Warm-starting seeds the accumulated impulse with a fraction of the previous
 /// frame's impulse, dramatically improving solver convergence.
-#[allow(dead_code)]
 pub trait WarmStartable: Constraint {
     /// Apply warm-start impulses at the beginning of the solve.
     ///
@@ -202,7 +195,6 @@ pub trait WarmStartable: Constraint {
     fn cached_impulse(&self) -> f64;
 }
 /// Extension trait for contact constraints that expose collision geometry.
-#[allow(dead_code)]
 pub trait ContactPatch: Constraint {
     /// World-space contact normal (pointing from body B toward body A).
     fn contact_normal(&self) -> [f64; 3];
@@ -218,7 +210,6 @@ pub trait ContactPatch: Constraint {
     fn friction_impulse(&self) -> f64;
 }
 /// Extension trait that allows a constraint to self-report its kind.
-#[allow(dead_code)]
 pub trait TypedConstraint: Constraint {
     /// Return the [`ConstraintKind`] for this constraint.
     fn kind(&self) -> ConstraintKind;
@@ -228,7 +219,6 @@ pub trait TypedConstraint: Constraint {
 ///
 /// Once broken, the constraint becomes permanently inactive and is skipped by
 /// the solver.  Typical use: destructible joints, fracture simulation.
-#[allow(dead_code)]
 pub trait BreakableConstraint: Constraint {
     /// Maximum force magnitude before the constraint breaks \[N\].
     fn break_force(&self) -> f64;
@@ -264,7 +254,6 @@ pub trait BreakableConstraint: Constraint {
     }
 }
 /// Extension trait for constraints that can provide solver hints.
-#[allow(dead_code)]
 pub trait HintedConstraint: Constraint {
     /// Return solver hints for this constraint.
     fn solver_hints(&self) -> SolverHints {
@@ -272,7 +261,6 @@ pub trait HintedConstraint: Constraint {
     }
 }
 /// Compute the error norm for a slice of residuals.
-#[allow(dead_code)]
 pub fn compute_error_norm(residuals: &[f64], norm: ErrorNorm) -> f64 {
     if residuals.is_empty() {
         return 0.0;
@@ -293,7 +281,6 @@ pub fn compute_error_norm(residuals: &[f64], norm: ErrorNorm) -> f64 {
 /// Weighted L2 norm (each component multiplied by the corresponding weight).
 ///
 /// Panics in debug mode if `residuals.len() != weights.len()`.
-#[allow(dead_code)]
 pub fn compute_weighted_l2_norm(residuals: &[f64], weights: &[f64]) -> f64 {
     debug_assert_eq!(
         residuals.len(),
@@ -309,7 +296,6 @@ pub fn compute_weighted_l2_norm(residuals: &[f64], weights: &[f64]) -> f64 {
 }
 /// Normalize a residual vector to have unit L2 norm.
 /// Returns a zero vector if the input is already zero.
-#[allow(dead_code)]
 pub fn normalize_residuals(residuals: &[f64]) -> Vec<f64> {
     let l2 = compute_error_norm(residuals, ErrorNorm::L2);
     if l2 < 1e-15 {
@@ -353,9 +339,7 @@ mod tests {
     }
     pub(super) struct MockSoftConstraint {
         compliance: f64,
-        #[allow(dead_code)]
         damping: f64,
-        #[allow(dead_code)]
         lambda: f64,
     }
     impl MockSoftConstraint {

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 /// Solves a tridiagonal system Ax = d using the Thomas algorithm.
 ///
 /// # Arguments
@@ -151,8 +150,8 @@ mod tests {
         let dx = 0.1;
         let u: Vec<f64> = (0..10).map(|i| i as f64 * dx).collect();
         let grad = fdm_gradient(&u, dx);
-        for i in 1..9 {
-            assert!((grad[i] - 1.0).abs() < 1e-10);
+        for (i, &g) in grad.iter().enumerate().take(9).skip(1) {
+            assert!((g - 1.0).abs() < 1e-10, "i={i}: {g}");
         }
     }
     #[test]
@@ -160,8 +159,8 @@ mod tests {
         let dx = 0.1;
         let u: Vec<f64> = (0..10).map(|i| i as f64 * dx).collect();
         let lap = fdm_laplacian(&u, dx);
-        for i in 1..9 {
-            assert!(lap[i].abs() < 1e-10);
+        for (_, &l) in lap.iter().enumerate().take(9).skip(1) {
+            assert!(l.abs() < 1e-10);
         }
     }
     #[test]
@@ -169,8 +168,8 @@ mod tests {
         let dx = 0.1;
         let u: Vec<f64> = (0..20).map(|i| (i as f64 * dx).powi(2)).collect();
         let lap = fdm_laplacian(&u, dx);
-        for i in 1..19 {
-            assert!((lap[i] - 2.0).abs() < 1e-6, "lap[{}] = {}", i, lap[i]);
+        for (i, &l) in lap.iter().enumerate().take(19).skip(1) {
+            assert!((l - 2.0).abs() < 1e-6, "lap[{}] = {}", i, l);
         }
     }
     #[test]
@@ -551,8 +550,8 @@ mod tests {
         let ops = FiniteDiffOps1D::new(10, 0.1);
         let u = vec![5.0_f64; 10];
         let lap = ops.laplacian(&u);
-        for i in 1..9 {
-            assert!(lap[i].abs() < 1e-10);
+        for (_, &l) in lap.iter().enumerate().take(9).skip(1) {
+            assert!(l.abs() < 1e-10);
         }
     }
     #[test]
@@ -627,13 +626,13 @@ mod tests {
         let fft = FftDiff1D::new(n, dx);
         let u: Vec<f64> = (0..n).map(|i| (i as f64 * dx).sin()).collect();
         let du = fft.differentiate(&u);
-        for i in 2..n - 2 {
+        for (i, &du_i) in du.iter().enumerate().take(n - 2).skip(2) {
             let x = i as f64 * dx;
             assert!(
-                (du[i] - x.cos()).abs() < 0.05,
+                (du_i - x.cos()).abs() < 0.05,
                 "i={} du={} cos={}",
                 i,
-                du[i],
+                du_i,
                 x.cos()
             );
         }

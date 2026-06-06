@@ -1,6 +1,6 @@
 # oxiphysics-sph TODO
 
-Last updated: 2026-05-17 | Version: 0.1.1
+Last updated: 2026-06-06 | Version: 0.1.2
 
 ## Phase 1: Foundation
 - [x] Define core types and traits
@@ -31,5 +31,5 @@ Last updated: 2026-05-17 | Version: 0.1.1
 - [x] Coupling layer (SPH↔rigid, SPH↔FEM, SPH↔DEM)
 - [x] CFL-based adaptive timestepping
 - [x] Simulation orchestration module
-- [x] 4,367 tests passing, 0 stubs
+- [x] 4,370 tests passing, 0 stubs
 

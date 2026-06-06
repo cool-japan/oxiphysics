@@ -4,8 +4,6 @@
 
 use std::collections::HashMap;
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     DEFAULT_CELL_SIZE, EPSILON, faces_share_vertex, v3_add, v3_cross, v3_max, v3_min, v3_norm,
     v3_scale, v3_sub, vertex_face_contact,

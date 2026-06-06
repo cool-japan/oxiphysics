@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,8 +8,6 @@
 //! conditions (Dirichlet/Neumann/periodic), Richardson extrapolation,
 //! method of lines, stability analysis (CFL, von Neumann), staggered grids,
 //! fractional step method, and ADI (alternating direction implicit).
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -33,34 +30,33 @@ pub enum BoundaryCondition {
 // Thomas algorithm (tridiagonal solver)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Solves the tridiagonal system `A x = d` using the Thomas algorithm.
+/// Solves the tridiagonal system `A x = rhs` using the Thomas algorithm.
 ///
-/// `a` is the sub-diagonal (index 0 unused), `b` the main diagonal,
-/// `c` the super-diagonal (last entry unused), and `d` the right-hand side.
+/// `sub` is the sub-diagonal (index 0 unused), `diag` the main diagonal,
+/// `sup` the super-diagonal (last entry unused), and `rhs` the right-hand side.
 /// All slices must have length `n`.
-#[allow(clippy::many_single_char_names)]
-pub fn thomas_algorithm(a: &[f64], b: &[f64], c: &[f64], d: &[f64]) -> Vec<f64> {
-    let n = b.len();
+pub fn thomas_algorithm(sub: &[f64], diag: &[f64], sup: &[f64], rhs: &[f64]) -> Vec<f64> {
+    let n = diag.len();
     assert!(n >= 2, "system must have at least 2 unknowns");
-    assert_eq!(a.len(), n);
-    assert_eq!(c.len(), n);
-    assert_eq!(d.len(), n);
+    assert_eq!(sub.len(), n);
+    assert_eq!(sup.len(), n);
+    assert_eq!(rhs.len(), n);
 
-    let mut cp = vec![0.0_f64; n];
-    let mut dp = vec![0.0_f64; n];
+    let mut sup_prime = vec![0.0_f64; n];
+    let mut rhs_prime = vec![0.0_f64; n];
     let mut x = vec![0.0_f64; n];
 
-    cp[0] = c[0] / b[0];
-    dp[0] = d[0] / b[0];
+    sup_prime[0] = sup[0] / diag[0];
+    rhs_prime[0] = rhs[0] / diag[0];
     for i in 1..n {
-        let denom = b[i] - a[i] * cp[i - 1];
-        cp[i] = if i < n - 1 { c[i] / denom } else { 0.0 };
-        dp[i] = (d[i] - a[i] * dp[i - 1]) / denom;
+        let denom = diag[i] - sub[i] * sup_prime[i - 1];
+        sup_prime[i] = if i < n - 1 { sup[i] / denom } else { 0.0 };
+        rhs_prime[i] = (rhs[i] - sub[i] * rhs_prime[i - 1]) / denom;
     }
 
-    x[n - 1] = dp[n - 1];
+    x[n - 1] = rhs_prime[n - 1];
     for i in (0..n - 1).rev() {
-        x[i] = dp[i] - cp[i] * x[i + 1];
+        x[i] = rhs_prime[i] - sup_prime[i] * x[i + 1];
     }
     x
 }
@@ -131,7 +127,6 @@ pub fn first_derivative_fourth_order(u: &[f64], dx: f64) -> Vec<f64> {
 /// First-order upwind advection: advances `u` one time step `dt`.
 ///
 /// The equation solved is `∂u/∂t + c ∂u/∂x = 0` with `bc` at the inflow.
-#[allow(clippy::too_many_arguments)]
 pub fn advection_upwind_step(
     u: &[f64],
     dx: f64,
@@ -155,7 +150,7 @@ pub fn advection_upwind_step(
 }
 
 /// Applies 1D boundary conditions (left and right) to a solution vector.
-pub fn apply_bc_1d(u: &mut Vec<f64>, left: BoundaryCondition, right: BoundaryCondition) {
+pub fn apply_bc_1d(u: &mut [f64], left: BoundaryCondition, right: BoundaryCondition) {
     let n = u.len();
     if n == 0 {
         return;
@@ -612,7 +607,6 @@ pub struct FractionalStepResult {
 /// Step 1: Advance velocity ignoring pressure (explicit advection + diffusion).
 /// Step 2: Solve pressure Poisson equation.
 /// Step 3: Project to divergence-free field.
-#[allow(clippy::too_many_arguments)]
 pub fn fractional_step_1d(
     u: &[f64],
     dx: f64,
@@ -774,9 +768,7 @@ pub fn adi_diffusion_step_2d(
         }
 
         let row_sol = thomas_algorithm(&a_d, &b_d, &c_d, &rhs);
-        for i in 0..nx {
-            u_half[j * nx + i] = row_sol[i];
-        }
+        u_half[j * nx..j * nx + nx].copy_from_slice(&row_sol);
     }
 
     // --- full step: implicit in y ---
@@ -921,7 +913,7 @@ pub fn ftcs_max_amplification(r: f64, dx: f64, n_modes: usize) -> f64 {
 ///
 /// Left ghost: `u[-1] = u[1]`, right ghost: `u[n] = u[n-2]`.
 /// Modifies the first and last elements of `u` in-place.
-pub fn apply_neumann_reflection(u: &mut Vec<f64>) {
+pub fn apply_neumann_reflection(u: &mut [f64]) {
     let n = u.len();
     if n < 3 {
         return;
@@ -1158,8 +1150,8 @@ mod tests {
         let dx = 0.1;
         let u: Vec<f64> = (0..n).map(|i| (i as f64 * dx).powi(2)).collect();
         let d2u = second_derivative(&u, dx);
-        for i in 1..n - 1 {
-            assert!((d2u[i] - 2.0).abs() < 1e-6, "i={i}: {}", d2u[i]);
+        for (i, &val) in d2u.iter().enumerate().take(n - 1).skip(1) {
+            assert!((val - 2.0).abs() < 1e-6, "i={i}: {}", val);
         }
     }
 
@@ -1171,12 +1163,12 @@ mod tests {
         let u: Vec<f64> = (0..n).map(|i| (i as f64 * dx).sin()).collect();
         let du = first_derivative_fourth_order(&u, dx);
         // check interior points (away from boundaries)
-        for i in 4..n - 4 {
+        for (i, &du_i) in du.iter().enumerate().take(n - 4).skip(4) {
             let exact = (i as f64 * dx).cos();
             assert!(
-                (du[i] - exact).abs() < 1e-6,
+                (du_i - exact).abs() < 1e-6,
                 "i={i}: got {} exp {}",
-                du[i],
+                du_i,
                 exact
             );
         }
@@ -1327,8 +1319,8 @@ mod tests {
         let u: Vec<f64> = (0..n).map(|i| 3.0 * i as f64 * dx).collect();
         let du = compact_first_derivative(&u, dx);
         // interior should give ~3.0
-        for i in 2..n - 2 {
-            assert!((du[i] - 3.0).abs() < 1e-8, "i={i}: {}", du[i]);
+        for (i, &val) in du.iter().enumerate().take(n - 2).skip(2) {
+            assert!((val - 3.0).abs() < 1e-8, "i={i}: {}", val);
         }
     }
 
@@ -1644,8 +1636,8 @@ mod tests {
         let dx = 0.1;
         let u = vec![5.0_f64; n];
         let d2u = compact_second_derivative(&u, dx);
-        for i in 1..n - 1 {
-            assert!(d2u[i].abs() < 1e-9, "i={i}: {}", d2u[i]);
+        for (i, &val) in d2u.iter().enumerate().take(n - 1).skip(1) {
+            assert!(val.abs() < 1e-9, "i={i}: {}", val);
         }
     }
 

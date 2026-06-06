@@ -1,11 +1,8 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! Advanced homogenization schemes: Self-Consistent, Hill-Mandel,
 //! RVE analysis, periodic boundary conditions, and multi-scale FE coupling.
-
-#![allow(dead_code)]
 
 use super::bounds::*;
 use super::matrix_utils::*;
@@ -328,8 +325,9 @@ impl PeriodicBoundaryConditions {
         let mut displacements = Vec::with_capacity(3 * boundary_nodes.len());
         for &n in boundary_nodes {
             let x = node_positions[n];
-            for i in 0..3 {
-                let ui: f64 = (0..3).map(|j| e[i][j] * x[j]).sum();
+            for (i, e_row) in e.iter().enumerate() {
+                let ui: f64 = e_row.iter().enumerate().map(|(j, &eij)| eij * x[j]).sum();
+                let _ = i;
                 displacements.push(ui);
             }
         }
@@ -521,12 +519,9 @@ mod tests {
         let id = mat6_identity();
         let c = glass().stiffness_voigt();
         let result = mat6_mul(&id, &c);
-        for i in 0..6 {
-            for j in 0..6 {
-                assert!(
-                    (result[i][j] - c[i][j]).abs() < 1e-10,
-                    "I*C != C at [{i}][{j}]"
-                );
+        for (i, row) in result.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - c[i][j]).abs() < 1e-10, "I*C != C at [{i}][{j}]");
             }
         }
     }
@@ -535,13 +530,10 @@ mod tests {
     fn test_mat6_inv_identity() {
         let id = mat6_identity();
         let inv = mat6_inv(&id).expect("identity should be invertible");
-        for i in 0..6 {
-            for j in 0..6 {
+        for (i, row) in inv.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (inv[i][j] - expected).abs() < 1e-12,
-                    "inv(I) != I at [{i}][{j}]"
-                );
+                assert!((val - expected).abs() < 1e-12, "inv(I) != I at [{i}][{j}]");
             }
         }
     }
@@ -670,7 +662,7 @@ mod tests {
             effective_youngs_modulus(&reuss_average(&[matrix.clone(), inclusion.clone()]));
         let e_voigt = effective_youngs_modulus(&voigt_average(&[matrix, inclusion]));
         assert!(
-            e_mt >= e_reuss * 0.99 && e_mt <= e_voigt * 1.01,
+            (e_reuss * 0.99..=e_voigt * 1.01).contains(&e_mt),
             "MT E={e_mt:.3e} should be between Reuss={e_reuss:.3e} and Voigt={e_voigt:.3e}"
         );
     }
@@ -760,7 +752,7 @@ mod tests {
         let e_voigt = effective_youngs_modulus(&voigt_average(&phases));
         // Self-consistent should be between bounds
         assert!(
-            e_sc >= e_reuss * 0.5 && e_sc <= e_voigt * 2.0,
+            (e_reuss * 0.5..=e_voigt * 2.0).contains(&e_sc),
             "SC E={e_sc:.3e} should be near bounds Reuss={e_reuss:.3e}, Voigt={e_voigt:.3e}"
         );
     }
@@ -871,10 +863,10 @@ mod tests {
         let mt = MoriTanakaScheme::new(matrix, inclusion);
         let s_sphere = mt.eshelby_tensor_sphere();
         let s_prolate = mt.eshelby_tensor_prolate(1.001);
-        for i in 0..6 {
-            for j in 0..6 {
+        for (i, row) in s_sphere.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (s_sphere[i][j] - s_prolate[i][j]).abs() < 1e-3,
+                    (val - s_prolate[i][j]).abs() < 1e-3,
                     "Prolate near sphere should match sphere at [{i}][{j}]"
                 );
             }
@@ -885,9 +877,9 @@ mod tests {
     fn test_mat6_sub_self_is_zero() {
         let c = steel().stiffness_voigt();
         let zero = mat6_sub(&c, &c);
-        for i in 0..6 {
-            for j in 0..6 {
-                assert!(zero[i][j].abs() < 1e-12);
+        for row in &zero {
+            for &val in row {
+                assert!(val.abs() < 1e-12);
             }
         }
     }

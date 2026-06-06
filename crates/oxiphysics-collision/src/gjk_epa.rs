@@ -4,10 +4,9 @@
 //! GJK (Gilbert-Johnson-Keerthi) and EPA (Expanding Polytope Algorithm)
 //! for convex shape collision detection using plain `[f64; 3]` arrays.
 
-#![allow(missing_docs)]
-
 // ─── Helper math ────────────────────────────────────────────────────────────
 
+/// Dot product of two 3-vectors stored as `[f64; 3]`.
 #[inline]
 pub fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
@@ -630,7 +629,6 @@ fn ensure_tetrahedron(
 // ─── GJK Distance query (improved) ───────────────────────────────────────────
 
 /// Closest point on a line segment AB to the origin.
-#[allow(dead_code)]
 pub fn closest_point_segment_to_origin(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     let ab = sub3(b, a);
     let t = dot3(neg3(a), ab) / dot3(ab, ab).max(1e-30);
@@ -639,7 +637,6 @@ pub fn closest_point_segment_to_origin(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 /// Closest point on triangle ABC to the origin (point projection).
-#[allow(dead_code)]
 pub fn closest_point_triangle_to_origin(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f64; 3] {
     let ab = sub3(b, a);
     let ac = sub3(c, a);
@@ -729,7 +726,6 @@ pub fn gjk_distance_with_witnesses(
 // ─── GJK with rotation ───────────────────────────────────────────────────────
 
 /// Apply a 3×3 rotation matrix (row-major) to a 3D vector.
-#[allow(dead_code)]
 pub fn rotate_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     [
         m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
@@ -770,7 +766,6 @@ impl<'a> ConvexShape for TransformedShape<'a> {
 }
 
 /// Test intersection between two shapes given explicit poses.
-#[allow(dead_code)]
 pub fn gjk_intersect_transformed(
     shape_a: &dyn ConvexShape,
     rot_a: [[f64; 3]; 3],
@@ -799,7 +794,6 @@ pub fn gjk_intersect_transformed(
 /// The initial tetrahedron has 4 faces.  Each expansion step removes at least
 /// 1 face visible from the new support point and adds at least 3 new faces
 /// along the silhouette edges.  This is a conservative *lower-bound* estimate.
-#[allow(dead_code)]
 pub fn epa_face_count_lower_bound(expansion_steps: usize) -> usize {
     4 + 2 * expansion_steps
 }

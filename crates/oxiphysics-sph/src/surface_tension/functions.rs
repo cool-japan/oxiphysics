@@ -13,7 +13,6 @@ use super::types::CsfSurfaceTension;
 ///
 /// The color field is 1 inside the fluid and drops to 0 outside.
 /// It is useful for identifying the free surface.
-#[allow(dead_code, clippy::needless_range_loop)]
 pub fn compute_color_field(
     positions: &[Vec3],
     masses: &[f64],
@@ -48,7 +47,6 @@ pub fn compute_color_field(
 /// field gradient points toward the interface between phases.
 ///
 /// * `phase` — phase label for each particle (e.g. 0 or 1)
-#[allow(dead_code, clippy::needless_range_loop)]
 pub fn compute_multiphase_color_gradient(
     positions: &[Vec3],
     masses: &[f64],
@@ -87,7 +85,6 @@ pub fn compute_multiphase_color_gradient(
 /// `kappa_i = -laplacian(c_i) / |grad(c_i)|`
 ///
 /// This is a simple curvature estimator that works well for smooth interfaces.
-#[allow(dead_code, clippy::needless_range_loop, clippy::too_many_arguments)]
 pub fn estimate_curvature_laplacian(
     positions: &[Vec3],
     masses: &[f64],
@@ -132,7 +129,6 @@ pub fn estimate_curvature_laplacian(
 /// `n_wall_i = n_i + cos(theta_w) * n_wall + sin(theta_w) * t_wall`
 ///
 /// where `t_wall` is the tangent component of n_i projected onto the wall.
-#[allow(dead_code, clippy::needless_range_loop)]
 pub fn apply_wetting_angle(
     normals: &mut [Vec3],
     positions: &[Vec3],
@@ -167,7 +163,6 @@ pub fn apply_wetting_angle(
 ///
 /// A particle is considered a surface particle if `|grad(c_i)| > threshold`.
 /// Returns a boolean mask.
-#[allow(dead_code)]
 pub fn detect_surface_particles(
     positions: &[Vec3],
     masses: &[f64],
@@ -185,7 +180,6 @@ pub fn detect_surface_particles(
 /// Particles within `radius` of each other are considered connected.
 /// Returns a label for each particle indicating which droplet it belongs to.
 /// Label 0 is the largest component; isolated particles get unique labels.
-#[allow(dead_code, clippy::needless_range_loop)]
 pub fn detect_droplets(positions: &[Vec3], neighbors: &[Vec<usize>]) -> Vec<usize> {
     let n = positions.len();
     if n == 0 {
@@ -214,8 +208,8 @@ pub fn detect_droplets(positions: &[Vec3], neighbors: &[Vec<usize>]) -> Vec<usiz
             rank[ra] += 1;
         }
     }
-    for i in 0..n {
-        for &j in &neighbors[i] {
+    for (i, nbrs) in neighbors.iter().enumerate().take(n) {
+        for &j in nbrs {
             union(&mut parent, &mut rank, i, j);
         }
     }
@@ -236,21 +230,20 @@ pub fn detect_droplets(positions: &[Vec3], neighbors: &[Vec<usize>]) -> Vec<usiz
     root_to_label.insert(largest_root, 0_usize);
     let mut next_label = 1_usize;
     let mut labels = vec![0_usize; n];
-    for i in 0..n {
+    for (i, lab) in labels.iter_mut().enumerate().take(n) {
         let root = find(&mut parent, i);
         let label = *root_to_label.entry(root).or_insert_with(|| {
             let l = next_label;
             next_label += 1;
             l
         });
-        labels[i] = label;
+        *lab = label;
     }
     labels
 }
 /// Compute per-droplet center of mass.
 ///
 /// Returns a map from droplet label to (center_of_mass, total_mass).
-#[allow(dead_code)]
 pub fn droplet_centers_of_mass(
     positions: &[Vec3],
     masses: &[f64],
@@ -272,7 +265,6 @@ pub fn droplet_centers_of_mass(
 /// Compute the effective radius of a droplet assuming spherical shape.
 ///
 /// `R = (3 * V / (4 * pi))^(1/3)` where `V = M / rho`.
-#[allow(dead_code)]
 pub fn droplet_effective_radius(total_mass: f64, density: f64) -> f64 {
     if density < 1e-14 || total_mass < 1e-14 {
         return 0.0;
@@ -285,7 +277,6 @@ pub fn droplet_effective_radius(total_mass: f64, density: f64) -> f64 {
 /// Uses a pairwise interaction force derived from free energy of mixing:
 /// `f_ij = -A_ij * grad_W(r_ij)`
 /// where `A_ij` depends on the color field difference between particles.
-#[allow(dead_code, clippy::needless_range_loop)]
 pub fn tartakovsky_meakin_forces(
     positions: &[Vec3],
     masses: &[f64],
@@ -338,7 +329,6 @@ pub fn tartakovsky_meakin_forces(
 /// - `gamma_LG` = liquid-gas surface tension (J/m^2)
 ///
 /// Returns angle in radians, clamped to \[0, π\].
-#[allow(dead_code)]
 pub fn young_dupree_contact_angle(gamma_sg: f64, gamma_sl: f64, gamma_lg: f64) -> f64 {
     if gamma_lg < 1e-15 {
         return 0.0;
@@ -352,7 +342,6 @@ pub fn young_dupree_contact_angle(gamma_sg: f64, gamma_sl: f64, gamma_lg: f64) -
 ///
 /// - S > 0: complete wetting (θ = 0)
 /// - S < 0: partial wetting (θ > 0)
-#[allow(dead_code)]
 pub fn spreading_coefficient(gamma_sg: f64, gamma_sl: f64, gamma_lg: f64) -> f64 {
     gamma_sg - gamma_sl - gamma_lg
 }
@@ -364,7 +353,6 @@ pub fn spreading_coefficient(gamma_sg: f64, gamma_sl: f64, gamma_lg: f64) -> f64
 ///
 /// Here we compute it via SPH as:
 /// `f_i = -dsigma_dT * sum_j (m_j/rho_j) * (T_j - T_i) * grad_W(r_ij)`
-#[allow(dead_code, clippy::too_many_arguments, clippy::needless_range_loop)]
 pub fn marangoni_forces(
     positions: &[Vec3],
     masses: &[f64],
@@ -410,7 +398,6 @@ pub fn marangoni_forces(
 /// - `sigma` — surface tension coefficient (N/m)
 ///
 /// Returns `f64::INFINITY` when `sigma ≈ 0`.
-#[allow(dead_code)]
 pub fn weber_number(rho: f64, u: f64, l: f64, sigma: f64) -> f64 {
     if sigma.abs() < 1e-30 {
         return f64::INFINITY;
@@ -426,7 +413,6 @@ pub fn weber_number(rho: f64, u: f64, l: f64, sigma: f64) -> f64 {
 /// - `sigma` — surface tension coefficient (N/m)
 ///
 /// Returns `f64::INFINITY` when `sigma ≈ 0`.
-#[allow(dead_code)]
 pub fn capillary_number(mu: f64, u: f64, sigma: f64) -> f64 {
     if sigma.abs() < 1e-30 {
         return f64::INFINITY;
@@ -436,7 +422,6 @@ pub fn capillary_number(mu: f64, u: f64, sigma: f64) -> f64 {
 /// Ohnesorge number: ratio of viscous to inertial and surface tension forces.
 ///
 /// `Oh = μ / sqrt(ρ σ L)`
-#[allow(dead_code)]
 pub fn ohnesorge_number(mu: f64, rho: f64, sigma: f64, l: f64) -> f64 {
     let denom = (rho * sigma * l).sqrt();
     if denom < 1e-30 {
@@ -447,7 +432,6 @@ pub fn ohnesorge_number(mu: f64, rho: f64, sigma: f64, l: f64) -> f64 {
 /// Bond number (Eötvös number): ratio of gravitational to surface tension forces.
 ///
 /// `Bo = ρ g L² / σ`
-#[allow(dead_code)]
 pub fn bond_number(rho: f64, g: f64, l: f64, sigma: f64) -> f64 {
     if sigma.abs() < 1e-30 {
         return f64::INFINITY;
@@ -460,7 +444,6 @@ pub fn bond_number(rho: f64, g: f64, l: f64, sigma: f64) -> f64 {
 ///
 /// For a sphere: `R₁ = R₂ = R` → `ΔP = 2σ/R`.
 /// For a cylinder: `R₁ = R`, `R₂ = ∞` → `ΔP = σ/R`.
-#[allow(dead_code)]
 pub fn young_laplace_pressure(sigma: f64, r1: f64, r2: f64) -> f64 {
     let k1 = if r1.abs() > 1e-30 { 1.0 / r1 } else { 0.0 };
     let k2 = if r2.abs() > 1e-30 { 1.0 / r2 } else { 0.0 };
@@ -472,14 +455,12 @@ pub fn young_laplace_pressure(sigma: f64, r1: f64, r2: f64) -> f64 {
 /// is smaller than a threshold (typically on the order of the molecular scale).
 ///
 /// `gap = center_distance - r1 - r2`
-#[allow(dead_code)]
 pub fn should_coalesce(_r1: f64, _r2: f64, gap: f64, threshold: f64) -> bool {
     gap < threshold
 }
 /// Compute the radius of the merged droplet (volume conservation).
 ///
 /// `R_merged = (R1^3 + R2^3)^(1/3)`
-#[allow(dead_code)]
 pub fn coalescence_merged_radius(r1: f64, r2: f64) -> f64 {
     (r1.powi(3) + r2.powi(3)).cbrt()
 }
@@ -488,7 +469,6 @@ pub fn coalescence_merged_radius(r1: f64, r2: f64) -> f64 {
 /// The Laplace pressure across a spherical interface: `ΔP = 2*sigma/R`.
 /// Two approaching droplets of radii r1, r2 have a net driving force:
 /// `F_coalesce = 2*sigma*(1/r1 + 1/r2) * A_neck`
-#[allow(dead_code)]
 pub fn coalescence_driving_force(sigma: f64, r1: f64, r2: f64, neck_area: f64) -> f64 {
     if r1 < 1e-15 || r2 < 1e-15 {
         return 0.0;

@@ -1,8 +1,6 @@
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
-#![allow(clippy::needless_range_loop)]
-
 use oxiphysics_articulated::{
     body::RigidBody,
     crba::compute_mass_matrix_crba,
@@ -74,14 +72,14 @@ fn test_crba_vs_rnea_2link_arm() {
 fn test_crba_symmetric() {
     let (mut model, q) = make_2link_arm();
     let m = compute_mass_matrix_crba(&mut model, &q);
-    let n = m.len();
-    for i in 0..n {
-        for j in 0..n {
-            let diff = (m[i][j] - m[j][i]).abs();
+    let _n = m.len();
+    for (i, m_row) in m.iter().enumerate() {
+        for (j, &m_ij) in m_row.iter().enumerate() {
+            let diff = (m_ij - m[j][i]).abs();
             assert!(
                 diff < 1e-10,
                 "M not symmetric: M[{i}][{j}]={} M[{j}][{i}]={} diff={:.2e}",
-                m[i][j],
+                m_ij,
                 m[j][i],
                 diff
             );
@@ -99,8 +97,8 @@ fn test_crba_positive_definite() {
     for i in 0..n {
         for j in 0..=i {
             let mut sum = l[i][j];
-            for k in 0..j {
-                sum -= l[i][k] * l[j][k];
+            for (k, &l_jk) in l[j][..j].iter().enumerate() {
+                sum -= l[i][k] * l_jk;
             }
             if i == j {
                 assert!(

@@ -9,8 +9,6 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::KAPITZA_R0;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::KapitzaResistance;
 
 impl Default for KapitzaResistance {

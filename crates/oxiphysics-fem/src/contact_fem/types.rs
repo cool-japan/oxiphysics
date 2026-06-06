@@ -2,15 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// Mortar contact element for FEM — uses L2 projection of contact tractions.
 ///
 /// The mortar method avoids locking and provides smooth stress fields.
-#[allow(dead_code)]
 pub struct MortarContactElement {
     /// Number of slave-side quadrature points.
     pub n_quad_pts: usize,
@@ -22,7 +17,6 @@ impl MortarContactElement {
     ///
     /// Integrates the gap function weighted by shape functions using
     /// Gaussian quadrature (simplified 1D version).
-    #[allow(dead_code)]
     pub fn mortar_gap_integral(
         &self,
         slave_a: [f64; 3],
@@ -63,7 +57,6 @@ impl MortarContactElement {
     /// Mortar constraint residual for a contact pair.
     ///
     /// R = penalty * integral(gap * N_I dS) for each slave node I.
-    #[allow(dead_code)]
     pub fn constraint_residual(
         &self,
         slave_a: [f64; 3],
@@ -77,7 +70,6 @@ impl MortarContactElement {
     }
 }
 /// Stores candidate contact node pairs found by a proximity search.
-#[allow(dead_code)]
 pub struct ContactSearch {
     /// Pairs of node indices `(i_a, i_b)` that are within the search cutoff.
     pub candidate_pairs: Vec<(usize, usize)>,
@@ -86,7 +78,6 @@ impl ContactSearch {
     /// Find all node pairs from sets A and B whose distance is within `cutoff`.
     ///
     /// Complexity is O(|A| x |B|); suitable for small to medium meshes.
-    #[allow(dead_code)]
     pub fn brute_force_search(nodes_a: &[[f64; 3]], nodes_b: &[[f64; 3]], cutoff: f64) -> Self {
         let mut pairs = Vec::new();
         for (i, a) in nodes_a.iter().enumerate() {
@@ -105,13 +96,11 @@ impl ContactSearch {
         }
     }
     /// Return the number of candidate contact pairs.
-    #[allow(dead_code)]
     pub fn pair_count(&self) -> usize {
         self.candidate_pairs.len()
     }
 }
 /// Penalty method for contact enforcement.
-#[allow(dead_code)]
 pub struct PenaltyContact {
     /// Penalty stiffness `k` (N/m).
     pub stiffness: f64,
@@ -120,7 +109,6 @@ pub struct PenaltyContact {
 }
 impl PenaltyContact {
     /// Create a new [`PenaltyContact`].
-    #[allow(dead_code)]
     pub fn new(stiffness: f64, friction: f64) -> Self {
         Self {
             stiffness,
@@ -128,18 +116,15 @@ impl PenaltyContact {
         }
     }
     /// Compute the normal contact force for the given gap.
-    #[allow(dead_code)]
     pub fn normal_force(&self, gap: f64) -> f64 {
         self.stiffness * (-gap).max(0.0)
     }
     /// Compute the tangential friction force using regularized Coulomb law.
-    #[allow(dead_code)]
     pub fn friction_force(&self, f_n: f64, sliding_vel: f64) -> f64 {
         const EPSILON: f64 = 1e-6;
         self.friction_coeff * f_n * (sliding_vel / EPSILON).tanh()
     }
     /// Compute both contact force components: `(normal_force, tangential_force)`.
-    #[allow(dead_code)]
     pub fn contact_residual(&self, gap: f64, sliding_vel: f64) -> (f64, f64) {
         let f_n = self.normal_force(gap);
         let f_t = self.friction_force(f_n, sliding_vel);
@@ -147,7 +132,6 @@ impl PenaltyContact {
     }
 }
 /// Augmented Lagrangian contact formulation.
-#[allow(dead_code)]
 pub struct AugmentedLagrangianContact {
     /// Penalty parameter `p`.
     pub penalty: f64,
@@ -158,7 +142,6 @@ pub struct AugmentedLagrangianContact {
 }
 impl AugmentedLagrangianContact {
     /// Create a new [`AugmentedLagrangianContact`] with zero multipliers.
-    #[allow(dead_code)]
     pub fn new(penalty: f64) -> Self {
         Self {
             penalty,
@@ -167,7 +150,6 @@ impl AugmentedLagrangianContact {
         }
     }
     /// Update Lagrange multipliers from current gap and sliding displacement.
-    #[allow(dead_code)]
     pub fn update_multipliers(&mut self, gap: f64, sliding: f64, friction_coeff: f64) {
         self.lambda_n += self.penalty * gap.min(0.0);
         let trial = self.lambda_t + self.penalty * sliding;
@@ -175,13 +157,11 @@ impl AugmentedLagrangianContact {
         self.lambda_t = trial.clamp(-limit, limit);
     }
     /// Evaluate the augmented contact force for the current gap.
-    #[allow(dead_code)]
     pub fn force(&self, gap: f64) -> f64 {
         self.lambda_n + self.penalty * gap.min(0.0)
     }
 }
 /// Axis-Aligned Bounding Box for contact detection acceleration.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Aabb {
     /// Minimum corner \[x, y, z\].
@@ -191,7 +171,6 @@ pub struct Aabb {
 }
 impl Aabb {
     /// Create an AABB from a set of points.
-    #[allow(dead_code)]
     pub fn from_points(points: &[[f64; 3]]) -> Self {
         if points.is_empty() {
             return Self {
@@ -214,7 +193,6 @@ impl Aabb {
         Self { min, max }
     }
     /// Expand the AABB by a margin in all directions.
-    #[allow(dead_code)]
     pub fn expand(&mut self, margin: f64) {
         for i in 0..3 {
             self.min[i] -= margin;
@@ -222,7 +200,6 @@ impl Aabb {
         }
     }
     /// Check if two AABBs overlap.
-    #[allow(dead_code)]
     pub fn overlaps(&self, other: &Aabb) -> bool {
         for i in 0..3 {
             if self.max[i] < other.min[i] || self.min[i] > other.max[i] {
@@ -232,17 +209,15 @@ impl Aabb {
         true
     }
     /// Check if a point is inside this AABB.
-    #[allow(dead_code)]
     pub fn contains_point(&self, point: [f64; 3]) -> bool {
-        for i in 0..3 {
-            if point[i] < self.min[i] || point[i] > self.max[i] {
+        for (i, &pt) in point.iter().enumerate() {
+            if pt < self.min[i] || pt > self.max[i] {
                 return false;
             }
         }
         true
     }
     /// Compute the volume of the AABB.
-    #[allow(dead_code)]
     pub fn volume(&self) -> f64 {
         let mut vol = 1.0;
         for i in 0..3 {
@@ -252,7 +227,6 @@ impl Aabb {
     }
 }
 /// Accelerated contact search using AABB-based broad phase.
-#[allow(dead_code)]
 pub struct AcceleratedContactSearch;
 impl AcceleratedContactSearch {
     /// Broad-phase contact detection using AABB overlap test.
@@ -261,7 +235,6 @@ impl AcceleratedContactSearch {
     /// whose AABBs overlap.
     ///
     /// Returns indices of element pairs that may be in contact.
-    #[allow(dead_code)]
     pub fn aabb_broad_phase(aabbs_a: &[Aabb], aabbs_b: &[Aabb]) -> Vec<(usize, usize)> {
         let mut candidate_pairs = Vec::new();
         for (i, a) in aabbs_a.iter().enumerate() {
@@ -277,7 +250,6 @@ impl AcceleratedContactSearch {
     ///
     /// Assigns nodes to spatial buckets and only tests node pairs
     /// within the same or adjacent buckets.
-    #[allow(dead_code)]
     pub fn bucket_search(
         nodes_a: &[[f64; 3]],
         nodes_b: &[[f64; 3]],
@@ -324,7 +296,6 @@ impl AcceleratedContactSearch {
 ///
 /// Maps a slave node onto a master surface described by two end nodes,
 /// computes gap function, normal, and penalty forces.
-#[allow(dead_code)]
 pub struct NodeToSegmentElement {
     /// Penalty stiffness for normal contact.
     pub penalty_normal: f64,
@@ -335,7 +306,6 @@ pub struct NodeToSegmentElement {
 }
 impl NodeToSegmentElement {
     /// Create a new node-to-segment element.
-    #[allow(dead_code)]
     pub fn new(penalty_normal: f64, penalty_tangential: f64, friction_coeff: f64) -> Self {
         Self {
             penalty_normal,
@@ -347,7 +317,6 @@ impl NodeToSegmentElement {
     ///
     /// Positive gap → slave is outside (no contact).
     /// Negative gap → penetration.
-    #[allow(dead_code)]
     pub fn gap(
         slave_pos: [f64; 3],
         master_a: [f64; 3],
@@ -363,7 +332,6 @@ impl NodeToSegmentElement {
         d[0] * surface_normal[0] + d[1] * surface_normal[1] + d[2] * surface_normal[2]
     }
     /// Compute nodal contact force vector for the slave node (penalty method).
-    #[allow(dead_code)]
     pub fn penalty_force(
         &self,
         slave_pos: [f64; 3],
@@ -383,7 +351,6 @@ impl NodeToSegmentElement {
     ///
     /// For segment \[a, b\] and closest point at parameter t ∈ \[0,1\]:
     ///   N_a = 1 - t, N_b = t.
-    #[allow(dead_code)]
     pub fn shape_functions(
         slave_pos: [f64; 3],
         master_a: [f64; 3],
@@ -408,7 +375,6 @@ impl NodeToSegmentElement {
         [1.0 - t, t]
     }
     /// Compute the 3x3 penalty contact stiffness matrix for slave node DOFs.
-    #[allow(dead_code)]
     pub fn contact_stiffness_matrix(
         &self,
         surface_normal: [f64; 3],
@@ -428,14 +394,12 @@ impl NodeToSegmentElement {
     }
 }
 /// Recover contact stress (pressure and shear) from nodal gap and forces.
-#[allow(dead_code)]
 pub struct ContactStressRecovery {
     /// Element area (m²) for stress recovery.
     pub element_area: f64,
 }
 impl ContactStressRecovery {
     /// Normal contact pressure from nodal force and element area.
-    #[allow(dead_code)]
     pub fn normal_pressure(&self, normal_force: f64) -> f64 {
         if self.element_area < 1e-30 {
             return 0.0;
@@ -443,7 +407,6 @@ impl ContactStressRecovery {
         normal_force / self.element_area
     }
     /// Shear stress from tangential force and element area.
-    #[allow(dead_code)]
     pub fn shear_stress(&self, tangential_force: f64) -> f64 {
         if self.element_area < 1e-30 {
             return 0.0;
@@ -451,14 +414,12 @@ impl ContactStressRecovery {
         tangential_force / self.element_area
     }
     /// Von Mises equivalent contact stress.
-    #[allow(dead_code)]
     pub fn von_mises_contact_stress(&self, normal_force: f64, tangential_force: f64) -> f64 {
         let sigma_n = self.normal_pressure(normal_force);
         let tau = self.shear_stress(tangential_force);
         (sigma_n * sigma_n + 3.0 * tau * tau).sqrt()
     }
     /// Maximum shear stress on contact interface.
-    #[allow(dead_code)]
     pub fn max_shear_stress(&self, normal_force: f64, tangential_force: f64) -> f64 {
         let sigma_n = self.normal_pressure(normal_force);
         let tau = self.shear_stress(tangential_force);
@@ -467,7 +428,6 @@ impl ContactStressRecovery {
     /// Compute nodal stress vector from element-level contact forces.
     ///
     /// Returns \[sigma_x, sigma_y, sigma_z\] using normal direction weighting.
-    #[allow(dead_code)]
     pub fn nodal_stress_vector(&self, normal_force: f64, normal_dir: [f64; 3]) -> [f64; 3] {
         let p = self.normal_pressure(normal_force);
         [p * normal_dir[0], p * normal_dir[1], p * normal_dir[2]]
@@ -477,7 +437,6 @@ impl ContactStressRecovery {
 ///
 /// For tied contact, slave nodes are constrained to follow the master surface
 /// (no relative motion allowed).
-#[allow(dead_code)]
 pub struct TiedContact {
     /// Pairs of (slave_node_index, master_node_index) that are tied.
     pub tied_pairs: Vec<(usize, usize)>,
@@ -486,7 +445,6 @@ pub struct TiedContact {
 }
 impl TiedContact {
     /// Create a new tied contact from node pairs.
-    #[allow(dead_code)]
     pub fn new(pairs: Vec<(usize, usize)>, penalty: f64) -> Self {
         Self {
             tied_pairs: pairs,
@@ -496,7 +454,6 @@ impl TiedContact {
     /// Compute the tied contact force for a given pair.
     ///
     /// Force = penalty * (u_slave - u_master) applied to both nodes.
-    #[allow(dead_code)]
     pub fn tied_force(&self, slave_disp: [f64; 3], master_disp: [f64; 3]) -> ([f64; 3], [f64; 3]) {
         let mut f_slave = [0.0; 3];
         let mut f_master = [0.0; 3];
@@ -510,7 +467,6 @@ impl TiedContact {
     /// Compute the tied contact stiffness contribution for a pair.
     ///
     /// Returns the 6x6 stiffness matrix contribution (3 slave DOFs + 3 master DOFs).
-    #[allow(dead_code)]
     pub fn tied_stiffness(&self) -> [[f64; 6]; 6] {
         let k = self.penalty;
         let mut ke = [[0.0; 6]; 6];
@@ -524,7 +480,6 @@ impl TiedContact {
     }
 }
 /// Sliding contact with Coulomb friction and stick-slip transition.
-#[allow(dead_code)]
 pub struct SlidingContact {
     /// Normal penalty stiffness.
     pub normal_stiffness: f64,
@@ -537,7 +492,6 @@ pub struct SlidingContact {
 }
 impl SlidingContact {
     /// Create a new sliding contact formulation.
-    #[allow(dead_code)]
     pub fn new(k_n: f64, k_t: f64, mu: f64, n_pairs: usize) -> Self {
         Self {
             normal_stiffness: k_n,
@@ -549,7 +503,6 @@ impl SlidingContact {
     /// Compute the normal and tangential contact forces for a pair.
     ///
     /// Returns (force_normal_vec, force_tangential_vec, is_sliding).
-    #[allow(dead_code)]
     pub fn contact_forces(
         &self,
         gap: f64,
@@ -583,14 +536,12 @@ impl SlidingContact {
         (f_n_vec, f_t_vec, is_sliding)
     }
     /// Update accumulated slip for a contact pair.
-    #[allow(dead_code)]
     pub fn update_slip(&mut self, pair_idx: usize, slip_increment: [f64; 3]) {
-        for i in 0..3 {
-            self.accumulated_slip[pair_idx][i] += slip_increment[i];
+        for (i, &inc) in slip_increment.iter().enumerate() {
+            self.accumulated_slip[pair_idx][i] += inc;
         }
     }
     /// Reset accumulated slip for a pair (e.g., when contact is lost).
-    #[allow(dead_code)]
     pub fn reset_slip(&mut self, pair_idx: usize) {
         self.accumulated_slip[pair_idx] = [0.0; 3];
     }

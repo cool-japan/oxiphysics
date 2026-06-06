@@ -5,9 +5,6 @@
 //!
 //! Exposes per-step physics telemetry, rolling averages, and CSV export.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::telemetry::{PhysicsStats, TelemetrySession};
 use pyo3::prelude::*;
 
@@ -15,6 +12,112 @@ use pyo3::prelude::*;
 use numpy::{IntoPyArray, PyArray1};
 #[cfg(feature = "numpy-bridge")]
 use pyo3::Bound;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PySimulationTime
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Grouped simulation time parameters for a physics step.
+///
+/// Pass this to `PhysicsStats` to reduce its argument count.
+#[pyclass(name = "SimulationTime", from_py_object)]
+#[derive(Debug, Clone)]
+pub struct PySimulationTime {
+    /// Simulation step counter.
+    pub step: u64,
+    /// Simulation time step (seconds).
+    pub dt: f64,
+}
+
+#[pymethods]
+impl PySimulationTime {
+    /// Create `SimulationTime` from `step` and `dt`.
+    #[new]
+    pub fn new(step: u64, dt: f64) -> Self {
+        Self { step, dt }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PyPhysicsStats
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A snapshot of per-step physics metrics.
+///
+/// Pass this to `TelemetrySession.push()` instead of ten separate arguments.
+#[pyclass(name = "PhysicsStats", from_py_object)]
+#[derive(Clone)]
+pub struct PyPhysicsStats {
+    /// Simulation step counter.
+    pub step: u64,
+    /// Simulation time step (seconds).
+    pub dt: f64,
+    /// Number of active rigid bodies.
+    pub body_count: usize,
+    /// Number of sleeping bodies.
+    pub sleeping_count: usize,
+    /// Number of active contacts.
+    pub contact_count: usize,
+    /// Number of constraint islands.
+    pub island_count: usize,
+    /// Solver iterations performed.
+    pub solve_iterations: usize,
+    /// Broad-phase collision pairs.
+    pub broad_phase_pairs: usize,
+    /// Total kinetic energy (J).
+    pub kinetic_energy: f64,
+    /// Wall-clock time for the step (ms).
+    pub elapsed_ms: f64,
+}
+
+#[pymethods]
+impl PyPhysicsStats {
+    /// Create a new `PhysicsStats` snapshot.
+    #[new]
+    pub fn new(
+        time: PyRef<'_, PySimulationTime>,
+        body_count: usize,
+        sleeping_count: usize,
+        contact_count: usize,
+        island_count: usize,
+        solve_iterations: usize,
+        broad_phase_pairs: usize,
+        kinetic_energy: f64,
+        elapsed_ms: f64,
+    ) -> Self {
+        let step = time.step;
+        let dt = time.dt;
+        Self {
+            step,
+            dt,
+            body_count,
+            sleeping_count,
+            contact_count,
+            island_count,
+            solve_iterations,
+            broad_phase_pairs,
+            kinetic_energy,
+            elapsed_ms,
+        }
+    }
+}
+
+impl From<PyPhysicsStats> for PhysicsStats {
+    fn from(p: PyPhysicsStats) -> Self {
+        Self {
+            step: p.step,
+            dt: p.dt,
+            body_count: p.body_count,
+            sleeping_count: p.sleeping_count,
+            contact_count: p.contact_count,
+            island_count: p.island_count,
+            solve_iterations: p.solve_iterations,
+            broad_phase_pairs: p.broad_phase_pairs,
+            kinetic_energy: p.kinetic_energy,
+            elapsed_ms: p.elapsed_ms,
+        }
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PyTelemetrySession
@@ -38,36 +141,9 @@ impl PyTelemetrySession {
 
     /// Push a stats entry for one step.
     ///
-    /// Arguments: step, dt, body_count, sleeping_count, contact_count,
-    ///            island_count, solve_iterations, broad_phase_pairs,
-    ///            kinetic_energy, elapsed_ms.
-    #[allow(clippy::too_many_arguments)]
-    pub fn push(
-        &mut self,
-        step: u64,
-        dt: f64,
-        body_count: usize,
-        sleeping_count: usize,
-        contact_count: usize,
-        island_count: usize,
-        solve_iterations: usize,
-        broad_phase_pairs: usize,
-        kinetic_energy: f64,
-        elapsed_ms: f64,
-    ) {
-        let stats = PhysicsStats {
-            step,
-            dt,
-            body_count,
-            sleeping_count,
-            contact_count,
-            island_count,
-            solve_iterations,
-            broad_phase_pairs,
-            kinetic_energy,
-            elapsed_ms,
-        };
-        self.inner.push(stats);
+    /// Pass a `PhysicsStats` object (construct it first, then push).
+    pub fn push(&mut self, stats: PyPhysicsStats) {
+        self.inner.push(stats.into());
     }
 
     /// Number of recorded entries.
@@ -176,6 +252,8 @@ impl PyTelemetrySession {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PySimulationTime>()?;
+    m.add_class::<PyPhysicsStats>()?;
     m.add_class::<PyTelemetrySession>()?;
     Ok(())
 }
@@ -188,11 +266,37 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use super::*;
 
+    fn make_stats(step: u64, elapsed_ms: f64) -> PyPhysicsStats {
+        PyPhysicsStats {
+            step,
+            dt: 0.016,
+            body_count: 5,
+            sleeping_count: 0,
+            contact_count: 2,
+            island_count: 2,
+            solve_iterations: 4,
+            broad_phase_pairs: 10,
+            kinetic_energy: 50.0,
+            elapsed_ms,
+        }
+    }
+
     #[test]
     fn test_telemetry_session_instantiation() {
         let mut session = PyTelemetrySession::new(100);
         assert!(session.is_empty());
-        session.push(0, 0.016, 10, 2, 5, 3, 10, 20, 100.0, 1.5);
+        session.push(PyPhysicsStats {
+            step: 0,
+            dt: 0.016,
+            body_count: 10,
+            sleeping_count: 2,
+            contact_count: 5,
+            island_count: 3,
+            solve_iterations: 10,
+            broad_phase_pairs: 20,
+            kinetic_energy: 100.0,
+            elapsed_ms: 1.5,
+        });
         assert_eq!(session.len(), 1);
         session.clear();
         assert!(session.is_empty());
@@ -201,8 +305,8 @@ mod tests {
     #[test]
     fn test_telemetry_session_stats() {
         let mut session = PyTelemetrySession::new(100);
-        session.push(0, 0.016, 5, 0, 2, 2, 4, 10, 50.0, 1.0);
-        session.push(1, 0.016, 5, 0, 3, 2, 4, 11, 60.0, 2.0);
+        session.push(make_stats(0, 1.0));
+        session.push(make_stats(1, 2.0));
         let latest = session.latest_json().expect("latest_json failed");
         assert!(latest.is_some());
         let avg = session.average_json().expect("average_json failed");
@@ -215,7 +319,18 @@ mod tests {
     #[test]
     fn test_telemetry_csv_export() {
         let mut session = PyTelemetrySession::new(10);
-        session.push(0, 0.016, 3, 0, 1, 1, 2, 5, 10.0, 1.0);
+        session.push(PyPhysicsStats {
+            step: 0,
+            dt: 0.016,
+            body_count: 3,
+            sleeping_count: 0,
+            contact_count: 1,
+            island_count: 1,
+            solve_iterations: 2,
+            broad_phase_pairs: 5,
+            kinetic_energy: 10.0,
+            elapsed_ms: 1.0,
+        });
         let csv = session.to_csv();
         assert!(csv.contains("step") || csv.contains("0"));
     }

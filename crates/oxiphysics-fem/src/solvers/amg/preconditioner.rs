@@ -3,8 +3,6 @@
 
 //! Preconditioner trait and AMG-based preconditioner.
 
-#![allow(dead_code)]
-
 use crate::parallel_solver::ParallelPcgSolver;
 use crate::solvers::amg::cycle::{AmgHierarchy, CycleKind, v_cycle, w_cycle};
 

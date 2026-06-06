@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -175,8 +174,7 @@ impl D3q19Simulation {
             for y in 0..ny {
                 for x in 0..nx {
                     let dst = (x + y * nx + z * nx * ny) * N_DIRS;
-                    #[allow(clippy::manual_memcpy)]
-                    for i in 0..N_DIRS {
+                    for (i, cell) in self.f[dst..dst + N_DIRS].iter_mut().enumerate() {
                         let src_x =
                             ((x as i64 - D3Q19_EX[i] as i64).rem_euclid(nx as i64)) as usize;
                         let src_y =
@@ -184,7 +182,7 @@ impl D3q19Simulation {
                         let src_z =
                             ((z as i64 - D3Q19_EZ[i] as i64).rem_euclid(nz as i64)) as usize;
                         let src = (src_x + src_y * nx + src_z * nx * ny) * N_DIRS;
-                        self.f[dst + i] = f_old[src + i];
+                        *cell = f_old[src + i];
                     }
                 }
             }
@@ -205,9 +203,8 @@ impl D3q19Simulation {
             let base = k * N_DIRS;
             // Swap each direction with its opposite.
             // Iterate over pairs (i < opp) to avoid double-swap.
-            for i in 1..N_DIRS {
-                let opp = D3Q19_OPP[i];
-                if opp > i {
+            for (i, opp) in D3Q19_OPP.iter().enumerate().skip(1) {
+                if *opp > i {
                     self.f.swap(base + i, base + opp);
                 }
             }
@@ -327,7 +324,6 @@ impl D3q19Simulation {
     /// The relaxation rates `s` correspond to the 19 moments in order.
     /// Typically s\[0\]=s\[3\]=s\[5\]=0 (conserved), others in (0,2).
     /// Uses a simplified D3Q19 moment-space transformation.
-    #[allow(clippy::too_many_arguments)]
     pub fn collide_mrt(&mut self, s: &[f64; 19]) {
         let n = self.nx * self.ny * self.nz;
         for k in 0..n {
@@ -340,9 +336,9 @@ impl D3q19Simulation {
             // Compute equilibrium and relax each distribution using
             // the per-direction effective relaxation. This is a simplified
             // approach where s[i] maps to direction i.
-            for i in 0..N_DIRS {
+            for (i, s_i) in s.iter().enumerate() {
                 let feq = Self::equilibrium(rho, u, i);
-                self.f[base + i] -= s[i] * (self.f[base + i] - feq);
+                self.f[base + i] -= s_i * (self.f[base + i] - feq);
             }
         }
     }
@@ -404,9 +400,9 @@ impl D3q19Simulation {
                 }
             }
         }
-        for a in 0..3 {
-            for b in 0..3 {
-                pi_sq += pi[a][b] * pi[a][b];
+        for pi_row in &pi {
+            for pi_ab in pi_row {
+                pi_sq += pi_ab * pi_ab;
             }
         }
         let rho_safe = if rho.abs() > 1e-15 { rho } else { 1.0 };
@@ -520,9 +516,9 @@ mod tests {
     fn test_d3q19_equilibrium_zero_velocity() {
         let rho = 1.5_f64;
         let u = [0.0_f64; 3];
-        for i in 0..N_DIRS {
+        for (i, &w_i) in D3Q19_WEIGHTS.iter().enumerate() {
             let feq = D3q19Simulation::equilibrium(rho, u, i);
-            let expected = D3Q19_WEIGHTS[i] * rho;
+            let expected = w_i * rho;
             assert!(
                 (feq - expected).abs() < 1e-14,
                 "feq[{i}] = {feq}, expected {expected}"
@@ -819,8 +815,8 @@ impl D3q19Simulation {
             let base = k * N_DIRS;
 
             // Compute symmetric feq+ and antisymmetric feq-
-            for i in 0..N_DIRS {
-                let opp = D3Q19_OPP[i];
+            for (i, opp) in D3Q19_OPP.iter().enumerate() {
+                let opp = *opp;
                 let feq_i = Self::equilibrium(rho, u, i);
                 let feq_opp = Self::equilibrium(rho, u, opp);
 
@@ -892,11 +888,9 @@ impl D3q19Simulation {
         let mut h = 0.0_f64;
         for k in 0..n {
             let base = k * N_DIRS;
-            for i in 0..N_DIRS {
-                let fi = self.f[base + i];
-                let wi = D3Q19_WEIGHTS[i];
-                if fi > 1e-30 && wi > 1e-30 {
-                    h += fi * (fi / wi).ln();
+            for (fi, wi) in self.f[base..base + N_DIRS].iter().zip(D3Q19_WEIGHTS.iter()) {
+                if *fi > 1e-30 && *wi > 1e-30 {
+                    h += fi * (*fi / wi).ln();
                 }
             }
         }
@@ -1008,7 +1002,6 @@ impl D3q19Simulation {
     /// For simplicity in this implementation, each distribution is relaxed
     /// toward its equilibrium with a moment-dependent relaxation rate derived
     /// from the diagonal of M^T * S * M applied to the BGK operator.
-    #[allow(clippy::too_many_arguments)]
     pub fn collide_mrt_full(&mut self, s: &[f64; 19]) {
         // This is an alias to the existing collide_mrt for now, but with validation
         assert_eq!(s.len(), 19, "Need exactly 19 relaxation rates");
@@ -1103,19 +1096,16 @@ impl D3q19Simulation {
     /// In BGK this is tied to the kinematic viscosity, but the ratio can be
     /// independently estimated.  This method returns the bulk viscosity
     /// implied by `tau`: `xi = (2/3) * (tau - 0.5) * cs^2`.
-    #[allow(dead_code)]
     pub fn bulk_viscosity(&self) -> f64 {
         (2.0 / 3.0) * (self.tau - 0.5) * CS2
     }
 
     /// Kinematic viscosity: `nu = cs^2 * (tau - 0.5)`.
-    #[allow(dead_code)]
     pub fn kinematic_viscosity(&self) -> f64 {
         CS2 * (self.tau - 0.5)
     }
 
     /// Reynolds number given a characteristic length `L` and velocity `U`.
-    #[allow(dead_code)]
     pub fn reynolds_number(&self, u_char: f64, l_char: f64) -> f64 {
         let nu = self.kinematic_viscosity();
         if nu.abs() < 1e-30 {
@@ -1126,7 +1116,6 @@ impl D3q19Simulation {
     }
 
     /// Mach number for a given velocity magnitude (lattice units, cs=1/√3).
-    #[allow(dead_code)]
     pub fn mach_number(u_mag: f64) -> f64 {
         u_mag / CS2.sqrt()
     }
@@ -1665,8 +1654,7 @@ mod tests_extended {
     #[test]
     fn test_d3q19_opp_double_application_is_identity() {
         // D3Q19_OPP[D3Q19_OPP[i]] == i (involution property)
-        for i in 0..N_DIRS {
-            let j = D3Q19_OPP[i];
+        for (i, &j) in D3Q19_OPP.iter().enumerate() {
             assert_eq!(D3Q19_OPP[j], i, "OPP is not an involution at i={i}");
         }
     }

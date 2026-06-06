@@ -2,13 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::types::*;
 #[cfg(test)]
 mod tests_new_ch {
-    use super::*;
+    use crate::convex_hull::*;
     #[test]
     fn test_lower_hull_2d_square() {
         let pts = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];

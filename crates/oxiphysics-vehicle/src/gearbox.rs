@@ -6,8 +6,6 @@
 //! Provides a complete transmission model including gear ratios, shift logic,
 //! torque converter, clutch dynamics, friction losses, and dual-clutch shifting.
 
-#![allow(dead_code)]
-
 // ── Gearbox ───────────────────────────────────────────────────────────────────
 
 /// A multi-speed gearbox with gear ratios and mechanical efficiency maps.

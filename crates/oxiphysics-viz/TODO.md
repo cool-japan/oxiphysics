@@ -1,6 +1,6 @@
 # oxiphysics-viz TODO
 
-Last updated: 2026-05-17 | Version: 0.1.1
+Last updated: 2026-06-06 | Version: 0.1.2
 
 ## Phase 1: Foundation
 - [x] Define core types and traits
@@ -9,7 +9,7 @@ Last updated: 2026-05-17 | Version: 0.1.1
 
 ## Phase 2: Core Implementation
 - [x] Implement primary algorithms (rasterizer, post-processing, mesh gen)
-- [x] Add integration tests (4,072 tests passing)
+- [x] Add integration tests (4,114 tests passing)
 - [x] Performance benchmarks
 
 ## Phase 3: Polish

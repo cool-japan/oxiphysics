@@ -20,8 +20,6 @@
 //! The local beam axis is along x; y and z are the two principal bending axes.
 //! All stiffness matrices are expressed in local coordinates.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ============================================================================
@@ -51,7 +49,6 @@ pub const BEAM2D_NDOF: usize = 6;
 // ============================================================================
 
 /// Geometric and material cross-section properties for a beam.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct CrossSection {
     /// Cross-sectional area A \[m²\].
@@ -173,7 +170,6 @@ impl CrossSection {
 /// # Arguments
 /// * `cs` – cross-section properties
 /// * `le` – element length L \[m\]
-#[allow(dead_code)]
 pub fn euler_bernoulli_stiffness_2d(cs: &CrossSection, le: f64) -> [f64; 36] {
     let ea = cs.axial_stiffness();
     let ei = cs.bending_stiffness_z();
@@ -225,7 +221,6 @@ pub fn euler_bernoulli_stiffness_2d(cs: &CrossSection, le: f64) -> [f64; 36] {
 /// # Arguments
 /// * `xi` – natural coordinate ξ ∈ \[0, 1\]
 /// * `le` – element length L
-#[allow(dead_code)]
 pub fn hermite_shape_functions(xi: f64, le: f64) -> [f64; 4] {
     let x = xi * le;
     let l = le;
@@ -245,7 +240,6 @@ pub fn hermite_shape_functions(xi: f64, le: f64) -> [f64; 4] {
 /// # Arguments
 /// * `xi` – natural coordinate ξ ∈ \[0, 1\]
 /// * `le` – element length L
-#[allow(dead_code)]
 pub fn hermite_shape_derivatives(xi: f64, le: f64) -> [f64; 4] {
     let x = xi * le;
     let l = le;
@@ -265,7 +259,6 @@ pub fn hermite_shape_derivatives(xi: f64, le: f64) -> [f64; 4] {
 /// # Arguments
 /// * `q`  – distributed transverse load \[N/m\]
 /// * `le` – element length \[m\]
-#[allow(dead_code)]
 pub fn euler_bernoulli_uniform_load(q: f64, le: f64) -> [f64; 4] {
     let l = le;
     [
@@ -287,7 +280,6 @@ pub fn euler_bernoulli_uniform_load(q: f64, le: f64) -> [f64; 4] {
 /// # Arguments
 /// * `cs` – cross-section
 /// * `le` – element length
-#[allow(dead_code)]
 pub fn timoshenko_phi(cs: &CrossSection, le: f64) -> f64 {
     let ei = cs.bending_stiffness_z();
     let ks = cs.shear_stiffness_y();
@@ -305,7 +297,6 @@ pub fn timoshenko_phi(cs: &CrossSection, le: f64) -> f64 {
 /// # Arguments
 /// * `cs` – cross-section
 /// * `le` – element length
-#[allow(dead_code)]
 pub fn timoshenko_stiffness_2d(cs: &CrossSection, le: f64) -> [f64; 36] {
     let ea = cs.axial_stiffness();
     let ei = cs.bending_stiffness_z();
@@ -366,7 +357,6 @@ pub fn timoshenko_stiffness_2d(cs: &CrossSection, le: f64) -> [f64; 36] {
 /// # Arguments
 /// * `cs` – cross-section properties
 /// * `le` – element length
-#[allow(dead_code)]
 pub fn beam3d_stiffness(cs: &CrossSection, le: f64) -> [f64; 144] {
     let ea = cs.axial_stiffness();
     let eiz = cs.bending_stiffness_z();
@@ -435,7 +425,6 @@ pub fn beam3d_stiffness(cs: &CrossSection, le: f64) -> [f64; 144] {
 ///
 /// # Arguments
 /// * `k` – 12×12 matrix stored as \[f64; 144\]
-#[allow(dead_code)]
 pub fn beam3d_stiffness_symmetry_error(k: &[f64; 144]) -> f64 {
     let mut max_err = 0.0_f64;
     for i in 0..12 {
@@ -467,7 +456,6 @@ pub fn beam3d_stiffness_symmetry_error(k: &[f64; 144]) -> f64 {
 /// # Arguments
 /// * `axial_force` – axial compressive force N \[N\] (positive = compression)
 /// * `le`          – element length \[m\]
-#[allow(dead_code)]
 pub fn geometric_stiffness_2d(axial_force: f64, le: f64) -> [f64; 36] {
     let n = axial_force;
     let l = le;
@@ -505,7 +493,6 @@ pub fn geometric_stiffness_2d(axial_force: f64, le: f64) -> [f64; 36] {
 /// # Arguments
 /// * `cs` – cross-section
 /// * `le` – element length (= column height for a pin-pin column)
-#[allow(dead_code)]
 pub fn euler_buckling_load(cs: &CrossSection, le: f64) -> f64 {
     let ei = cs.bending_stiffness_z().min(cs.bending_stiffness_y());
     PI * PI * ei / (le * le)
@@ -514,7 +501,6 @@ pub fn euler_buckling_load(cs: &CrossSection, le: f64) -> f64 {
 /// Effective buckling length factor K for common end conditions.
 ///
 /// Returns K: 1.0 (pin-pin), 0.5 (fixed-fixed), 0.7 (fixed-pin), 2.0 (fixed-free).
-#[allow(dead_code)]
 pub enum BoundaryConditionType {
     /// Both ends pinned (K = 1.0).
     PinPin,
@@ -530,7 +516,6 @@ pub enum BoundaryConditionType {
 ///
 /// # Arguments
 /// * `bc` – boundary condition type
-#[allow(dead_code)]
 pub fn effective_length_factor(bc: &BoundaryConditionType) -> f64 {
     match bc {
         BoundaryConditionType::PinPin => 1.0,
@@ -548,7 +533,6 @@ pub fn effective_length_factor(bc: &BoundaryConditionType) -> f64 {
 ///
 /// The element accounts for membrane-bending coupling due to curvature.
 /// Stored in the local arc-length coordinate system.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct CurvedBeamElement {
     /// Cross-section properties.
@@ -616,7 +600,6 @@ impl CurvedBeamElement {
 // ============================================================================
 
 /// A single material layer in a composite beam cross-section.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct CompositeLayer {
     /// Width of the layer \[m\].
@@ -657,7 +640,6 @@ impl CompositeLayer {
 /// * `e_ref`     – reference Young's modulus \[Pa\]
 ///
 /// Returns (EA, EI) of the transformed section.
-#[allow(dead_code)]
 pub fn transformed_section_properties(layers: &[CompositeLayer], e_ref: f64) -> (f64, f64) {
     if layers.is_empty() || e_ref.abs() < f64::EPSILON {
         return (0.0, 0.0);
@@ -697,7 +679,6 @@ pub fn transformed_section_properties(layers: &[CompositeLayer], e_ref: f64) -> 
 /// # Arguments
 /// * `rho` – mass per unit length ρA \[kg/m\]
 /// * `le`  – element length \[m\]
-#[allow(dead_code)]
 pub fn consistent_mass_2d(rho_a: f64, le: f64) -> [f64; 36] {
     let l = le;
     let l2 = l * l;
@@ -742,7 +723,6 @@ pub fn consistent_mass_2d(rho_a: f64, le: f64) -> [f64; 36] {
 /// # Arguments
 /// * `rho_a` – mass per unit length \[kg/m\]
 /// * `le`    – element length \[m\]
-#[allow(dead_code)]
 pub fn lumped_mass_2d(rho_a: f64, le: f64) -> [f64; 36] {
     let half = rho_a * le / 2.0;
     let mut m = [0.0f64; 36];
@@ -765,7 +745,6 @@ pub fn lumped_mass_2d(rho_a: f64, le: f64) -> [f64; 36] {
 /// * `rho_a`  – mass per unit length \[kg/m\]
 /// * `length` – total beam length \[m\]
 /// * `n_modes`– number of modes to compute
-#[allow(dead_code)]
 pub fn simply_supported_natural_frequencies(
     cs: &CrossSection,
     rho_a: f64,
@@ -795,7 +774,6 @@ pub fn simply_supported_natural_frequencies(
 /// * `rho_a`  – mass per unit length \[kg/m\]
 /// * `length` – beam length \[m\]
 /// * `n_modes`– number of modes (≤ 3 analytically; higher modes use approx)
-#[allow(dead_code)]
 pub fn cantilever_natural_frequencies(
     cs: &CrossSection,
     rho_a: f64,
@@ -824,7 +802,6 @@ pub fn cantilever_natural_frequencies(
 // ============================================================================
 
 /// Plastic hinge moment-rotation relationship (bilinear model).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct PlasticHinge {
     /// Fully plastic moment capacity M_p \[N·m\].
@@ -901,7 +878,6 @@ impl PlasticHinge {
 /// Linearly tapered beam with properties that vary along the element.
 ///
 /// Properties vary as: P(x) = P1 + (P2 − P1) x/L
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct TaperedBeamElement {
     /// Cross-section at node 1 (x=0).
@@ -977,7 +953,6 @@ impl TaperedBeamElement {
 // ============================================================================
 
 /// Cable element modelling parameters.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct CableElement {
     /// Cross-sectional area \[m²\].
@@ -994,7 +969,6 @@ pub struct CableElement {
 
 impl CableElement {
     /// Create a new cable element.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         area: f64,
         elastic_modulus: f64,
@@ -1090,7 +1064,6 @@ impl CableElement {
 /// * `x`      – position \[m\]
 /// * `length` – beam length \[m\]
 /// * `n`      – mode number (1, 2, ...)
-#[allow(dead_code)]
 pub fn simply_supported_mode_shape(x: f64, length: f64, n: usize) -> f64 {
     let nf = n as f64;
     (nf * PI * x / length.max(f64::EPSILON)).sin()
@@ -1105,7 +1078,6 @@ pub fn simply_supported_mode_shape(x: f64, length: f64, n: usize) -> f64 {
 /// * `x`      – position \[m\]
 /// * `length` – beam length \[m\]
 /// * `n`      – mode number (1, 2, ...; limited to 3 analytically)
-#[allow(dead_code)]
 pub fn cantilever_mode_shape(x: f64, length: f64, n: usize) -> f64 {
     let beta_l_vals = [1.875_104, 4.694_091, 7.854_757, 10.995_541, 14.137_166];
     let sigma_vals = [0.734_096, 1.018_465, 0.999_225, 1.000_033, 0.999_999];
@@ -1129,7 +1101,6 @@ pub fn cantilever_mode_shape(x: f64, length: f64, n: usize) -> f64 {
 /// * `q`  – uniform load \[N/m\]
 /// * `le` – span \[m\]
 /// * `ei` – bending stiffness \[N·m²\]
-#[allow(dead_code)]
 pub fn deflection_ss_uniform_load(q: f64, le: f64, ei: f64) -> f64 {
     if ei.abs() < f64::EPSILON {
         return f64::MAX;
@@ -1145,7 +1116,6 @@ pub fn deflection_ss_uniform_load(q: f64, le: f64, ei: f64) -> f64 {
 /// * `p`  – point load at the free end \[N\]
 /// * `le` – beam length \[m\]
 /// * `ei` – bending stiffness \[N·m²\]
-#[allow(dead_code)]
 pub fn deflection_cantilever_tip_load(p: f64, le: f64, ei: f64) -> f64 {
     if ei.abs() < f64::EPSILON {
         return f64::MAX;
@@ -1162,7 +1132,6 @@ pub fn deflection_cantilever_tip_load(p: f64, le: f64, ei: f64) -> f64 {
 /// * `le` – beam length \[m\]
 /// * `ei` – bending stiffness \[N·m²\]
 /// * `x`  – position along the beam \[m\]
-#[allow(dead_code)]
 pub fn deflection_cantilever_profile(p: f64, le: f64, ei: f64, x: f64) -> f64 {
     if ei.abs() < f64::EPSILON {
         return 0.0;
@@ -1182,7 +1151,6 @@ pub fn deflection_cantilever_profile(p: f64, le: f64, ei: f64, x: f64) -> f64 {
 /// * `q`  – distributed load \[N/m\]
 /// * `le` – span \[m\]
 /// * `x`  – position \[m\]
-#[allow(dead_code)]
 pub fn moment_ss_uniform_load(q: f64, le: f64, x: f64) -> f64 {
     0.5 * q * x * (le - x)
 }
@@ -1195,7 +1163,6 @@ pub fn moment_ss_uniform_load(q: f64, le: f64, x: f64) -> f64 {
 /// * `q`  – distributed load \[N/m\]
 /// * `le` – span \[m\]
 /// * `x`  – position \[m\]
-#[allow(dead_code)]
 pub fn shear_ss_uniform_load(q: f64, le: f64, x: f64) -> f64 {
     q * (le / 2.0 - x)
 }
@@ -1206,7 +1173,6 @@ pub fn shear_ss_uniform_load(q: f64, le: f64, x: f64) -> f64 {
 /// * `moment`    – bending moment \[N·m\]
 /// * `c`         – distance from neutral axis to extreme fibre \[m\]
 /// * `second_mom`– second moment of area I \[m⁴\]
-#[allow(dead_code)]
 pub fn bending_stress(moment: f64, c: f64, second_mom: f64) -> f64 {
     if second_mom.abs() < f64::EPSILON {
         return 0.0;

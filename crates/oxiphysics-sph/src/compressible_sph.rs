@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -35,12 +34,12 @@
 //!   using interparticle contact algorithms. *J. Comput. Phys.*, 180, 358–382.
 //! - Harlow, F.H. & Amsden, A.A. (1971). *Fluid Dynamics*. LANL Monograph.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ============================================================================
 // Math helpers
 // ============================================================================
+
+/// Snapshot tuple for per-particle thermodynamic state used in energy_update.
+type ParticleSnap = (f64, f64, [f64; 3], [f64; 3], f64);
 
 #[inline]
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -214,20 +213,21 @@ impl CompressibleSph {
     ///
     /// ρ_i = Σ_j m_j · W(|x_i - x_j|, h)
     pub fn density_update(&mut self) {
-        let n = self.particles.len();
+        let _n = self.particles.len();
         let h = self.h;
-        let mut new_density = vec![0.0_f64; n];
-        for i in 0..n {
-            let mut rho = 0.0;
-            for j in 0..n {
-                let r = len3(sub3(self.particles[i].pos, self.particles[j].pos));
-                let w = cubic_spline_kernel(r, h);
-                rho += self.particles[j].mass * w;
-            }
-            new_density[i] = rho.max(1e-10);
-        }
-        for i in 0..n {
-            self.particles[i].density = new_density[i];
+        let positions: Vec<[f64; 3]> = self.particles.iter().map(|p| p.pos).collect();
+        let masses: Vec<f64> = self.particles.iter().map(|p| p.mass).collect();
+        for (p_i, pos_i) in self.particles.iter_mut().zip(positions.iter()) {
+            let rho: f64 = positions
+                .iter()
+                .zip(masses.iter())
+                .map(|(pos_j, &mj)| {
+                    let r = len3(sub3(*pos_i, *pos_j));
+                    mj * cubic_spline_kernel(r, h)
+                })
+                .sum::<f64>()
+                .max(1e-10);
+            p_i.density = rho;
         }
     }
 
@@ -235,7 +235,7 @@ impl CompressibleSph {
     ///
     /// d**v**_i/dt = -Σ_j m_j (p_i/ρ_i² + p_j/ρ_j²) ∇W_ij
     pub fn momentum_update(&mut self) {
-        let n = self.particles.len();
+        let _n = self.particles.len();
         let h = self.h;
         // Snapshot current pressures / densities / positions
         let snap: Vec<(f64, f64, [f64; 3], f64)> = self
@@ -244,14 +244,13 @@ impl CompressibleSph {
             .map(|p| (p.pressure, p.density, p.pos, p.mass))
             .collect();
 
-        for i in 0..n {
+        for (i, p) in self.particles.iter_mut().enumerate() {
             let (pi, rhoi, xi, _) = snap[i];
             let mut acc = [0.0_f64; 3];
-            for j in 0..n {
+            for (j, &(pj, rhoj, xj, mj)) in snap.iter().enumerate() {
                 if i == j {
                     continue;
                 }
-                let (pj, rhoj, xj, mj) = snap[j];
                 let rij = sub3(xi, xj);
                 let r = len3(rij);
                 let dw = cubic_spline_kernel_grad(r, h);
@@ -262,7 +261,7 @@ impl CompressibleSph {
                 }
             }
             // Simple Euler update (dt = 1 for this helper; caller uses step())
-            self.particles[i].vel = add3(self.particles[i].vel, acc);
+            p.vel = add3(p.vel, acc);
         }
     }
 
@@ -270,25 +269,23 @@ impl CompressibleSph {
     ///
     /// de_i/dt = (p_i/ρ_i²) Σ_j m_j (**v**_i - **v**_j) · ∇W_ij
     pub fn energy_update(&mut self) {
-        let n = self.particles.len();
         let h = self.h;
-        let snap: Vec<(f64, f64, [f64; 3], [f64; 3], f64)> = self
+        let snap: Vec<ParticleSnap> = self
             .particles
             .iter()
             .map(|p| (p.pressure, p.density, p.pos, p.vel, p.mass))
             .collect();
 
-        for i in 0..n {
+        for (i, p) in self.particles.iter_mut().enumerate() {
             let (pi, rhoi, xi, vi, _) = snap[i];
             if rhoi.abs() < 1e-300 {
                 continue;
             }
             let mut de = 0.0;
-            for j in 0..n {
+            for (j, &(_pj, _rhoj, xj, vj, mj)) in snap.iter().enumerate() {
                 if i == j {
                     continue;
                 }
-                let (_pj, _rhoj, xj, vj, mj) = snap[j];
                 let rij = sub3(xi, xj);
                 let r = len3(rij);
                 let dw = cubic_spline_kernel_grad(r, h);
@@ -298,8 +295,8 @@ impl CompressibleSph {
                     de += mj * dot3(dv, dir) * dw;
                 }
             }
-            self.particles[i].energy += (pi / (rhoi * rhoi)) * de;
-            self.particles[i].energy = self.particles[i].energy.max(0.0);
+            p.energy += (pi / (rhoi * rhoi)) * de;
+            p.energy = p.energy.max(0.0);
         }
     }
 

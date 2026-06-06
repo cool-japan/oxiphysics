@@ -1,17 +1,12 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions_2::*;
-use std::collections::HashMap;
-
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{
     BOUNDARY_ENFORCE_WGSL, BROADPHASE_SORT_SHADER, INTEGRATE_WGSL, LBM_BGK_D2Q9_WGSL,
     LBM_STREAMING_SHADER, RIGID_INTEGRATE_SHADER, SPH_DENSITY_WGSL, SPH_FORCE_WGSL,
 };
+use std::collections::HashMap;
 
 /// Reflection data extracted from a (mock) SPIR-V module or WGSL source.
 #[derive(Debug, Clone)]

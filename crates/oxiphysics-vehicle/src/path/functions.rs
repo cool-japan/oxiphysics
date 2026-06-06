@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{CubicSplinePath, FrenetFrame, Path, Waypoint};
 
 /// Compute the curvature (1/m) at each waypoint using three-point finite differences.
@@ -247,7 +246,6 @@ pub fn cross_track_error(vehicle_pos: [f64; 3], path_pos: [f64; 3], path_heading
 /// 3. Limit by power: `v_power = P / (F = m * a_lat)`, simplified as max power
 ///    constraint `v ≤ P / (m * a_lat_g)`.
 /// 4. Integrate `dt = ds / v` over the path.
-#[allow(dead_code)]
 pub fn minimum_lap_time_estimate(
     path: &CubicSplinePath,
     max_lateral_g: f64,
@@ -309,7 +307,6 @@ pub fn minimum_lap_time_estimate(
 /// reference path.
 ///
 /// Returns `(mean_error, max_error, rms_error)` in metres.
-#[allow(dead_code)]
 pub fn cross_track_statistics(trajectory: &[[f64; 2]], reference: &[[f64; 2]]) -> (f64, f64, f64) {
     if trajectory.is_empty() || reference.len() < 2 {
         return (0.0, 0.0, 0.0);
@@ -374,7 +371,6 @@ pub(super) fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 /// Inline 3-D vector length.
-#[allow(dead_code)]
 pub fn vec3_len(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
@@ -391,7 +387,6 @@ pub(super) fn vec3_norm(v: [f64; 3]) -> [f64; 3] {
 ///
 /// Returns a vector of cumulative arc-length values corresponding to each
 /// input point (same length as `pts`).
-#[allow(dead_code)]
 pub fn arc_length_parameter(pts: &[[f64; 3]]) -> Vec<f64> {
     let n = pts.len();
     if n == 0 {
@@ -410,7 +405,6 @@ pub fn arc_length_parameter(pts: &[[f64; 3]]) -> Vec<f64> {
 ///
 /// Linearly interpolates between the surrounding points.
 /// Clamps to the first/last point if `target_s` is out of range.
-#[allow(dead_code)]
 pub fn sample_polyline_at_arc_length(pts: &[[f64; 3]], target_s: f64) -> [f64; 3] {
     let n = pts.len();
     if n == 0 {
@@ -458,7 +452,6 @@ pub fn sample_polyline_at_arc_length(pts: &[[f64; 3]], target_s: f64) -> [f64; 3
 /// * `n_pts`       – number of output points
 ///
 /// Returns a `Vec` of 2-D points `[x, y]` starting at the origin.
-#[allow(dead_code)]
 pub fn clothoid_points(
     kappa_start: f64,
     a_sq: f64,
@@ -488,7 +481,6 @@ pub fn clothoid_points(
 /// Radius of curvature at arc-length `s` along a clothoid with parameter A².
 ///
 /// R(s) = A² / s  (tends to ∞ at s=0, decreases linearly).
-#[allow(dead_code)]
 pub fn clothoid_radius_at(a_sq: f64, s: f64) -> f64 {
     if s.abs() < 1e-15 {
         f64::INFINITY
@@ -500,7 +492,6 @@ pub fn clothoid_radius_at(a_sq: f64, s: f64) -> f64 {
 /// starting from a given parameter A².
 ///
 /// `s = A² / R`
-#[allow(dead_code)]
 pub fn clothoid_length_for_radius(a_sq: f64, target_radius: f64) -> f64 {
     if target_radius <= 0.0 {
         return 0.0;
@@ -510,7 +501,6 @@ pub fn clothoid_length_for_radius(a_sq: f64, target_radius: f64) -> f64 {
 /// Compute the signed heading error between two angles, wrapped to `(-π, π]`.
 ///
 /// Returns `desired_heading - actual_heading` normalised to `(-π, π]`.
-#[allow(dead_code)]
 pub fn heading_error_wrapped(actual: f64, desired: f64) -> f64 {
     let mut err = desired - actual;
     while err > std::f64::consts::PI {
@@ -534,7 +524,6 @@ pub fn heading_error_wrapped(actual: f64, desired: f64) -> f64 {
 /// `(cross_track_error_m, heading_error_rad)`
 /// CTE is positive when the vehicle is to the left of the path (in the
 /// path-normal frame).
-#[allow(dead_code)]
 pub fn frenet_errors(
     path: &CubicSplinePath,
     vehicle_pos: [f64; 3],
@@ -726,11 +715,11 @@ mod tests {
             })
             .collect();
         let k = compute_path_curvature(&pts);
-        for i in 5..n - 5 {
+        for (i, &ki) in k.iter().enumerate().take(n - 5).skip(5) {
             assert!(
-                approx_eq(k[i], 1.0 / r, 0.05 / r),
+                approx_eq(ki, 1.0 / r, 0.05 / r),
                 "curvature at {i}: got {}, expected {}",
-                k[i],
+                ki,
                 1.0 / r
             );
         }
@@ -746,11 +735,8 @@ mod tests {
             })
             .collect();
         let k = compute_signed_curvature(&pts);
-        for i in 5..n - 5 {
-            assert!(
-                k[i] > 0.0,
-                "CCW circle should have positive signed curvature"
-            );
+        for &ki in k.iter().take(n - 5).skip(5) {
+            assert!(ki > 0.0, "CCW circle should have positive signed curvature");
         }
     }
     #[test]

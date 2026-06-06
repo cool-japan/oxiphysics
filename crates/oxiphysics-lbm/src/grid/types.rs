@@ -2,24 +2,16 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[cfg(test)]
-#[cfg(test)]
-#[allow(unused_imports)]
-use super::functions_2::*;
 use crate::lattice::CS2;
 use crate::lattice::{
     D2Q9_VELOCITIES, D2Q9_WEIGHTS, bgk_d2q9, bounce_back_node_d2q9, equilibrium_d2q9,
     macros_from_d2q9, stream_d2q9_periodic,
 };
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{C9, C19, OPP9, W9, W19, equilibrium_2d};
 use super::grid_extended::{BoundaryNodeType, NodeFlag};
 
 /// Cell-based 3-D LBM grid for D3Q19.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CellGrid3D {
     /// Number of cells in x-direction.
@@ -31,7 +23,6 @@ pub struct CellGrid3D {
     /// Cells in row-major order: `cells[z * ny * nx + y * nx + x]`.
     pub cells: Vec<LbmCell3D>,
 }
-#[allow(dead_code)]
 impl CellGrid3D {
     /// Create a new 3-D grid initialised to equilibrium with uniform density `rho0`.
     pub fn new(nx: usize, ny: usize, nz: usize, rho0: f64) -> Self {
@@ -106,12 +97,12 @@ impl CellGrid3D {
             let mut mx = 0.0_f64;
             let mut my = 0.0_f64;
             let mut mz = 0.0_f64;
-            for a in 0..19 {
+            for (a, c19a) in C19.iter().enumerate() {
                 let fi = cell.f[a];
                 rho += fi;
-                mx += fi * C19[a][0] as f64;
-                my += fi * C19[a][1] as f64;
-                mz += fi * C19[a][2] as f64;
+                mx += fi * c19a[0] as f64;
+                my += fi * c19a[1] as f64;
+                mz += fi * c19a[2] as f64;
             }
             cell.rho = rho;
             if rho.abs() > 1e-15 {
@@ -145,7 +136,6 @@ impl CellGrid3D {
 /// - Periodic streaming
 /// - Bounce-back wall flags
 /// - Guo body-force scheme
-#[allow(dead_code)]
 pub struct CellularGrid2D {
     /// Width in cells.
     pub nx: usize,
@@ -160,7 +150,6 @@ pub struct CellularGrid2D {
 }
 impl CellularGrid2D {
     /// Create a grid initialised to rest equilibrium (ρ=1, u=0).
-    #[allow(dead_code)]
     pub fn new(nx: usize, ny: usize, omega: f64) -> Self {
         let n = nx * ny;
         let feq = equilibrium_d2q9(1.0, 0.0, 0.0);
@@ -174,29 +163,24 @@ impl CellularGrid2D {
     }
     /// Linear index for cell `(x, y)`.
     #[inline]
-    #[allow(dead_code)]
     pub fn idx(&self, x: usize, y: usize) -> usize {
         y * self.nx + x
     }
     /// Mark a cell as solid wall.
-    #[allow(dead_code)]
     pub fn set_wall(&mut self, x: usize, y: usize) {
         let i = y * self.nx + x;
         self.wall[i] = true;
     }
     /// Remove wall flag.
-    #[allow(dead_code)]
     pub fn clear_wall(&mut self, x: usize, y: usize) {
         let i = y * self.nx + x;
         self.wall[i] = false;
     }
     /// Compute total mass (sum of all populations).
-    #[allow(dead_code)]
     pub fn total_mass(&self) -> f64 {
         self.pop.iter().flat_map(|n| n.iter()).sum()
     }
     /// Compute total x-momentum.
-    #[allow(dead_code)]
     pub fn total_momentum_x(&self) -> f64 {
         let mut jx = 0.0f64;
         for (idx, node) in self.pop.iter().enumerate() {
@@ -209,7 +193,6 @@ impl CellularGrid2D {
         jx
     }
     /// Compute total kinetic energy (½ ρ u²).
-    #[allow(dead_code)]
     pub fn kinetic_energy(&self) -> f64 {
         let mut ke = 0.0f64;
         for node in &self.pop {
@@ -219,12 +202,10 @@ impl CellularGrid2D {
         ke
     }
     /// Get macroscopic variables at cell `(x, y)`.
-    #[allow(dead_code)]
     pub fn macros_at(&self, x: usize, y: usize) -> (f64, f64, f64) {
         macros_from_d2q9(&self.pop[self.idx(x, y)])
     }
     /// Apply BGK collision to all fluid cells.
-    #[allow(dead_code)]
     pub fn collide(&mut self) {
         for idx in 0..self.pop.len() {
             if !self.wall[idx] {
@@ -236,8 +217,6 @@ impl CellularGrid2D {
     /// Apply BGK collision with Guo body force to all fluid cells.
     ///
     /// Adds the Guo correction `F_i = w_i * (1 - 1/(2τ)) * (e_i - u + (e_i·u) e_i/cs²) · F / cs²`
-    #[allow(clippy::too_many_arguments)]
-    #[allow(dead_code)]
     pub fn collide_with_force(&mut self, fx: f64, fy: f64) {
         let tau = 1.0 / self.omega;
         let pre = 1.0 - 0.5 / tau;
@@ -260,12 +239,10 @@ impl CellularGrid2D {
         }
     }
     /// Apply periodic streaming.
-    #[allow(dead_code)]
     pub fn stream(&mut self) {
         stream_d2q9_periodic(&mut self.pop, self.nx, self.ny);
     }
     /// Apply half-way bounce-back to all wall cells.
-    #[allow(dead_code)]
     pub fn bounce_back(&mut self) {
         for idx in 0..self.pop.len() {
             if self.wall[idx] {
@@ -274,21 +251,18 @@ impl CellularGrid2D {
         }
     }
     /// Execute one full LBM step: collide → stream → bounce-back.
-    #[allow(dead_code)]
     pub fn step(&mut self) {
         self.collide();
         self.stream();
         self.bounce_back();
     }
     /// Execute one step with body force.
-    #[allow(dead_code)]
     pub fn step_with_force(&mut self, fx: f64, fy: f64) {
         self.collide_with_force(fx, fy);
         self.stream();
         self.bounce_back();
     }
     /// Extract x-velocity profile at column `x` (all y values).
-    #[allow(dead_code)]
     pub fn ux_profile(&self, x: usize) -> Vec<f64> {
         (0..self.ny)
             .map(|y| {
@@ -298,7 +272,6 @@ impl CellularGrid2D {
             .collect()
     }
     /// Return max velocity magnitude over all fluid cells.
-    #[allow(dead_code)]
     pub fn max_speed(&self) -> f64 {
         self.pop
             .iter()
@@ -311,7 +284,6 @@ impl CellularGrid2D {
             .fold(0.0f64, f64::max)
     }
     /// Initialise all fluid cells to equilibrium at given density and velocity.
-    #[allow(dead_code)]
     pub fn set_uniform_equilibrium(&mut self, rho: f64, ux: f64, uy: f64) {
         let feq = equilibrium_d2q9(rho, ux, uy);
         for (idx, node) in self.pop.iter_mut().enumerate() {
@@ -325,7 +297,6 @@ impl CellularGrid2D {
 /// collide-stream-BC stepping.
 ///
 /// Distribution storage: flat `f[idx * 9 + alpha]`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FlaggedGrid2D {
     /// Number of cells in x-direction.
@@ -339,7 +310,6 @@ pub struct FlaggedGrid2D {
     /// Per-node flags.
     pub flags: Vec<NodeFlag>,
 }
-#[allow(dead_code)]
 impl FlaggedGrid2D {
     /// Create a new flagged 2D grid initialised to equilibrium at rest.
     pub fn new(nx: usize, ny: usize, omega: f64, rho0: f64) -> Self {
@@ -410,16 +380,16 @@ impl FlaggedGrid2D {
             let mut rho = 0.0;
             let mut mx = 0.0;
             let mut my = 0.0;
-            for a in 0..9 {
+            for (a, c9a) in C9.iter().enumerate() {
                 let fi = self.f[base + a];
                 rho += fi;
-                mx += fi * C9[a][0] as f64;
-                my += fi * C9[a][1] as f64;
+                mx += fi * c9a[0] as f64;
+                my += fi * c9a[1] as f64;
             }
             let ux = if rho.abs() > 1e-15 { mx / rho } else { 0.0 };
             let uy = if rho.abs() > 1e-15 { my / rho } else { 0.0 };
-            for a in 0..9 {
-                let feq = equilibrium_2d(W9[a], rho, ux, uy, C9[a][0] as f64, C9[a][1] as f64);
+            for (a, (c9a, &w9a)) in C9.iter().zip(W9.iter()).enumerate() {
+                let feq = equilibrium_2d(w9a, rho, ux, uy, c9a[0] as f64, c9a[1] as f64);
                 self.f[base + a] -= omega * (self.f[base + a] - feq);
             }
         }
@@ -432,9 +402,9 @@ impl FlaggedGrid2D {
         for y in 0..ny {
             for x in 0..nx {
                 let dst = (y * nx + x) * 9;
-                for a in 0..9 {
-                    let sx = (x as isize - C9[a][0] as isize).rem_euclid(nx as isize) as usize;
-                    let sy = (y as isize - C9[a][1] as isize).rem_euclid(ny as isize) as usize;
+                for (a, c9a) in C9.iter().enumerate() {
+                    let sx = (x as isize - c9a[0] as isize).rem_euclid(nx as isize) as usize;
+                    let sy = (y as isize - c9a[1] as isize).rem_euclid(ny as isize) as usize;
                     let src = (sy * nx + sx) * 9 + a;
                     self.f[dst + a] = f_old[src];
                 }
@@ -497,11 +467,11 @@ impl FlaggedGrid2D {
         let mut rho = 0.0;
         let mut mx = 0.0;
         let mut my = 0.0;
-        for a in 0..9 {
+        for (a, c9a) in C9.iter().enumerate() {
             let fi = self.f[base + a];
             rho += fi;
-            mx += fi * C9[a][0] as f64;
-            my += fi * C9[a][1] as f64;
+            mx += fi * c9a[0] as f64;
+            my += fi * c9a[1] as f64;
         }
         if rho.abs() > 1e-15 {
             [mx / rho, my / rho]
@@ -523,7 +493,6 @@ impl FlaggedGrid2D {
     }
 }
 /// A single 2-D LBM cell holding D2Q9 distributions and macroscopic fields.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct LbmCell2D {
     /// D2Q9 distribution functions.
@@ -564,7 +533,6 @@ impl LbmCell2D {
 ///
 /// Stores one `LbmCell2D` per lattice node.  The `step` method performs a
 /// complete BGK collision + pull-streaming + macroscopic update.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CellGrid2D {
     /// Number of cells in x-direction.
@@ -574,7 +542,6 @@ pub struct CellGrid2D {
     /// Cells in row-major order: `cells[y * nx + x]`.
     pub cells: Vec<LbmCell2D>,
 }
-#[allow(dead_code)]
 impl CellGrid2D {
     /// Create a new grid initialised to equilibrium with uniform density `rho0`.
     pub fn new(nx: usize, ny: usize, rho0: f64) -> Self {
@@ -641,11 +608,11 @@ impl CellGrid2D {
             let mut rho = 0.0_f64;
             let mut mx = 0.0_f64;
             let mut my = 0.0_f64;
-            for a in 0..9 {
+            for (a, c9a) in C9.iter().enumerate() {
                 let fi = cell.f[a];
                 rho += fi;
-                mx += fi * C9[a][0] as f64;
-                my += fi * C9[a][1] as f64;
+                mx += fi * c9a[0] as f64;
+                my += fi * c9a[1] as f64;
             }
             cell.rho = rho;
             if rho.abs() > 1e-15 {
@@ -719,7 +686,6 @@ impl CellGrid2D {
 /// Convenience wrapper for a 2D channel flow driven by a uniform body force.
 ///
 /// The channel has no-slip walls at y=0 and y=ny-1 and is periodic in x.
-#[allow(dead_code)]
 pub struct ChannelFlow2D {
     /// The underlying 2D cellular grid.
     pub grid: CellularGrid2D,
@@ -728,7 +694,6 @@ pub struct ChannelFlow2D {
 }
 impl ChannelFlow2D {
     /// Construct a channel with no-slip top and bottom walls.
-    #[allow(dead_code)]
     pub fn new(nx: usize, ny: usize, omega: f64, fx: f64) -> Self {
         let mut grid = CellularGrid2D::new(nx, ny, omega);
         for x in 0..nx {
@@ -738,12 +703,10 @@ impl ChannelFlow2D {
         Self { grid, fx }
     }
     /// Advance the channel by one LBM time step with body force.
-    #[allow(dead_code)]
     pub fn step(&mut self) {
         self.grid.step_with_force(self.fx, 0.0);
     }
     /// Compute mean x-velocity over interior cells.
-    #[allow(dead_code)]
     pub fn mean_ux(&self) -> f64 {
         let nx = self.grid.nx;
         let ny = self.grid.ny;
@@ -759,7 +722,6 @@ impl ChannelFlow2D {
         if count == 0 { 0.0 } else { sum / count as f64 }
     }
     /// Analytical Poiseuille centreline velocity: `u_max = fx * H² / (8 ν)`.
-    #[allow(dead_code)]
     pub fn poiseuille_umax(&self) -> f64 {
         let h = (self.grid.ny - 2) as f64;
         let nu = CS2 * (1.0 / self.grid.omega - 0.5);
@@ -767,7 +729,6 @@ impl ChannelFlow2D {
     }
 }
 /// A single 3-D LBM cell holding D3Q19 distributions and macroscopic fields.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct LbmCell3D {
     /// D3Q19 distribution functions.
@@ -798,7 +759,6 @@ impl LbmCell3D {
 /// pull-scheme streaming, and Zou-He inlet/outlet BCs.
 ///
 /// Distribution layout: flat `f2[cell_idx * 9 + alpha]`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LbmGrid2DFull {
     /// Number of cells in x-direction.
@@ -812,7 +772,6 @@ pub struct LbmGrid2DFull {
     /// Per-node boundary type.
     pub node_type: Vec<BoundaryNodeType>,
 }
-#[allow(dead_code)]
 impl LbmGrid2DFull {
     /// Create a new `LbmGrid2DFull` initialised to equilibrium at rest with `rho0`.
     pub fn new(nx: usize, ny: usize, omega: f64, rho0: f64) -> Self {
@@ -879,16 +838,16 @@ impl LbmGrid2DFull {
             let mut rho = 0.0_f64;
             let mut mx = 0.0_f64;
             let mut my = 0.0_f64;
-            for a in 0..9 {
+            for (a, c9a) in C9.iter().enumerate() {
                 let fi = self.f2[base + a];
                 rho += fi;
-                mx += fi * C9[a][0] as f64;
-                my += fi * C9[a][1] as f64;
+                mx += fi * c9a[0] as f64;
+                my += fi * c9a[1] as f64;
             }
             let ux = if rho.abs() > 1e-15 { mx / rho } else { 0.0 };
             let uy = if rho.abs() > 1e-15 { my / rho } else { 0.0 };
-            for a in 0..9 {
-                let feq = equilibrium_2d(W9[a], rho, ux, uy, C9[a][0] as f64, C9[a][1] as f64);
+            for (a, (c9a, &w9a)) in C9.iter().zip(W9.iter()).enumerate() {
+                let feq = equilibrium_2d(w9a, rho, ux, uy, c9a[0] as f64, c9a[1] as f64);
                 self.f2[base + a] -= omega * (self.f2[base + a] - feq);
             }
         }
@@ -960,11 +919,11 @@ impl LbmGrid2DFull {
         let mut rho = 0.0_f64;
         let mut mx = 0.0_f64;
         let mut my = 0.0_f64;
-        for a in 0..9 {
+        for (a, c9a) in C9.iter().enumerate() {
             let fi = self.f2[base + a];
             rho += fi;
-            mx += fi * C9[a][0] as f64;
-            my += fi * C9[a][1] as f64;
+            mx += fi * c9a[0] as f64;
+            my += fi * c9a[1] as f64;
         }
         if rho.abs() > 1e-15 {
             [mx / rho, my / rho]

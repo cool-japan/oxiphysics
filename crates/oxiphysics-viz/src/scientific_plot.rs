@@ -7,9 +7,6 @@
 //! series, layouts, and an SVG renderer.  All types are pure data — no
 //! windowing or GPU dependency is required.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // ColorScheme
 // ---------------------------------------------------------------------------
@@ -835,7 +832,6 @@ impl ScientificPlot {
 /// `data` is treated as a row-major `n×n` grid where `data[row*n+col].y` is
 /// the scalar value at grid cell `(row, col)`.  Marching-squares detects
 /// iso-level crossings; each crossing segment is emitted as a `<polyline>`.
-#[allow(clippy::too_many_arguments)]
 fn render_contour(
     data: &[DataPoint2D],
     color: &str,
@@ -936,7 +932,6 @@ fn render_contour(
 /// Same grid convention as [`render_contour`].  Cells are projected with
 /// `(col - row*0.5, row*0.5 + value*scale)` and emitted as `<polygon>`
 /// elements, sorted back-to-front (painter's algorithm).
-#[allow(clippy::too_many_arguments)]
 fn render_surface(
     data: &[DataPoint2D],
     color: &str,

@@ -16,7 +16,6 @@ use crate::particle::{SoftBody, SoftParticle};
 ///
 /// Compliance is the inverse of stiffness: higher compliance means softer.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub enum ConstraintKind {
     /// Perfectly rigid – zero compliance, enforced exactly.
     Rigid,
@@ -51,7 +50,6 @@ impl ConstraintKind {
     /// Convert the kind to an XPBD compliance value (α).
     ///
     /// Returns 0 for `Rigid` and `Collision` (hard constraints).
-    #[allow(dead_code)]
     pub fn compliance(&self) -> Real {
         match self {
             ConstraintKind::Rigid => 0.0,
@@ -138,7 +136,6 @@ impl XpbdSolver {
     }
 
     /// Create a solver with explicit sub-step and iteration counts.
-    #[allow(dead_code)]
     pub fn with_iterations(num_substeps: usize, num_iterations: usize) -> Self {
         Self {
             num_substeps,
@@ -148,7 +145,6 @@ impl XpbdSolver {
     }
 
     /// Wake the body up (reset sleep counter and state).
-    #[allow(dead_code)]
     pub fn wake(&mut self) {
         self.sleep_counter = 0;
         self.sleep_state = SleepState::Awake;
@@ -160,7 +156,6 @@ impl XpbdSolver {
     /// `max_displacement` in one sub-step.
     ///
     /// If all particles are static or have zero velocity, returns `dt_max`.
-    #[allow(dead_code)]
     pub fn cfl_timestep(body: &SoftBody, dt_max: Real, max_displacement: Real) -> Real {
         let v_max = body
             .particles
@@ -180,7 +175,6 @@ impl XpbdSolver {
     /// Check whether the body should go to sleep based on current velocities.
     ///
     /// Returns `true` if all dynamic particles are below [`Self::sleep_threshold`].
-    #[allow(dead_code)]
     fn check_sleep(&mut self, body: &SoftBody) -> bool {
         let all_slow = body
             .particles
@@ -204,7 +198,6 @@ impl XpbdSolver {
     }
 
     /// Run one full solve step over `body` with the given `constraints`.
-    #[allow(clippy::needless_range_loop)]
     pub fn solve(
         &mut self,
         body: &mut SoftBody,
@@ -225,8 +218,7 @@ impl XpbdSolver {
 
         for _sub in 0..self.num_substeps {
             // 1. Predict positions.
-            for i in 0..n {
-                let p = &mut body.particles[i];
+            for p in &mut body.particles {
                 if p.is_static() {
                     continue;
                 }
@@ -243,8 +235,7 @@ impl XpbdSolver {
             }
 
             // 3. Update velocities from position corrections.
-            for i in 0..n {
-                let p = &mut body.particles[i];
+            for p in &mut body.particles {
                 if p.is_static() {
                     continue;
                 }
@@ -253,8 +244,8 @@ impl XpbdSolver {
 
             // 4. Apply damping.
             let damp = 1.0 - body.damping;
-            for i in 0..n {
-                body.particles[i].velocity *= damp;
+            for p in &mut body.particles {
+                p.velocity *= damp;
             }
         }
 
@@ -266,7 +257,6 @@ impl XpbdSolver {
     ///
     /// Useful when you want to call the integration and projection phases
     /// separately (e.g. from a higher-level PBD loop).
-    #[allow(dead_code)]
     pub fn integrate_positions(&self, body: &mut SoftBody, dt: Real) {
         for p in &mut body.particles {
             if p.is_static() {
@@ -282,7 +272,6 @@ impl XpbdSolver {
     /// `integrate_positions` call (i.e. from `prev_position`).
     ///
     /// Call this **after** all constraint projections for a sub-step.
-    #[allow(dead_code)]
     pub fn integrate_velocities(&self, body: &mut SoftBody, dt: Real) {
         for p in &mut body.particles {
             if p.is_static() {
@@ -293,7 +282,6 @@ impl XpbdSolver {
     }
 
     /// Apply velocity damping to all dynamic particles.
-    #[allow(dead_code)]
     pub fn apply_damping(&self, body: &mut SoftBody) {
         let damp = 1.0 - body.damping;
         for p in &mut body.particles {
@@ -302,7 +290,6 @@ impl XpbdSolver {
     }
 
     /// Compute total kinetic energy of the body (½ Σ mᵢ |vᵢ|²).
-    #[allow(dead_code)]
     pub fn kinetic_energy(body: &SoftBody) -> Real {
         body.particles
             .iter()
@@ -321,7 +308,6 @@ impl XpbdSolver {
     /// Compute the maximum particle displacement in the last sub-step.
     ///
     /// Useful for adaptive iteration count decisions.
-    #[allow(dead_code)]
     pub fn max_displacement(body: &SoftBody) -> Real {
         body.particles
             .iter()
@@ -343,7 +329,6 @@ impl Default for XpbdSolver {
 
 /// Tracks convergence statistics across solver iterations.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SolverConvergenceTracker {
     /// Per-iteration maximum constraint error.
     pub error_history: Vec<Real>,
@@ -355,7 +340,6 @@ pub struct SolverConvergenceTracker {
     pub threshold: Real,
 }
 
-#[allow(dead_code)]
 impl SolverConvergenceTracker {
     /// Create a new tracker.
     pub fn new(threshold: Real) -> Self {
@@ -413,7 +397,6 @@ impl SolverConvergenceTracker {
 
 /// Strategy for ordering constraint projections within an iteration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum ConstraintOrdering {
     /// Process constraints in the order they were added (default).
     Sequential,
@@ -424,7 +407,6 @@ pub enum ConstraintOrdering {
 }
 
 /// Solve with a specified constraint ordering strategy.
-#[allow(dead_code)]
 pub fn solve_with_ordering(
     solver: &mut XpbdSolver,
     body: &mut SoftBody,
@@ -508,13 +490,11 @@ pub fn solve_with_ordering(
 /// Stores per-constraint Lagrange multipliers from the previous solve
 /// for warm-starting the next solve.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct WarmstartCache {
     /// Previous Lagrange multipliers indexed by constraint.
     pub lambdas: Vec<Real>,
 }
 
-#[allow(dead_code)]
 impl WarmstartCache {
     /// Create a new cache.
     pub fn new() -> Self {
@@ -566,7 +546,6 @@ impl WarmstartCache {
 /// This is essentially what the standard XPBD loop does, but packaged
 /// as a separate utility for clarity and testability.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct GaussSeidelSolver {
     /// Number of iterations.
     pub iterations: usize,
@@ -574,7 +553,6 @@ pub struct GaussSeidelSolver {
     pub omega: Real,
 }
 
-#[allow(dead_code)]
 impl GaussSeidelSolver {
     /// Create a new Gauss-Seidel solver.
     pub fn new(iterations: usize) -> Self {
@@ -977,14 +955,12 @@ mod tests {
 ///
 /// Two constraints are compatible for batching if they do not share any
 /// particle indices.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConstraintBatch {
     /// Indices into the original constraint list that belong to this batch.
     pub indices: Vec<usize>,
 }
 
-#[allow(dead_code)]
 impl ConstraintBatch {
     /// Create a new empty batch.
     pub fn new() -> Self {
@@ -1020,7 +996,6 @@ impl Default for ConstraintBatch {
 ///
 /// Returns a list of batches, each batch containing constraint indices that
 /// can be solved in parallel.
-#[allow(dead_code)]
 pub fn partition_constraints_into_batches(
     constraint_particles: &[Vec<usize>],
 ) -> Vec<ConstraintBatch> {
@@ -1074,7 +1049,6 @@ pub fn partition_constraints_into_batches(
 ///
 /// This function computes the diagonal of the compliance matrix (one entry
 /// per constraint).
-#[allow(dead_code)]
 pub fn xpbd_compliance_diagonal(
     compliances: &[Real],
     gradient_norms_sq: &[Real],
@@ -1100,7 +1074,6 @@ pub fn xpbd_compliance_diagonal(
 /// C = |x_b - x_a| - rest_length
 ///
 /// Returns (constraint_value, gradient_norm_squared).
-#[allow(dead_code)]
 pub fn distance_constraint_residual(
     pos_a: [Real; 3],
     pos_b: [Real; 3],
@@ -1127,7 +1100,6 @@ pub fn distance_constraint_residual(
 /// for GPU-ready parallel execution.
 ///
 /// Returns the sum of |Δx| (total displacement applied this step).
-#[allow(dead_code)]
 pub fn xpbd_global_step(
     positions: &mut [[Real; 3]],
     inv_masses: &[Real],
@@ -1201,7 +1173,6 @@ pub fn xpbd_global_step(
 ///
 /// Each batch is processed sequentially, but within a batch all constraints
 /// can be solved in parallel (no shared particles).
-#[allow(dead_code)]
 pub struct ParallelGaussSeidelSolver {
     /// Number of iterations.
     pub iterations: usize,
@@ -1209,7 +1180,6 @@ pub struct ParallelGaussSeidelSolver {
     pub batches: Vec<ConstraintBatch>,
 }
 
-#[allow(dead_code)]
 impl ParallelGaussSeidelSolver {
     /// Create a new parallel GS solver from constraint topology.
     pub fn new(iterations: usize, constraint_particles: &[Vec<usize>]) -> Self {
@@ -1236,7 +1206,6 @@ impl ParallelGaussSeidelSolver {
 /// `v_i = (x_i^new - x_i^prev) / dt`
 ///
 /// Returns the kinetic energy.
-#[allow(dead_code)]
 pub fn compute_velocities_from_positions(
     positions: &[[Real; 3]],
     prev_positions: &[[Real; 3]],

@@ -1,6 +1,6 @@
 //! Auto-generated module structure
 
-pub mod functions;
+mod functions;
 pub mod rigidbody_accessors;
 pub mod rigidbody_accessors_1;
 pub mod rigidbody_accessors_2;
@@ -24,7 +24,7 @@ pub mod rigidbody_type;
 pub mod rigidbody_velocity_at_point_group;
 pub mod rigidbody_wake_up_group;
 pub mod rigidbody_world_aabb_group;
-pub mod types;
+mod types;
 
 // Re-export all types
 pub use rigidbody_type::*;

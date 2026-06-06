@@ -17,8 +17,6 @@
 //! - [`CheckpointManager`] — rolling-window checkpoint storage.
 //! - [`ParameterSweep`] — Cartesian-product and Latin-hypercube parameter sweeps.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -1236,14 +1234,17 @@ mod tests {
 
     #[test]
     fn test_db_new_empty() {
-        let db = SimulationDatabase::new("/tmp/test.csv");
+        let path = std::env::temp_dir().join("test_simdb.csv");
+        let path_str = path.to_str().unwrap_or("").to_string();
+        let db = SimulationDatabase::new(&path_str);
         assert!(db.records.is_empty());
-        assert_eq!(db.file_path, "/tmp/test.csv");
+        assert_eq!(db.file_path, path_str);
     }
 
     #[test]
     fn test_db_add_and_find() {
-        let mut db = SimulationDatabase::new("/tmp/test.csv");
+        let path = std::env::temp_dir().join("test_simdb_find.csv");
+        let mut db = SimulationDatabase::new(path.to_str().unwrap_or(""));
         let r = SimulationRecord::new("abc", 42);
         db.add_record(r);
         assert!(db.find_by_id("abc").is_some());
@@ -1252,7 +1253,8 @@ mod tests {
 
     #[test]
     fn test_db_delete_by_id() {
-        let mut db = SimulationDatabase::new("/tmp/test.csv");
+        let path = std::env::temp_dir().join("test_simdb_del.csv");
+        let mut db = SimulationDatabase::new(path.to_str().unwrap_or(""));
         db.add_record(SimulationRecord::new("to_delete", 0));
         db.add_record(SimulationRecord::new("keep", 0));
         let removed = db.delete_by_id("to_delete");
@@ -1263,7 +1265,8 @@ mod tests {
 
     #[test]
     fn test_db_query_range_basic() {
-        let mut db = SimulationDatabase::new("/tmp/test.csv");
+        let path = std::env::temp_dir().join("test_simdb_qr.csv");
+        let mut db = SimulationDatabase::new(path.to_str().unwrap_or(""));
         let mut r1 = SimulationRecord::new("a", 0);
         r1.set_param("dt", 0.01);
         let mut r2 = SimulationRecord::new("b", 0);
@@ -1279,7 +1282,8 @@ mod tests {
 
     #[test]
     fn test_db_query_time_range() {
-        let mut db = SimulationDatabase::new("/tmp/t.csv");
+        let path = std::env::temp_dir().join("test_simdb_tr.csv");
+        let mut db = SimulationDatabase::new(path.to_str().unwrap_or(""));
         for i in 0_u64..5 {
             db.add_record(SimulationRecord::new(format!("r{i}"), 1000 + i * 100));
         }
@@ -1289,13 +1293,14 @@ mod tests {
 
     #[test]
     fn test_db_save_and_load_roundtrip() {
-        let mut db = SimulationDatabase::new("/tmp/rt.csv");
+        let path = std::env::temp_dir().join("test_simdb_rt.csv");
+        let mut db = SimulationDatabase::new(path.to_str().unwrap_or(""));
         let mut r = SimulationRecord::new("run42", 999);
         r.set_param("Re", 1000.0);
         r.set_meta("solver", "rk4");
         db.add_record(r);
         let csv = db.save_to_csv();
-        let mut db2 = SimulationDatabase::new("/tmp/rt.csv");
+        let mut db2 = SimulationDatabase::new(path.to_str().unwrap_or(""));
         db2.load_from_csv(&csv);
         assert_eq!(db2.records.len(), 1);
         assert_eq!(db2.records[0].id, "run42");
@@ -1305,7 +1310,8 @@ mod tests {
 
     #[test]
     fn test_db_statistics_basic() {
-        let mut db = SimulationDatabase::new("/tmp/s.csv");
+        let path = std::env::temp_dir().join("test_simdb_stats.csv");
+        let mut db = SimulationDatabase::new(path.to_str().unwrap_or(""));
         for (i, v) in [1.0_f64, 2.0, 3.0, 4.0, 5.0].iter().enumerate() {
             let mut r = SimulationRecord::new(format!("r{i}"), 0);
             r.set_param("x", *v);
@@ -1319,7 +1325,8 @@ mod tests {
 
     #[test]
     fn test_db_export_json_contains_id() {
-        let mut db = SimulationDatabase::new("/tmp/t.csv");
+        let path = std::env::temp_dir().join("test_simdb_json.csv");
+        let mut db = SimulationDatabase::new(path.to_str().unwrap_or(""));
         db.add_record(SimulationRecord::new("sim-1", 0));
         let json = db.export_json();
         assert!(json.contains("\"sim-1\""));
@@ -1603,7 +1610,8 @@ mod tests {
 
     #[test]
     fn test_checkpoint_save_and_load() {
-        let mut mgr = CheckpointManager::new("/tmp/checkpoints", 5);
+        let path = std::env::temp_dir().join("test_simdb_checkpoints");
+        let mut mgr = CheckpointManager::new(path.to_str().unwrap_or(""), 5);
         mgr.save_checkpoint(0, &[1.0, 2.0, 3.0]);
         let data = mgr.load_checkpoint(0).unwrap();
         assert_eq!(data, vec![1.0, 2.0, 3.0]);
@@ -1611,7 +1619,8 @@ mod tests {
 
     #[test]
     fn test_checkpoint_cleanup_old() {
-        let mut mgr = CheckpointManager::new("/tmp/ckpt", 3);
+        let path = std::env::temp_dir().join("test_simdb_ckpt");
+        let mut mgr = CheckpointManager::new(path.to_str().unwrap_or(""), 3);
         for step in 0..6_usize {
             mgr.save_checkpoint(step, &[step as f64]);
         }
@@ -1643,7 +1652,8 @@ mod tests {
 
     #[test]
     fn test_query_builder_param_range() {
-        let mut db = SimulationDatabase::new("/tmp/q.csv");
+        let path = std::env::temp_dir().join("test_simdb_qbpr.csv");
+        let mut db = SimulationDatabase::new(path.to_str().unwrap_or(""));
         for i in 0..5_usize {
             let mut r = SimulationRecord::new(format!("r{i}"), 0);
             r.set_param("v", i as f64);
@@ -1656,7 +1666,8 @@ mod tests {
 
     #[test]
     fn test_query_builder_time_range() {
-        let mut db = SimulationDatabase::new("/tmp/q.csv");
+        let path = std::env::temp_dir().join("test_simdb_qbtr.csv");
+        let mut db = SimulationDatabase::new(path.to_str().unwrap_or(""));
         for i in 0_u64..5 {
             db.add_record(SimulationRecord::new(format!("t{i}"), 1000 + i * 100));
         }
@@ -1667,7 +1678,8 @@ mod tests {
 
     #[test]
     fn test_query_builder_meta_eq() {
-        let mut db = SimulationDatabase::new("/tmp/q.csv");
+        let path = std::env::temp_dir().join("test_simdb_qbme.csv");
+        let mut db = SimulationDatabase::new(path.to_str().unwrap_or(""));
         let mut r1 = SimulationRecord::new("a", 0);
         r1.set_meta("solver", "rk4");
         let mut r2 = SimulationRecord::new("b", 0);
@@ -1682,7 +1694,8 @@ mod tests {
 
     #[test]
     fn test_query_builder_combined_filters() {
-        let mut db = SimulationDatabase::new("/tmp/q.csv");
+        let path = std::env::temp_dir().join("test_simdb_qbcf.csv");
+        let mut db = SimulationDatabase::new(path.to_str().unwrap_or(""));
         for i in 0_u64..6 {
             let mut r = SimulationRecord::new(format!("r{i}"), 1000 + i * 100);
             r.set_param("Re", (i as f64) * 100.0);

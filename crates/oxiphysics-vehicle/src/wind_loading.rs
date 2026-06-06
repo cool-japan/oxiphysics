@@ -22,9 +22,6 @@
 //! - [`wind_power_penalty`] — power lost to aerodynamic drag.
 //! - [`highway_fuel_consumption`] — L/100 km estimate.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // WindConditions
 // ─────────────────────────────────────────────────────────────────────────────

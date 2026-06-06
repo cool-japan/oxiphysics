@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,9 +6,6 @@
 //!
 //! All geometry is represented with `[f64; 3]` arrays to avoid nalgebra
 //! dependencies inside this module.
-
-#![allow(dead_code)]
-#![allow(non_snake_case)]
 
 use crate::math::Real;
 
@@ -718,8 +714,8 @@ impl Obb {
         ];
         for (i, s) in signs.iter().enumerate() {
             let mut v = self.center;
-            for k in 0..3 {
-                v = v3_add(v, v3_scale(self.axes[k], s[k] * self.half_extents[k]));
+            for (k, (&sk, &he)) in s.iter().zip(self.half_extents.iter()).enumerate() {
+                v = v3_add(v, v3_scale(self.axes[k], sk * he));
             }
             verts[i] = v;
         }

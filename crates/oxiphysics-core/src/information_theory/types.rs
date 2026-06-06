@@ -2,10 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// Encapsulates a discrete probability distribution with entropy utilities.
 pub struct DiscreteDistribution {
     /// Normalised probability vector.

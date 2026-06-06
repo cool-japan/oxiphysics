@@ -1,4 +1,3 @@
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,8 +13,6 @@
 //! - [`terzaghi_u`]: Settlement degree of consolidation series expansion
 //! - [`consolidation_time`]: Real time from dimensionless time factor
 //! - [`effective_stress`]: Terzaghi effective stress principle
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -461,7 +458,7 @@ mod tests {
     #[test]
     fn test_biot_alpha_range() {
         let b = BiotCoeff::compute_from_bulk(5e9, 36e9, 2.2e9, 0.3);
-        assert!(b.alpha >= 0.0 && b.alpha <= 1.0);
+        assert!((0.0..=1.0).contains(&b.alpha));
     }
 
     #[test]
@@ -755,7 +752,7 @@ mod tests {
         for i in 0..10 {
             let tv = i as f64 * 0.1;
             let r = pore_pressure_ratio(0.5, 1.0, tv);
-            assert!(r >= 0.0 && r <= 1.0);
+            assert!((0.0..=1.0).contains(&r));
         }
     }
 }

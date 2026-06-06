@@ -14,8 +14,6 @@ use oxiphysics_core::Aabb;
 use oxiphysics_core::math::Real;
 
 use super::functions::BroadPhase;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::SweepAndPrune;
 
 impl Default for SweepAndPrune {

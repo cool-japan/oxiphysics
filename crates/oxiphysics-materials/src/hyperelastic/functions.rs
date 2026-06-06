@@ -5,23 +5,17 @@
 use super::types::{MooneyRivlin, Ogden};
 
 /// Helper: compute invariants from a 3x3 deformation gradient F.
-#[allow(clippy::needless_range_loop)]
 pub(super) fn deformation_invariants(f: &[[f64; 3]; 3]) -> (f64, f64, f64) {
     let mut c = [[0.0; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
-            for k in 0..3 {
-                c[i][j] += f[k][i] * f[k][j];
-            }
+            c[i][j] = (0..3).map(|k| f[k][i] * f[k][j]).sum();
         }
     }
     let i1 = c[0][0] + c[1][1] + c[2][2];
-    let mut c2_trace = 0.0;
-    for i in 0..3 {
-        for k in 0..3 {
-            c2_trace += c[i][k] * c[k][i];
-        }
-    }
+    let c2_trace: f64 = (0..3)
+        .flat_map(|i| (0..3).map(move |k| c[i][k] * c[k][i]))
+        .sum();
     let i2 = 0.5 * (i1 * i1 - c2_trace);
     let det_f = f[0][0] * (f[1][1] * f[2][2] - f[1][2] * f[2][1])
         - f[0][1] * (f[1][0] * f[2][2] - f[1][2] * f[2][0])
@@ -70,14 +64,11 @@ pub(super) fn transpose3(m: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
 }
 /// Compute principal stretches from deformation gradient F.
 /// These are the square roots of eigenvalues of C = F^T F.
-#[allow(clippy::needless_range_loop)]
 pub(super) fn principal_stretches(f: &[[f64; 3]; 3]) -> (f64, f64, f64) {
     let mut c = [[0.0; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
-            for k in 0..3 {
-                c[i][j] += f[k][i] * f[k][j];
-            }
+            c[i][j] = (0..3).map(|k| f[k][i] * f[k][j]).sum();
         }
     }
     let i1 = c[0][0] + c[1][1] + c[2][2];
@@ -265,7 +256,6 @@ pub fn tangent_shear_modulus_fd<F: Fn(&[[f64; 3]; 3]) -> f64>(w_fn: F, gamma: f6
 ///
 /// Returns the 3 principal Cauchy stresses (σ₁, σ₂, σ₃) for principal
 /// stretches (λ₁, λ₂, λ₃) using finite differences on W.
-#[allow(clippy::too_many_arguments)]
 pub fn principal_cauchy_stress_incompressible<F: Fn(f64, f64, f64) -> f64>(
     w_fn: &F,
     lambda1: f64,
@@ -315,7 +305,6 @@ pub fn lagrange_multiplier_uniaxial<F: Fn(f64, f64, f64) -> f64>(w_fn: &F, lambd
 ///
 /// For the reference configuration (material tangent):
 ///   λ = K - 2/3 * μ,  using current J.
-#[allow(dead_code)]
 pub fn neo_hookean_constitutive_tangent(
     shear_modulus: f64,
     bulk_modulus: f64,
@@ -348,7 +337,6 @@ pub fn neo_hookean_constitutive_tangent(
 ///   d²W/dC² is approximated via central finite differences with step h.
 ///
 /// Returns the 6×6 symmetric Hessian in Voigt notation (flat row-major).
-#[allow(dead_code)]
 pub fn mooney_rivlin_strain_energy_hessian(
     mr: &MooneyRivlin,
     c_voigt: &[f64; 6],
@@ -421,7 +409,6 @@ pub fn mooney_rivlin_strain_energy_hessian(
 ///
 /// # Returns
 /// `[sigma1, sigma2, sigma3]` — principal Cauchy stresses (Pa)
-#[allow(dead_code)]
 pub fn ogden_principal_stresses(
     ogden: &Ogden,
     lambda1: f64,
@@ -462,17 +449,15 @@ mod tests {
     use crate::hyperelastic::Varga;
     use crate::hyperelastic::Yeoh;
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_mooney_rivlin_identity_zero_stress() {
         let mr = MooneyRivlin::new(0.5e6, 0.1e6, 1.0e9);
         let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let p = mr.first_piola_kirchhoff_stress(&identity);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in p.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    p[i][j].abs() < 1.0,
-                    "P[{i}][{j}] = {} should be ~0 at identity",
-                    p[i][j]
+                    val.abs() < 1.0,
+                    "P[{i}][{j}] = {val} should be ~0 at identity"
                 );
             }
         }

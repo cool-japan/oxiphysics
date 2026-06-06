@@ -1,8 +1,5 @@
 //! Extended types for electric vehicle simulation
 
-#![allow(clippy::too_many_arguments)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{clarke_transform, inverse_park, park_transform, svpwm};
 use super::types_core::{
     BatteryPack, CcCvCharger, CellChemistry, ChargingMode, DriveCycle, GridTariff, PackConfig,

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::functions::*;
 use super::types_advanced::ShieldsParam;
 
@@ -627,14 +626,14 @@ impl VerticalDiffusion {
         let mut new_c = self.profile.clone();
         let dz = self.dz;
         let ws = self.settling_velocity;
-        for i in 1..n - 1 {
+        for (i, nc_i) in new_c.iter_mut().enumerate().take(n - 1).skip(1) {
             let eps_p = (self.diffusivity[i] + self.diffusivity[i + 1]) * 0.5;
             let eps_m = (self.diffusivity[i] + self.diffusivity[i - 1]) * 0.5;
             let diff = (eps_p * (self.profile[i + 1] - self.profile[i])
                 - eps_m * (self.profile[i] - self.profile[i - 1]))
                 / (dz * dz);
             let settle = ws * (self.profile[i + 1] - self.profile[i - 1]) / (2.0 * dz);
-            new_c[i] = (self.profile[i] + dt * diff - dt * settle).max(0.0);
+            *nc_i = (self.profile[i] + dt * diff - dt * settle).max(0.0);
         }
         self.profile = new_c;
     }
@@ -687,15 +686,15 @@ impl SedimentBed {
     /// Erode the bed: z_bed\[i\] -= rates\[i\] * dt.
     pub fn erode(&mut self, rates: &[f64], dt: f64) {
         let n = self.z_bed.len().min(rates.len());
-        for i in 0..n {
-            self.z_bed[i] -= rates[i] * dt;
+        for (i, zb) in self.z_bed.iter_mut().enumerate().take(n) {
+            *zb -= rates[i] * dt;
         }
     }
     /// Deposit on the bed: z_bed\[i\] += rates\[i\] * dt.
     pub fn deposit(&mut self, rates: &[f64], dt: f64) {
         let n = self.z_bed.len().min(rates.len());
-        for i in 0..n {
-            self.z_bed[i] += rates[i] * dt;
+        for (i, zb) in self.z_bed.iter_mut().enumerate().take(n) {
+            *zb += rates[i] * dt;
         }
     }
     /// Total bed volume: sum of z_bed\[i\] * dx.
@@ -852,7 +851,7 @@ impl SedimentConcentration1D {
         let u = self.velocity;
         let eps = self.diffusivity;
         let dx = self.dx;
-        for i in 1..n - 1 {
+        for (i, nc_i) in new_c.iter_mut().enumerate().take(n - 1).skip(1) {
             let adv = if u >= 0.0 {
                 u * (self.concentration[i] - self.concentration[i - 1]) / dx
             } else {
@@ -864,7 +863,7 @@ impl SedimentConcentration1D {
                 / (dx * dx);
             let src = erosion_rates.get(i).copied().unwrap_or(0.0)
                 - deposition_rates.get(i).copied().unwrap_or(0.0);
-            new_c[i] = (self.concentration[i] - dt * adv + dt * diff + dt * src).max(0.0);
+            *nc_i = (self.concentration[i] - dt * adv + dt * diff + dt * src).max(0.0);
         }
         self.concentration = new_c;
     }

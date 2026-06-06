@@ -3,8 +3,6 @@
 
 //! Elastic material models (linear, orthotropic, transversely isotropic, and hyperelastic).
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // LinearElastic (isotropic)
 // ---------------------------------------------------------------------------
@@ -189,20 +187,19 @@ impl IsotropicElastic {
 ///
 /// Convention: directions 1, 2, 3 are the principal material axes.
 #[derive(Debug, Clone, Copy)]
-#[allow(non_snake_case)]
 pub struct OrthotropicElastic {
     /// Young's modulus in direction 1 (Pa).
-    pub E1: f64,
+    pub e1: f64,
     /// Young's modulus in direction 2 (Pa).
-    pub E2: f64,
+    pub e2: f64,
     /// Young's modulus in direction 3 (Pa).
-    pub E3: f64,
+    pub e3: f64,
     /// Shear modulus in the 1-2 plane (Pa).
-    pub G12: f64,
+    pub g12: f64,
     /// Shear modulus in the 2-3 plane (Pa).
-    pub G23: f64,
+    pub g23: f64,
     /// Shear modulus in the 1-3 plane (Pa).
-    pub G13: f64,
+    pub g13: f64,
     /// Poisson's ratio ν₁₂ (strain in 2 due to stress in 1).
     pub nu12: f64,
     /// Poisson's ratio ν₂₃.
@@ -215,31 +212,30 @@ impl OrthotropicElastic {
     /// Compliance matrix in Voigt notation (flat row-major `[f64; 36]`).
     ///
     /// Voigt order: `[sigma_11, sigma_22, sigma_33, sigma_23, sigma_13, sigma_12]`.
-    #[allow(non_snake_case)]
     pub fn compliance_voigt(&self) -> [f64; 36] {
-        let (E1, E2, E3) = (self.E1, self.E2, self.E3);
-        let (G12, G23, G13) = (self.G12, self.G23, self.G13);
+        let (e1, e2, e3) = (self.e1, self.e2, self.e3);
+        let (g12, g23, g13) = (self.g12, self.g23, self.g13);
         let (nu12, nu23, nu13) = (self.nu12, self.nu23, self.nu13);
 
-        // Reciprocal relations: nu21/E2 = nu12/E1
-        let nu21 = nu12 * E2 / E1;
-        let nu31 = nu13 * E3 / E1;
-        let nu32 = nu23 * E3 / E2;
+        // Reciprocal relations: nu21/e2 = nu12/e1
+        let nu21 = nu12 * e2 / e1;
+        let nu31 = nu13 * e3 / e1;
+        let nu32 = nu23 * e3 / e2;
 
         let mut s = [0.0_f64; 36];
-        s[0] = 1.0 / E1;
-        s[6 + 1] = 1.0 / E2;
-        s[2 * 6 + 2] = 1.0 / E3;
-        s[3 * 6 + 3] = 1.0 / G23;
-        s[4 * 6 + 4] = 1.0 / G13;
-        s[5 * 6 + 5] = 1.0 / G12;
+        s[0] = 1.0 / e1;
+        s[6 + 1] = 1.0 / e2;
+        s[2 * 6 + 2] = 1.0 / e3;
+        s[3 * 6 + 3] = 1.0 / g23;
+        s[4 * 6 + 4] = 1.0 / g13;
+        s[5 * 6 + 5] = 1.0 / g12;
 
-        s[1] = -nu21 / E2;
-        s[2] = -nu31 / E3;
-        s[6] = -nu12 / E1;
-        s[6 + 2] = -nu32 / E3;
-        s[2 * 6] = -nu13 / E1;
-        s[2 * 6 + 1] = -nu23 / E2;
+        s[1] = -nu21 / e2;
+        s[2] = -nu31 / e3;
+        s[6] = -nu12 / e1;
+        s[6 + 2] = -nu32 / e3;
+        s[2 * 6] = -nu13 / e1;
+        s[2 * 6 + 1] = -nu23 / e2;
 
         s
     }
@@ -397,33 +393,31 @@ impl FailureCriteria for VonMisesFailure {
 /// ```
 /// The material fails when F ≥ 1.
 #[derive(Debug, Clone, Copy)]
-#[allow(non_snake_case)]
 pub struct TsaiWuFailure {
     /// Linear coefficient in direction 1.
-    pub F1: f64,
+    pub f1: f64,
     /// Linear coefficient in direction 2.
-    pub F2: f64,
+    pub f2: f64,
     /// Quadratic coefficient for σ1².
-    pub F11: f64,
+    pub f11: f64,
     /// Quadratic coefficient for σ2².
-    pub F22: f64,
+    pub f22: f64,
     /// Quadratic coefficient for τ12².
-    pub F66: f64,
-    /// Interaction term coefficient (must satisfy F12² < F11*F22 for stability).
-    pub F12: f64,
+    pub f66: f64,
+    /// Interaction term coefficient (must satisfy f12² < f11*f22 for stability).
+    pub f12: f64,
 }
 
 impl TsaiWuFailure {
     /// Create a new Tsai-Wu failure criterion.
-    #[allow(non_snake_case, clippy::too_many_arguments)]
-    pub fn new(F1: f64, F2: f64, F11: f64, F22: f64, F66: f64, F12: f64) -> Self {
+    pub fn new(f1: f64, f2: f64, f11: f64, f22: f64, f66: f64, f12: f64) -> Self {
         Self {
-            F1,
-            F2,
-            F11,
-            F22,
-            F66,
-            F12,
+            f1,
+            f2,
+            f11,
+            f22,
+            f66,
+            f12,
         }
     }
 
@@ -443,12 +437,12 @@ impl TsaiWuFailure {
         let f66 = 1.0 / (s * s);
         let f12 = -0.5 * (f11 * f22).sqrt(); // typical recommended value
         Self {
-            F1: f1,
-            F2: f2,
-            F11: f11,
-            F22: f22,
-            F66: f66,
-            F12: f12,
+            f1,
+            f2,
+            f11,
+            f22,
+            f66,
+            f12,
         }
     }
 
@@ -458,12 +452,12 @@ impl TsaiWuFailure {
         let s2 = stress[1];
         let t12 = stress[5];
 
-        self.F1 * s1
-            + self.F2 * s2
-            + self.F11 * s1 * s1
-            + self.F22 * s2 * s2
-            + self.F66 * t12 * t12
-            + 2.0 * self.F12 * s1 * s2
+        self.f1 * s1
+            + self.f2 * s2
+            + self.f11 * s1 * s1
+            + self.f22 * s2 * s2
+            + self.f66 * t12 * t12
+            + 2.0 * self.f12 * s1 * s2
     }
 }
 
@@ -582,7 +576,6 @@ fn inv_transpose3(m: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
 
 /// Invert a 6×6 matrix stored as a flat row-major `[f64; 36]` array using
 /// Gauss-Jordan elimination with partial pivoting.
-#[allow(clippy::needless_range_loop)]
 fn invert_voigt_6x6(mat: [f64; 36]) -> [f64; 36] {
     let n = 6_usize;
     // Build augmented matrix [A | I]
@@ -598,9 +591,10 @@ fn invert_voigt_6x6(mat: [f64; 36]) -> [f64; 36] {
         // Find pivot
         let mut max_row = col;
         let mut max_val = a[col][col].abs();
-        for row in (col + 1)..n {
-            if a[row][col].abs() > max_val {
-                max_val = a[row][col].abs();
+        for (offset, row_data) in a[(col + 1)..n].iter().enumerate() {
+            let row = col + 1 + offset;
+            if row_data[col].abs() > max_val {
+                max_val = row_data[col].abs();
                 max_row = row;
             }
         }
@@ -612,14 +606,15 @@ fn invert_voigt_6x6(mat: [f64; 36]) -> [f64; 36] {
             return [0.0; 36];
         }
 
-        for j in 0..12 {
-            a[col][j] /= pivot;
+        for elem in a[col].iter_mut() {
+            *elem /= pivot;
         }
-        for row in 0..n {
+        let pivot_row = a[col];
+        for (row, a_row) in a.iter_mut().enumerate().take(n) {
             if row != col {
-                let factor = a[row][col];
-                for j in 0..12 {
-                    a[row][j] -= factor * a[col][j];
+                let factor = a_row[col];
+                for (j, &pv) in pivot_row.iter().enumerate() {
+                    a_row[j] -= factor * pv;
                 }
             }
         }
@@ -875,7 +870,6 @@ impl EffectiveMedium {
 // ---------------------------------------------------------------------------
 
 /// Engineering constants extracted from a general 6×6 stiffness tensor.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct EngineeringConstants {
     /// Young's modulus E1 (Pa).
@@ -899,7 +893,6 @@ pub struct EngineeringConstants {
 }
 
 /// Wave speeds computed from elastic stiffness and density.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct WaveSpeeds {
     /// Longitudinal (P-wave) speed along axis-1 (m/s).
@@ -920,7 +913,6 @@ pub struct WaveSpeeds {
 ///
 /// Provides compliance tensor (S = C⁻¹), engineering constants extracted from
 /// the compliance matrix, and elastic wave speeds.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElasticMaterial {
     /// 6×6 stiffness matrix in Voigt notation (flat row-major, Pa).
@@ -929,7 +921,6 @@ pub struct ElasticMaterial {
     pub density: f64,
 }
 
-#[allow(dead_code)]
 impl ElasticMaterial {
     /// Create an `ElasticMaterial` from a 6×6 stiffness matrix and density.
     pub fn new(stiffness: [f64; 36], density: f64) -> Self {
@@ -1101,16 +1092,12 @@ mod tests {
 
     /// LinearElastic stiffness matrix is symmetric.
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_linear_elastic_stress_strain_symmetry() {
         let mat = LinearElastic::new(200.0e9, 0.3);
         let c = mat.stress_strain_matrix_3d();
-        for i in 0..6 {
-            for j in 0..6 {
-                assert!(
-                    (c[i][j] - c[j][i]).abs() < 1.0e-6,
-                    "C[{i}][{j}] != C[{j}][{i}]"
-                );
+        for (i, row) in c.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - c[j][i]).abs() < 1.0e-6, "C[{i}][{j}] != C[{j}][{i}]");
             }
         }
     }
@@ -1127,18 +1114,13 @@ mod tests {
 
     /// Neo-Hookean: identity deformation gradient → zero stress.
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_neo_hookean_identity_zero_stress() {
         let mat = NeoHookean::new(1.0e6, 1.0e9);
         let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let p = mat.first_piola_kirchhoff_stress(&identity);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(
-                    p[i][j].abs() < 1.0e-6,
-                    "P[{i}][{j}] = {} should be ~0",
-                    p[i][j]
-                );
+        for (i, row) in p.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!(val.abs() < 1.0e-6, "P[{i}][{j}] = {} should be ~0", val);
             }
         }
     }
@@ -1146,14 +1128,13 @@ mod tests {
     /// OrthotropicElastic compliance matrix is symmetric for equal E1, E2, E3.
     #[test]
     fn test_orthotropic_compliance_symmetry() {
-        #[allow(non_snake_case)]
         let mat = OrthotropicElastic {
-            E1: 200.0e9,
-            E2: 100.0e9,
-            E3: 80.0e9,
-            G12: 40.0e9,
-            G23: 30.0e9,
-            G13: 35.0e9,
+            e1: 200.0e9,
+            e2: 100.0e9,
+            e3: 80.0e9,
+            g12: 40.0e9,
+            g23: 30.0e9,
+            g13: 35.0e9,
             nu12: 0.25,
             nu23: 0.2,
             nu13: 0.22,

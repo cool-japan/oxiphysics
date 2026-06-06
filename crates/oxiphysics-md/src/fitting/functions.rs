@@ -2,13 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{
     BootstrapResult, DihedralFit, HarmonicAngleFit, HarmonicBondFit, LjFitResult, RespFitResult,
 };
 
 /// Lennard-Jones 12-6 energy: `4·ε·[(σ/r)¹² − (σ/r)⁶]`
-#[allow(dead_code)]
 pub fn lj_energy(r: f64, epsilon: f64, sigma: f64) -> f64 {
     let sr = sigma / r;
     let sr6 = sr.powi(6);
@@ -16,13 +14,11 @@ pub fn lj_energy(r: f64, epsilon: f64, sigma: f64) -> f64 {
     4.0 * epsilon * (sr12 - sr6)
 }
 /// Harmonic energy: `0.5·k·(x − x₀)²`
-#[allow(dead_code)]
 pub fn harmonic_energy(x: f64, x0: f64, k: f64) -> f64 {
     let dx = x - x0;
     0.5 * k * dx * dx
 }
 /// OPLS-style single-term torsion energy: `k·(1 + cos(n·φ − δ))`
-#[allow(dead_code)]
 pub fn torsion_energy(phi: f64, k: f64, n: u32, delta: f64) -> f64 {
     k * (1.0 + (n as f64 * phi - delta).cos())
 }
@@ -42,7 +38,6 @@ pub(super) fn rmse(predicted: &[f64], target: &[f64]) -> f64 {
 /// Optimises in log-parameter space (log ε, log σ) for numerical stability.
 /// Initial guesses: σ = median(distances), ε from the minimum energy.
 /// Returns [`LjFitResult`] with the best-fit parameters and the RMSE.
-#[allow(dead_code)]
 pub fn fit_lj_parameters(distances: &[f64], energies: &[f64]) -> LjFitResult {
     assert_eq!(distances.len(), energies.len());
     assert!(!distances.is_empty());
@@ -111,13 +106,11 @@ pub fn fit_lj_parameters(distances: &[f64], energies: &[f64]) -> LjFitResult {
 ///
 /// The fit solves the normal equations for the parabola `a·r² + b·r + c`
 /// and recovers `r0 = -b/(2a)` and `k = 2a`.
-#[allow(dead_code)]
 pub fn fit_harmonic_bond(distances: &[f64], energies: &[f64]) -> HarmonicBondFit {
     fit_harmonic_generic(distances, energies)
 }
 /// Fit a harmonic angle potential `V = 0.5·k·(θ − θ₀)²` using an analytic
 /// parabolic (least-squares) fit.
-#[allow(dead_code)]
 pub fn fit_harmonic_angle(angles: &[f64], energies: &[f64]) -> HarmonicAngleFit {
     let r = fit_harmonic_generic(angles, energies);
     HarmonicAngleFit {
@@ -161,7 +154,6 @@ pub(super) fn fit_harmonic_generic(xs: &[f64], ys: &[f64]) -> HarmonicBondFit {
 /// least-squares fit in the Fourier basis `{cos(n·φ), sin(n·φ), 1}` and keep
 /// the best (lowest RMSE) solution.  Then recover k and δ from the cosine and
 /// sine coefficients.
-#[allow(dead_code)]
 pub fn fit_dihedral(angles: &[f64], energies: &[f64]) -> DihedralFit {
     assert_eq!(angles.len(), energies.len());
     assert!(!angles.is_empty());
@@ -239,7 +231,6 @@ pub(super) fn det3x3(m: &[[f64; 3]; 3]) -> f64 {
 /// * `q_total`       – Required total charge.
 /// * `restraint`     – RESP hyperbolic restraint strength a (kJ/mol/e²).
 /// * `max_iter`      – Maximum number of iterations.
-#[allow(dead_code)]
 pub fn fit_resp_charges(
     esp_points: &[([f64; 3], f64)],
     atom_positions: &[[f64; 3]],
@@ -330,9 +321,9 @@ pub(super) fn solve_linear_system(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
         }
         for row in (col + 1)..k {
             let factor = aug[row][col] / pivot;
-            for j in col..=k {
-                let v = aug[col][j];
-                aug[row][j] -= factor * v;
+            let pivot_row: Vec<f64> = aug[col][col..=k].to_vec();
+            for (aug_row_j, &aug_col_j) in aug[row][col..=k].iter_mut().zip(pivot_row.iter()) {
+                *aug_row_j -= factor * aug_col_j;
             }
         }
     }
@@ -349,7 +340,6 @@ pub(super) fn solve_linear_system(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
     x
 }
 /// Mean absolute error.
-#[allow(dead_code)]
 pub fn mae(predicted: &[f64], target: &[f64]) -> f64 {
     assert_eq!(predicted.len(), target.len());
     let n = predicted.len() as f64;
@@ -361,7 +351,6 @@ pub fn mae(predicted: &[f64], target: &[f64]) -> f64 {
         / n
 }
 /// R² (coefficient of determination).
-#[allow(dead_code)]
 pub fn r_squared(predicted: &[f64], target: &[f64]) -> f64 {
     assert_eq!(predicted.len(), target.len());
     let n = target.len() as f64;
@@ -378,7 +367,6 @@ pub fn r_squared(predicted: &[f64], target: &[f64]) -> f64 {
     1.0 - ss_res / ss_tot
 }
 /// Maximum absolute error.
-#[allow(dead_code)]
 pub fn max_error(predicted: &[f64], target: &[f64]) -> f64 {
     assert_eq!(predicted.len(), target.len());
     predicted
@@ -388,7 +376,6 @@ pub fn max_error(predicted: &[f64], target: &[f64]) -> f64 {
         .fold(0.0_f64, f64::max)
 }
 /// Perform bootstrap estimation of harmonic bond fit uncertainty.
-#[allow(dead_code)]
 pub fn bootstrap_harmonic_bond(
     data: &[(f64, f64)],
     n_bootstrap: usize,
@@ -443,7 +430,6 @@ pub(super) fn std_dev(vals: &[f64]) -> f64 {
 /// The data are split into `k_folds` contiguous folds; each fold is used once
 /// as a validation set while the remaining data train a harmonic fit.  Returns
 /// the average RMSE across all folds.
-#[allow(dead_code)]
 pub fn cross_validate(data: &[(f64, f64)], k_folds: usize) -> f64 {
     assert!(k_folds >= 2, "Need at least 2 folds");
     assert!(data.len() >= k_folds, "Need at least k_folds data points");
@@ -484,7 +470,6 @@ pub fn cross_validate(data: &[(f64, f64)], k_folds: usize) -> f64 {
 /// Compute per-atom RMSD between two coordinate sets.
 ///
 /// Both slices must have the same length.  Returns 0.0 for empty inputs.
-#[allow(dead_code)]
 pub fn atom_rmsd(coords_a: &[[f64; 3]], coords_b: &[[f64; 3]]) -> f64 {
     let n = coords_a.len().min(coords_b.len());
     if n == 0 {
@@ -504,7 +489,6 @@ pub fn atom_rmsd(coords_a: &[[f64; 3]], coords_b: &[[f64; 3]]) -> f64 {
 ///
 /// Given a list of frames (each frame is a slice of \[f64; 3\] atom coords),
 /// returns the per-atom RMSF relative to the mean position.
-#[allow(dead_code)]
 pub fn rmsf_per_atom(trajectory: &[Vec<[f64; 3]>]) -> Vec<f64> {
     let n_frames = trajectory.len();
     if n_frames == 0 {
@@ -544,7 +528,6 @@ pub fn rmsf_per_atom(trajectory: &[Vec<[f64; 3]>]) -> Vec<f64> {
         .collect()
 }
 /// Mean RMSF over all atoms.
-#[allow(dead_code)]
 pub fn mean_rmsf(trajectory: &[Vec<[f64; 3]>]) -> f64 {
     let rmsf_vals = rmsf_per_atom(trajectory);
     if rmsf_vals.is_empty() {
@@ -559,7 +542,6 @@ pub fn mean_rmsf(trajectory: &[Vec<[f64; 3]>]) -> f64 {
 ///
 /// where Δr(t) = r(t) - r_mean.
 /// Normalized so C(0) = 1.
-#[allow(dead_code)]
 pub fn displacement_autocorrelation(
     trajectory: &[Vec<[f64; 3]>],
     atom_idx: usize,
@@ -620,7 +602,6 @@ pub fn displacement_autocorrelation(
 ///
 /// `cos_theta_vals` are cos(θ) values where θ is the angle between each
 /// bond vector and the director (e.g., membrane normal).
-#[allow(dead_code)]
 pub fn s2_order_parameter(cos_theta_vals: &[f64]) -> f64 {
     if cos_theta_vals.is_empty() {
         return 0.0;
@@ -636,7 +617,6 @@ pub fn s2_order_parameter(cos_theta_vals: &[f64]) -> f64 {
 /// Nematic order parameter Q for a set of unit vectors.
 ///
 /// Q = ½⟨3cos²θ - 1⟩ where θ is angle with the average director.
-#[allow(dead_code)]
 pub fn nematic_order_parameter(vectors: &[[f64; 3]]) -> f64 {
     if vectors.is_empty() {
         return 0.0;

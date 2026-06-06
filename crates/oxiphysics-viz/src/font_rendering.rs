@@ -7,9 +7,6 @@
 //! field) fonts, text layout, and 3-D annotation projection.  No GPU or
 //! windowing dependency is required.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::collections::HashMap;
 
 // ─────────────────────────────────────────────────────────────────────────────

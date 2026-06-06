@@ -253,7 +253,6 @@ impl RaycastVolume {
     ///
     /// `dir` does not need to be normalised; it is normalised internally.
     /// The result `[r, g, b, a]` has components in `[0, 1]`.
-    #[allow(clippy::too_many_arguments)]
     pub fn render_ray(&self, origin: [f64; 3], dir: [f64; 3]) -> [f64; 4] {
         // Normalise direction
         let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();

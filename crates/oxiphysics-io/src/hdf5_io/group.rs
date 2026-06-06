@@ -3,8 +3,6 @@
 
 //! HDF5 group: a container for sub-groups, datasets, links and attributes.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use super::dataset::Hdf5Dataset;

@@ -2,11 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::*;
 
     use crate::parallel::ParallelFor;
     use crate::parallel::SerialWorkQueue;
@@ -500,7 +498,6 @@ mod tests {
 ///
 /// Unrolls into chunks of 4 elements to mimic 4-wide SIMD lanes.
 /// Falls back to scalar for the remaining elements.
-#[allow(dead_code)]
 pub fn vectorized_dot_product(a: &[f64], b: &[f64]) -> f64 {
     assert_eq!(a.len(), b.len(), "vectorized_dot_product: length mismatch");
     let n = a.len();
@@ -528,7 +525,6 @@ pub fn vectorized_dot_product(a: &[f64], b: &[f64]) -> f64 {
 /// Phase 2: Adjust each chunk by the cumulative sum of previous chunks.
 ///
 /// In practice both phases run sequentially here (correctness reference).
-#[allow(dead_code)]
 pub fn parallel_prefix_scan(data: &[f64], n_chunks: usize) -> Vec<f64> {
     if data.is_empty() {
         return vec![];

@@ -21,9 +21,6 @@
 //! - [`sinkage_squat`] — shallow-water squat formula.
 //! - [`added_mass_sphere`] — fluid added mass of a sphere.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────

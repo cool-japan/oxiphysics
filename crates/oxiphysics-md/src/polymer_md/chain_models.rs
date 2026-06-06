@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -136,8 +135,7 @@ impl PolymerChain {
     pub fn step(&mut self) {
         let dt = self.dt;
         let forces: Vec<[f64; 3]> = (0..self.n_beads).map(|i| self.total_force(i)).collect();
-        for i in 0..self.n_beads {
-            let m = self.masses[i];
+        for (i, &m) in self.masses.iter().enumerate().take(self.n_beads) {
             self.velocities[i][0] += forces[i][0] / m * dt;
             self.velocities[i][1] += forces[i][1] / m * dt;
             self.velocities[i][2] += forces[i][2] / m * dt;

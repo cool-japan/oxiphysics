@@ -1,6 +1,6 @@
 # oxiphysics-rigid
 
-**Status: Alpha** | Version 0.1.1 | Part of [OxiPhysics](https://github.com/cool-japan/oxiphysics)
+**Status: Alpha** | Version 0.1.2 | Part of [OxiPhysics](https://github.com/cool-japan/oxiphysics)
 
 Rigid body dynamics for the OxiPhysics engine — Pure Rust, no C/Fortran dependencies.
 
@@ -43,7 +43,7 @@ use oxiphysics_rigid::{body::*, collider::*, sets::*, sleeping::*, ragdoll::*, f
 | Metric | Count |
 |---|---|
 | Public items | 4,815 |
-| Tests | 3,810 |
+| Tests | 3,820 |
 | Stubs | 0 |
 
 ## License

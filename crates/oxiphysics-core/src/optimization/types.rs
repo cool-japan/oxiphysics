@@ -2,12 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{cholesky_lower, forward_solve_lower, simulated_annealing};
-#[allow(unused_imports)]
-use super::functions_2::*;
 use rand::RngExt;
 
 /// Facade that bundles several optimization algorithms under a single struct.
@@ -31,7 +26,6 @@ impl Optimizer {
     /// * `f_weight` - Differential weight F ∈ (0, 2].
     /// * `cr`       - Crossover probability ∈ \[0, 1\].
     /// * `max_gens` - Number of generations.
-    #[allow(clippy::too_many_arguments)]
     pub fn differential_evolution<F>(
         &self,
         f: F,
@@ -47,8 +41,8 @@ impl Optimizer {
         let dim = bounds.len();
         let mut rng = rand::rng();
         let mut de = DifferentialEvolution::new(pop_size.max(4), dim, bounds, &mut rng);
-        de.F = f_weight;
-        de.CR = cr;
+        de.f_weight = f_weight;
+        de.cr = cr;
         for _ in 0..max_gens {
             de.step(&f, &mut rng);
         }
@@ -64,7 +58,6 @@ impl Optimizer {
     /// Global minimisation via Simulated Annealing.
     ///
     /// Delegates to [`simulated_annealing`].
-    #[allow(clippy::too_many_arguments)]
     pub fn simulated_annealing<F>(
         &self,
         f: F,
@@ -101,14 +94,13 @@ pub(crate) struct Particle {
 ///
 /// Uses DE/rand/1/bin strategy: for each individual, a trial vector is formed
 /// from a random base vector plus `scale_f * (r1 - r2)` and crossed with the target.
-#[allow(non_snake_case)]
 pub struct DifferentialEvolution {
     /// Population of candidate vectors.
     pub pop: Vec<Vec<f64>>,
-    /// Differential weight F ∈ (0, 2].
-    pub F: f64,
-    /// Crossover probability CR ∈ \[0, 1\].
-    pub CR: f64,
+    /// Differential weight (`F` in the DE literature) ∈ (0, 2].
+    pub f_weight: f64,
+    /// Crossover probability (`CR` in the DE literature) ∈ \[0, 1\].
+    pub cr: f64,
 }
 impl DifferentialEvolution {
     /// Initialise a population of `n` individuals in `dim` dimensions,
@@ -126,8 +118,8 @@ impl DifferentialEvolution {
             .collect();
         Self {
             pop,
-            F: 0.8,
-            CR: 0.9,
+            f_weight: 0.8,
+            cr: 0.9,
         }
     }
     /// Perform one generation of DE.
@@ -141,7 +133,7 @@ impl DifferentialEvolution {
         }
         let dim = self.pop[0].len();
         let mut new_pop = self.pop.clone();
-        for i in 0..n {
+        for (i, new_entry) in new_pop.iter_mut().enumerate() {
             let mut indices = Vec::with_capacity(3);
             while indices.len() < 3 {
                 let r = (rng.random::<f64>() * n as f64) as usize % n;
@@ -151,12 +143,12 @@ impl DifferentialEvolution {
             }
             let (a, b, c) = (indices[0], indices[1], indices[2]);
             let mutant: Vec<f64> = (0..dim)
-                .map(|d| self.pop[a][d] + self.F * (self.pop[b][d] - self.pop[c][d]))
+                .map(|d| self.pop[a][d] + self.f_weight * (self.pop[b][d] - self.pop[c][d]))
                 .collect();
             let j_rand = (rng.random::<f64>() * dim as f64) as usize % dim;
             let trial: Vec<f64> = (0..dim)
                 .map(|d| {
-                    if d == j_rand || rng.random::<f64>() < self.CR {
+                    if d == j_rand || rng.random::<f64>() < self.cr {
                         mutant[d]
                     } else {
                         self.pop[i][d]
@@ -164,7 +156,7 @@ impl DifferentialEvolution {
                 })
                 .collect();
             if fitness(&trial) <= fitness(&self.pop[i]) {
-                new_pop[i] = trial;
+                *new_entry = trial;
             }
         }
         self.pop = new_pop;
@@ -279,13 +271,15 @@ impl NelderMead {
                     fvals[n] = fc;
                 } else {
                     let x0b = self.simplex[0].clone();
-                    for i in 1..=n {
-                        self.simplex[i] = x0b
+                    for (simplex_entry, fval) in
+                        self.simplex[1..=n].iter_mut().zip(fvals[1..=n].iter_mut())
+                    {
+                        *simplex_entry = x0b
                             .iter()
-                            .zip(self.simplex[i].iter())
+                            .zip(simplex_entry.iter())
                             .map(|(b, v)| b + sigma * (v - b))
                             .collect();
-                        fvals[i] = f(&self.simplex[i]);
+                        *fval = f(simplex_entry);
                     }
                 }
             }
@@ -433,9 +427,8 @@ impl CmaEs {
         let c_s_comp = (self.c_sigma * (2.0 - self.c_sigma)).sqrt();
         let mu_eff: f64 = 1.0 / self.weights.iter().map(|&w| w * w).sum::<f64>();
         let mu_eff_sqrt = mu_eff.sqrt();
-        for i in 0..n {
-            self.p_sigma[i] =
-                (1.0 - self.c_sigma) * self.p_sigma[i] + c_s_comp * mu_eff_sqrt * l_inv_delta[i];
+        for (ps, &ld) in self.p_sigma.iter_mut().zip(l_inv_delta.iter()) {
+            *ps = (1.0 - self.c_sigma) * *ps + c_s_comp * mu_eff_sqrt * ld;
         }
         let p_sigma_norm = self.p_sigma.iter().map(|v| v * v).sum::<f64>().sqrt();
         self.sigma *= ((self.c_sigma / self.d_sigma) * (p_sigma_norm / self.chi_n - 1.0)).exp();
@@ -445,9 +438,8 @@ impl CmaEs {
             0.0_f64
         };
         let c_c_comp = (self.c_c * (2.0 - self.c_c)).sqrt();
-        for i in 0..n {
-            self.p_c[i] =
-                (1.0 - self.c_c) * self.p_c[i] + h_sigma * c_c_comp * mu_eff_sqrt * mean_delta[i];
+        for (pc, &md) in self.p_c.iter_mut().zip(mean_delta.iter()) {
+            *pc = (1.0 - self.c_c) * *pc + h_sigma * c_c_comp * mu_eff_sqrt * md;
         }
         let mut rank_mu_sum = vec![0.0_f64; n * n];
         for (rank, &(_, idx)) in fitvals.iter().take(self.mu).enumerate() {

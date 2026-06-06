@@ -220,11 +220,8 @@ pub fn edge_edge_contact(
 }
 #[cfg(test)]
 mod tests_extended {
-    use super::*;
-    use crate::Capsule;
-
+    use super::super::*;
     use crate::Obb;
-
     use crate::ObbCapsuleCollision;
     use crate::ObbCollision;
 
@@ -338,7 +335,6 @@ mod tests_extended {
     }
 }
 /// Query overlapping pairs between two flat-array OBB BVHs.
-#[allow(dead_code)]
 pub fn obb_bvh_pair_query(a: &ObbBvh, b: &ObbBvh) -> Vec<(usize, usize)> {
     if a.nodes.is_empty() || b.nodes.is_empty() {
         return Vec::new();
@@ -384,7 +380,6 @@ pub(super) fn obb_bvh_pair_recursive(
     }
 }
 /// Project an OBB onto a unit vector and return (center_projection, extent).
-#[allow(dead_code)]
 pub fn obb_project(obb: &Obb, axis: [f64; 3]) -> (f64, f64) {
     let cp = dot(obb.center, axis);
     let r = obb.half_extents[0] * dot(obb.axes[0], axis).abs()
@@ -393,7 +388,6 @@ pub fn obb_project(obb: &Obb, axis: [f64; 3]) -> (f64, f64) {
     (cp, r)
 }
 /// Returns `true` if two OBBs overlap along `axis`.
-#[allow(dead_code)]
 pub fn obb_overlap_on_axis(a: &Obb, b: &Obb, axis: [f64; 3]) -> bool {
     let len = length(axis);
     if len < 1e-12 {

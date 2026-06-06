@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -19,8 +18,6 @@
 //! Reference: Guo, Z., Zheng, C., & Shi, B. (2002). Discrete lattice effects
 //! on the forcing term in the lattice Boltzmann method. *Physical Review E*,
 //! 65, 046308.
-
-#![allow(dead_code)]
 
 use crate::lattice::{D3Q19_VELOCITIES, D3Q19_WEIGHTS};
 
@@ -1000,8 +997,8 @@ mod tests {
     fn test_boussinesq_no_force_at_ref() {
         let bf = BoussinesqForcing::new(1e-3, 300.0, [0.0, -9.81, 0.0]);
         let f = bf.force_at(1.0, 300.0);
-        for k in 0..3 {
-            assert!(f[k].abs() < 1e-15, "Force should be zero at T_ref");
+        for &f_k in f.iter() {
+            assert!(f_k.abs() < 1e-15, "Force should be zero at T_ref");
         }
     }
 

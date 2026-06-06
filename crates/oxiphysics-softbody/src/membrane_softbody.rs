@@ -11,9 +11,6 @@
 //! All quantities are in SI units (Pa, m, N, ...) unless otherwise stated.
 //! Uses `[f64; 3]` arrays for vectors (no nalgebra dependency).
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -75,18 +72,6 @@ fn vec_normalize(a: [f64; 3]) -> [f64; 3] {
 #[inline]
 fn vec_neg(a: [f64; 3]) -> [f64; 3] {
     [-a[0], -a[1], -a[2]]
-}
-
-/// Add scaled vector: a + s * b.
-#[inline]
-fn vec_add_scaled(a: [f64; 3], b: [f64; 3], s: f64) -> [f64; 3] {
-    [a[0] + s * b[0], a[1] + s * b[1], a[2] + s * b[2]]
-}
-
-/// Squared length of a 3-vector.
-#[inline]
-fn vec_len_sq(a: [f64; 3]) -> f64 {
-    vec_dot(a, a)
 }
 
 /// Zero 3-vector.

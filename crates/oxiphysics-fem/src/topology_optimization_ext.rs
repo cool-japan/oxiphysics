@@ -1,5 +1,3 @@
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -10,9 +8,6 @@
 //! constraint, multi-load-case, stress-constrained, level-set, BESO,
 //! compliant-mechanism design, frequency optimisation, and heat-conduction
 //! topology optimisation.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ============================================================================
 // § 1  SIMP INTERPOLATION
@@ -328,7 +323,7 @@ pub fn mma_single_variable(p: f64, q: f64, lower: f64, upper: f64, alpha: f64, b
 pub fn mma_step(
     x: &[f64],
     dc: &[f64],
-    asymptotes: &mut Vec<MmaAsymptote>,
+    asymptotes: &mut [MmaAsymptote],
     x_lo: f64,
     x_hi: f64,
     move_limit: f64,
@@ -719,7 +714,7 @@ pub fn beso_thresholds(
 /// elements to approach the target volume fraction.
 pub fn beso_update(
     sensitivities: &[f64],
-    states: &mut Vec<BesoCellState>,
+    states: &mut [BesoCellState],
     volume_fraction_target: f64,
     evolutionary_rate: f64,
 ) {
@@ -1338,9 +1333,9 @@ mod tests {
     fn test_oc_single_update_clamping() {
         // Should never exceed [rho_min, 1.0]
         let v = oc_single_update(0.5, 100.0, 1e-6, 0.2, 0.01);
-        assert!(v <= 1.0 && v >= 0.01);
+        assert!((0.01..=1.0).contains(&v));
         let v2 = oc_single_update(0.5, 1e-10, 1e6, 0.2, 0.01);
-        assert!(v2 >= 0.01 && v2 <= 1.0);
+        assert!((0.01..=1.0).contains(&v2));
     }
 
     #[test]

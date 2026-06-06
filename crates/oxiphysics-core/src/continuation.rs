@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,8 +8,10 @@
 //! bifurcation point detection, branch switching, turning-point location,
 //! stability analysis, and generic path-following with event detection.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
+/// Residual function F(u, λ) → ℝⁿ.
+pub type ResidualFn = dyn Fn(&[f64], f64) -> Vec<f64>;
+/// Jacobian function J(u, λ) → ℝⁿˣⁿ.
+pub type JacobianFn = dyn Fn(&[f64], f64) -> Vec<Vec<f64>>;
 
 // ---------------------------------------------------------------------------
 // ContinuationState
@@ -125,8 +126,8 @@ pub struct CorrectorResult {
 pub fn corrector_newton(
     predicted: &ContinuationState,
     prev: &ContinuationState,
-    f: &dyn Fn(&[f64], f64) -> Vec<f64>,
-    jac: &dyn Fn(&[f64], f64) -> Vec<Vec<f64>>,
+    f: &ResidualFn,
+    jac: &JacobianFn,
     tol: f64,
     max_iter: usize,
 ) -> CorrectorResult {
@@ -186,10 +187,10 @@ pub fn corrector_newton(
         for col in 0..m {
             let mut max_row = col;
             let mut max_val = mat[col][col].abs();
-            for row in (col + 1)..m {
-                if mat[row][col].abs() > max_val {
-                    max_val = mat[row][col].abs();
-                    max_row = row;
+            for (offset, row_vec) in mat[(col + 1)..m].iter().enumerate() {
+                if row_vec[col].abs() > max_val {
+                    max_val = row_vec[col].abs();
+                    max_row = col + 1 + offset;
                 }
             }
             mat.swap(col, max_row);
@@ -205,9 +206,9 @@ pub fn corrector_newton(
             }
             for row in (col + 1)..m {
                 let factor = mat[row][col] / pivot;
-                for k in col..=m {
-                    let val = mat[col][k];
-                    mat[row][k] -= factor * val;
+                let col_slice: Vec<f64> = mat[col][col..=m].to_vec();
+                for (cell, &cv) in mat[row][col..=m].iter_mut().zip(col_slice.iter()) {
+                    *cell -= factor * cv;
                 }
             }
         }
@@ -221,8 +222,8 @@ pub fn corrector_newton(
             delta[i] = s / mat[i][i];
         }
 
-        for i in 0..n {
-            u[i] += delta[i];
+        for (ui, &di) in u.iter_mut().zip(delta[..n].iter()) {
+            *ui += di;
         }
         lam += delta[n];
     }
@@ -261,10 +262,10 @@ pub fn matrix_determinant(mat: &[Vec<f64>]) -> f64 {
     for col in 0..n {
         let mut max_row = col;
         let mut max_val = a[col][col].abs();
-        for row in (col + 1)..n {
-            if a[row][col].abs() > max_val {
-                max_val = a[row][col].abs();
-                max_row = row;
+        for (offset, row_vec) in a[(col + 1)..n].iter().enumerate() {
+            if row_vec[col].abs() > max_val {
+                max_val = row_vec[col].abs();
+                max_row = col + 1 + offset;
             }
         }
         if max_row != col {
@@ -277,9 +278,9 @@ pub fn matrix_determinant(mat: &[Vec<f64>]) -> f64 {
         }
         for row in (col + 1)..n {
             let factor = a[row][col] / pivot;
-            for k in col..n {
-                let val = a[col][k];
-                a[row][k] -= factor * val;
+            let col_slice: Vec<f64> = a[col][col..n].to_vec();
+            for (cell, &cv) in a[row][col..n].iter_mut().zip(col_slice.iter()) {
+                *cell -= factor * cv;
             }
         }
     }
@@ -299,7 +300,7 @@ pub fn matrix_determinant(mat: &[Vec<f64>]) -> f64 {
 pub fn detect_fold_point(
     state_a: &ContinuationState,
     state_b: &ContinuationState,
-    jac: &dyn Fn(&[f64], f64) -> Vec<Vec<f64>>,
+    jac: &JacobianFn,
 ) -> bool {
     let det_a = matrix_determinant(&jac(&state_a.u, state_a.lambda));
     let det_b = matrix_determinant(&jac(&state_b.u, state_b.lambda));
@@ -344,11 +345,13 @@ pub fn stability_index(mat: &[Vec<f64>]) -> usize {
         }
     } else {
         let mut count = 0;
-        for i in 0..n {
-            let center = mat[i][i];
-            let radius: f64 = (0..n)
-                .filter(|&jj| jj != i)
-                .map(|jj| mat[i][jj].abs())
+        for (i, row) in mat.iter().enumerate() {
+            let center = row[i];
+            let radius: f64 = row
+                .iter()
+                .enumerate()
+                .filter(|&(jj, _)| jj != i)
+                .map(|(_, &v)| v.abs())
                 .sum();
             if center - radius > 0.0 {
                 count += 1;
@@ -369,7 +372,7 @@ pub fn stability_index(mat: &[Vec<f64>]) -> usize {
 pub fn detect_bifurcation(
     state_a: &ContinuationState,
     state_b: &ContinuationState,
-    jac: &dyn Fn(&[f64], f64) -> Vec<Vec<f64>>,
+    jac: &JacobianFn,
 ) -> bool {
     let ja = jac(&state_a.u, state_a.lambda);
     let jb = jac(&state_b.u, state_b.lambda);
@@ -414,7 +417,7 @@ pub struct BifurcationPoint {
 pub fn classify_bifurcation(
     state_a: &ContinuationState,
     state_b: &ContinuationState,
-    jac: &dyn Fn(&[f64], f64) -> Vec<Vec<f64>>,
+    jac: &JacobianFn,
 ) -> Option<BifurcationPoint> {
     let det_a = matrix_determinant(&jac(&state_a.u, state_a.lambda));
     let det_b = matrix_determinant(&jac(&state_b.u, state_b.lambda));
@@ -456,8 +459,7 @@ pub fn classify_bifurcation(
     let det_mid = matrix_determinant(&j_mid);
 
     // Simple heuristic: if trace changes sign simultaneously → pitchfork candidate
-    let n2 = j_mid.len();
-    let tr_mid: f64 = (0..n2).map(|i| j_mid[i][i]).sum();
+    let tr_mid: f64 = j_mid.iter().enumerate().map(|(i, row)| row[i]).sum();
     let bif_type = if tr_mid.abs() < 1e-6 {
         BifurcationType::Pitchfork
     } else {
@@ -482,7 +484,7 @@ pub fn classify_bifurcation(
 /// branch displaced by `epsilon`.
 pub fn branch_switching(
     state: &ContinuationState,
-    jac: &dyn Fn(&[f64], f64) -> Vec<Vec<f64>>,
+    jac: &JacobianFn,
     epsilon: f64,
 ) -> ContinuationState {
     let n = state.u.len();
@@ -490,14 +492,11 @@ pub fn branch_switching(
     let mut null_dir = vec![0.0_f64; n];
     let mut min_col_norm = f64::MAX;
     for col in 0..n {
-        let col_norm: f64 = (0..n)
-            .map(|row| j[row][col] * j[row][col])
-            .sum::<f64>()
-            .sqrt();
+        let col_norm: f64 = j.iter().map(|row| row[col] * row[col]).sum::<f64>().sqrt();
         if col_norm < min_col_norm {
             min_col_norm = col_norm;
-            for row in 0..n {
-                null_dir[row] = j[row][col];
+            for (nd, jrow) in null_dir.iter_mut().zip(j.iter()) {
+                *nd = jrow[col];
             }
         }
     }
@@ -557,11 +556,7 @@ impl BranchSwitching {
     /// Switch branch at `state` using the bordered system approach.
     ///
     /// Returns the new continuation state on the secondary branch.
-    pub fn switch(
-        &self,
-        state: &ContinuationState,
-        jac: &dyn Fn(&[f64], f64) -> Vec<Vec<f64>>,
-    ) -> ContinuationState {
+    pub fn switch(&self, state: &ContinuationState, jac: &JacobianFn) -> ContinuationState {
         branch_switching(state, jac, self.epsilon)
     }
 }
@@ -595,7 +590,7 @@ impl TurningPointLocator {
         &self,
         state_a: &ContinuationState,
         state_b: &ContinuationState,
-        jac: &dyn Fn(&[f64], f64) -> Vec<Vec<f64>>,
+        jac: &JacobianFn,
     ) -> (ContinuationState, f64) {
         let mut alpha_lo = 0.0_f64;
         let mut alpha_hi = 1.0_f64;
@@ -667,11 +662,7 @@ impl StabilityAnalysis {
     /// Assign a stability label to a single state.
     ///
     /// Uses the exact 2×2 formula and Gershgorin for larger systems.
-    pub fn label(
-        &self,
-        state: &ContinuationState,
-        jac: &dyn Fn(&[f64], f64) -> Vec<Vec<f64>>,
-    ) -> StabilityLabel {
+    pub fn label(&self, state: &ContinuationState, jac: &JacobianFn) -> StabilityLabel {
         let j = jac(&state.u, state.lambda);
         let n = j.len();
         if n == 0 {
@@ -717,9 +708,14 @@ impl StabilityAnalysis {
         // Gershgorin for n > 2
         let mut any_unstable = false;
         let mut any_marginal = false;
-        for i in 0..n {
-            let center = j[i][i];
-            let radius: f64 = (0..n).filter(|&jj| jj != i).map(|jj| j[i][jj].abs()).sum();
+        for (i, row) in j.iter().enumerate() {
+            let center = row[i];
+            let radius: f64 = row
+                .iter()
+                .enumerate()
+                .filter(|&(jj, _)| jj != i)
+                .map(|(_, &v)| v.abs())
+                .sum();
             if center - radius > 0.0 {
                 any_unstable = true;
             }
@@ -740,7 +736,7 @@ impl StabilityAnalysis {
     pub fn label_branch(
         &self,
         states: &[ContinuationState],
-        jac: &dyn Fn(&[f64], f64) -> Vec<Vec<f64>>,
+        jac: &JacobianFn,
     ) -> Vec<StabilityLabel> {
         states.iter().map(|s| self.label(s, jac)).collect()
     }
@@ -787,8 +783,8 @@ impl PseudoArcLengthContinuation {
     pub fn step(
         &self,
         state: &mut ContinuationState,
-        f: &dyn Fn(&[f64], f64) -> Vec<f64>,
-        jac: &dyn Fn(&[f64], f64) -> Vec<Vec<f64>>,
+        f: &ResidualFn,
+        jac: &JacobianFn,
     ) -> Option<ContinuationState> {
         // Try current ds; if corrector fails, halve ds up to 5 times.
         for attempt in 0..5usize {
@@ -799,8 +795,11 @@ impl PseudoArcLengthContinuation {
                 // Update tangent via finite difference between states
                 let n = state.u.len();
                 let mut new_tangent = vec![0.0_f64; n + 1];
-                for i in 0..n {
-                    new_tangent[i] = result.u[i] - state.u[i];
+                for (ti, (ri, si)) in new_tangent[..n]
+                    .iter_mut()
+                    .zip(result.u.iter().zip(state.u.iter()))
+                {
+                    *ti = ri - si;
                 }
                 new_tangent[n] = result.lambda - state.lambda;
                 let t_norm: f64 = new_tangent.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -875,8 +874,8 @@ impl PathFollowing {
     pub fn follow(
         &self,
         initial_state: ContinuationState,
-        f: &dyn Fn(&[f64], f64) -> Vec<f64>,
-        jac: &dyn Fn(&[f64], f64) -> Vec<Vec<f64>>,
+        f: &ResidualFn,
+        jac: &JacobianFn,
     ) -> Vec<PathStep> {
         let mut steps: Vec<PathStep> = Vec::with_capacity(self.max_steps);
         let mut current = initial_state;

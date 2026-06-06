@@ -14,7 +14,6 @@
 /// Fuel system parameters and state.
 ///
 /// Models a single-tank, single-injector fuel system.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FuelSystem {
     /// Total tank volume in litres.
@@ -123,7 +122,6 @@ pub fn injection_timing(rpm: f64, load: f64, base_deg: f64) -> f64 {
 /// * `rho_air`     — Air density (kg/m³); ambient ≈ 1.2.
 ///
 /// Returns SMD in micrometres.
-#[allow(clippy::too_many_arguments)]
 pub fn fuel_atomization(
     u_rel_m_s: f64,
     d_nozzle_mm: f64,
@@ -200,7 +198,6 @@ pub fn emissions_nox(temp_k: f64, o2_fraction: f64) -> f64 {
 /// * `time_s`             — Time since lateral acceleration applied (s).
 ///
 /// Returns the approximate sloshing displacement angle (rad) at time `t`.
-#[allow(clippy::too_many_arguments)]
 pub fn tank_sloshing(
     lateral_accel_m_s2: f64,
     fill_fraction: f64,

@@ -2,10 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// A single particle used in volumetric PBD simulation.
 #[derive(Debug, Clone)]
 pub struct VolumeParticle {
@@ -252,7 +249,6 @@ impl TetrahedralSoftBody {
 /// when compressed.
 impl TetrahedralSoftBody {
     /// Project volume constraints with an additional internal pressure correction.
-    #[allow(dead_code)]
     pub fn solve_volume_with_pressure(&mut self, pressure: f64) {
         for (idx, &tet) in self.tetrahedra.iter().enumerate() {
             let v_rest = self.rest_volumes[idx];
@@ -303,7 +299,6 @@ impl TetrahedralSoftBody {
     ///
     /// For each tet, computes the signed volume of 4 sub-tets formed with
     /// the centroid, then verifies consistency.
-    #[allow(dead_code)]
     pub fn total_volume_centroid(&self) -> f64 {
         let mut total = 0.0_f64;
         for tet in &self.tetrahedra {
@@ -323,7 +318,6 @@ impl TetrahedralSoftBody {
         total
     }
     /// Compute volume change ratio: V_current / V_rest for each tetrahedron.
-    #[allow(dead_code)]
     pub fn volume_ratios(&self) -> Vec<f64> {
         self.tetrahedra
             .iter()
@@ -343,7 +337,6 @@ impl TetrahedralSoftBody {
     ///
     /// Uses the ideal gas law to compute internal pressure based on
     /// volume change, then applies it during constraint projection.
-    #[allow(dead_code)]
     pub fn step_with_gas_law(&mut self, dt: f64, gravity: [f64; 3], reference_pressure: f64) {
         let dt2 = dt * dt;
         for p in &mut self.particles {
@@ -365,7 +358,6 @@ impl TetrahedralSoftBody {
 impl TetrahedralSoftBody {
     /// Apply volume preservation penalty forces via position correction.
     /// Moves particles to reduce volume error.
-    #[allow(dead_code)]
     pub fn apply_volume_preservation(&mut self, rest_volumes: &[f64], stiffness: f64) {
         let positions: Vec<[f64; 3]> = self.particles.iter().map(|p| p.position).collect();
         let grad =
@@ -381,7 +373,6 @@ impl TetrahedralSoftBody {
         }
     }
     /// Return the current volumes for each tetrahedron.
-    #[allow(dead_code)]
     pub fn compute_current_volumes(&self) -> Vec<f64> {
         self.tetrahedra
             .iter()
@@ -397,13 +388,11 @@ impl TetrahedralSoftBody {
             .collect()
     }
     /// Count the number of free (non-fixed) particles.
-    #[allow(dead_code)]
     pub fn free_particle_count(&self) -> usize {
         self.particles.iter().filter(|p| !p.fixed).count()
     }
     /// Estimate kinetic energy using Verlet velocity approximation: v ≈ (pos - prev_pos) / dt.
     /// Uses dt = 1.0 as a unit time.
-    #[allow(dead_code)]
     pub fn approx_kinetic_energy(&self) -> f64 {
         self.particles
             .iter()
@@ -419,7 +408,6 @@ impl TetrahedralSoftBody {
             .sum()
     }
     /// Apply plane collision to all particles (positional correction only).
-    #[allow(dead_code)]
     pub fn apply_plane_collision(&mut self, plane: &CollisionPlane) {
         let n = plane.normal;
         let p0 = plane.point;
@@ -446,7 +434,6 @@ impl TetrahedralSoftBody {
     }
     /// Simulate one step with Boyle's law gas pressure applied to a surface mesh.
     /// The gas pressure modifies prev_position to inject velocity into Verlet.
-    #[allow(dead_code)]
     pub fn step_with_pressure(
         &mut self,
         triangles: &[[usize; 3]],
@@ -486,7 +473,6 @@ impl TetrahedralSoftBody {
     }
 }
 /// Sphere-particle soft collision: push particles out of a sphere.
-#[allow(dead_code)]
 pub struct CollisionSphere {
     /// Centre of the sphere.
     pub center: [f64; 3],
@@ -494,7 +480,6 @@ pub struct CollisionSphere {
     pub radius: f64,
 }
 /// Plane collision represented by a point on the plane and an outward normal.
-#[allow(dead_code)]
 pub struct CollisionPlane {
     /// A point on the plane.
     pub point: [f64; 3],

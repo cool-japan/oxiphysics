@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,7 +15,6 @@
 ///
 /// The Courant–Friedrichs–Lewy (CFL) number must satisfy `ν ≤ 1` (advection)
 /// or `α ≤ 0.5` (diffusion) for stability of explicit schemes.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CflCondition {
     /// Grid spacing Δx.
@@ -79,7 +77,6 @@ impl CflCondition {
 /// elements fixed.
 ///
 /// Returns the temperature field after `n_steps`.
-#[allow(dead_code)]
 pub fn heat_equation_1d(u0: &[f64], alpha: f64, dx: f64, dt: f64, n_steps: usize) -> Vec<f64> {
     let n = u0.len();
     let mut u = u0.to_vec();
@@ -118,7 +115,6 @@ pub fn heat_equation_1d(u0: &[f64], alpha: f64, dx: f64, dt: f64, n_steps: usize
 /// Dirichlet zero boundary conditions are applied.
 ///
 /// Returns the solution at time t + n_steps·Δt.
-#[allow(dead_code)]
 pub fn wave_equation_1d(
     u_prev: &[f64],
     u_curr: &[f64],
@@ -160,7 +156,6 @@ pub fn wave_equation_1d(
 /// are applied.
 ///
 /// Returns the solution vector `u` of the same length as `f`.
-#[allow(dead_code)]
 pub fn poisson_1d(f: &[f64], dx: f64, bc_left: f64, bc_right: f64) -> Vec<f64> {
     let n = f.len();
     if n < 2 {
@@ -228,7 +223,6 @@ pub fn poisson_1d(f: &[f64], dx: f64, bc_left: f64, bc_right: f64) -> Vec<f64> {
 /// Periodic boundary conditions are applied.
 ///
 /// Returns the advected field after `n_steps`.
-#[allow(dead_code)]
 pub fn advection_1d_upwind(u0: &[f64], c: f64, dx: f64, dt: f64, n_steps: usize) -> Vec<f64> {
     let n = u0.len();
     let mut u = u0.to_vec();
@@ -266,7 +260,6 @@ pub fn advection_1d_upwind(u0: &[f64], c: f64, dx: f64, dt: f64, n_steps: usize)
 /// - `n_steps` — number of time steps.
 ///
 /// Periodic boundary conditions are applied.
-#[allow(dead_code)]
 pub fn burger_equation_1d(u0: &[f64], dx: f64, dt: f64, n_steps: usize) -> Vec<f64> {
     let n = u0.len();
     let mut u = u0.to_vec();
@@ -329,7 +322,6 @@ fn godunov_flux_burgers(u_l: f64, u_r: f64) -> f64 {
 ///   value `u`, and time `t`.
 ///
 /// Dirichlet boundary conditions are preserved from `u0`.
-#[allow(dead_code)]
 pub fn diffusion_reaction_1d<F>(
     u0: &[f64],
     d: f64,
@@ -439,12 +431,12 @@ mod tests {
         let dt = 0.4 * dx * dx / alpha; // just below stability limit
         let u = heat_equation_1d(&u0, alpha, dx, dt, 5000);
 
-        for i in 1..n - 1 {
+        for (i, &u_i) in u.iter().enumerate().take(n - 1).skip(1) {
             let x = i as f64 * dx;
             assert!(
-                (u[i] - x).abs() < 1e-3,
+                (u_i - x).abs() < 1e-3,
                 "expected {x:.3} at node {i}, got {:.6}",
-                u[i]
+                u_i
             );
         }
     }
@@ -528,12 +520,12 @@ mod tests {
         let dx = 1.0 / (n - 1) as f64;
         let f = vec![0.0_f64; n];
         let u = poisson_1d(&f, dx, 0.0, 1.0);
-        for i in 0..n {
+        for (i, &u_i) in u.iter().enumerate() {
             let x = i as f64 * dx;
             assert!(
-                (u[i] - x).abs() < 1e-10,
+                (u_i - x).abs() < 1e-10,
                 "node {i}: expected {x}, got {}",
-                u[i]
+                u_i
             );
         }
     }
@@ -545,13 +537,13 @@ mod tests {
         let dx = 1.0 / (n - 1) as f64;
         let f = vec![2.0_f64; n];
         let u = poisson_1d(&f, dx, 0.0, 0.0);
-        for i in 0..n {
+        for (i, &u_i) in u.iter().enumerate() {
             let x = i as f64 * dx;
             let expected = x * (1.0 - x);
             assert!(
-                (u[i] - expected).abs() < 1e-10,
+                (u_i - expected).abs() < 1e-10,
                 "node {i}: expected {expected:.6}, got {:.6}",
-                u[i]
+                u_i
             );
         }
     }
@@ -711,11 +703,11 @@ mod tests {
 
         // Interior values should decay: u ≈ 0.5 * (1 - k*dt)^steps
         let expected = 0.5 * (1.0 - k * dt).powi(steps as i32);
-        for i in 1..n - 1 {
+        for (i, &u_i) in u.iter().enumerate().take(n - 1).skip(1) {
             assert!(
-                (u[i] - expected).abs() < 1e-6,
+                (u_i - expected).abs() < 1e-6,
                 "node {i}: expected {expected:.8}, got {:.8}",
-                u[i]
+                u_i
             );
         }
     }

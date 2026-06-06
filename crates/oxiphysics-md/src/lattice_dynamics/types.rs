@@ -4,7 +4,6 @@
 
 use std::f64::consts::PI;
 
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{HBAR, KB};
 

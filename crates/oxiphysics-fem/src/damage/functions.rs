@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 /// Von-Mises equivalent stress from a Voigt stress vector
 /// \[sigma_xx, sigma_yy, sigma_zz, tau_xy, tau_yz, tau_xz\].
 pub(super) fn von_mises(s: &[f64; 6]) -> f64 {
@@ -342,12 +341,12 @@ mod tests {
     #[test]
     fn test_lemaitre_damaged_stiffness() {
         let mut c = [[0.0_f64; 6]; 6];
-        for i in 0..6 {
-            c[i][i] = 1.0;
+        for (i, row) in c.iter_mut().enumerate() {
+            row[i] = 1.0;
         }
         let cd = LemaitreDamage::damaged_stiffness(0.5, &c);
-        for i in 0..6 {
-            assert!((cd[i][i] - 0.5).abs() < 1e-10);
+        for (i, row) in cd.iter().enumerate() {
+            assert!((row[i] - 0.5).abs() < 1e-10);
         }
     }
     #[test]
@@ -388,7 +387,7 @@ mod tests {
     #[test]
     fn test_scalar_isotropic_damage_monotone() {
         let mut model = ScalarIsotropicDamage {
-            D: 0.0,
+            d: 0.0,
             kappa: 0.0,
             kappa_0: 1e-4,
         };
@@ -408,7 +407,7 @@ mod tests {
     #[test]
     fn test_scalar_isotropic_damage_zero_below_threshold() {
         let mut model = ScalarIsotropicDamage {
-            D: 0.0,
+            d: 0.0,
             kappa: 0.0,
             kappa_0: 1e-3,
         };
@@ -462,8 +461,8 @@ mod tests {
     #[test]
     fn test_lemaitre_cdm_rate_positive() {
         let model = LemaitreCDM {
-            D: 0.0,
-            S: 1.0,
+            d: 0.0,
+            s: 1.0,
             s0: 1.0,
         };
         let rate = model.evolution_rate(0.01, 300e6, 100e6);
@@ -475,7 +474,7 @@ mod tests {
     #[test]
     fn test_crack_band_softening_slope_negative() {
         let model = CrackBandModel {
-            Gf: 100.0,
+            gf: 100.0,
             fc: 3e6,
             h: 0.02,
         };
@@ -485,7 +484,7 @@ mod tests {
     #[test]
     fn test_crack_band_softening_formula() {
         let model = CrackBandModel {
-            Gf: 100.0,
+            gf: 100.0,
             fc: 3e6,
             h: 0.02,
         };
@@ -535,24 +534,44 @@ mod tests {
     }
     #[test]
     fn test_coupled_damage_plasticity_yield_stress_increases() {
-        let model = CoupledDamagePlasticity::new(
-            200e9, 0.3, 250e6, 1e9, 100e6, 5.0, 1e9, 0.5, 2.0, 1.0, 0.8,
-        );
+        let model = CoupledDamagePlasticity::new(CoupledDamagePlasticityParams {
+            e: 200e9,
+            nu: 0.3,
+            sigma_y0: 250e6,
+            h: 1e9,
+            q: 100e6,
+            b_hard: 5.0,
+            c_kin: 1e9,
+            gamma_kin: 0.5,
+            s_dmg: 2.0,
+            s_dmg_exp: 1.0,
+            d_c: 0.8,
+        });
         let s0 = model.yield_stress(0.0);
         let s1 = model.yield_stress(0.01);
         assert!(s1 > s0, "Yield stress should increase with plastic strain");
     }
     #[test]
     fn test_coupled_damage_plasticity_elastic_step() {
-        let model = CoupledDamagePlasticity::new(
-            200e9, 0.3, 250e6, 1e9, 100e6, 5.0, 1e9, 0.5, 2.0, 1.0, 0.8,
-        );
+        let model = CoupledDamagePlasticity::new(CoupledDamagePlasticityParams {
+            e: 200e9,
+            nu: 0.3,
+            sigma_y0: 250e6,
+            h: 1e9,
+            q: 100e6,
+            b_hard: 5.0,
+            c_kin: 1e9,
+            gamma_kin: 0.5,
+            s_dmg: 2.0,
+            s_dmg_exp: 1.0,
+            d_c: 0.8,
+        });
         let state = DamagePlasticityState::default();
         let sigma_trial = [100e6, 0.0, 0.0, 0.0, 0.0, 0.0];
         let (new_state, converged) = model.return_mapping(&state, &sigma_trial);
         assert!(converged, "Should converge");
         assert!(
-            (new_state.D - 0.0).abs() < 1e-12,
+            (new_state.d - 0.0).abs() < 1e-12,
             "No damage in elastic regime"
         );
         assert!(
@@ -562,9 +581,19 @@ mod tests {
     }
     #[test]
     fn test_coupled_damage_plasticity_plastic_step() {
-        let model = CoupledDamagePlasticity::new(
-            200e9, 0.3, 250e6, 1e9, 100e6, 5.0, 1e9, 0.5, 2.0, 1.0, 0.8,
-        );
+        let model = CoupledDamagePlasticity::new(CoupledDamagePlasticityParams {
+            e: 200e9,
+            nu: 0.3,
+            sigma_y0: 250e6,
+            h: 1e9,
+            q: 100e6,
+            b_hard: 5.0,
+            c_kin: 1e9,
+            gamma_kin: 0.5,
+            s_dmg: 2.0,
+            s_dmg_exp: 1.0,
+            d_c: 0.8,
+        });
         let state = DamagePlasticityState::default();
         let sigma_trial = [600e6, 0.0, 0.0, 0.0, 0.0, 0.0];
         let (new_state, converged) = model.return_mapping(&state, &sigma_trial);
@@ -573,9 +602,19 @@ mod tests {
     }
     #[test]
     fn test_coupled_damage_plasticity_shear_modulus() {
-        let model = CoupledDamagePlasticity::new(
-            200e9, 0.3, 250e6, 1e9, 100e6, 5.0, 1e9, 0.5, 2.0, 1.0, 0.8,
-        );
+        let model = CoupledDamagePlasticity::new(CoupledDamagePlasticityParams {
+            e: 200e9,
+            nu: 0.3,
+            sigma_y0: 250e6,
+            h: 1e9,
+            q: 100e6,
+            b_hard: 5.0,
+            c_kin: 1e9,
+            gamma_kin: 0.5,
+            s_dmg: 2.0,
+            s_dmg_exp: 1.0,
+            d_c: 0.8,
+        });
         let g = model.shear_modulus();
         let expected = 200e9 / (2.0 * 1.3);
         assert!((g - expected).abs() / expected < 1e-12);
@@ -620,11 +659,11 @@ mod tests {
     #[test]
     fn test_lemaitre_chaboche_energy_release_rate_positive() {
         let model = LemaitreChabocheDamage {
-            S: 2.0,
+            s_strength: 2.0,
             s: 1.0,
-            p_D: 0.0,
-            D_c: 0.9,
-            E: 200e9,
+            p_d: 0.0,
+            d_c: 0.9,
+            e: 200e9,
             nu: 0.3,
         };
         let sigma = [300e6, 0.0, 0.0, 0.0, 0.0, 0.0];
@@ -637,11 +676,11 @@ mod tests {
     #[test]
     fn test_lemaitre_chaboche_no_damage_below_threshold() {
         let model = LemaitreChabocheDamage {
-            S: 2.0,
+            s_strength: 2.0,
             s: 1.0,
-            p_D: 0.01,
-            D_c: 0.9,
-            E: 200e9,
+            p_d: 0.01,
+            d_c: 0.9,
+            e: 200e9,
             nu: 0.3,
         };
         let sigma = [300e6, 0.0, 0.0, 0.0, 0.0, 0.0];
@@ -651,11 +690,11 @@ mod tests {
     #[test]
     fn test_lemaitre_chaboche_damage_accumulates() {
         let model = LemaitreChabocheDamage {
-            S: 2.0,
+            s_strength: 2.0,
             s: 1.0,
-            p_D: 0.0,
-            D_c: 0.9,
-            E: 200e9,
+            p_d: 0.0,
+            d_c: 0.9,
+            e: 200e9,
             nu: 0.3,
         };
         let mut state = DamageState::default();
@@ -675,11 +714,11 @@ mod tests {
     #[test]
     fn test_lemaitre_chaboche_saturation_at_dc() {
         let model = LemaitreChabocheDamage {
-            S: 0.1,
+            s_strength: 0.1,
             s: 1.0,
-            p_D: 0.0,
-            D_c: 0.8,
-            E: 200e9,
+            p_d: 0.0,
+            d_c: 0.8,
+            e: 200e9,
             nu: 0.3,
         };
         let mut state = DamageState::default();
@@ -687,16 +726,16 @@ mod tests {
         for _ in 0..200 {
             model.update(&mut state, &sigma, 0.01);
         }
-        assert!(state.d <= model.D_c + 1e-10, "Damage should not exceed D_c");
+        assert!(state.d <= model.d_c + 1e-10, "Damage should not exceed D_c");
     }
     #[test]
     fn test_lemaitre_chaboche_effective_stress_scales() {
         let model = LemaitreChabocheDamage {
-            S: 2.0,
+            s_strength: 2.0,
             s: 1.0,
-            p_D: 0.0,
-            D_c: 0.9,
-            E: 200e9,
+            p_d: 0.0,
+            d_c: 0.9,
+            e: 200e9,
             nu: 0.3,
         };
         let sigma = [100e6, 0.0, 0.0, 0.0, 0.0, 0.0];

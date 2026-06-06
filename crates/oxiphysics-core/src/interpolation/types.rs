@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{dist3, hermite, hermite_deriv, lerp};
 
 /// A piecewise cubic Hermite spline defined by control points and tangents.
@@ -107,31 +104,20 @@ impl CatmullRomSpline {
         let t3 = t2 + dist3(self.points[i2], self.points[i3]).powf(self.alpha);
         let u = t1 + local_t * (t2 - t1);
         self.barry_goldman(
-            self.points[i0],
-            self.points[i1],
-            self.points[i2],
-            self.points[i3],
-            t0,
-            t1,
-            t2,
-            t3,
+            [
+                self.points[i0],
+                self.points[i1],
+                self.points[i2],
+                self.points[i3],
+            ],
+            [t0, t1, t2, t3],
             u,
         )
     }
     /// Barry-Goldman algorithm for parameterized Catmull-Rom evaluation.
-    #[allow(clippy::too_many_arguments)]
-    fn barry_goldman(
-        &self,
-        p0: [f64; 3],
-        p1: [f64; 3],
-        p2: [f64; 3],
-        p3: [f64; 3],
-        t0: f64,
-        t1: f64,
-        t2: f64,
-        t3: f64,
-        t: f64,
-    ) -> [f64; 3] {
+    fn barry_goldman(&self, points: [[f64; 3]; 4], knots: [f64; 4], t: f64) -> [f64; 3] {
+        let [p0, p1, p2, p3] = points;
+        let [t0, t1, t2, t3] = knots;
         fn blend(a: [f64; 3], b: [f64; 3], ta: f64, tb: f64, t: f64) -> [f64; 3] {
             if (tb - ta).abs() < f64::EPSILON {
                 return a;
@@ -634,8 +620,8 @@ impl RBFInterpolation {
             mat.swap(col, pivot);
             rhs.swap(col, pivot);
             let diag = mat[col][col];
-            for j in col..n {
-                mat[col][j] /= diag;
+            for cell in mat[col][col..].iter_mut() {
+                *cell /= diag;
             }
             rhs[col] /= diag;
             for row in 0..n {
@@ -643,9 +629,9 @@ impl RBFInterpolation {
                     continue;
                 }
                 let factor = mat[row][col];
-                for j in col..n {
-                    let v = mat[col][j] * factor;
-                    mat[row][j] -= v;
+                let col_vals: Vec<f64> = mat[col][col..].to_vec();
+                for (cell, &cv) in mat[row][col..].iter_mut().zip(col_vals.iter()) {
+                    *cell -= cv * factor;
                 }
                 let rv = rhs[col] * factor;
                 rhs[row] -= rv;
@@ -780,13 +766,13 @@ impl BSplineCurve {
         let mut knots = vec![0.0_f64; m];
         let interior = if n > degree + 1 { n - degree - 1 } else { 0 };
         let total_interior = interior + 2;
-        for i in 0..m {
+        for (i, knot) in knots.iter_mut().enumerate() {
             if i <= degree {
-                knots[i] = 0.0;
+                *knot = 0.0;
             } else if i >= m - degree - 1 {
-                knots[i] = 1.0;
+                *knot = 1.0;
             } else {
-                knots[i] = (i - degree) as f64 / (total_interior - 1 + 1) as f64;
+                *knot = (i - degree) as f64 / (total_interior - 1 + 1) as f64;
             }
         }
         knots

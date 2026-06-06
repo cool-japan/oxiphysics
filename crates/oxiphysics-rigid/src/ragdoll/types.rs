@@ -1,8 +1,6 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// Skeleton joint definition for building ragdolls from skeletons.
@@ -240,8 +238,7 @@ impl ArticulatedPose {
 pub struct HumanoidRagdoll;
 impl HumanoidRagdoll {
     /// Build a standard 15-bone humanoid ragdoll (Y-up coordinate system).
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new() -> Ragdoll {
+    pub fn build() -> Ragdoll {
         let gravity = [0.0, -9.81, 0.0];
         let mut rag = Ragdoll::new(gravity);
         let pi = std::f64::consts::PI;
@@ -782,7 +779,6 @@ impl Ragdoll {
         idx
     }
     /// Add a hinge joint and return its index.
-    #[allow(clippy::too_many_arguments)]
     pub fn add_hinge_joint(
         &mut self,
         bone_a: usize,

@@ -5,9 +5,6 @@
 //!
 //! Exposes the uniform spatial hash grid for fast neighbourhood queries.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::spatial_grid::SpatialGrid;
 use pyo3::prelude::*;
 

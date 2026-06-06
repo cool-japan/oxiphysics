@@ -25,8 +25,6 @@
 //! println!("{}", r);
 //! ```
 
-#![allow(dead_code)]
-
 use std::time::{Duration, Instant};
 
 use crate::simd_paths::{

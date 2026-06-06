@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::*;
     use crate::trajectory_optimization::BSplineTrajectory;
     use crate::trajectory_optimization::BoundaryConditions;
     use crate::trajectory_optimization::ConvergenceMonitor;

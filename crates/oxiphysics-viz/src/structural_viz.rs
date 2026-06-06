@@ -13,8 +13,6 @@
 //! consumes the produced [`MeshWireframe`], [`ColoredMesh`], [`GlyphSet`],
 //! and [`LinePlot`] data structures.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -57,6 +55,7 @@ fn vec3_normalize(a: [f64; 3]) -> [f64; 3] {
 }
 
 /// Dot product.
+#[cfg(test)]
 #[inline]
 fn vec3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
@@ -436,7 +435,6 @@ impl ColoredMesh {
 ///
 /// Only `Tri3` elements are tessellated; other element types are skipped.
 /// `scalar` must have one value per node in `mesh.nodes`.
-#[allow(clippy::too_many_arguments)]
 pub fn fem_surface_colored(mesh: &FemMesh, scalar: &[f64], cmap: StructColormap) -> ColoredMesh {
     let colors = scalars_to_colors(scalar, cmap);
     let mut cm = ColoredMesh::new();

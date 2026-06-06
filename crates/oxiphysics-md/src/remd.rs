@@ -1,4 +1,3 @@
-#![allow(clippy::too_many_arguments)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -19,7 +18,6 @@
 //! ```
 
 /// State of one REMD replica.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RemdReplica {
     /// Temperature in Kelvin.
@@ -123,7 +121,6 @@ pub fn attempt_exchange(
 // ─── RemdExchangeLog ─────────────────────────────────────────────────────────
 
 /// Log of all exchange attempts for post-analysis.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct RemdExchangeLog {
     /// Each entry is `(replica_i_id, replica_j_id, probability, accepted)`.
@@ -439,7 +436,6 @@ impl RemdAnalysis {
     /// Compute the mean potential energy per replica.
     ///
     /// `energy_history[replica][step]` → mean over steps.
-    #[allow(dead_code)]
     pub fn mean_energies(energy_history: &[Vec<f64>]) -> Vec<f64> {
         energy_history
             .iter()
@@ -453,7 +449,6 @@ impl RemdAnalysis {
     }
 
     /// Compute the variance of potential energy per replica.
-    #[allow(dead_code)]
     pub fn energy_variance(energy_history: &[Vec<f64>]) -> Vec<f64> {
         energy_history
             .iter()
@@ -469,7 +464,6 @@ impl RemdAnalysis {
     }
 
     /// Exchange matrix: `matrix[i][j]` = total number of swaps between replicas i and j.
-    #[allow(dead_code)]
     pub fn exchange_matrix(log: &RemdExchangeLog, n_replicas: usize) -> Vec<Vec<u32>> {
         let mut mat = vec![vec![0u32; n_replicas]; n_replicas];
         for &(i, j, _, accepted) in &log.exchanges {
@@ -482,7 +476,6 @@ impl RemdAnalysis {
     }
 
     /// Total number of accepted exchanges.
-    #[allow(dead_code)]
     pub fn total_exchanges(log: &RemdExchangeLog) -> usize {
         log.exchanges.iter().filter(|e| e.3).count()
     }
@@ -490,7 +483,6 @@ impl RemdAnalysis {
     /// Optimal temperature ratio for target acceptance rate.
     ///
     /// Based on the empirical formula: T_{i+1}/T_i ≈ 1 + sqrt(2/N_dof)/sqrt(k_B*T/sigma_E)
-    #[allow(dead_code)]
     pub fn optimal_temperature_ratio(n_dof: usize, target_rate: f64) -> f64 {
         1.0 + target_rate * (2.0 / n_dof as f64).sqrt()
     }
@@ -498,7 +490,6 @@ impl RemdAnalysis {
     /// Build an exponential temperature ladder from T_min to T_max.
     ///
     /// Same as `RemdConfig::geometric_temperatures` but returns the ratio.
-    #[allow(dead_code)]
     pub fn exponential_spacing(t_min: f64, t_max: f64, n: usize) -> (Vec<f64>, f64) {
         let temps = RemdConfig::geometric_temperatures(t_min, t_max, n);
         let ratio = if n > 1 {
@@ -512,7 +503,6 @@ impl RemdAnalysis {
     /// Compute the effective sample size (ESS) for a set of energies.
     ///
     /// ESS ≈ n² / Σ(w_i)² where w_i = exp(-β E_i) / Z.
-    #[allow(dead_code)]
     pub fn effective_sample_size(energies: &[f64], beta: f64) -> f64 {
         if energies.is_empty() {
             return 0.0;
@@ -538,7 +528,6 @@ impl RemdAnalysis {
 
 /// Per-replica energy statistics for analysis.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ReplicaEnergyStats {
     /// Replica index.
     pub replica_id: usize,
@@ -554,7 +543,6 @@ pub struct ReplicaEnergyStats {
 
 impl ReplicaEnergyStats {
     /// Compute statistics from a history of energies for one replica.
-    #[allow(dead_code)]
     pub fn from_history(replica_id: usize, temperature: f64, energies: &[f64]) -> Self {
         let n = energies.len();
         if n == 0 {
@@ -582,7 +570,6 @@ impl ReplicaEnergyStats {
     }
 
     /// Heat capacity estimate from energy fluctuations: Cv = `δE²` / (k_B T²).
-    #[allow(dead_code)]
     pub fn heat_capacity(&self, kb: f64) -> f64 {
         if self.temperature < 1e-10 {
             return 0.0;
@@ -597,7 +584,6 @@ impl ReplicaEnergyStats {
 /// (NPT ensemble REMD).
 ///
 /// Δ = (β_i - β_j)(E_i - E_j) + (β_i P_i - β_j P_j)(V_i - V_j)
-#[allow(dead_code)]
 pub fn npt_exchange_probability(
     e_i: f64,
     e_j: f64,
@@ -616,7 +602,6 @@ pub fn npt_exchange_probability(
 ///
 /// Uses the analytic approximation for Gaussian-distributed energies:
 /// P_acc ≈ erfc(|β_i - β_j| * σ_E / √2) where σ_E is the RMS energy fluctuation.
-#[allow(dead_code)]
 pub fn expected_acceptance_rate(beta_i: f64, beta_j: f64, sigma_e: f64) -> f64 {
     let x = (beta_i - beta_j).abs() * sigma_e / std::f64::consts::SQRT_2;
     // Approximate erfc(x) for small x
@@ -1068,7 +1053,6 @@ mod tests {
 /// In H-REMD replicas run at the same temperature but with different Hamiltonians
 /// (e.g. different force-field parameters, alchemical lambda states, or solute
 /// scaling). Exchange is attempted between adjacent lambda states.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HremdReplica {
     /// Lambda parameter (0 = reference, 1 = target Hamiltonian).
@@ -1083,7 +1067,6 @@ pub struct HremdReplica {
 
 impl HremdReplica {
     /// Create a new H-REMD replica.
-    #[allow(dead_code)]
     pub fn new(lambda: f64, temperature: f64) -> Self {
         Self {
             lambda,
@@ -1103,7 +1086,6 @@ impl HremdReplica {
 ///
 /// In the simplified form where only one cross-evaluation is stored:
 /// Δ = β * (E_i(lambda_j) - E_i(lambda_i))   (standard for solute scaling)
-#[allow(dead_code)]
 pub fn hremd_exchange_probability(e_i_own: f64, e_i_neighbour: f64, beta: f64) -> f64 {
     let delta = beta * (e_i_neighbour - e_i_own);
     if delta <= 0.0 { 1.0 } else { (-delta).exp() }
@@ -1123,7 +1105,6 @@ pub fn hremd_exchange_probability(e_i_own: f64, e_i_neighbour: f64, beta: f64) -
 /// * `e_sv`  – Solute-solvent interaction energy.
 /// * `e_vv`  – Solvent-solvent interaction energy (unscaled).
 /// * `scale` – `beta_m / beta_0` (> 1 for heated solute replicas).
-#[allow(dead_code)]
 pub fn rest2_total_energy(e_ss: f64, e_sv: f64, e_vv: f64, scale: f64) -> f64 {
     let scaled_ss = e_ss * scale;
     let scaled_sv = e_sv * scale.sqrt();
@@ -1133,7 +1114,6 @@ pub fn rest2_total_energy(e_ss: f64, e_sv: f64, e_vv: f64, scale: f64) -> f64 {
 /// Compute the REST2 exchange probability between two replicas.
 ///
 /// Based on the Hamiltonian REMD criterion applied to REST2 energies.
-#[allow(dead_code)]
 pub fn rest2_exchange_probability(
     e_ss_i: f64,
     e_sv_i: f64,
@@ -1165,7 +1145,6 @@ pub fn rest2_exchange_probability(
 /// 3. Rescale gaps to meet the target acceptance rate.
 ///
 /// Returns the adjusted temperature ladder.
-#[allow(dead_code)]
 pub fn optimise_temperature_ladder(
     t_min: f64,
     t_max: f64,
@@ -1209,7 +1188,6 @@ pub fn optimise_temperature_ladder(
 /// Pair-wise exchange statistics matrix.
 ///
 /// `ExchangeMatrix[i][j]` = (n_attempts, n_accepted) for the pair (i,j).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ExchangeMatrix {
     /// Number of replicas.
@@ -1222,7 +1200,6 @@ pub struct ExchangeMatrix {
 
 impl ExchangeMatrix {
     /// Create a new exchange matrix for `n` replicas.
-    #[allow(dead_code)]
     pub fn new(n: usize) -> Self {
         Self {
             n,
@@ -1232,7 +1209,6 @@ impl ExchangeMatrix {
     }
 
     /// Record an exchange attempt between replicas `i` and `j`.
-    #[allow(dead_code)]
     pub fn record(&mut self, i: usize, j: usize, accepted: bool) {
         if i < self.n && j < self.n {
             self.attempts[i][j] += 1;
@@ -1245,7 +1221,6 @@ impl ExchangeMatrix {
     }
 
     /// Acceptance rate for pair (i, j).
-    #[allow(dead_code)]
     pub fn rate(&self, i: usize, j: usize) -> f64 {
         if i >= self.n || j >= self.n {
             return 0.0;
@@ -1258,7 +1233,6 @@ impl ExchangeMatrix {
     }
 
     /// Global acceptance rate across all pairs.
-    #[allow(dead_code)]
     pub fn global_rate(&self) -> f64 {
         let mut total_att = 0u64;
         let mut total_acc = 0u64;
@@ -1286,7 +1260,6 @@ impl ExchangeMatrix {
 /// `temps` = the complete ordered temperature ladder.
 ///
 /// Returns mean squared displacement in units of (replica index)^2 per step.
-#[allow(dead_code)]
 pub fn replica_diffusivity(temp_history: &[f64], temps: &[f64]) -> f64 {
     if temp_history.len() < 2 || temps.is_empty() {
         return 0.0;
@@ -1318,7 +1291,6 @@ pub fn replica_diffusivity(temp_history: &[f64], temps: &[f64]) -> f64 {
 ///
 /// Returns a value in \[0, 1\]: 0 means no mixing (all replicas stuck),
 /// 1 means perfect mixing (every replica visits every temperature equally).
-#[allow(dead_code)]
 pub fn ergodic_measure(exchange_matrix: &ExchangeMatrix) -> f64 {
     let n = exchange_matrix.n;
     if n <= 1 {
@@ -1346,7 +1318,6 @@ pub fn ergodic_measure(exchange_matrix: &ExchangeMatrix) -> f64 {
 /// At lambda=1: full force field (standard MD)
 ///
 /// Exchange probability uses the H-REMD criterion at a single temperature.
-#[allow(dead_code)]
 pub fn ss_remd_exchange_probability(
     torsion_i: f64,
     torsion_j: f64,

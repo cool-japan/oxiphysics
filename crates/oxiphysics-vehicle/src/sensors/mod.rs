@@ -7,7 +7,5 @@ pub mod types_core;
 
 // Re-export all types
 pub use functions::*;
-#[allow(unused_imports)]
-pub use imudeadreckoning_traits::*;
 pub use types_advanced::*;
 pub use types_core::*;

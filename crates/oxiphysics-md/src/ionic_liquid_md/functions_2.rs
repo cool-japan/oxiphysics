@@ -2,14 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests {
+    use super::super::functions::*;
     use super::super::types::*;
-    use super::*;
     use crate::ionic_liquid_md::IlSimParams;
     use crate::ionic_liquid_md::IonModel;
     use crate::ionic_liquid_md::IonType;
@@ -426,9 +422,9 @@ mod tests {
     fn test_min_image() {
         let dr = [16.0, -14.0, 5.0];
         let wrapped = min_image(dr, 20.0);
-        for d in 0..3 {
+        for v in wrapped {
             assert!(
-                wrapped[d].abs() <= 10.0,
+                v.abs() <= 10.0,
                 "Wrapped component should be within half box"
             );
         }

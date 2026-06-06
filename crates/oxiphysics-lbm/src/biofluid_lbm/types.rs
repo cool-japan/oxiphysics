@@ -4,9 +4,7 @@
 
 use std::f64::consts::PI;
 
-#[allow(unused_imports)]
-use super::functions::*;
-use super::functions::{CS2, CX, CY, NQ, W};
+use super::functions::{CS2, CX, CY, NQ, W, add2, clamp, feq, len2, scale2, sub2};
 
 /// Hele-Shaw flow parameters in a thin-gap device.
 #[derive(Debug, Clone)]
@@ -171,7 +169,6 @@ pub struct MicrofluidicsLbm {
 }
 impl MicrofluidicsLbm {
     /// Create a new microfluidics LBM simulation.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         nx: usize,
         ny: usize,
@@ -1083,7 +1080,6 @@ pub struct BiofiltrationLbm {
 }
 impl BiofiltrationLbm {
     /// Construct a new biofiltration simulation.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         nx: usize,
         ny: usize,

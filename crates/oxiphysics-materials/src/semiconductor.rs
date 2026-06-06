@@ -493,7 +493,6 @@ impl PnJunction {
     /// Reverse saturation current I0 in A.
     ///
     /// Uses the Shockley diode equation parameters.
-    #[allow(clippy::too_many_arguments)]
     pub fn saturation_current(&self, dn: f64, dp: f64, ln: f64, lp: f64) -> f64 {
         let ni = self.ni();
         let term_n = Q_ELECTRON * dn * ni * ni / (ln * self.nd);
@@ -543,7 +542,6 @@ pub struct SchottkyBarrier {
 
 impl SchottkyBarrier {
     /// Create a new Schottky barrier.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         metal_work_function: f64,
         band: BandStructure,
@@ -648,7 +646,6 @@ pub struct RecombinationModel {
 
 impl RecombinationModel {
     /// Create a new recombination model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(tau_n: f64, tau_p: f64, cn: f64, cp: f64, brad: f64, ni: f64) -> Self {
         Self {
             tau_n,
@@ -763,7 +760,6 @@ pub struct MosfetModel {
 
 impl MosfetModel {
     /// Create a new MOSFET model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         vth: f64,
         cox: f64,

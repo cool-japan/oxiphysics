@@ -13,19 +13,16 @@
 // ── Helper functions ──────────────────────────────────────────────────────────
 
 /// Dot product of two 3-vectors.
-#[allow(dead_code)]
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// Length squared of a 3-vector.
-#[allow(dead_code)]
 fn len2_3(v: [f64; 3]) -> f64 {
     v[0] * v[0] + v[1] * v[1] + v[2] * v[2]
 }
 
 /// Length of a 3-vector.
-#[allow(dead_code)]
 fn len3(v: [f64; 3]) -> f64 {
     len2_3(v).sqrt()
 }
@@ -83,7 +80,6 @@ impl EnergyBudget {
 /// * `vel`     – linear velocity (m/s).
 /// * `omega`   – angular velocity (rad/s).
 /// * `inertia` – 3×3 inertia tensor (kg·m²), row-major.
-#[allow(dead_code)]
 pub fn kinetic_energy(mass: f64, vel: [f64; 3], omega: [f64; 3], inertia: [[f64; 3]; 3]) -> f64 {
     let ke_lin = 0.5 * mass * len2_3(vel);
     // rotational: 0.5 * ω^T I ω
@@ -99,7 +95,6 @@ pub fn kinetic_energy(mass: f64, vel: [f64; 3], omega: [f64; 3], inertia: [[f64;
 /// Compute gravitational potential energy.
 ///
 /// PE = m * g * h  (where h = position\[2\] in default up-axis convention)
-#[allow(dead_code)]
 pub fn gravitational_potential_energy(mass: f64, position: [f64; 3], gravity: f64) -> f64 {
     mass * gravity * position[2]
 }
@@ -107,7 +102,6 @@ pub fn gravitational_potential_energy(mass: f64, position: [f64; 3], gravity: f6
 /// Compute elastic (spring) potential energy.
 ///
 /// PE_spring = 0.5 * k * x²
-#[allow(dead_code)]
 pub fn spring_potential_energy(stiffness: f64, displacement: f64) -> f64 {
     0.5 * stiffness * displacement * displacement
 }
@@ -227,7 +221,6 @@ pub struct BatteryConstraint {
 
 impl BatteryConstraint {
     /// Create a new `BatteryConstraint` with default health.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         capacity: f64,
         soc_min: f64,
@@ -501,7 +494,6 @@ pub struct FuelCellConstraint {
 
 impl FuelCellConstraint {
     /// Create a new `FuelCellConstraint`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         open_circuit_voltage: f64,
         max_power: f64,
@@ -568,7 +560,6 @@ pub struct RenewableStorageConstraint {
 
 impl RenewableStorageConstraint {
     /// Create a new `RenewableStorageConstraint`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         capacity: f64,
         initial_energy: f64,
@@ -981,7 +972,6 @@ impl EnergyManager {
     /// * `pe`               – current potential energy (J).
     ///
     /// Returns `true` if all constraints are satisfied.
-    #[allow(clippy::too_many_arguments)]
     pub fn step(
         &mut self,
         electrical_power: f64,
@@ -1083,7 +1073,6 @@ pub struct WindEnergyModel {
 
 impl WindEnergyModel {
     /// Create a new `WindEnergyModel`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         air_density: f64,
         rotor_area: f64,

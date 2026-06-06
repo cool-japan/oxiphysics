@@ -2,11 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::ptr_arg)]
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// Constraint graph coloring result.
 ///
 /// Groups constraints into independent sets (colors) so that all constraints
@@ -115,7 +111,7 @@ impl WarmStartCache {
     /// scaled by `warm_start_factor` (typically 0.0–1.0).
     pub fn apply_warm_start(
         &self,
-        particles: &mut Vec<PbdParticle>,
+        particles: &mut [PbdParticle],
         constraints: &[PbdConstraint],
         warm_start_factor: f64,
         dt: f64,

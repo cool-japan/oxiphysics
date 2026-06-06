@@ -6,9 +6,6 @@
 //! Exposes a JSON-oriented surface around rollback frames, desync detection,
 //! and a tick-based snapshot ring buffer suitable for use across the WASM boundary.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use wasm_bindgen::prelude::*;

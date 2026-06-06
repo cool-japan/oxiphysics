@@ -1,12 +1,6 @@
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// Parameters for the Cahn-Hilliard phase field model.
 pub struct PhaseFieldParams {
     /// Cahn-Hilliard mobility M
@@ -292,7 +286,6 @@ impl PhaseField {
 /// The SOY model (Swift, Orlandini, Osborn, Yeomans 1996) provides a
 /// thermodynamically consistent multiphase LBM by incorporating a modified
 /// equilibrium distribution that enforces the correct pressure tensor.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SoyModel {
     /// Landau parameter A (< 0 for phase separation).
@@ -306,7 +299,6 @@ pub struct SoyModel {
 }
 impl SoyModel {
     /// Create a new SOY model.
-    #[allow(dead_code)]
     pub fn new(a: f64, b: f64, kappa: f64) -> Self {
         Self {
             a,
@@ -316,29 +308,24 @@ impl SoyModel {
         }
     }
     /// Bulk chemical potential: `mu_bulk = A * phi + B * phi^3`.
-    #[allow(dead_code)]
     pub fn mu_bulk(&self, phi: f64) -> f64 {
         self.a * phi + self.b * phi * phi * phi
     }
     /// Full chemical potential including gradient term:
     /// `mu = A * phi + B * phi^3 - kappa * lap(phi)`.
-    #[allow(dead_code)]
     pub fn chemical_potential(&self, phi: f64, laplacian_phi: f64) -> f64 {
         self.mu_bulk(phi) - self.kappa * laplacian_phi
     }
     /// Isotropic bulk pressure: `p_bulk = cs^2 * rho + A/2 * phi^2 + 3B/4 * phi^4`.
-    #[allow(dead_code)]
     pub fn bulk_pressure(&self, rho: f64, phi: f64) -> f64 {
         self.cs2 * rho + 0.5 * self.a * phi * phi + 0.75 * self.b * phi.powi(4)
     }
     /// Interface pressure correction:
     /// `P_interface = kappa * phi * lap(phi) + kappa/2 * |grad phi|^2`.
-    #[allow(dead_code)]
     pub fn interface_pressure(&self, phi: f64, laplacian_phi: f64, grad_phi_sq: f64) -> f64 {
         self.kappa * phi * laplacian_phi + 0.5 * self.kappa * grad_phi_sq
     }
     /// Total thermodynamic pressure (bulk + interface corrections).
-    #[allow(dead_code)]
     pub fn total_pressure(&self, rho: f64, phi: f64, laplacian_phi: f64, grad_phi_sq: f64) -> f64 {
         self.bulk_pressure(rho, phi) + self.interface_pressure(phi, laplacian_phi, grad_phi_sq)
     }
@@ -349,8 +336,6 @@ impl SoyModel {
     ///
     /// Here we expose the pressure-tensor correction term that distinguishes SOY
     /// from standard BGK.
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
     pub fn soy_equilibrium_correction(
         &self,
         w: f64,
@@ -373,7 +358,6 @@ impl SoyModel {
     /// `g_i^eq = w_i * [phi + phi * (c_i . u) / cs^2 + Gamma * mu * (c_i c_i - cs^2 I)]`
     ///
     /// where `Gamma` is the mobility coefficient.
-    #[allow(dead_code)]
     pub fn order_param_equilibrium(
         &self,
         w: f64,
@@ -392,7 +376,6 @@ impl SoyModel {
     /// Equilibrium droplet radius from the Young-Laplace balance.
     ///
     /// `R_eq = 2 * sigma / ΔP` where `sigma = sqrt(-8*kappa*A^3/(9*B^2))`.
-    #[allow(dead_code)]
     pub fn equilibrium_radius(&self, delta_p: f64) -> f64 {
         if self.a >= 0.0 || self.b <= 0.0 || self.kappa <= 0.0 || delta_p < 1e-30 {
             return f64::INFINITY;
@@ -403,7 +386,6 @@ impl SoyModel {
     /// Coexistence order parameter values (Maxwell construction).
     ///
     /// Returns `(phi_minus, phi_plus)` with `phi_minus = -sqrt(-A/B)`.
-    #[allow(dead_code)]
     pub fn coexistence_values(&self) -> (f64, f64) {
         if self.a < 0.0 && self.b > 0.0 {
             let phi_eq = (-self.a / self.b).sqrt();
@@ -413,7 +395,6 @@ impl SoyModel {
         }
     }
     /// Interface width parameter xi = sqrt(-kappa / A) (valid when A < 0).
-    #[allow(dead_code)]
     pub fn interface_width_xi(&self) -> f64 {
         if self.a < 0.0 && self.kappa > 0.0 {
             (-self.kappa / self.a).sqrt()
@@ -422,7 +403,6 @@ impl SoyModel {
         }
     }
     /// Surface tension: `sigma = sqrt(-8 * kappa * A^3 / (9 * B^2))`.
-    #[allow(dead_code)]
     pub fn surface_tension(&self) -> f64 {
         if self.a < 0.0 && self.b > 0.0 && self.kappa > 0.0 {
             (-8.0 * self.kappa * self.a.powi(3) / (9.0 * self.b * self.b)).sqrt()
@@ -436,7 +416,6 @@ impl SoyModel {
 /// Provides methods for computing interface geometric quantities and
 /// applying contact-angle boundary conditions in diffuse-interface
 /// (Cahn-Hilliard / Allen-Cahn) LBM simulations.
-#[allow(dead_code)]
 pub struct PhaseFieldLbm {
     /// Grid width (cells).
     pub nx: usize,
@@ -454,7 +433,6 @@ impl PhaseFieldLbm {
     /// - `nx`, `ny`  — grid dimensions
     /// - `epsilon`   — diffuse interface half-width ε (lattice units)
     /// - `sigma`     — surface tension coefficient σ
-    #[allow(dead_code)]
     pub fn new(nx: usize, ny: usize, epsilon: f64, sigma: f64) -> Self {
         Self {
             nx,
@@ -480,7 +458,6 @@ impl PhaseFieldLbm {
     /// - `phi`   — phase-field order parameter (flattened, row-major)
     /// - `x_col` — column index at which to measure
     /// - `phi_lo`, `phi_hi` — lower and upper threshold values (e.g. 0.1, 0.9)
-    #[allow(dead_code)]
     pub fn compute_interface_width(
         &self,
         phi: &[f64],
@@ -527,8 +504,6 @@ impl PhaseFieldLbm {
     /// - `phi`         — mutable phase-field array (nx * ny, row-major)
     /// - `theta_deg`   — contact angle in degrees \[0°, 180°\]
     /// - `wall_row`    — row index of the solid wall (usually 0)
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
     pub fn apply_contact_angle(&self, phi: &mut [f64], theta_deg: f64, wall_row: usize) {
         let theta = theta_deg.to_radians();
         let cos_theta = theta.cos();
@@ -564,7 +539,6 @@ impl PhaseFieldLbm {
     /// - `phi`        — phase-field order parameter (nx * ny)
     /// - `grad_thresh`— minimum gradient magnitude to compute curvature
     ///   (avoids division by zero in bulk; typically 1e-6)
-    #[allow(dead_code)]
     pub fn compute_capillary_pressure(&self, phi: &[f64], grad_thresh: f64) -> Vec<f64> {
         let nx = self.nx;
         let ny = self.ny;

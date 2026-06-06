@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,9 +16,6 @@
 //! - [`EulerCharacteristic`]: Euler characteristic and Euler-Poincaré formula.
 //! - [`CellularApproximation`]: Cellular approximation and homotopy equivalence.
 //! - [`ShellableComplex`]: Shellability, h-vector, f-vector, Dehn-Sommerville.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::collections::HashMap;
 
@@ -376,16 +372,16 @@ pub fn smith_normal_form(mat: &[Vec<i32>]) -> Vec<i32> {
             for i in (pivot + 1)..nrows {
                 if a[i][pivot] != 0 {
                     let q = a[i][pivot] / a[pivot][pivot];
-                    for j in pivot..ncols {
-                        let sub = q * a[pivot][j];
-                        a[i][j] -= sub;
+                    let pivot_row_copy: Vec<i32> = a[pivot][pivot..ncols].to_vec();
+                    for (a_ij, &a_pj) in a[i][pivot..ncols].iter_mut().zip(pivot_row_copy.iter()) {
+                        *a_ij -= q * a_pj;
                     }
                     if a[i][pivot] != 0 {
                         // GCD step: swap rows to put smaller nonzero value on top
                         a.swap(pivot, i);
                         if a[pivot][pivot] < 0 {
-                            for j in 0..ncols {
-                                a[pivot][j] = -a[pivot][j];
+                            for a_j in a[pivot].iter_mut() {
+                                *a_j = -*a_j;
                             }
                         }
                         changed = true;
@@ -397,9 +393,9 @@ pub fn smith_normal_form(mat: &[Vec<i32>]) -> Vec<i32> {
             for j in (pivot + 1)..ncols {
                 if a[pivot][j] != 0 {
                     let q = a[pivot][j] / a[pivot][pivot];
-                    for i in pivot..nrows {
-                        let sub = q * a[i][pivot];
-                        a[i][j] -= sub;
+                    let pivot_col_copy: Vec<i32> = (pivot..nrows).map(|i| a[i][pivot]).collect();
+                    for (i, &a_ip) in pivot_col_copy.iter().enumerate() {
+                        a[pivot + i][j] -= q * a_ip;
                     }
                     if a[pivot][j] != 0 {
                         // GCD column step: swap columns
@@ -407,8 +403,8 @@ pub fn smith_normal_form(mat: &[Vec<i32>]) -> Vec<i32> {
                             row.swap(pivot, j);
                         }
                         if a[pivot][pivot] < 0 {
-                            for i in 0..nrows {
-                                a[i][pivot] = -a[i][pivot];
+                            for a_row in a.iter_mut() {
+                                a_row[pivot] = -a_row[pivot];
                             }
                         }
                         changed = true;
@@ -531,13 +527,11 @@ pub fn rank_of_matrix(mat: &[Vec<i32>]) -> usize {
 
     for col in 0..ncols {
         // Find a pivot in this column
-        let mut pivot_row = None;
-        for i in row_cursor..nrows {
-            if a[i][col] != 0 {
-                pivot_row = Some(i);
-                break;
-            }
-        }
+        let pivot_row = a[row_cursor..nrows]
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row[col] != 0)
+            .map(|(i, _)| row_cursor + i);
         let pivot_row = match pivot_row {
             Some(r) => r,
             None => continue,
@@ -548,8 +542,9 @@ pub fn rank_of_matrix(mat: &[Vec<i32>]) -> usize {
             if i != row_cursor && a[i][col] != 0 {
                 let pv = a[row_cursor][col];
                 let iv = a[i][col];
-                for j in 0..ncols {
-                    a[i][j] = a[i][j] * pv - iv * a[row_cursor][j];
+                let pivot_copy: Vec<i32> = a[row_cursor].clone();
+                for (a_ij, &piv_j) in a[i].iter_mut().zip(pivot_copy.iter()) {
+                    *a_ij = *a_ij * pv - iv * piv_j;
                 }
             }
         }
@@ -1158,14 +1153,17 @@ mod tests {
         let d1 = tet.boundary_matrix(1);
         let d2 = tet.boundary_matrix(2);
         // ∂₁ ∘ ∂₂ should be the zero matrix
-        let nrows = d1.len();
+        let _nrows = d1.len();
         let ncols = if !d2.is_empty() { d2[0].len() } else { 0 };
-        let nmid = d1[0].len();
-        for i in 0..nrows {
-            for j in 0..ncols {
+        let _nmid = d1[0].len();
+        for (i, d1_row) in d1.iter().enumerate() {
+            if ncols == 0 {
+                continue;
+            }
+            for (j, _) in d2[0].iter().enumerate() {
                 let mut sum = 0i32;
-                for k in 0..nmid {
-                    sum += d1[i][k] * d2[k][j];
+                for (k, &d1_ik) in d1_row.iter().enumerate() {
+                    sum += d1_ik * d2[k][j];
                 }
                 assert_eq!(sum, 0, "∂₁∂₂ ≠ 0 at ({},{}): {}", i, j, sum);
             }

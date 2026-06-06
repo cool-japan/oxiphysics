@@ -2,14 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
+use super::functions::compute_error_norm;
 
 /// Parameters for a single-DOF angular motor (e.g., on a revolute joint).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AngularMotorData {
     /// Motor control mode.
     pub mode: AngularMotorMode,
@@ -28,7 +24,6 @@ pub struct AngularMotorData {
 }
 impl AngularMotorData {
     /// Create a new angular motor in `Off` mode.
-    #[allow(dead_code)]
     pub fn new(max_torque: f64) -> Self {
         AngularMotorData {
             mode: AngularMotorMode::Off,
@@ -45,7 +40,6 @@ impl AngularMotorData {
     /// * `current_angle`    — current joint angle \[rad\].
     /// * `current_velocity` — current angular velocity \[rad/s\].
     /// * `dt`               — time step \[s\].
-    #[allow(dead_code)]
     pub fn compute_torque(&mut self, current_angle: f64, current_velocity: f64, _dt: f64) -> f64 {
         let torque = match self.mode {
             AngularMotorMode::Off => 0.0,
@@ -64,14 +58,12 @@ impl AngularMotorData {
         clamped
     }
     /// Returns `true` if the joint is within `tolerance` \[rad\] of the target.
-    #[allow(dead_code)]
     pub fn at_target(&self, current_angle: f64, tolerance: f64) -> bool {
         (current_angle - self.target_angle).abs() <= tolerance
     }
 }
 /// Supported norms for measuring constraint error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum ErrorNorm {
     /// L1 norm (sum of absolute values).
     L1,
@@ -85,7 +77,6 @@ pub enum ErrorNorm {
 /// A minimal cache for the previous frame's constraint impulses, used for
 /// warm-starting and stability analysis.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ImpulseCache {
     /// Cached impulses keyed by constraint index.
     pub(super) entries: Vec<(usize, f64)>,
@@ -94,7 +85,6 @@ pub struct ImpulseCache {
 }
 impl ImpulseCache {
     /// Create a new cache with the given capacity.
-    #[allow(dead_code)]
     pub fn new(capacity: usize) -> Self {
         ImpulseCache {
             entries: Vec::with_capacity(capacity),
@@ -103,7 +93,6 @@ impl ImpulseCache {
     }
     /// Store an impulse for a constraint index, evicting the oldest entry if
     /// at capacity.
-    #[allow(dead_code)]
     pub fn store(&mut self, index: usize, impulse: f64) {
         if let Some(pos) = self.entries.iter().position(|(i, _)| *i == index) {
             self.entries[pos].1 = impulse;
@@ -116,7 +105,6 @@ impl ImpulseCache {
     }
     /// Retrieve the cached impulse for a constraint index, returning `None` if
     /// not found.
-    #[allow(dead_code)]
     pub fn get(&self, index: usize) -> Option<f64> {
         self.entries
             .iter()
@@ -124,17 +112,14 @@ impl ImpulseCache {
             .map(|(_, v)| *v)
     }
     /// Clear all cached impulses.
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.entries.clear();
     }
     /// Number of entries currently stored.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
     /// Returns `true` if the cache is empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -149,7 +134,6 @@ impl ImpulseCache {
 /// β̃ = β / dt
 /// ```
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct XpbdParams {
     /// Compliance α \[m/N or rad/(N·m)\].  0 → rigid.
     pub compliance: f64,
@@ -158,7 +142,6 @@ pub struct XpbdParams {
 }
 impl XpbdParams {
     /// Create XPBD params with given compliance and damping.
-    #[allow(dead_code)]
     pub fn new(compliance: f64, damping: f64) -> Self {
         XpbdParams {
             compliance,
@@ -166,7 +149,6 @@ impl XpbdParams {
         }
     }
     /// Rigid (zero compliance, zero damping).
-    #[allow(dead_code)]
     pub fn rigid() -> Self {
         XpbdParams {
             compliance: 0.0,
@@ -174,7 +156,6 @@ impl XpbdParams {
         }
     }
     /// Scaled compliance: α̃ = α / dt².
-    #[allow(dead_code)]
     pub fn alpha_tilde(&self, dt: f64) -> f64 {
         if dt.abs() < 1e-15 {
             0.0
@@ -183,7 +164,6 @@ impl XpbdParams {
         }
     }
     /// Scaled damping: β̃ = β / dt.
-    #[allow(dead_code)]
     pub fn beta_tilde(&self, dt: f64) -> f64 {
         if dt.abs() < 1e-15 {
             0.0
@@ -198,7 +178,6 @@ impl XpbdParams {
     /// * `jmj`        — J M⁻¹ Jᵀ (generalized inverse mass).
     /// * `lambda`     — current accumulated Lagrange multiplier.
     /// * `dt`         — sub-step time.
-    #[allow(dead_code)]
     pub fn delta_lambda(&self, c: f64, c_dot: f64, jmj: f64, lambda: f64, dt: f64) -> f64 {
         let alpha_t = self.alpha_tilde(dt);
         let beta_t = self.beta_tilde(dt);
@@ -213,7 +192,6 @@ impl XpbdParams {
 ///
 /// Used for serialization, debug output, and solver statistics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub enum ConstraintKind {
     /// Fixed joint (zero relative DOF).
     Fixed,
@@ -247,7 +225,6 @@ pub enum ConstraintKind {
 /// Groups are used to enforce inter-constraint ordering (e.g. solve all
 /// structural joints before contact constraints).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ConstraintGroup {
     /// Human-readable group name (for debug output).
     pub name: String,
@@ -260,7 +237,6 @@ pub struct ConstraintGroup {
 }
 impl ConstraintGroup {
     /// Create a new empty group.
-    #[allow(dead_code)]
     pub fn new(name: impl Into<String>, priority: ConstraintPriority) -> Self {
         ConstraintGroup {
             name: name.into(),
@@ -270,24 +246,20 @@ impl ConstraintGroup {
         }
     }
     /// Add a constraint index to the group.
-    #[allow(dead_code)]
     pub fn push(&mut self, index: usize) {
         self.indices.push(index);
     }
     /// Return the number of constraints in this group.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.indices.len()
     }
     /// Returns `true` if the group contains no constraints.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.indices.is_empty()
     }
 }
 /// A validated compliance range `[min, max]` for use in soft constraints.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub struct ComplianceRange {
     /// Minimum compliance value (most rigid end).
     pub min: f64,
@@ -298,25 +270,21 @@ impl ComplianceRange {
     /// Create a new compliance range, ensuring `min ≤ max` and both > 0.
     ///
     /// Panics in debug mode if `min > max` or either value is non-positive.
-    #[allow(dead_code)]
     pub fn new(min: f64, max: f64) -> Self {
         debug_assert!(min > 0.0, "compliance min must be positive");
         debug_assert!(max >= min, "compliance max must be >= min");
         ComplianceRange { min, max }
     }
     /// Clamp a compliance value to this range.
-    #[allow(dead_code)]
     pub fn clamp(&self, value: f64) -> f64 {
         value.clamp(self.min, self.max)
     }
     /// Linearly interpolate within the range: `t=0` → `min`, `t=1` → `max`.
-    #[allow(dead_code)]
     pub fn lerp(&self, t: f64) -> f64 {
         let t = t.clamp(0.0, 1.0);
         self.min + t * (self.max - self.min)
     }
     /// Returns the midpoint of the range.
-    #[allow(dead_code)]
     pub fn midpoint(&self) -> f64 {
         (self.min + self.max) * 0.5
     }
@@ -326,7 +294,6 @@ impl ComplianceRange {
 /// The constraint is active when the distance between the anchors violates
 /// the limit: `distance < lower_limit` or `distance > upper_limit`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DistanceLimitData {
     /// Anchor A in body-A local space.
     pub anchor_a: [f64; 3],
@@ -343,7 +310,6 @@ pub struct DistanceLimitData {
 }
 impl DistanceLimitData {
     /// Create a distance limit with given bounds.
-    #[allow(dead_code)]
     pub fn new(anchor_a: [f64; 3], anchor_b: [f64; 3], lower: f64, upper: f64) -> Self {
         DistanceLimitData {
             anchor_a,
@@ -357,7 +323,6 @@ impl DistanceLimitData {
     /// Returns the violation at the current distance, or 0.0 if within limits.
     ///
     /// Positive = below lower limit, Negative = above upper limit, 0 = within.
-    #[allow(dead_code)]
     pub fn violation(&self, distance: f64) -> f64 {
         if distance < self.lower_limit {
             self.lower_limit - distance
@@ -368,19 +333,16 @@ impl DistanceLimitData {
         }
     }
     /// Returns `true` if the lower limit is currently active.
-    #[allow(dead_code)]
     pub fn lower_active(&self, distance: f64) -> bool {
         distance < self.lower_limit
     }
     /// Returns `true` if the upper limit is currently active.
-    #[allow(dead_code)]
     pub fn upper_active(&self, distance: f64) -> bool {
         distance > self.upper_limit
     }
 }
 /// Tracks residuals for a multi-DOF constraint across iterations.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ConstraintResidualTracker {
     /// Per-DOF residuals from the last iteration.
     pub residuals: Vec<f64>,
@@ -393,7 +355,6 @@ pub struct ConstraintResidualTracker {
 }
 impl ConstraintResidualTracker {
     /// Create a new tracker for `dof_count` DOFs.
-    #[allow(dead_code)]
     pub fn new(dof_count: usize, norm: ErrorNorm, tolerance: f64) -> Self {
         ConstraintResidualTracker {
             residuals: vec![0.0; dof_count],
@@ -403,24 +364,20 @@ impl ConstraintResidualTracker {
         }
     }
     /// Update residuals for the current iteration.
-    #[allow(dead_code)]
     pub fn update(&mut self, new_residuals: &[f64]) {
         let len = self.residuals.len().min(new_residuals.len());
         self.residuals[..len].copy_from_slice(&new_residuals[..len]);
         self.iteration_count += 1;
     }
     /// Compute the current error norm.
-    #[allow(dead_code)]
     pub fn error_norm(&self) -> f64 {
         compute_error_norm(&self.residuals, self.norm)
     }
     /// Returns `true` if the current error norm is below the tolerance.
-    #[allow(dead_code)]
     pub fn has_converged(&self) -> bool {
         self.error_norm() <= self.tolerance
     }
     /// Reset the tracker.
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         for r in &mut self.residuals {
             *r = 0.0;
@@ -430,7 +387,6 @@ impl ConstraintResidualTracker {
 }
 /// Snapshot of per-constraint solver statistics for one physics step.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct ConstraintMetrics {
     /// Number of velocity-solve iterations performed.
     pub velocity_iterations: usize,
@@ -445,17 +401,14 @@ pub struct ConstraintMetrics {
 }
 impl ConstraintMetrics {
     /// Create a new zeroed metrics snapshot.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
     /// Returns `true` if the residual is below the given tolerance.
-    #[allow(dead_code)]
     pub fn is_within_tolerance(&self, tolerance: f64) -> bool {
         self.velocity_residual <= tolerance
     }
     /// Merge another metrics snapshot into this one (accumulate counts/maxima).
-    #[allow(dead_code)]
     pub fn merge(&mut self, other: &ConstraintMetrics) {
         self.velocity_iterations += other.velocity_iterations;
         self.velocity_residual = self.velocity_residual.max(other.velocity_residual);
@@ -469,7 +422,6 @@ impl ConstraintMetrics {
 /// Higher-priority constraints are solved first, giving them precedence when
 /// the solver cannot satisfy all constraints simultaneously.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-#[allow(dead_code)]
 pub enum ConstraintPriority {
     /// Lowest priority — may be violated if higher-priority constraints conflict.
     Low = 0,
@@ -483,7 +435,6 @@ pub enum ConstraintPriority {
 }
 /// Lifecycle state of a constraint within the solver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(dead_code)]
 pub enum ConstraintState {
     /// Not yet initialised; will be prepared on the next step.
     #[default]
@@ -502,7 +453,6 @@ pub enum ConstraintState {
 /// Enforces `|r_a - r_b| ≈ rest_length` using a linear spring force
 /// with optional XPBD compliance.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SpringConstraintData {
     /// Anchor point in body-A local space.
     pub anchor_a: [f64; 3],
@@ -523,7 +473,6 @@ pub struct SpringConstraintData {
 }
 impl SpringConstraintData {
     /// Create a new spring constraint.
-    #[allow(dead_code)]
     pub fn new(
         anchor_a: [f64; 3],
         anchor_b: [f64; 3],
@@ -543,12 +492,10 @@ impl SpringConstraintData {
         }
     }
     /// Current spring force magnitude given a current separation `distance`.
-    #[allow(dead_code)]
     pub fn spring_force(&self, distance: f64) -> f64 {
         self.stiffness * (distance - self.rest_length)
     }
     /// Compute XPBD Δλ for this spring given current extension and velocity.
-    #[allow(dead_code)]
     pub fn xpbd_delta(&mut self, extension: f64, ext_rate: f64, jmj: f64, dt: f64) -> f64 {
         self.xpbd
             .delta_lambda(extension, ext_rate, jmj, self.lambda.lambda, dt)
@@ -559,7 +506,6 @@ impl SpringConstraintData {
 /// Solvers can broadcast these to registered listeners for game logic, sound,
 /// visual effects, etc.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum ConstraintEvent {
     /// The constraint was broken (force exceeded threshold).
     Broken {
@@ -597,7 +543,6 @@ pub enum ConstraintEvent {
 ///
 /// These are advisory; the solver is free to ignore any hint.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct SolverHints {
     /// Suggested maximum number of velocity-solve iterations for this constraint.
     ///
@@ -607,12 +552,11 @@ pub struct SolverHints {
     pub needs_position_solve: bool,
     /// Whether the constraint is one-sided (inequality / contact).
     pub is_unilateral: bool,
-    /// Priority override (overrides [`PrioritizedConstraint::priority`] if `Some`).
+    /// Priority override (overrides `PrioritizedConstraint::priority` if `Some`).
     pub priority_override: Option<ConstraintPriority>,
 }
 /// Control mode for an angular motor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(dead_code)]
 pub enum AngularMotorMode {
     /// Drive toward a target angular velocity.
     Velocity,
@@ -626,7 +570,6 @@ pub enum AngularMotorMode {
 ///
 /// Stores the current λ and applies clamping to enforce inequality constraints.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct LagrangeMultiplier {
     /// Current accumulated impulse (λ · Δt).
     pub lambda: f64,
@@ -637,7 +580,6 @@ pub struct LagrangeMultiplier {
 }
 impl LagrangeMultiplier {
     /// Create a new bilateral (equality) Lagrange multiplier.
-    #[allow(dead_code)]
     pub fn bilateral() -> Self {
         LagrangeMultiplier {
             lambda: 0.0,
@@ -646,7 +588,6 @@ impl LagrangeMultiplier {
         }
     }
     /// Create a new unilateral (contact / one-sided) Lagrange multiplier.
-    #[allow(dead_code)]
     pub fn unilateral() -> Self {
         LagrangeMultiplier {
             lambda: 0.0,
@@ -655,7 +596,6 @@ impl LagrangeMultiplier {
         }
     }
     /// Create with explicit bounds.
-    #[allow(dead_code)]
     pub fn with_bounds(lower: f64, upper: f64) -> Self {
         LagrangeMultiplier {
             lambda: 0.0,
@@ -666,7 +606,6 @@ impl LagrangeMultiplier {
     /// Apply a delta-lambda update and return the actual change (after clamping).
     ///
     /// The accumulated `lambda` is updated in-place.
-    #[allow(dead_code)]
     pub fn apply_delta(&mut self, delta: f64) -> f64 {
         let new_lambda = (self.lambda + delta).clamp(self.lower_bound, self.upper_bound);
         let actual_delta = new_lambda - self.lambda;
@@ -674,12 +613,10 @@ impl LagrangeMultiplier {
         actual_delta
     }
     /// Reset the multiplier to zero (call at the start of each frame).
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         self.lambda = 0.0;
     }
     /// Apply warm-start: seed λ with a fraction of the previous value.
-    #[allow(dead_code)]
     pub fn warm_start(&mut self, prev_lambda: f64, factor: f64) {
         self.lambda = (prev_lambda * factor).clamp(self.lower_bound, self.upper_bound);
     }
@@ -688,7 +625,6 @@ impl LagrangeMultiplier {
 ///
 /// Commonly used for ball-and-socket joints to prevent over-extension.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ConeLimitData {
     /// Reference axis in world space (unit vector).
     pub reference_axis: [f64; 3],
@@ -701,7 +637,6 @@ pub struct ConeLimitData {
 }
 impl ConeLimitData {
     /// Create a new cone limit.
-    #[allow(dead_code)]
     pub fn new(reference_axis: [f64; 3], half_angle: f64) -> Self {
         ConeLimitData {
             reference_axis,
@@ -711,7 +646,6 @@ impl ConeLimitData {
         }
     }
     /// Compute the angle between `body_axis` and the reference axis.
-    #[allow(dead_code)]
     pub fn current_angle(&self, body_axis: [f64; 3]) -> f64 {
         let ref_len = (self.reference_axis[0] * self.reference_axis[0]
             + self.reference_axis[1] * self.reference_axis[1]
@@ -738,17 +672,14 @@ impl ConeLimitData {
         cos_angle.acos()
     }
     /// Returns `true` if the cone limit is currently violated.
-    #[allow(dead_code)]
     pub fn is_violated(&self, body_axis: [f64; 3]) -> bool {
         self.current_angle(body_axis) > self.half_angle
     }
     /// Cone constraint residual: angle - half_angle (positive when violated).
-    #[allow(dead_code)]
     pub fn residual(&self, body_axis: [f64; 3]) -> f64 {
         (self.current_angle(body_axis) - self.half_angle).max(0.0)
     }
     /// Update the active flag based on current axis direction.
-    #[allow(dead_code)]
     pub fn update_active(&mut self, body_axis: [f64; 3]) {
         self.active = self.is_violated(body_axis);
     }

@@ -38,8 +38,6 @@
 //! - Sweet, P.A. (1958). The neutral point theory of solar flares.
 //!   *IAU Symp.*, 6, 123–134.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -191,7 +189,6 @@ impl LorentzForce {
     /// * `b_xm`       – B at (i-1,j)
     /// * `b_yp`       – B at (i,j+1)
     /// * `b_ym`       – B at (i,j-1)
-    #[allow(clippy::too_many_arguments)]
     pub fn compute(
         &self,
         b_center: [f64; 3],
@@ -223,7 +220,6 @@ impl LorentzForce {
     /// Compute the current density J = ∇×B/μ from finite differences.
     ///
     /// Returns J vector (A m⁻²).
-    #[allow(clippy::too_many_arguments)]
     pub fn current_density(
         &self,
         b_xp: [f64; 3],
@@ -712,7 +708,6 @@ pub struct MhdAnalysis {
 
 impl MhdAnalysis {
     /// Construct a new `MhdAnalysis` instance.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         velocity: f64,
         length: f64,

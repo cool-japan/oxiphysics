@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// Smooth intersection using polynomial blend.
@@ -15,7 +14,6 @@ pub struct SdfSmoothIntersection<A, B> {
     /// Blend radius.
     pub k: f64,
 }
-#[allow(dead_code)]
 impl<A: Sdf, B: Sdf> SdfSmoothIntersection<A, B> {
     /// Create a smooth intersection.
     pub fn new(a: A, b: B, k: f64) -> Self {
@@ -34,7 +32,6 @@ pub struct SdfSmoothUnion<A, B> {
     /// Blend radius (≥ 0).
     pub k: f64,
 }
-#[allow(dead_code)]
 impl<A: Sdf, B: Sdf> SdfSmoothUnion<A, B> {
     /// Create a smooth union.
     pub fn new(a: A, b: B, k: f64) -> Self {
@@ -51,7 +48,6 @@ pub struct SdfHexagonalPrism {
     /// Half-height along Y \[m\].
     pub half_height: f64,
 }
-#[allow(dead_code)]
 impl SdfHexagonalPrism {
     /// Create a hexagonal prism SDF.
     pub fn new(radius: f64, half_height: f64) -> Self {
@@ -95,7 +91,6 @@ pub struct SdfTranslate<S> {
     /// Translation vector.
     pub offset: [f64; 3],
 }
-#[allow(dead_code)]
 impl<S: Sdf> SdfTranslate<S> {
     /// Create a translated SDF.
     pub fn new(inner: S, offset: [f64; 3]) -> Self {
@@ -114,7 +109,6 @@ pub struct SdfRepeat<S> {
     /// Cell period in Z.
     pub period_z: f64,
 }
-#[allow(dead_code)]
 impl<S: Sdf> SdfRepeat<S> {
     /// Create an infinitely repeated SDF.
     pub fn new(inner: S, period_x: f64, period_y: f64, period_z: f64) -> Self {
@@ -134,7 +128,6 @@ pub struct SdfScale<S> {
     /// Uniform scale factor (> 0).
     pub factor: f64,
 }
-#[allow(dead_code)]
 impl<S: Sdf> SdfScale<S> {
     /// Create a scaled SDF.
     pub fn new(inner: S, factor: f64) -> Self {
@@ -149,7 +142,6 @@ pub struct SdfTorus {
     /// Minor radius (tube radius) \[m\].
     pub minor: f64,
 }
-#[allow(dead_code)]
 impl SdfTorus {
     /// Create a torus SDF.
     pub fn new(major: f64, minor: f64) -> Self {
@@ -166,7 +158,6 @@ pub struct SdfPlane {
     /// Signed distance of the plane from the origin along `normal`.
     pub offset: f64,
 }
-#[allow(dead_code)]
 impl SdfPlane {
     /// Create a plane SDF from a (not necessarily unit) normal and offset.
     pub fn new(normal: [f64; 3], offset: f64) -> Self {
@@ -186,7 +177,6 @@ pub struct SdfSmoothDifference<A, B> {
     /// Blend radius.
     pub k: f64,
 }
-#[allow(dead_code)]
 impl<A: Sdf, B: Sdf> SdfSmoothDifference<A, B> {
     /// Create a smooth difference.
     pub fn new(a: A, b: B, k: f64) -> Self {
@@ -203,7 +193,6 @@ pub struct SdfTwist<S> {
     /// Twist rate \[rad/m\].
     pub strength: f64,
 }
-#[allow(dead_code)]
 impl<S: Sdf> SdfTwist<S> {
     /// Create a twisted SDF.
     pub fn new(inner: S, strength: f64) -> Self {
@@ -226,7 +215,6 @@ pub struct SdfGrid {
     /// Flat SDF samples in (z, y, x) major order.
     pub data: Vec<f64>,
 }
-#[allow(dead_code)]
 impl SdfGrid {
     /// Create an empty grid of given resolution and spacing.
     pub fn new(nx: usize, ny: usize, nz: usize, origin: [f64; 3], spacing: f64) -> Self {
@@ -328,7 +316,6 @@ pub struct SdfRoundedCylinder {
     /// Corner rounding radius \[m\].
     pub rounding: f64,
 }
-#[allow(dead_code)]
 impl SdfRoundedCylinder {
     /// Create a rounded cylinder SDF.
     pub fn new(radius: f64, half_height: f64, rounding: f64) -> Self {
@@ -347,7 +334,6 @@ pub struct SdfIntersection<A, B> {
     /// Second operand.
     pub b: B,
 }
-#[allow(dead_code)]
 impl<A: Sdf, B: Sdf> SdfIntersection<A, B> {
     /// Create an intersection.
     pub fn new(a: A, b: B) -> Self {
@@ -363,7 +349,6 @@ pub struct SdfExtrude<F> {
     /// Half-extent along the Y axis.
     pub half_height: f64,
 }
-#[allow(dead_code)]
 impl<F: Fn([f64; 2]) -> f64 + Send + Sync> SdfExtrude<F> {
     /// Create an extruded SDF.
     pub fn new(profile: F, half_height: f64) -> Self {
@@ -381,7 +366,6 @@ pub struct SdfRevolution<F> {
     /// 2-D profile function: `f(r, y) -> signed_distance`.
     pub profile: F,
 }
-#[allow(dead_code)]
 impl<F: Fn(f64, f64) -> f64 + Send + Sync> SdfRevolution<F> {
     /// Create a solid-of-revolution SDF.
     pub fn new(profile: F) -> Self {
@@ -396,7 +380,6 @@ pub struct SdfUnion<A, B> {
     /// Second operand.
     pub b: B,
 }
-#[allow(dead_code)]
 impl<A: Sdf, B: Sdf> SdfUnion<A, B> {
     /// Create a union.
     pub fn new(a: A, b: B) -> Self {
@@ -413,7 +396,6 @@ pub struct SdfCone {
     /// Cone height (distance from apex to base) \[m\].
     pub height: f64,
 }
-#[allow(dead_code)]
 impl SdfCone {
     /// Create a cone SDF.
     pub fn new(half_angle: f64, height: f64) -> Self {
@@ -430,7 +412,6 @@ pub struct SdfOffset<S> {
     /// Offset distance \[m\].
     pub offset: f64,
 }
-#[allow(dead_code)]
 impl<S: Sdf> SdfOffset<S> {
     /// Create an offset SDF.
     pub fn new(inner: S, offset: f64) -> Self {
@@ -455,7 +436,6 @@ pub struct SdfPyramid {
     /// Height of the pyramid \[m\].
     pub height: f64,
 }
-#[allow(dead_code)]
 impl SdfPyramid {
     /// Create a pyramid SDF.
     pub fn new(half_base: f64, height: f64) -> Self {
@@ -470,7 +450,6 @@ pub struct SdfDifference<A, B> {
     /// Shape to subtract.
     pub b: B,
 }
-#[allow(dead_code)]
 impl<A: Sdf, B: Sdf> SdfDifference<A, B> {
     /// Create a difference.
     pub fn new(a: A, b: B) -> Self {
@@ -492,7 +471,6 @@ pub struct SdfNoiseDisplace<S> {
     /// Number of fBm octaves.
     pub octaves: u32,
 }
-#[allow(dead_code)]
 impl<S: Sdf> SdfNoiseDisplace<S> {
     /// Create a noise-displaced SDF.
     pub fn new(inner: S, noise_scale: f64, amplitude: f64, octaves: u32) -> Self {
@@ -512,7 +490,6 @@ pub struct SdfEllipsoid {
     /// Semi-axis lengths (rx, ry, rz).
     pub radii: [f64; 3],
 }
-#[allow(dead_code)]
 impl SdfEllipsoid {
     /// Create an ellipsoid SDF.
     pub fn new(rx: f64, ry: f64, rz: f64) -> Self {
@@ -555,7 +532,6 @@ pub enum SdfNode {
         k: f64,
     },
 }
-#[allow(dead_code)]
 impl SdfNode {
     /// Create a leaf node from any `Sdf` implementor.
     pub fn leaf<S: Sdf + 'static>(s: S) -> Self {
@@ -599,7 +575,6 @@ pub struct SdfTriangularPrism {
     /// Half-height along Y \[m\].
     pub half_height: f64,
 }
-#[allow(dead_code)]
 impl SdfTriangularPrism {
     /// Create a triangular prism SDF.
     pub fn new(side: f64, half_height: f64) -> Self {
@@ -617,7 +592,6 @@ pub struct SdfGyroid {
     /// Thickness of the gyroid sheet.
     pub thickness: f64,
 }
-#[allow(dead_code)]
 impl SdfGyroid {
     /// Create a gyroid SDF.
     pub fn new(scale: f64, thickness: f64) -> Self {
@@ -634,7 +608,6 @@ pub struct SdfShell<S> {
     /// Shell thickness \[m\] (half on each side of the zero isosurface).
     pub thickness: f64,
 }
-#[allow(dead_code)]
 impl<S: Sdf> SdfShell<S> {
     /// Create a shell SDF of given `thickness`.
     pub fn new(inner: S, thickness: f64) -> Self {
@@ -651,7 +624,6 @@ pub struct SdfBend<S> {
     /// Bend rate \[rad/m\].
     pub strength: f64,
 }
-#[allow(dead_code)]
 impl<S: Sdf> SdfBend<S> {
     /// Create a bent SDF.
     pub fn new(inner: S, strength: f64) -> Self {
@@ -670,7 +642,6 @@ pub struct SdfLineSegment {
     /// Tube radius \[m\].
     pub radius: f64,
 }
-#[allow(dead_code)]
 impl SdfLineSegment {
     /// Create a line-segment SDF.
     pub fn new(a: [f64; 3], b: [f64; 3], radius: f64) -> Self {
@@ -701,7 +672,6 @@ pub struct SdfBoundedProxy<S> {
     /// Radius of the bounding sphere.
     pub bsphere_radius: f64,
 }
-#[allow(dead_code)]
 impl<S: Sdf> SdfBoundedProxy<S> {
     /// Create a bounded proxy.
     pub fn new(inner: S, bsphere_center: [f64; 3], bsphere_radius: f64) -> Self {
@@ -724,7 +694,6 @@ pub struct SdfBox {
     /// Half-extents along each axis.
     pub half_extents: [f64; 3],
 }
-#[allow(dead_code)]
 impl SdfBox {
     /// Create a box SDF.
     pub fn new(hx: f64, hy: f64, hz: f64) -> Self {
@@ -749,7 +718,6 @@ pub struct SdfSphere {
     /// Sphere radius \[m\].
     pub radius: f64,
 }
-#[allow(dead_code)]
 impl SdfSphere {
     /// Create a new sphere SDF with `radius`.
     pub fn new(radius: f64) -> Self {

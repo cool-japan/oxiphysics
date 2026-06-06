@@ -1,9 +1,6 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use oxiphysics_core::Transform;
 use oxiphysics_core::math::{Mat3, Real, Vec3};
 

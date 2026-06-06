@@ -1,5 +1,3 @@
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::manual_range_contains, clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -13,8 +11,6 @@
 //! - Perturbation initialization
 //! - Ramp-up strategies for gradual forcing
 //! - Checkpoint save/load for simulation state
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Boundary conditions
@@ -747,7 +743,6 @@ pub fn zou_he_velocity_top(f: &mut [f64; 9], rho: f64, u: [f64; 2]) {
 /// where R = ny/2 and n = 7 by default.
 ///
 /// Returns a `Vec` of \[ux, uy\] for each lattice node (row-major, x fast).
-#[allow(dead_code)]
 pub fn initialize_turbulent_pipe_flow(
     nx: usize,
     ny: usize,
@@ -771,7 +766,6 @@ pub fn initialize_turbulent_pipe_flow(
 ///
 /// For the 1/n power law the theoretical bulk / centreline ratio is:
 /// U_bulk / U_max = 2 * n^2 / ((n+1) * (2n+1))
-#[allow(dead_code)]
 pub fn turbulent_pipe_bulk_velocity(u_max: f64, n_power: f64) -> f64 {
     2.0 * n_power * n_power / ((n_power + 1.0) * (2.0 * n_power + 1.0)) * u_max
 }
@@ -787,7 +781,6 @@ pub fn turbulent_pipe_bulk_velocity(u_max: f64, n_power: f64) -> f64 {
 /// `z0` is the aerodynamic roughness length.
 ///
 /// Returns `ux` (streamwise velocity) at height `z`.
-#[allow(dead_code)]
 pub fn abl_log_law_velocity(z: f64, u_star: f64, z0: f64) -> f64 {
     const KAPPA: f64 = 0.41;
     if z + z0 <= 0.0 {
@@ -799,7 +792,6 @@ pub fn abl_log_law_velocity(z: f64, u_star: f64, z0: f64) -> f64 {
 /// Initialize a 2D lattice with an atmospheric boundary layer velocity profile.
 ///
 /// The y-axis represents height z. Returns `Vec<[ux, uy]>` (row-major).
-#[allow(dead_code)]
 pub fn initialize_abl_profile(
     nx: usize,
     ny: usize,
@@ -826,7 +818,6 @@ pub fn initialize_abl_profile(
 ///
 /// u_wake(r, x) = U_inf * (1 - A * exp(-r^2 / (2 * sigma(x)^2)))
 /// where sigma(x) = sigma0 * sqrt(1 + x / x0).
-#[allow(dead_code)]
 pub fn wake_velocity_deficit(
     r: f64,
     x_downstream: f64,
@@ -843,7 +834,6 @@ pub fn wake_velocity_deficit(
 ///
 /// The obstacle is located at `(x_body, y_center)`.
 /// Returns `Vec<[ux, uy]>` (row-major, x fast).
-#[allow(dead_code)]
 pub fn initialize_wake_flow(
     nx: usize,
     ny: usize,
@@ -887,7 +877,6 @@ pub struct Droplet {
 ///
 /// Returns a `Vec`f64` of phase values: 0.0 = gas, 1.0 = liquid.
 /// A smooth tanh interface of width `interface_width` is applied.
-#[allow(dead_code)]
 pub fn initialize_droplet_array(
     nx: usize,
     ny: usize,
@@ -913,7 +902,6 @@ pub fn initialize_droplet_array(
 }
 
 /// Compute the average phase value (volume fraction of liquid).
-#[allow(dead_code)]
 pub fn average_phase(phi: &[f64]) -> f64 {
     if phi.is_empty() {
         return 0.0;
@@ -929,7 +917,6 @@ pub fn average_phase(phi: &[f64]) -> f64 {
 ///
 /// u = -(K / mu) * grad_p
 /// For a uniform pressure gradient dp/dx, u_x = K * dp_dx / mu.
-#[allow(dead_code)]
 pub fn initialize_porous_darcy(
     nx: usize,
     ny: usize,
@@ -946,7 +933,6 @@ pub fn initialize_porous_darcy(
 /// Combines Darcy flow with a wall-corrected Brinkman profile.
 /// The effective velocity is: u(y) = u_darcy * (1 - exp(-alpha * y) - exp(-alpha * (H-y)))
 /// where alpha = sqrt(viscosity / (permeability * mu_eff)) and H = ny.
-#[allow(dead_code)]
 pub fn initialize_brinkman_flow(nx: usize, ny: usize, u_darcy: f64, alpha: f64) -> Vec<[f64; 2]> {
     let mut vel = vec![[0.0_f64; 2]; nx * ny];
     let h = ny as f64 - 1.0;
@@ -964,7 +950,6 @@ pub fn initialize_brinkman_flow(nx: usize, ny: usize, u_darcy: f64, alpha: f64) 
 /// Compute the effective Brinkman channel permeability correction factor.
 ///
 /// Factor = 1 - 2/(alpha * H) * (1 - exp(-alpha * H))
-#[allow(dead_code)]
 pub fn brinkman_correction_factor(alpha: f64, h: f64) -> f64 {
     if alpha.abs() < 1e-12 {
         return 0.0;
@@ -1566,12 +1551,12 @@ mod tests {
         let nx = 5;
         let ny = 10;
         let vel = initialize_abl_profile(nx, ny, 0.3, 0.01, 1.0);
-        // y=0 → z=0 → u=0
-        for x in 0..nx {
+        // y=0 → z=0 → u=0; only the ground row (first nx elements) should be zero
+        for ground_vel in &vel[..nx] {
             assert!(
-                vel[x][0].abs() < 1e-12,
+                ground_vel[0].abs() < 1e-12,
                 "ABL profile at ground should be zero: {}",
-                vel[x][0]
+                ground_vel[0]
             );
         }
     }
@@ -1586,7 +1571,7 @@ mod tests {
         let u = wake_velocity_deficit(0.0, 0.0, 1.0, 0.5, 1.0, 10.0);
         // At x=0 and r=0, deficit is maximum
         assert!(
-            u >= 0.0 && u <= 1.0,
+            (0.0..=1.0).contains(&u),
             "wake velocity should be in [0, U_inf]: {u}"
         );
     }
@@ -1720,7 +1705,7 @@ mod tests {
     fn test_brinkman_correction_factor_range() {
         let factor = brinkman_correction_factor(1.0, 10.0);
         assert!(
-            factor >= 0.0 && factor <= 1.0,
+            (0.0..=1.0).contains(&factor),
             "correction factor should be in [0,1]: {factor}"
         );
     }

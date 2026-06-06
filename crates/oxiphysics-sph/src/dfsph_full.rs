@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -141,26 +140,24 @@ impl DfsphState {
     /// Compute density via SPH summation using the cubic spline kernel.
     ///
     /// ρ_i = Σ_j m_j W(|r_ij|, h)
-    #[allow(clippy::needless_range_loop)]
     pub fn compute_densities(&mut self, neighbors: &[Vec<usize>]) {
         let h = self.h;
-        for i in 0..self.n {
+        for (i, rho_out) in self.densities.iter_mut().enumerate() {
             let mut rho = self.masses[i] * cubic_w(0.0, h); // self-contribution
             for &j in &neighbors[i] {
                 let r = norm3(sub3(self.positions[i], self.positions[j]));
                 rho += self.masses[j] * cubic_w(r, h);
             }
-            self.densities[i] = rho;
+            *rho_out = rho;
         }
     }
 
     /// Compute per-particle α factors for the pressure corrections.
     ///
     /// α_i = ρ_i² / (|Σ_j m_j ∇W_ij|² + Σ_j |m_j ∇W_ij|²)
-    #[allow(clippy::needless_range_loop)]
     pub fn compute_alphas(&mut self, neighbors: &[Vec<usize>]) {
         let h = self.h;
-        for i in 0..self.n {
+        for (i, alpha_out) in self.alphas.iter_mut().enumerate() {
             let mut sum_grad = [0.0f64; 3];
             let mut sum_grad_sq = 0.0f64;
 
@@ -179,7 +176,7 @@ impl DfsphState {
             }
 
             let denom = dot3(sum_grad, sum_grad) + sum_grad_sq;
-            self.alphas[i] = if denom > 1e-28 {
+            *alpha_out = if denom > 1e-28 {
                 self.densities[i] * self.densities[i] / denom
             } else {
                 0.0
@@ -195,7 +192,6 @@ impl DfsphState {
     /// Per iteration:
     ///   κ_i = (div v_i) * α_i / dt
     ///   Δv_i = -dt * Σ_j m_j * (κ_i/ρ_i² + κ_j/ρ_j²) * ∇W_ij
-    #[allow(clippy::needless_range_loop)]
     pub fn divergence_free_solve(
         &mut self,
         neighbors: &[Vec<usize>],
@@ -209,12 +205,12 @@ impl DfsphState {
             // Compute κ_i from velocity divergence
             let mut kappas = vec![0.0f64; self.n];
             let mut max_div = 0.0f64;
-            for i in 0..self.n {
+            for (i, kappa_out) in kappas.iter_mut().enumerate() {
                 let div_v = self.velocity_divergence(i, neighbors);
                 let rho_i = self.densities[i].max(1e-14);
-                kappas[i] = div_v * self.alphas[i] / (dt * rho_i * rho_i);
+                *kappa_out = div_v * self.alphas[i] / (dt * rho_i * rho_i);
                 // store scaled pressure for divergence phase
-                self.pressures_div[i] = kappas[i];
+                self.pressures_div[i] = *kappa_out;
                 max_div = max_div.max(div_v.abs());
             }
 
@@ -226,7 +222,7 @@ impl DfsphState {
             // Δv_i = -dt * Σ_j m_j * (κ_i/ρ_i² + κ_j/ρ_j²) * ∇W_ij
             // Note: κ already has /ρ² baked in from above
             let mut dv = vec![[0.0f64; 3]; self.n];
-            for i in 0..self.n {
+            for (i, dv_i) in dv.iter_mut().enumerate() {
                 for &j in &neighbors[i] {
                     let rij = sub3(self.positions[i], self.positions[j]);
                     let r = norm3(rij);
@@ -236,11 +232,11 @@ impl DfsphState {
                     let dw_dr = cubic_grad_w(r, h);
                     let r_hat = scale3(rij, 1.0 / r);
                     let factor = -dt * self.masses[j] * (kappas[i] + kappas[j]) * dw_dr;
-                    dv[i] = add3(dv[i], scale3(r_hat, factor));
+                    *dv_i = add3(*dv_i, scale3(r_hat, factor));
                 }
             }
-            for i in 0..self.n {
-                self.velocities[i] = add3(self.velocities[i], dv[i]);
+            for (vel, dv_i) in self.velocities.iter_mut().zip(dv.iter()) {
+                *vel = add3(*vel, *dv_i);
             }
         }
 
@@ -256,7 +252,6 @@ impl DfsphState {
     ///   ρ*_i = ρ_i + dt * Σ_j m_j (v_i - v_j) · ∇W_ij
     ///   κ_i  = (ρ*_i - ρ0) * α_i / (dt² * ρ_i²)
     ///   Δv_i = -dt * Σ_j m_j * (κ_i/ρ_i² + κ_j/ρ_j²) * ∇W_ij
-    #[allow(clippy::needless_range_loop)]
     pub fn density_solve(
         &mut self,
         neighbors: &[Vec<usize>],
@@ -271,7 +266,7 @@ impl DfsphState {
             // Predict density: ρ*_i = ρ_i + dt * Σ_j m_j (v_i - v_j) · ∇W_ij
             let mut rho_star = vec![0.0f64; self.n];
             let mut max_err = 0.0f64;
-            for i in 0..self.n {
+            for (i, rs) in rho_star.iter_mut().enumerate() {
                 let mut drho_dt = 0.0;
                 for &j in &neighbors[i] {
                     let rij = sub3(self.positions[i], self.positions[j]);
@@ -284,8 +279,8 @@ impl DfsphState {
                     let vij = sub3(self.velocities[i], self.velocities[j]);
                     drho_dt += self.masses[j] * dot3(vij, scale3(r_hat, dw_dr));
                 }
-                rho_star[i] = self.densities[i] + dt * drho_dt;
-                let err = ((rho_star[i] - rho0) / rho0).abs();
+                *rs = self.densities[i] + dt * drho_dt;
+                let err = ((*rs - rho0) / rho0).abs();
                 max_err = max_err.max(err);
             }
 
@@ -295,20 +290,22 @@ impl DfsphState {
 
             // Compute κ_i = (ρ*_i - ρ0) * α_i / (dt² * ρ_i²)
             let mut kappas = vec![0.0f64; self.n];
-            for i in 0..self.n {
+            for (i, kappa_out) in kappas.iter_mut().enumerate() {
                 let rho_i = self.densities[i].max(1e-14);
                 let alpha_i = self.alphas[i];
-                kappas[i] = if alpha_i.abs() > 1e-28 {
+                *kappa_out = if alpha_i.abs() > 1e-28 {
                     (rho_star[i] - rho0) * alpha_i / (dt * dt * rho_i * rho_i)
                 } else {
                     0.0
                 };
-                self.pressures[i] = kappas[i];
+            }
+            for (p, &k) in self.pressures.iter_mut().zip(kappas.iter()) {
+                *p = k;
             }
 
             // Apply velocity correction
             let mut dv = vec![[0.0f64; 3]; self.n];
-            for i in 0..self.n {
+            for (i, dv_i) in dv.iter_mut().enumerate() {
                 for &j in &neighbors[i] {
                     let rij = sub3(self.positions[i], self.positions[j]);
                     let r = norm3(rij);
@@ -318,11 +315,11 @@ impl DfsphState {
                     let dw_dr = cubic_grad_w(r, h);
                     let r_hat = scale3(rij, 1.0 / r);
                     let factor = -dt * self.masses[j] * (kappas[i] + kappas[j]) * dw_dr;
-                    dv[i] = add3(dv[i], scale3(r_hat, factor));
+                    *dv_i = add3(*dv_i, scale3(r_hat, factor));
                 }
             }
-            for i in 0..self.n {
-                self.velocities[i] = add3(self.velocities[i], dv[i]);
+            for (vel, dv_i) in self.velocities.iter_mut().zip(dv.iter()) {
+                *vel = add3(*vel, *dv_i);
             }
         }
 
@@ -355,7 +352,6 @@ impl DfsphState {
     /// Apply non-pressure forces: gravity and artificial viscosity (XSPH variant).
     ///
     /// Viscosity term: Δv_i += ν * Σ_j (m_j/ρ_j) * (v_j - v_i) * W_ij
-    #[allow(clippy::needless_range_loop)]
     pub fn apply_non_pressure_forces(
         &mut self,
         gravity: [f64; 3],
@@ -366,14 +362,14 @@ impl DfsphState {
         let dt = self.dt;
 
         // Gravity
-        for i in 0..self.n {
-            self.velocities[i] = add3(self.velocities[i], scale3(gravity, dt));
+        for vel in self.velocities.iter_mut() {
+            *vel = add3(*vel, scale3(gravity, dt));
         }
 
         // XSPH viscosity
         if viscosity > 1e-28 {
             let mut dv_visc = vec![[0.0f64; 3]; self.n];
-            for i in 0..self.n {
+            for (i, dv_i) in dv_visc.iter_mut().enumerate() {
                 for &j in &neighbors[i] {
                     let rij = sub3(self.positions[i], self.positions[j]);
                     let r = norm3(rij);
@@ -381,11 +377,11 @@ impl DfsphState {
                     let rho_j = self.densities[j].max(1e-14);
                     let vji = sub3(self.velocities[j], self.velocities[i]);
                     let coeff = viscosity * self.masses[j] / rho_j * w;
-                    dv_visc[i] = add3(dv_visc[i], scale3(vji, coeff));
+                    *dv_i = add3(*dv_i, scale3(vji, coeff));
                 }
             }
-            for i in 0..self.n {
-                self.velocities[i] = add3(self.velocities[i], dv_visc[i]);
+            for (vel, dv_i) in self.velocities.iter_mut().zip(dv_visc.iter()) {
+                *vel = add3(*vel, *dv_i);
             }
         }
     }
@@ -393,8 +389,8 @@ impl DfsphState {
     /// Integrate positions: pos += vel * dt.
     pub fn integrate_positions(&mut self) {
         let dt = self.dt;
-        for i in 0..self.n {
-            self.positions[i] = add3(self.positions[i], scale3(self.velocities[i], dt));
+        for (pos, vel) in self.positions.iter_mut().zip(self.velocities.iter()) {
+            *pos = add3(*pos, scale3(*vel, dt));
         }
     }
 
@@ -451,7 +447,6 @@ impl DfsphState {
 ///
 /// Manages the complete simulation including neighbor rebuilding and
 /// diagnostic output.
-#[allow(dead_code)]
 pub struct DfsphSimulation {
     /// The solver state.
     pub state: DfsphState,
@@ -475,7 +470,6 @@ pub struct DfsphSimulation {
     pub step_count: usize,
 }
 
-#[allow(dead_code)]
 impl DfsphSimulation {
     /// Create a new simulation from a DFSPH state.
     pub fn new(state: DfsphState, gravity: [f64; 3], viscosity: f64) -> Self {
@@ -550,19 +544,17 @@ impl DfsphSimulation {
 
     /// Compute total kinetic energy: ½ Σ mᵢ |vᵢ|².
     pub fn kinetic_energy(&self) -> f64 {
-        let mut ke = 0.0;
-        for i in 0..self.state.n_particles() {
-            let v = self.state.velocities[i];
-            let v2 = dot3(v, v);
-            ke += 0.5 * self.state.masses[i] * v2;
-        }
-        ke
+        self.state
+            .velocities
+            .iter()
+            .zip(self.state.masses.iter())
+            .map(|(v, &m)| 0.5 * m * dot3(*v, *v))
+            .sum()
     }
 }
 
 /// Diagnostic snapshot from a DFSPH simulation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DfsphDiagnostics {
     /// Current simulation time.
     pub time: f64,
@@ -583,10 +575,8 @@ pub struct DfsphDiagnostics {
 // ---------------------------------------------------------------------------
 
 /// Analyze properties of the velocity field in a DFSPH simulation.
-#[allow(dead_code)]
 pub struct VelocityFieldAnalysis;
 
-#[allow(dead_code)]
 impl VelocityFieldAnalysis {
     /// Compute the average velocity across all particles.
     pub fn mean_velocity(state: &DfsphState) -> [f64; 3] {
@@ -622,11 +612,10 @@ impl VelocityFieldAnalysis {
     /// Compute the total linear momentum Σ mᵢ vᵢ.
     pub fn total_momentum(state: &DfsphState) -> [f64; 3] {
         let mut p = [0.0; 3];
-        for i in 0..state.n_particles() {
-            let m = state.masses[i];
-            p[0] += m * state.velocities[i][0];
-            p[1] += m * state.velocities[i][1];
-            p[2] += m * state.velocities[i][2];
+        for (v, &m) in state.velocities.iter().zip(state.masses.iter()) {
+            p[0] += m * v[0];
+            p[1] += m * v[1];
+            p[2] += m * v[2];
         }
         p
     }
@@ -746,7 +735,6 @@ pub fn compute_alpha_single(
 /// Stores α values computed from a reference configuration and provides
 /// lookup by particle index.  Used when the geometry is fixed or when
 /// recomputing α every step would be too costly.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DfsphFactorTable {
     /// Pre-computed α values (one per particle).
@@ -757,7 +745,6 @@ pub struct DfsphFactorTable {
     pub h: f64,
 }
 
-#[allow(dead_code)]
 impl DfsphFactorTable {
     /// Build the factor table from the given particle configuration.
     pub fn build(
@@ -768,13 +755,16 @@ impl DfsphFactorTable {
         rho0: f64,
     ) -> Self {
         let neighbors = find_neighbors_brute(positions, h);
-        let n = positions.len();
-        let mut alphas = vec![0.0_f64; n];
-        for i in 0..n {
-            let nb_pos: Vec<[f64; 3]> = neighbors[i].iter().map(|&j| positions[j]).collect();
-            let nb_mass: Vec<f64> = neighbors[i].iter().map(|&j| masses[j]).collect();
-            alphas[i] = compute_alpha_single(positions[i], densities[i], h, &nb_pos, &nb_mass);
-        }
+        let alphas: Vec<f64> = positions
+            .iter()
+            .zip(densities.iter())
+            .enumerate()
+            .map(|(i, (&pos_i, &rho_i))| {
+                let nb_pos: Vec<[f64; 3]> = neighbors[i].iter().map(|&j| positions[j]).collect();
+                let nb_mass: Vec<f64> = neighbors[i].iter().map(|&j| masses[j]).collect();
+                compute_alpha_single(pos_i, rho_i, h, &nb_pos, &nb_mass)
+            })
+            .collect();
         Self { alphas, rho0, h }
     }
 
@@ -868,28 +858,47 @@ pub fn drho_dt_sph(
 // Two-stage DFSPH solver (standalone functional API)
 // ---------------------------------------------------------------------------
 
+/// Solver configuration parameters for [`dfsph_two_stage_solve`].
+#[derive(Debug, Clone, Copy)]
+pub struct DfsphSolverConfig {
+    /// Smoothing length \[m\]
+    pub h: f64,
+    /// Rest density \[kg/m³\]
+    pub rho0: f64,
+    /// Time step \[s\]
+    pub dt: f64,
+    /// Maximum iterations for divergence-free stage
+    pub max_iter_div: usize,
+    /// Convergence tolerance for divergence-free stage
+    pub div_eps: f64,
+    /// Maximum iterations for density stage
+    pub max_iter_den: usize,
+    /// Convergence tolerance for density stage
+    pub den_eps: f64,
+}
+
 /// Two-stage DFSPH pressure solve using plain `[f64; 3]` arrays.
 ///
 /// Stage 1: divergence-free velocity correction (ensures ∇·v ≈ 0).
 /// Stage 2: density correction (ensures ρ ≈ ρ₀).
 ///
 /// Returns `(stage1_iters, stage2_iters)`.
-#[allow(clippy::too_many_arguments)]
 pub fn dfsph_two_stage_solve(
     positions: &[[f64; 3]],
-    velocities: &mut Vec<[f64; 3]>,
+    velocities: &mut [[f64; 3]],
     densities: &[f64],
     alphas: &[f64],
     masses: &[f64],
     neighbors: &[Vec<usize>],
-    h: f64,
-    rho0: f64,
-    dt: f64,
-    max_iter_div: usize,
-    div_eps: f64,
-    max_iter_den: usize,
-    den_eps: f64,
+    cfg: DfsphSolverConfig,
 ) -> (usize, usize) {
+    let h = cfg.h;
+    let rho0 = cfg.rho0;
+    let dt = cfg.dt;
+    let max_iter_div = cfg.max_iter_div;
+    let div_eps = cfg.div_eps;
+    let max_iter_den = cfg.max_iter_den;
+    let den_eps = cfg.den_eps;
     let n = positions.len();
 
     // --- Stage 1: divergence-free solve ---
@@ -899,7 +908,7 @@ pub fn dfsph_two_stage_solve(
         // Compute κ_div for each particle: κ_i = α_i * (div v_i) / dt
         let mut kappas = vec![0.0_f64; n];
         let mut max_div = 0.0_f64;
-        for i in 0..n {
+        for (i, kappa_out) in kappas.iter_mut().enumerate() {
             let nb_pos: Vec<[f64; 3]> = neighbors[i].iter().map(|&j| positions[j]).collect();
             let nb_vel: Vec<[f64; 3]> = neighbors[i].iter().map(|&j| velocities[j]).collect();
             let nb_mass: Vec<f64> = neighbors[i].iter().map(|&j| masses[j]).collect();
@@ -913,7 +922,7 @@ pub fn dfsph_two_stage_solve(
                 &nb_mass,
             );
             let rho_i = densities[i].max(1e-14);
-            kappas[i] = alphas[i] * div_v / (dt * rho_i * rho_i);
+            *kappa_out = alphas[i] * div_v / (dt * rho_i * rho_i);
             max_div = max_div.max(div_v.abs());
         }
         if max_div < div_eps {
@@ -921,7 +930,7 @@ pub fn dfsph_two_stage_solve(
         }
         // Apply Δv
         let mut dv = vec![[0.0_f64; 3]; n];
-        for i in 0..n {
+        for (i, dv_i) in dv.iter_mut().enumerate() {
             for &j in &neighbors[i] {
                 let rij = sub3(positions[i], positions[j]);
                 let r = norm3(rij);
@@ -931,11 +940,11 @@ pub fn dfsph_two_stage_solve(
                 let dw_dr = cubic_grad_w(r, h);
                 let r_hat = scale3(rij, 1.0 / r);
                 let factor = -dt * masses[j] * (kappas[i] + kappas[j]) * dw_dr;
-                dv[i] = add3(dv[i], scale3(r_hat, factor));
+                *dv_i = add3(*dv_i, scale3(r_hat, factor));
             }
         }
-        for i in 0..n {
-            velocities[i] = add3(velocities[i], dv[i]);
+        for (vel, dv_i) in velocities.iter_mut().zip(dv.iter()) {
+            *vel = add3(*vel, *dv_i);
         }
     }
 
@@ -945,7 +954,7 @@ pub fn dfsph_two_stage_solve(
         iters2 = iter + 1;
         let mut kappas = vec![0.0_f64; n];
         let mut max_err = 0.0_f64;
-        for i in 0..n {
+        for (i, kappa_out) in kappas.iter_mut().enumerate() {
             let nb_pos: Vec<[f64; 3]> = neighbors[i].iter().map(|&j| positions[j]).collect();
             let nb_vel: Vec<[f64; 3]> = neighbors[i].iter().map(|&j| velocities[j]).collect();
             let nb_mass: Vec<f64> = neighbors[i].iter().map(|&j| masses[j]).collect();
@@ -954,7 +963,7 @@ pub fn dfsph_two_stage_solve(
             let rho_i = densities[i].max(1e-14);
             let err = ((rho_star - rho0) / rho0).abs();
             max_err = max_err.max(err);
-            kappas[i] = if alphas[i].abs() > 1e-28 {
+            *kappa_out = if alphas[i].abs() > 1e-28 {
                 (rho_star - rho0) * alphas[i] / (dt * dt * rho_i * rho_i)
             } else {
                 0.0
@@ -964,7 +973,7 @@ pub fn dfsph_two_stage_solve(
             break;
         }
         let mut dv = vec![[0.0_f64; 3]; n];
-        for i in 0..n {
+        for (i, dv_i) in dv.iter_mut().enumerate() {
             for &j in &neighbors[i] {
                 let rij = sub3(positions[i], positions[j]);
                 let r = norm3(rij);
@@ -974,11 +983,11 @@ pub fn dfsph_two_stage_solve(
                 let dw_dr = cubic_grad_w(r, h);
                 let r_hat = scale3(rij, 1.0 / r);
                 let factor = -dt * masses[j] * (kappas[i] + kappas[j]) * dw_dr;
-                dv[i] = add3(dv[i], scale3(r_hat, factor));
+                *dv_i = add3(*dv_i, scale3(r_hat, factor));
             }
         }
-        for i in 0..n {
-            velocities[i] = add3(velocities[i], dv[i]);
+        for (vel, dv_i) in velocities.iter_mut().zip(dv.iter()) {
+            *vel = add3(*vel, *dv_i);
         }
     }
 
@@ -990,7 +999,6 @@ pub fn dfsph_two_stage_solve(
 // ---------------------------------------------------------------------------
 
 /// Diagnostics collected from one DFSPH two-stage solve.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DfsphIterationStats {
     /// Iterations used by the divergence-free stage.
@@ -1003,7 +1011,6 @@ pub struct DfsphIterationStats {
     pub final_max_den_err: f64,
 }
 
-#[allow(dead_code)]
 impl DfsphIterationStats {
     /// Compute diagnostics from a fully solved state.
     pub fn from_state(state: &DfsphState, neighbors: &[Vec<usize>]) -> Self {
@@ -1032,7 +1039,6 @@ impl DfsphIterationStats {
 /// ```text
 /// a_i = -Σ_j m_j (p_i/ρ_i² + p_j/ρ_j²) ∇W_ij
 /// ```
-#[allow(dead_code)]
 pub fn sph_pressure_accel_plain(
     positions: &[[f64; 3]],
     densities: &[f64],
@@ -1043,7 +1049,7 @@ pub fn sph_pressure_accel_plain(
 ) -> Vec<[f64; 3]> {
     let n = positions.len();
     let mut accels = vec![[0.0_f64; 3]; n];
-    for i in 0..n {
+    for (i, acc_i) in accels.iter_mut().enumerate() {
         let rho_i = densities[i].max(1e-14);
         let p_i = pressures[i];
         for &j in &neighbors[i] {
@@ -1056,9 +1062,9 @@ pub fn sph_pressure_accel_plain(
             let rho_j = densities[j].max(1e-14);
             let p_j = pressures[j];
             let factor = -masses[j] * (p_i / (rho_i * rho_i) + p_j / (rho_j * rho_j)) * dw_dr / r;
-            accels[i][0] += factor * rij[0];
-            accels[i][1] += factor * rij[1];
-            accels[i][2] += factor * rij[2];
+            acc_i[0] += factor * rij[0];
+            acc_i[1] += factor * rij[1];
+            acc_i[2] += factor * rij[2];
         }
     }
     accels
@@ -1072,14 +1078,14 @@ pub fn find_neighbors_brute(positions: &[[f64; 3]], h: f64) -> Vec<Vec<usize>> {
     let n = positions.len();
     let support = 2.0 * h;
     let mut neighbors = vec![Vec::new(); n];
-    for i in 0..n {
+    for (i, nb) in neighbors.iter_mut().enumerate() {
         for j in 0..n {
             if i == j {
                 continue;
             }
             let r = norm3(sub3(positions[i], positions[j]));
             if r < support {
-                neighbors[i].push(j);
+                nb.push(j);
             }
         }
     }
@@ -1252,7 +1258,7 @@ mod tests {
     fn test_velocity_divergence_uniform_is_small() {
         let (state, neighbors) = uniform_grid(3, 3, 3, 0.05);
         // Uniform grid with zero velocities should have ~zero divergence
-        for i in 0..state.n_particles() {
+        for (i, _) in state.velocities.iter().enumerate() {
             let div = state.velocity_divergence(i, &neighbors);
             assert!(
                 div.abs() < 1e-6,
@@ -1350,10 +1356,9 @@ mod tests {
         }
         // All particles should have finite positions
         for (i, pos) in state.positions.iter().enumerate() {
-            #[allow(clippy::needless_range_loop)]
-            for d in 0..3 {
+            for (d, &coord) in pos.iter().enumerate() {
                 assert!(
-                    pos[d].is_finite(),
+                    coord.is_finite(),
                     "Position of particle {i} dim {d} is not finite"
                 );
             }
@@ -1443,13 +1448,13 @@ mod tests {
         state.step(&neighbors, [0.0, 0.0, 0.0], 0.0);
         // With zero gravity and zero viscosity, positions should change only slightly
         // (only through pressure corrections)
-        for (i, pos) in state.positions.iter().enumerate() {
-            for d in 0..3 {
+        for (i, (pos, pos_b)) in state.positions.iter().zip(pos_before.iter()).enumerate() {
+            for (d, (&coord, &coord_b)) in pos.iter().zip(pos_b.iter()).enumerate() {
                 assert!(
-                    pos[d].is_finite(),
+                    coord.is_finite(),
                     "Position [{i}][{d}] not finite after step"
                 );
-                let _diff = (pos[d] - pos_before[i][d]).abs();
+                let _diff = (coord - coord_b).abs();
             }
         }
     }
@@ -1615,13 +1620,15 @@ mod tests {
             &state.alphas,
             &state.masses,
             &neighbors,
-            state.h,
-            state.rho0,
-            state.dt,
-            20,
-            1e-4,
-            20,
-            1e-4,
+            DfsphSolverConfig {
+                h: state.h,
+                rho0: state.rho0,
+                dt: state.dt,
+                max_iter_div: 20,
+                div_eps: 1e-4,
+                max_iter_den: 20,
+                den_eps: 1e-4,
+            },
         );
         assert!((1..=20).contains(&iters1));
         assert!((1..=20).contains(&iters2));
@@ -1643,18 +1650,19 @@ mod tests {
             &state.alphas,
             &state.masses,
             &neighbors,
-            state.h,
-            state.rho0,
-            state.dt,
-            10,
-            1e-3,
-            10,
-            1e-3,
+            DfsphSolverConfig {
+                h: state.h,
+                rho0: state.rho0,
+                dt: state.dt,
+                max_iter_div: 10,
+                div_eps: 1e-3,
+                max_iter_den: 10,
+                den_eps: 1e-3,
+            },
         );
         for (i, v) in velocities.iter().enumerate() {
-            #[allow(clippy::needless_range_loop)]
-            for d in 0..3 {
-                assert!(v[d].is_finite(), "velocity[{i}][{d}] not finite");
+            for (d, &coord) in v.iter().enumerate() {
+                assert!(coord.is_finite(), "velocity[{i}][{d}] not finite");
             }
         }
     }
@@ -1696,9 +1704,8 @@ mod tests {
             state.h,
         );
         for (i, a) in accels.iter().enumerate() {
-            #[allow(clippy::needless_range_loop)]
-            for d in 0..3 {
-                assert!(a[d].is_finite(), "accel[{i}][{d}] should be finite");
+            for (d, &coord) in a.iter().enumerate() {
+                assert!(coord.is_finite(), "accel[{i}][{d}] should be finite");
             }
         }
     }
@@ -1764,9 +1771,9 @@ mod tests {
         let (state, _) = uniform_grid(2, 2, 2, 0.1);
         // All velocities are zero
         let mean = VelocityFieldAnalysis::mean_velocity(&state);
-        #[allow(clippy::needless_range_loop)]
-        for d in 0..3 {
-            assert!(mean[d].abs() < 1e-14);
+
+        for &coord in mean.iter() {
+            assert!(coord.abs() < 1e-14);
         }
     }
 

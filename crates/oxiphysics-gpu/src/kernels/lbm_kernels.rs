@@ -5,8 +5,6 @@
 //!
 //! Mirrors GPU dispatch layout but executes in pure Rust on the CPU.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ── Lattice and collision type enums ─────────────────────────────────────────
 

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::functions_2::g2p_transfer_with_dt;
 use super::types::{MaterialType, MpmGrid, MpmParticle, SandParams, SnowParams};
 
@@ -173,12 +172,7 @@ pub fn polar_decomp(f: [[f64; 3]; 3]) -> ([[f64; 3]; 3], [[f64; 3]; 3]) {
         let r_next_raw = mat3_add(r, r_t_inv);
         r = mat3_scale(r_next_raw, 0.5);
         let diff = mat3_add(r, mat3_scale(mat3_transpose(r), -1.0));
-        let mut err = 0.0_f64;
-        for i in 0..3 {
-            for j in 0..3 {
-                err += diff[i][j] * diff[i][j];
-            }
-        }
+        let err: f64 = diff.iter().flat_map(|row| row.iter()).map(|x| x * x).sum();
         if err < 1e-20 {
             break;
         }
@@ -298,15 +292,14 @@ pub fn von_mises_return_mapping(
     let trace_c = mat3_trace(cauchy);
     let mut deviatoric = cauchy;
     let mean_stress = trace_c / 3.0;
-    for i in 0..3 {
-        deviatoric[i][i] -= mean_stress;
+    for (i, row) in deviatoric.iter_mut().enumerate() {
+        row[i] -= mean_stress;
     }
-    let mut norm_sq = 0.0;
-    for i in 0..3 {
-        for j in 0..3 {
-            norm_sq += deviatoric[i][j] * deviatoric[i][j];
-        }
-    }
+    let norm_sq: f64 = deviatoric
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(|x| x * x)
+        .sum();
     let norm_dev = norm_sq.sqrt();
     let vm_stress = (1.5_f64).sqrt() * norm_dev;
     if vm_stress <= yield_stress {
@@ -318,14 +311,14 @@ pub fn von_mises_return_mapping(
     let trace_u = mat3_trace(u_matrix);
     let mut u_dev = u_matrix;
     let mean_u = trace_u / 3.0;
-    for i in 0..3 {
-        u_dev[i][i] -= mean_u;
+    for (i, row) in u_dev.iter_mut().enumerate() {
+        row[i] -= mean_u;
     }
     let u_corrected = {
         let mut uc = mat3_zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                uc[i][j] = mean_u * (if i == j { 1.0 } else { 0.0 }) + u_dev[i][j] * scale;
+        for (i, uc_row) in uc.iter_mut().enumerate() {
+            for (j, uc_ij) in uc_row.iter_mut().enumerate() {
+                *uc_ij = mean_u * (if i == j { 1.0 } else { 0.0 }) + u_dev[i][j] * scale;
             }
         }
         uc
@@ -465,24 +458,24 @@ pub fn p2g_transfer(grid: &mut MpmGrid, particles: &[MpmParticle], dt: f64, grav
                 let j = mat3_det(p.deformation_gradient);
                 let pressure = p.lambda0 * (j - 1.0);
                 let mut s = mat3_zero();
-                for i in 0..3 {
-                    s[i][i] = -pressure;
+                for (i, row) in s.iter_mut().enumerate() {
+                    row[i] = -pressure;
                 }
                 s
             }
             MaterialType::Rigid => mat3_zero(),
         };
         let vol_stress = mat3_scale(stress, p.volume0);
-        for di in 0..3_usize {
-            for dj in 0..3_usize {
-                for dk in 0..3_usize {
+        for (di, w0_di) in w[0].iter().enumerate() {
+            for (dj, w1_dj) in w[1].iter().enumerate() {
+                for (dk, w2_dk) in w[2].iter().enumerate() {
                     let ix = base[0] + di as i64 - 1;
                     let iy = base[1] + dj as i64 - 1;
                     let iz = base[2] + dk as i64 - 1;
                     if !grid.in_bounds(ix, iy, iz) {
                         continue;
                     }
-                    let w_ijk = w[0][di] * w[1][dj] * w[2][dk];
+                    let w_ijk = w0_di * w1_dj * w2_dk;
                     let node_idx = grid.idx(ix as usize, iy as usize, iz as usize);
                     let xip = sub3(
                         grid.node_pos(ix as usize, iy as usize, iz as usize),
@@ -520,16 +513,16 @@ pub fn g2p_transfer_dt(grid: &MpmGrid, particles: &mut [MpmParticle], _dt: f64) 
         let (w, _dw) = compute_weights(base, frac, h);
         let mut new_vel = [0.0f64; 3];
         let mut new_c = mat3_zero();
-        for di in 0..3_usize {
-            for dj in 0..3_usize {
-                for dk in 0..3_usize {
+        for (di, w0_di) in w[0].iter().enumerate() {
+            for (dj, w1_dj) in w[1].iter().enumerate() {
+                for (dk, w2_dk) in w[2].iter().enumerate() {
                     let ix = base[0] + di as i64 - 1;
                     let iy = base[1] + dj as i64 - 1;
                     let iz = base[2] + dk as i64 - 1;
                     if !grid.in_bounds(ix, iy, iz) {
                         continue;
                     }
-                    let w_ijk = w[0][di] * w[1][dj] * w[2][dk];
+                    let w_ijk = w0_di * w1_dj * w2_dk;
                     let node_idx = grid.idx(ix as usize, iy as usize, iz as usize);
                     let vi = grid.nodes[node_idx].velocity;
                     new_vel = add3(new_vel, scale3(vi, w_ijk));
@@ -668,16 +661,16 @@ pub fn apply_level_set_coupling(
         let (w, _) = compute_weights(base, frac, grid.h);
         let mut phi_p = 0.0;
         let grad_phi = [0.0f64; 3];
-        for di in 0..3_usize {
-            for dj in 0..3_usize {
-                for dk in 0..3_usize {
+        for (di, w0_di) in w[0].iter().enumerate() {
+            for (dj, w1_dj) in w[1].iter().enumerate() {
+                for (dk, w2_dk) in w[2].iter().enumerate() {
                     let ix = base[0] + di as i64 - 1;
                     let iy = base[1] + dj as i64 - 1;
                     let iz = base[2] + dk as i64 - 1;
                     if !grid.in_bounds(ix, iy, iz) {
                         continue;
                     }
-                    let w_ijk = w[0][di] * w[1][dj] * w[2][dk];
+                    let w_ijk = w0_di * w1_dj * w2_dk;
                     let idx = grid.idx(ix as usize, iy as usize, iz as usize);
                     phi_p += w_ijk * phi[idx];
                 }
@@ -840,12 +833,11 @@ pub fn neo_hookean_energy(f: [[f64; 3]; 3], mu: f64, lambda: f64) -> f64 {
 pub fn fixed_corotated_energy(f: [[f64; 3]; 3], mu: f64, lambda: f64) -> f64 {
     let (r, _) = polar_decomp(f);
     let f_minus_r = mat3_add(f, mat3_scale(r, -1.0));
-    let mut norm_sq = 0.0;
-    for i in 0..3 {
-        for j in 0..3 {
-            norm_sq += f_minus_r[i][j] * f_minus_r[i][j];
-        }
-    }
+    let norm_sq: f64 = f_minus_r
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(|x| x * x)
+        .sum();
     let j = mat3_det(f);
     mu * norm_sq + 0.5 * lambda * (j - 1.0) * (j - 1.0)
 }
@@ -869,16 +861,16 @@ pub fn g2p_flip(
         let mut v_pic = [0.0f64; 3];
         let mut delta_v = [0.0f64; 3];
         let mut new_c = mat3_zero();
-        for di in 0..3_usize {
-            for dj in 0..3_usize {
-                for dk in 0..3_usize {
+        for (di, w0_di) in w[0].iter().enumerate() {
+            for (dj, w1_dj) in w[1].iter().enumerate() {
+                for (dk, w2_dk) in w[2].iter().enumerate() {
                     let ix = base[0] + di as i64 - 1;
                     let iy = base[1] + dj as i64 - 1;
                     let iz = base[2] + dk as i64 - 1;
                     if !grid.in_bounds(ix, iy, iz) {
                         continue;
                     }
-                    let w_ijk = w[0][di] * w[1][dj] * w[2][dk];
+                    let w_ijk = w0_di * w1_dj * w2_dk;
                     let node_idx = grid.idx(ix as usize, iy as usize, iz as usize);
                     let vi_new = grid.nodes[node_idx].velocity;
                     let vi_old = grid_old_velocity[node_idx];

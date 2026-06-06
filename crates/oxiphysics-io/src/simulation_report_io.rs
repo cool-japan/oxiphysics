@@ -9,8 +9,6 @@
 //! - [`MarkdownReportWriter`] — GitHub-flavored Markdown
 //! - [`LatexReportWriter`] — LaTeX `article` class with tabular environments
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
 

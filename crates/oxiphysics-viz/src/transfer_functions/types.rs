@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 /// Opacity profile type.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OpacityProfileKind {

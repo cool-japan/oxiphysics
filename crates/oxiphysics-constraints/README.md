@@ -1,6 +1,6 @@
 # oxiphysics-constraints
 
-**Status:** Alpha | **Version:** 0.1.1 | **Tests:** 2,173
+**Status:** Alpha | **Version:** 0.1.2 | **Tests:** 2,188
 
 Comprehensive constraint solvers and joint systems for the [OxiPhysics](https://github.com/cool-japan/oxiphysics) engine.
 
@@ -52,7 +52,7 @@ use oxiphysics_constraints::{
 | Metric | Count |
 |--------|-------|
 | Public items | 3,118 |
-| Tests | 2,173 |
+| Tests | 2,188 |
 | Stubs | 0 |
 | Modules | 18+ |
 

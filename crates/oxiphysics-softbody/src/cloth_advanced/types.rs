@@ -2,11 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
-#[allow(unused_imports)]
 use super::functions::*;
 /// Hashin-type failure criterion for woven composites applied to fabric.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FabricFailureCriterion {
     /// Tensile warp strength (Pa).
@@ -107,13 +104,13 @@ impl ClothSewing {
                 let dir = normalize3(diff);
                 let correction = seam.stiffness * dist * dt;
                 if !self.particles[ia].is_pinned() {
-                    for k in 0..3 {
-                        self.particles[ia].velocity[k] += correction * dir[k];
+                    for (v, d) in self.particles[ia].velocity.iter_mut().zip(dir.iter()) {
+                        *v += correction * d;
                     }
                 }
                 if !self.particles[ib].is_pinned() {
-                    for k in 0..3 {
-                        self.particles[ib].velocity[k] -= correction * dir[k];
+                    for (v, d) in self.particles[ib].velocity.iter_mut().zip(dir.iter()) {
+                        *v -= correction * d;
                     }
                 }
             }
@@ -121,7 +118,6 @@ impl ClothSewing {
     }
 }
 /// Broad-phase cloth-cloth collision using sorted AABB sweep.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClothCollisionBroadphase {
     /// AABB leaves for each triangle.
@@ -161,7 +157,6 @@ impl ClothCollisionBroadphase {
     }
 }
 /// Yarn cross-section geometry.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct YarnSection {
     /// Radius of circular cross-section (m).
@@ -195,7 +190,6 @@ impl YarnSection {
     }
 }
 /// A 2D garment panel (pattern piece) before construction.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GarmentPanel {
     /// Panel name.
@@ -260,7 +254,6 @@ impl GarmentPanel {
     }
 }
 /// Thermal properties of fabric for heat transfer simulation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FabricThermal {
     /// Thermal conductivity (W/m·K).
@@ -377,7 +370,6 @@ impl ElasticFabric {
     }
 }
 /// Woven fabric mechanical model.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WovenFabric {
     /// Warp yarn section.
@@ -661,7 +653,6 @@ pub enum InteractionMode {
     Cut,
 }
 /// Bounding volume hierarchy leaf node for cloth collision.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ClothBvhLeaf {
     /// Triangle index.
@@ -700,7 +691,6 @@ impl ClothBvhLeaf {
     }
 }
 /// Knitted fabric loop model.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct KnittedFabric {
     /// Yarn section.
@@ -890,7 +880,6 @@ impl LayeredCloth {
     }
 }
 /// Drape simulation parameters for a fabric over an obstacle.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DrapeSimParams {
     /// Number of drape petals (symmetry order).
@@ -1070,7 +1059,7 @@ impl WindDraping {
         [f, f, f]
     }
     /// Apply wind forces to all particles given triangle connectivity.
-    pub fn apply(&self, particles: &mut Vec<ClothParticle>, triangles: &[[usize; 3]]) {
+    pub fn apply(&self, particles: &mut [ClothParticle], triangles: &[[usize; 3]]) {
         for tri in triangles {
             let [i0, i1, i2] = *tri;
             if i0 >= particles.len() || i1 >= particles.len() || i2 >= particles.len() {
@@ -1101,7 +1090,6 @@ pub struct RenderVertex {
     pub uv: [f32; 2],
 }
 /// Woven fabric weave pattern type.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WeavePattern {
     /// Plain weave: alternating over/under.
@@ -1134,7 +1122,6 @@ impl WeavePattern {
     }
 }
 /// Garment fitting quality metrics.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct FitMetrics {
     /// Ease (slack) in circumference (m) — positive = comfortable.
@@ -1191,7 +1178,7 @@ impl ClothInteraction {
         self.selected_particle = None;
     }
     /// Apply the interaction force to the selected particle.
-    pub fn apply(&self, particles: &mut Vec<ClothParticle>, dt: f64) {
+    pub fn apply(&self, particles: &mut [ClothParticle], dt: f64) {
         let Some(idx) = self.selected_particle else {
             return;
         };
@@ -1210,8 +1197,8 @@ impl ClothInteraction {
                     self.target_position[2] - p[2],
                 ];
                 let inv_m = particles[idx].inv_mass;
-                for k in 0..3 {
-                    particles[idx].velocity[k] += self.stiffness * diff[k] * inv_m * dt;
+                for (v, d) in particles[idx].velocity.iter_mut().zip(diff.iter()) {
+                    *v += self.stiffness * d * inv_m * dt;
                 }
             }
             InteractionMode::Cut => {

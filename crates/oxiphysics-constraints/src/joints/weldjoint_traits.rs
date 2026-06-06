@@ -13,8 +13,6 @@ use oxiphysics_core::BodyHandle;
 use oxiphysics_core::math::{Unit, Vec3};
 use oxiphysics_rigid::RigidBodySet;
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     apply_angular_impulse, apply_pair_impulse, linear_effective_mass, read_body,
     small_rotation_quat,

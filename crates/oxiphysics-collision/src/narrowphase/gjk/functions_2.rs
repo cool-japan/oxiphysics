@@ -2,13 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::types::*;
 #[cfg(test)]
 mod tests_gjk_extended {
-    use super::*;
+    use super::super::*;
     use oxiphysics_core::Transform;
     use oxiphysics_core::Vec3;
     use oxiphysics_geometry::{BoxShape, Capsule, Sphere};

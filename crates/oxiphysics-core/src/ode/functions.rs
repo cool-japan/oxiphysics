@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 /// Trait representing the right-hand side of an ODE system `dy/dt = f(t, y)`.
 ///
 /// Implement this trait to define a system of ordinary differential equations
@@ -231,9 +230,9 @@ pub fn solve_linear_system(a: &[Vec<f64>], b: &[f64]) -> Option<Vec<f64>> {
         }
         for row in (col + 1)..n {
             let factor = mat[row][col] / pivot;
-            for k in col..=n {
-                let val = mat[col][k];
-                mat[row][k] -= factor * val;
+            let (upper, lower) = mat.split_at_mut(row);
+            for (mr_k, &mc_k) in lower[0][col..=n].iter_mut().zip(upper[col][col..=n].iter()) {
+                *mr_k -= factor * mc_k;
             }
         }
     }

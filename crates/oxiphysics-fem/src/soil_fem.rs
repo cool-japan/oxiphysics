@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,9 +6,6 @@
 //! Implements consolidation (Biot's theory), drained/undrained conditions,
 //! effective stress analysis, Mohr-Coulomb and Drucker-Prager plasticity,
 //! and coupled hydro-mechanical FEM for saturated/unsaturated soils.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 /// Soil material model type.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -778,9 +774,10 @@ impl ConsolidationSolver {
             return;
         }
         let mut u_new = self.u.clone();
-        for i in 1..(self.n_layers - 1) {
+        for (idx, u_new_i) in u_new[1..(self.n_layers - 1)].iter_mut().enumerate() {
+            let i = idx + 1;
             let r = self.cv[i] * self.dt / (self.dz * self.dz);
-            u_new[i] = self.u[i] + r * (self.u[i + 1] - 2.0 * self.u[i] + self.u[i - 1]);
+            *u_new_i = self.u[i] + r * (self.u[i + 1] - 2.0 * self.u[i] + self.u[i - 1]);
         }
         // Boundary conditions: drainage at top and bottom
         u_new[0] = 0.0;
@@ -1043,10 +1040,10 @@ mod tests {
     #[test]
     fn test_elastic_stiffness_symmetry() {
         let d = elastic_stiffness(10e6, 0.3);
-        for i in 0..6 {
-            for j in 0..6 {
+        for (i, row) in d.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (d[i][j] - d[j][i]).abs() < 1e-6,
+                    (val - d[j][i]).abs() < 1e-6,
                     "D not symmetric at ({}, {})",
                     i,
                     j

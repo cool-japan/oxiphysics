@@ -38,19 +38,6 @@ pub fn hash2(ix: i32, iy: i32) -> f64 {
     ((h as u32) as f64) / (u32::MAX as f64)
 }
 
-/// Hash for a 3-D lattice point.
-#[allow(dead_code)]
-fn hash3(ix: i32, iy: i32, iz: i32) -> f64 {
-    let mut h = ix
-        .wrapping_mul(1664525)
-        .wrapping_add(iy.wrapping_mul(1013904223))
-        .wrapping_add(iz.wrapping_mul(22695477));
-    h ^= h >> 13;
-    h = h.wrapping_mul(1664525_i32);
-    h ^= h >> 17;
-    ((h as u32) as f64) / (u32::MAX as f64)
-}
-
 /// Gradient for a 2-D lattice point (one of 8 unit directions).
 fn grad2(hash: i32, dx: f64, dy: f64) -> f64 {
     match hash & 7 {

@@ -27,9 +27,6 @@
 //! }
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -18,7 +17,6 @@ use super::core_sim::MdSim;
 ///
 /// Reference: Parrinello & Rahman, J. Appl. Phys. 52, 7182 (1981).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ParrinelloRahmanBarostat {
     /// Target pressure (bar).
     pub target_pressure: f64,
@@ -30,7 +28,6 @@ pub struct ParrinelloRahmanBarostat {
     pub box_velocity: [f64; 3],
 }
 
-#[allow(dead_code)]
 impl ParrinelloRahmanBarostat {
     /// Create a new Parrinello-Rahman barostat.
     pub fn new(target_pressure: f64, tau_p: f64, compressibility: f64) -> Self {
@@ -62,15 +59,20 @@ impl ParrinelloRahmanBarostat {
     pub fn apply(&mut self, sim: &mut MdSim, virial: f64, dt: f64) {
         let p_current = sim.compute_pressure(virial);
         let scale = self.scale_factors(p_current, dt);
-        let n = sim.state.n_atoms();
-        for i in 0..n {
-            for a in 0..3 {
-                sim.state.positions[i][a] *= scale[a];
+        for pos in sim.state.positions.iter_mut() {
+            for (p, &s) in pos.iter_mut().zip(scale.iter()) {
+                *p *= s;
             }
         }
-        for a in 0..3 {
-            sim.config.box_lengths[a] *= scale[a];
-            self.box_velocity[a] = (scale[a] - 1.0) * sim.config.box_lengths[a] / dt;
+        for ((bl, &s), bv) in sim
+            .config
+            .box_lengths
+            .iter_mut()
+            .zip(scale.iter())
+            .zip(self.box_velocity.iter_mut())
+        {
+            *bl *= s;
+            *bv = (s - 1.0) * *bl / dt;
         }
     }
 }
@@ -83,7 +85,6 @@ impl ParrinelloRahmanBarostat {
 ///
 /// MSD(t) = <|r(t) - r(0)|^2> averaged over all atoms.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct MsdCalculator {
     /// Reference positions at t = 0 (Å).
     pub reference: Vec<[f64; 3]>,
@@ -91,7 +92,6 @@ pub struct MsdCalculator {
     pub msd_values: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl MsdCalculator {
     /// Create a new MSD calculator with the given reference positions.
     pub fn new(reference: Vec<[f64; 3]>) -> Self {
@@ -126,15 +126,19 @@ impl MsdCalculator {
         if n == 0 {
             return 0.0;
         }
-        let sum: f64 = (0..n)
-            .map(|i| {
-                let mut dsq = 0.0;
-                for a in 0..3 {
-                    let mut d = positions[i][a] - self.reference[i][a];
-                    d -= box_len * (d / box_len).round();
-                    dsq += d * d;
-                }
-                dsq
+        let sum: f64 = positions
+            .iter()
+            .zip(self.reference.iter())
+            .take(n)
+            .map(|(pos, refp)| {
+                pos.iter()
+                    .zip(refp.iter())
+                    .map(|(&p, &r)| {
+                        let mut d = p - r;
+                        d -= box_len * (d / box_len).round();
+                        d * d
+                    })
+                    .sum::<f64>()
             })
             .sum();
         sum / n as f64
@@ -172,7 +176,6 @@ impl MsdCalculator {
 /// Accumulates pair counts into histogram bins over multiple frames,
 /// then normalises by the ideal-gas reference to give g(r).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct RdfRunning {
     /// Histogram bin counts.
     pub histogram: Vec<u64>,
@@ -190,7 +193,6 @@ pub struct RdfRunning {
     pub n_frames: u64,
 }
 
-#[allow(dead_code)]
 impl RdfRunning {
     /// Create a new running RDF accumulator.
     ///
@@ -217,12 +219,15 @@ impl RdfRunning {
         let n = positions.len();
         for i in 0..n {
             for j in (i + 1)..n {
-                let mut r2 = 0.0;
-                for a in 0..3 {
-                    let mut d = positions[j][a] - positions[i][a];
-                    d -= box_len * (d / box_len).round();
-                    r2 += d * d;
-                }
+                let r2: f64 = positions[i]
+                    .iter()
+                    .zip(positions[j].iter())
+                    .map(|(&pi, &pj)| {
+                        let mut d = pj - pi;
+                        d -= box_len * (d / box_len).round();
+                        d * d
+                    })
+                    .sum();
                 let r = r2.sqrt();
                 if r < self.r_max {
                     let bin = (r / self.dr) as usize;
@@ -278,7 +283,6 @@ impl MdSim {
     ///
     /// The Parrinello-Rahman equations of motion are integrated using
     /// a predictor–corrector step for the box degrees of freedom.
-    #[allow(dead_code)]
     pub fn run_npt_parrinello_rahman(
         &mut self,
         forces_fn: impl Fn(&[[f64; 3]], &[f64; 3]) -> Vec<[f64; 3]>,
@@ -317,7 +321,6 @@ impl MdSim {
     /// Compute the mean square displacement relative to `reference_positions` (Å²).
     ///
     /// No PBC unfolding is performed; pass unwrapped coordinates if needed.
-    #[allow(dead_code)]
     pub fn compute_msd(&self, reference_positions: &[[f64; 3]]) -> f64 {
         let calc = MsdCalculator::new(reference_positions.to_vec());
         calc.compute(&self.state.positions)
@@ -326,7 +329,6 @@ impl MdSim {
     /// Accumulate one RDF frame from the current positions into `rdf`.
     ///
     /// Assumes a cubic box with side length equal to `box_lengths[0]`.
-    #[allow(dead_code)]
     pub fn compute_rdf_running(&self, rdf: &mut RdfRunning) {
         rdf.accumulate(&self.state.positions, self.config.box_lengths[0]);
     }
@@ -341,7 +343,6 @@ impl MdSim {
     /// * `forces_fn`       – force function `(positions, box) -> forces`
     /// * `force_threshold` – maximum acceptable force magnitude (kJ mol^-1 Å^-1)
     /// * `dt_max`          – upper limit on the timestep (ps)
-    #[allow(dead_code)]
     pub fn adaptive_timestep(
         &mut self,
         forces_fn: impl Fn(&[[f64; 3]], &[f64; 3]) -> Vec<[f64; 3]>,

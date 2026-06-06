@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +7,6 @@
 //! Euclidean (L2), Manhattan (L1), Chebyshev (L∞), Hamming, and edit distance.
 //! Also includes a [`MetricBallTree`] for efficient nearest-neighbor queries
 //! and [`FrechetDistance`] for comparing polygonal curves.
-
-#![allow(dead_code)]
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -323,7 +320,6 @@ impl EditDistance {
     }
 
     /// Compute the edit distance with custom costs for insert, delete, and substitute.
-    #[allow(clippy::too_many_arguments)]
     pub fn weighted_edit(
         a: &[char],
         b: &[char],
@@ -1392,8 +1388,8 @@ mod tests {
         let m = EuclideanMetric;
         let pts = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
         let mat = distance_matrix(&m, &pts);
-        for i in 0..3 {
-            assert!(mat[i][i].abs() < 1e-12);
+        for (i, row) in mat.iter().enumerate() {
+            assert!(row[i].abs() < 1e-12);
         }
     }
 
@@ -1402,9 +1398,9 @@ mod tests {
         let m = ManhattanMetric;
         let pts = vec![vec![0.0, 0.0], vec![1.0, 2.0], vec![3.0, -1.0]];
         let mat = distance_matrix(&m, &pts);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((mat[i][j] - mat[j][i]).abs() < 1e-12);
+        for (i, row_i) in mat.iter().enumerate() {
+            for (j, row_j) in mat.iter().enumerate() {
+                assert!((row_i[j] - row_j[i]).abs() < 1e-12);
             }
         }
     }

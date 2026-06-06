@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -197,10 +196,16 @@ impl FemLbmCoupling {
             });
         }
 
-        for i in 0..n {
-            self.ib_points[i].position = positions[i];
-            self.ib_points[i].velocity = velocities[i];
-            self.boundary_velocities[i] = velocities[i];
+        for (ibp, (&pos, &vel)) in self
+            .ib_points
+            .iter_mut()
+            .zip(positions.iter().zip(velocities.iter()))
+        {
+            ibp.position = pos;
+            ibp.velocity = vel;
+        }
+        for (bv, &vel) in self.boundary_velocities.iter_mut().zip(velocities.iter()) {
+            *bv = vel;
         }
 
         Ok(())
@@ -217,10 +222,7 @@ impl FemLbmCoupling {
     ///
     /// # Errors
     /// Returns an error if the coupling is not initialized.
-    pub fn transfer_velocity_to_lbm(
-        &self,
-        grid_dims: [usize; 3],
-    ) -> Result<Vec<([usize; 3], [f64; 3])>, CouplingError> {
+    pub fn transfer_velocity_to_lbm(&self, grid_dims: [usize; 3]) -> LbmCouplingResult {
         if !self.initialized {
             return Err(CouplingError::NotInitialized);
         }
@@ -304,8 +306,8 @@ impl FemLbmCoupling {
         let n = self.interface_nodes.len();
 
         // Save previous forces for relaxation
-        for i in 0..n {
-            self.prev_forces[i] = self.fluid_forces[i];
+        for (prev, &curr) in self.prev_forces.iter_mut().zip(self.fluid_forces.iter()) {
+            *prev = curr;
         }
 
         for i in 0..n {
@@ -337,13 +339,13 @@ impl FemLbmCoupling {
             // Viscous stress contribution: tau_ij = nu * (du_i/dx_j + du_j/dx_i)
             // Force from viscous stress (simplified: trace-free symmetric part)
             let mut viscous_force = [0.0; 3];
-            for d in 0..3 {
+            for (d, vf_d) in viscous_force.iter_mut().enumerate() {
                 let mut tau_sum = 0.0;
-                for e in 0..3 {
+                for (e, &grad_u_de) in grad_u[d].iter().enumerate() {
                     // Symmetric rate-of-strain tensor
-                    tau_sum += nu * (grad_u[d][e] + grad_u[e][d]);
+                    tau_sum += nu * (grad_u_de + grad_u[e][d]);
                 }
-                viscous_force[d] = tau_sum * h * h; // scale by area element
+                *vf_d = tau_sum * h * h; // scale by area element
             }
 
             // Total force: pressure + viscous + penalty
@@ -394,7 +396,7 @@ impl FemLbmCoupling {
         lbm_velocity: &[[f64; 3]],
         grid_spacing: f64,
         grid_dims: [usize; 3],
-    ) -> Result<Vec<([usize; 3], [f64; 3])>, CouplingError> {
+    ) -> LbmCouplingResult {
         if !self.initialized {
             return Err(CouplingError::NotInitialized);
         }
@@ -467,6 +469,12 @@ impl std::fmt::Display for CouplingError {
 
 impl std::error::Error for CouplingError {}
 
+/// A list of `(grid_index, velocity)` pairs for LBM velocity boundary conditions.
+pub type LbmVelocityBcList = Vec<([usize; 3], [f64; 3])>;
+
+/// Result type for LBM velocity transfer and coupling step operations.
+pub type LbmCouplingResult = Result<LbmVelocityBcList, CouplingError>;
+
 // ---------------------------------------------------------------------------
 // Free functions for IBM delta function and interpolation
 // ---------------------------------------------------------------------------
@@ -486,16 +494,6 @@ pub fn interpolate_to_grid(pos: [f64; 3], grid_spacing: f64) -> [usize; 3] {
         (pos[0] / safe_h).round().max(0.0) as usize,
         (pos[1] / safe_h).round().max(0.0) as usize,
         (pos[2] / safe_h).round().max(0.0) as usize,
-    ]
-}
-
-/// Clamp a grid index to valid bounds.
-#[allow(dead_code)]
-fn clamp_index(idx: [usize; 3], dims: [usize; 3]) -> [usize; 3] {
-    [
-        idx[0].min(dims[0].saturating_sub(1)),
-        idx[1].min(dims[1].saturating_sub(1)),
-        idx[2].min(dims[2].saturating_sub(1)),
     ]
 }
 
@@ -554,7 +552,7 @@ fn roma_delta_1d(r: f64, h: f64) -> f64 {
 /// ```text
 /// delta_3d(r, h) = phi(rx, h) * phi(ry, h) * phi(rz, h)
 /// ```
-#[allow(dead_code)]
+#[cfg(test)]
 fn delta_3d(r: [f64; 3], h: f64) -> f64 {
     roma_delta_1d(r[0], h) * roma_delta_1d(r[1], h) * roma_delta_1d(r[2], h)
 }
@@ -770,7 +768,7 @@ fn compute_velocity_gradient(
     let eps = grid_spacing * 0.5;
     let mut grad = [[0.0; 3]; 3];
 
-    for d in 0..3 {
+    for d in 0..3usize {
         let mut pos_plus = pos;
         let mut pos_minus = pos;
         pos_plus[d] += eps;
@@ -780,8 +778,8 @@ fn compute_velocity_gradient(
         let v_minus = interpolate_velocity(pos_minus, velocities, grid_spacing, grid_dims);
 
         let inv_2eps = 1.0 / (2.0 * eps);
-        for c in 0..3 {
-            grad[c][d] = (v_plus[c] - v_minus[c]) * inv_2eps;
+        for (c, grad_row) in grad.iter_mut().enumerate() {
+            grad_row[d] = (v_plus[c] - v_minus[c]) * inv_2eps;
         }
     }
 
@@ -859,12 +857,10 @@ mod tests {
         // The IBM interpolation of a constant field should recover that constant.
         // With h=1 and the delta function integrating to 1/h^3 over grid points,
         // the sum of delta * h^3 = 1 for a point exactly on a grid node.
-        for d in 0..3 {
+        for (d, (&res_d, &exp_d)) in result.iter().zip(uniform_vel.iter()).enumerate() {
             assert!(
-                (result[d] - uniform_vel[d]).abs() < 0.1,
-                "dim {d}: interpolated {}, expected {}",
-                result[d],
-                uniform_vel[d]
+                (res_d - exp_d).abs() < 0.1,
+                "dim {d}: interpolated {res_d}, expected {exp_d}"
             );
         }
     }
@@ -896,12 +892,10 @@ mod tests {
         // Actually spread already includes h^3, so total = force * sum(w * h^3)
         // and sum(w) ~ 1/h^3 => total ~ force.
         // Let's just check conservation to a reasonable tolerance.
-        for d in 0..3 {
+        for (d, (&tot_d, &f_d)) in total.iter().zip(force.iter()).enumerate() {
             assert!(
-                (total[d] - force[d]).abs() < 0.15,
-                "dim {d}: total spread force = {}, expected {}",
-                total[d],
-                force[d]
+                (tot_d - f_d).abs() < 0.15,
+                "dim {d}: total spread force = {tot_d}, expected {f_d}"
             );
         }
     }
@@ -937,12 +931,10 @@ mod tests {
         // Check consistency (not exact due to discrete convolution).
         // Round-trip spread+interpolate includes h^6 * Σ δ² factor, so only
         // directional consistency is expected.
-        for d in 0..3 {
+        for (d, (&rec_d, &orig_d)) in recovered.iter().zip(original_vel.iter()).enumerate() {
             assert!(
-                (recovered[d] - original_vel[d]).abs() < 2.0,
-                "dim {d}: recovered {}, expected {}",
-                recovered[d],
-                original_vel[d]
+                (rec_d - orig_d).abs() < 2.0,
+                "dim {d}: recovered {rec_d}, expected {orig_d}"
             );
         }
     }

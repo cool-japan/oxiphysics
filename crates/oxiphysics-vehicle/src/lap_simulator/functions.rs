@@ -10,7 +10,6 @@ use super::types::{
 /// Simulate a full lap given a track layout and configuration.
 ///
 /// Returns a [`LapResult`] with estimated lap time and sector breakdown.
-#[allow(clippy::too_many_arguments)]
 pub fn simulate_lap(
     track: &TrackLayout,
     config: &mut LapSimConfig,

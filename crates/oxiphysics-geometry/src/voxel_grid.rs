@@ -6,8 +6,6 @@
 //! Used by the V-HACD decomposer to rasterize triangle soups and compute
 //! connected components.
 
-#![allow(dead_code)]
-
 use bitvec::prelude::*;
 use std::collections::VecDeque;
 

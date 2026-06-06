@@ -10,7 +10,6 @@
 // -----------------------------------------------------------------------
 
 /// Standard PID controller with optional integral clamping.
-#[allow(dead_code)]
 pub struct PidController {
     /// Proportional gain.
     pub kp: f64,
@@ -73,7 +72,6 @@ impl PidController {
 // -----------------------------------------------------------------------
 
 /// A revolute motor joint driven by a PID controller.
-#[allow(dead_code)]
 pub struct PidMotorJoint {
     /// Embedded PID controller.
     pub pid: PidController,
@@ -130,7 +128,6 @@ impl PidMotorJoint {
 // -----------------------------------------------------------------------
 
 /// Soft/hard joint limits using a penalty spring.
-#[allow(dead_code)]
 pub struct JointLimit {
     /// Lower bound (radians or metres).
     pub lower: f64,
@@ -180,7 +177,6 @@ impl JointLimit {
 // -----------------------------------------------------------------------
 
 /// A 1-D / 3-D spring-damper joint.
-#[allow(dead_code)]
 pub struct SpringJoint {
     /// Natural (rest) length of the spring.
     pub rest_length: f64,
@@ -235,7 +231,6 @@ impl SpringJoint {
 // -----------------------------------------------------------------------
 
 /// A rotational spring-damper.
-#[allow(dead_code)]
 pub struct TorsionSpring {
     /// Natural (rest) angle in radians.
     pub rest_angle: f64,
@@ -266,7 +261,6 @@ impl TorsionSpring {
 // -----------------------------------------------------------------------
 
 /// A gear constraint coupling two rotational joints with a fixed ratio.
-#[allow(dead_code)]
 pub struct GearConstraint {
     /// Gear ratio: `v_b = ratio * v_a`.
     pub ratio: f64,
@@ -308,7 +302,6 @@ impl GearConstraint {
 /// * `tu` - oscillation period at ultimate gain
 ///
 /// Returns `(kp, ki, kd)`.
-#[allow(dead_code)]
 pub fn pid_tune_ziegler_nichols(ku: f64, tu: f64) -> (f64, f64, f64) {
     let kp = 0.6 * ku;
     let ti = 0.5 * tu;
@@ -325,7 +318,6 @@ pub fn pid_tune_ziegler_nichols(ku: f64, tu: f64) -> (f64, f64, f64) {
 /// * `lambda`        - desired closed-loop time constant (tuning knob)
 ///
 /// Returns `(kp, ki, kd)`.
-#[allow(dead_code)]
 pub fn pid_tune_lambda(process_gain: f64, time_constant: f64, lambda: f64) -> (f64, f64, f64) {
     let kp = time_constant / (process_gain * lambda);
     let ki = kp / time_constant;
@@ -346,7 +338,6 @@ pub fn pid_tune_lambda(process_gain: f64, time_constant: f64, lambda: f64) -> (f
 /// inner_setpoint = outer_output
 /// inner_output = inner_pid(inner_error = inner_setpoint - inner_measurement)
 /// ```
-#[allow(dead_code)]
 pub struct CascadePid {
     /// Outer (primary) PID controller.
     pub outer: PidController,
@@ -358,7 +349,6 @@ pub struct CascadePid {
 
 impl CascadePid {
     /// Create a new cascade PID.
-    #[allow(dead_code)]
     pub fn new(
         outer_kp: f64,
         outer_ki: f64,
@@ -375,7 +365,6 @@ impl CascadePid {
     }
 
     /// Set scale factor from outer output to inner setpoint.
-    #[allow(dead_code)]
     pub fn with_scale(mut self, scale: f64) -> Self {
         self.outer_to_inner_scale = scale;
         self
@@ -388,7 +377,6 @@ impl CascadePid {
     /// * `dt` - time step
     ///
     /// Returns the final control output from the inner loop.
-    #[allow(dead_code)]
     pub fn update(&mut self, outer_error: f64, inner_measurement: f64, dt: f64) -> f64 {
         let outer_output = self.outer.update(outer_error, dt);
         let inner_setpoint = outer_output * self.outer_to_inner_scale;
@@ -397,7 +385,6 @@ impl CascadePid {
     }
 
     /// Reset both controllers.
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         self.outer.reset();
         self.inner.reset();
@@ -414,7 +401,6 @@ impl CascadePid {
 ///
 /// Feed-forward provides immediate response to setpoint changes,
 /// while PID handles disturbance rejection.
-#[allow(dead_code)]
 pub struct FeedForwardController {
     /// PID controller for feedback.
     pub pid: PidController,
@@ -428,7 +414,6 @@ pub struct FeedForwardController {
 
 impl FeedForwardController {
     /// Create a new feed-forward + PID controller.
-    #[allow(dead_code)]
     pub fn new(kp: f64, ki: f64, kd: f64, ff_gain: f64) -> Self {
         Self {
             pid: PidController::new(kp, ki, kd),
@@ -439,7 +424,6 @@ impl FeedForwardController {
     }
 
     /// Set derivative feed-forward gain.
-    #[allow(dead_code)]
     pub fn with_ff_derivative(mut self, gain: f64) -> Self {
         self.ff_derivative_gain = gain;
         self
@@ -450,7 +434,6 @@ impl FeedForwardController {
     /// * `setpoint` - desired value
     /// * `measurement` - current measured value
     /// * `dt` - time step
-    #[allow(dead_code)]
     pub fn update(&mut self, setpoint: f64, measurement: f64, dt: f64) -> f64 {
         let error = setpoint - measurement;
         let pid_out = self.pid.update(error, dt);
@@ -465,7 +448,6 @@ impl FeedForwardController {
     }
 
     /// Reset the controller.
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         self.pid.reset();
         self.prev_setpoint = 0.0;
@@ -479,7 +461,6 @@ impl FeedForwardController {
 /// A setpoint profile that varies over time.
 ///
 /// Defined by a sequence of (time, value) pairs with linear interpolation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SetpointProfile {
     /// Time-value pairs, sorted by time.
@@ -490,14 +471,12 @@ impl SetpointProfile {
     /// Create a new profile from a list of (time, value) pairs.
     ///
     /// Points are sorted by time automatically.
-    #[allow(dead_code)]
     pub fn new(mut points: Vec<(f64, f64)>) -> Self {
         points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         Self { points }
     }
 
     /// Create a step profile: constant value before `step_time`, then `final_value`.
-    #[allow(dead_code)]
     pub fn step(initial_value: f64, final_value: f64, step_time: f64) -> Self {
         Self {
             points: vec![(0.0, initial_value), (step_time, final_value)],
@@ -505,7 +484,6 @@ impl SetpointProfile {
     }
 
     /// Create a ramp profile from (0, start) to (ramp_time, end).
-    #[allow(dead_code)]
     pub fn ramp(start: f64, end: f64, ramp_time: f64) -> Self {
         Self {
             points: vec![(0.0, start), (ramp_time, end)],
@@ -513,7 +491,6 @@ impl SetpointProfile {
     }
 
     /// Evaluate the profile at time `t` using linear interpolation.
-    #[allow(dead_code)]
     pub fn evaluate(&self, t: f64) -> f64 {
         if self.points.is_empty() {
             return 0.0;
@@ -537,7 +514,6 @@ impl SetpointProfile {
     }
 
     /// Duration of the profile (time of last point minus time of first point).
-    #[allow(dead_code)]
     pub fn duration(&self) -> f64 {
         if self.points.len() < 2 {
             return 0.0;
@@ -558,7 +534,6 @@ impl SetpointProfile {
 /// ```text
 /// G(s) = K * exp(-L*s) / (tau*s + 1)
 /// ```
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SystemIdentification {
     /// Steady-state gain K.
@@ -571,7 +546,6 @@ pub struct SystemIdentification {
 
 impl SystemIdentification {
     /// Create from known parameters.
-    #[allow(dead_code)]
     pub fn new(gain: f64, time_constant: f64, dead_time: f64) -> Self {
         Self {
             gain,
@@ -588,8 +562,6 @@ impl SystemIdentification {
     /// * `initial_value` - value before the step
     ///
     /// Uses the 63.2% method for time constant estimation.
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
     pub fn from_step_response(
         times: &[f64],
         values: &[f64],
@@ -635,7 +607,6 @@ impl SystemIdentification {
     /// Compute recommended PID gains using the Cohen-Coon method.
     ///
     /// Returns `(kp, ki, kd)`.
-    #[allow(dead_code)]
     pub fn cohen_coon_pid(&self) -> (f64, f64, f64) {
         let r = self.dead_time / self.time_constant;
         if r < 1e-10 {
@@ -656,7 +627,6 @@ impl SystemIdentification {
     /// y(t) = K * (1 - exp(-(t - L) / tau))  for t > L
     /// y(t) = 0                                for t <= L
     /// ```
-    #[allow(dead_code)]
     pub fn step_response(&self, t: f64) -> f64 {
         if t <= self.dead_time {
             return 0.0;
@@ -672,7 +642,6 @@ impl SystemIdentification {
 /// Gain scheduler that selects PID parameters based on an operating condition.
 ///
 /// Uses a lookup table of (condition, kp, ki, kd) with linear interpolation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GainScheduler {
     /// Table of (operating_point, kp, ki, kd), sorted by operating_point.
@@ -681,7 +650,6 @@ pub struct GainScheduler {
 
 impl GainScheduler {
     /// Create a new gain scheduler from a schedule table.
-    #[allow(dead_code)]
     pub fn new(mut schedule: Vec<(f64, f64, f64, f64)>) -> Self {
         schedule.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         Self { schedule }
@@ -690,7 +658,6 @@ impl GainScheduler {
     /// Look up gains for the given operating condition using linear interpolation.
     ///
     /// Returns `(kp, ki, kd)`.
-    #[allow(dead_code)]
     pub fn lookup(&self, condition: f64) -> (f64, f64, f64) {
         if self.schedule.is_empty() {
             return (1.0, 0.0, 0.0);
@@ -722,7 +689,6 @@ impl GainScheduler {
     }
 
     /// Apply the scheduled gains to a PID controller.
-    #[allow(dead_code)]
     pub fn apply_to(&self, pid: &mut PidController, condition: f64) {
         let (kp, ki, kd) = self.lookup(condition);
         pid.kp = kp;
@@ -731,7 +697,6 @@ impl GainScheduler {
     }
 
     /// Number of entries in the schedule.
-    #[allow(dead_code)]
     pub fn num_entries(&self) -> usize {
         self.schedule.len()
     }
@@ -752,7 +717,6 @@ impl GainScheduler {
 /// ```text
 /// J * d(omega)/dt = (K_t/R) * V - (B + K_t*K_e/R) * omega - T_load
 /// ```
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MotorModel {
     /// Moment of inertia (kg*m^2).
@@ -773,7 +737,6 @@ pub struct MotorModel {
 
 impl MotorModel {
     /// Create a new motor model.
-    #[allow(dead_code)]
     pub fn new(
         inertia: f64,
         torque_constant: f64,
@@ -793,19 +756,16 @@ impl MotorModel {
     }
 
     /// Compute the effective gain K_eff = K_t / R.
-    #[allow(dead_code)]
     pub fn effective_gain(&self) -> f64 {
         self.torque_constant / self.resistance
     }
 
     /// Compute the effective damping B_eff = B + K_t*K_e/R.
-    #[allow(dead_code)]
     pub fn effective_damping(&self) -> f64 {
         self.friction + self.torque_constant * self.back_emf_constant / self.resistance
     }
 
     /// Steady-state speed for a given voltage (no load).
-    #[allow(dead_code)]
     pub fn steady_state_speed(&self, voltage: f64) -> f64 {
         let b_eff = self.effective_damping();
         if b_eff < 1e-20 {
@@ -815,7 +775,6 @@ impl MotorModel {
     }
 
     /// Simulate one time step with applied voltage and load torque.
-    #[allow(dead_code)]
     pub fn step(&mut self, voltage: f64, load_torque: f64, dt: f64) {
         if self.inertia <= 0.0 || dt <= 0.0 {
             return;
@@ -828,7 +787,6 @@ impl MotorModel {
     }
 
     /// Time constant of the motor (J / B_eff).
-    #[allow(dead_code)]
     pub fn time_constant(&self) -> f64 {
         let b_eff = self.effective_damping();
         if b_eff < 1e-20 {

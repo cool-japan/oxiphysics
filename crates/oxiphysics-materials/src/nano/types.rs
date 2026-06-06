@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 /// Models the matrix-fiber interfacial transition zone (ITZ).
 ///
 /// Accounts for debonding criterion and van der Waals adhesion forces.
@@ -139,7 +137,6 @@ impl VirialStress {
     /// Cauchy-Born rule: mapping atomistic strain to continuum deformation gradient.
     /// Given deformation gradient F\[3x3\] as flat array \[F11,F12,F13,F21,...\],
     /// returns the Green-Lagrange strain E = 0.5*(F^T*F - I) as 6-component Voigt.
-    #[allow(clippy::too_many_arguments)]
     pub fn cauchy_born_strain(f: &[f64; 9]) -> [f64; 6] {
         let ftf11 = f[0] * f[0] + f[3] * f[3] + f[6] * f[6];
         let ftf22 = f[1] * f[1] + f[4] * f[4] + f[7] * f[7];
@@ -194,12 +191,6 @@ pub struct QuantumDotConfinement {
     pub designation: String,
 }
 impl QuantumDotConfinement {
-    /// Boltzmann constant (eV/K).
-    #[allow(dead_code)]
-    const KB_EV: f64 = 8.617e-5;
-    /// Planck constant (eV·s).
-    #[allow(dead_code)]
-    const H_EV_S: f64 = 4.136e-15;
     /// Free electron mass (kg).
     const M0: f64 = 9.109e-31;
     /// CdSe quantum dot.

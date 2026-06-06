@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,7 +7,6 @@
 //! density constraint projection, vorticity confinement, and XSPH viscosity.
 
 /// A single PBF particle.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PbfParticle {
     /// Current position \[m\].
@@ -333,9 +331,8 @@ pub fn xsph_viscosity(
 /// * `epsilon`     – CFM (constraint-force-mixing) regularisation
 /// * `solver_iters`– number of constraint projection iterations
 /// * `xsph_c`      – XSPH viscosity coefficient
-#[allow(clippy::too_many_arguments)]
 pub fn pbf_step(
-    particles: &mut Vec<PbfParticle>,
+    particles: &mut [PbfParticle],
     gravity: [f64; 3],
     dt: f64,
     h: f64,
@@ -749,7 +746,6 @@ mod tests {
 /// An extended PBF particle carrying a density estimate and lambda multiplier.
 ///
 /// Provides `predict` and `update_velocity` helpers for the standard PBF loop.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PbfExtParticle {
     /// Current position \[m\].
@@ -809,7 +805,6 @@ impl PbfExtParticle {
 /// * `particles` – extended particle slice
 /// * `i`         – query particle index
 /// * `h`         – smoothing radius \[m\]
-#[allow(dead_code)]
 pub fn pbf_density(particles: &[PbfExtParticle], i: usize, h: f64) -> f64 {
     let mut rho = 0.0;
     for (j, pj) in particles.iter().enumerate() {
@@ -834,7 +829,6 @@ pub fn pbf_density(particles: &[PbfExtParticle], i: usize, h: f64) -> f64 {
 /// * `rho0`     – rest density \[kg/m³\]
 /// * `grad_sum` – sum of squared gradient magnitudes (denominator term)
 /// * `eps`      – regularisation constant (CFM)
-#[allow(dead_code)]
 pub fn pbf_lambda(rho_i: f64, rho0: f64, grad_sum: f64, eps: f64) -> f64 {
     -(rho_i / rho0 - 1.0) / (grad_sum + eps)
 }
@@ -848,7 +842,6 @@ pub fn pbf_lambda(rho_i: f64, rho0: f64, grad_sum: f64, eps: f64) -> f64 {
 /// * `lambdas`   – lambda slice aligned with `particles`
 /// * `h`         – smoothing radius \[m\]
 /// * `rho0`      – rest density \[kg/m³\]
-#[allow(dead_code)]
 pub fn pbf_delta_pos(
     particles: &[PbfExtParticle],
     i: usize,
@@ -884,7 +877,6 @@ pub fn pbf_delta_pos(
 /// * `q`  – |r_ij| / h
 /// * `k`  – artificial surface tension coefficient
 /// * `n`  – power (typically 4)
-#[allow(dead_code)]
 pub fn tensile_instability_correction(q: f64, k: f64, n: usize) -> f64 {
     let delta_q = 0.2_f64; // reference distance fraction
     let w_q = poly6_kernel(q, 1.0);
@@ -900,7 +892,6 @@ pub fn tensile_instability_correction(q: f64, k: f64, n: usize) -> f64 {
 // ------------------------------------------------------------------
 
 /// A self-contained Position-Based Fluids solver using `PbfExtParticle`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PbfSolver {
     /// Particle list.
@@ -938,7 +929,6 @@ impl PbfSolver {
     ///
     /// * `dt`      – time step \[s\]
     /// * `gravity` – gravitational acceleration \[m/s²\]
-    #[allow(clippy::too_many_arguments)]
     pub fn step(&mut self, dt: f64, gravity: [f64; 3]) {
         let n = self.particles.len();
         if n == 0 {
@@ -1024,7 +1014,6 @@ impl PbfSolver {
 /// * `i`          – particle index
 /// * `h`          – smoothing radius \[m\]
 /// * `epsilon`    – vorticity confinement coefficient
-#[allow(dead_code)]
 pub fn vorticity_confinement_pbf(
     particles: &[PbfExtParticle],
     i: usize,
@@ -1102,7 +1091,6 @@ pub fn vorticity_confinement_pbf(
 /// * `i`         – particle index
 /// * `h`         – smoothing radius \[m\]
 /// * `c`         – XSPH coefficient (0–1)
-#[allow(dead_code)]
 pub fn xsph_viscosity_pbf(particles: &[PbfExtParticle], i: usize, h: f64, c: f64) -> [f64; 3] {
     let mut dv = [0.0f64; 3];
     for j in 0..particles.len() {

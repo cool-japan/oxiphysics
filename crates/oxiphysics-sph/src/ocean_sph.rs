@@ -16,8 +16,6 @@
 //! - Rogue (freak) wave simulation (superposition of focused wave trains)
 //! - SPH beach run-up (Carrier–Greenspan shoreline tracking)
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 /// Gravitational acceleration (m s⁻²).
@@ -26,9 +24,6 @@ const G: f64 = 9.80665;
 const RHO_WATER: f64 = 1025.0;
 /// Air density at sea level (kg m⁻³).
 const RHO_AIR: f64 = 1.225;
-/// Von Kármán constant.
-const KAPPA: f64 = 0.4;
-
 // ---------------------------------------------------------------------------
 // Vec3 helpers
 // ---------------------------------------------------------------------------
@@ -1117,7 +1112,6 @@ pub fn wave_power(amplitude: f64, omega: f64, depth: f64) -> f64 {
 /// * `alpha`          – shear coefficient (typically 0.1)
 /// * `mass_j`         – mass of particle j (kg)
 /// * `dw`             – kernel gradient magnitude (m⁻¹)
-#[allow(clippy::too_many_arguments)]
 pub fn sph_artificial_viscosity_acc(
     pos_i: [f64; 3],
     pos_j: [f64; 3],

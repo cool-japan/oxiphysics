@@ -6,8 +6,6 @@
 //! Provides models for the Seebeck effect, Peltier effect, thermoelectric
 //! generators (TEG), Peltier coolers, and figure-of-merit (ZT) interpolation.
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // ThermoelectricProps
 // ---------------------------------------------------------------------------
@@ -134,7 +132,6 @@ pub struct ThermoelectricGenerator {
 
 impl ThermoelectricGenerator {
     /// Create a new `ThermoelectricGenerator`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         hot_temp: f64,
         cold_temp: f64,

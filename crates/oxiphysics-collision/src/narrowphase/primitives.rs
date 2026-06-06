@@ -5,9 +5,6 @@
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 use oxiphysics_core::math::Vec3;
 
 // ── ContactResult ─────────────────────────────────────────────────────────────
@@ -417,14 +414,12 @@ pub fn plane_aabb(
 // ── Point-Triangle distance ──────────────────────────────────────────────────
 
 /// Compute the squared distance from a point to a triangle.
-#[allow(dead_code)]
 pub fn point_triangle_distance_sq(p: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) -> f64 {
     let closest = closest_point_on_triangle(v0, v1, v2, p);
     (p - closest).norm_squared()
 }
 
 /// Compute the unsigned distance from a point to a triangle.
-#[allow(dead_code)]
 pub fn point_triangle_distance(p: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) -> f64 {
     point_triangle_distance_sq(p, v0, v1, v2).sqrt()
 }
@@ -432,14 +427,12 @@ pub fn point_triangle_distance(p: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) -> f64 {
 // ── Edge-Edge distance ──────────────────────────────────────────────────────
 
 /// Compute the squared distance between two line segments.
-#[allow(dead_code)]
 pub fn edge_edge_distance_sq(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> f64 {
     let (_, _, ca, cb) = closest_points_segment_segment(a0, a1, b0, b1);
     (ca - cb).norm_squared()
 }
 
 /// Compute the unsigned distance between two line segments.
-#[allow(dead_code)]
 pub fn edge_edge_distance(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> f64 {
     edge_edge_distance_sq(a0, a1, b0, b1).sqrt()
 }
@@ -450,7 +443,6 @@ pub fn edge_edge_distance(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> f64 {
 ///
 /// Returns `Some((t, point))` where `t` is the parameter along the segment
 /// and `point` is the intersection point.  Returns `None` if no intersection.
-#[allow(dead_code)]
 pub fn segment_triangle_intersection(
     seg_start: Vec3,
     seg_end: Vec3,
@@ -496,7 +488,6 @@ pub fn segment_triangle_intersection(
 ///
 /// Uses a robust approach: test all 6 segment-triangle pairs plus
 /// coplanarity checks.
-#[allow(dead_code)]
 pub fn triangle_triangle_intersects(
     a0: Vec3,
     a1: Vec3,
@@ -545,7 +536,6 @@ pub enum ClosestFeature {
 
 /// Result of a closest-feature query between two triangles.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ClosestFeatureResult {
     /// The type of closest feature pair.
     pub feature: ClosestFeature,
@@ -561,7 +551,6 @@ pub struct ClosestFeatureResult {
 ///
 /// Tests all vertex-vertex, vertex-edge, edge-edge, and vertex-face
 /// combinations and returns the one with minimum distance.
-#[allow(dead_code)]
 pub fn closest_feature_pair(
     a0: Vec3,
     a1: Vec3,
@@ -670,7 +659,6 @@ pub fn closest_feature_pair(
 /// Compute the signed distance from a point to a plane defined by a triangle.
 ///
 /// Positive if the point is on the side of the triangle normal.
-#[allow(dead_code)]
 pub fn point_plane_signed_distance(p: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) -> f64 {
     let n = (v1 - v0).cross(&(v2 - v0));
     let n_len = n.norm();
@@ -685,7 +673,6 @@ pub fn point_plane_signed_distance(p: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) -> f64
 /// Returns `(u, v, w)` such that `p ≈ u*v0 + v*v1 + w*v2`.
 /// The point does not need to be on the triangle; the returned coordinates
 /// are for the projection onto the triangle plane.
-#[allow(dead_code)]
 pub fn barycentric_coordinates(p: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) -> (f64, f64, f64) {
     let e0 = v1 - v0;
     let e1 = v2 - v0;
@@ -713,7 +700,6 @@ pub fn barycentric_coordinates(p: Vec3, v0: Vec3, v1: Vec3, v2: Vec3) -> (f64, f
 /// Closest point on a finite cylinder axis segment to an external point.
 ///
 /// The cylinder axis runs from `c0` to `c1`. Returns the clamped projection.
-#[allow(dead_code)]
 pub fn closest_point_on_cylinder_axis(c0: Vec3, c1: Vec3, p: Vec3) -> (Vec3, f64) {
     closest_point_on_segment(c0, c1, p)
 }
@@ -724,7 +710,6 @@ pub fn closest_point_on_cylinder_axis(c0: Vec3, c1: Vec3, p: Vec3) -> (Vec3, f64
 ///
 /// The cylinder is defined by two end-cap centres `c0`/`c1` and a `radius`.
 /// Returns `None` when separated.
-#[allow(dead_code)]
 pub fn sphere_cylinder(
     sphere_center: Vec3,
     sphere_radius: f64,
@@ -778,7 +763,6 @@ pub fn sphere_cylinder(
 ///
 /// The capsule is `(a0, a1, r_cap)`, the cylinder is `(c0, c1, r_cyl)`.
 /// Reduces to a sphere–cylinder test at the closest capsule axis point.
-#[allow(dead_code)]
 pub fn capsule_cylinder(
     a0: Vec3,
     a1: Vec3,
@@ -799,7 +783,6 @@ pub fn capsule_cylinder(
 /// Treats the cylinder as a capsule (infinite cylinder is approximated by
 /// expanding the AABB check) for a fast conservative test.  Returns `None`
 /// when clearly separated.
-#[allow(dead_code)]
 pub fn box_cylinder_approx(
     aabb_min: Vec3,
     aabb_max: Vec3,
@@ -827,7 +810,6 @@ pub fn box_cylinder_approx(
 /// Signed distance from a point to a sphere.
 ///
 /// Negative inside the sphere, positive outside.
-#[allow(dead_code)]
 pub fn sdf_sphere(p: Vec3, center: Vec3, radius: f64) -> f64 {
     (p - center).norm() - radius
 }
@@ -835,7 +817,6 @@ pub fn sdf_sphere(p: Vec3, center: Vec3, radius: f64) -> f64 {
 /// Signed distance from a point to an axis-aligned box (AABB).
 ///
 /// Negative inside, positive outside.
-#[allow(dead_code)]
 pub fn sdf_aabb(p: Vec3, aabb_min: Vec3, aabb_max: Vec3) -> f64 {
     let center = (aabb_min + aabb_max) * 0.5;
     let half = (aabb_max - aabb_min) * 0.5;
@@ -852,7 +833,6 @@ pub fn sdf_aabb(p: Vec3, aabb_min: Vec3, aabb_max: Vec3) -> f64 {
 /// Signed distance from a point to a capsule.
 ///
 /// The capsule axis runs from `c0` to `c1` with the given `radius`.
-#[allow(dead_code)]
 pub fn sdf_capsule(p: Vec3, c0: Vec3, c1: Vec3, radius: f64) -> f64 {
     let (closest, _) = closest_point_on_segment(c0, c1, p);
     (p - closest).norm() - radius
@@ -861,7 +841,6 @@ pub fn sdf_capsule(p: Vec3, c0: Vec3, c1: Vec3, radius: f64) -> f64 {
 /// Signed distance from a point to an infinite plane `n·x = d`.
 ///
 /// Positive on the side the normal points toward.
-#[allow(dead_code)]
 pub fn sdf_plane(p: Vec3, normal: Vec3, d: f64) -> f64 {
     p.dot(&normal) - d
 }
@@ -869,7 +848,6 @@ pub fn sdf_plane(p: Vec3, normal: Vec3, d: f64) -> f64 {
 /// Signed distance from a point to a cylinder (lateral surface only, infinite).
 ///
 /// The cylinder axis is defined by segment `c0`–`c1`.
-#[allow(dead_code)]
 pub fn sdf_cylinder_infinite(p: Vec3, c0: Vec3, c1: Vec3, radius: f64) -> f64 {
     let axis = c1 - c0;
     let axis_len = axis.norm();
@@ -888,7 +866,6 @@ pub fn sdf_cylinder_infinite(p: Vec3, c0: Vec3, c1: Vec3, radius: f64) -> f64 {
 ///
 /// Each element of `planes` is `(normal, d)` where `normal · x ≥ d` is the
 /// inside half-space. The point is inside if it satisfies all half-spaces.
-#[allow(dead_code)]
 pub fn point_in_convex(p: Vec3, planes: &[(Vec3, f64)]) -> bool {
     for &(n, d) in planes {
         if p.dot(&n) < d - 1e-10 {
@@ -902,7 +879,6 @@ pub fn point_in_convex(p: Vec3, planes: &[(Vec3, f64)]) -> bool {
 ///
 /// Returns planes in the form `(outward_normal, d)` where `normal · x ≥ d`
 /// describes the *inside* of the box (i.e. inward half-space with negated normal).
-#[allow(dead_code)]
 pub fn aabb_face_planes(aabb_min: Vec3, aabb_max: Vec3) -> Vec<(Vec3, f64)> {
     vec![
         (Vec3::new(1.0, 0.0, 0.0), aabb_min.x),
@@ -920,7 +896,6 @@ pub fn aabb_face_planes(aabb_min: Vec3, aabb_max: Vec3) -> Vec<(Vec3, f64)> {
 ///
 /// Returns `(closest_point, u, v, w)` where `u + v + w = 1` and
 /// `closest = u*v0 + v*v1 + w*v2`.
-#[allow(dead_code)]
 pub fn closest_point_on_triangle_with_bary(
     v0: Vec3,
     v1: Vec3,
@@ -933,7 +908,6 @@ pub fn closest_point_on_triangle_with_bary(
 }
 
 /// Compute the triangle area.
-#[allow(dead_code)]
 pub fn triangle_area(v0: Vec3, v1: Vec3, v2: Vec3) -> f64 {
     let e1 = v1 - v0;
     let e2 = v2 - v0;
@@ -943,7 +917,6 @@ pub fn triangle_area(v0: Vec3, v1: Vec3, v2: Vec3) -> f64 {
 /// Compute the triangle normal (unit length).
 ///
 /// Returns `Vec3::new(0,1,0)` for degenerate (zero-area) triangles.
-#[allow(dead_code)]
 pub fn triangle_normal(v0: Vec3, v1: Vec3, v2: Vec3) -> Vec3 {
     let n = (v1 - v0).cross(&(v2 - v0));
     let len = n.norm();
@@ -955,7 +928,6 @@ pub fn triangle_normal(v0: Vec3, v1: Vec3, v2: Vec3) -> Vec3 {
 }
 
 /// Project a point onto the plane of a triangle, returning the in-plane point.
-#[allow(dead_code)]
 pub fn project_onto_triangle_plane(v0: Vec3, v1: Vec3, v2: Vec3, p: Vec3) -> Vec3 {
     let n = triangle_normal(v0, v1, v2);
     let dist = (p - v0).dot(&n);
@@ -967,7 +939,6 @@ pub fn project_onto_triangle_plane(v0: Vec3, v1: Vec3, v2: Vec3, p: Vec3) -> Vec
 /// Signed distance from a point to an AABB using the SDF formulation.
 ///
 /// Negative means the point is inside the AABB.
-#[allow(dead_code)]
 pub fn point_aabb_signed_distance(p: Vec3, aabb_min: Vec3, aabb_max: Vec3) -> f64 {
     sdf_aabb(p, aabb_min, aabb_max)
 }
@@ -978,7 +949,6 @@ pub fn point_aabb_signed_distance(p: Vec3, aabb_min: Vec3, aabb_max: Vec3) -> f6
 ///
 /// Returns `(tangent_u, tangent_v)` such that `{normal, tangent_u, tangent_v}`
 /// form a right-handed orthonormal frame.
-#[allow(dead_code)]
 pub fn contact_tangent_basis(normal: Vec3) -> (Vec3, Vec3) {
     let t_u = if normal.x.abs() < 0.9 {
         let c = Vec3::new(1.0, 0.0, 0.0);

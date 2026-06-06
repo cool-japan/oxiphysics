@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 use super::functions::*;
 
 /// Bezier extraction operator for a B-spline basis.
@@ -455,11 +454,11 @@ impl NurbsSurface {
         let nv_basis = basis_functions(v_span, pv, v, &self.v_basis.knot);
         let mut pw = [0.0f64; 3];
         let mut w_sum: f64 = 0.0;
-        for i in 0..=pu {
-            for j in 0..=pv {
+        for (i, &nu_i) in nu_basis.iter().enumerate().take(pu + 1) {
+            for (j, &nv_j) in nv_basis.iter().enumerate().take(pv + 1) {
                 let ui = u_span - pu + i;
                 let vi = v_span - pv + j;
-                let w = self.weights[ui][vi] * nu_basis[i] * nv_basis[j];
+                let w = self.weights[ui][vi] * nu_i * nv_j;
                 pw[0] += w * self.control_net[ui][vi][0];
                 pw[1] += w * self.control_net[ui][vi][1];
                 pw[2] += w * self.control_net[ui][vi][2];
@@ -952,14 +951,13 @@ impl IgaVolumeMassMatrix {
                     let mut wt = 0.0f64;
                     let mut nf = vec![0.0f64; n_ctrl];
                     let mut local_a = 0usize;
-                    for ii in 0..=pu {
-                        for jj in 0..=pv {
-                            for kk in 0..=pw_deg {
+                    for (ii, &bu_ii) in bu.iter().enumerate().take(pu + 1) {
+                        for (jj, &bv_jj) in bv.iter().enumerate().take(pv + 1) {
+                            for (kk, &bw_kk) in bw_vals.iter().enumerate().take(pw_deg + 1) {
                                 let ui = u_span - pu + ii;
                                 let vi = v_span - pv + jj;
                                 let wi_idx = w_span - pw_deg + kk;
-                                let w_ijk =
-                                    vol.weights[ui][vi][wi_idx] * bu[ii] * bv[jj] * bw_vals[kk];
+                                let w_ijk = vol.weights[ui][vi][wi_idx] * bu_ii * bv_jj * bw_kk;
                                 nf[local_a] = w_ijk;
                                 wt += w_ijk;
                                 local_a += 1;
@@ -967,8 +965,8 @@ impl IgaVolumeMassMatrix {
                         }
                     }
                     if wt.abs() > 1e-15 {
-                        for idx in 0..n_ctrl {
-                            nf[idx] /= wt;
+                        for nf_val in nf.iter_mut().take(n_ctrl) {
+                            *nf_val /= wt;
                         }
                     }
                     let rho = self.density;
@@ -1096,13 +1094,13 @@ impl NurbsVolume {
         let bw = basis_functions(w_span, pw, w, &self.w_basis.knot);
         let mut pt = [0.0f64; 3];
         let mut wt = 0.0f64;
-        for i in 0..=pu {
-            for j in 0..=pv {
-                for k in 0..=pw {
+        for (i, &bu_i) in bu.iter().enumerate().take(pu + 1) {
+            for (j, &bv_j) in bv.iter().enumerate().take(pv + 1) {
+                for (k, &bw_k) in bw.iter().enumerate().take(pw + 1) {
                     let ui = u_span - pu + i;
                     let vi = v_span - pv + j;
                     let wi_idx = w_span - pw + k;
-                    let w_ijk = self.weights[ui][vi][wi_idx] * bu[i] * bv[j] * bw[k];
+                    let w_ijk = self.weights[ui][vi][wi_idx] * bu_i * bv_j * bw_k;
                     pt[0] += w_ijk * self.ctrl[ui][vi][wi_idx][0];
                     pt[1] += w_ijk * self.ctrl[ui][vi][wi_idx][1];
                     pt[2] += w_ijk * self.ctrl[ui][vi][wi_idx][2];
@@ -1572,11 +1570,9 @@ impl NurbsCurve {
         let mut da = [0.0f64; 3];
         let mut w = 0.0f64;
         let mut dw = 0.0f64;
-        for j in 0..=p {
+        for (j, (&n0, &n1)) in ders[0].iter().zip(ders[1].iter()).enumerate().take(p + 1) {
             let idx = span - p + j;
             let wi = self.weights[idx];
-            let n0 = ders[0][j];
-            let n1 = ders[1][j];
             let pi = self.control_points[idx];
             a[0] += wi * pi[0] * n0;
             a[1] += wi * pi[1] * n0;
@@ -1606,21 +1602,14 @@ impl NurbsCurve {
         let knot = &self.basis.knot;
         let k = find_knot_span(n, p, t_new, knot);
         let mut new_knot = Vec::with_capacity(knot.len() + 1);
-        for i in 0..=k {
-            new_knot.push(knot[i]);
-        }
+        new_knot.extend_from_slice(&knot[..=k]);
         new_knot.push(t_new);
-        for i in (k + 1)..knot.len() {
-            new_knot.push(knot[i]);
-        }
+        new_knot.extend_from_slice(&knot[k + 1..]);
         let m = n + p + 1;
         let mut new_ctrl = vec![[0.0f64; 3]; n + 2];
         let mut new_weights = vec![0.0f64; n + 2];
-        #[allow(clippy::manual_memcpy)]
-        for i in 0..=(k - p) {
-            new_ctrl[i] = self.control_points[i];
-            new_weights[i] = self.weights[i];
-        }
+        new_ctrl[..=(k - p)].copy_from_slice(&self.control_points[..=(k - p)]);
+        new_weights[..=(k - p)].copy_from_slice(&self.weights[..=(k - p)]);
         for i in (k - p + 1)..=k {
             let alpha = (t_new - knot[i]) / (knot[i + p] - knot[i]);
             let prev_i = i - 1;
@@ -1710,16 +1699,26 @@ impl IgaElement {
         let mut dw_dv = 0.0f64;
         let mut bw = vec![0.0f64; n_local];
         let mut a = 0;
-        for i in 0..=pu {
-            for j in 0..=pv {
+        for (i, (&ud0i, &ud1i)) in u_ders[0]
+            .iter()
+            .zip(u_ders[1].iter())
+            .enumerate()
+            .take(pu + 1)
+        {
+            for (j, (&vd0j, &vd1j)) in v_ders[0]
+                .iter()
+                .zip(v_ders[1].iter())
+                .enumerate()
+                .take(pv + 1)
+            {
                 let ui = u_span - pu + i;
                 let vi = v_span - pv + j;
                 let wij = self.surface.weights[ui][vi];
-                let nij = u_ders[0][i] * v_ders[0][j];
+                let nij = ud0i * vd0j;
                 bw[a] = wij * nij;
                 w += bw[a];
-                dw_du += wij * u_ders[1][i] * v_ders[0][j];
-                dw_dv += wij * u_ders[0][i] * v_ders[1][j];
+                dw_du += wij * ud1i * vd0j;
+                dw_dv += wij * ud0i * vd1j;
                 a += 1;
             }
         }
@@ -1728,14 +1727,24 @@ impl IgaElement {
         }
         let _w2 = w * w;
         a = 0;
-        for i in 0..=pu {
-            for j in 0..=pv {
+        for (i, (&ud0i, &ud1i)) in u_ders[0]
+            .iter()
+            .zip(u_ders[1].iter())
+            .enumerate()
+            .take(pu + 1)
+        {
+            for (j, (&vd0j, &vd1j)) in v_ders[0]
+                .iter()
+                .zip(v_ders[1].iter())
+                .enumerate()
+                .take(pv + 1)
+            {
                 let ui = u_span - pu + i;
                 let vi = v_span - pv + j;
                 let wij = self.surface.weights[ui][vi];
                 r[a] = bw[a] / w;
-                dr_du[a] = (wij * u_ders[1][i] * v_ders[0][j] - dw_du * bw[a] / w) / w;
-                dr_dv[a] = (wij * u_ders[0][i] * v_ders[1][j] - dw_dv * bw[a] / w) / w;
+                dr_du[a] = (wij * ud1i * vd0j - dw_du * bw[a] / w) / w;
+                dr_dv[a] = (wij * ud0i * vd1j - dw_dv * bw[a] / w) / w;
                 let _ = (ui, vi);
                 a += 1;
             }

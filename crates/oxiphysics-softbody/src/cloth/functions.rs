@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use crate::particle::SoftParticle;
 use oxiphysics_core::math::Vec3;
 
@@ -78,8 +77,7 @@ pub(super) fn normalize(a: [f64; 3]) -> [f64; 3] {
 /// For every pair of vertices closer than `min_dist`, applies a positional
 /// correction that pushes them apart to `min_dist`.  Only non-fixed vertices
 /// are corrected.
-#[allow(dead_code)]
-pub fn resolve_self_collision(vertices: &mut Vec<ClothVertex>, min_dist: f64) {
+pub fn resolve_self_collision(vertices: &mut [ClothVertex], min_dist: f64) {
     let n = vertices.len();
     for i in 0..n {
         for j in (i + 1)..n {
@@ -111,8 +109,7 @@ pub fn resolve_self_collision(vertices: &mut Vec<ClothVertex>, min_dist: f64) {
 ///
 /// Vertices that penetrate the sphere are pushed to its surface and their
 /// inward velocity components are removed (or reflected with restitution).
-#[allow(dead_code)]
-pub fn resolve_cloth_sphere_collision(vertices: &mut Vec<ClothVertex>, sphere: &RigidSphere) {
+pub fn resolve_cloth_sphere_collision(vertices: &mut [ClothVertex], sphere: &RigidSphere) {
     for v in vertices.iter_mut() {
         if v.fixed {
             continue;
@@ -133,12 +130,7 @@ pub fn resolve_cloth_sphere_collision(vertices: &mut Vec<ClothVertex>, sphere: &
 ///
 /// Vertices below `floor_y` are pushed back up with restitution applied to the
 /// y-velocity.
-#[allow(dead_code)]
-pub fn resolve_cloth_floor_collision(
-    vertices: &mut Vec<ClothVertex>,
-    floor_y: f64,
-    restitution: f64,
-) {
+pub fn resolve_cloth_floor_collision(vertices: &mut [ClothVertex], floor_y: f64, restitution: f64) {
     for v in vertices.iter_mut() {
         if v.fixed {
             continue;
@@ -157,7 +149,6 @@ pub fn resolve_cloth_floor_collision(
 /// `F_lift = 0.5 * ρ_air * C_L * A * |v_rel|² * n̂`
 /// where `v_rel` is the relative wind velocity and `C_L` depends on the
 /// angle of attack.
-#[allow(dead_code)]
 pub fn compute_lift_force(
     p0: [f64; 3],
     p1: [f64; 3],
@@ -187,7 +178,6 @@ pub fn compute_lift_force(
 /// Estimates the wrinkling intensity from the compressive strain at the
 /// vertex, expressed as the ratio of compressive edge stretch to a reference
 /// rest length.
-#[allow(dead_code)]
 pub fn vertex_wrinkle_amplitude(
     vertex_idx: usize,
     edges: &[ClothEdge],
@@ -220,13 +210,11 @@ pub fn vertex_wrinkle_amplitude(
 ///
 /// This is a post-processing wrinkling enhancement: each vertex is displaced
 /// by `amplitude(v) * normal(v)`.
-#[allow(dead_code)]
-pub fn apply_wrinkling(vertices: &mut Vec<ClothVertex>, edges: &[ClothEdge], wrinkle_scale: f64) {
+pub fn apply_wrinkling(vertices: &mut [ClothVertex], edges: &[ClothEdge], wrinkle_scale: f64) {
     let n = vertices.len();
-    let mut amplitudes = vec![0.0_f64; n];
-    for i in 0..n {
-        amplitudes[i] = vertex_wrinkle_amplitude(i, edges, vertices, wrinkle_scale);
-    }
+    let amplitudes: Vec<f64> = (0..n)
+        .map(|i| vertex_wrinkle_amplitude(i, edges, vertices, wrinkle_scale))
+        .collect();
     for (i, v) in vertices.iter_mut().enumerate() {
         if v.fixed {
             continue;
@@ -536,8 +524,6 @@ mod pbd_cloth_tests {
 ///
 /// The deformation gradient `F` maps the reference triangle to the current
 /// one.
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub fn green_lagrange_strain(
     p0: [f64; 3],
     p1: [f64; 3],
@@ -585,7 +571,6 @@ pub fn green_lagrange_strain(
 /// where λ and μ are the Lamé parameters and E is the Green–Lagrange strain.
 ///
 /// `strain_voigt` = `[E11, E22, E12]`.
-#[allow(dead_code)]
 pub fn svk_energy(strain_voigt: [f64; 3], lambda: f64, mu: f64) -> f64 {
     let e11 = strain_voigt[0];
     let e22 = strain_voigt[1];
@@ -599,7 +584,6 @@ pub fn svk_energy(strain_voigt: [f64; 3], lambda: f64, mu: f64) -> f64 {
 /// `S = λ * tr(E) * I + 2μ * E`
 ///
 /// Returns `[S11, S22, S12]`.
-#[allow(dead_code)]
 pub fn svk_stress(strain_voigt: [f64; 3], lambda: f64, mu: f64) -> [f64; 3] {
     let e11 = strain_voigt[0];
     let e22 = strain_voigt[1];
@@ -613,7 +597,6 @@ pub fn svk_stress(strain_voigt: [f64; 3], lambda: f64, mu: f64) -> [f64; 3] {
 }
 /// Convert Young's modulus `E` and Poisson's ratio `nu` to 2-D plane-stress
 /// Lamé parameters.
-#[allow(dead_code)]
 pub fn lame_from_young_poisson(young: f64, nu: f64) -> (f64, f64) {
     let mu = young / (2.0 * (1.0 + nu));
     let lambda = young * nu / ((1.0 + nu) * (1.0 - nu));
@@ -625,7 +608,6 @@ pub fn lame_from_young_poisson(young: f64, nu: f64) -> (f64, f64) {
 /// vertices where the average edge strain is negative (compressive).
 ///
 /// The compression measure is the magnitude of the average compressive strain.
-#[allow(dead_code)]
 pub fn detect_wrinkle_regions(
     vertices: &[ClothVertex],
     edges: &[ClothEdge],
@@ -666,9 +648,8 @@ pub fn detect_wrinkle_regions(
 /// edges and tears them if their current strain exceeds `propagation_threshold`.
 ///
 /// Returns the number of newly torn edges.
-#[allow(dead_code)]
 pub fn propagate_tears(
-    edges: &mut Vec<ClothEdge>,
+    edges: &mut [ClothEdge],
     vertices: &[ClothVertex],
     propagation_threshold: f64,
     max_propagation_steps: usize,
@@ -684,21 +665,21 @@ pub fn propagate_tears(
                 torn_vertices.insert(e.b);
             }
         }
-        for i in 0..n_edges {
-            if edges[i].torn {
+        for edge in edges.iter_mut().take(n_edges) {
+            if edge.torn {
                 continue;
             }
-            let a = edges[i].a;
-            let b = edges[i].b;
+            let a = edge.a;
+            let b = edge.b;
             if !torn_vertices.contains(&a) && !torn_vertices.contains(&b) {
                 continue;
             }
             let pa = vertices[a].pos;
             let pb = vertices[b].pos;
             let d = length(sub(pb, pa));
-            let strain = (d - edges[i].rest_length) / edges[i].rest_length.max(1e-12);
+            let strain = (d - edge.rest_length) / edge.rest_length.max(1e-12);
             if strain > propagation_threshold {
-                edges[i].torn = true;
+                edge.torn = true;
                 torn_this_step += 1;
             }
         }

@@ -2,13 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions_2::*;
 use oxiphysics_core::math::{Real, Vec3};
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{heightfield_tessellate, ray_aabb_xz, ray_triangle, tri_area};
 
 /// A grid-based height field for terrain representation.
@@ -47,7 +42,6 @@ impl HeightField {
     /// Create a height field from a function.
     ///
     /// The function `f(col, row)` returns the height at each grid point.
-    #[allow(dead_code)]
     pub fn from_fn(
         cols: usize,
         rows: usize,
@@ -71,7 +65,6 @@ impl HeightField {
     /// Bilinear interpolation of height at normalized coordinates (u, v).
     ///
     /// `u` and `v` are in `[0, 1]`, mapping to the full extent of the grid.
-    #[allow(dead_code)]
     pub fn height_at_uv(&self, u: Real, v: Real) -> Real {
         let u = u.clamp(0.0, 1.0);
         let v = v.clamp(0.0, 1.0);
@@ -92,7 +85,6 @@ impl HeightField {
         h0 * (1.0 - tz) + h1 * tz
     }
     /// Compute the surface normal at grid point (col, row) via finite differences.
-    #[allow(dead_code)]
     pub fn normal_at_grid(&self, col: usize, row: usize) -> [Real; 3] {
         let dh_dx = if col == 0 {
             (self.height_at(row, col + 1) - self.height_at(row, col)) / self.scale_x
@@ -118,7 +110,6 @@ impl HeightField {
     ///
     /// Returns (vertices, triangles) where each vertex is `[x, y, z]`
     /// and each triangle is 3 vertex indices.
-    #[allow(dead_code)]
     pub fn to_triangle_mesh(&self) -> (Vec<[Real; 3]>, Vec<[usize; 3]>) {
         let mut vertices = Vec::with_capacity(self.rows * self.cols);
         for row in 0..self.rows {
@@ -144,17 +135,14 @@ impl HeightField {
         (vertices, triangles)
     }
     /// Return the minimum height in the field.
-    #[allow(dead_code)]
     pub fn min_height(&self) -> Real {
         self.height_bounds().0
     }
     /// Return the maximum height in the field.
-    #[allow(dead_code)]
     pub fn max_height(&self) -> Real {
         self.height_bounds().1
     }
     /// Compute the total surface area by summing triangle areas from tessellation.
-    #[allow(dead_code)]
     pub fn surface_area(&self) -> Real {
         if self.rows < 2 || self.cols < 2 {
             return 0.0;
@@ -192,7 +180,6 @@ impl HeightField {
     ///
     /// Each interior height is replaced by the average of its 4-connected neighbors.
     /// Boundary heights are unchanged.
-    #[allow(dead_code)]
     pub fn smooth(&mut self, iterations: usize) {
         for _ in 0..iterations {
             let mut new_heights = self.heights.clone();
@@ -212,7 +199,6 @@ impl HeightField {
     ///
     /// Returns `Some((toi, [nx, ny, nz]))` for the closest hit within `max_toi`,
     /// or `None` if no intersection.
-    #[allow(dead_code)]
     pub fn ray_cast_grid(
         &self,
         origin: [Real; 3],
@@ -302,7 +288,6 @@ impl HeightField {
     ///
     /// `factor` must be ≥ 1.  A factor of 2 halves the resolution by averaging
     /// 2×2 blocks of cells.  If the grid is too small the original is returned.
-    #[allow(dead_code)]
     pub fn lod_downsample(&self, factor: usize) -> HeightField {
         if factor <= 1 {
             return self.clone();
@@ -342,7 +327,6 @@ impl HeightField {
     ///
     /// Returns a Vec where index 0 is the original, index 1 is 2× downsampled,
     /// index 2 is 4× downsampled, etc., until the grid is too small.
-    #[allow(dead_code)]
     pub fn lod_pyramid(&self, levels: usize) -> Vec<HeightField> {
         let mut result = vec![self.clone()];
         let mut factor = 2;
@@ -359,7 +343,6 @@ impl HeightField {
     }
     /// Compute the normal at an arbitrary world-space XZ position via bilinear
     /// interpolation of the four surrounding grid normals.
-    #[allow(dead_code)]
     pub fn normal_at_world(&self, x: Real, z: Real) -> [Real; 3] {
         let fx = (x / self.scale_x).clamp(0.0, (self.cols - 1) as Real);
         let fz = (z / self.scale_z).clamp(0.0, (self.rows - 1) as Real);
@@ -389,7 +372,6 @@ impl HeightField {
     /// Serialize the height field to a flat `Vec`f64` prefixed by metadata.
     ///
     /// Format: `\[rows, cols, scale_x, scale_z, h0, h1, ...\]`
-    #[allow(dead_code)]
     pub fn serialize(&self) -> Vec<Real> {
         let mut data = Vec::with_capacity(4 + self.heights.len());
         data.push(self.rows as Real);
@@ -400,7 +382,6 @@ impl HeightField {
         data
     }
     /// Deserialize a height field from a flat `Vec`f64` (inverse of `serialize`).
-    #[allow(dead_code)]
     pub fn deserialize(data: &[Real]) -> Option<HeightField> {
         if data.len() < 4 {
             return None;
@@ -423,7 +404,6 @@ impl HeightField {
     /// Compute per-vertex normals for all grid vertices.
     ///
     /// Returns a flat `Vec<[Real; 3]>` in row-major order.
-    #[allow(dead_code)]
     pub fn compute_all_normals(&self) -> Vec<[Real; 3]> {
         let mut normals = Vec::with_capacity(self.rows * self.cols);
         for row in 0..self.rows {
@@ -436,7 +416,6 @@ impl HeightField {
     /// Height at arbitrary world-space XZ position (bilinear interpolation).
     ///
     /// Clamps to grid extents.
-    #[allow(dead_code)]
     pub fn height_at_world(&self, x: Real, z: Real) -> Real {
         let u = (x / (self.scale_x * (self.cols - 1) as Real)).clamp(0.0, 1.0);
         let v = (z / (self.scale_z * (self.rows - 1) as Real)).clamp(0.0, 1.0);
@@ -445,7 +424,6 @@ impl HeightField {
     /// Ray cast with DDA and a maximum number of steps (bounded version).
     ///
     /// Avoids unbounded loops on very large grids.
-    #[allow(dead_code)]
     pub fn ray_cast_bounded(
         &self,
         origin: [Real; 3],
@@ -489,7 +467,6 @@ impl HeightField {
     /// Axis-aligned bounding box of this height field in world space.
     ///
     /// Returns `(min, max)` where each is `[x, y, z]`.
-    #[allow(dead_code)]
     pub fn aabb(&self) -> ([f64; 3], [f64; 3]) {
         let (min_h, max_h) = self.height_bounds();
         let max_x = (self.cols - 1) as f64 * self.scale_x;
@@ -501,7 +478,6 @@ impl HeightField {
     /// Unlike `height_at(row, col)` (grid indices) and `height_at_world`,
     /// this method accepts `(x, z)` world coordinates and returns the
     /// interpolated height, clamping to the grid extents.
-    #[allow(dead_code)]
     pub fn height_at_xz(&self, x: f64, z: f64) -> f64 {
         self.height_at_world(x, z)
     }
@@ -509,7 +485,6 @@ impl HeightField {
     ///
     /// Each normal is computed via finite differences over the 4-connected
     /// neighborhood and returned as a unit vector `[nx, ny, nz]`.
-    #[allow(dead_code)]
     pub fn normals(&self) -> Vec<[f64; 3]> {
         self.compute_all_normals()
     }
@@ -519,7 +494,6 @@ impl HeightField {
     /// - `vertices` is a list of world-space `[x, y, z]` positions,
     ///   one per grid point, in row-major order.
     /// - `indices` is a list of `[i0, i1, i2]` triangles (two per quad cell).
-    #[allow(dead_code)]
     pub fn tessellate(&self) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
         let vertices: Vec<[f64; 3]> = (0..self.rows)
             .flat_map(|row| {
@@ -542,7 +516,6 @@ impl HeightField {
     /// Returns `None` if the ray misses the terrain or is going away from it.
     ///
     /// The search is limited to a reasonable distance (diagonal of the AABB).
-    #[allow(dead_code)]
     pub fn ray_intersect(&self, origin: [f64; 3], dir: [f64; 3]) -> Option<(f64, [f64; 3])> {
         let (_, max_h) = self.height_bounds();
         if dir[1] > 0.0 && origin[1] >= max_h {
@@ -561,7 +534,6 @@ impl HeightField {
     ///
     /// Slope is defined as `sqrt((dh/dx)² + (dh/dz)²)` using the same
     /// finite-difference stencil as `normal_at_grid`.
-    #[allow(dead_code)]
     pub fn slope_at(&self, col: usize, row: usize) -> f64 {
         let dh_dx = if col == 0 {
             (self.height_at(row, col + 1) - self.height_at(row, col)) / self.scale_x
@@ -583,7 +555,6 @@ impl HeightField {
     ///
     /// Uses a second-order central difference approximation:
     /// `κ ≈ (d²h/dx² + d²h/dz²) / 2`.
-    #[allow(dead_code)]
     pub fn curvature_at(&self, col: usize, row: usize) -> f64 {
         let h = self.height_at(row, col);
         let d2h_dx2 = if col == 0 || col == self.cols - 1 {
@@ -603,7 +574,6 @@ impl HeightField {
         (d2h_dx2 + d2h_dz2) * 0.5
     }
     /// Return a flat `Vec`f64` of slope magnitudes in row-major order.
-    #[allow(dead_code)]
     pub fn slope_map(&self) -> Vec<f64> {
         let mut out = Vec::with_capacity(self.rows * self.cols);
         for row in 0..self.rows {
@@ -614,7 +584,6 @@ impl HeightField {
         out
     }
     /// Return a flat `Vec`f64` of mean curvatures in row-major order.
-    #[allow(dead_code)]
     pub fn curvature_map(&self) -> Vec<f64> {
         let mut out = Vec::with_capacity(self.rows * self.cols);
         for row in 0..self.rows {
@@ -628,7 +597,6 @@ impl HeightField {
     /// over all grid vertices.
     ///
     /// Returns `(closest_world_point, row, col)`.
-    #[allow(dead_code)]
     pub fn closest_vertex(&self, q: [f64; 3]) -> ([f64; 3], usize, usize) {
         let mut best_dist2 = f64::INFINITY;
         let mut best_pt = [0.0f64; 3];
@@ -657,7 +625,6 @@ impl HeightField {
     ///
     /// `new_cols` and `new_rows` must be ≥ 2.  Returns a new `HeightField` with
     /// the same world extents but a different resolution.
-    #[allow(dead_code)]
     pub fn resample(&self, new_cols: usize, new_rows: usize) -> HeightField {
         assert!(new_cols >= 2 && new_rows >= 2);
         let new_scale_x = (self.scale_x * (self.cols - 1) as f64) / (new_cols - 1) as f64;
@@ -678,7 +645,6 @@ impl HeightField {
     ///
     /// `iterations` controls how many passes are performed.  For correctness
     /// the caller should keep `sediment_rate` ≤ 0.5.
-    #[allow(dead_code)]
     pub fn hydraulic_erode(&mut self, sediment_rate: f64, iterations: usize) {
         for _ in 0..iterations {
             let mut delta = vec![0.0f64; self.rows * self.cols];
@@ -713,8 +679,8 @@ impl HeightField {
                     }
                 }
             }
-            for i in 0..self.heights.len() {
-                self.heights[i] += delta[i];
+            for (h, d) in self.heights.iter_mut().zip(delta.iter()) {
+                *h += d;
             }
         }
     }
@@ -723,7 +689,6 @@ impl HeightField {
     /// Each cell accumulates 1 unit plus the total of all upstream cells that
     /// drain into it following steepest descent.  Returns a flat `Vec`f64`
     /// in row-major order; larger values indicate valleys/channels.
-    #[allow(dead_code)]
     pub fn flow_accumulation(&self) -> Vec<f64> {
         let n = self.rows * self.cols;
         let mut drain: Vec<Option<usize>> = vec![None; n];
@@ -767,21 +732,18 @@ impl HeightField {
         accum
     }
     /// Clamp all height values to the range `\[min_h, max_h\]`.
-    #[allow(dead_code)]
     pub fn clamp_heights(&mut self, min_h: f64, max_h: f64) {
         for h in &mut self.heights {
             *h = h.clamp(min_h, max_h);
         }
     }
     /// Scale all heights by a uniform factor.
-    #[allow(dead_code)]
     pub fn scale_heights(&mut self, factor: f64) {
         for h in &mut self.heights {
             *h *= factor;
         }
     }
     /// Offset all heights by a constant value.
-    #[allow(dead_code)]
     pub fn offset_heights(&mut self, offset: f64) {
         for h in &mut self.heights {
             *h += offset;
@@ -789,7 +751,6 @@ impl HeightField {
     }
     /// Normalize heights to the range `\[0, 1\]`.  If all heights are equal, all
     /// become 0.
-    #[allow(dead_code)]
     pub fn normalize_heights(&mut self) {
         let (min_h, max_h) = self.height_bounds();
         let range = max_h - min_h;
@@ -804,7 +765,6 @@ impl HeightField {
         }
     }
     /// Invert heights: each height `h` becomes `max_height - (h - min_height)`.
-    #[allow(dead_code)]
     pub fn invert_heights(&mut self) {
         let (min_h, max_h) = self.height_bounds();
         for h in &mut self.heights {
@@ -812,7 +772,6 @@ impl HeightField {
         }
     }
     /// Compute the average height over the entire grid.
-    #[allow(dead_code)]
     pub fn mean_height(&self) -> f64 {
         if self.heights.is_empty() {
             return 0.0;
@@ -820,7 +779,6 @@ impl HeightField {
         self.heights.iter().sum::<f64>() / self.heights.len() as f64
     }
     /// Compute the variance of heights.
-    #[allow(dead_code)]
     pub fn height_variance(&self) -> f64 {
         if self.heights.is_empty() {
             return 0.0;
@@ -835,7 +793,6 @@ impl HeightField {
     /// Count the number of local maxima (peaks) in the grid.
     ///
     /// A cell is a peak if it is strictly higher than all 4-connected neighbors.
-    #[allow(dead_code)]
     pub fn count_peaks(&self) -> usize {
         let mut count = 0usize;
         for row in 0..self.rows {
@@ -864,7 +821,6 @@ impl HeightField {
     /// Approximate volume under the height field (above y=0) using the trapezoidal rule.
     ///
     /// Each grid cell contributes `(average_height) * cell_area`.
-    #[allow(dead_code)]
     pub fn volume(&self) -> f64 {
         if self.rows < 2 || self.cols < 2 {
             return 0.0;
@@ -886,7 +842,6 @@ impl HeightField {
     /// Cast a ray against the height field. Returns hit information if intersection found.
     ///
     /// Uses the tessellated triangle mesh for accurate intersection.
-    #[allow(dead_code)]
     pub fn ray_cast(
         &self,
         ray_origin: &oxiphysics_core::math::Vec3,
@@ -942,7 +897,6 @@ pub struct HeightfieldRayHit {
 }
 /// Result of a heightfield ray traversal.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct HeightfieldRaycast {
     /// Column index of the cell that was hit.
     pub cell_ix: usize,
@@ -959,7 +913,6 @@ pub struct HeightfieldRaycast {
 /// [`HeightfieldRayTraversal::next_cell`] repeatedly to visit each cell along
 /// the ray in XZ-projection order.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct HeightfieldRayTraversal {
     /// Current cell column index.
     pub cell_col: isize,
@@ -982,7 +935,6 @@ pub struct HeightfieldRayTraversal {
     /// True once the traversal has finished.
     pub done: bool,
 }
-#[allow(dead_code)]
 impl HeightfieldRayTraversal {
     /// Initialize a DDA traversal over `hf` starting at `ray_origin` in direction
     /// `ray_dir` (need not be normalised).  `max_t` bounds the traversal.

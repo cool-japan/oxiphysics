@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::*;
     use crate::ray_casting::types::{
         Aabb, Bvh, Capsule, ConvexMesh, Heightfield, Obb, Ray, RayDifferential, RayTree, Scene,
         Sphere,

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,9 +16,6 @@
 //! - [`HairLod`]: level-of-detail system for hair bundles.
 //!
 //! All vectors use `[f64; 3]` arrays (no nalgebra dependency).
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -306,10 +302,10 @@ impl DiscreteElasticRod {
         let mut forces = vec![zero3(); n];
 
         // Gravity
-        for i in 0..n {
-            if self.inv_mass[i] > 0.0 {
-                let m = 1.0 / self.inv_mass[i];
-                forces[i] = scale3(gravity, m);
+        for (force, inv_m) in forces.iter_mut().zip(self.inv_mass.iter()) {
+            if *inv_m > 0.0 {
+                let m = 1.0 / inv_m;
+                *force = scale3(gravity, m);
             }
         }
 
@@ -317,12 +313,18 @@ impl DiscreteElasticRod {
         self.accumulate_bend_forces(&mut forces);
 
         // Update velocities and positions
-        for i in 0..n {
-            if self.inv_mass[i] <= 0.0 {
+        for (i, (vel, (force, inv_m))) in self
+            .velocities
+            .iter_mut()
+            .zip(forces.iter().zip(self.inv_mass.iter()))
+            .enumerate()
+        {
+            let _ = i;
+            if *inv_m <= 0.0 {
                 continue;
             }
-            let acc = scale3(forces[i], self.inv_mass[i]);
-            self.velocities[i] = add3(self.velocities[i], scale3(acc, dt));
+            let acc = scale3(*force, *inv_m);
+            *vel = add3(*vel, scale3(acc, dt));
         }
 
         self.apply_damping(dt);
@@ -687,13 +689,18 @@ impl StylingForce {
     pub fn energy(&self, positions: &[[f64; 3]]) -> f64 {
         let n = positions.len().min(self.targets.len());
         let mut e = 0.0;
-        for i in 0..n {
+        for (i, (pos, tgt)) in positions
+            .iter()
+            .zip(self.targets.iter())
+            .enumerate()
+            .take(n)
+        {
             let w = if i < self.weights.len() {
                 self.weights[i]
             } else {
                 1.0
             };
-            let d = dist3(positions[i], self.targets[i]);
+            let d = dist3(*pos, *tgt);
             e += 0.5 * self.stiffness * w * d * d;
         }
         e
@@ -1268,10 +1275,14 @@ impl HairBundle {
             self.wind.apply_to_strand(guide, wind_velocity, &mut forces);
 
             // Add forces to velocities before stepping
-            for i in 0..n {
-                if guide.inv_mass[i] > 0.0 {
-                    let acc = scale3(forces[i], guide.inv_mass[i]);
-                    guide.velocities[i] = add3(guide.velocities[i], scale3(acc, dt));
+            for (vel, (force, inv_m)) in guide
+                .velocities
+                .iter_mut()
+                .zip(forces.iter().zip(guide.inv_mass.iter()))
+            {
+                if *inv_m > 0.0 {
+                    let acc = scale3(*force, *inv_m);
+                    *vel = add3(*vel, scale3(acc, dt));
                 }
             }
 

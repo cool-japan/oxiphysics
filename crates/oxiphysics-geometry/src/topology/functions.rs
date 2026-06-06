@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Auto-generated module
 //
 // 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
@@ -74,7 +73,7 @@ pub fn compute_0d_persistence(
         }
         parent[x]
     }
-    fn union(parent: &mut Vec<usize>, rank: &mut Vec<usize>, x: usize, y: usize) -> (usize, usize) {
+    fn union(parent: &mut Vec<usize>, rank: &mut [usize], x: usize, y: usize) -> (usize, usize) {
         let rx = find(parent, x);
         let ry = find(parent, y);
         if rx == ry {
@@ -343,8 +342,7 @@ pub fn detect_non_manifold_vertices(mesh: &HalfEdgeMesh) -> Vec<NonManifoldVerte
             }
         }
     }
-    for v in 0..nv {
-        let faces = &vf[v];
+    for (v, faces) in vf.iter().enumerate().take(nv) {
         if faces.len() <= 1 {
             continue;
         }
@@ -1012,12 +1010,12 @@ mod tests {
     fn test_marching_squares_circle_like() {
         let n = 10usize;
         let mut field = vec![vec![0.0f64; n]; n];
-        for y in 0..n {
-            for x in 0..n {
+        for (y, row) in field.iter_mut().enumerate() {
+            for (x, cell) in row.iter_mut().enumerate() {
                 let cx = 4.5f64;
                 let cy = 4.5f64;
                 let r2 = (x as f64 - cx).powi(2) + (y as f64 - cy).powi(2);
-                field[y][x] = (-r2 / 4.0).exp();
+                *cell = (-r2 / 4.0).exp();
             }
         }
         let segs = IsoCurve::marching_squares(&field, n, n, 1.0, 1.0, 0.3);

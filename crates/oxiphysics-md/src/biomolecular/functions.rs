@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{AmberLjParams, DsspLabel, GyrRadius, ProteinTopology, SecondaryStructure};
 
 /// Compute phi backbone dihedral angle (C_prev, N, CA, C) in degrees.
@@ -178,12 +177,12 @@ pub fn detect_sheet_residues(
 ) -> Vec<bool> {
     let n = n_pos.len().min(o_pos.len());
     let mut sheet = vec![false; n];
-    for i in 0..n {
-        for j in 0..n {
+    for (i, &o) in o_pos.iter().enumerate().take(n) {
+        for (j, &np) in n_pos.iter().enumerate().take(n) {
             if (i as isize - j as isize).unsigned_abs() < min_sep {
                 continue;
             }
-            let d = dist3(o_pos[i], n_pos[j]);
+            let d = dist3(o, np);
             if d < 3.5 {
                 sheet[i] = true;
                 break;
@@ -413,10 +412,10 @@ pub fn jacobi3(a: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
         let mut max_val = 0.0_f64;
         let mut p = 0;
         let mut q = 1;
-        for i in 0..3 {
-            for j in (i + 1)..3 {
-                if d[i][j].abs() > max_val {
-                    max_val = d[i][j].abs();
+        for (i, d_row) in d.iter().enumerate() {
+            for (j, &d_val) in d_row.iter().enumerate().skip(i + 1) {
+                if d_val.abs() > max_val {
+                    max_val = d_val.abs();
                     p = i;
                     q = j;
                 }
@@ -438,21 +437,19 @@ pub fn jacobi3(a: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
         d[q][q] += t * dpq;
         d[p][q] = 0.0;
         d[q][p] = 0.0;
-        for r in 0..3 {
-            if r != p && r != q {
-                let drp = d[r][p];
-                let drq = d[r][q];
-                d[r][p] = c * drp - s * drq;
-                d[p][r] = d[r][p];
-                d[r][q] = c * drq + s * drp;
-                d[q][r] = d[r][q];
-            }
+        for r in (0usize..3).filter(|&r| r != p && r != q) {
+            let drp = d[r][p];
+            let drq = d[r][q];
+            d[r][p] = c * drp - s * drq;
+            d[p][r] = d[r][p];
+            d[r][q] = c * drq + s * drp;
+            d[q][r] = d[r][q];
         }
-        for r in 0..3 {
-            let vrp = v[r][p];
-            let vrq = v[r][q];
-            v[r][p] = c * vrp - s * vrq;
-            v[r][q] = c * vrq + s * vrp;
+        for row in v.iter_mut() {
+            let vrp = row[p];
+            let vrq = row[q];
+            row[p] = c * vrp - s * vrq;
+            row[q] = c * vrq + s * vrp;
         }
     }
     ([d[0][0], d[1][1], d[2][2]], v)

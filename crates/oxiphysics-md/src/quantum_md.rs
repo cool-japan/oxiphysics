@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -44,8 +43,6 @@
 //! - [`normal_mode_frequencies`]: compute ring-polymer normal-mode frequencies.
 //! - [`wkb_tunneling_rate`]: WKB tunneling rate through a parabolic barrier.
 //! - [`quantum_diffusion_coefficient`]: Green-Kubo integral of the VACF.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -241,10 +238,10 @@ impl NormalModeTransform {
     pub fn forward(&self, bead_coords: &[[f64; 3]]) -> Vec<[f64; 3]> {
         let p = self.n_beads;
         let mut modes = vec![[0.0f64; 3]; p];
-        for n in 0..p {
-            for k in 0..p {
+        for (n, mode_n) in modes.iter_mut().enumerate() {
+            for (k, &bc_k) in bead_coords.iter().enumerate().take(p) {
                 let c_kn = self.c_matrix[k * p + n];
-                modes[n] = v3_add(modes[n], v3_scale(c_kn, bead_coords[k]));
+                *mode_n = v3_add(*mode_n, v3_scale(c_kn, bc_k));
             }
         }
         modes
@@ -255,10 +252,10 @@ impl NormalModeTransform {
     pub fn inverse(&self, mode_coords: &[[f64; 3]]) -> Vec<[f64; 3]> {
         let p = self.n_beads;
         let mut beads = vec![[0.0f64; 3]; p];
-        for k in 0..p {
-            for n in 0..p {
+        for (k, bead_k) in beads.iter_mut().enumerate() {
+            for (n, &mc_n) in mode_coords.iter().enumerate().take(p) {
                 let c_kn = self.c_matrix[k * p + n];
-                beads[k] = v3_add(beads[k], v3_scale(c_kn, mode_coords[n]));
+                *bead_k = v3_add(*bead_k, v3_scale(c_kn, mc_n));
             }
         }
         beads
@@ -541,8 +538,8 @@ impl PileThermostat {
         let freqs = normal_mode_frequencies(n_beads, beta, hbar);
         let mut gamma_modes = Vec::with_capacity(n_beads);
         gamma_modes.push(gamma_centroid);
-        for n in 1..n_beads {
-            gamma_modes.push(2.0 * freqs[n]); // critical damping
+        for freq_n in freqs.iter().skip(1) {
+            gamma_modes.push(2.0 * freq_n); // critical damping
         }
         let c1: Vec<f64> = gamma_modes.iter().map(|&g| (-g * dt / 2.0).exp()).collect();
         let c2: Vec<f64> = c1.iter().map(|&c| (1.0 - c * c).sqrt()).collect();
@@ -835,8 +832,7 @@ impl VacfAccumulator {
                 numerator += v3_dot(*a0, *at);
             }
         }
-        for t0 in 0..n_pairs {
-            let v0 = &self.snapshots[t0];
+        for v0 in &self.snapshots[..n_pairs] {
             for a0 in v0.iter() {
                 denominator += v3_dot(*a0, *a0);
             }

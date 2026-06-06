@@ -18,9 +18,6 @@
 //! - **Fiber recruitment** – motor unit recruitment model
 //! - **Isometric/isotonic contractions** – fixed-length and fixed-load modes
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Helper math (no nalgebra)
 // ---------------------------------------------------------------------------
@@ -70,12 +67,6 @@ fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
 #[inline]
 fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
     x.max(lo).min(hi)
-}
-
-/// Linear interpolation.
-#[inline]
-fn lerp(a: f64, b: f64, t: f64) -> f64 {
-    a + (b - a) * t
 }
 
 // ===========================================================================

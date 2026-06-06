@@ -6,9 +6,6 @@
 //! Wraps the character controller geometry and configuration types and
 //! exposes a JSON-oriented surface suitable for use across the WASM boundary.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -36,11 +33,6 @@ fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 #[inline]
 fn scale(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
-}
-
-#[inline]
-fn len(a: [f64; 3]) -> f64 {
-    dot(a, a).sqrt()
 }
 
 #[inline]

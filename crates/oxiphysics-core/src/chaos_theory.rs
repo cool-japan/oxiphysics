@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -30,8 +29,6 @@
 //! - Takens, F. (1981). Detecting strange attractors in turbulence. *Lect. Notes Math.*, 898.
 //! - Feigenbaum, M.J. (1978). Quantitative universality for a class of nonlinear transformations.
 //!   *J. Stat. Phys.*, 19, 25–52.
-
-#![allow(dead_code)]
 
 // ─── Lorenz System ───────────────────────────────────────────────────────────
 
@@ -255,7 +252,6 @@ pub struct DuffingOscillator {
 
 impl DuffingOscillator {
     /// Creates a new Duffing oscillator with the given parameters.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(delta: f64, alpha: f64, beta: f64, gamma: f64, omega: f64) -> Self {
         Self {
             delta,
@@ -752,11 +748,11 @@ impl MutualInformation {
         }
 
         let mut mi = 0.0f64;
-        for bx in 0..nb {
-            for by in 0..nb {
-                let pxy = joint[bx][by] as f64 / n as f64;
-                let px = marg_x[bx] as f64 / n as f64;
-                let py = marg_y[by] as f64 / n as f64;
+        for (joint_row, &mx) in joint.iter().zip(marg_x.iter()) {
+            let px = mx as f64 / n as f64;
+            for (jval, &my) in joint_row.iter().zip(marg_y.iter()) {
+                let pxy = *jval as f64 / n as f64;
+                let py = my as f64 / n as f64;
                 if pxy > 0.0 && px > 0.0 && py > 0.0 {
                     mi += pxy * (pxy / (px * py)).ln();
                 }
@@ -980,8 +976,8 @@ impl FtleField {
         let eps = dx.min(dy) * 0.01;
 
         let mut ftle = vec![vec![0.0f64; self.ny]; self.nx];
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
+        for (ix, ftle_row) in ftle.iter_mut().enumerate() {
+            for (iy, cell) in ftle_row.iter_mut().enumerate() {
                 let x0 = x_range.0 + ix as f64 * dx;
                 let y0 = y_range.0 + iy as f64 * dy;
                 let p0 = [x0, y0, z_fixed];
@@ -1009,7 +1005,7 @@ impl FtleField {
                 let det = c11 * c22 - c12 * c12;
                 let disc = (0.25 * tr * tr - det).max(0.0);
                 let lambda_max = 0.5 * tr + disc.sqrt();
-                ftle[ix][iy] = if lambda_max > 1.0 {
+                *cell = if lambda_max > 1.0 {
                     lambda_max.ln() / (2.0 * self.t_integration.abs())
                 } else {
                     0.0
@@ -1227,10 +1223,10 @@ fn gram_schmidt_qr(cols: [[f64; 3]; 3]) -> ([[f64; 3]; 3], [f64; 3]) {
     for j in 0..3 {
         let mut v = cols[j];
         // Subtract projections onto previous columns.
-        for k in 0..j {
-            let proj = dot3(v, q[k]);
-            for i in 0..3 {
-                v[i] -= proj * q[k][i];
+        for qk in q[..j].iter() {
+            let proj = dot3(v, *qk);
+            for (vi, &qki) in v.iter_mut().zip(qk.iter()) {
+                *vi -= proj * qki;
             }
         }
         let norm = dot3(v, v).sqrt();

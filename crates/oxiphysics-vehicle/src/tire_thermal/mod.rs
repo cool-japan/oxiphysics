@@ -1,8 +1,8 @@
 //! Auto-generated module structure
 
-pub mod functions;
+mod functions;
 pub mod tireheatbalance_traits;
-pub mod types;
+mod types;
 
 // Re-export all types
 pub use functions::*;

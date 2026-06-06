@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg, clippy::too_many_arguments)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,8 +14,6 @@
 //! - Dielectric constant from dipole moment fluctuations
 //! - Orientational order parameters
 //! - Cluster analysis (DBSCAN)
-
-#![allow(dead_code, missing_docs)]
 
 use std::f64::consts::PI;
 
@@ -883,8 +880,8 @@ impl ClusterAnalysis {
         _core: usize,
         neighbors: &[usize],
         cluster_id: i64,
-        labels: &mut Vec<i64>,
-        visited: &mut Vec<bool>,
+        labels: &mut [i64],
+        visited: &mut [bool],
         eps2: f64,
     ) {
         let mut queue: Vec<usize> = neighbors.to_vec();

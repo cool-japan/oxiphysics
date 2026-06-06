@@ -1,4 +1,3 @@
-#![allow(clippy::if_same_then_else)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,9 +16,6 @@
 //! - Protein–ligand binding ΔΔG estimation
 //! - Relative free energy perturbation (RBFE)
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use rand::RngExt;
 use std::f64::consts::PI;
 
@@ -30,20 +26,15 @@ use std::f64::consts::PI;
 /// Boltzmann constant (J K⁻¹).
 const K_B: f64 = 1.380_649e-23;
 
-/// Avogadro's number (mol⁻¹).
-const N_AV: f64 = 6.022_140_76e23;
-
 /// Gas constant (J mol⁻¹ K⁻¹).
 const R_GAS: f64 = 8.314_462_618;
 
 /// Reference temperature (K).
+#[cfg(test)]
 const T_REF: f64 = 298.15;
 
 /// kcal to kJ conversion factor.
 const KCAL_TO_KJ: f64 = 4.184;
-
-/// kJ mol⁻¹ to k_B T at 298.15 K: β = 1 / (R T) in mol kJ⁻¹.
-const BETA_REF_MOL: f64 = 1.0 / (R_GAS * 1.0e-3 * T_REF); // kJ⁻¹ mol
 
 // ---------------------------------------------------------------------------
 // Scalar helpers
@@ -466,11 +457,7 @@ pub fn mbar_free_energies(
                         if n < energies[l].len() {
                             let term = f[l] + log_nk[l] - b * energies[l][n];
                             // log-sum-exp accumulation
-                            if term > log_den {
-                                log_den = log_sum_exp(&[log_den, term]);
-                            } else {
-                                log_den = log_sum_exp(&[log_den, term]);
-                            }
+                            log_den = log_sum_exp(&[log_den, term]);
                         }
                     }
                     let log_w = log_num - log_den;

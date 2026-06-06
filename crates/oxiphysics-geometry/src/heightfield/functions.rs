@@ -2,14 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use crate::shape::RayHit;
 use oxiphysics_core::math::{Real, Vec3};
 
 use super::types::{HeightField, HeightfieldRayTraversal, HeightfieldRaycast};
 
 /// Compute the area of a triangle from 3 vertices as arrays.
-#[allow(dead_code)]
 pub(super) fn tri_area(a: &[Real; 3], b: &[Real; 3], c: &[Real; 3]) -> Real {
     let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
@@ -22,7 +20,6 @@ pub(super) fn tri_area(a: &[Real; 3], b: &[Real; 3], c: &[Real; 3]) -> Real {
 }
 /// Intersect a ray (in XZ plane) with an axis-aligned rectangle \[0, w\] x \[0, h\].
 /// Returns (t_enter, t_exit) or None if no intersection.
-#[allow(dead_code)]
 pub(super) fn ray_aabb_xz(
     ox: Real,
     oz: Real,
@@ -104,7 +101,6 @@ pub(super) fn ray_triangle(
 ///
 /// For each cell along the ray (in the XZ plane), tests the two triangles
 /// using bilinear interpolation and returns the closest hit.
-#[allow(dead_code)]
 pub fn heightfield_ray_traverse(
     hf: &HeightField,
     ray_origin: [f64; 3],
@@ -191,7 +187,6 @@ pub fn heightfield_ray_traverse(
 /// Laplacian smoothing with a blending factor alpha.
 ///
 /// Each interior vertex is blended: `h_new = (1-alpha)*h + alpha*avg_neighbors`.
-#[allow(dead_code)]
 pub fn heightfield_smooth(hf: &mut HeightField, iterations: usize, alpha: f64) {
     for _ in 0..iterations {
         let mut new_h = hf.heights.clone();
@@ -211,7 +206,6 @@ pub fn heightfield_smooth(hf: &mut HeightField, iterations: usize, alpha: f64) {
 }
 /// Simple thermal erosion: for each cell, compute height excess over the
 /// average of lower neighbors and redistribute `rate` fraction to them.
-#[allow(dead_code)]
 pub fn heightfield_erode(hf: &mut HeightField, rate: f64, iterations: usize) {
     for _ in 0..iterations {
         let mut delta = vec![0.0f64; hf.rows * hf.cols];
@@ -250,20 +244,18 @@ pub fn heightfield_erode(hf: &mut HeightField, rate: f64, iterations: usize) {
                 }
             }
         }
-        for i in 0..hf.heights.len() {
-            hf.heights[i] += delta[i];
+        for (h, d) in hf.heights.iter_mut().zip(delta.iter()) {
+            *h += d;
         }
     }
 }
 /// Compute per-vertex normals for all grid vertices via finite differences.
 ///
 /// Returns a flat `Vec<[f64;3]>` in row-major order (same as `compute_all_normals`).
-#[allow(dead_code)]
 pub fn heightfield_compute_normals(hf: &HeightField) -> Vec<[f64; 3]> {
     hf.compute_all_normals()
 }
 /// Enumerate all triangles in the heightfield as a flat list of vertex triples.
-#[allow(dead_code)]
 pub fn heightfield_to_triangle_list(hf: &HeightField) -> Vec<[[f64; 3]; 3]> {
     let mut tris =
         Vec::with_capacity((hf.rows.saturating_sub(1)) * (hf.cols.saturating_sub(1)) * 2);
@@ -296,7 +288,6 @@ pub fn heightfield_to_triangle_list(hf: &HeightField) -> Vec<[[f64; 3]; 3]> {
     tris
 }
 /// Return `(min_height, max_height)` over all grid vertices.
-#[allow(dead_code)]
 pub fn heightfield_min_max(hf: &HeightField) -> (f64, f64) {
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
@@ -313,7 +304,6 @@ pub fn heightfield_min_max(hf: &HeightField) -> (f64, f64) {
 /// Compute the axis-aligned bounding box of the heightfield.
 ///
 /// Returns `(min_corner, max_corner)` as `[f64; 3]` arrays.
-#[allow(dead_code)]
 pub fn heightfield_aabb(hf: &HeightField) -> ([f64; 3], [f64; 3]) {
     let (min_h, max_h) = heightfield_min_max(hf);
     let min = [0.0, min_h, 0.0];
@@ -696,7 +686,6 @@ mod tests {
 ///
 /// For purely vertical rays (no X or Z component), a single-cell look-up is
 /// performed at the ray's (x, z) position.
-#[allow(dead_code)]
 pub fn heightfield_ray_intersect(
     hf: &HeightField,
     ray_origin: [f64; 3],
@@ -781,7 +770,6 @@ pub fn heightfield_ray_intersect(
 /// Returns a flat list of triangle indices `[i0, i1, i2]` into the vertex
 /// array produced by `to_triangle_mesh`.  Each quad cell is split into two
 /// triangles.  The total count is `(rows-1) * (cols-1) * 2`.
-#[allow(dead_code)]
 pub fn heightfield_tessellate(hf: &HeightField) -> Vec<[usize; 3]> {
     if hf.rows < 2 || hf.cols < 2 {
         return vec![];
@@ -805,7 +793,6 @@ pub fn heightfield_tessellate(hf: &HeightField) -> Vec<[usize; 3]> {
 /// Gaussian kernel of radius `ceil(3*sigma)` is applied first in the column
 /// direction then in the row direction.  Boundary cells are handled by
 /// clamping the kernel window to the grid extent.
-#[allow(dead_code)]
 pub fn heightfield_smooth_gaussian(hf: &HeightField, sigma: f64) -> HeightField {
     if sigma < 1e-10 {
         return hf.clone();
@@ -859,14 +846,12 @@ pub fn heightfield_smooth_gaussian(hf: &HeightField, sigma: f64) -> HeightField 
 ///
 /// `i` is the column index (X direction) and `j` is the row index (Z direction).
 /// Returns a unit normal `[nx, ny, nz]`.
-#[allow(dead_code)]
 pub fn heightfield_normal_at(hf: &HeightField, i: usize, j: usize) -> [f64; 3] {
     hf.normal_at_grid(i, j)
 }
 /// Bilinear interpolation of height at arbitrary world-space position `(x, z)`.
 ///
 /// Clamps to the grid extents.
-#[allow(dead_code)]
 pub fn heightfield_height_at_xy(hf: &HeightField, x: f64, z: f64) -> f64 {
     hf.height_at_world(x, z)
 }

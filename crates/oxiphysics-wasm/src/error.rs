@@ -562,7 +562,6 @@ impl std::fmt::Display for ErrorWithContext {
 // ---------------------------------------------------------------------------
 
 /// Category of a recovery suggestion.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SuggestionKind {
     /// Reduce the simulation time step.
@@ -580,7 +579,6 @@ pub enum SuggestionKind {
 }
 
 /// A structured recovery suggestion for a physics error.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecoverySuggestion {
     /// Machine-readable category.
@@ -609,7 +607,6 @@ impl RecoverySuggestion {
 }
 
 /// Return a structured [`RecoverySuggestion`] for the given error.
-#[allow(dead_code)]
 pub fn structured_suggestion(error: &Error) -> RecoverySuggestion {
     match error {
         Error::InvalidTimeStep(_) | Error::SimulationDiverged { .. } => {
@@ -647,7 +644,6 @@ pub fn structured_suggestion(error: &Error) -> RecoverySuggestion {
 // ---------------------------------------------------------------------------
 
 /// A severity level for logged errors.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum LogLevel {
     /// Informational — not really an error.
@@ -672,7 +668,6 @@ impl std::fmt::Display for LogLevel {
 }
 
 /// A single entry in the [`ErrorLog`].
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorLogEntry {
     /// Simulation step at which the error occurred.
@@ -720,7 +715,6 @@ impl ErrorLogEntry {
 /// let json = log.to_json();
 /// assert!(json.contains("SimulationDiverged"));
 /// ```
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ErrorLog {
     entries: Vec<ErrorLogEntry>,
@@ -728,7 +722,6 @@ pub struct ErrorLog {
     pub max_entries: usize,
 }
 
-#[allow(dead_code)]
 impl ErrorLog {
     /// Create a new empty error log (unlimited capacity).
     pub fn new() -> Self {

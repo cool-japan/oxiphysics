@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,37 +10,21 @@
 // Small math helpers
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
-#[inline]
-fn clamp(v: f64, lo: f64, hi: f64) -> f64 {
-    v.clamp(lo, hi)
-}
-
-#[allow(dead_code)]
 #[inline]
 fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-#[allow(dead_code)]
-#[inline]
-fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-#[allow(dead_code)]
 #[inline]
 fn scale3(v: [f64; 3], s: f64) -> [f64; 3] {
     [v[0] * s, v[1] * s, v[2] * s]
 }
 
-#[allow(dead_code)]
 #[inline]
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-#[allow(dead_code)]
 #[inline]
 fn len3(v: [f64; 3]) -> f64 {
     dot3(v, v).sqrt()
@@ -52,7 +35,6 @@ fn len3(v: [f64; 3]) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// A single MPM snow particle.
-#[allow(dead_code)]
 pub struct SnowParticle {
     /// World-space position (metres).
     pub position: [f64; 3],
@@ -101,7 +83,6 @@ fn identity3x3() -> [f64; 9] {
 // ---------------------------------------------------------------------------
 
 /// MPM simulation grid cell.
-#[allow(dead_code)]
 pub struct MpmCell {
     /// Grid node velocity (m/s).
     pub velocity: [f64; 3],
@@ -125,7 +106,6 @@ impl MpmCell {
 }
 
 /// MPM solver for snow.
-#[allow(dead_code)]
 pub struct SnowMpm {
     /// Grid resolution (cells per axis).
     pub grid_resolution: usize,
@@ -270,8 +250,8 @@ impl SnowMpm {
         let g = self.gravity;
         for cell in &mut self.grid {
             if cell.mass > 1e-12 {
-                for c in 0..3 {
-                    cell.momentum[c] += cell.mass * g[c] * dt;
+                for (c, &gc) in g.iter().enumerate() {
+                    cell.momentum[c] += cell.mass * gc * dt;
                     cell.velocity[c] = cell.momentum[c] / cell.mass;
                 }
             }
@@ -289,7 +269,6 @@ fn grid_idx(x: usize, y: usize, z: usize, n: usize) -> usize {
 }
 
 /// Quadratic B-spline weight for MPM.
-#[allow(dead_code)]
 pub fn mpm_grid_to_particle(node_pos: [f64; 3], particle_pos: [f64; 3], h: f64) -> f64 {
     quadratic_weight(particle_pos, node_pos, h)
 }
@@ -314,7 +293,6 @@ fn quadratic_weight(particle: [f64; 3], node: [f64; 3], h: f64) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Drucker-Prager yield criterion with hardening for snow compaction.
-#[allow(dead_code)]
 pub struct DruckerPragerPlastic {
     /// Friction angle (radians).
     pub friction_angle: f64,
@@ -370,7 +348,6 @@ impl DruckerPragerPlastic {
 }
 
 /// Drucker-Prager yield function value.
-#[allow(dead_code)]
 pub fn drucker_prager_yield(q: f64, p: f64, mu: f64, c: f64) -> f64 {
     q - mu * p - c
 }
@@ -380,7 +357,6 @@ pub fn drucker_prager_yield(q: f64, p: f64, mu: f64, c: f64) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Temperature-dependent snow cohesion (sintering model).
-#[allow(dead_code)]
 pub struct SnowCohesion {
     /// Reference cohesion at 273 K (Pa).
     pub cohesion_0: f64,
@@ -423,7 +399,6 @@ impl SnowCohesion {
 }
 
 /// Compute snow density from temperature using a simple model.
-#[allow(dead_code)]
 pub fn snow_density_from_temp(t_kelvin: f64) -> f64 {
     // Fresh snow: ~50 kg/m³ at -10°C; denser near 0°C
     let t_celsius = t_kelvin - 273.15;
@@ -437,7 +412,6 @@ pub fn snow_density_from_temp(t_kelvin: f64) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// A particle of clay-water mud.
-#[allow(dead_code)]
 pub struct MudParticle {
     /// World-space position (metres).
     pub position: [f64; 3],
@@ -496,7 +470,6 @@ impl MudParticle {
 // ---------------------------------------------------------------------------
 
 /// Bingham plastic viscoplastic mud model.
-#[allow(dead_code)]
 pub struct ViscoPlasticMud {
     /// Yield stress (Pa).
     pub yield_stress: f64,
@@ -555,7 +528,6 @@ impl ViscoPlasticMud {
 }
 
 /// Compute Bingham plastic shear stress.
-#[allow(dead_code)]
 pub fn bingham_shear_stress(gamma_dot: f64, tau_y: f64, mu_p: f64) -> f64 {
     if gamma_dot.abs() < 1e-12 {
         return 0.0;
@@ -568,7 +540,6 @@ pub fn bingham_shear_stress(gamma_dot: f64, tau_y: f64, mu_p: f64) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Dry granular sand model.
-#[allow(dead_code)]
 pub struct SandGranular {
     /// Angle of repose (radians).
     pub angle_of_repose: f64,
@@ -615,7 +586,6 @@ impl SandGranular {
 // ---------------------------------------------------------------------------
 
 /// Simple snow avalanche slope-stability model.
-#[allow(dead_code)]
 pub struct AvalancheSim {
     /// Slope angle (radians).
     pub slope_angle: f64,
@@ -686,7 +656,6 @@ impl AvalancheSim {
 // ---------------------------------------------------------------------------
 
 /// Tire-terrain interaction in snow/mud.
-#[allow(dead_code)]
 pub struct TireInteraction {
     /// Tire contact width (metres).
     pub width: f64,
@@ -754,7 +723,6 @@ impl TireInteraction {
 // ---------------------------------------------------------------------------
 
 /// Permanent deformation tracking (track record in snow/mud).
-#[allow(dead_code)]
 pub struct GroundDeformation {
     /// Grid resolution (cells per side).
     pub resolution: usize,
@@ -781,7 +749,6 @@ impl GroundDeformation {
     }
 
     /// Apply a point load at world position `(x, z)` with `pressure` (Pa) and time `dt`.
-    #[allow(clippy::too_many_arguments)]
     pub fn apply_load(&mut self, x: f64, z: f64, pressure: f64, stiffness: f64, dt: f64) {
         let ix = (x / self.cell_size) as i64;
         let iz = (z / self.cell_size) as i64;

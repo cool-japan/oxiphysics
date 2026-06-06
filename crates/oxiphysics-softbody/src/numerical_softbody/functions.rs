@@ -26,6 +26,7 @@ pub(super) fn v3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 pub(super) fn v3_norm(a: [f64; 3]) -> f64 {
     v3_dot(a, a).sqrt()
 }
+#[cfg(test)]
 #[inline]
 pub(super) fn v3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
@@ -34,6 +35,7 @@ pub(super) fn v3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
         a[0] * b[1] - a[1] * b[0],
     ]
 }
+#[cfg(test)]
 #[inline]
 pub(super) fn v3_normalize(a: [f64; 3]) -> [f64; 3] {
     let n = v3_norm(a);
@@ -46,14 +48,6 @@ pub(super) fn v3_normalize(a: [f64; 3]) -> [f64; 3] {
 /// Flat vector dot product.
 pub(super) fn vec_dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
-}
-/// Flat vector scaled-add: result = a + s*b
-pub(super) fn vec_axpy(a: &[f64], s: f64, b: &[f64]) -> Vec<f64> {
-    a.iter().zip(b.iter()).map(|(x, y)| x + s * y).collect()
-}
-/// Flat vector scale: result = s * a
-pub(super) fn vec_scale(a: &[f64], s: f64) -> Vec<f64> {
-    a.iter().map(|x| x * s).collect()
 }
 /// Flat vector norm.
 pub(super) fn vec_norm(a: &[f64]) -> f64 {
@@ -105,7 +99,6 @@ pub(super) fn mat3_mul_v3(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
 /// `H` is provided as a function `apply: &[[f64;3\]] -> &[f64] -> Vec`f64`.
 ///
 /// Returns the solution vector.
-#[allow(dead_code)]
 pub fn matrix_free_cg<F>(
     positions: &[[f64; 3]],
     b: &[f64],
@@ -149,7 +142,6 @@ where
 /// Compute total elastic potential energy for a spring-mass system.
 ///
 /// `E = sum_springs 0.5 * k * (|x_i - x_j| - L)^2`
-#[allow(dead_code)]
 pub fn spring_elastic_energy(positions: &[[f64; 3]], springs: &[ImplicitSpring]) -> f64 {
     springs
         .iter()
@@ -162,7 +154,6 @@ pub fn spring_elastic_energy(positions: &[[f64; 3]], springs: &[ImplicitSpring])
         .sum()
 }
 /// Zero out gradient entries corresponding to static (pinned) particles.
-#[allow(dead_code)]
 pub fn apply_static_mask(grad: &mut [f64], is_static: &[bool]) {
     for (i, &fixed) in is_static.iter().enumerate() {
         if fixed {

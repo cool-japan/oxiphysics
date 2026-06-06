@@ -12,12 +12,9 @@ use crate::particle::SoftParticle;
 use oxiphysics_core::math::Real;
 
 use super::functions::SoftConstraint;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::BendingConstraint;
 
 impl SoftConstraint for BendingConstraint {
-    #[allow(clippy::too_many_arguments)]
     fn project(&mut self, particles: &mut [SoftParticle], dt_sub: Real) {
         let [i0, i1, i2, i3] = self.indices;
         let p0 = particles[i0].position;

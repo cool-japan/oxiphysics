@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -26,9 +25,6 @@
 //! - Hardy, R.J. (1982). J. Chem. Phys. 76, 622.
 //! - Xiao & Belytschko (2004). Comput. Methods Appl. Mech. Engrg. 193, 1645.
 //! - Flekkøy, Wagner & Feder (2000). Europhys. Lett. 52, 271.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -96,10 +92,10 @@ impl AtomisticRegion {
 
     /// Check if a Cartesian point lies inside the region.
     pub fn contains(&self, point: [f64; 3]) -> bool {
-        for i in 0..3 {
+        for (i, &p) in point.iter().enumerate() {
             let lo = self.origin[i];
             let hi = lo + self.extents[i];
-            if point[i] < lo || point[i] > hi {
+            if p < lo || p > hi {
                 return false;
             }
         }
@@ -201,8 +197,8 @@ impl HandshakeZone {
 
     /// Return true if a point lies inside the handshake zone.
     pub fn contains(&self, point: [f64; 3]) -> bool {
-        for i in 0..3 {
-            if point[i] < self.min_corner[i] || point[i] > self.max_corner[i] {
+        for (i, &p) in point.iter().enumerate() {
+            if p < self.min_corner[i] || p > self.max_corner[i] {
                 return false;
             }
         }

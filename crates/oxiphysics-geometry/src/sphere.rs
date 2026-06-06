@@ -22,26 +22,22 @@ impl Sphere {
     }
 
     /// Surface area: 4πr².
-    #[allow(dead_code)]
     pub fn surface_area(&self) -> Real {
         4.0 * PI * self.radius * self.radius
     }
 
     /// Volume: (4/3)πr³.
-    #[allow(dead_code)]
     pub fn volume_explicit(&self) -> Real {
         (4.0 / 3.0) * PI * self.radius.powi(3)
     }
 
     /// Inertia tensor as \[\[f64;3\\];3] row-major: (2/5)mr² × identity.
-    #[allow(dead_code)]
     pub fn inertia_tensor_array(&self, mass: f64) -> [[f64; 3]; 3] {
         let i = 0.4 * mass * self.radius * self.radius;
         [[i, 0.0, 0.0], [0.0, i, 0.0], [0.0, 0.0, i]]
     }
 
     /// Ray cast returning (t, normal) as plain arrays.
-    #[allow(dead_code)]
     pub fn ray_cast_array(
         &self,
         origin: [f64; 3],
@@ -56,7 +52,6 @@ impl Sphere {
 
     /// Closest point on the sphere surface to `p`.
     /// If `p` is the origin, returns a point on the +X side.
-    #[allow(dead_code)]
     pub fn closest_point(&self, p: [f64; 3]) -> [f64; 3] {
         let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
         if len < 1e-12 {
@@ -67,7 +62,6 @@ impl Sphere {
     }
 
     /// GJK support function: farthest point in `direction`.
-    #[allow(dead_code)]
     pub fn support(&self, direction: [f64; 3]) -> [f64; 3] {
         let len = (direction[0] * direction[0]
             + direction[1] * direction[1]
@@ -84,7 +78,6 @@ impl Sphere {
 
     /// GJK support point with a center offset.
     /// Returns `center + radius * normalize(direction)`.
-    #[allow(dead_code)]
     pub fn support_with_center(&self, center: [f64; 3], direction: [f64; 3]) -> [f64; 3] {
         let sp = self.support(direction);
         [sp[0] + center[0], sp[1] + center[1], sp[2] + center[2]]
@@ -92,7 +85,6 @@ impl Sphere {
 
     /// Minkowski sum support: support(A) + support(B) in the given direction.
     /// Both spheres are centered at the origin.
-    #[allow(dead_code)]
     pub fn minkowski_sum_support(&self, other: &Sphere, direction: [f64; 3]) -> [f64; 3] {
         let combined_radius = self.radius + other.radius;
         let len = (direction[0] * direction[0]
@@ -108,7 +100,6 @@ impl Sphere {
 
     /// Minkowski difference support: support_A(d) - support_B(-d).
     /// Both spheres centered at origin.
-    #[allow(dead_code)]
     pub fn minkowski_diff_support(&self, other: &Sphere, direction: [f64; 3]) -> [f64; 3] {
         let sa = self.support(direction);
         let neg_d = [-direction[0], -direction[1], -direction[2]];
@@ -118,7 +109,6 @@ impl Sphere {
 
     /// Compute bounding sphere from a set of points (Ritter's algorithm).
     /// Returns `(center, radius)`.
-    #[allow(dead_code)]
     pub fn bounding_sphere_from_points(points: &[[f64; 3]]) -> ([f64; 3], f64) {
         if points.is_empty() {
             return ([0.0; 3], 0.0);
@@ -170,7 +160,6 @@ impl Sphere {
 
     /// Sphere-sphere intersection test.
     /// Returns true if two spheres (at given centers) overlap.
-    #[allow(dead_code)]
     pub fn intersects_sphere(
         &self,
         center_a: [f64; 3],
@@ -188,7 +177,6 @@ impl Sphere {
     /// Sphere-sphere intersection circle.
     /// Returns `Some((center, normal, circle_radius))` if the spheres intersect
     /// in a circle, `None` if they don't intersect or are concentric.
-    #[allow(dead_code)]
     pub fn sphere_intersection_circle(
         &self,
         center_a: [f64; 3],
@@ -229,7 +217,6 @@ impl Sphere {
 
     /// Closest point on the sphere surface to a line defined by `point` and `direction`.
     /// Returns the closest point on the sphere surface.
-    #[allow(dead_code)]
     pub fn closest_point_to_line(&self, line_point: [f64; 3], line_dir: [f64; 3]) -> [f64; 3] {
         // Find closest point on line to origin (sphere center)
         let dir_len_sq =
@@ -251,7 +238,6 @@ impl Sphere {
 
     /// Closest point on the sphere surface to a plane defined by `normal` (unit) and `d`
     /// where `normal · x = d`.
-    #[allow(dead_code)]
     pub fn closest_point_to_plane(&self, normal: [f64; 3], d: f64) -> [f64; 3] {
         // Signed distance from sphere center (origin) to plane
         // sign = -(normal · 0 - d) = d
@@ -267,7 +253,6 @@ impl Sphere {
     /// Sphere sweep (moving sphere): test if a sphere moving from `start` along
     /// `velocity` hits a static sphere (centered at `target_center` with `target_radius`).
     /// Returns `Some(t)` in \[0, max_t\] if there is a collision.
-    #[allow(dead_code)]
     pub fn sphere_sweep(
         &self,
         start: [f64; 3],
@@ -311,20 +296,17 @@ impl Sphere {
 
     /// Signed distance from a point to the sphere surface.
     /// Negative if inside the sphere, positive if outside.
-    #[allow(dead_code)]
     pub fn signed_distance(&self, p: [f64; 3]) -> f64 {
         let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
         len - self.radius
     }
 
     /// Returns true if the point is inside (or on) the sphere.
-    #[allow(dead_code)]
     pub fn contains_point(&self, p: [f64; 3]) -> bool {
         p[0] * p[0] + p[1] * p[1] + p[2] * p[2] <= self.radius * self.radius
     }
 
     /// Project a point onto the sphere interior (clamp to sphere if outside).
-    #[allow(dead_code)]
     pub fn project_inside(&self, p: [f64; 3]) -> [f64; 3] {
         let len_sq = p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
         if len_sq <= self.radius * self.radius {
@@ -341,7 +323,6 @@ impl Sphere {
     /// Returns `(vertices, triangles)` where each vertex is a unit-sphere
     /// point scaled to `self.radius`, and triangles are `[usize; 3]` index triples.
     /// `subdivisions` = 0 gives the base icosahedron (20 faces, 12 verts).
-    #[allow(dead_code)]
     pub fn geodesic_icosphere(&self, subdivisions: u32) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
         let (mut verts, mut tris) = base_icosahedron();
         for _ in 0..subdivisions {
@@ -365,7 +346,6 @@ impl Sphere {
     ///
     /// Returns the volume of a spherical cap of height `h` cut from this sphere.
     /// `h` must be in `[0, 2r]`.
-    #[allow(dead_code)]
     pub fn spherical_cap_volume(&self, h: f64) -> f64 {
         let h_clamped = h.clamp(0.0, 2.0 * self.radius);
         PI * h_clamped * h_clamped * (3.0 * self.radius - h_clamped) / 3.0
@@ -374,7 +354,6 @@ impl Sphere {
     /// Spherical cap surface area (curved part only).
     ///
     /// Area = 2π r h.
-    #[allow(dead_code)]
     pub fn spherical_cap_area(&self, h: f64) -> f64 {
         let h_clamped = h.clamp(0.0, 2.0 * self.radius);
         2.0 * PI * self.radius * h_clamped
@@ -385,7 +364,6 @@ impl Sphere {
     /// For planes at heights `h1` and `h2` (measured from the bottom of the
     /// sphere), returns the surface area of the zone.
     /// Area = 2π r |h2 - h1|.
-    #[allow(dead_code)]
     pub fn spherical_zone_area(&self, h1: f64, h2: f64) -> f64 {
         let dh = (h2 - h1).abs();
         2.0 * PI * self.radius * dh
@@ -395,7 +373,6 @@ impl Sphere {
     ///
     /// Uses a deterministic xorshift PRNG seeded with `seed`.
     /// Each point lies on the unit hemisphere surface projected to `self.radius`.
-    #[allow(dead_code)]
     pub fn hemisphere_cosine_sample(&self, n: usize, seed: u64) -> Vec<[f64; 3]> {
         let mut state = seed;
         let xorshift = |s: &mut u64| -> f64 {
@@ -425,7 +402,6 @@ impl Sphere {
     /// Uniform hemisphere sampling (z ≥ 0).
     ///
     /// Each sample is uniformly distributed on the upper hemisphere.
-    #[allow(dead_code)]
     pub fn hemisphere_uniform_sample(&self, n: usize, seed: u64) -> Vec<[f64; 3]> {
         let mut state = seed;
         let xorshift = |s: &mut u64| -> f64 {
@@ -455,7 +431,6 @@ impl Sphere {
     ///
     /// Generates `n` nearly uniformly distributed points on the sphere surface
     /// using the golden-angle Fibonacci lattice method.
-    #[allow(dead_code)]
     pub fn fibonacci_sphere(&self, n: usize) -> Vec<[f64; 3]> {
         let n = n.max(1);
         let golden = (1.0 + 5.0_f64.sqrt()) / 2.0;
@@ -482,7 +457,6 @@ impl Sphere {
     /// infinity; the south pole is undefined.
     ///
     /// Returns `(x_plane, y_plane)` or `None` if `p` is at (or near) the south pole.
-    #[allow(dead_code)]
     pub fn stereographic_project(&self, p: [f64; 3]) -> Option<[f64; 2]> {
         let r = self.radius;
         // South pole at (0, 0, -r)
@@ -499,7 +473,6 @@ impl Sphere {
     /// Maps `(x_plane, y_plane)` back to a point on the sphere.
     /// Uses the formula: X = 4r²x/D, Y = 4r²y/D, Z = r(D - 4r²)/D
     /// where D = x² + y² + 4r².
-    #[allow(dead_code)]
     pub fn stereographic_unproject(&self, uv: [f64; 2]) -> [f64; 3] {
         let r = self.radius;
         let x = uv[0];
@@ -516,7 +489,6 @@ impl Sphere {
     /// Spherical harmonic (l=3) coefficient Y_3^m(theta, phi).
     ///
     /// Extends `spherical_harmonic` to degree 3.
-    #[allow(dead_code)]
     pub fn sh_l3(m: i32, theta: f64, phi: f64) -> f64 {
         let cos_t = theta.cos();
         let sin_t = theta.sin();
@@ -539,7 +511,6 @@ impl Sphere {
     /// Compute the solid angle subtended by a spherical cap of height `h`.
     ///
     /// Ω = 2π(1 - cos θ) where cos θ = 1 - h/r.
-    #[allow(dead_code)]
     pub fn cap_solid_angle(&self, h: f64) -> f64 {
         let cos_theta = 1.0 - h / self.radius;
         2.0 * PI * (1.0 - cos_theta.clamp(-1.0, 1.0))
@@ -549,7 +520,6 @@ impl Sphere {
     ///
     /// Returns `(longitude, latitude)` in radians.
     /// Longitude in `(-π, π]`, latitude in `[-π/2, π/2]`.
-    #[allow(dead_code)]
     pub fn lon_lat(&self, p: [f64; 3]) -> (f64, f64) {
         let lon = p[1].atan2(p[0]);
         let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-14);
@@ -710,7 +680,6 @@ impl Shape for Sphere {
 /// Minimum enclosing sphere using Welzl's algorithm (randomised).
 ///
 /// Returns `(center, radius)` for the smallest sphere containing all points.
-#[allow(dead_code)]
 pub fn minimum_enclosing_sphere(points: &[[f64; 3]]) -> ([f64; 3], f64) {
     if points.is_empty() {
         return ([0.0; 3], 0.0);
@@ -721,7 +690,6 @@ pub fn minimum_enclosing_sphere(points: &[[f64; 3]]) -> ([f64; 3], f64) {
 }
 
 /// Sphere-OBB penetration depth.
-#[allow(dead_code)]
 pub fn sphere_obb_penetration(
     sphere_radius: f64,
     sphere_center: [f64; 3],
@@ -760,7 +728,6 @@ pub fn sphere_obb_penetration(
 
 /// Generate `n` uniformly distributed random points on the unit sphere surface.
 /// Uses rejection sampling.  `seed` is an LCG seed.
-#[allow(dead_code)]
 pub fn random_points_on_sphere(radius: f64, n: usize, seed: u64) -> Vec<[f64; 3]> {
     let mut rng_state = seed;
     let mut next_f64 = move || -> f64 {
@@ -788,7 +755,6 @@ pub fn random_points_on_sphere(radius: f64, n: usize, seed: u64) -> Vec<[f64; 3]
 
 /// Compute real spherical harmonics coefficient Y_l^m(theta, phi).
 /// Only l = 0, 1, 2 implemented.
-#[allow(dead_code)]
 pub fn spherical_harmonic(l: u32, m: i32, theta: f64, phi: f64) -> f64 {
     match (l, m) {
         (0, 0) => 1.0 / (2.0 * PI.sqrt()),
@@ -805,7 +771,6 @@ pub fn spherical_harmonic(l: u32, m: i32, theta: f64, phi: f64) -> f64 {
 }
 
 /// Sphere-sphere intersection volume (lens volume).
-#[allow(dead_code)]
 pub fn sphere_sphere_intersection_volume(r1: f64, r2: f64, d: f64) -> f64 {
     if d >= r1 + r2 {
         return 0.0;

@@ -10,8 +10,6 @@
 //! buckling, soft underwater gripper simulation, undulatory (anguilliform)
 //! locomotion, and bio-inspired fin propulsion.
 
-#![allow(dead_code)]
-
 // ── Vec3 helpers ─────────────────────────────────────────────────────────────
 
 /// A simple 3-D vector as `[f64; 3]`.
@@ -20,15 +18,6 @@ pub type Vec3 = [f64; 3];
 #[inline]
 fn dot(a: Vec3, b: Vec3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-#[inline]
-fn cross(a: Vec3, b: Vec3) -> Vec3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 #[inline]
@@ -75,7 +64,6 @@ pub const MU_SEAWATER: f64 = 1.08e-3;
 // ── Buoyancy ──────────────────────────────────────────────────────────────────
 
 /// Parameters describing the fluid environment for underwater simulation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FluidEnvironment {
     /// Fluid density in kg/m³.
@@ -127,7 +115,6 @@ impl FluidEnvironment {
 ///
 /// The added mass tensor accounts for the inertia of entrained fluid and is
 /// stored as a diagonal 3×3 coefficient matrix: `m_added_i = C_a_i * rho * V`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AddedMass {
     /// Added mass coefficients (dimensionless) along each axis.
@@ -181,7 +168,6 @@ impl AddedMass {
 // ── Viscous drag ──────────────────────────────────────────────────────────────
 
 /// Viscous drag model for flexible bodies based on Stokes / quadratic drag.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ViscousDrag {
     /// Drag coefficient (dimensionless).  Use `C_d ≈ 1.2` for a cylinder.
@@ -232,7 +218,6 @@ impl ViscousDrag {
 /// ```
 ///
 /// where `u` is fluid velocity, `v` is body velocity.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MorisonElement {
     /// Inertia coefficient `Cm` (= 1 + Ca).
@@ -290,7 +275,6 @@ impl MorisonElement {
 /// Uses the Hartlen-Currie wake oscillator model:
 /// - Wake variable `q` obeys a van der Pol oscillator driven by cylinder motion.
 /// - Lift force = `0.5 * rho * D * L * U^2 * CL0 * q`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VivModel {
     /// Fluid density in kg/m³.
@@ -360,7 +344,6 @@ impl VivModel {
 // ── Marine growth ─────────────────────────────────────────────────────────────
 
 /// Effect of marine growth (barnacles, mussels, biofilm) on structural stiffness.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MarineGrowth {
     /// Added thickness due to marine growth in m.
@@ -407,7 +390,6 @@ impl MarineGrowth {
 /// Linear elastic pressure hull deformation model (thin-shell approximation).
 ///
 /// Based on Lamé's equations for a thick cylinder under external pressure.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PressureHull {
     /// Outer radius in m.
@@ -462,7 +444,6 @@ impl PressureHull {
 // ── Hydrostatic buckling ──────────────────────────────────────────────────────
 
 /// Hydrostatic buckling analysis for a cylindrical shell.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HydrostaticBuckling {
     /// Cylinder radius in m.
@@ -534,7 +515,6 @@ impl HydrostaticBuckling {
 // ── Soft underwater gripper ───────────────────────────────────────────────────
 
 /// A segment of a pneumatically-actuated soft underwater gripper finger.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GripperSegment {
     /// Rest length in m.
@@ -590,7 +570,6 @@ impl GripperSegment {
 }
 
 /// A multi-segment soft underwater gripper finger.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SoftGripperFinger {
     /// Segments composing the finger.
@@ -645,7 +624,6 @@ impl SoftGripperFinger {
 ///
 /// The body curvature wave travels from head to tail:
 /// `kappa(s, t) = A(s) * sin(k*s - omega*t)`
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AnguillaBody {
     /// Body length in m.
@@ -752,7 +730,6 @@ pub enum FinMode {
 /// Bio-inspired oscillating fin model.
 ///
 /// Compute thrust and lift based on quasi-steady blade-element theory.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BioFin {
     /// Fin span in m.
@@ -777,7 +754,6 @@ pub struct BioFin {
 
 impl BioFin {
     /// Create a bio-inspired fin.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         span: f64,
         chord: f64,
@@ -856,7 +832,6 @@ impl BioFin {
 ///
 /// Each particle below the free surface receives an upward buoyancy force
 /// proportional to its associated volume.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BuoyancyDistributor {
     /// Fluid density in kg/m³.
@@ -907,7 +882,6 @@ impl BuoyancyDistributor {
 // ── Flexible underwater cable segment ────────────────────────────────────────
 
 /// A single segment of a flexible underwater cable or pipe.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CableSegment {
     /// Start position in m.
@@ -926,7 +900,6 @@ pub struct CableSegment {
 
 impl CableSegment {
     /// Create a cable segment.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pos_a: Vec3,
         pos_b: Vec3,
@@ -979,7 +952,6 @@ impl CableSegment {
 // ── Underwater soft body simulation ──────────────────────────────────────────
 
 /// A particle in an underwater soft body simulation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct UnderwaterParticle {
     /// Position in m.
@@ -1041,7 +1013,6 @@ impl UnderwaterParticle {
 }
 
 /// A flexible underwater soft body consisting of mass–spring particles.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct UnderwaterSoftBody {
     /// Particles.

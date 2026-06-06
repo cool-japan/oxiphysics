@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use oxiphysics_core::math::{Real, Vec3};
 
 /// Parameters for the WCSPH solver.

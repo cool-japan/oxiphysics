@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -38,7 +37,6 @@ use rand::RngExt;
 /// Apply element-wise soft-thresholding: `sign(x) * max(|x| - lambda, 0)`.
 ///
 /// Used as a proximal operator in iterative shrinkage-thresholding algorithms.
-#[allow(dead_code)]
 pub fn soft_threshold(x: f64, lambda: f64) -> f64 {
     if x > lambda {
         x - lambda
@@ -52,7 +50,6 @@ pub fn soft_threshold(x: f64, lambda: f64) -> f64 {
 /// Compute the Nyquist sampling rate for a band-limited signal.
 ///
 /// Returns `2 * bandwidth` (samples per second).
-#[allow(dead_code)]
 pub fn nyquist_rate(bandwidth: f64) -> f64 {
     2.0 * bandwidth
 }
@@ -60,7 +57,6 @@ pub fn nyquist_rate(bandwidth: f64) -> f64 {
 /// Compute the compression ratio `m / n`.
 ///
 /// A ratio less than 1 indicates sub-Nyquist sampling.
-#[allow(dead_code)]
 pub fn compression_ratio(n: usize, m: usize) -> f64 {
     if n == 0 {
         return 0.0;
@@ -71,7 +67,6 @@ pub fn compression_ratio(n: usize, m: usize) -> f64 {
 /// Compute the ℓ₂ norm of a slice.
 ///
 /// Returns `sqrt(sum of squares)`.
-#[allow(dead_code)]
 pub fn l2_norm(x: &[f64]) -> f64 {
     x.iter().map(|v| v * v).sum::<f64>().sqrt()
 }
@@ -79,8 +74,7 @@ pub fn l2_norm(x: &[f64]) -> f64 {
 /// Normalise a vector to unit ℓ₂ norm in place.
 ///
 /// If the norm is smaller than `1e-14` the vector is left unchanged.
-#[allow(dead_code)]
-pub fn normalise(x: &mut Vec<f64>) {
+pub fn normalise(x: &mut [f64]) {
     let n = l2_norm(x);
     if n > 1e-14 {
         for v in x.iter_mut() {
@@ -92,7 +86,6 @@ pub fn normalise(x: &mut Vec<f64>) {
 /// Compute the matrix-vector product `y = A x`.
 ///
 /// `a` is row-major with shape `m × n`; returns a vector of length `m`.
-#[allow(dead_code)]
 pub fn mat_vec(a: &[Vec<f64>], x: &[f64]) -> Vec<f64> {
     a.iter()
         .map(|row| row.iter().zip(x.iter()).map(|(ai, xi)| ai * xi).sum())
@@ -102,17 +95,15 @@ pub fn mat_vec(a: &[Vec<f64>], x: &[f64]) -> Vec<f64> {
 /// Compute the transposed matrix-vector product `y = A^T x`.
 ///
 /// `a` is row-major with shape `m × n`; returns a vector of length `n`.
-#[allow(dead_code)]
 pub fn mat_transpose_vec(a: &[Vec<f64>], x: &[f64]) -> Vec<f64> {
     if a.is_empty() {
         return Vec::new();
     }
     let n = a[0].len();
-    let m = a.len();
     let mut y = vec![0.0_f64; n];
-    for i in 0..m {
-        for j in 0..n {
-            y[j] += a[i][j] * x[i];
+    for (row, &xi) in a.iter().zip(x.iter()) {
+        for (yj, &aij) in y.iter_mut().zip(row.iter()) {
+            *yj += aij * xi;
         }
     }
     y
@@ -121,7 +112,6 @@ pub fn mat_transpose_vec(a: &[Vec<f64>], x: &[f64]) -> Vec<f64> {
 /// Estimate the spectral norm (largest singular value) of `a` via power iteration.
 ///
 /// Runs `max_iter` iterations; returns an approximation to `||A||_2`.
-#[allow(dead_code)]
 pub fn spectral_norm(a: &[Vec<f64>], max_iter: usize) -> f64 {
     if a.is_empty() {
         return 0.0;
@@ -147,13 +137,11 @@ pub fn spectral_norm(a: &[Vec<f64>], max_iter: usize) -> f64 {
 ///
 /// Signals with few significant DCT coefficients can be recovered from
 /// far fewer measurements than the Nyquist rate.
-#[allow(dead_code)]
 pub struct DctBasis {
     /// Length of the signal (number of samples).
     pub n: usize,
 }
 
-#[allow(dead_code)]
 impl DctBasis {
     /// Create a DCT basis for signals of length `n`.
     pub fn new(n: usize) -> Self {
@@ -165,22 +153,23 @@ impl DctBasis {
     /// Returns a coefficient vector of the same length.
     pub fn transform(&self, x: &[f64]) -> Vec<f64> {
         let n = self.n.min(x.len());
-        let mut out = vec![0.0; n];
         let pi_over_n = std::f64::consts::PI / n as f64;
-        for k in 0..n {
-            let mut sum = 0.0;
-            for j in 0..n {
-                sum += x[j] * ((j as f64 + 0.5) * k as f64 * pi_over_n).cos();
-            }
-            // DCT-II normalisation
-            let norm = if k == 0 {
-                (1.0 / n as f64).sqrt()
-            } else {
-                (2.0 / n as f64).sqrt()
-            };
-            out[k] = sum * norm;
-        }
-        out
+        (0..n)
+            .map(|k| {
+                let sum: f64 = x[..n]
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &xj)| xj * ((j as f64 + 0.5) * k as f64 * pi_over_n).cos())
+                    .sum();
+                // DCT-II normalisation
+                let norm = if k == 0 {
+                    (1.0 / n as f64).sqrt()
+                } else {
+                    (2.0 / n as f64).sqrt()
+                };
+                sum * norm
+            })
+            .collect()
     }
 
     /// Compute the inverse DCT-II (i.e. DCT-III) transform of `coeffs`.
@@ -188,17 +177,22 @@ impl DctBasis {
     /// Reconstructs the original signal from its DCT coefficients.
     pub fn inverse(&self, coeffs: &[f64]) -> Vec<f64> {
         let n = self.n.min(coeffs.len());
-        let mut out = vec![0.0; n];
         let pi_over_n = std::f64::consts::PI / n as f64;
-        for j in 0..n {
-            let mut sum = (1.0 / n as f64).sqrt() * coeffs[0];
-            for k in 1..n {
-                let norm = (2.0 / n as f64).sqrt();
-                sum += norm * coeffs[k] * ((j as f64 + 0.5) * k as f64 * pi_over_n).cos();
-            }
-            out[j] = sum;
-        }
-        out
+        let norm_rest = (2.0 / n as f64).sqrt();
+        let norm0 = (1.0 / n as f64).sqrt();
+        (0..n)
+            .map(|j| {
+                norm0 * coeffs[0]
+                    + coeffs[1..n]
+                        .iter()
+                        .enumerate()
+                        .map(|(ki, &ck)| {
+                            let k = ki + 1;
+                            norm_rest * ck * ((j as f64 + 0.5) * k as f64 * pi_over_n).cos()
+                        })
+                        .sum::<f64>()
+            })
+            .collect()
     }
 
     /// Threshold DCT coefficients to keep only the `k` largest-magnitude ones.
@@ -227,7 +221,6 @@ impl DctBasis {
 ///
 /// Each row is an independent Gaussian random vector; `m << n` enables
 /// sub-Nyquist recovery of sparse signals.
-#[allow(dead_code)]
 pub struct RandomMeasurementMatrix {
     /// Number of measurements (rows).
     pub m: usize,
@@ -237,7 +230,6 @@ pub struct RandomMeasurementMatrix {
     pub matrix: Vec<Vec<f64>>,
 }
 
-#[allow(dead_code)]
 impl RandomMeasurementMatrix {
     /// Generate an `m × n` Gaussian measurement matrix (entries ~ N(0, 1/m)).
     ///
@@ -310,10 +302,8 @@ impl RandomMeasurementMatrix {
 ///
 /// FISTA adds Nesterov momentum for faster O(1/k²) convergence versus
 /// O(1/k) for plain ISTA.
-#[allow(dead_code)]
 pub struct BasisPursuit;
 
-#[allow(dead_code)]
 impl BasisPursuit {
     /// Estimate the Lipschitz constant of the gradient via power iteration.
     fn lipschitz(a: &[Vec<f64>]) -> f64 {
@@ -428,13 +418,11 @@ impl BasisPursuit {
 ///
 /// Greedily selects the most correlated column of the measurement matrix
 /// at each step and performs a least-squares fit on the selected support.
-#[allow(dead_code)]
 pub struct OrthogonalMatchingPursuit {
     /// Maximum sparsity (number of non-zero coefficients to recover).
     pub max_k: usize,
 }
 
-#[allow(dead_code)]
 impl OrthogonalMatchingPursuit {
     /// Create an OMP solver with sparsity bound `max_k`.
     pub fn new(max_k: usize) -> Self {
@@ -467,7 +455,12 @@ impl OrthogonalMatchingPursuit {
                 if support.contains(&j) {
                     continue;
                 }
-                let corr: f64 = (0..m).map(|i| a[i][j] * residual[i]).sum::<f64>().abs();
+                let corr: f64 = a
+                    .iter()
+                    .zip(residual.iter())
+                    .map(|(row, &ri)| row[j] * ri)
+                    .sum::<f64>()
+                    .abs();
                 if corr > best_corr {
                     best_corr = corr;
                     best_idx = j;
@@ -481,27 +474,29 @@ impl OrthogonalMatchingPursuit {
             let mut atb = vec![0.0_f64; s];
             for (si, &ci) in support.iter().enumerate() {
                 for (sj, &cj) in support.iter().enumerate() {
-                    ata[si][sj] = (0..m).map(|i| a[i][ci] * a[i][cj]).sum();
+                    ata[si][sj] = a.iter().map(|row| row[ci] * row[cj]).sum();
                 }
-                atb[si] = (0..m).map(|i| a[i][ci] * b[i]).sum();
+                atb[si] = a.iter().zip(b.iter()).map(|(row, &bi)| row[ci] * bi).sum();
             }
 
             // Solve s×s system via Gaussian elimination
             let coeffs = gauss_solve(&ata, &atb);
 
             // Update x
-            for j in 0..n {
-                x[j] = 0.0;
+            for xj in x.iter_mut() {
+                *xj = 0.0;
             }
             for (si, &ci) in support.iter().enumerate() {
                 x[ci] = coeffs[si];
             }
 
             // Update residual: r = b - A x
-            residual = (0..m)
-                .map(|i| {
-                    let ax_i: f64 = (0..n).map(|j| a[i][j] * x[j]).sum();
-                    b[i] - ax_i
+            residual = a
+                .iter()
+                .zip(b.iter())
+                .map(|(row, &bi)| {
+                    let ax_i: f64 = row.iter().zip(x.iter()).map(|(aij, xj)| aij * xj).sum();
+                    bi - ax_i
                 })
                 .collect();
 
@@ -533,7 +528,12 @@ impl OrthogonalMatchingPursuit {
                 if support.contains(&j) {
                     continue;
                 }
-                let corr: f64 = (0..m).map(|i| a[i][j] * residual[i]).sum::<f64>().abs();
+                let corr: f64 = a
+                    .iter()
+                    .zip(residual.iter())
+                    .map(|(row, &ri)| row[j] * ri)
+                    .sum::<f64>()
+                    .abs();
                 if corr > best_corr {
                     best_corr = corr;
                     best_idx = j;
@@ -541,13 +541,18 @@ impl OrthogonalMatchingPursuit {
             }
             support.push(best_idx);
             // Quick residual update (orthogonal projection onto selected atom)
-            let col_norm_sq: f64 = (0..m).map(|i| a[i][best_idx].powi(2)).sum();
+            let col_norm_sq: f64 = a.iter().map(|row| row[best_idx].powi(2)).sum();
             if col_norm_sq < 1e-14 {
                 break;
             }
-            let proj: f64 = (0..m).map(|i| a[i][best_idx] * residual[i]).sum::<f64>() / col_norm_sq;
-            for i in 0..m {
-                residual[i] -= proj * a[i][best_idx];
+            let proj: f64 = a
+                .iter()
+                .zip(residual.iter())
+                .map(|(row, &ri)| row[best_idx] * ri)
+                .sum::<f64>()
+                / col_norm_sq;
+            for (ri, row) in residual.iter_mut().zip(a.iter()) {
+                *ri -= proj * row[best_idx];
             }
         }
         support
@@ -583,9 +588,9 @@ fn gauss_solve(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
         }
         for row in (col + 1)..n {
             let factor = mat[row][col] / diag;
-            for k in col..n {
-                let v = mat[col][k];
-                mat[row][k] -= factor * v;
+            let col_slice: Vec<f64> = mat[col][col..n].to_vec();
+            for (cell, &cv) in mat[row][col..n].iter_mut().zip(col_slice.iter()) {
+                *cell -= factor * cv;
             }
             rhs[row] -= factor * rhs[col];
         }
@@ -609,10 +614,8 @@ fn gauss_solve(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Metrics for quantifying signal sparsity and dictionary coherence.
-#[allow(dead_code)]
 pub struct SparsityMetrics;
 
-#[allow(dead_code)]
 impl SparsityMetrics {
     /// Count the number of elements whose absolute value exceeds `threshold` (ℓ₀ norm).
     pub fn l0_norm(x: &[f64], threshold: f64) -> usize {
@@ -732,10 +735,8 @@ impl SparsityMetrics {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Theoretical guarantees for exact sparse recovery.
-#[allow(dead_code)]
 pub struct RecoveryGuarantee;
 
-#[allow(dead_code)]
 impl RecoveryGuarantee {
     /// Estimate the Restricted Isometry Property (RIP) constant for sparsity `k`.
     ///
@@ -824,7 +825,6 @@ impl RecoveryGuarantee {
 /// (rank-1 SVD update) to learn an overcomplete dictionary adapted to training data.
 ///
 /// Reference: Aharon, Elad & Bruckstein (2006).
-#[allow(dead_code)]
 pub struct KSvd {
     /// Number of dictionary atoms (columns).
     pub n_atoms: usize,
@@ -834,7 +834,6 @@ pub struct KSvd {
     pub n_iter: usize,
 }
 
-#[allow(dead_code)]
 impl KSvd {
     /// Create a new K-SVD learner.
     ///
@@ -923,13 +922,13 @@ impl KSvd {
                     .iter()
                     .map(|&s| {
                         let mut e = signals[s].clone();
-                        for j in 0..n_atoms {
+                        for (j, dict_j) in dict.iter().enumerate() {
                             if j == k {
                                 continue;
                             }
                             let coef = codes[s][j];
-                            for i in 0..d {
-                                e[i] -= coef * dict[j][i];
+                            for (ei, &dji) in e.iter_mut().zip(dict_j.iter()) {
+                                *ei -= coef * dji;
                             }
                         }
                         e
@@ -1024,7 +1023,6 @@ impl KSvd {
 /// In MRI, measurements are taken in Fourier (k-space) domain.  This module
 /// provides a simplified 1-D model: the signal is sparse in the DCT domain,
 /// and k-space samples are random Fourier measurements.
-#[allow(dead_code)]
 pub struct MriCompressedSensing {
     /// Signal length.
     pub n: usize,
@@ -1032,7 +1030,6 @@ pub struct MriCompressedSensing {
     pub m: usize,
 }
 
-#[allow(dead_code)]
 impl MriCompressedSensing {
     /// Create an MRI-CS reconstruction problem for a signal of length `n`
     /// with `m` k-space measurements.
@@ -1081,7 +1078,6 @@ impl MriCompressedSensing {
     /// - `max_iter` — number of FISTA iterations
     ///
     /// Returns the reconstructed signal.
-    #[allow(clippy::too_many_arguments)]
     pub fn reconstruct_fista(
         &self,
         measurements: &[f64],
@@ -1119,10 +1115,8 @@ impl MriCompressedSensing {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Utility for generating and manipulating synthetic sparse signals.
-#[allow(dead_code)]
 pub struct SparseSignal;
 
-#[allow(dead_code)]
 impl SparseSignal {
     /// Generate a `k`-sparse signal of length `n` with random support and values.
     ///
@@ -1329,11 +1323,11 @@ mod tests {
         let basis = DctBasis::new(n);
         let signal = vec![1.0_f64; n];
         let coeffs = basis.transform(&signal);
-        for k in 1..n {
+        for (k, &c) in coeffs.iter().enumerate().skip(1) {
             assert!(
-                coeffs[k].abs() < 1e-10,
+                c.abs() < 1e-10,
                 "non-DC coefficient k={k} should be ~0, got {}",
-                coeffs[k]
+                c
             );
         }
         assert!(coeffs[0].abs() > 0.5, "DC component should be non-zero");

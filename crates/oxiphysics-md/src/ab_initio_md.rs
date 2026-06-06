@@ -18,7 +18,6 @@
 // ---------------------------------------------------------------------------
 
 /// Basis set descriptor for DFT calculations.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum BasisSet {
     /// Minimal STO-3G basis set.
@@ -32,7 +31,6 @@ pub enum BasisSet {
 }
 
 /// Exchange-correlation functional type.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum XcFunctional {
     /// Local density approximation (LDA/VWN).
@@ -53,7 +51,6 @@ pub enum XcFunctional {
 ///
 /// Holds the configuration for a DFT calculation: number of atoms,
 /// basis set, exchange-correlation functional, and nuclear positions.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DftSystem {
     /// Number of atoms.
@@ -134,7 +131,6 @@ impl DftSystem {
 /// Kohn-Sham orbital representation.
 ///
 /// Stores orbital energies and occupation numbers for a closed-shell system.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct KohnSham {
     /// Orbital energies in eV.
@@ -209,7 +205,6 @@ impl KohnSham {
 /// - `occupations`: occupation number for each orbital
 ///
 /// Returns the band energy in eV.
-#[allow(dead_code)]
 pub fn hartree_fock_energy(orbital_energies: &[f64], occupations: &[f64]) -> f64 {
     orbital_energies
         .iter()
@@ -236,8 +231,6 @@ pub fn hartree_fock_energy(orbital_energies: &[f64], occupations: &[f64]) -> f64
 /// - `dv`: volume element per grid point (Bohr^3)
 ///
 /// Returns the force vector `[fx, fy, fz]` in Hartree/Bohr.
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
 pub fn dft_force(
     z_a: f64,
     r_a: &[f64; 3],
@@ -275,7 +268,6 @@ pub fn dft_force(
 /// `rho_out = sum_i c_i * rho_in_i`
 ///
 /// where the coefficients `c_i` are determined from the error vectors.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PulayMixer {
     /// History of input densities.
@@ -351,7 +343,6 @@ impl PulayMixer {
 /// - `forces`: forces on nuclei (updated from density)
 /// - `masses`: nuclear masses in atomic mass units
 /// - `dt`: timestep in femtoseconds
-#[allow(dead_code)]
 pub fn born_oppenheimer_step(
     positions: &mut [[f64; 3]],
     velocities: &mut [[f64; 3]],
@@ -388,7 +379,6 @@ pub fn born_oppenheimer_step(
 ///
 /// In Ehrenfest dynamics, the electrons evolve on the mean-field potential
 /// while coupled to the nuclei. The electronic wavefunction is a superposition.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EhrenfestState {
     /// Nuclear positions `[[x,y,z\], ...]`.
@@ -444,7 +434,6 @@ impl EhrenfestState {
 /// - `forces`: mean-field forces on each nucleus `[[fx,fy,fz\], ...]`
 /// - `coupling`: non-adiabatic coupling between state 0 and 1 (scalar placeholder)
 /// - `dt`: timestep in fs
-#[allow(dead_code)]
 pub fn ehrenfest_dynamics(state: &mut EhrenfestState, forces: &[[f64; 3]], coupling: f64, dt: f64) {
     let n = state.positions.len();
     // Update nuclear positions (velocity Verlet with mean-field forces)

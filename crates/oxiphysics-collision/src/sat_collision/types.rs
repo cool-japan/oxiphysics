@@ -2,12 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::if_same_then_else, clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
+
 /// Contact result from the arbitrary convex polyhedra SAT test.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct PolyhedraContact {
     /// Minimum-overlap separating axis (contact normal).
     pub normal: [f64; 3],
@@ -160,9 +158,9 @@ impl ObbCollision {
                 }
             }
         };
-        for i in 0..3 {
+        for (i, &ax) in obb_a.axes.iter().enumerate() {
             if !test(
-                obb_a.axes[i],
+                ax,
                 ContactFeature::FaceFace {
                     face_a: i * 2,
                     face_b: 0,
@@ -171,9 +169,9 @@ impl ObbCollision {
                 return None;
             }
         }
-        for j in 0..3 {
+        for (j, &bx) in obb_b.axes.iter().enumerate() {
             if !test(
-                obb_b.axes[j],
+                bx,
                 ContactFeature::FaceFace {
                     face_a: 0,
                     face_b: j * 2,
@@ -182,9 +180,9 @@ impl ObbCollision {
                 return None;
             }
         }
-        for i in 0..3 {
-            for j in 0..3 {
-                let axis = cross(obb_a.axes[i], obb_b.axes[j]);
+        for (i, &ai) in obb_a.axes.iter().enumerate() {
+            for (j, &bj) in obb_b.axes.iter().enumerate() {
+                let axis = cross(ai, bj);
                 if length(axis) > 1e-6
                     && !test(
                         axis,
@@ -281,12 +279,12 @@ impl ObbTriangleCollision {
             let overlap = f64::min(max_obb, max_tri) - f64::max(min_obb, min_tri);
             if overlap < 0.0 { None } else { Some(overlap) }
         };
-        for i in 0..3 {
-            match test_axis(obb.axes[i]) {
+        for (i, &ax) in obb.axes.iter().enumerate() {
+            match test_axis(ax) {
                 None => return None,
                 Some(depth) if depth < min_depth => {
                     min_depth = depth;
-                    best_normal = obb.axes[i];
+                    best_normal = ax;
                     best_feature = ContactFeature::FaceFace {
                         face_a: i,
                         face_b: 0,
@@ -308,9 +306,9 @@ impl ObbTriangleCollision {
             }
             _ => {}
         }
-        for i in 0..3 {
-            for j in 0..3 {
-                let axis = cross(obb.axes[i], tri_edges[j]);
+        for (i, &ai) in obb.axes.iter().enumerate() {
+            for (j, &te) in tri_edges.iter().enumerate() {
+                let axis = cross(ai, te);
                 if length(axis) < 1e-9 {
                     continue;
                 }
@@ -523,7 +521,6 @@ impl PolytopeCollision {
 }
 /// A convex polyhedron for SAT tests, described by vertices and face normals.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct ConvexPolyhedron {
     /// Vertices in world space.
     pub vertices: Vec<[f64; 3]>,
@@ -534,7 +531,6 @@ pub struct ConvexPolyhedron {
 }
 impl ConvexPolyhedron {
     /// Create a convex polyhedron from vertices, face normals, and edge directions.
-    #[allow(dead_code)]
     pub fn new(
         vertices: Vec<[f64; 3]>,
         face_normals: Vec<[f64; 3]>,
@@ -547,7 +543,6 @@ impl ConvexPolyhedron {
         }
     }
     /// Support function: vertex furthest along `dir`.
-    #[allow(dead_code)]
     pub fn support(&self, dir: [f64; 3]) -> [f64; 3] {
         self.vertices
             .iter()
@@ -560,7 +555,6 @@ impl ConvexPolyhedron {
             .unwrap_or([0.0; 3])
     }
     /// Project all vertices onto `axis`, returning `(min, max)`.
-    #[allow(dead_code)]
     pub fn project(&self, axis: [f64; 3]) -> (f64, f64) {
         let mut mn = f64::INFINITY;
         let mut mx = f64::NEG_INFINITY;
@@ -578,7 +572,6 @@ impl ConvexPolyhedron {
 /// dramatically reducing the average number of axes tested when objects
 /// move slowly relative to each other.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct SatAxisCache {
     /// The cached separating or minimum-penetration axis.
     pub axis: [f64; 3],
@@ -589,7 +582,6 @@ pub struct SatAxisCache {
 }
 impl SatAxisCache {
     /// Create an empty (invalid) cache.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         SatAxisCache {
             axis: [0.0, 1.0, 0.0],
@@ -598,12 +590,10 @@ impl SatAxisCache {
         }
     }
     /// Invalidate the cache (e.g. when a body teleports or is removed).
-    #[allow(dead_code)]
     pub fn invalidate(&mut self) {
         self.valid = false;
     }
     /// Update the cache with a new axis and overlap.
-    #[allow(dead_code)]
     pub fn update(&mut self, axis: [f64; 3], overlap: f64) {
         self.axis = axis;
         self.overlap = overlap;
@@ -613,7 +603,6 @@ impl SatAxisCache {
     ///
     /// Returns `Some(overlap)` if still overlapping in the cached direction,
     /// or `None` if the cache is invalid or the axis separates the OBBs.
-    #[allow(dead_code)]
     pub fn check(&self, obb_a: &Obb, obb_b: &Obb) -> Option<f64> {
         if !self.valid {
             return None;
@@ -623,19 +612,16 @@ impl SatAxisCache {
 }
 /// A flat-array OBB BVH (distinct from the recursive `ObbTree`).
 #[derive(Clone, Debug, Default)]
-#[allow(dead_code)]
 pub struct ObbBvh {
     /// All nodes (root = index 0).
     pub nodes: Vec<ObbBvhNode>,
 }
 impl ObbBvh {
     /// Create an empty BVH.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         ObbBvh { nodes: Vec::new() }
     }
     /// Build a balanced BVH from a slice of leaf OBBs.
-    #[allow(dead_code)]
     pub fn build(leaf_obbs: &[Obb]) -> Self {
         if leaf_obbs.is_empty() {
             return Self::new();
@@ -680,10 +666,7 @@ impl ObbBvh {
         let (mut left_idx, mut right_idx): (Vec<usize>, Vec<usize>) = indices
             .iter()
             .partition(|&&i| obbs[i].center[split_axis] <= split_val);
-        if left_idx.is_empty() {
-            left_idx = indices[..indices.len() / 2].to_vec();
-            right_idx = indices[indices.len() / 2..].to_vec();
-        } else if right_idx.is_empty() {
+        if left_idx.is_empty() || right_idx.is_empty() {
             left_idx = indices[..indices.len() / 2].to_vec();
             right_idx = indices[indices.len() / 2..].to_vec();
         }
@@ -700,7 +683,6 @@ impl ObbBvh {
         node_idx
     }
     /// Query all leaf geometry indices whose bounds overlap `query_obb`.
-    #[allow(dead_code)]
     pub fn query_overlapping(&self, query_obb: &Obb) -> Vec<usize> {
         if self.nodes.is_empty() {
             return Vec::new();
@@ -728,12 +710,10 @@ impl ObbBvh {
         }
     }
     /// Number of leaf nodes.
-    #[allow(dead_code)]
     pub fn leaf_count(&self) -> usize {
         self.nodes.iter().filter(|n| n.is_leaf()).count()
     }
     /// Total number of nodes.
-    #[allow(dead_code)]
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
@@ -1027,14 +1007,12 @@ impl ObbCapsuleCollision {
     }
 }
 /// SAT test between two arbitrary convex polyhedra.
-#[allow(dead_code)]
 pub struct ConvexPolyhedraSat;
 impl ConvexPolyhedraSat {
     /// Test intersection between two convex polyhedra.
     ///
     /// Tests all face normals of both polyhedra plus all edge-cross-product axes.
     /// Returns `Some(contact)` if the polyhedra overlap, `None` if separated.
-    #[allow(dead_code)]
     pub fn test(a: &ConvexPolyhedron, b: &ConvexPolyhedron) -> Option<PolyhedraContact> {
         let mut min_depth = f64::INFINITY;
         let mut best_normal = [0.0_f64, 1.0, 0.0];
@@ -1115,14 +1093,12 @@ impl ConvexPolyhedraSat {
         })
     }
     /// Returns `true` if the two convex polyhedra are separated.
-    #[allow(dead_code)]
     pub fn is_separated(a: &ConvexPolyhedron, b: &ConvexPolyhedron) -> bool {
         Self::test(a, b).is_none()
     }
 }
 /// A node in a flat-array OBB BVH.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct ObbBvhNode {
     /// Bounding OBB for this node.
     pub bounds: Obb,
@@ -1135,7 +1111,6 @@ pub struct ObbBvhNode {
 }
 impl ObbBvhNode {
     /// Returns `true` if this is a leaf node.
-    #[allow(dead_code)]
     pub fn is_leaf(&self) -> bool {
         self.left == usize::MAX && self.right == usize::MAX
     }

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,9 +13,6 @@
 //! - [`StreamingPotential`]: pressure-driven flow generating electric potential
 //! - [`EDLLayer`]: electrical double layer (Debye length)
 //! - [`IonicStrength`]: ionic strength I = 0.5 Σ c_i z_i²
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Physical constants
@@ -253,7 +249,7 @@ impl PoissonBoltzmannSolver {
     ///
     /// `phi` is initialized with boundary conditions (Dirichlet).
     /// Interior `fixed[i*ny+j] = true` means the point is a Dirichlet BC node.
-    pub fn solve(&self, phi: &mut Vec<f64>, fixed: &[bool]) -> usize {
+    pub fn solve(&self, phi: &mut [f64], fixed: &[bool]) -> usize {
         let h2 = self.h * self.h;
         let kappa2 = self.kappa * self.kappa;
         let diag = 4.0 + kappa2 * h2;
@@ -295,12 +291,12 @@ impl PoissonBoltzmannSolver {
         // Analytical solution of ∂²φ/∂y² = κ²φ: φ(y) = A sinh(κ(L-y)) / sinh(κL)
         let l = (n - 1) as f64 * self.h;
         let kl = self.kappa * l;
-        for j in 0..n {
+        for (j, phi_j) in phi.iter_mut().enumerate() {
             let y = j as f64 * self.h;
             if kl.abs() < 1e-10 {
-                phi[j] = zeta * (1.0 - y / l);
+                *phi_j = zeta * (1.0 - y / l);
             } else {
-                phi[j] = zeta * (self.kappa * (l - y)).sinh() / kl.sinh();
+                *phi_j = zeta * (self.kappa * (l - y)).sinh() / kl.sinh();
             }
         }
         phi
@@ -327,6 +323,18 @@ impl PoissonBoltzmannSolver {
 // ─────────────────────────────────────────────────────────────────────────────
 // NernstPlanckLbm
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Configuration bundle for the BGK collision step in [`NernstPlanckLbm`].
+#[derive(Debug, Clone, Copy)]
+struct NernstPlanckCollideConfig {
+    nx: usize,
+    ny: usize,
+    tau: f64,
+    z_val: f64,
+    thermal_voltage: f64,
+    /// +1.0 for cations, -1.0 for anions.
+    sign: f64,
+}
 
 /// D2Q9 LBM solver for ion transport via Nernst-Planck equations.
 ///
@@ -444,20 +452,23 @@ impl NernstPlanckLbm {
     ///
     /// `ux`, `uy`: fluid velocity field (length nx*ny each).
     /// `ex`, `ey`: electric field -∇φ (length nx*ny each), positive pointing toward bulk.
-    /// `sign`: +1 for cation, -1 for anion.
+    /// `cfg.sign`: +1 for cation, -1 for anion.
     fn collide(
         f: &mut [f64],
-        nx: usize,
-        ny: usize,
-        tau: f64,
-        z_val: f64,
-        thermal_voltage: f64,
-        sign: f64,
+        cfg: NernstPlanckCollideConfig,
         ux: &[f64],
         uy: &[f64],
         ex: &[f64],
         ey: &[f64],
     ) {
+        let NernstPlanckCollideConfig {
+            nx,
+            ny,
+            tau,
+            z_val,
+            thermal_voltage,
+            sign,
+        } = cfg;
         let inv_tau = 1.0 / tau;
         let mig = sign * z_val / thermal_voltage;
         for i in 0..nx {
@@ -493,12 +504,14 @@ impl NernstPlanckLbm {
     pub fn step(&mut self, ux: &[f64], uy: &[f64], ex: &[f64], ey: &[f64]) {
         Self::collide(
             &mut self.f_cation,
-            self.nx,
-            self.ny,
-            self.tau,
-            self.z_val,
-            self.thermal_voltage,
-            1.0,
+            NernstPlanckCollideConfig {
+                nx: self.nx,
+                ny: self.ny,
+                tau: self.tau,
+                z_val: self.z_val,
+                thermal_voltage: self.thermal_voltage,
+                sign: 1.0,
+            },
             ux,
             uy,
             ex,
@@ -506,12 +519,14 @@ impl NernstPlanckLbm {
         );
         Self::collide(
             &mut self.f_anion,
-            self.nx,
-            self.ny,
-            self.tau,
-            self.z_val,
-            self.thermal_voltage,
-            -1.0,
+            NernstPlanckCollideConfig {
+                nx: self.nx,
+                ny: self.ny,
+                tau: self.tau,
+                z_val: self.z_val,
+                thermal_voltage: self.thermal_voltage,
+                sign: -1.0,
+            },
             ux,
             uy,
             ex,

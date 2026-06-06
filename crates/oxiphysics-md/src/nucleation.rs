@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,9 +16,6 @@
 //! - OstwaldRipening: LSW coarsening, mean radius evolution
 //! - SpinodaDecomposition: Cahn-Hilliard free energy, spinodal criterion
 //! - SolidificationFront: Stefan problem, moving boundary, freezing-point depression
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -738,8 +734,8 @@ impl SpinodalDecomposition {
             let lap_mu = (mu[ip] + mu[im] - 2.0 * mu[i]) / (self.dx * self.dx);
             dc[i] = self.mobility * lap_mu;
         }
-        for i in 0..n {
-            self.c[i] += dt * dc[i];
+        for (c_i, &dc_i) in self.c.iter_mut().zip(dc.iter()) {
+            *c_i += dt * dc_i;
         }
     }
 
@@ -1135,10 +1131,10 @@ impl PhaseField1D {
     pub fn step(&mut self, dt: f64) {
         let n = self.phi.len();
         let drive: Vec<f64> = (0..n).map(|i| self.driving_force(i)).collect();
-        for i in 0..n {
-            self.phi[i] += dt * self.mobility * drive[i];
+        for (phi_i, &dr) in self.phi.iter_mut().zip(drive.iter()) {
+            *phi_i += dt * self.mobility * dr;
             // Clamp to [-1.5, 1.5] to prevent blow-up
-            self.phi[i] = self.phi[i].clamp(-1.5, 1.5);
+            *phi_i = phi_i.clamp(-1.5, 1.5);
         }
     }
 

@@ -138,13 +138,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
     /// Create a [`Error::General`] from any `Display`-able value.
-    #[allow(dead_code)]
     pub fn general(msg: impl std::fmt::Display) -> Self {
         Error::General(msg.to_string())
     }
 
     /// Create a [`Error::ConvergenceFailure`].
-    #[allow(dead_code)]
     pub fn convergence(residual: f64, iterations: usize, tolerance: f64) -> Self {
         Error::ConvergenceFailure {
             residual,
@@ -154,13 +152,11 @@ impl Error {
     }
 
     /// Create a [`Error::InvalidBodyHandle`].
-    #[allow(dead_code)]
     pub fn invalid_body(id: u64) -> Self {
         Error::InvalidBodyHandle { id }
     }
 
     /// Create a [`Error::DegenerateConstraint`].
-    #[allow(dead_code)]
     pub fn degenerate(reason: impl Into<String>) -> Self {
         Error::DegenerateConstraint {
             reason: reason.into(),
@@ -168,13 +164,11 @@ impl Error {
     }
 
     /// Create a [`Error::SingularMatrix`].
-    #[allow(dead_code)]
     pub fn singular(condition: f64) -> Self {
         Error::SingularMatrix { condition }
     }
 
     /// Create a [`Error::ConfigurationError`].
-    #[allow(dead_code)]
     pub fn config(parameter: &'static str, value: f64, min: f64, max: f64) -> Self {
         Error::ConfigurationError {
             parameter,
@@ -185,13 +179,11 @@ impl Error {
     }
 
     /// Create a [`Error::InvalidTimestep`].
-    #[allow(dead_code)]
     pub fn invalid_dt(dt: f64) -> Self {
         Error::InvalidTimestep { dt }
     }
 
     /// Create a [`Error::CapacityExceeded`].
-    #[allow(dead_code)]
     pub fn capacity(requested: usize, capacity: usize) -> Self {
         Error::CapacityExceeded {
             requested,
@@ -200,13 +192,11 @@ impl Error {
     }
 
     /// Create a [`Error::InvalidJointLimits`].
-    #[allow(dead_code)]
     pub fn joint_limits(lower: f64, upper: f64) -> Self {
         Error::InvalidJointLimits { lower, upper }
     }
 
     /// Create a [`Error::ControllerError`].
-    #[allow(dead_code)]
     pub fn controller(message: impl Into<String>) -> Self {
         Error::ControllerError {
             message: message.into(),
@@ -214,19 +204,16 @@ impl Error {
     }
 
     /// Create a [`Error::CcdFailure`].
-    #[allow(dead_code)]
     pub fn ccd_failure(tmin: f64, tmax: f64) -> Self {
         Error::CcdFailure { tmin, tmax }
     }
 
     /// Create a [`Error::PbdComplianceError`].
-    #[allow(dead_code)]
     pub fn pbd_compliance(compliance: f64) -> Self {
         Error::PbdComplianceError { compliance }
     }
 
     /// Create a [`Error::FrictionModelError`].
-    #[allow(dead_code)]
     pub fn friction_model(normal_force: f64) -> Self {
         Error::FrictionModelError { normal_force }
     }
@@ -236,7 +223,6 @@ impl Error {
 
 impl Error {
     /// Returns `true` if this error represents a numerical / floating-point issue.
-    #[allow(dead_code)]
     pub fn is_numerical(&self) -> bool {
         matches!(
             self,
@@ -247,7 +233,6 @@ impl Error {
     }
 
     /// Returns `true` if this error indicates a configuration / API misuse.
-    #[allow(dead_code)]
     pub fn is_configuration(&self) -> bool {
         matches!(
             self,
@@ -261,7 +246,6 @@ impl Error {
 
     /// Returns `true` if the error is potentially recoverable (retry with
     /// smaller dt or more iterations may succeed).
-    #[allow(dead_code)]
     pub fn is_recoverable(&self) -> bool {
         matches!(
             self,
@@ -274,7 +258,6 @@ impl Error {
 
 /// Severity level for constraint errors — used for logging / filtering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(dead_code)]
 pub enum Severity {
     /// Informational — the solver can continue without intervention.
     Info,
@@ -288,7 +271,6 @@ pub enum Severity {
 
 impl Error {
     /// Map each error variant to an advisory [`Severity`] level.
-    #[allow(dead_code)]
     pub fn severity(&self) -> Severity {
         match self {
             Error::ConvergenceFailure { .. } => Severity::Warning,
@@ -312,7 +294,6 @@ impl Error {
 // ── Validation helpers ────────────────────────────────────────────────────────
 
 /// Validate that a time-step is strictly positive.
-#[allow(dead_code)]
 pub fn validate_dt(dt: f64) -> Result<()> {
     if dt <= 0.0 || !dt.is_finite() {
         Err(Error::invalid_dt(dt))
@@ -322,7 +303,6 @@ pub fn validate_dt(dt: f64) -> Result<()> {
 }
 
 /// Validate that a joint limit pair is well-ordered (lower ≤ upper).
-#[allow(dead_code)]
 pub fn validate_joint_limits(lower: f64, upper: f64) -> Result<()> {
     if lower > upper {
         Err(Error::joint_limits(lower, upper))
@@ -332,7 +312,6 @@ pub fn validate_joint_limits(lower: f64, upper: f64) -> Result<()> {
 }
 
 /// Validate that a configuration parameter is within `[min, max]`.
-#[allow(dead_code)]
 pub fn validate_param(parameter: &'static str, value: f64, min: f64, max: f64) -> Result<()> {
     if value < min || value > max || !value.is_finite() {
         Err(Error::config(parameter, value, min, max))
@@ -342,7 +321,6 @@ pub fn validate_param(parameter: &'static str, value: f64, min: f64, max: f64) -
 }
 
 /// Validate that a PBD compliance value is positive.
-#[allow(dead_code)]
 pub fn validate_compliance(compliance: f64) -> Result<()> {
     if compliance <= 0.0 || !compliance.is_finite() {
         Err(Error::pbd_compliance(compliance))
@@ -352,7 +330,6 @@ pub fn validate_compliance(compliance: f64) -> Result<()> {
 }
 
 /// Validate that a normal force is non-negative.
-#[allow(dead_code)]
 pub fn validate_normal_force(normal_force: f64) -> Result<()> {
     if normal_force < 0.0 || !normal_force.is_finite() {
         Err(Error::friction_model(normal_force))
@@ -362,7 +339,6 @@ pub fn validate_normal_force(normal_force: f64) -> Result<()> {
 }
 
 /// Validate that a value is strictly positive.
-#[allow(dead_code)]
 pub fn validate_positive(parameter: &'static str, value: f64) -> Result<()> {
     if value <= 0.0 || !value.is_finite() {
         Err(Error::config(parameter, value, f64::EPSILON, f64::INFINITY))
@@ -372,7 +348,6 @@ pub fn validate_positive(parameter: &'static str, value: f64) -> Result<()> {
 }
 
 /// Validate that a value is finite (not NaN or infinite).
-#[allow(dead_code)]
 pub fn validate_finite(parameter: &'static str, value: f64) -> Result<()> {
     if !value.is_finite() {
         Err(Error::config(
@@ -389,7 +364,6 @@ pub fn validate_finite(parameter: &'static str, value: f64) -> Result<()> {
 /// Validate that a 3D vector is a unit vector (length ≈ 1).
 ///
 /// Tolerance is ±1e-6.
-#[allow(dead_code)]
 pub fn validate_unit_vector(parameter: &'static str, v: [f64; 3]) -> Result<()> {
     let len_sq = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
     let deviation = (len_sq - 1.0).abs();
@@ -403,7 +377,6 @@ pub fn validate_unit_vector(parameter: &'static str, v: [f64; 3]) -> Result<()> 
 }
 
 /// Validate that a 3D vector is non-zero (length > tolerance).
-#[allow(dead_code)]
 pub fn validate_nonzero_vector(parameter: &'static str, v: [f64; 3]) -> Result<()> {
     let len_sq = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
     if len_sq < 1e-15 {
@@ -416,7 +389,6 @@ pub fn validate_nonzero_vector(parameter: &'static str, v: [f64; 3]) -> Result<(
 }
 
 /// Validate that `count` items can be inserted without exceeding `capacity`.
-#[allow(dead_code)]
 pub fn validate_capacity(current: usize, count: usize, capacity: usize) -> Result<()> {
     let total = current.saturating_add(count);
     if total > capacity {
@@ -431,7 +403,6 @@ pub fn validate_capacity(current: usize, count: usize, capacity: usize) -> Resul
 /// Collects multiple non-fatal errors (warnings) during a solve step so they
 /// can be inspected after the fact rather than causing an early return.
 #[derive(Debug, Default)]
-#[allow(dead_code)]
 pub struct ErrorAccumulator {
     errors: Vec<Error>,
     fatal: bool,
@@ -439,7 +410,6 @@ pub struct ErrorAccumulator {
 
 impl ErrorAccumulator {
     /// Create a new, empty accumulator.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -447,7 +417,6 @@ impl ErrorAccumulator {
     /// Push an error onto the accumulator.
     ///
     /// If the error's severity is [`Severity::Fatal`], the `fatal` flag is set.
-    #[allow(dead_code)]
     pub fn push(&mut self, e: Error) {
         if e.severity() == Severity::Fatal {
             self.fatal = true;
@@ -456,45 +425,38 @@ impl ErrorAccumulator {
     }
 
     /// Returns `true` if a fatal error has been accumulated.
-    #[allow(dead_code)]
     pub fn has_fatal(&self) -> bool {
         self.fatal
     }
 
     /// Returns `true` if any errors (including warnings) have been accumulated.
-    #[allow(dead_code)]
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty()
     }
 
     /// Number of accumulated errors.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.errors.len()
     }
 
     /// Returns `true` if no errors have been accumulated.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.errors.is_empty()
     }
 
     /// Drain all accumulated errors, returning them as a `Vec`.
-    #[allow(dead_code)]
     pub fn drain(&mut self) -> Vec<Error> {
         self.fatal = false;
         std::mem::take(&mut self.errors)
     }
 
     /// Return a reference to all accumulated errors without consuming them.
-    #[allow(dead_code)]
     pub fn errors(&self) -> &[Error] {
         &self.errors
     }
 
     /// If any fatal errors were accumulated, return `Err` with the first one;
     /// otherwise return `Ok(())`.
-    #[allow(dead_code)]
     pub fn into_result(mut self) -> Result<()> {
         if self.fatal {
             Err(self
@@ -512,7 +474,6 @@ impl ErrorAccumulator {
 
 /// Wraps an error with additional context about where it occurred.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct ErrorContext {
     /// The underlying error.
     pub error: Error,
@@ -524,7 +485,6 @@ pub struct ErrorContext {
 
 impl ErrorContext {
     /// Wrap an error with a context string.
-    #[allow(dead_code)]
     pub fn new(error: Error, context: impl Into<String>) -> Self {
         ErrorContext {
             error,
@@ -534,7 +494,6 @@ impl ErrorContext {
     }
 
     /// Attach a constraint index to the context.
-    #[allow(dead_code)]
     pub fn with_constraint(mut self, index: usize) -> Self {
         self.constraint_index = Some(index);
         self
@@ -556,7 +515,6 @@ impl std::fmt::Display for ErrorContext {
 /// Compute a simple 2×2 condition number estimate via max/min absolute diagonal.
 ///
 /// Returns `f64::INFINITY` if the minimum diagonal is zero.
-#[allow(dead_code)]
 pub fn condition_number_2x2(a00: f64, a11: f64) -> f64 {
     let max_d = a00.abs().max(a11.abs());
     let min_d = a00.abs().min(a11.abs());
@@ -572,7 +530,6 @@ pub fn condition_number_2x2(a00: f64, a11: f64) -> f64 {
 /// criterion.
 ///
 /// The entries are `[a00, a01, a02, a11, a12, a22]`.
-#[allow(dead_code)]
 pub fn check_positive_definite_3x3(m: [f64; 6]) -> Result<()> {
     let (a00, a11, a01, a02, a12, a22) = (m[0], m[3], m[1], m[2], m[4], m[5]);
     // Leading minors
@@ -602,12 +559,10 @@ pub fn check_positive_definite_3x3(m: [f64; 6]) -> Result<()> {
 /// Allows the solver to continue after a non-fatal error and report all problems
 /// at once rather than stopping at the first failure.
 #[derive(Debug, Default)]
-#[allow(dead_code)]
 pub struct ErrorBatch {
     errors: Vec<Error>,
 }
 
-#[allow(dead_code)]
 impl ErrorBatch {
     /// Create a new, empty error batch.
     pub fn new() -> Self {
@@ -661,7 +616,6 @@ impl ErrorBatch {
 /// Validate that a time step `dt` is strictly positive.
 ///
 /// Returns `Err(Error::InvalidTimestep)` if `dt <= 0` or `dt` is NaN.
-#[allow(dead_code)]
 pub fn validate_timestep(dt: f64) -> Result<()> {
     if dt.is_nan() || dt <= 0.0 {
         Err(Error::InvalidTimestep { dt })
@@ -674,7 +628,6 @@ pub fn validate_timestep(dt: f64) -> Result<()> {
 /// Validate that a friction coefficient is non-negative.
 ///
 /// Returns `Err(Error::ConfigurationError)` if `mu < 0` or is NaN.
-#[allow(dead_code)]
 pub fn validate_friction_coefficient(mu: f64) -> Result<()> {
     if mu.is_nan() || mu < 0.0 {
         Err(Error::config("friction_coefficient", mu, 0.0, f64::MAX))
@@ -684,7 +637,6 @@ pub fn validate_friction_coefficient(mu: f64) -> Result<()> {
 }
 
 /// Validate that a restitution coefficient is in [0, 1].
-#[allow(dead_code)]
 pub fn validate_restitution(e: f64) -> Result<()> {
     if e.is_nan() || !(0.0..=1.0).contains(&e) {
         Err(Error::config("restitution", e, 0.0, 1.0))
@@ -694,7 +646,6 @@ pub fn validate_restitution(e: f64) -> Result<()> {
 }
 
 /// Validate that an angular velocity limit is non-negative.
-#[allow(dead_code)]
 pub fn validate_angular_velocity_limit(omega_max: f64) -> Result<()> {
     if omega_max.is_nan() || omega_max < 0.0 {
         Err(Error::config(
@@ -709,7 +660,6 @@ pub fn validate_angular_velocity_limit(omega_max: f64) -> Result<()> {
 }
 
 /// Validate that a Baumgarte stabilisation factor is in (0, 1].
-#[allow(dead_code)]
 pub fn validate_baumgarte(beta: f64) -> Result<()> {
     if beta.is_nan() || beta <= 0.0 || beta > 1.0 {
         Err(Error::config("baumgarte", beta, 1e-15, 1.0))
@@ -722,7 +672,6 @@ pub fn validate_baumgarte(beta: f64) -> Result<()> {
 
 /// A summary of error counts by category, derived from an `ErrorBatch`.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct ErrorSummary {
     /// Total number of errors.
     pub total: usize,
@@ -738,7 +687,6 @@ pub struct ErrorSummary {
     pub other: usize,
 }
 
-#[allow(dead_code)]
 impl ErrorSummary {
     /// Build a summary from an `ErrorBatch`.
     pub fn from_batch(batch: &ErrorBatch) -> Self {
@@ -773,7 +721,6 @@ impl ErrorSummary {
 
 /// Diagnostic information captured during a single solver step.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct SolverDiagnostics {
     /// Number of PGS iterations performed.
     pub iterations: usize,
@@ -789,7 +736,6 @@ pub struct SolverDiagnostics {
     pub time_us: u64,
 }
 
-#[allow(dead_code)]
 impl SolverDiagnostics {
     /// Create empty diagnostics.
     pub fn new() -> Self {

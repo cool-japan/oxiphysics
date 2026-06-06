@@ -32,7 +32,7 @@ pub(super) fn normalize(a: [f64; 3]) -> [f64; 3] {
         scale(a, 1.0 / len)
     }
 }
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn negate(a: [f64; 3]) -> [f64; 3] {
     [-a[0], -a[1], -a[2]]
 }

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! Provides particle splitting/merging (refinement/coarsening), an octree
 //! spatial index, and consistency-condition checks for multi-resolution SPH
 //! simulations.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // ResolutionLevel
@@ -334,8 +331,8 @@ impl OctreeNode {
 
     /// Return `true` if `pos` lies inside this node's bounding cube.
     pub fn contains(&self, pos: [f64; 3]) -> bool {
-        for k in 0..3 {
-            if (pos[k] - self.center[k]).abs() > self.half_size {
+        for (k, &p) in pos.iter().enumerate() {
+            if (p - self.center[k]).abs() > self.half_size {
                 return false;
             }
         }
@@ -449,13 +446,13 @@ impl OctreeNode {
     ) {
         // Check AABB overlap
         let mut min_dist_sq = 0.0_f64;
-        for k in 0..3 {
+        for (k, &qk) in query.iter().enumerate() {
             let lo = self.center[k] - self.half_size;
             let hi = self.center[k] + self.half_size;
-            if query[k] < lo {
-                min_dist_sq += (query[k] - lo).powi(2);
-            } else if query[k] > hi {
-                min_dist_sq += (query[k] - hi).powi(2);
+            if qk < lo {
+                min_dist_sq += (qk - lo).powi(2);
+            } else if qk > hi {
+                min_dist_sq += (qk - hi).powi(2);
             }
         }
         if min_dist_sq > radius * radius {

@@ -2,12 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// A suggestion for improving mesh quality.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum QualitySuggestion {
     /// Remove degenerate triangles.
@@ -36,7 +32,6 @@ pub enum QualitySuggestion {
     MeshIsGoodQuality,
 }
 /// Extended quality report with histogram data.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ExtendedQualityReport {
     /// Basic quality report.
@@ -51,7 +46,6 @@ pub struct ExtendedQualityReport {
     pub area_std_dev: f32,
 }
 /// Per-triangle quality values for visualization.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct QualityVisualizationData {
     /// Aspect ratio per triangle.
@@ -68,7 +62,6 @@ pub struct QualityVisualizationData {
     pub jacobians: Vec<f32>,
 }
 /// Result of comparing two meshes.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MeshComparison {
     /// Difference in vertex count (mesh_b - mesh_a).
@@ -85,7 +78,6 @@ pub struct MeshComparison {
     pub fewer_degenerates: bool,
 }
 /// A poorly-shaped element with its index and the reason it is flagged.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PoorlyShapedElement {
     /// Triangle index.
@@ -94,7 +86,6 @@ pub struct PoorlyShapedElement {
     pub reasons: Vec<PoorShapeReason>,
 }
 /// Reason a triangle is considered poorly shaped.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum PoorShapeReason {
     /// High aspect ratio (> threshold).
@@ -109,9 +100,7 @@ pub enum PoorShapeReason {
     HighSkewness(f32),
 }
 /// Additional triangle mesh quality metrics.
-#[allow(dead_code)]
 pub struct MeshQuality;
-#[allow(dead_code)]
 impl MeshQuality {
     /// Compute the dihedral angle (in degrees) between two adjacent triangles
     /// sharing an edge defined by vertices `ea` and `eb`.
@@ -183,7 +172,6 @@ impl MeshQuality {
     }
 }
 /// A triangle mesh consisting of vertices and triangle connectivity.
-#[allow(dead_code)]
 pub struct TriangleMesh {
     /// 3D vertex positions.
     pub vertices: Vec<[f32; 3]>,
@@ -192,7 +180,6 @@ pub struct TriangleMesh {
 }
 impl TriangleMesh {
     /// Create an empty mesh.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             vertices: Vec::new(),
@@ -200,7 +187,6 @@ impl TriangleMesh {
         }
     }
     /// Create a mesh from raw vertex and triangle data.
-    #[allow(dead_code)]
     pub fn from_raw(verts: Vec<[f32; 3]>, tris: Vec<[u32; 3]>) -> Self {
         Self {
             vertices: verts,
@@ -208,18 +194,15 @@ impl TriangleMesh {
         }
     }
     /// Return the number of vertices.
-    #[allow(dead_code)]
     pub fn vertex_count(&self) -> usize {
         self.vertices.len()
     }
     /// Return the number of triangles.
-    #[allow(dead_code)]
     pub fn triangle_count(&self) -> usize {
         self.triangles.len()
     }
 }
 /// Full mesh quality report including angles, Jacobians, and element counts.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FullQualityReport {
     /// Basic quality report.
@@ -244,7 +227,6 @@ pub struct FullQualityReport {
     pub total_surface_area: f32,
 }
 /// Quality thresholds for evaluating mesh quality.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct QualityThresholds {
     /// Maximum acceptable aspect ratio.
@@ -259,7 +241,6 @@ pub struct QualityThresholds {
     pub min_area: f32,
 }
 /// Statistics about element shapes in the mesh.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ElementTypeStats {
     /// Number of near-equilateral triangles (all angles within 50-70 degrees).
@@ -276,7 +257,6 @@ pub struct ElementTypeStats {
     pub total: u32,
 }
 /// Quality statistics broken down per element category.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct PerTypeMeshStats {
     /// Mean aspect ratio of equilateral triangles.
@@ -297,7 +277,6 @@ pub struct PerTypeMeshStats {
     pub n_degenerate: u32,
 }
 /// Result of checking a mesh against quality thresholds.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct QualityCheckResult {
     /// Number of triangles exceeding max aspect ratio.
@@ -314,7 +293,6 @@ pub struct QualityCheckResult {
     pub passes: bool,
 }
 /// Summary of mesh quality metrics computed over all triangles.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MeshQualityReport {
     /// Minimum triangle area.
@@ -333,7 +311,6 @@ pub struct MeshQualityReport {
     pub n_degenerate: u32,
 }
 /// Automated quality improvement suggestion with priority.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AutoImproveSuggestion {
     /// Human-readable description.

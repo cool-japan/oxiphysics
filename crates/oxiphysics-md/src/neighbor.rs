@@ -1,4 +1,3 @@
-#![allow(clippy::manual_div_ceil)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -61,7 +60,6 @@ impl PeriodicBox {
     }
 
     /// Number density: N / V.
-    #[allow(dead_code)]
     pub fn number_density(&self, n: usize) -> f64 {
         n as f64 / self.volume()
     }
@@ -221,19 +219,16 @@ impl CellList {
     }
 
     /// Total number of cells.
-    #[allow(dead_code)]
     pub fn total_cells(&self) -> usize {
         self.n_cells[0] * self.n_cells[1] * self.n_cells[2]
     }
 
     /// Maximum number of atoms in any single cell.
-    #[allow(dead_code)]
     pub fn max_cell_occupancy(&self) -> usize {
         self.cells.iter().map(|c| c.len()).max().unwrap_or(0)
     }
 
     /// Average number of atoms per cell.
-    #[allow(dead_code)]
     pub fn avg_cell_occupancy(&self) -> f64 {
         let total: usize = self.cells.iter().map(|c| c.len()).sum();
         let n_cells = self.cells.len();
@@ -245,7 +240,6 @@ impl CellList {
     }
 
     /// Number of non-empty cells.
-    #[allow(dead_code)]
     pub fn occupied_cells(&self) -> usize {
         self.cells.iter().filter(|c| !c.is_empty()).count()
     }
@@ -318,7 +312,6 @@ impl VerletList {
     }
 
     /// Rebuild the Verlet list with new positions.
-    #[allow(dead_code)]
     pub fn rebuild(&mut self, positions: &[Vec3], pbox: &PeriodicBox) {
         let new_list = Self::build(positions, pbox, self.cutoff, self.skin);
         self.pairs = new_list.pairs;
@@ -341,7 +334,6 @@ impl VerletList {
     }
 
     /// Check and rebuild if needed. Returns true if rebuilt.
-    #[allow(dead_code)]
     pub fn update_if_needed(&mut self, positions: &[Vec3], pbox: &PeriodicBox) -> bool {
         if self.needs_rebuild(positions, pbox) {
             self.rebuild(positions, pbox);
@@ -352,13 +344,11 @@ impl VerletList {
     }
 
     /// Number of pairs in the list.
-    #[allow(dead_code)]
     pub fn pair_count(&self) -> usize {
         self.pairs.len()
     }
 
     /// Maximum displacement since last build.
-    #[allow(dead_code)]
     pub fn max_displacement(&self, positions: &[Vec3], pbox: &PeriodicBox) -> f64 {
         self.reference_positions
             .iter()
@@ -376,7 +366,6 @@ impl VerletList {
 // ---------------------------------------------------------------------------
 
 /// Statistics about a neighbor list.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NeighborListStats {
     /// Total number of atoms.
@@ -391,7 +380,6 @@ pub struct NeighborListStats {
     pub min_neighbors: usize,
 }
 
-#[allow(dead_code)]
 impl NeighborListStats {
     /// Compute statistics from a Verlet list.
     pub fn from_verlet_list(vlist: &VerletList, n_atoms: usize) -> Self {
@@ -462,7 +450,6 @@ impl NeighborListStats {
 ///
 /// Useful for systems with different interaction ranges (e.g., short-range
 /// repulsion + long-range electrostatics).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MultiCutoffNeighborList {
     /// Per-cutoff pair lists: `lists[k]` contains pairs within `cutoffs[k]`.
@@ -471,7 +458,6 @@ pub struct MultiCutoffNeighborList {
     pub cutoffs: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl MultiCutoffNeighborList {
     /// Build multi-cutoff neighbor lists.
     ///
@@ -532,7 +518,6 @@ impl MultiCutoffNeighborList {
 /// Splits the atom index space into non-overlapping domains suitable
 /// for OpenMP-style parallel loops.  Each domain owns a contiguous
 /// range of atom indices for force accumulation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ForceDecomposition {
     /// Atom index ranges for each domain.
@@ -541,7 +526,6 @@ pub struct ForceDecomposition {
     pub cross_pairs: Vec<(usize, usize)>,
 }
 
-#[allow(dead_code)]
 impl ForceDecomposition {
     /// Decompose atoms into `n_domains` contiguous slices.
     pub fn from_atoms(n_atoms: usize, n_domains: usize) -> Self {
@@ -598,7 +582,6 @@ impl ForceDecomposition {
 /// Tracks rebuild frequency and adjusts the skin distance to achieve
 /// a target rebuild interval.  If the list is rebuilt too often the skin
 /// is increased; if it is rebuilt rarely the skin is decreased.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SkinAdaptiveVerletList {
     /// Underlying Verlet list.
@@ -615,7 +598,6 @@ pub struct SkinAdaptiveVerletList {
     pub skin_max: f64,
 }
 
-#[allow(dead_code)]
 impl SkinAdaptiveVerletList {
     /// Create a new adaptive Verlet list.
     pub fn new(
@@ -660,7 +642,6 @@ impl SkinAdaptiveVerletList {
 // ---------------------------------------------------------------------------
 
 /// Hints for parallelizing neighbor list operations.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ParallelHints {
     /// Recommended chunk size for splitting atoms across threads.
@@ -671,7 +652,6 @@ pub struct ParallelHints {
     pub worth_parallelizing: bool,
 }
 
-#[allow(dead_code)]
 impl ParallelHints {
     /// Compute parallel hints for a system of `n_atoms` atoms.
     ///
@@ -707,7 +687,6 @@ impl ParallelHints {
 /// Brute-force O(N²) all-pairs distance computation for validation.
 ///
 /// Returns all unique pairs (i, j) with i < j whose PBC distance <= cutoff.
-#[allow(dead_code)]
 pub fn brute_force_neighbors(
     positions: &[Vec3],
     pbox: &PeriodicBox,
@@ -729,7 +708,6 @@ pub fn brute_force_neighbors(
 /// Compare cell-list and brute-force neighbor counts for validation.
 ///
 /// Returns `true` if both produce the same number of pairs.
-#[allow(dead_code)]
 pub fn validate_cell_list(positions: &[Vec3], pbox: &PeriodicBox, cutoff: f64) -> bool {
     let bf = brute_force_neighbors(positions, pbox, cutoff);
     let cl = CellList::build(positions, pbox, cutoff);
@@ -743,7 +721,6 @@ pub fn validate_cell_list(positions: &[Vec3], pbox: &PeriodicBox, cutoff: f64) -
 // ---------------------------------------------------------------------------
 
 /// A list of bonded-atom pairs to exclude from non-bonded computations.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ExclusionList {
     /// Excluded pairs stored as (i, j) with i < j.
@@ -752,7 +729,6 @@ pub struct ExclusionList {
 
 impl ExclusionList {
     /// Create an empty exclusion list.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             pairs: std::collections::HashSet::new(),
@@ -760,14 +736,12 @@ impl ExclusionList {
     }
 
     /// Add a 1-2 exclusion.
-    #[allow(dead_code)]
     pub fn add_12(&mut self, i: usize, j: usize) {
         let (a, b) = if i < j { (i, j) } else { (j, i) };
         self.pairs.insert((a, b));
     }
 
     /// Add 1-3 exclusions from a bond list (pairs of bonded atom lists).
-    #[allow(dead_code)]
     pub fn add_13_from_bonds(&mut self, bonds: &[(usize, usize)]) {
         // For every pair of bonds sharing an atom, add the 1-3 pair
         for &(a, b) in bonds {
@@ -791,26 +765,22 @@ impl ExclusionList {
     }
 
     /// Check whether a pair (i, j) is excluded.
-    #[allow(dead_code)]
     pub fn is_excluded(&self, i: usize, j: usize) -> bool {
         let (a, b) = if i < j { (i, j) } else { (j, i) };
         self.pairs.contains(&(a, b))
     }
 
     /// Number of exclusions.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.pairs.len()
     }
 
     /// Returns true if the exclusion list is empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.pairs.is_empty()
     }
 
     /// Filter a neighbor pair list, removing excluded pairs.
-    #[allow(dead_code)]
     pub fn filter_pairs(&self, pairs: &[(usize, usize)]) -> Vec<(usize, usize)> {
         pairs
             .iter()
@@ -828,7 +798,6 @@ impl ExclusionList {
 ///
 /// This avoids storing both (i,j) and (j,i), halving storage and allowing
 /// Newton's third law to reduce computation by half.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HalfNeighborList {
     /// Pairs (i, j) with i < j and distance <= cutoff + skin.
@@ -841,7 +810,6 @@ pub struct HalfNeighborList {
 
 impl HalfNeighborList {
     /// Build a half-neighbor list from positions.
-    #[allow(dead_code)]
     pub fn build(positions: &[Vec3], pbox: &PeriodicBox, cutoff: f64, skin: f64) -> Self {
         let r_max = cutoff + skin;
         let r_max2 = r_max * r_max;
@@ -863,19 +831,16 @@ impl HalfNeighborList {
     }
 
     /// Number of pairs.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.pairs.len()
     }
 
     /// Returns true if list is empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.pairs.is_empty()
     }
 
     /// Filter by exclusion list, returning a new half-list.
-    #[allow(dead_code)]
     pub fn apply_exclusions(&self, excl: &ExclusionList) -> Self {
         let pairs = excl.filter_pairs(&self.pairs);
         Self {
@@ -886,7 +851,6 @@ impl HalfNeighborList {
     }
 
     /// Count pairs involving atom `idx`.
-    #[allow(dead_code)]
     pub fn count_for_atom(&self, idx: usize) -> usize {
         self.pairs
             .iter()
@@ -903,7 +867,6 @@ impl HalfNeighborList {
 ///
 /// Returns a `Vec`usize` where entry `i` is the count of atoms j (j != i)
 /// within cutoff of atom i.
-#[allow(dead_code)]
 pub fn neighbor_counts(positions: &[Vec3], pbox: &PeriodicBox, cutoff: f64) -> Vec<usize> {
     let n = positions.len();
     let cutoff2 = cutoff * cutoff;
@@ -923,7 +886,6 @@ pub fn neighbor_counts(positions: &[Vec3], pbox: &PeriodicBox, cutoff: f64) -> V
 }
 
 /// Compute the average number of neighbors per atom.
-#[allow(dead_code)]
 pub fn average_neighbor_count(positions: &[Vec3], pbox: &PeriodicBox, cutoff: f64) -> f64 {
     if positions.is_empty() {
         return 0.0;
@@ -935,7 +897,6 @@ pub fn average_neighbor_count(positions: &[Vec3], pbox: &PeriodicBox, cutoff: f6
 /// Find the atom with the most neighbors within `cutoff`.
 ///
 /// Returns `None` if the list is empty.
-#[allow(dead_code)]
 pub fn most_connected_atom(positions: &[Vec3], pbox: &PeriodicBox, cutoff: f64) -> Option<usize> {
     let counts = neighbor_counts(positions, pbox, cutoff);
     counts
@@ -952,7 +913,6 @@ pub fn most_connected_atom(positions: &[Vec3], pbox: &PeriodicBox, cutoff: f64) 
 /// Utility: given a list of positions, return the distance matrix (upper triangle only).
 ///
 /// Entry `(i, j)` with i < j is the PBC distance between atoms i and j.
-#[allow(dead_code)]
 pub fn distance_matrix_pbc(positions: &[Vec3], pbox: &PeriodicBox) -> Vec<(usize, usize, f64)> {
     let n = positions.len();
     let mut entries = Vec::with_capacity(n * (n - 1) / 2);
@@ -969,7 +929,6 @@ pub fn distance_matrix_pbc(positions: &[Vec3], pbox: &PeriodicBox) -> Vec<(usize
 ///
 /// Returns a histogram of pair distances binned into `n_bins` bins of width
 /// `(r_max - r_min) / n_bins`. Bin `k` spans `\[r_min + k*dr, r_min + (k+1)*dr)`.
-#[allow(dead_code)]
 pub fn rdf_histogram(
     positions: &[Vec3],
     pbox: &PeriodicBox,
@@ -1002,7 +961,6 @@ pub fn rdf_histogram(
 // ---------------------------------------------------------------------------
 
 /// Track Verlet list rebuild statistics over a simulation run.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct RebuildStats {
     /// Total number of rebuild events.
@@ -1015,13 +973,11 @@ pub struct RebuildStats {
 
 impl RebuildStats {
     /// Create a new stats tracker.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Record a step; if `rebuilt` is true, also record the rebuild cost.
-    #[allow(dead_code)]
     pub fn record_step(&mut self, rebuilt: bool, pair_count: usize) {
         self.n_steps += 1;
         if rebuilt {
@@ -1031,7 +987,6 @@ impl RebuildStats {
     }
 
     /// Average steps between rebuilds.
-    #[allow(dead_code)]
     pub fn avg_steps_between_rebuilds(&self) -> f64 {
         if self.n_rebuilds == 0 {
             return self.n_steps as f64;
@@ -1040,7 +995,6 @@ impl RebuildStats {
     }
 
     /// Rebuild fraction (fraction of steps that required a rebuild).
-    #[allow(dead_code)]
     pub fn rebuild_fraction(&self) -> f64 {
         if self.n_steps == 0 {
             return 0.0;
@@ -1057,7 +1011,6 @@ impl RebuildStats {
 ///
 /// Returns a `Vec<Option`usize`>` where entry `i` is the index of the
 /// closest atom to atom `i` (or `None` if there is only one atom).
-#[allow(dead_code)]
 pub fn nearest_neighbors(positions: &[Vec3], pbox: &PeriodicBox) -> Vec<Option<usize>> {
     let n = positions.len();
     (0..n)

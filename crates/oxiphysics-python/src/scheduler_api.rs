@@ -5,9 +5,6 @@
 //!
 //! Exposes priority-based physics step budget allocation per island to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::scheduler::{Priority, Scheduler};
 use pyo3::prelude::*;
 

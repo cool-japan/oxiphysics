@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use super::functions::*;
 use std::f64::consts::PI;
 
@@ -317,14 +316,14 @@ impl DenseLayer {
     /// Backward pass.  Returns gradient w.r.t. input.
     pub fn backward(&mut self, grad_output: &[f64], lr: f64) -> Vec<f64> {
         let in_dim = self.weights.cols;
-        let out_dim = self.weights.rows;
-        for i in 0..out_dim {
+        let _out_dim = self.weights.rows;
+        for (i, (&go, b)) in grad_output.iter().zip(self.bias.iter_mut()).enumerate() {
             for j in 0..in_dim {
-                let dw = grad_output[i] * self.input_cache[j];
+                let dw = go * self.input_cache[j];
                 let w = self.weights.get(i, j) - lr * dw;
                 self.weights.set(i, j, w);
             }
-            self.bias[i] -= lr * grad_output[i];
+            *b -= lr * go;
         }
         let wt = self.weights.transpose();
         wt.matvec(grad_output)
@@ -444,14 +443,14 @@ impl LinearRegression {
             for (xi, &yi) in x.iter().zip(y.iter()) {
                 let pred = dot(xi, &w) + b;
                 let err = pred - yi;
-                for j in 0..d {
-                    dw[j] += err * xi[j];
+                for (dwj, &xij) in dw.iter_mut().zip(xi.iter()) {
+                    *dwj += err * xij;
                 }
                 db += err;
             }
             let inv_n = lr / n as f64;
-            for j in 0..d {
-                w[j] -= inv_n * dw[j];
+            for (wj, dwj) in w.iter_mut().zip(dw.iter()) {
+                *wj -= inv_n * dwj;
             }
             b -= inv_n * db;
         }
@@ -518,28 +517,31 @@ impl GaussianNaiveBayes {
         for (xi, &yi) in x.iter().zip(y.iter()) {
             if yi < n_classes {
                 counts[yi] += 1;
-                for j in 0..d {
-                    means[yi][j] += xi[j];
+                for (mj, &xj) in means[yi].iter_mut().zip(xi.iter()) {
+                    *mj += xj;
                 }
             }
         }
-        for c in 0..n_classes {
+        for (c, row) in means.iter_mut().enumerate() {
             let cnt = counts[c].max(1) as f64;
-            for j in 0..d {
-                means[c][j] /= cnt;
+            for m in row.iter_mut() {
+                *m /= cnt;
             }
         }
         for (xi, &yi) in x.iter().zip(y.iter()) {
             if yi < n_classes {
-                for j in 0..d {
-                    variances[yi][j] += (xi[j] - means[yi][j]).powi(2);
+                for (vj, (&xj, &mj)) in variances[yi]
+                    .iter_mut()
+                    .zip(xi.iter().zip(means[yi].iter()))
+                {
+                    *vj += (xj - mj).powi(2);
                 }
             }
         }
-        for c in 0..n_classes {
+        for (c, row) in variances.iter_mut().enumerate() {
             let cnt = counts[c].max(1) as f64;
-            for j in 0..d {
-                variances[c][j] = variances[c][j] / cnt + 1e-9;
+            for v in row.iter_mut() {
+                *v = *v / cnt + 1e-9;
             }
         }
         let total = n as f64;
@@ -556,10 +558,12 @@ impl GaussianNaiveBayes {
         (0..self.n_classes)
             .map(|c| {
                 let mut log_p = self.priors[c].ln();
-                for j in 0..x.len() {
-                    let mu = self.means[c][j];
-                    let var = self.variances[c][j];
-                    log_p += -0.5 * ((x[j] - mu).powi(2) / var + (2.0 * PI * var).ln());
+                for ((&xj, &mu), &var) in x
+                    .iter()
+                    .zip(self.means[c].iter())
+                    .zip(self.variances[c].iter())
+                {
+                    log_p += -0.5 * ((xj - mu).powi(2) / var + (2.0 * PI * var).ln());
                 }
                 log_p
             })
@@ -614,8 +618,8 @@ impl PcaResult {
             .map(|proj| {
                 let mut rec = self.mean.clone();
                 for (k, &coef) in proj.iter().enumerate() {
-                    for j in 0..d {
-                        rec[j] += coef * self.components[k][j];
+                    for (j, r) in rec.iter_mut().enumerate().take(d) {
+                        *r += coef * self.components[k][j];
                     }
                 }
                 rec
@@ -711,14 +715,14 @@ impl LogisticRegression {
                 let z = dot(xi, &w) + b;
                 let pred = sigmoid(z);
                 let err = pred - yi;
-                for j in 0..d {
-                    dw[j] += err * xi[j];
+                for (dwj, &xij) in dw.iter_mut().zip(xi.iter()) {
+                    *dwj += err * xij;
                 }
                 db += err;
             }
             let inv_n = lr / n as f64;
-            for j in 0..d {
-                w[j] -= inv_n * dw[j];
+            for (wj, dwj) in w.iter_mut().zip(dw.iter()) {
+                *wj -= inv_n * dwj;
             }
             b -= inv_n * db;
         }
@@ -1025,11 +1029,14 @@ impl BatchNorm {
             })
             .collect();
         if self.training {
-            for j in 0..d {
-                self.running_mean[j] =
-                    (1.0 - self.momentum) * self.running_mean[j] + self.momentum * batch_mean[j];
-                self.running_var[j] =
-                    (1.0 - self.momentum) * self.running_var[j] + self.momentum * batch_var[j];
+            for ((rm, rv), (&bm, &bv)) in self
+                .running_mean
+                .iter_mut()
+                .zip(self.running_var.iter_mut())
+                .zip(batch_mean.iter().zip(batch_var.iter()))
+            {
+                *rm = (1.0 - self.momentum) * *rm + self.momentum * bm;
+                *rv = (1.0 - self.momentum) * *rv + self.momentum * bv;
             }
         }
         x.iter()
@@ -1077,7 +1084,7 @@ impl RmsProp {
         }
     }
     /// Perform one RMSProp step.
-    pub fn step(&mut self, params: &mut Vec<f64>, grads: &[f64]) {
+    pub fn step(&mut self, params: &mut [f64], grads: &[f64]) {
         for (i, (p, &g)) in params.iter_mut().zip(grads.iter()).enumerate() {
             self.v[i] = self.alpha * self.v[i] + (1.0 - self.alpha) * g * g;
             *p -= self.lr * g / (self.v[i].sqrt() + self.eps);
@@ -1362,7 +1369,7 @@ impl Adam {
         }
     }
     /// Perform one Adam update step.
-    pub fn step(&mut self, params: &mut Vec<f64>, grads: &[f64]) {
+    pub fn step(&mut self, params: &mut [f64], grads: &[f64]) {
         self.t += 1;
         let t = self.t as f64;
         let bias_corr1 = 1.0 - self.beta1.powf(t);
@@ -1488,7 +1495,7 @@ impl Sgd {
         }
     }
     /// Compute parameter update given gradients.  Modifies params in-place.
-    pub fn step(&mut self, params: &mut Vec<f64>, grads: &[f64]) {
+    pub fn step(&mut self, params: &mut [f64], grads: &[f64]) {
         for (i, (p, &g)) in params.iter_mut().zip(grads.iter()).enumerate() {
             self.velocity[i] = self.momentum * self.velocity[i] - self.lr * g;
             *p += self.velocity[i];

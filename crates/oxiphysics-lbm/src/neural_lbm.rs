@@ -1,4 +1,3 @@
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,8 +8,6 @@
 //! - Physics-informed LBM with neural force corrections
 //! - DeepONet-based solution operators
 //! - Data-driven reduced-order models via DMD
-
-#![allow(dead_code)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Activation functions
@@ -864,7 +861,7 @@ mod tests {
         for r in 0..8 {
             for c in 0..8 {
                 let w = simple_weight(r, c, 8);
-                assert!(w >= -1.0 && w <= 1.0, "weight {w} out of range");
+                assert!((-1.0_f64..=1.0).contains(&w), "weight {w} out of range");
             }
         }
     }

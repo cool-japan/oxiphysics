@@ -8,7 +8,6 @@
 //! edge cutting, progressive tear propagation, and boundary smoothing.
 
 /// An edge in the mesh, described by two vertex indices.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Edge {
     /// Index of the first endpoint vertex.
@@ -32,7 +31,6 @@ impl Edge {
 }
 
 /// A tearable mesh with vertices, edges, and per-edge tear thresholds.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TearableMesh {
     /// Vertex positions as `[x, y, z]` triples.
@@ -689,7 +687,6 @@ mod tests {
 // ------------------------------------------------------------------
 
 /// A particle in the tearable spring-mass mesh.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TearParticle {
     /// Position \[m\].
@@ -719,7 +716,6 @@ impl TearParticle {
 // ------------------------------------------------------------------
 
 /// A spring edge that can permanently break once its strain exceeds `max_strain`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TearEdge {
     /// Index of the first endpoint particle.
@@ -794,7 +790,6 @@ impl TearEdge {
 // ------------------------------------------------------------------
 
 /// A spring-mass mesh whose edges can tear when their strain exceeds a threshold.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct TearMesh {
     /// List of particles.
@@ -880,7 +875,6 @@ impl TearMesh {
 ///
 /// * `sigma_f` – fracture stress \[Pa\]
 /// * `e_mod`   – Young's modulus \[Pa\]
-#[allow(dead_code)]
 pub fn fracture_energy(sigma_f: f64, e_mod: f64) -> f64 {
     sigma_f * sigma_f * std::f64::consts::PI / e_mod
 }
@@ -891,7 +885,6 @@ pub fn fracture_energy(sigma_f: f64, e_mod: f64) -> f64 {
 ///
 /// * `sigma` – applied stress \[Pa\]
 /// * `a`     – half crack length \[m\]
-#[allow(dead_code)]
 pub fn stress_intensity_factor(sigma: f64, a: f64) -> f64 {
     sigma * (std::f64::consts::PI * a).sqrt()
 }
@@ -902,7 +895,6 @@ pub fn stress_intensity_factor(sigma: f64, a: f64) -> f64 {
 ///
 /// * `kic`   – plane-strain fracture toughness \[Pa·√m\]
 /// * `sigma` – applied stress \[Pa\]
-#[allow(dead_code)]
 pub fn critical_crack_length(kic: f64, sigma: f64) -> f64 {
     let denom = sigma * std::f64::consts::PI.sqrt();
     (kic / denom).powi(2)
@@ -915,7 +907,6 @@ pub fn critical_crack_length(kic: f64, sigma: f64) -> f64 {
 /// * `e_mod`   – Young's modulus \[Pa\]
 /// * `gc`      – fracture energy \[J/m²\]
 /// * `sigma_c` – cohesive strength \[Pa\]
-#[allow(dead_code)]
 pub fn cohesive_zone_length(e_mod: f64, gc: f64, sigma_c: f64) -> f64 {
     e_mod * gc / (std::f64::consts::PI * sigma_c * sigma_c)
 }
@@ -928,7 +919,6 @@ pub fn cohesive_zone_length(e_mod: f64, gc: f64, sigma_c: f64) -> f64 {
 /// * `eps_current` – current plastic strain
 ///
 /// Clamped to \[0, 1\].
-#[allow(dead_code)]
 pub fn ductile_fracture_indicator(eps_f: f64, eps_current: f64) -> f64 {
     (eps_current / eps_f).clamp(0.0, 1.0)
 }

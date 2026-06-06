@@ -1,4 +1,3 @@
-#![allow(clippy::should_implement_trait)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -71,7 +70,7 @@ impl ExodusElementType {
     }
 
     /// Parse from the canonical Exodus II string name (case-insensitive).
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_keyword(s: &str) -> Option<Self> {
         match s.to_ascii_uppercase().as_str() {
             "TRI3" => Some(Self::Tri3),
             "TRI6" => Some(Self::Tri6),
@@ -379,7 +378,7 @@ impl ExodusReader {
                     let id: usize = parts[1]
                         .parse()
                         .map_err(|e: std::num::ParseIntError| Error::Parse(e.to_string()))?;
-                    let etype = ExodusElementType::from_str(parts[2]).ok_or_else(|| {
+                    let etype = ExodusElementType::from_keyword(parts[2]).ok_or_else(|| {
                         Error::Parse(format!("unknown element type: {}", parts[2]))
                     })?;
                     let count: usize = parts[3]
@@ -524,7 +523,11 @@ mod tests {
     }
 
     fn tmp_path(name: &str) -> String {
-        format!("/tmp/oxiphysics_exodus_test_{name}.exo")
+        std::env::temp_dir()
+            .join(format!("oxiphysics_exodus_test_{name}.exo"))
+            .to_str()
+            .unwrap_or("")
+            .to_string()
     }
 
     // ── ExodusElementType ────────────────────────────────────────────────────
@@ -549,25 +552,25 @@ mod tests {
             ExodusElementType::Hex20,
             ExodusElementType::Bar2,
         ] {
-            let parsed = ExodusElementType::from_str(et.as_str());
+            let parsed = ExodusElementType::from_keyword(et.as_str());
             assert_eq!(parsed, Some(et), "round-trip failed for {:?}", et);
         }
     }
 
     #[test]
     fn element_type_from_str_unknown() {
-        assert!(ExodusElementType::from_str("UNKNOWN").is_none());
-        assert!(ExodusElementType::from_str("").is_none());
+        assert!(ExodusElementType::from_keyword("UNKNOWN").is_none());
+        assert!(ExodusElementType::from_keyword("").is_none());
     }
 
     #[test]
     fn element_type_from_str_case_insensitive() {
         assert_eq!(
-            ExodusElementType::from_str("tri3"),
+            ExodusElementType::from_keyword("tri3"),
             Some(ExodusElementType::Tri3)
         );
         assert_eq!(
-            ExodusElementType::from_str("Hex8"),
+            ExodusElementType::from_keyword("Hex8"),
             Some(ExodusElementType::Hex8)
         );
     }
@@ -799,7 +802,8 @@ mod tests {
 
     #[test]
     fn read_nonexistent_file_returns_error() {
-        let result = ExodusReader::new().parse("/tmp/nonexistent_oxiphysics_exodus.exo");
+        let path = std::env::temp_dir().join("nonexistent_oxiphysics_exodus.exo");
+        let result = ExodusReader::new().parse(path.to_str().unwrap_or(""));
         assert!(result.is_err());
     }
 

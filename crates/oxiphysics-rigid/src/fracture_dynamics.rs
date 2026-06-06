@@ -7,8 +7,6 @@
 //!
 //! All vector math uses `[f64; 3]` arrays — no external linear-algebra crate.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -36,15 +34,6 @@ fn v3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 
 #[inline]
-fn v3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-#[inline]
 fn v3_norm(a: [f64; 3]) -> f64 {
     v3_dot(a, a).sqrt()
 }
@@ -57,11 +46,6 @@ fn v3_normalise(a: [f64; 3]) -> [f64; 3] {
     } else {
         v3_scale(a, 1.0 / n)
     }
-}
-
-#[inline]
-fn v3_lerp(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
-    v3_add(v3_scale(a, 1.0 - t), v3_scale(b, t))
 }
 
 // ---------------------------------------------------------------------------
@@ -460,7 +444,6 @@ pub struct BreakableJoint {
 
 impl BreakableJoint {
     /// Create a new joint with force/torque thresholds.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: usize,
         body_a: usize,

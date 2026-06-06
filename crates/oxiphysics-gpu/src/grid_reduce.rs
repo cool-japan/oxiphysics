@@ -1,4 +1,3 @@
-#![allow(clippy::manual_div_ceil, clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,9 +8,6 @@
 //! (filter_compact), sparse-to-dense scatter/gather, and occupancy estimation
 //! helpers.  All algorithms are CPU-side mocks that mimic GPU execution
 //! semantics using Rayon.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use rayon::prelude::*;
 
@@ -321,7 +317,6 @@ pub fn warp_vote_all<F: Fn(f64) -> bool>(lanes: &[f64], pred: F) -> bool {
 /// * `max_threads_per_sm` - hardware limit (threads per SM).
 /// * `max_regs_per_sm` - hardware limit (total registers per SM).
 /// * `max_smem_per_sm` - hardware limit (shared memory bytes per SM).
-#[allow(clippy::too_many_arguments)]
 pub fn estimate_occupancy(
     wg_size: usize,
     regs_per_thread: usize,
@@ -585,7 +580,6 @@ pub fn matvec(a: &[f64], m: usize, n: usize, x: &[f64]) -> Vec<f64> {
 
 /// Compute `C = A * B` where `A` is `m × k` and `B` is `k × n` (all row-major).
 /// Returns a flat `m*n` vector.
-#[allow(clippy::too_many_arguments)]
 pub fn matmul(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) -> Vec<f64> {
     assert_eq!(a.len(), m * k);
     assert_eq!(b.len(), k * n);
@@ -1205,8 +1199,8 @@ pub fn parallel_segmented_reduce_sum(data: &[f64], flags: &[bool]) -> Vec<f64> {
     assert_eq!(data.len(), flags.len());
     // Build segment boundaries
     let mut starts = vec![0usize];
-    for i in 1..flags.len() {
-        if flags[i] {
+    for (i, &flag) in flags.iter().enumerate().skip(1) {
+        if flag {
             starts.push(i);
         }
     }
@@ -1429,7 +1423,7 @@ pub struct TwoLevelHistogram {
 impl TwoLevelHistogram {
     /// Compute a two-level histogram.
     pub fn compute(data: &[f64], lo: f64, hi: f64, n_bins: usize, tile_size: usize) -> Self {
-        let n_tiles = (data.len() + tile_size - 1) / tile_size.max(1);
+        let n_tiles = data.len().div_ceil(tile_size.max(1));
         let bins = parallel_histogram(data, lo, hi, n_bins, n_tiles.max(1));
         Self {
             bins,

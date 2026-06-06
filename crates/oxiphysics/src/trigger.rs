@@ -32,9 +32,6 @@
 //! assert!(events[0].is_enter());
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::collections::HashSet;
 

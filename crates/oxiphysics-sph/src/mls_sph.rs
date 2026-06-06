@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -12,7 +11,6 @@
 ///
 /// Stores the `B` matrix that corrects SPH kernel gradient estimates
 /// to achieve first-order (linear) consistency.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MlsMatrix {
     /// The correction matrix B, stored row-major. Size: `dim x (1+dim)`.
@@ -149,7 +147,6 @@ pub fn mls_correction_matrix(
 /// * `dim` - spatial dimension
 ///
 /// Returns gradient vector of length `dim`.
-#[allow(clippy::too_many_arguments)]
 pub fn mls_gradient(
     phi_i: f64,
     phi_j: &[f64],
@@ -181,9 +178,9 @@ pub fn mls_gradient(
             pj[1 + d] = pos_j[j][d] - pos_i[d];
         }
         // contribution: d_phi * wvj * B[d][c] * pj[c] summed over c
-        for d in 0..dim {
-            for c in 0..p_size {
-                grad[d] += d_phi * wvj * mls.b[d * p_size + c] * pj[c];
+        for (d, gd) in grad.iter_mut().enumerate() {
+            for (c, pjc) in pj.iter().enumerate() {
+                *gd += d_phi * wvj * mls.b[d * p_size + c] * pjc;
             }
         }
     }

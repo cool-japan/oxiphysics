@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +7,6 @@
 //! discrete wavelet transforms (DWT), wavelet-domain denoising,
 //! multi-resolution analysis, wavelet packet decomposition with best-basis
 //! selection, wavelet compression, and physics-specific wavelet tools.
-
-#![allow(dead_code)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HaarWavelet
@@ -561,9 +558,9 @@ impl ContinuousWavelet {
             let mut row = Vec::with_capacity(n);
             for t_idx in 0..n {
                 let mut val = 0.0;
-                for tau in 0..n {
+                for (tau, &s) in signal.iter().enumerate() {
                     let time = (t_idx as f64 - tau as f64) * dt / scale.max(1e-12);
-                    val += signal[tau] * Self::morlet(time, sigma);
+                    val += s * Self::morlet(time, sigma);
                 }
                 row.push(val * dt / scale.sqrt().max(1e-12));
             }
@@ -583,9 +580,9 @@ impl ContinuousWavelet {
             let mut row = Vec::with_capacity(n);
             for t_idx in 0..n {
                 let mut val = 0.0;
-                for tau in 0..n {
+                for (tau, &s) in signal.iter().enumerate() {
                     let time = (t_idx as f64 - tau as f64) * dt / scale.max(1e-12);
-                    val += signal[tau] * Self::mexican_hat(time, sigma);
+                    val += s * Self::mexican_hat(time, sigma);
                 }
                 row.push(val * dt / scale.sqrt().max(1e-12));
             }
@@ -604,9 +601,9 @@ impl ContinuousWavelet {
             let mut row = Vec::with_capacity(n);
             for t_idx in 0..n {
                 let mut val = 0.0;
-                for tau in 0..n {
+                for (tau, &s) in signal.iter().enumerate() {
                     let time = (t_idx as f64 - tau as f64) * dt / scale.max(1e-12);
-                    val += signal[tau] * Self::paul(time, m);
+                    val += s * Self::paul(time, m);
                 }
                 row.push(val * dt / scale.sqrt().max(1e-12));
             }
@@ -806,7 +803,7 @@ pub struct WaveletDenoising;
 
 impl WaveletDenoising {
     /// Hard thresholding: set coefficients with absolute value below `threshold` to zero.
-    pub fn hard_threshold(coeffs: &mut Vec<f64>, threshold: f64) {
+    pub fn hard_threshold(coeffs: &mut [f64], threshold: f64) {
         for c in coeffs.iter_mut() {
             if c.abs() < threshold {
                 *c = 0.0;
@@ -815,7 +812,7 @@ impl WaveletDenoising {
     }
 
     /// Soft thresholding: shrink coefficients toward zero by `threshold`.
-    pub fn soft_threshold(coeffs: &mut Vec<f64>, threshold: f64) {
+    pub fn soft_threshold(coeffs: &mut [f64], threshold: f64) {
         for c in coeffs.iter_mut() {
             if c.abs() <= threshold {
                 *c = 0.0;
@@ -1833,8 +1830,8 @@ mod tests {
     fn test_shock_detection_step_function() {
         // Step function: indices around the discontinuity should be detected
         let mut signal = vec![0.0_f64; 16];
-        for i in 8..16 {
-            signal[i] = 10.0;
+        for s in signal[8..16].iter_mut() {
+            *s = 10.0;
         }
         let shocks = PoddedWavelet::shock_detection(&signal, 0.5);
         assert!(!shocks.is_empty(), "should detect discontinuity");

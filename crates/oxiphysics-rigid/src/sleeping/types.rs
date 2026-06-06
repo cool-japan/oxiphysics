@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::ptr_arg, clippy::should_implement_trait)]
-#[allow(unused_imports)]
-use super::functions::*;
 /// A single rigid body tracked by the sleep manager.
 #[derive(Debug, Clone)]
 pub struct SleepingBody {
@@ -74,7 +71,6 @@ impl SleepingBody {
 /// It is equivalent to an infinite-mass static object, but retains its
 /// original mass for density-based queries.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FrozenBody {
     /// Body ID.
     pub id: u32,
@@ -185,7 +181,6 @@ impl SleepStats {
 /// the full physics rate, saving CPU while avoiding the sharp discontinuity of
 /// hard sleeping.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PseudoSleepBody {
     /// Body ID.
     pub id: u32,
@@ -285,7 +280,6 @@ impl SleepingSystem {
     }
 }
 /// Records the sleep/wake event history for a body.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SleepEventType {
     /// Simulation time of the event (s).
@@ -315,9 +309,9 @@ pub struct SleepConfig {
     /// If > 0, used instead of frame counting.
     pub sleep_time_seconds: f64,
 }
-impl SleepConfig {
+impl Default for SleepConfig {
     /// Sensible defaults: 0.1 m/s, 0.1 rad/s, 60 frames.
-    pub fn default() -> Self {
+    fn default() -> Self {
         Self {
             linear_threshold: 0.1,
             angular_threshold: 0.1,
@@ -327,6 +321,8 @@ impl SleepConfig {
             sleep_time_seconds: 0.0,
         }
     }
+}
+impl SleepConfig {
     /// Create a config tuned for fast sleeping (useful for stacking scenarios).
     pub fn fast() -> Self {
         Self {
@@ -366,7 +362,6 @@ impl SleepConfig {
 ///
 /// Bodies matching the pattern are forced awake during "active" windows
 /// and allowed to sleep during "rest" windows.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SleepWakePattern {
     /// Duration of the active window (s).
@@ -378,7 +373,6 @@ pub struct SleepWakePattern {
     /// Whether the pattern is currently in the active phase.
     pub is_active: bool,
 }
-#[allow(dead_code)]
 impl SleepWakePattern {
     /// Create a new sleep/wake pattern.
     pub fn new(active_duration: f64, rest_duration: f64) -> Self {
@@ -569,7 +563,6 @@ impl SleepHysteresis {
 /// reduce false positives (waking sleeping bodies due to numeric noise) while
 /// keeping simulation quality high.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SleepThresholdAdapter {
     /// Current linear speed threshold (m/s).
     pub linear_threshold: f64,
@@ -677,7 +670,6 @@ impl WakePropagator {
 /// The threshold is raised when many bodies are active (fast-moving scene)
 /// and lowered when few bodies are active (stable scene), allowing the
 /// simulation to put more bodies to sleep in quiet phases.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AdaptiveSleepThreshold {
     /// Minimum threshold (m/s or rad/s).
@@ -691,7 +683,6 @@ pub struct AdaptiveSleepThreshold {
     /// Target fraction of sleeping bodies.
     pub target_sleep_fraction: f64,
 }
-#[allow(dead_code)]
 impl AdaptiveSleepThreshold {
     /// Create a new adaptive threshold.
     pub fn new(min_t: f64, max_t: f64, adaptation_rate: f64, target_fraction: f64) -> Self {
@@ -724,7 +715,6 @@ impl AdaptiveSleepThreshold {
 ///
 /// An island sleeps only if *every* body in it is below the sleep thresholds.
 /// If any body is active, all sleeping bodies in the island are woken.
-#[allow(dead_code)]
 pub struct IslandSleepEvaluator {
     /// Energy threshold below which a body is considered still (J).
     pub energy_threshold: f64,
@@ -848,7 +838,7 @@ impl IslandSleepManager {
     ) -> Vec<Vec<usize>> {
         let n = bodies.len();
         let mut parent: Vec<usize> = (0..n).collect();
-        fn find(parent: &mut Vec<usize>, mut x: usize) -> usize {
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
             while parent[x] != x {
                 parent[x] = parent[parent[x]];
                 x = parent[x];
@@ -1002,7 +992,6 @@ impl IslandSleepManager {
 }
 /// Result of an island-level sleep evaluation.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum IslandSleepDecision {
     /// All bodies in the island should sleep.
     SleepAll,
@@ -1013,7 +1002,6 @@ pub enum IslandSleepDecision {
 }
 /// Tracks kinetic energy over time to estimate when a body will naturally
 /// decay below the sleep threshold.
-#[allow(dead_code)]
 pub struct EnergyDecayTracker {
     /// Body ID.
     pub id: u32,
@@ -1121,7 +1109,6 @@ impl EnergyTracker {
 ///
 /// Models: `v(t) = v0 * exp(-damping * t)`
 /// Sleep occurs when `v(t) < threshold`, i.e. `t > -ln(threshold/v0) / damping`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SleepPredictor {
     /// Linear damping coefficient (1/s).
@@ -1133,7 +1120,6 @@ pub struct SleepPredictor {
     /// Angular velocity threshold (rad/s).
     pub angular_threshold: f64,
 }
-#[allow(dead_code)]
 impl SleepPredictor {
     /// Create a new sleep predictor.
     pub fn new(
@@ -1235,13 +1221,11 @@ impl ActivityLevel {
     }
 }
 /// Records sleep/wake transitions for diagnostics.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct SleepHistory {
     /// Recorded events in order.
     pub events: Vec<SleepEventType>,
 }
-#[allow(dead_code)]
 impl SleepHistory {
     /// Create an empty history.
     pub fn new() -> Self {
@@ -1341,15 +1325,6 @@ impl SleepManager {
         let b = &mut self.bodies[idx];
         b.position = pos;
         b.orientation = orient;
-    }
-    /// Check if a body should sleep based on the configured criterion.
-    #[allow(dead_code)]
-    fn should_sleep(&self, body: &SleepingBody) -> bool {
-        if self.config.energy_threshold > 0.0 {
-            body.is_below_energy_threshold(self.config.energy_threshold)
-        } else {
-            body.is_below_threshold(self.config.linear_threshold, self.config.angular_threshold)
-        }
     }
     /// Advance the sleep state machine by one simulation frame.
     ///

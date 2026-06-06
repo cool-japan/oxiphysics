@@ -8,9 +8,6 @@
 //! - `ComputeBackend`
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{ComputeBackend, ComputeKernel};
 use super::types::{BufferHandle, CpuBackend};
 

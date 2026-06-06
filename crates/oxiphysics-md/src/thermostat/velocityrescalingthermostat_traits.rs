@@ -11,8 +11,6 @@
 use crate::atom::AtomSet;
 
 use super::functions::Thermostat;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::VelocityRescalingThermostat;
 
 impl Thermostat for VelocityRescalingThermostat {

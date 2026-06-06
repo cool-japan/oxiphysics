@@ -1,4 +1,3 @@
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,9 +7,6 @@
 //!
 //! All computations are self-contained (no nalgebra); matrices are represented
 //! as flat `Vec`f64` in row-major order.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -558,7 +554,7 @@ mod tests {
         let mut x = 0.4;
         for _ in 0..1000 {
             x = logistic_map(r, x);
-            assert!(x >= 0.0 && x <= 1.0);
+            assert!((0.0..=1.0).contains(&x));
         }
     }
 
@@ -751,7 +747,10 @@ mod tests {
         let diag = BifurcationDiagram::compute_logistic(&r_range, 300, 20);
         for att in &diag.attractors {
             for &x in att {
-                assert!(x >= 0.0 && x <= 1.0, "logistic map left unit interval: {x}");
+                assert!(
+                    (0.0..=1.0).contains(&x),
+                    "logistic map left unit interval: {x}"
+                );
             }
         }
     }

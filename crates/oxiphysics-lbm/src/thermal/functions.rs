@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use crate::lattice::{D2Q9_VELOCITIES, D2Q9_WEIGHTS};
 
 /// Speed of sound squared in lattice units (cs² = 1/3).
@@ -13,7 +12,6 @@ pub(super) const CS2: f64 = 1.0 / 3.0;
 /// δ_T = δ_vel / Pr^(1/3)
 ///
 /// where δ_vel is the velocity boundary layer thickness.
-#[allow(dead_code)]
 pub fn thermal_boundary_layer_thickness(delta_vel: f64, pr: f64) -> f64 {
     if pr <= 0.0 {
         return 0.0;
@@ -23,7 +21,6 @@ pub fn thermal_boundary_layer_thickness(delta_vel: f64, pr: f64) -> f64 {
 /// Blasius flat-plate velocity boundary layer thickness:
 ///
 /// δ_99 = 5.0 * sqrt(ν * x / U)
-#[allow(dead_code)]
 pub fn blasius_boundary_layer_thickness(nu: f64, x: f64, u_inf: f64) -> f64 {
     if u_inf <= 0.0 || x <= 0.0 {
         return 0.0;
@@ -33,19 +30,16 @@ pub fn blasius_boundary_layer_thickness(nu: f64, x: f64, u_inf: f64) -> f64 {
 /// Local Nusselt number for laminar flat-plate flow (Pohlhausen–Eckert):
 ///
 /// Nu_x = 0.332 * Re_x^(1/2) * Pr^(1/3)
-#[allow(dead_code)]
 pub fn local_nusselt_flat_plate(re_x: f64, pr: f64) -> f64 {
     0.332 * re_x.sqrt() * pr.powf(1.0 / 3.0)
 }
 /// Average Nusselt number for laminar flat plate (length L):
 ///
 /// Nu_L = 0.664 * Re_L^(1/2) * Pr^(1/3)
-#[allow(dead_code)]
 pub fn average_nusselt_flat_plate(re_l: f64, pr: f64) -> f64 {
     0.664 * re_l.sqrt() * pr.powf(1.0 / 3.0)
 }
 /// Heat transfer coefficient h = Nu * k / L.
-#[allow(dead_code)]
 pub fn heat_transfer_coefficient(nu: f64, k_fluid: f64, length: f64) -> f64 {
     if length <= 0.0 {
         return 0.0;
@@ -55,7 +49,6 @@ pub fn heat_transfer_coefficient(nu: f64, k_fluid: f64, length: f64) -> f64 {
 /// D3Q7 lattice velocities for thermal LBM.
 ///
 /// Velocities: (0,0,0) and ±e_i for i=1,2,3.
-#[allow(dead_code)]
 pub const D3Q7_VELOCITIES: [[i32; 3]; 7] = [
     [0, 0, 0],
     [1, 0, 0],
@@ -66,7 +59,6 @@ pub const D3Q7_VELOCITIES: [[i32; 3]; 7] = [
     [0, 0, -1],
 ];
 /// D3Q7 weights: w_0 = 1/4, w_{1..6} = 1/8.
-#[allow(dead_code)]
 pub const D3Q7_WEIGHTS: [f64; 7] = [
     1.0 / 4.0,
     1.0 / 8.0,
@@ -81,7 +73,6 @@ pub const D3Q7_WEIGHTS: [f64; 7] = [
 /// g_eq_i = w_i * T * (1 + (c_i · u) / (2 * cs2_t))
 ///
 /// where cs2_t = 1/4 for D3Q7.
-#[allow(dead_code)]
 pub fn d3q7_thermal_equilibrium(t: f64, u: [f64; 3], i: usize) -> f64 {
     pub(super) const CS2_T: f64 = 1.0 / 4.0;
     let w = D3Q7_WEIGHTS[i];
@@ -92,7 +83,6 @@ pub fn d3q7_thermal_equilibrium(t: f64, u: [f64; 3], i: usize) -> f64 {
 /// BGK collision step for a single D3Q7 node.
 ///
 /// g_post_i = g_i - (g_i - g_eq_i) / tau_t
-#[allow(dead_code)]
 pub fn d3q7_bgk_collision(g: &[f64; 7], t: f64, u: [f64; 3], tau_t: f64) -> [f64; 7] {
     let mut g_post = [0.0; 7];
     for i in 0..7 {
@@ -102,13 +92,11 @@ pub fn d3q7_bgk_collision(g: &[f64; 7], t: f64, u: [f64; 3], tau_t: f64) -> [f64
     g_post
 }
 /// Compute temperature from D3Q7 distribution: T = Σ_i g_i.
-#[allow(dead_code)]
 pub fn d3q7_temperature(g: &[f64; 7]) -> f64 {
     g.iter().sum()
 }
 /// Thermal diffusivity from D3Q7 relaxation time:
 /// α = cs2_t * (tau_t - 0.5)
-#[allow(dead_code)]
 pub fn d3q7_thermal_diffusivity(tau_t: f64) -> f64 {
     pub(super) const CS2_T: f64 = 1.0 / 4.0;
     CS2_T * (tau_t - 0.5)
@@ -118,7 +106,6 @@ pub fn d3q7_thermal_diffusivity(tau_t: f64) -> f64 {
 /// μ = μ_ref * (T / T_ref)^(3/2) * (T_ref + S) / (T + S)
 ///
 /// Reference values: μ_ref = 1.716e-5 Pa·s, T_ref = 273.15 K, S = 110.4 K.
-#[allow(dead_code)]
 pub fn air_viscosity_sutherland(t_k: f64) -> f64 {
     pub(super) const MU_REF: f64 = 1.716e-5;
     pub(super) const T_REF: f64 = 273.15;
@@ -128,7 +115,6 @@ pub fn air_viscosity_sutherland(t_k: f64) -> f64 {
 /// Air thermal conductivity (W/(m·K)) using power-law approximation:
 ///
 /// k = 0.0241 * (T / 273.15)^0.82
-#[allow(dead_code)]
 pub fn air_thermal_conductivity(t_k: f64) -> f64 {
     0.0241 * (t_k / 273.15_f64).powf(0.82)
 }
@@ -136,7 +122,6 @@ pub fn air_thermal_conductivity(t_k: f64) -> f64 {
 /// slight temperature dependence):
 ///
 /// Pr = μ * cp / k
-#[allow(dead_code)]
 pub fn air_prandtl_number(t_k: f64) -> f64 {
     pub(super) const CP: f64 = 1006.0;
     let mu = air_viscosity_sutherland(t_k);
@@ -146,7 +131,6 @@ pub fn air_prandtl_number(t_k: f64) -> f64 {
 /// Water specific heat capacity as a polynomial fit (valid 273–373 K):
 ///
 /// cp ≈ 4217.6 - 3.83 * (T - 273.15) + 0.0092 * (T - 273.15)^2  \[J/(kg·K)\]
-#[allow(dead_code)]
 pub fn water_specific_heat(t_k: f64) -> f64 {
     let dt = t_k - 273.15;
     4217.6 - 3.83 * dt + 0.0092 * dt * dt
@@ -154,19 +138,16 @@ pub fn water_specific_heat(t_k: f64) -> f64 {
 /// Check if thermal LBM parameters satisfy stability conditions.
 ///
 /// Stability requires: 0.5 < τ_t < 2.0 (practical heuristic).
-#[allow(dead_code)]
 pub fn check_thermal_stability(tau_t: f64) -> bool {
     tau_t > 0.5 && tau_t < 2.0
 }
 /// Compute τ_t from thermal diffusivity α and cs² for the chosen lattice.
 ///
 /// τ_t = α / cs2 + 0.5  (for D2Q9: cs2 = 1/3)
-#[allow(dead_code)]
 pub fn tau_from_diffusivity(alpha: f64, cs2: f64) -> f64 {
     alpha / cs2 + 0.5
 }
 /// Thermal Péclet number: Pe = U * L / α.
-#[allow(dead_code)]
 pub fn peclet_number(u: f64, l: f64, alpha: f64) -> f64 {
     if alpha.abs() < 1e-30 {
         return f64::INFINITY;
@@ -176,7 +157,6 @@ pub fn peclet_number(u: f64, l: f64, alpha: f64) -> f64 {
 /// Fourier number: Fo = α * t / L².
 ///
 /// Governs transient heat conduction; Fo >> 1 implies near-steady state.
-#[allow(dead_code)]
 pub fn fourier_number(alpha: f64, t: f64, l: f64) -> f64 {
     if l.abs() < 1e-30 {
         return f64::INFINITY;
@@ -186,7 +166,6 @@ pub fn fourier_number(alpha: f64, t: f64, l: f64) -> f64 {
 /// Stefan number: Ste = cp * (T - T_melt) / L_fusion.
 ///
 /// Dimensionless measure of sensible heat relative to latent heat.
-#[allow(dead_code)]
 pub fn stefan_number(cp: f64, delta_t: f64, l_fusion: f64) -> f64 {
     if l_fusion.abs() < 1e-30 {
         return f64::INFINITY;
@@ -200,7 +179,6 @@ pub fn stefan_number(cp: f64, delta_t: f64, l_fusion: f64) -> f64 {
 ///
 /// Returns the wrapped temperature values for the left (x=0) and right (x=nx-1)
 /// boundaries after applying periodic conditions.
-#[allow(dead_code)]
 pub fn periodic_temperature_x(temperature: &[f64], nx: usize, ny: usize) -> Vec<f64> {
     let mut temp = temperature.to_vec();
     for y in 0..ny {
@@ -215,7 +193,6 @@ pub fn periodic_temperature_x(temperature: &[f64], nx: usize, ny: usize) -> Vec<
 /// Apply a linear temperature ramp along x as initial condition.
 ///
 /// T(x) = T_left + (T_right - T_left) * x / (nx - 1)
-#[allow(dead_code)]
 pub fn linear_temperature_profile_x(nx: usize, ny: usize, t_left: f64, t_right: f64) -> Vec<f64> {
     let n = nx * ny;
     let mut temp = vec![0.0; n];
@@ -229,7 +206,6 @@ pub fn linear_temperature_profile_x(nx: usize, ny: usize, t_left: f64, t_right: 
 /// Apply a sinusoidal temperature perturbation on top of a mean temperature.
 ///
 /// T(x, y) = T_mean + A * sin(2π x / nx)
-#[allow(dead_code)]
 pub fn sinusoidal_temperature_perturbation(
     nx: usize,
     ny: usize,
@@ -368,12 +344,11 @@ mod tests {
                 "Bottom BC temperature at x={x}: got {}, expected {t_bot}",
                 thermal.temperature[k]
             );
-            for i in 0..9 {
-                let expected = D2Q9_WEIGHTS[i] * t_bot;
+            for (i, (&gki, &w)) in thermal.g[k].iter().zip(D2Q9_WEIGHTS.iter()).enumerate() {
+                let expected = w * t_bot;
                 assert!(
-                    (thermal.g[k][i] - expected).abs() < 1e-14,
-                    "Bottom BC g[{k}][{i}] = {}, expected {expected}",
-                    thermal.g[k][i]
+                    (gki - expected).abs() < 1e-14,
+                    "Bottom BC g[{k}][{i}] = {gki}, expected {expected}",
                 );
             }
         }
@@ -715,7 +690,6 @@ mod tests_extended_thermal {
 /// ```
 ///
 /// This first-order form is suitable for the advection-diffusion thermal LBM.
-#[allow(dead_code)]
 pub fn energy_equilibrium(temp: f64, u: [f64; 2], i: usize) -> f64 {
     let w = D2Q9_WEIGHTS[i];
     let c = D2Q9_VELOCITIES[i];
@@ -727,7 +701,6 @@ pub fn energy_equilibrium(temp: f64, u: [f64; 2], i: usize) -> f64 {
 /// ```text
 /// g_eq_i = w_i * T * (1 + (e_i·u)/cs² + (e_i·u)²/(2cs⁴) − u²/(2cs²))
 /// ```
-#[allow(dead_code)]
 pub fn energy_equilibrium_second_order(temp: f64, u: [f64; 2], i: usize) -> f64 {
     let w = D2Q9_WEIGHTS[i];
     let c = D2Q9_VELOCITIES[i];
@@ -738,20 +711,17 @@ pub fn energy_equilibrium_second_order(temp: f64, u: [f64; 2], i: usize) -> f64 
 /// Sum the zeroth moment of the energy equilibrium over all 9 directions.
 ///
 /// Should equal `T` for any velocity `u`.
-#[allow(dead_code)]
 pub fn energy_equilibrium_sum(temp: f64, u: [f64; 2]) -> f64 {
     (0..9).map(|i| energy_equilibrium(temp, u, i)).sum()
 }
 /// Apply a fixed-temperature Dirichlet BC on the bottom wall of a flat
 /// temperature array `temp[y * nx + x]` (sets `y = 0` row to `t_bot`).
-#[allow(dead_code)]
 pub fn apply_dirichlet_bc_bottom(temp: &mut [f64], nx: usize, t_bot: f64) {
-    for x in 0..nx {
-        temp[x] = t_bot;
+    for t in temp[..nx].iter_mut() {
+        *t = t_bot;
     }
 }
 /// Apply a fixed-temperature Dirichlet BC on the top wall (`y = ny-1`).
-#[allow(dead_code)]
 pub fn apply_dirichlet_bc_top(temp: &mut [f64], nx: usize, ny: usize, t_top: f64) {
     let y_top = ny - 1;
     for x in 0..nx {
@@ -760,7 +730,6 @@ pub fn apply_dirichlet_bc_top(temp: &mut [f64], nx: usize, ny: usize, t_top: f64
 }
 /// Apply an insulating (zero-flux / Neumann) BC on the left wall using
 /// zero-gradient extrapolation: `T(0, y) = T(1, y)`.
-#[allow(dead_code)]
 pub fn apply_insulating_bc_left(temp: &mut [f64], nx: usize, ny: usize) {
     for y in 0..ny {
         temp[y * nx] = temp[y * nx + 1];
@@ -768,7 +737,6 @@ pub fn apply_insulating_bc_left(temp: &mut [f64], nx: usize, ny: usize) {
 }
 /// Apply an insulating (zero-flux / Neumann) BC on the right wall:
 /// `T(nx-1, y) = T(nx-2, y)`.
-#[allow(dead_code)]
 pub fn apply_insulating_bc_right(temp: &mut [f64], nx: usize, ny: usize) {
     for y in 0..ny {
         temp[y * nx + nx - 1] = temp[y * nx + nx - 2];
@@ -783,7 +751,6 @@ pub fn apply_insulating_bc_right(temp: &mut [f64], nx: usize, ny: usize) {
 /// wall node such that the gradient `dT/dy|_{y=0}` equals `q_bot / k_fluid`.
 /// With lattice spacing `Δy = 1`:
 /// `T_wall = T_interior + q_bot / k_fluid`
-#[allow(dead_code)]
 pub fn apply_heat_flux_bc_bottom(temp: &mut [f64], nx: usize, q_flux: f64, k_fluid: f64) {
     for x in 0..nx {
         let t_interior = temp[nx + x];
@@ -797,7 +764,6 @@ pub fn apply_heat_flux_bc_bottom(temp: &mut [f64], nx: usize, q_flux: f64, k_flu
 /// q_x = Σ_i c_{ix} * g_i
 /// q_y = Σ_i c_{iy} * g_i
 /// ```
-#[allow(dead_code)]
 pub fn compute_heat_flux(g: &[f64; 9]) -> [f64; 2] {
     let mut qx = 0.0_f64;
     let mut qy = 0.0_f64;
@@ -809,7 +775,6 @@ pub fn compute_heat_flux(g: &[f64; 9]) -> [f64; 2] {
     [qx, qy]
 }
 /// Compute heat flux magnitude at a node.
-#[allow(dead_code)]
 pub fn heat_flux_magnitude(g: &[f64; 9]) -> f64 {
     let [qx, qy] = compute_heat_flux(g);
     (qx * qx + qy * qy).sqrt()
@@ -820,7 +785,6 @@ pub fn heat_flux_magnitude(g: &[f64; 9]) -> f64 {
 /// ```text
 /// Nu = -(T(x,2) - T(x,0)) / (2 * ΔT / H) = H * (T(x,0) - T(x,2)) / (2 * ΔT)
 /// ```
-#[allow(dead_code)]
 pub fn local_nusselt_bottom_central(
     temperature: &[f64],
     nx: usize,
@@ -847,7 +811,6 @@ pub fn local_nusselt_bottom_central(
 /// (left) wall.
 ///
 /// `temperature` is stored as `temperature[y * nx + x]`.
-#[allow(dead_code)]
 pub fn de_vahl_davis_nusselt(
     temperature: &[f64],
     nx: usize,
@@ -876,15 +839,12 @@ pub fn de_vahl_davis_nusselt(
 /// ```
 ///
 /// For free-slip (stress-free) boundaries it is `Ra_c ≈ 657.5`.
-#[allow(dead_code)]
 pub const RAYLEIGH_BENARD_CRITICAL_RA_NOSLIP: f64 = 1707.76;
 /// Critical Rayleigh number for free-slip boundary conditions.
-#[allow(dead_code)]
 pub const RAYLEIGH_BENARD_CRITICAL_RA_FREESLIP: f64 = 657.5;
 /// Check whether Rayleigh–Bénard convection onset is predicted.
 ///
 /// Returns `true` if `Ra > Ra_c` (no-slip boundaries).
-#[allow(dead_code)]
 pub fn is_rb_convective(ra: f64) -> bool {
     ra > RAYLEIGH_BENARD_CRITICAL_RA_NOSLIP
 }
@@ -896,7 +856,6 @@ pub fn is_rb_convective(ra: f64) -> bool {
 /// ```
 ///
 /// This is a rough engineering estimate valid for `10⁵ ≤ Ra ≤ 10⁹`.
-#[allow(dead_code)]
 pub fn grossmann_lohse_nusselt(ra: f64) -> f64 {
     if ra <= RAYLEIGH_BENARD_CRITICAL_RA_NOSLIP {
         return 1.0;
@@ -909,7 +868,6 @@ pub fn grossmann_lohse_nusselt(ra: f64) -> f64 {
 /// ```text
 /// Nu ≈ 1 + C * (Ra - Ra_c) / Ra_c    for Ra just above Ra_c
 /// ```
-#[allow(dead_code)]
 pub fn nusselt_near_onset(ra: f64, c: f64) -> f64 {
     if ra <= RAYLEIGH_BENARD_CRITICAL_RA_NOSLIP {
         return 1.0;
@@ -919,14 +877,12 @@ pub fn nusselt_near_onset(ra: f64, c: f64) -> f64 {
 /// Compute thermal diffusivity from D2Q9 relaxation time.
 ///
 /// `α = (τ_t - 0.5) * cs²    where cs² = 1/3`
-#[allow(dead_code)]
 pub fn thermal_diffusivity_d2q9(tau_t: f64) -> f64 {
     (tau_t - 0.5) * CS2
 }
 /// Compute D2Q9 thermal relaxation time from diffusivity.
 ///
 /// `τ_t = α / cs² + 0.5`
-#[allow(dead_code)]
 pub fn tau_t_from_diffusivity_d2q9(alpha: f64) -> f64 {
     alpha / CS2 + 0.5
 }
@@ -934,7 +890,6 @@ pub fn tau_t_from_diffusivity_d2q9(alpha: f64) -> f64 {
 /// diffusivity `α`:
 ///
 /// `Pr = ν / α`
-#[allow(dead_code)]
 pub fn prandtl_number(nu: f64, alpha: f64) -> f64 {
     if alpha.abs() < 1e-30 {
         return f64::INFINITY;
@@ -944,7 +899,6 @@ pub fn prandtl_number(nu: f64, alpha: f64) -> f64 {
 /// Compute the Rayleigh number from fluid and geometry properties:
 ///
 /// `Ra = g * β * ΔT * H³ / (ν * α)`
-#[allow(dead_code)]
 pub fn rayleigh_number(g: f64, beta: f64, delta_t: f64, h: f64, nu: f64, alpha: f64) -> f64 {
     if nu.abs() < 1e-30 || alpha.abs() < 1e-30 {
         return f64::INFINITY;
@@ -952,7 +906,6 @@ pub fn rayleigh_number(g: f64, beta: f64, delta_t: f64, h: f64, nu: f64, alpha: 
     g * beta * delta_t * h.powi(3) / (nu * alpha)
 }
 /// Compute the Grashof number: `Gr = Ra / Pr = g * β * ΔT * H³ / ν²`.
-#[allow(dead_code)]
 pub fn grashof_number(g: f64, beta: f64, delta_t: f64, h: f64, nu: f64) -> f64 {
     if nu.abs() < 1e-30 {
         return f64::INFINITY;
@@ -1135,12 +1088,8 @@ mod extended_thermal_tests {
         let ny = 4;
         let mut temp = vec![1.0; nx * ny];
         apply_dirichlet_bc_bottom(&mut temp, nx, 3.0);
-        for x in 0..nx {
-            assert!(
-                (temp[x] - 3.0).abs() < 1e-14,
-                "Bottom BC x={x}: T={}",
-                temp[x]
-            );
+        for (x, &t) in temp[..nx].iter().enumerate() {
+            assert!((t - 3.0).abs() < 1e-14, "Bottom BC x={x}: T={t}",);
         }
     }
     #[test]
@@ -1195,12 +1144,8 @@ mod extended_thermal_tests {
         let q = 1.0;
         let k_f = 2.0;
         apply_heat_flux_bc_bottom(&mut temp, nx, q, k_f);
-        for x in 0..nx {
-            assert!(
-                (temp[x] - 2.5).abs() < 1e-14,
-                "Heat flux BC x={x}: T={}",
-                temp[x]
-            );
+        for (x, &t) in temp[..nx].iter().enumerate() {
+            assert!((t - 2.5).abs() < 1e-14, "Heat flux BC x={x}: T={t}",);
         }
     }
     #[test]
@@ -1463,8 +1408,8 @@ mod tests_thermal_extended {
     fn test_d3q7_temperature_recovery() {
         let t_init = 2.0;
         let mut g = [0.0_f64; 7];
-        for i in 0..7 {
-            g[i] = d3q7_thermal_equilibrium(t_init, [0.0, 0.0, 0.0], i);
+        for (i, o) in g.iter_mut().enumerate() {
+            *o = d3q7_thermal_equilibrium(t_init, [0.0, 0.0, 0.0], i);
         }
         let t_rec = d3q7_temperature(&g);
         assert!(
@@ -1482,8 +1427,8 @@ mod tests_thermal_extended {
         let t_init = 1.0;
         let g = {
             let mut arr = [0.0_f64; 7];
-            for i in 0..7 {
-                arr[i] = d3q7_thermal_equilibrium(t_init, [0.0, 0.0, 0.0], i);
+            for (i, o) in arr.iter_mut().enumerate() {
+                *o = d3q7_thermal_equilibrium(t_init, [0.0, 0.0, 0.0], i);
             }
             arr
         };

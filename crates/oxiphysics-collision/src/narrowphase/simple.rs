@@ -6,17 +6,12 @@
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 // ── Vector helpers ────────────────────────────────────────────────────────────
 
-#[allow(dead_code)]
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-#[allow(dead_code)]
 fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -25,32 +20,26 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 
-#[allow(dead_code)]
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-#[allow(dead_code)]
 fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-#[allow(dead_code)]
 fn scale(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
 }
 
-#[allow(dead_code)]
 fn len(a: [f64; 3]) -> f64 {
     (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
 }
 
-#[allow(dead_code)]
 fn len_sq(a: [f64; 3]) -> f64 {
     a[0] * a[0] + a[1] * a[1] + a[2] * a[2]
 }
 
-#[allow(dead_code)]
 fn normalize(a: [f64; 3]) -> [f64; 3] {
     let l = len(a);
     if l > 1e-10 {
@@ -60,7 +49,6 @@ fn normalize(a: [f64; 3]) -> [f64; 3] {
     }
 }
 
-#[allow(dead_code)]
 fn neg(a: [f64; 3]) -> [f64; 3] {
     [-a[0], -a[1], -a[2]]
 }
@@ -68,7 +56,6 @@ fn neg(a: [f64; 3]) -> [f64; 3] {
 // ── Contact types ─────────────────────────────────────────────────────────────
 
 /// A single contact point between two shapes.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Contact {
     /// Witness point on shape A in world space.
@@ -82,7 +69,6 @@ pub struct Contact {
 }
 
 /// Result of a narrow-phase collision query.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum NarrowPhaseResult {
     /// The shapes are separated; no contact.
@@ -95,13 +81,11 @@ pub enum NarrowPhaseResult {
 
 impl NarrowPhaseResult {
     /// Returns `true` if there is at least one contact.
-    #[allow(dead_code)]
     pub fn has_contact(&self) -> bool {
         !matches!(self, NarrowPhaseResult::NoContact)
     }
 
     /// Returns the first contact if any.
-    #[allow(dead_code)]
     pub fn first_contact(&self) -> Option<&Contact> {
         match self {
             NarrowPhaseResult::NoContact => None,
@@ -117,7 +101,6 @@ impl NarrowPhaseResult {
 ///
 /// Returns `NoContact` when the spheres are separated, `SingleContact`
 /// when they overlap.
-#[allow(dead_code)]
 pub fn sphere_sphere(ca: [f64; 3], ra: f64, cb: [f64; 3], rb: f64) -> NarrowPhaseResult {
     let d = sub(cb, ca);
     let dist = len(d);
@@ -146,7 +129,6 @@ pub fn sphere_sphere(ca: [f64; 3], ra: f64, cb: [f64; 3], rb: f64) -> NarrowPhas
 ///
 /// The box is defined by its `box_center` and `half_extents`.
 /// Returns `NoContact` when the sphere does not reach the box.
-#[allow(dead_code)]
 pub fn sphere_box(
     sphere_center: [f64; 3],
     radius: f64,
@@ -210,7 +192,6 @@ pub fn sphere_box(
 ///
 /// Returns `NoContact` if any axis separates the boxes, otherwise the contact
 /// with minimum penetration depth.
-#[allow(dead_code)]
 pub fn box_box_sat(
     center_a: [f64; 3],
     half_a: [f64; 3],
@@ -340,7 +321,6 @@ pub fn box_box_sat(
 /// Each capsule is defined by two segment endpoints `(a0, a1)` and radii.
 /// Finds the closest points between the two segments, then performs a
 /// sphere–sphere test at those points.
-#[allow(dead_code)]
 pub fn capsule_capsule(
     a0: [f64; 3],
     a1: [f64; 3],
@@ -358,7 +338,6 @@ pub fn capsule_capsule(
 /// Closest point on segment `(a, b)` to point `p`.
 ///
 /// Returns the closest point.
-#[allow(dead_code)]
 pub fn closest_point_on_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     let ab = sub(b, a);
     let len_sq_ab = len_sq(ab);
@@ -372,7 +351,6 @@ pub fn closest_point_on_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> [f64; 
 /// Closest point on triangle `(a, b, c)` to point `p`.
 ///
 /// Uses the Ericson barycentric projection method.
-#[allow(dead_code)]
 pub fn closest_point_on_triangle(p: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f64; 3] {
     let ab = sub(b, a);
     let ac = sub(c, a);
@@ -425,7 +403,6 @@ pub fn closest_point_on_triangle(p: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64;
 /// Closest points between two segments `(a0, a1)` and `(b0, b1)`.
 ///
 /// Returns `(t_a, t_b, point_on_a, point_on_b)`.
-#[allow(dead_code)]
 pub fn segment_segment_closest(
     a0: [f64; 3],
     a1: [f64; 3],
@@ -475,7 +452,6 @@ pub fn segment_segment_closest(
 // ── GJK ───────────────────────────────────────────────────────────────────────
 
 /// A GJK simplex (up to 4 points).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GjkSimplex {
     pts: [[f64; 3]; 4],
@@ -484,7 +460,6 @@ pub struct GjkSimplex {
 
 impl GjkSimplex {
     /// Create an empty simplex.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             pts: [[0.0; 3]; 4],
@@ -493,7 +468,6 @@ impl GjkSimplex {
     }
 
     /// Add a point to the simplex.
-    #[allow(dead_code)]
     pub fn push(&mut self, p: [f64; 3]) {
         if self.count < 4 {
             self.pts[self.count] = p;
@@ -502,13 +476,11 @@ impl GjkSimplex {
     }
 
     /// Number of points in the simplex.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.count
     }
 
     /// Returns `true` if the simplex has no points.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
@@ -539,7 +511,6 @@ where
 ///
 /// `support_a` and `support_b` are support-function closures.
 /// Returns `true` if the shapes intersect (origin inside Minkowski difference).
-#[allow(dead_code)]
 pub fn gjk_intersect<A, B>(support_a: A, support_b: B) -> bool
 where
     A: Fn([f64; 3]) -> [f64; 3],
@@ -688,7 +659,6 @@ fn do_simplex_gjk(simplex: &mut GjkSimplex, dir: &mut [f64; 3]) -> GjkStep {
 /// `poly` is the current polygon vertices.
 /// `plane_normal` and `plane_offset` define the clip plane (`n·x = offset`).
 /// Points with `n·x > offset` are kept (or interpolated at the boundary).
-#[allow(dead_code)]
 fn clip_polygon_by_plane(
     poly: &[[f64; 3]],
     plane_normal: [f64; 3],
@@ -727,7 +697,6 @@ fn clip_polygon_by_plane(
 /// `ref_normal` is the face normal (pointing outward from reference box).
 /// `incident_verts` are the four corners of the incident face.
 /// Returns a vector of contact points (those below the reference face plane).
-#[allow(dead_code)]
 pub fn clip_incident_face(
     ref_center: [f64; 3],
     ref_u: [f64; 3],
@@ -779,7 +748,6 @@ pub fn clip_incident_face(
 /// `half_extents` – half-extents of the AABB along x, y, z.
 ///
 /// Returns `true` if the triangle overlaps the box.
-#[allow(dead_code)]
 pub fn triangle_aabb_intersect(
     tri_verts: &[[f64; 3]; 3],
     box_center: [f64; 3],
@@ -850,7 +818,6 @@ pub fn triangle_aabb_intersect(
 /// The capsule is defined by its segment `(c0, c1)` and radius `cr`.
 /// The OBB is defined by `center`, `half_extents`, and rotation matrix `rot`.
 /// Returns `NoContact` or a `SingleContact`.
-#[allow(dead_code)]
 pub fn obb_capsule(
     obb_center: [f64; 3],
     obb_half: [f64; 3],
@@ -947,7 +914,6 @@ fn obb_local_to_world(v: [f64; 3], rot: [[f64; 3]; 3]) -> [f64; 3] {
 ///
 /// Finds the closest point on the capsule segment to the AABB, then performs
 /// a sphere–box test at that point.
-#[allow(dead_code)]
 pub fn aabb_capsule(
     box_center: [f64; 3],
     half_extents: [f64; 3],
@@ -968,7 +934,6 @@ pub fn aabb_capsule(
 /// The heightfield stores heights at grid points (x, z) with spacing `cell_size`.
 /// Origin is at `(origin_x, origin_z)`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Heightfield {
     /// Heights at grid points (row-major: row = z index, col = x index).
     pub heights: Vec<f64>,
@@ -986,7 +951,6 @@ pub struct Heightfield {
 
 impl Heightfield {
     /// Create a flat heightfield at `y = 0`.
-    #[allow(dead_code)]
     pub fn flat(n_x: usize, n_z: usize, cell_size: f64) -> Self {
         Self {
             heights: vec![0.0; n_x * n_z],
@@ -999,13 +963,11 @@ impl Heightfield {
     }
 
     /// Get the height at grid cell (ix, iz).
-    #[allow(dead_code)]
     pub fn height_at(&self, ix: usize, iz: usize) -> f64 {
         self.heights[iz * self.n_x + ix]
     }
 
     /// Bilinearly interpolated height at world-space (x, z).
-    #[allow(dead_code)]
     pub fn height_world(&self, x: f64, z: f64) -> f64 {
         let lx = (x - self.origin_x) / self.cell_size;
         let lz = (z - self.origin_z) / self.cell_size;
@@ -1026,7 +988,6 @@ impl Heightfield {
     }
 
     /// Surface normal at world-space (x, z) via central differences.
-    #[allow(dead_code)]
     pub fn normal_world(&self, x: f64, z: f64) -> [f64; 3] {
         let h = self.cell_size * 0.5;
         let dydx = (self.height_world(x + h, z) - self.height_world(x - h, z)) / (2.0 * h);
@@ -1039,7 +1000,6 @@ impl Heightfield {
 ///
 /// Finds the heightfield height directly beneath the sphere centre and checks
 /// for penetration.
-#[allow(dead_code)]
 pub fn heightfield_sphere(
     hf: &Heightfield,
     sphere_center: [f64; 3],
@@ -1072,7 +1032,6 @@ pub fn heightfield_sphere(
 ///
 /// Iterates over the grid cells beneath the box AABB footprint and tests each
 /// cell's representative height against the box bottom face.
-#[allow(dead_code)]
 pub fn heightfield_box(
     hf: &Heightfield,
     box_center: [f64; 3],
@@ -1123,7 +1082,6 @@ pub fn heightfield_box(
 ///
 /// Finds the closest point on the triangle to the sphere centre and performs
 /// a point-sphere overlap check.
-#[allow(dead_code)]
 pub fn triangle_sphere(
     tri_a: [f64; 3],
     tri_b: [f64; 3],

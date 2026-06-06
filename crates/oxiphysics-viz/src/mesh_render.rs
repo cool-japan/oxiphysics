@@ -1,12 +1,9 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! CPU-side mesh rendering, rasterization, and wireframe drawing.
 //!
 //! All math uses plain `f32` arrays — no external linear-algebra crate.
-
-#![allow(dead_code)]
 
 use std::f32::consts::PI;
 
@@ -958,11 +955,14 @@ impl PhongShader {
         let specular = n_dot_h.powf(32.0);
 
         let mut result = [0.0_f32; 3];
-        for i in 0..3 {
-            let ambient = self.ambient * base_color[i];
-            let diffuse = n_dot_l * self.light_color[i] * base_color[i];
-            let spec_c = specular * self.light_color[i];
-            result[i] = (ambient + diffuse + spec_c).clamp(0.0, 1.0);
+        for (res, (lc, bc)) in result
+            .iter_mut()
+            .zip(self.light_color.iter().zip(base_color.iter()))
+        {
+            let ambient = self.ambient * bc;
+            let diffuse = n_dot_l * lc * bc;
+            let spec_c = specular * lc;
+            *res = (ambient + diffuse + spec_c).clamp(0.0, 1.0);
         }
         result
     }
@@ -986,15 +986,15 @@ pub fn generate_lod(mesh: &RenderMesh, threshold: f32) -> RenderMesh {
         if remap[i] != i {
             continue;
         }
-        for j in (i + 1)..n {
-            if remap[j] != j {
+        for (j, rj) in remap.iter_mut().enumerate().skip(i + 1) {
+            if *rj != j {
                 continue;
             }
             let dx = mesh.vertices[i].pos[0] - mesh.vertices[j].pos[0];
             let dy = mesh.vertices[i].pos[1] - mesh.vertices[j].pos[1];
             let dz = mesh.vertices[i].pos[2] - mesh.vertices[j].pos[2];
             if (dx * dx + dy * dy + dz * dz).sqrt() <= threshold {
-                remap[j] = i;
+                *rj = i;
             }
         }
     }
@@ -1175,7 +1175,6 @@ impl MeshSkinData {
     /// Compute the skinned position for a vertex given the current bone transforms.
     ///
     /// `bone_transforms[i]` is the current world transform of bone i.
-    #[allow(clippy::too_many_arguments)]
     pub fn skin_position(
         &self,
         vertex_idx: usize,
@@ -1464,11 +1463,11 @@ mod tests {
             [1.0, 1.0, 1.0], // white base colour
         );
         // Each channel should be close to 1.0 (saturated).
-        for i in 0..3 {
+        for (i, &val) in result.iter().enumerate() {
             assert!(
-                result[i] > 0.9,
+                val > 0.9,
                 "channel {i} should be bright when normal aligns with light, got {}",
-                result[i]
+                val
             );
         }
     }

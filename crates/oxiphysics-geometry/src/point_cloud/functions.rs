@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{
     IcpRegistration, KdTree3D, NormalEstimation, PointCloud, PointCloudFilter, RansacPlaneResult,
 };
@@ -118,7 +117,7 @@ pub(super) fn gram_schmidt_fallback(u: &[[f64; 3]; 3], col: usize) -> [f64; 3] {
     let candidates: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     for &cand in &candidates {
         let mut v = cand;
-        for j in 0..col {
+        for (j, _) in u[0].iter().enumerate().take(col) {
             let uj = [u[0][j], u[1][j], u[2][j]];
             let proj = dot(v, uj);
             v = sub(v, scale(uj, proj));
@@ -138,10 +137,10 @@ pub(super) fn jacobi_eigen_3x3(mut a: [[f64; 3]; 3]) -> ([[f64; 3]; 3], [f64; 3]
         let mut max_val = 0.0f64;
         let mut p = 0;
         let mut q = 1;
-        for i in 0..3 {
-            for j in (i + 1)..3 {
-                if a[i][j].abs() > max_val {
-                    max_val = a[i][j].abs();
+        for (i, a_row) in a.iter().enumerate() {
+            for (j, a_ij) in a_row.iter().enumerate().skip(i + 1) {
+                if a_ij.abs() > max_val {
+                    max_val = a_ij.abs();
                     p = i;
                     q = j;
                 }
@@ -165,21 +164,29 @@ pub(super) fn jacobi_eigen_3x3(mut a: [[f64; 3]; 3]) -> ([[f64; 3]; 3], [f64; 3]
         a[q][q] = s * s * app + 2.0 * s * c * apq + c * c * aqq;
         a[p][q] = 0.0;
         a[q][p] = 0.0;
-        for r in 0..3 {
+        for (r, a_row) in a.iter_mut().enumerate() {
             if r != p && r != q {
-                let arp = a[r][p];
-                let arq = a[r][q];
-                a[r][p] = c * arp - s * arq;
-                a[p][r] = a[r][p];
-                a[r][q] = s * arp + c * arq;
-                a[q][r] = a[r][q];
+                let arp = a_row[p];
+                let arq = a_row[q];
+                a_row[p] = c * arp - s * arq;
+                a_row[q] = s * arp + c * arq;
             }
         }
-        for r in 0..3 {
-            let vrp = v[r][p];
-            let vrq = v[r][q];
-            v[r][p] = c * vrp - s * vrq;
-            v[r][q] = s * vrp + c * vrq;
+        // Fix symmetry - collect indices to update to avoid borrow conflicts
+        let sym_updates: Vec<(usize, f64, f64)> = (0..3)
+            .filter(|&r| r != p && r != q)
+            .map(|r| (r, a[r][p], a[r][q]))
+            .collect();
+        for (r, arp, arq) in sym_updates {
+            a[p][r] = arp;
+            a[q][r] = arq;
+        }
+        for (r, v_row) in v.iter_mut().enumerate() {
+            let _ = r;
+            let vrp = v_row[p];
+            let vrq = v_row[q];
+            v_row[p] = c * vrp - s * vrq;
+            v_row[q] = s * vrp + c * vrq;
         }
     }
     let eigenvalues = [a[0][0], a[1][1], a[2][2]];
@@ -397,12 +404,12 @@ pub fn ransac_fit_plane(
     let n_in = best_inliers.len() as f64;
     let mut centroid = [0.0f64; 3];
     for &i in &best_inliers {
-        for k in 0..3 {
-            centroid[k] += points[i][k];
+        for (c, p) in centroid.iter_mut().zip(points[i].iter()) {
+            *c += p;
         }
     }
-    for k in 0..3 {
-        centroid[k] /= n_in;
+    for c in centroid.iter_mut() {
+        *c /= n_in;
     }
     let n_inliers = best_inliers.len();
     let point_on_plane = sub(
@@ -458,12 +465,12 @@ pub fn pca_obb(points: &[[f64; 3]]) -> ([[f64; 3]; 3], [f64; 3], [f64; 3]) {
     let n = points.len() as f64;
     let mut centroid = [0.0f64; 3];
     for &p in points {
-        for i in 0..3 {
-            centroid[i] += p[i];
+        for (c, p_i) in centroid.iter_mut().zip(p.iter()) {
+            *c += p_i;
         }
     }
-    for i in 0..3 {
-        centroid[i] /= n;
+    for c in centroid.iter_mut() {
+        *c /= n;
     }
     let mut cov = [[0.0f64; 3]; 3];
     for &p in points {

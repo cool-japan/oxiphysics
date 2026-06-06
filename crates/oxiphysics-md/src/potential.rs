@@ -300,7 +300,6 @@ pub struct StillingerWeber {
 
 impl StillingerWeber {
     /// Create a new Stillinger-Weber two-body potential.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         epsilon: f64,
         sigma: f64,
@@ -322,7 +321,6 @@ impl StillingerWeber {
     }
 
     /// Default silicon parameters.
-    #[allow(dead_code)]
     pub fn silicon() -> Self {
         Self::new(2.1683, 2.0951, 7.049556277, 0.6022245584, 4, 0, 1.8)
     }
@@ -392,7 +390,6 @@ pub struct EamPair {
 
 impl EamPair {
     /// Create a new EAM pair potential.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(a_coeff: f64, alpha: f64, b_coeff: f64, beta: f64, r_e: f64, cutoff: f64) -> Self {
         let x_c = cutoff / r_e - 1.0;
         let energy_shift = a_coeff * (-alpha * x_c).exp() - b_coeff * (-beta * x_c).exp();
@@ -436,7 +433,6 @@ impl Potential for EamPair {
 }
 
 /// EAM electron density function: rho(r) = f_e · exp(-beta · (r/r_e - 1)).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EamDensity {
     /// Density prefactor.
@@ -504,7 +500,6 @@ pub struct TersoffPair {
 
 impl TersoffPair {
     /// Create a new Tersoff pair potential.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         a_param: f64,
         b_param: f64,
@@ -524,7 +519,6 @@ impl TersoffPair {
     }
 
     /// Default silicon parameters (Tersoff 1988).
-    #[allow(dead_code)]
     pub fn silicon() -> Self {
         Self::new(1830.8, 471.18, 2.4799, 1.7322, 2.7, 3.0)
     }
@@ -625,7 +619,6 @@ impl TabulatedPotential {
     }
 
     /// Create from an existing `Potential` by tabulating it.
-    #[allow(dead_code)]
     pub fn from_potential(pot: &dyn Potential, r_min: f64, r_max: f64, n_points: usize) -> Self {
         let dr = (r_max - r_min) / (n_points - 1) as f64;
         let energies: Vec<f64> = (0..n_points)
@@ -684,7 +677,6 @@ impl Potential for TabulatedPotential {
 ///
 /// sigma_ij = (sigma_i + sigma_j) / 2
 /// epsilon_ij = sqrt(epsilon_i * epsilon_j)
-#[allow(dead_code)]
 pub fn lorentz_berthelot_mix(eps_i: f64, sig_i: f64, eps_j: f64, sig_j: f64) -> (f64, f64) {
     let eps_ij = (eps_i * eps_j).sqrt();
     let sig_ij = 0.5 * (sig_i + sig_j);
@@ -695,7 +687,6 @@ pub fn lorentz_berthelot_mix(eps_i: f64, sig_i: f64, eps_j: f64, sig_j: f64) -> 
 ///
 /// sigma_ij = sqrt(sigma_i * sigma_j)
 /// epsilon_ij = sqrt(epsilon_i * epsilon_j)
-#[allow(dead_code)]
 pub fn geometric_mix(eps_i: f64, sig_i: f64, eps_j: f64, sig_j: f64) -> (f64, f64) {
     let eps_ij = (eps_i * eps_j).sqrt();
     let sig_ij = (sig_i * sig_j).sqrt();
@@ -706,7 +697,6 @@ pub fn geometric_mix(eps_i: f64, sig_i: f64, eps_j: f64, sig_j: f64) -> (f64, f6
 ///
 /// sigma_ij = ((sigma_i^6 + sigma_j^6) / 2)^(1/6)
 /// epsilon_ij = 2 * sqrt(eps_i * eps_j) * sigma_i^3 * sigma_j^3 / (sigma_i^6 + sigma_j^6)
-#[allow(dead_code)]
 pub fn waldman_hagler_mix(eps_i: f64, sig_i: f64, eps_j: f64, sig_j: f64) -> (f64, f64) {
     let si6 = sig_i.powi(6);
     let sj6 = sig_j.powi(6);
@@ -731,7 +721,6 @@ pub fn waldman_hagler_mix(eps_i: f64, sig_i: f64, eps_j: f64, sig_j: f64) -> (f6
 /// where θᵢ, θⱼ, θₖ are the interior angles of the triangle formed by the
 /// three atoms and rᵢⱼ etc. are the inter-atom distances.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AxilrodTeller {
     /// Three-body coefficient C₉ (energy · length⁹).
     pub c9: f64,
@@ -739,13 +728,11 @@ pub struct AxilrodTeller {
 
 impl AxilrodTeller {
     /// Create a new Axilrod-Teller potential.
-    #[allow(dead_code)]
     pub fn new(c9: f64) -> Self {
         Self { c9 }
     }
 
     /// Compute the Axilrod-Teller three-body energy for a triplet.
-    #[allow(dead_code)]
     pub fn energy(&self, ri: [f64; 3], rj: [f64; 3], rk: [f64; 3]) -> f64 {
         let rij = dist3(ri, rj);
         let rik = dist3(ri, rk);
@@ -771,7 +758,6 @@ impl AxilrodTeller {
     }
 
     /// Compute forces on all three particles via numerical gradient.
-    #[allow(clippy::too_many_arguments, dead_code)]
     pub fn forces(
         &self,
         ri: [f64; 3],
@@ -815,7 +801,6 @@ impl AxilrodTeller {
 ///
 /// Used for three-body angular interactions in molecular mechanics.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AngularPotential {
     /// Force constant (kJ mol⁻¹ rad⁻²).
     pub k: f64,
@@ -825,27 +810,23 @@ pub struct AngularPotential {
 
 impl AngularPotential {
     /// Create a new angular potential.
-    #[allow(dead_code)]
     pub fn new(k: f64, theta0: f64) -> Self {
         Self { k, theta0 }
     }
 
     /// Energy V(θ) = ½ k (θ − θ₀)².
-    #[allow(dead_code)]
     pub fn energy(&self, theta: f64) -> f64 {
         let dt = theta - self.theta0;
         0.5 * self.k * dt * dt
     }
 
     /// Torque τ = −dV/dθ = −k (θ − θ₀).
-    #[allow(dead_code)]
     pub fn torque(&self, theta: f64) -> f64 {
         -self.k * (theta - self.theta0)
     }
 
     /// Compute the three-body energy and forces for atoms i-j-k (j is the
     /// central atom).  The angle is at atom j.
-    #[allow(dead_code)]
     pub fn energy_and_forces(
         &self,
         ri: [f64; 3],
@@ -891,7 +872,6 @@ impl AngularPotential {
 ///
 /// Energy is looked up as E(r_ij, r_ik) from a flattened row-major 2D table.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TabulatedThreeBody {
     /// Minimum distance.
     pub r_min: f64,
@@ -907,7 +887,6 @@ pub struct TabulatedThreeBody {
 
 impl TabulatedThreeBody {
     /// Create from a (n × n) energy table on the uniform grid \[r_min, r_max\].
-    #[allow(dead_code)]
     pub fn new(r_min: f64, r_max: f64, n: usize, energies: Vec<f64>) -> Self {
         assert_eq!(energies.len(), n * n, "energy table must have n² entries");
         assert!(n >= 2);
@@ -947,7 +926,6 @@ impl TabulatedThreeBody {
     /// Evaluate the tabulated three-body energy for distances r_ij and r_ik.
     ///
     /// The third distance r_jk is ignored (not currently used by simple tables).
-    #[allow(dead_code)]
     pub fn energy(&self, r_ij: f64, r_ik: f64, _r_jk: f64) -> f64 {
         if r_ij >= self.r_max || r_ik >= self.r_max {
             return 0.0;
@@ -965,7 +943,6 @@ impl TabulatedThreeBody {
 ///
 /// Useful for representing ab-initio computed 1-D reaction coordinates.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PesSurface1D {
     /// Minimum coordinate.
     pub r_min: f64,
@@ -979,7 +956,6 @@ pub struct PesSurface1D {
 
 impl PesSurface1D {
     /// Create from a uniform energy grid.
-    #[allow(dead_code)]
     pub fn new(r_min: f64, r_max: f64, energies: Vec<f64>) -> Self {
         let n = energies.len();
         assert!(n >= 2);
@@ -993,7 +969,6 @@ impl PesSurface1D {
     }
 
     /// Create from a reference [`Potential`] by tabulating it.
-    #[allow(dead_code)]
     pub fn from_potential(pot: &dyn Potential, r_min: f64, r_max: f64, n: usize) -> Self {
         let dr = (r_max - r_min) / (n - 1) as f64;
         let energies: Vec<f64> = (0..n).map(|i| pot.energy(r_min + i as f64 * dr)).collect();
@@ -1008,7 +983,6 @@ impl PesSurface1D {
     /// Linearly interpolated energy at coordinate `r`.
     ///
     /// Returns 0 outside \[r_min, r_max\].
-    #[allow(dead_code)]
     pub fn energy(&self, r: f64) -> f64 {
         if r < self.r_min || r >= self.r_max {
             return 0.0;
@@ -1024,7 +998,6 @@ impl PesSurface1D {
     }
 
     /// Force (negative gradient) at coordinate `r` using central differences.
-    #[allow(dead_code)]
     pub fn force(&self, r: f64) -> f64 {
         let h = self.dr * 0.5;
         let ep = self.energy((r + h).min(self.r_max - 1e-12));
@@ -1037,7 +1010,6 @@ impl PesSurface1D {
     }
 
     /// Minimum energy value and corresponding coordinate.
-    #[allow(dead_code)]
     pub fn minimum(&self) -> (f64, f64) {
         let (i_min, &e_min) = self
             .energies

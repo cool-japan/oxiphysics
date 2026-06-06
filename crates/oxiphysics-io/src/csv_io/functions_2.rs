@@ -2,14 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use crate::csv_io::types::*;
 #[cfg(test)]
-#[allow(dead_code)]
 mod tests_csv_extra {
-    use super::*;
+    use crate::csv_io::*;
     #[test]
     fn csv_file_new_empty() {
         let f = CsvFile::new(vec!["a".into(), "b".into()]);
@@ -59,7 +54,7 @@ mod tests_csv_extra {
         f.add_record_f64(&[0.0, 1.0]);
         f.add_record_f64(&[1.0, 2.0]);
         let s = f.to_string();
-        let f2 = CsvFile::from_str(&s).unwrap();
+        let f2 = &s.parse::<CsvFile>().unwrap();
         assert_eq!(f2.record_count(), 2);
         let v = f2.get_column_f64(1).unwrap();
         assert!((v[1] - 2.0).abs() < 1e-12);
@@ -227,13 +222,13 @@ mod tests_csv_extra {
     #[test]
     fn timeseries_csv_n_steps() {
         let data = "t,v\n0.0,1.0\n1.0,2.0\n2.0,3.0\n";
-        let ts = TimeSeriesCsv::from_str(data, "t").unwrap();
+        let ts = TimeSeriesCsv::parse(data, "t").unwrap();
         assert_eq!(ts.n_steps(), 3);
     }
     #[test]
     fn timeseries_csv_times() {
         let data = "t,v\n0.0,10.0\n0.5,20.0\n1.0,30.0\n";
-        let ts = TimeSeriesCsv::from_str(data, "t").unwrap();
+        let ts = TimeSeriesCsv::parse(data, "t").unwrap();
         let times = ts.times().unwrap();
         assert_eq!(times.len(), 3);
         assert!((times[1] - 0.5).abs() < 1e-12);
@@ -241,19 +236,19 @@ mod tests_csv_extra {
     #[test]
     fn timeseries_csv_duration() {
         let data = "t,x\n0.0,1.0\n2.0,3.0\n";
-        let ts = TimeSeriesCsv::from_str(data, "t").unwrap();
+        let ts = TimeSeriesCsv::parse(data, "t").unwrap();
         assert!((ts.duration() - 2.0).abs() < 1e-12);
     }
     #[test]
     fn timeseries_csv_duration_single_row() {
         let data = "t,x\n1.0,2.0\n";
-        let ts = TimeSeriesCsv::from_str(data, "t").unwrap();
+        let ts = TimeSeriesCsv::parse(data, "t").unwrap();
         assert_eq!(ts.duration(), 0.0);
     }
     #[test]
     fn timeseries_csv_column_f64() {
         let data = "t,v\n0.0,5.0\n1.0,10.0\n";
-        let ts = TimeSeriesCsv::from_str(data, "t").unwrap();
+        let ts = TimeSeriesCsv::parse(data, "t").unwrap();
         let v = ts.column_f64("v").unwrap();
         assert!((v[0] - 5.0).abs() < 1e-12);
         assert!((v[1] - 10.0).abs() < 1e-12);
@@ -287,7 +282,7 @@ mod tests_csv_extra {
     #[test]
     fn dataframe_from_csv_types() {
         let data = "n,x,name\n1,1.5,Alice\n2,2.5,Bob\n";
-        let csv = CsvFile::from_str(data).unwrap();
+        let csv = data.parse::<CsvFile>().unwrap();
         let df = CsvDataFrame::from_csv(&csv);
         assert_eq!(df.n_cols(), 3);
         assert_eq!(df.n_rows(), 2);
@@ -307,7 +302,7 @@ mod tests_csv_extra {
     #[test]
     fn dataframe_float_column() {
         let data = "v\n1.1\n2.2\n3.3\n";
-        let csv = CsvFile::from_str(data).unwrap();
+        let csv = data.parse::<CsvFile>().unwrap();
         let df = CsvDataFrame::from_csv(&csv);
         let col = df.float_column("v").unwrap();
         assert_eq!(col.len(), 3);
@@ -316,7 +311,7 @@ mod tests_csv_extra {
     #[test]
     fn dataframe_integer_column() {
         let data = "n\n10\n20\n30\n";
-        let csv = CsvFile::from_str(data).unwrap();
+        let csv = data.parse::<CsvFile>().unwrap();
         let df = CsvDataFrame::from_csv(&csv);
         let col = df.integer_column("n").unwrap();
         assert_eq!(col, &vec![10_i64, 20, 30]);
@@ -324,7 +319,7 @@ mod tests_csv_extra {
     #[test]
     fn dataframe_text_column() {
         let data = "label\nalpha\nbeta\n";
-        let csv = CsvFile::from_str(data).unwrap();
+        let csv = data.parse::<CsvFile>().unwrap();
         let df = CsvDataFrame::from_csv(&csv);
         let col = df.text_column("label").unwrap();
         assert_eq!(col[0], "alpha");
@@ -332,7 +327,7 @@ mod tests_csv_extra {
     #[test]
     fn dataframe_column_index_by_name() {
         let data = "a,b,c\n1,2,3\n";
-        let csv = CsvFile::from_str(data).unwrap();
+        let csv = data.parse::<CsvFile>().unwrap();
         let df = CsvDataFrame::from_csv(&csv);
         assert_eq!(df.column_index("b"), Some(1));
         assert_eq!(df.column_index("z"), None);
@@ -340,7 +335,7 @@ mod tests_csv_extra {
     #[test]
     fn all_column_stats_mixed() {
         let data = "n,label\n1,foo\n2,bar\n3,baz\n";
-        let csv = CsvFile::from_str(data).unwrap();
+        let csv = data.parse::<CsvFile>().unwrap();
         let stats = csv.all_column_stats();
         assert_eq!(stats.len(), 1);
         assert_eq!(stats[0].0, "n");

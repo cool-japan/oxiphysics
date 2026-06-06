@@ -8,9 +8,6 @@
 //! data structures for molecular orbitals, basis sets, normal modes,
 //! electronic structure, excited states, and NBO analysis.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::collections::HashMap;
 use std::fmt;
 

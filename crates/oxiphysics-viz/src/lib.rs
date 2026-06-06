@@ -64,7 +64,6 @@ pub use wireframe::{
 };
 
 /// Trait for physics visualization renderers.
-#[allow(dead_code)]
 pub trait Renderer {
     /// Initialize this component.
     fn init(&mut self);
@@ -75,7 +74,6 @@ pub trait Renderer {
 // ---------------------------------------------------------------------------
 
 /// Global configuration for the OxiPhysics visualization subsystem.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VizConfig {
     /// Default colormap for scalar field visualization.
@@ -122,7 +120,6 @@ impl Default for VizConfig {
 
 impl VizConfig {
     /// Construct a config with debugging aids enabled.
-    #[allow(dead_code)]
     pub fn debug_mode() -> Self {
         Self {
             show_debug_overlay: true,
@@ -132,7 +129,6 @@ impl VizConfig {
     }
 
     /// Return `true` if the depth range is valid (`near < far`).
-    #[allow(dead_code)]
     pub fn depth_range_valid(&self) -> bool {
         self.near_clip > 0.0 && self.near_clip < self.far_clip
     }
@@ -143,7 +139,6 @@ impl VizConfig {
 // ---------------------------------------------------------------------------
 
 /// Per-frame rendering statistics.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct VizStats {
     /// Number of draw calls issued this frame.
@@ -166,27 +161,23 @@ pub struct VizStats {
 
 impl VizStats {
     /// Total frame time: geometry + render + post-processing.
-    #[allow(dead_code)]
     pub fn total_ms(&self) -> f64 {
         self.geometry_ms + self.render_ms + self.post_ms
     }
 
     /// Approximate frames per second (1000 / total_ms), or `f64::INFINITY`
     /// if total_ms is zero.
-    #[allow(dead_code)]
     pub fn fps(&self) -> f64 {
         let t = self.total_ms();
         if t < 1e-10 { f64::INFINITY } else { 1000.0 / t }
     }
 
     /// Reset all counters to zero.
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         *self = Self::default();
     }
 
     /// Merge stats from another frame (accumulate).
-    #[allow(dead_code)]
     pub fn accumulate(&mut self, other: &VizStats) {
         self.draw_calls += other.draw_calls;
         self.triangles += other.triangles;
@@ -204,7 +195,6 @@ impl VizStats {
 // ---------------------------------------------------------------------------
 
 /// A plug-in that can inject custom geometry or post-effects into a frame.
-#[allow(dead_code)]
 pub trait VizPlugin: std::fmt::Debug {
     /// Name identifying this plugin.
     fn name(&self) -> &str;
@@ -227,7 +217,6 @@ pub trait VizPlugin: std::fmt::Debug {
 ///
 /// Stores any type `T` under a unique name. Useful for managing named meshes,
 /// shaders, colormaps, or transfer functions within a scene.
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct VizRegistry<T> {
     items: std::collections::HashMap<String, T>,
@@ -301,7 +290,6 @@ impl<T> VizRegistry<T> {
 ///
 /// A `VizContext` is typically created once per application session and passed
 /// (by shared reference) to visualization functions.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct VizContext {
     /// Active configuration.
@@ -370,7 +358,6 @@ impl VizContext {
 /// Build a list of [`LinePrimitive`]s forming a 3-D coordinate axis triad.
 ///
 /// The triad has unit length along each axis, colored RGB (x=red, y=green, z=blue).
-#[allow(dead_code)]
 pub fn axis_triad(origin: oxiphysics_core::math::Vec3, scale: f64) -> Vec<LinePrimitive> {
     use oxiphysics_core::math::Vec3;
     vec![
@@ -398,7 +385,6 @@ pub fn axis_triad(origin: oxiphysics_core::math::Vec3, scale: f64) -> Vec<LinePr
 /// - `half_extent` — half-size of the grid along each axis.
 /// - `divisions` — number of divisions per side (minimum 1).
 /// - `color` — line color.
-#[allow(dead_code)]
 pub fn grid_lines(
     center: oxiphysics_core::math::Vec3,
     half_extent: f64,
@@ -428,19 +414,16 @@ pub fn grid_lines(
 }
 
 /// Merge multiple lists of [`LinePrimitive`]s into one.
-#[allow(dead_code)]
 pub fn merge_lines(groups: &[Vec<LinePrimitive>]) -> Vec<LinePrimitive> {
     groups.iter().flat_map(|g| g.iter().cloned()).collect()
 }
 
 /// Merge multiple lists of [`TrianglePrimitive`]s into one.
-#[allow(dead_code)]
 pub fn merge_triangles(groups: &[Vec<TrianglePrimitive>]) -> Vec<TrianglePrimitive> {
     groups.iter().flat_map(|g| g.iter().cloned()).collect()
 }
 
 /// Flip all vertex normals in a [`RenderMesh`] (in-place).
-#[allow(dead_code)]
 pub fn flip_normals(mesh: &mut RenderMesh) {
     for v in &mut mesh.vertices {
         v.normal = [-v.normal[0], -v.normal[1], -v.normal[2]];
@@ -448,7 +431,6 @@ pub fn flip_normals(mesh: &mut RenderMesh) {
 }
 
 /// Scale a [`RenderMesh`] uniformly about the origin.
-#[allow(dead_code)]
 pub fn scale_mesh(mesh: &mut RenderMesh, factor: f64) {
     let f = factor as f32;
     for v in &mut mesh.vertices {
@@ -457,7 +439,6 @@ pub fn scale_mesh(mesh: &mut RenderMesh, factor: f64) {
 }
 
 /// Translate a [`RenderMesh`] by an offset vector.
-#[allow(dead_code)]
 pub fn translate_mesh(mesh: &mut RenderMesh, offset: oxiphysics_core::math::Vec3) {
     let [ox, oy, oz] = [offset.x as f32, offset.y as f32, offset.z as f32];
     for v in &mut mesh.vertices {
@@ -468,7 +449,6 @@ pub fn translate_mesh(mesh: &mut RenderMesh, offset: oxiphysics_core::math::Vec3
 }
 
 /// Recolor all vertices in a [`RenderMesh`].
-#[allow(dead_code)]
 pub fn recolor_mesh(mesh: &mut RenderMesh, color: Color) {
     for v in &mut mesh.vertices {
         v.color = color;
@@ -478,7 +458,6 @@ pub fn recolor_mesh(mesh: &mut RenderMesh, color: Color) {
 /// Compute the axis-aligned bounding box of a mesh as `(min, max)` corner vectors.
 ///
 /// Returns `None` if the mesh has no vertices.
-#[allow(dead_code)]
 pub fn mesh_aabb(
     mesh: &RenderMesh,
 ) -> Option<(oxiphysics_core::math::Vec3, oxiphysics_core::math::Vec3)> {

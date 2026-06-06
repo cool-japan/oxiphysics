@@ -1,5 +1,3 @@
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -12,8 +10,6 @@
 //! - Moment-based curved BC
 //! - Immersed boundary direct forcing
 //! - Moving and rotating wall BCs
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -321,7 +317,7 @@ impl CurvedBoundarySet {
     /// # Arguments
     /// * `f`     - mutable reference to all distribution functions
     /// * `omega` - relaxation parameter
-    pub fn apply(&self, f: &mut Vec<Vec<f64>>, omega: f64) {
+    pub fn apply(&self, f: &mut [Vec<f64>], omega: f64) {
         for node in &self.nodes {
             let fluid_idx = node.fluid_idx;
             let q = node.q;
@@ -734,7 +730,7 @@ mod tests {
     fn test_quad_monotone_input() {
         // For monotone input at q=0.5 the result should be between f_0 and f_1
         let v = quadratic_interpolation_bc(1.0, 2.0, 3.0, 0.5);
-        assert!(v >= 1.0 && v <= 3.0, "v={v}");
+        assert!((1.0..=3.0).contains(&v), "v={v}");
     }
 
     #[test]

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,9 +7,6 @@
 //! paths, including tube/ribbon geometry generation, arc-length
 //! parameterization, Frenet frames, curvature, path smoothing, and
 //! aerospace flight-path utilities.  No GPU or windowing dependency.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::collections::HashMap;
 
@@ -28,6 +24,7 @@ fn vec3_scale(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
 }
 
+#[cfg(test)]
 fn vec3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -50,10 +47,6 @@ fn vec3_normalize(a: [f64; 3]) -> [f64; 3] {
         return [0.0, 0.0, 1.0];
     }
     [a[0] / len, a[1] / len, a[2] / len]
-}
-
-fn vec3_lerp(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
-    vec3_add(vec3_scale(a, 1.0 - t), vec3_scale(b, t))
 }
 
 // ── PathStyle ─────────────────────────────────────────────────────────────────
@@ -225,10 +218,10 @@ pub fn smooth_path(points: &[[f64; 3]], window: usize) -> Vec<[f64; 3]> {
         let hi = (i + window + 1).min(n);
         let mut sum = [0.0f64; 3];
         let mut wt_total = 0.0f64;
-        for j in lo..hi {
+        for (j, pt) in points.iter().enumerate().take(hi).skip(lo) {
             let dx = (i as f64) - (j as f64);
             let wt = (-0.5 * (dx / sigma).powi(2)).exp();
-            sum = vec3_add(sum, vec3_scale(points[j], wt));
+            sum = vec3_add(sum, vec3_scale(*pt, wt));
             wt_total += wt;
         }
         out.push(vec3_scale(sum, 1.0 / wt_total));
@@ -412,9 +405,9 @@ impl PathRenderer {
         let arc = arc_length_parameterize(&path.points);
         let total = *arc.last().unwrap_or(&1.0);
         let mut segs = Vec::with_capacity(n - 1);
-        for i in 0..n - 1 {
+        for (i, arc_i) in arc.iter().enumerate().take(n - 1) {
             let t = if total > 1e-14 {
-                arc[i] / total
+                arc_i / total
             } else {
                 i as f64 / (n - 1) as f64
             };
@@ -542,7 +535,7 @@ impl PathRenderer {
 
     /// Add arrow-head markers (via `arrow_at_end = true`) to segments spaced
     /// approximately every `1.0 / density` of the total path length.
-    pub fn add_arrow_heads(segments: &mut Vec<PathSegment>, size: f64) {
+    pub fn add_arrow_heads(segments: &mut [PathSegment], size: f64) {
         let _ = size;
         if segments.is_empty() {
             return;

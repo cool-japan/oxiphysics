@@ -8,9 +8,6 @@
 //! - `From`
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use crate::types::TransformWasm;
 
 use super::types::JsTransform;

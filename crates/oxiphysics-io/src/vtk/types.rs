@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use crate::Result;
 use oxiphysics_core::math::Vec3;
 use std::fs::File;
@@ -265,7 +263,6 @@ impl VtuGrid {
     }
 }
 /// A key-value pair in a VTK field data section.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VtkFieldRecord {
     /// Field name.
@@ -311,7 +308,6 @@ pub enum VtkCellType {
     Pyramid = 14,
 }
 /// A parsed VTK legacy ASCII dataset.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VtkLegacyData {
     /// Dataset title line.
@@ -338,7 +334,6 @@ impl VtkLegacyData {
 ///
 /// Field data is global (not attached to points or cells) and is useful for
 /// simulation metadata such as time, timestep index, and solver parameters.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct VtkFieldData {
     /// The field records in this collection.
@@ -400,7 +395,6 @@ impl VtkWriter {
     /// Write an unstructured grid with tetrahedral cells to a legacy VTK file.
     ///
     /// Optionally includes scalar and vector point data.
-    #[allow(clippy::too_many_arguments)]
     pub fn write_unstructured_grid(
         path: &str,
         positions: &[Vec3],
@@ -470,7 +464,6 @@ impl VtkWriter {
     }
 }
 /// A time series of `VtuGrid` snapshots.
-#[allow(dead_code)]
 pub struct VtkTimeSeries {
     /// The simulation time of each snapshot.
     pub times: Vec<f64>,
@@ -519,7 +512,6 @@ impl VtkTimeSeries {
     }
 }
 /// A single time step entry in a PVD collection.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PvdEntry {
     /// Simulation time.
@@ -546,7 +538,6 @@ impl PvdEntry {
 ///
 /// Wraps several [`VtuGrid`] blocks, each with a name.  Serializes to a
 /// `<vtkMultiBlockDataSet>` XML document.
-#[allow(dead_code)]
 pub struct VtkMultiBlock {
     /// The named blocks comprising this dataset.
     pub blocks: Vec<VtkBlock>,
@@ -619,7 +610,6 @@ impl VtkMultiBlock {
     }
 }
 /// A VTK polydata dataset storing points, lines, and polygons.
-#[allow(dead_code)]
 pub struct VtkPolyDataGrid {
     /// 3-D point coordinates.
     pub points: Vec<[f64; 3]>,
@@ -760,7 +750,6 @@ impl VtkDataArray {
     }
 }
 /// A named block in a multi-block dataset.
-#[allow(dead_code)]
 pub struct VtkBlock {
     /// Block name.
     pub name: String,
@@ -777,7 +766,6 @@ impl VtkBlock {
     }
 }
 /// A VTK rectilinear grid (`.vtr`): axes are independently sampled.
-#[allow(dead_code)]
 pub struct VtkRectilinearGrid {
     /// Coordinate values along the X axis.
     pub x_coords: Vec<f64>,
@@ -885,7 +873,6 @@ impl VtkRectilinearGrid {
 ///
 /// Dimensions are `(ni, nj, nk)` in index space.  Points are ordered
 /// with i varying fastest, then j, then k.
-#[allow(dead_code)]
 pub struct VtkStructuredGrid {
     /// Dimensions `\[ni, nj, nk\]`.
     pub dims: [usize; 3],
@@ -966,7 +953,6 @@ impl VtkStructuredGrid {
         s
     }
     /// Build a uniform Cartesian grid covering `\[x0,x1\] x \[y0,y1\] x \[z0,z1\]`.
-    #[allow(clippy::too_many_arguments)]
     pub fn uniform(
         x0: f64,
         x1: f64,

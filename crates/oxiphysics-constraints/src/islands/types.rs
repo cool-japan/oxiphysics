@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use crate::contact::ContactConstraint;
 use crate::traits::Constraint;
 use oxiphysics_core::BodyHandle;
@@ -15,7 +13,6 @@ use std::collections::HashMap;
 ///
 /// Contains all indices needed to solve the island independently.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct IslandWorkItem {
     /// Index of the island in the islands array.
     pub island_index: usize,
@@ -33,7 +30,6 @@ pub struct IslandWorkItem {
 /// A body is eligible to sleep when its accumulated velocity falls below
 /// the threshold for `required_steps` consecutive steps.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct VelocityAccumulator {
     /// Summed velocity magnitudes per body (body_handle key → sum).
     pub velocity_sum: std::collections::HashMap<(u32, u32), f64>,
@@ -44,7 +40,6 @@ pub struct VelocityAccumulator {
     /// Number of steps required before a body is considered sleepable.
     pub required_steps: usize,
 }
-#[allow(dead_code)]
 impl VelocityAccumulator {
     /// Create a new accumulator.
     pub fn new(linear_threshold: f64, required_steps: usize) -> Self {
@@ -114,22 +109,18 @@ impl Island {
         }
     }
     /// Number of bodies in this island.
-    #[allow(dead_code)]
     pub fn body_count(&self) -> usize {
         self.body_handles.len()
     }
     /// Total number of constraints (contacts + joints) in this island.
-    #[allow(dead_code)]
     pub fn constraint_count(&self) -> usize {
         self.contact_indices.len() + self.joint_indices.len()
     }
     /// Whether the island has any constraints.
-    #[allow(dead_code)]
     pub fn has_constraints(&self) -> bool {
         !self.contact_indices.is_empty() || !self.joint_indices.is_empty()
     }
     /// Check whether a body handle belongs to this island.
-    #[allow(dead_code)]
     pub fn contains_body(&self, handle: BodyHandle) -> bool {
         self.body_handles
             .iter()
@@ -138,7 +129,6 @@ impl Island {
 }
 /// Per-island statistics for profiling.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct IslandSolveStats {
     /// Number of bodies.
     pub body_count: usize,
@@ -155,7 +145,6 @@ pub struct IslandSolveStats {
 }
 /// Result of an island split analysis.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct IslandSplitResult {
     /// Index of the island that was analysed.
     pub island_index: usize,
@@ -168,7 +157,6 @@ pub struct IslandSplitResult {
 }
 /// Aggregate statistics for the island contact graph.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct IslandContactGraphStats {
     /// Total number of islands.
     pub island_count: usize,
@@ -189,7 +177,6 @@ pub struct IslandContactGraphStats {
 }
 /// Per-island size summary.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct IslandSizeSummary {
     /// Index of the island.
     pub index: usize,
@@ -205,12 +192,10 @@ pub struct IslandSizeSummary {
 /// Iterator over the body handles in an island with their velocity data.
 ///
 /// Yields `(BodyHandle, linear_speed, angular_speed)` for every dynamic body.
-#[allow(dead_code)]
 pub struct IslandBodyIter<'a> {
     pub(super) handles: std::slice::Iter<'a, BodyHandle>,
     pub(super) bodies: &'a RigidBodySet,
 }
-#[allow(dead_code)]
 impl<'a> IslandBodyIter<'a> {
     /// Create a new iterator for the given island.
     pub fn new(island: &'a Island, bodies: &'a RigidBodySet) -> Self {
@@ -225,7 +210,6 @@ impl<'a> IslandBodyIter<'a> {
 /// Boundary contacts arise when a newly detected contact connects bodies
 /// from two previously separate islands.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct BoundaryContact {
     /// Index of the contact constraint.
     pub contact_index: usize,
@@ -238,11 +222,9 @@ pub struct BoundaryContact {
 ///
 /// Each entry maps a body handle key `(index, generation)` to a list of
 /// body handle keys it is in contact with.
-#[allow(dead_code)]
 pub struct BodyGraph {
     pub(super) adjacency: HashMap<(u32, u32), Vec<(u32, u32)>>,
 }
-#[allow(dead_code)]
 impl BodyGraph {
     /// Build the body graph from contact constraints.
     pub fn from_contacts(contacts: &[ContactConstraint]) -> Self {
@@ -538,7 +520,6 @@ impl IslandManager {
         }
     }
     /// Wake all bodies in a specific island.
-    #[allow(dead_code)]
     pub fn wake_island(&self, bodies: &mut RigidBodySet, island: &Island) {
         for &handle in &island.body_handles {
             if let Some(body) = bodies.get_mut(handle)
@@ -549,7 +530,6 @@ impl IslandManager {
         }
     }
     /// Find the island containing a given body handle from a list of islands.
-    #[allow(dead_code)]
     pub fn find_island_for_body(&self, handle: BodyHandle, islands: &[Island]) -> Option<usize> {
         islands
             .iter()
@@ -561,7 +541,6 @@ impl IslandManager {
 /// If island A "depends on" island B it means a constraint spans both islands
 /// and they must be solved jointly or in order.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct IslandDependency {
     /// Index of the source island.
     pub from: usize,
@@ -574,12 +553,10 @@ pub struct IslandDependency {
 ///
 /// Higher-cost islands are placed first so a scheduler can pick them up
 /// and assign them to worker threads before smaller islands.
-#[allow(dead_code)]
 pub struct IslandPriorityQueue {
     /// Ordered pairs of (cost, island_index).
     pub(super) items: Vec<(usize, usize)>,
 }
-#[allow(dead_code)]
 impl IslandPriorityQueue {
     /// Build a priority queue from a list of islands (highest cost first).
     pub fn build(islands: &[Island]) -> Self {

@@ -12,7 +12,6 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Shape of a single visualization glyph.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlyphType {
     /// Arrow (shaft + cone head).
@@ -30,7 +29,6 @@ pub enum GlyphType {
 }
 
 /// A single renderable glyph instance placed in 3-D space.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct GlyphInstance {
     /// World-space position of the glyph origin (x, y, z).
@@ -69,7 +67,6 @@ impl GlyphInstance {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Vertex of an arrow glyph triangle mesh (position only, as \[f64; 3\]).
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct GlyphVertex {
     /// Position in glyph-local space.
@@ -82,7 +79,6 @@ pub struct GlyphVertex {
 pub type TriIdx = [u32; 3];
 
 /// Simple triangle mesh used for glyph geometry.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GlyphMesh {
     /// Vertex buffer.
@@ -105,7 +101,6 @@ pub struct GlyphMesh {
 ///
 /// # Returns
 /// A [`GlyphMesh`] in local space (arrow points along +Z, origin at base).
-#[allow(dead_code)]
 pub fn arrow_glyph(
     shaft_radius: f64,
     head_radius: f64,
@@ -202,7 +197,6 @@ pub fn arrow_glyph(
 /// - `slices` — number of longitude divisions.
 ///
 /// Returns a list of world-space vertex positions `[f64; 3]`.
-#[allow(dead_code)]
 pub fn tensor_ellipsoid(
     eigenvalues: [f64; 3],
     eigenvectors: [[f64; 3]; 3],
@@ -275,7 +269,6 @@ pub fn tensor_ellipsoid(
 /// - `color` — RGBA colour for all glyphs.
 ///
 /// Returns one [`GlyphInstance`] per grid node.
-#[allow(dead_code)]
 pub fn hedgehog_field<F>(
     origin: [f64; 3],
     spacing: [f64; 3],
@@ -318,7 +311,6 @@ where
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// A ribbon quad strip following a streamline, with optional twist.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StreamRibbon {
     /// Left-edge vertices of the ribbon.
@@ -340,7 +332,6 @@ pub struct StreamRibbon {
 /// - `twist_per_step` — extra twist per step (radians, 0 for no twist).
 ///
 /// Returns a [`StreamRibbon`] with the same number of points as `path`.
-#[allow(dead_code)]
 pub fn streamribbon(
     path: &[[f64; 3]],
     width: f64,
@@ -409,7 +400,6 @@ pub fn streamribbon(
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// A single oriented disc (a flat circle placed at a contact/surface normal).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OrientedDisc {
     /// World-space center.
@@ -426,7 +416,6 @@ pub struct OrientedDisc {
 ///
 /// Each entry in `contacts` is `(position, normal, radius)`.  The output
 /// discs are useful for visualising contact points or surface orientations.
-#[allow(dead_code)]
 pub fn oriented_discs(
     contacts: &[([f64; 3], [f64; 3], f64)],
     color: [f32; 4],

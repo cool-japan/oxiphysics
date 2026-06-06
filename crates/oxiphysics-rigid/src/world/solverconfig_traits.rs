@@ -7,9 +7,6 @@
 //! - `Default`
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::SolverConfig;
 
 impl Default for SolverConfig {

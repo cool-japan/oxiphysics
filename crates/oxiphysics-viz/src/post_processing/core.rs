@@ -3,8 +3,6 @@
 
 //! Core types for post-processing: PostColor and Image.
 
-#![allow(dead_code)]
-
 // ─── Color ────────────────────────────────────────────────────────────────────
 
 /// RGBA colour with `f32` components, used by post-processing effects.

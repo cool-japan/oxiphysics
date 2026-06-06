@@ -17,9 +17,6 @@
 //! - Bessel functions J_n(x) and Y_n(x)
 //! - Legendre polynomials P_n(x) and Hermite polynomials H_n(x)
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -198,9 +195,12 @@ impl std::ops::Mul for Complex {
 
 impl std::ops::Div for Complex {
     type Output = Self;
-    #[allow(clippy::suspicious_arithmetic_impl)]
     fn div(self, rhs: Self) -> Self {
-        self * rhs.inv()
+        let denom = rhs.re * rhs.re + rhs.im * rhs.im;
+        Self::new(
+            (self.re * rhs.re + self.im * rhs.im) / denom,
+            (self.im * rhs.re - self.re * rhs.im) / denom,
+        )
     }
 }
 

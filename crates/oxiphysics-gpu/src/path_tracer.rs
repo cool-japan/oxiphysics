@@ -6,8 +6,6 @@
 //! Implements a Monte Carlo path tracer with Lambertian, Metal, and Dielectric
 //! materials, sphere and triangle primitives, and a progressive pixel buffer.
 
-#![allow(dead_code)]
-
 use rand::Rng;
 
 use rand::RngExt;
@@ -600,7 +598,6 @@ impl Camera {
     /// * `aspect_ratio` — image width / height
     /// * `aperture` — lens aperture (0 = pinhole)
     /// * `focus_dist` — focus distance
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         look_from: [f32; 3],
         look_at: [f32; 3],

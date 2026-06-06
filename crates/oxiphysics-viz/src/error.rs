@@ -16,8 +16,6 @@
 //! - **Scene** – scene-graph management errors.
 //! - **IO** – file-system-related errors (stubbed, no actual IO dependency).
 
-#![allow(dead_code)]
-
 use std::fmt;
 use thiserror::Error;
 
@@ -517,7 +515,6 @@ pub struct ErrorRecord {
 
 impl ErrorRecord {
     /// Construct an `ErrorRecord` with full source location.
-    #[allow(clippy::too_many_arguments)]
     pub fn with_location(
         error: Error,
         file: Option<&'static str>,

@@ -21,12 +21,12 @@
 //! let vehicle = RaycastVehicle::new_default_4wheel();
 //! assert_eq!(vehicle.num_wheels(), 4);
 //! ```
-#![allow(missing_docs)]
-#![allow(ambiguous_glob_reexports)]
-#![allow(dead_code)]
 
 mod error;
-pub use error::*;
+pub use error::{
+    PathError, PathResult, SensorError, SensorResult, TelemetryError, TelemetryResult,
+    VehicleError, VehicleResult,
+};
 
 pub mod drivetrain;
 pub mod steering;

@@ -16,36 +16,11 @@
 //! - **Decimation transformation**: 1-D Ising decimation, block-spin flow equations
 //! - **Conformal field theory**: central charge, scaling dimensions, partition function
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ============================================================================
 // Internal lightweight LCG (no external rand dependency required)
 // ============================================================================
-
-/// Lightweight linear congruential generator used internally.
-struct Lcg {
-    state: u64,
-}
-
-impl Lcg {
-    fn new(seed: u64) -> Self {
-        Self { state: seed.max(1) }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.state = self
-            .state
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        self.state
-    }
-
-    fn next_f64(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
-    }
-}
 
 // ============================================================================
 // Constants
@@ -334,7 +309,6 @@ impl WilsonianRg {
     /// One-loop flow equations (ε-expansion):
     ///   du/dl = ε u − (n+8)/(16π²) u²
     ///   dr/dl = 2 r + (n+2)/(16π²) u  (n = 1 for Ising universality)
-    #[allow(clippy::too_many_arguments)]
     pub fn step_flow(&mut self, dl: f64, n_components: f64) {
         let du = self.epsilon * self.u - (n_components + 8.0) / (16.0 * PI * PI) * self.u * self.u;
         let dr = 2.0 * self.r + (n_components + 2.0) / (16.0 * PI * PI) * self.u;
@@ -761,7 +735,6 @@ pub struct CriticalPhenomena {
 
 impl CriticalPhenomena {
     /// Construct a CriticalPhenomena model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(exp: CriticalExponents, t_c: f64, xi0: f64, chi0: f64, m0: f64, c0: f64) -> Self {
         Self {
             exp,

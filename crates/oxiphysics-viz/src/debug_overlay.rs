@@ -483,7 +483,6 @@ impl PerformanceOverlay {
 /// A simple text rendering primitive for debug overlay.
 ///
 /// Stores a label with position, color, font size, and optional background.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TextPrimitive {
     /// Screen-space or world-space anchor position.
@@ -498,7 +497,6 @@ pub struct TextPrimitive {
     pub background: Option<Color>,
 }
 
-#[allow(dead_code)]
 impl TextPrimitive {
     /// Create a basic text primitive.
     pub fn new(position: [f32; 3], text: impl Into<String>, color: Color, font_size: f32) -> Self {
@@ -524,7 +522,6 @@ impl TextPrimitive {
 }
 
 /// A column of text lines for debug display.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TextColumn {
     /// All text lines in this column.
@@ -533,7 +530,6 @@ pub struct TextColumn {
     pub line_spacing: f32,
 }
 
-#[allow(dead_code)]
 impl TextColumn {
     /// Create a new text column.
     pub fn new(line_spacing: f32) -> Self {
@@ -575,14 +571,12 @@ impl TextColumn {
 // ─── OverlayStatistics ────────────────────────────────────────────────────
 
 /// Collects and displays simulation statistics.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OverlayStatistics {
     /// Label-value pairs.
     pub entries: Vec<(String, String)>,
 }
 
-#[allow(dead_code)]
 impl OverlayStatistics {
     /// Create empty stats.
     pub fn new() -> Self {
@@ -629,7 +623,6 @@ impl Default for OverlayStatistics {
 // ─── ConstraintViz ────────────────────────────────────────────────────────
 
 /// Visualizes constraints (springs, distance constraints) as lines.
-#[allow(dead_code)]
 pub struct ConstraintViz<'a> {
     overlay: &'a mut DebugOverlay,
     /// Color for satisfied constraints.
@@ -640,7 +633,6 @@ pub struct ConstraintViz<'a> {
     pub violation_threshold: f32,
 }
 
-#[allow(dead_code)]
 impl<'a> ConstraintViz<'a> {
     /// Create a new constraint visualizer.
     pub fn new(overlay: &'a mut DebugOverlay) -> Self {
@@ -679,7 +671,6 @@ impl<'a> ConstraintViz<'a> {
 // ─── VelocityArrowViz ─────────────────────────────────────────────────────
 
 /// Visualizes velocity vectors as arrows on bodies.
-#[allow(dead_code)]
 pub struct VelocityArrowViz<'a> {
     overlay: &'a mut DebugOverlay,
     /// Scale factor for velocity magnitude to arrow length.
@@ -688,7 +679,6 @@ pub struct VelocityArrowViz<'a> {
     pub color: Color,
 }
 
-#[allow(dead_code)]
 impl<'a> VelocityArrowViz<'a> {
     /// Create a new velocity arrow visualizer.
     pub fn new(overlay: &'a mut DebugOverlay, scale: f32) -> Self {
@@ -721,14 +711,12 @@ impl<'a> VelocityArrowViz<'a> {
 // ─── ForceDiagram ─────────────────────────────────────────────────────────
 
 /// Draws a force diagram showing all forces acting on a body.
-#[allow(dead_code)]
 pub struct ForceDiagram<'a> {
     overlay: &'a mut DebugOverlay,
     /// Scale factor for forces.
     pub scale: f32,
 }
 
-#[allow(dead_code)]
 impl<'a> ForceDiagram<'a> {
     /// Create a new force diagram visualizer.
     pub fn new(overlay: &'a mut DebugOverlay, scale: f32) -> Self {
@@ -754,7 +742,6 @@ impl<'a> ForceDiagram<'a> {
     }
 
     /// Draw gravity, normal, and friction forces in one call.
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_free_body(
         &mut self,
         body_pos: [f32; 3],
@@ -774,7 +761,6 @@ impl DebugOverlay {
     /// Draw a ground-plane grid of `n x n` cells centred at the origin.
     ///
     /// The grid lies in the XZ plane at `y = height`.
-    #[allow(dead_code)]
     pub fn grid(&mut self, n: usize, cell_size: f32, height: f32, color: Color) {
         let half = (n as f32 * cell_size) * 0.5;
         for i in 0..=n {
@@ -787,7 +773,6 @@ impl DebugOverlay {
     }
 
     /// Draw coordinate axes at the origin.
-    #[allow(dead_code)]
     pub fn axes(&mut self, length: f32) {
         self.arrow([0.0; 3], [1.0, 0.0, 0.0], length, Color::RED);
         self.arrow([0.0; 3], [0.0, 1.0, 0.0], length, Color::GREEN);
@@ -808,7 +793,6 @@ impl DebugOverlay {
     ///
     /// At most `max_nodes` entries are drawn to avoid flooding the overlay
     /// command buffer.
-    #[allow(dead_code)]
     pub fn draw_bvh_tree(
         &mut self,
         bvh_nodes: &[([f32; 3], [f32; 3])],
@@ -837,7 +821,6 @@ impl DebugOverlay {
     /// clearly visible arrows.  Arrows shorter than `min_mag` (in world units,
     /// before scaling) are skipped to avoid visual clutter near stagnation
     /// points.
-    #[allow(dead_code)]
     pub fn draw_velocity_field(
         &mut self,
         positions: &[[f32; 3]],
@@ -876,8 +859,6 @@ impl DebugOverlay {
     /// `[σ₁, σ₂, σ₃]` for each position.
     /// `principal_axes` contains the corresponding unit eigenvectors
     /// `[[e1x, e1y, e1z\], [e2x, e2y, e2z], [e3x, e3y, e3z]]` per glyph.
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_stress_tensor_glyphs(
         &mut self,
         positions: &[[f32; 3]],
@@ -916,7 +897,6 @@ impl DebugOverlay {
     }
 
     /// Draw a circle (approximated by line segments) in the XZ plane.
-    #[allow(dead_code)]
     pub fn circle_xz(&mut self, center: [f32; 3], radius: f32, segments: usize, color: Color) {
         let segs = segments.max(3);
         let step = 2.0 * std::f32::consts::PI / segs as f32;

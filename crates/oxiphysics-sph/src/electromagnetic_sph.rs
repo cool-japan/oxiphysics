@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,9 +10,6 @@
 //! - [`DielectricSph`]: Polarisation, electric susceptibility, dipole forces.
 //! - [`ElectrokineticSph`]: Electroosmosis, electrophoresis, streaming potential.
 //! - [`PlasmaSheath`]: Debye sheath formation, Child-Langmuir law, floating potential.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -431,8 +427,8 @@ impl InductionEquationSph {
 
     /// Advance the psi field by one time step dt.
     pub fn advance_psi(&mut self, div_b: &[f64], dt: f64) {
-        for i in 0..self.n.min(div_b.len()) {
-            let dpsi = self.divergence_cleaning_dpsi(div_b[i], self.psi[i]);
+        for (i, &db) in div_b.iter().enumerate().take(self.n) {
+            let dpsi = self.divergence_cleaning_dpsi(db, self.psi[i]);
             self.psi[i] += dpsi * dt;
         }
     }

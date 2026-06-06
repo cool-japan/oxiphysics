@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use rand::RngExt;
 use std::f64::consts::PI;
@@ -164,10 +162,16 @@ impl KarhunenLoeveExpansion {
         }
         let n_nodes = self.eigenvectors[0].len();
         let mut result = vec![0.0f64; n_nodes];
-        for i in 0..n_modes {
-            let scale = self.eigenvalues[i].max(0.0).sqrt() * xi[i];
-            for j in 0..n_nodes {
-                result[j] += scale * self.eigenvectors[i][j];
+        for ((&ev, &xi_i), eigvec) in self
+            .eigenvalues
+            .iter()
+            .zip(xi.iter())
+            .zip(self.eigenvectors.iter())
+            .take(n_modes)
+        {
+            let scale = ev.max(0.0).sqrt() * xi_i;
+            for (res_j, &e_j) in result.iter_mut().zip(eigvec.iter()) {
+                *res_j += scale * e_j;
             }
         }
         result
@@ -338,9 +342,9 @@ impl StochasticFemProblem {
     pub fn covariance_matrix_exponential(&self) -> Vec<Vec<f64>> {
         let n = self.nodes.len();
         let mut c = vec![vec![0.0f64; n]; n];
-        for i in 0..n {
-            for j in 0..n {
-                c[i][j] = covariance_exponential(
+        for (i, c_row) in c.iter_mut().enumerate() {
+            for (j, c_ij) in c_row.iter_mut().enumerate() {
+                *c_ij = covariance_exponential(
                     self.nodes[i],
                     self.nodes[j],
                     self.sigma,
@@ -356,9 +360,9 @@ impl StochasticFemProblem {
     pub fn covariance_matrix_gaussian(&self) -> Vec<Vec<f64>> {
         let n = self.nodes.len();
         let mut c = vec![vec![0.0f64; n]; n];
-        for i in 0..n {
-            for j in 0..n {
-                c[i][j] =
+        for (i, c_row) in c.iter_mut().enumerate() {
+            for (j, c_ij) in c_row.iter_mut().enumerate() {
+                *c_ij =
                     covariance_gaussian(self.nodes[i], self.nodes[j], self.sigma, self.corr_length);
             }
         }
@@ -448,8 +452,8 @@ impl ReliabilityFem {
         } else {
             self.lsf_coeffs[0]
         };
-        for i in 0..k.min(x.len()) {
-            g += self.lsf_coeffs[i + 1] * x[i];
+        for (coeff, &xi) in self.lsf_coeffs[1..].iter().zip(x.iter()).take(k) {
+            g += coeff * xi;
         }
         g
     }
@@ -524,11 +528,14 @@ impl ReliabilityFem {
         let mut n_fail = 0usize;
         let mut x = vec![0.0f64; k];
         for _ in 0..n_samples {
-            for i in 0..k {
+            for (x_i, (mean_i, std_i)) in x
+                .iter_mut()
+                .zip(self.means.iter().zip(self.std_devs.iter()))
+            {
                 let u1: f64 = rng.random_range(f64::EPSILON..1.0_f64);
                 let u2: f64 = rng.random_range(0.0_f64..1.0_f64);
                 let z = box_muller(u1, u2);
-                x[i] = self.means[i] + self.std_devs[i] * z;
+                *x_i = mean_i + std_i * z;
             }
             if self.lsf(&x) < 0.0 {
                 n_fail += 1;

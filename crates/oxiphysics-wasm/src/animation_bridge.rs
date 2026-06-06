@@ -6,9 +6,6 @@
 //! Exposes a JSON-oriented surface around keyframe animation clips and
 //! an animation player suitable for use across the WASM boundary.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 

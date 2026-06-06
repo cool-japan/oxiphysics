@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use rand::RngExt;
 use std::collections::HashMap;
 
@@ -19,7 +17,6 @@ impl Lacunarity {
     /// `box_size` is the side length of the gliding box.
     ///
     /// Returns the lacunarity value Lambda = Var(mass) / Mean(mass)^2 + 1.
-    #[allow(dead_code)]
     pub fn gliding_box(grid: &[Vec<bool>], box_size: usize) -> f64 {
         let rows = grid.len();
         if rows == 0 || box_size == 0 {
@@ -57,7 +54,6 @@ impl Lacunarity {
     /// Compute lacunarity for a point set by first rasterizing onto a grid.
     ///
     /// `resolution` is the grid side length. Points are mapped to grid cells.
-    #[allow(dead_code)]
     pub fn from_points(points: &[Point2], resolution: usize, box_size: usize) -> f64 {
         if points.is_empty() || resolution == 0 {
             return 0.0;
@@ -80,7 +76,6 @@ impl Lacunarity {
     /// Multi-scale lacunarity: compute lacunarity for a range of box sizes.
     ///
     /// Returns `(box_size, lacunarity)` pairs.
-    #[allow(dead_code)]
     pub fn multiscale(grid: &[Vec<bool>], box_sizes: &[usize]) -> Vec<(usize, f64)> {
         box_sizes
             .iter()
@@ -353,7 +348,6 @@ impl MandelbrotSet {
     /// Samples random points in the rectangle \[x_min, x_max\] x \[y_min, y_max\]
     /// and estimates the area as the fraction of points in the set times the
     /// rectangle area.
-    #[allow(dead_code)]
     pub fn area_monte_carlo(
         &self,
         x_min: f64,
@@ -408,7 +402,6 @@ impl MandelbrotSet {
 pub struct HilbertCurveMap;
 impl HilbertCurveMap {
     /// Convert a Hilbert curve index `d` to (x, y) coordinates for a curve of order `n`.
-    #[allow(dead_code)]
     pub fn d2xy(n: u32, d: u32) -> (u32, u32) {
         let mut rx: u32;
         let mut ry: u32;
@@ -432,7 +425,6 @@ impl HilbertCurveMap {
         (x, y)
     }
     /// Convert (x, y) coordinates to a Hilbert curve index for a curve of order `n`.
-    #[allow(dead_code)]
     pub fn xy2d(n: u32, x: u32, y: u32) -> u32 {
         let mut rx: u32;
         let mut ry: u32;
@@ -450,7 +442,6 @@ impl HilbertCurveMap {
         d
     }
     /// Rotate/flip a quadrant.
-    #[allow(dead_code)]
     fn rot(n: u32, x: &mut u32, y: &mut u32, rx: u32, ry: u32) {
         if ry == 0 {
             if rx == 1 {
@@ -463,7 +454,6 @@ impl HilbertCurveMap {
     /// Generate the full Hilbert curve path as a sequence of (x, y) for order `n`.
     ///
     /// `n` must be a power of 2. Returns `n*n` points.
-    #[allow(dead_code)]
     pub fn generate_path(n: u32) -> Vec<(u32, u32)> {
         let total = n * n;
         (0..total).map(|d| Self::d2xy(n, d)).collect()
@@ -479,7 +469,6 @@ impl FractalTerrain {
     /// `power` determines the grid size: side = 2^power + 1.
     /// `roughness` controls how quickly the random displacement decreases (0..1 typical).
     /// `seed_corners` sets the four corner heights `[top_left, top_right, bot_left, bot_right]`.
-    #[allow(dead_code)]
     pub fn diamond_square(power: u32, roughness: f64, seed_corners: [f64; 4]) -> Vec<Vec<f64>> {
         let size = (1 << power) + 1;
         let mut grid = vec![vec![0.0_f64; size]; size];
@@ -548,7 +537,6 @@ impl FractalTerrain {
     ///
     /// Produces a heightmap profile (1D array) of size 2^power + 1.
     /// `roughness` is the Hurst exponent factor (0 < roughness < 1).
-    #[allow(dead_code)]
     pub fn midpoint_displacement_1d(
         power: u32,
         roughness: f64,
@@ -581,7 +569,6 @@ impl FractalTerrain {
         heights
     }
     /// Compute the RMS (root mean square) roughness of a heightmap.
-    #[allow(dead_code)]
     pub fn rms_roughness(grid: &[Vec<f64>]) -> f64 {
         let mut sum = 0.0;
         let mut count = 0usize;
@@ -604,7 +591,6 @@ impl FractalTerrain {
         (sum / count as f64).sqrt()
     }
     /// Find the min and max height in a grid.
-    #[allow(dead_code)]
     pub fn height_range(grid: &[Vec<f64>]) -> (f64, f64) {
         let mut lo = f64::MAX;
         let mut hi = f64::MIN;
@@ -631,7 +617,6 @@ impl FractalMesh {
     ///
     /// Returns `(vertices, triangles)` where vertices are `[f64; 3]` positions
     /// and triangles are index triples into the vertex array.
-    #[allow(dead_code)]
     pub fn from_heightmap(grid: &[Vec<f64>], spacing: f64) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
         let rows = grid.len();
         if rows == 0 {
@@ -658,7 +643,6 @@ impl FractalMesh {
         (vertices, triangles)
     }
     /// Compute the total surface area of a triangle mesh.
-    #[allow(dead_code)]
     pub fn surface_area(vertices: &[[f64; 3]], triangles: &[[usize; 3]]) -> f64 {
         let mut area = 0.0;
         for tri in triangles {
@@ -677,7 +661,6 @@ impl FractalMesh {
         area
     }
     /// Number of vertices and triangles expected from a heightmap of given size.
-    #[allow(dead_code)]
     pub fn expected_counts(rows: usize, cols: usize) -> (usize, usize) {
         let verts = rows * cols;
         let tris = if rows > 1 && cols > 1 {
@@ -982,13 +965,11 @@ pub enum OrbitType {
 pub struct KochSnowflake;
 impl KochSnowflake {
     /// Theoretical Hausdorff dimension: same as Koch curve, log(4)/log(3).
-    #[allow(dead_code)]
     pub fn theoretical_dimension() -> f64 {
         (4.0_f64).ln() / (3.0_f64).ln()
     }
     /// Generate the Koch snowflake as line segments by recursively subdividing
     /// each side of an equilateral triangle.
-    #[allow(dead_code)]
     pub fn generate(generations: usize, side_length: f64) -> Vec<(Point2, Point2)> {
         let h = side_length * (3.0_f64).sqrt() / 2.0;
         let vertices = [
@@ -1005,7 +986,6 @@ impl KochSnowflake {
         segments
     }
     /// Recursively subdivide one edge of the snowflake.
-    #[allow(dead_code)]
     fn subdivide(a: Point2, b: Point2, depth: usize, out: &mut Vec<(Point2, Point2)>) {
         if depth == 0 {
             out.push((a, b));
@@ -1029,17 +1009,14 @@ impl KochSnowflake {
         Self::subdivide(p3, b, depth - 1, out);
     }
     /// Count the number of segments after `n` generations.
-    #[allow(dead_code)]
     pub fn segment_count(n: usize) -> usize {
         3 * 4_usize.pow(n as u32)
     }
     /// Perimeter of the snowflake after `n` generations with initial side `s`.
-    #[allow(dead_code)]
     pub fn perimeter(n: usize, side_length: f64) -> f64 {
         3.0 * side_length * (4.0 / 3.0_f64).powi(n as i32)
     }
     /// Area of the Koch snowflake after `n` generations.
-    #[allow(dead_code)]
     pub fn area(n: usize, side_length: f64) -> f64 {
         let a0 = (3.0_f64).sqrt() / 4.0 * side_length * side_length;
         let mut area = a0;
@@ -1064,7 +1041,6 @@ impl Multifractal {
     ///
     /// `q` is the moment order (q=0 gives box-counting dim, q=1 info dim, q=2 correlation dim).
     /// Returns `(dimension, r_squared)`.
-    #[allow(dead_code)]
     pub fn generalized_dimension(points: &[Point2], q: f64, num_scales: usize) -> (f64, f64) {
         if points.is_empty() || num_scales < 2 {
             return (0.0, 0.0);
@@ -1121,7 +1097,6 @@ impl Multifractal {
     /// Compute the multifractal spectrum D(q) for a range of q values.
     ///
     /// Returns a vector of `(q, D_q)` pairs.
-    #[allow(dead_code)]
     pub fn spectrum(points: &[Point2], q_values: &[f64], num_scales: usize) -> Vec<(f64, f64)> {
         q_values
             .iter()
@@ -1137,7 +1112,6 @@ impl Multifractal {
     /// where tau(q) = (q-1)*D(q).
     ///
     /// Returns a vector of `(alpha, f_alpha)` pairs.
-    #[allow(dead_code)]
     pub fn singularity_spectrum(dq_spectrum: &[(f64, f64)]) -> Vec<(f64, f64)> {
         if dq_spectrum.len() < 3 {
             return Vec::new();
@@ -1218,7 +1192,6 @@ impl Point3 {
         Self { x, y, z }
     }
     /// Euclidean distance to another point.
-    #[allow(dead_code)]
     pub fn distance(&self, other: &Point3) -> f64 {
         ((self.x - other.x).powi(2) + (self.y - other.y).powi(2) + (self.z - other.z).powi(2))
             .sqrt()
@@ -1599,17 +1572,14 @@ impl Aabb3 {
         Self { min, max }
     }
     /// Side length (assumes cubic).
-    #[allow(dead_code)]
     pub fn side(&self) -> f64 {
         self.max.x - self.min.x
     }
     /// Volume.
-    #[allow(dead_code)]
     pub fn volume(&self) -> f64 {
         (self.max.x - self.min.x) * (self.max.y - self.min.y) * (self.max.z - self.min.z)
     }
     /// Center point.
-    #[allow(dead_code)]
     pub fn center(&self) -> Point3 {
         Point3::new(
             (self.min.x + self.max.x) / 2.0,
@@ -1627,19 +1597,16 @@ impl MortonCurve {
     /// Encode 2D coordinates into a Morton code.
     ///
     /// Interleaves the bits of `x` and `y` (each up to 16 bits).
-    #[allow(dead_code)]
     pub fn encode(x: u32, y: u32) -> u64 {
         Self::spread_bits(x as u64) | (Self::spread_bits(y as u64) << 1)
     }
     /// Decode a Morton code back to 2D coordinates.
-    #[allow(dead_code)]
     pub fn decode(code: u64) -> (u32, u32) {
         let x = Self::compact_bits(code) as u32;
         let y = Self::compact_bits(code >> 1) as u32;
         (x, y)
     }
     /// Spread bits: insert a zero between each bit.
-    #[allow(dead_code)]
     fn spread_bits(mut v: u64) -> u64 {
         v &= 0x0000_0000_FFFF_FFFF;
         v = (v | (v << 16)) & 0x0000_FFFF_0000_FFFF;
@@ -1650,7 +1617,6 @@ impl MortonCurve {
         v
     }
     /// Compact bits: remove every other bit.
-    #[allow(dead_code)]
     fn compact_bits(mut v: u64) -> u64 {
         v &= 0x5555_5555_5555_5555;
         v = (v | (v >> 1)) & 0x3333_3333_3333_3333;
@@ -1663,7 +1629,6 @@ impl MortonCurve {
     /// Generate the Z-order traversal as a list of 2D points for an `n x n` grid.
     ///
     /// `n` should be a power of 2.
-    #[allow(dead_code)]
     pub fn generate_path(n: u32) -> Vec<(u32, u32)> {
         let total = n * n;
         let mut pairs: Vec<(u64, u32, u32)> = Vec::with_capacity(total as usize);
@@ -1676,14 +1641,12 @@ impl MortonCurve {
         pairs.iter().map(|&(_, x, y)| (x, y)).collect()
     }
     /// 3D Morton code encoding.
-    #[allow(dead_code)]
     pub fn encode_3d(x: u32, y: u32, z: u32) -> u64 {
         Self::spread_bits_3d(x as u64)
             | (Self::spread_bits_3d(y as u64) << 1)
             | (Self::spread_bits_3d(z as u64) << 2)
     }
     /// Spread bits for 3D: insert two zeros between each bit.
-    #[allow(dead_code)]
     fn spread_bits_3d(mut v: u64) -> u64 {
         v &= 0x001F_FFFF;
         v = (v | (v << 32)) & 0x001F_0000_0000_FFFF;
@@ -1724,14 +1687,12 @@ impl Point2 {
 pub struct MengerSponge;
 impl MengerSponge {
     /// Theoretical Hausdorff dimension: log(20)/log(3).
-    #[allow(dead_code)]
     pub fn theoretical_dimension() -> f64 {
         (20.0_f64).ln() / (3.0_f64).ln()
     }
     /// Generate the Menger sponge as a list of cubes (AABBs) at the given recursion level.
     ///
     /// `level` 0 returns a single unit cube, level 1 returns 20 sub-cubes, etc.
-    #[allow(dead_code)]
     pub fn generate(level: usize, origin: Point3, size: f64) -> Vec<Aabb3> {
         if level == 0 {
             return vec![Aabb3::new(
@@ -1760,12 +1721,10 @@ impl MengerSponge {
         cubes
     }
     /// Number of cubes at a given level.
-    #[allow(dead_code)]
     pub fn cube_count(level: usize) -> usize {
         20_usize.pow(level as u32)
     }
     /// Total volume at a given level (unit cube start).
-    #[allow(dead_code)]
     pub fn total_volume(level: usize) -> f64 {
         (20.0 / 27.0_f64).powi(level as i32)
     }

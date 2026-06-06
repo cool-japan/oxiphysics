@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -37,10 +36,6 @@ const ICE_THERMAL_CONDUCTIVITY: f64 = 2.1;
 
 /// Specific heat capacity of ice in J/(kg K).
 const ICE_SPECIFIC_HEAT: f64 = 2090.0;
-
-/// Latent heat of fusion for ice in J/kg.
-#[allow(dead_code)]
-const ICE_LATENT_HEAT: f64 = 334_000.0;
 
 /// Melting point of ice at 1 atm in K.
 const ICE_MELTING_POINT: f64 = 273.15;
@@ -995,7 +990,6 @@ pub fn cubic_spline_gradient_3d(r: f64, h: f64) -> f64 {
 /// Perform one SPH time step for ice particles.
 ///
 /// Simplified leapfrog integration with viscous forces from Glen's flow law.
-#[allow(clippy::too_many_arguments)]
 pub fn ice_sph_step(
     particles: &mut [IceParticle],
     glen: &GlenFlowLaw,
@@ -1004,33 +998,33 @@ pub fn ice_sph_step(
     thickness: f64,
     _gravity_vec: [f64; 3],
 ) {
-    let n = particles.len();
     // Compute driving stress
     let tau_d = IceSheetFlow::driving_stress(thickness, surface_slope);
 
-    for i in 0..n {
-        let t = particles[i].temperature;
+    for p in particles.iter_mut() {
+        let t = p.temperature;
         let sr = glen.strain_rate(tau_d, t);
         let eta = glen.effective_viscosity(tau_d, t);
-        particles[i].viscosity = eta;
+        p.viscosity = eta;
 
         // Simple gravity-driven acceleration
         let acc_x = tau_d / (ICE_DENSITY * thickness.max(1.0));
-        particles[i].vel[0] += acc_x * dt;
+        p.vel[0] += acc_x * dt;
         // Viscous damping
         let damping = (-dt * ICE_DENSITY * GRAVITY / eta.max(1.0)).exp();
-        particles[i].vel[0] *= damping;
+        p.vel[0] *= damping;
 
         // Update position
-        for d in 0..3 {
-            particles[i].pos[d] += particles[i].vel[d] * dt;
+        let vel = p.vel;
+        for (pos_k, vel_k) in p.pos.iter_mut().zip(vel.iter()) {
+            *pos_k += vel_k * dt;
         }
 
         // Update stress (simplified)
-        particles[i].stress[0] = 2.0 * eta * sr;
+        p.stress[0] = 2.0 * eta * sr;
 
         // Age
-        particles[i].age += dt / SECONDS_PER_YEAR;
+        p.age += dt / SECONDS_PER_YEAR;
     }
 }
 

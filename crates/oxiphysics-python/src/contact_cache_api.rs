@@ -5,9 +5,6 @@
 //!
 //! Exposes persistent contact pair cache with warm-start impulse data to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::contact_cache::{ContactCache, ContactPoint};
 use pyo3::prelude::*;
 

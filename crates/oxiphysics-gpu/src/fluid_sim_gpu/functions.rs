@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::ptr_arg)]
 use super::types::{
     FlipParticle, GpuBoundaryBox, LbmCellType, LbmD2Q9, MacGrid, SphConfig, SphKernels, SphParticle,
 };
@@ -22,13 +21,6 @@ pub(super) fn scale3(v: [f64; 3], s: f64) -> [f64; 3] {
 pub(super) fn length3(v: [f64; 3]) -> f64 {
     dot3(v, v).sqrt()
 }
-pub(super) fn normalize3(v: [f64; 3]) -> [f64; 3] {
-    let len = length3(v);
-    if len < 1e-15 {
-        return [0.0; 3];
-    }
-    scale3(v, 1.0 / len)
-}
 pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -39,7 +31,7 @@ pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// Compute SPH density for all particles (mock GPU kernel dispatch).
 ///
 /// For each particle i, density_i = Σ_j m_j * W_poly6(|r_i - r_j|, h)
-pub fn sph_compute_density(particles: &mut Vec<SphParticle>, config: &SphConfig) {
+pub fn sph_compute_density(particles: &mut [SphParticle], config: &SphConfig) {
     let n = particles.len();
     let mut densities = vec![0.0f64; n];
     for i in 0..n {
@@ -56,14 +48,14 @@ pub fn sph_compute_density(particles: &mut Vec<SphParticle>, config: &SphConfig)
     }
 }
 /// Compute SPH pressure from density (Tait equation).
-pub fn sph_compute_pressure(particles: &mut Vec<SphParticle>, config: &SphConfig) {
+pub fn sph_compute_pressure(particles: &mut [SphParticle], config: &SphConfig) {
     for p in particles.iter_mut() {
         let ratio = p.density / config.rest_density;
         p.pressure = config.pressure_k * (ratio.powi(7) - 1.0);
     }
 }
 /// Compute SPH forces: pressure gradient + viscosity + gravity + surface tension.
-pub fn sph_compute_forces(particles: &mut Vec<SphParticle>, config: &SphConfig) {
+pub fn sph_compute_forces(particles: &mut [SphParticle], config: &SphConfig) {
     let n = particles.len();
     let mut forces = vec![[0.0f64; 3]; n];
     for i in 0..n {
@@ -99,7 +91,7 @@ pub fn sph_compute_forces(particles: &mut Vec<SphParticle>, config: &SphConfig) 
     }
 }
 /// Integrate SPH particles using semi-implicit Euler.
-pub fn sph_integrate(particles: &mut Vec<SphParticle>, config: &SphConfig) {
+pub fn sph_integrate(particles: &mut [SphParticle], config: &SphConfig) {
     for p in particles.iter_mut() {
         let accel = scale3(p.force, 1.0 / p.density.max(1e-6));
         p.velocity = add3(p.velocity, scale3(accel, config.dt));
@@ -107,7 +99,7 @@ pub fn sph_integrate(particles: &mut Vec<SphParticle>, config: &SphConfig) {
     }
 }
 /// Full SPH step: density → pressure → forces → integrate.
-pub fn sph_step(particles: &mut Vec<SphParticle>, config: &SphConfig) {
+pub fn sph_step(particles: &mut [SphParticle], config: &SphConfig) {
     sph_compute_density(particles, config);
     sph_compute_pressure(particles, config);
     sph_compute_forces(particles, config);
@@ -426,7 +418,7 @@ pub fn g2p_transfer(
 /// atomic accumulation. Here we use a parallel-style double loop and write
 /// results into a temporary buffer first to keep the interface identical to a
 /// real GPU dispatch.
-pub fn gpu_sph_density_parallel(particles: &mut Vec<SphParticle>, config: &SphConfig) {
+pub fn gpu_sph_density_parallel(particles: &mut [SphParticle], config: &SphConfig) {
     let n = particles.len();
     let mut densities = vec![0.0f64; n];
     for i in 0..n {
@@ -561,7 +553,7 @@ pub fn morton_sort_particles(particles: &mut Vec<SphParticle>, domain_size: [f64
 /// GPU Euler integration: v += a*dt, x += v*dt.
 ///
 /// Maps to one GPU thread per particle.
-pub fn gpu_particle_integrate_euler(particles: &mut Vec<SphParticle>, dt: f64) {
+pub fn gpu_particle_integrate_euler(particles: &mut [SphParticle], dt: f64) {
     for p in particles.iter_mut() {
         let inv_rho = 1.0 / p.density.max(1e-6);
         for d in 0..3 {
@@ -574,7 +566,7 @@ pub fn gpu_particle_integrate_euler(particles: &mut Vec<SphParticle>, dt: f64) {
 /// GPU Verlet integration using the previous time-step `dt_prev`.
 ///
 /// x_new = x + v*dt + 0.5*a*dt^2 (Störmer–Verlet, velocity-explicit variant).
-pub fn gpu_particle_integrate_verlet(particles: &mut Vec<SphParticle>, dt: f64, _dt_prev: f64) {
+pub fn gpu_particle_integrate_verlet(particles: &mut [SphParticle], dt: f64, _dt_prev: f64) {
     for p in particles.iter_mut() {
         let inv_rho = 1.0 / p.density.max(1e-6);
         for d in 0..3 {
@@ -587,7 +579,7 @@ pub fn gpu_particle_integrate_verlet(particles: &mut Vec<SphParticle>, dt: f64, 
 /// GPU boundary condition: clamp particles inside an AABB and reflect velocities.
 ///
 /// One GPU thread per particle; no inter-thread communication needed.
-pub fn gpu_apply_boundary_box(particles: &mut Vec<SphParticle>, bounds: &GpuBoundaryBox) {
+pub fn gpu_apply_boundary_box(particles: &mut [SphParticle], bounds: &GpuBoundaryBox) {
     for p in particles.iter_mut() {
         for d in 0..3 {
             if p.position[d] < bounds.min[d] {
@@ -676,7 +668,7 @@ pub fn gpu_advect_2d(
 /// The staggered MAC discretisation gives the standard 5-point stencil:
 ///   p\[i,j\] = (p\[i+1,j\] + p\[i-1,j\] + p\[i,j+1\] + p\[i,j-1\] - dx²*rhs\[i,j\]) / 4
 pub fn gpu_pressure_poisson_jacobi_2d(
-    pressure: &mut Vec<f64>,
+    pressure: &mut [f64],
     div: &[f64],
     nx: usize,
     ny: usize,
@@ -684,7 +676,7 @@ pub fn gpu_pressure_poisson_jacobi_2d(
     iterations: usize,
 ) {
     let dx2 = dx * dx;
-    let mut p_new = pressure.clone();
+    let mut p_new = pressure.to_vec();
     for _ in 0..iterations {
         for j in 0..ny {
             for i in 0..nx {

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,9 +15,6 @@
 //! - [`StructuralDamping`] — Rayleigh proportional damping C = αM + βK
 //! - [`VortexInducedVibration`] — VIV lock-in criterion and amplitude model
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ── Math helpers ─────────────────────────────────────────────────────────────
@@ -27,20 +23,8 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
-fn norm(v: &[f64]) -> f64 {
-    dot(v, v).sqrt()
-}
-
-fn sub_vec(a: &[f64], b: &[f64]) -> Vec<f64> {
-    a.iter().zip(b.iter()).map(|(x, y)| x - y).collect()
-}
-
 fn scale_vec(v: &[f64], s: f64) -> Vec<f64> {
     v.iter().map(|x| x * s).collect()
-}
-
-fn add_vec(a: &[f64], b: &[f64]) -> Vec<f64> {
-    a.iter().zip(b.iter()).map(|(x, y)| x + y).collect()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -216,8 +200,13 @@ impl AleMapping {
 
     /// Update current positions from displacements.
     pub fn update(&mut self, displacements: &[f64]) {
-        for i in 0..self.cur_positions.len().min(displacements.len()) {
-            self.cur_positions[i] = self.ref_positions[i] + displacements[i];
+        for ((cur, &ref_pos), &disp) in self
+            .cur_positions
+            .iter_mut()
+            .zip(self.ref_positions.iter())
+            .zip(displacements.iter())
+        {
+            *cur = ref_pos + disp;
         }
     }
 

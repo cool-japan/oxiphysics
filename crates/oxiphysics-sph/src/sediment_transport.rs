@@ -17,8 +17,6 @@
 //! - Settling velocity of sediment grains (Stokes, Ferguson-Church)
 //! - Suspended load SPH advection–diffusion
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -623,7 +621,6 @@ pub struct TurbidityParticle {
 
 impl TurbidityParticle {
     /// Create a new [`TurbidityParticle`].
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         position: [f64; 3],
         velocity: [f64; 3],
@@ -815,7 +812,6 @@ impl SuspendedLoadParams {
 /// * `eps_s` – sediment diffusivity (m²/s)
 /// * `r_ij`  – distance between i and j (m)
 /// * `dw`    – magnitude of ∇W_ij (1/m⁴)
-#[allow(clippy::too_many_arguments)]
 pub fn sph_diffusion_rate(
     ci: f64,
     cj: f64,
@@ -893,7 +889,6 @@ pub struct SedimentParticle {
 
 impl SedimentParticle {
     /// Create a new [`SedimentParticle`].
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         position: [f64; 3],
         velocity: [f64; 3],

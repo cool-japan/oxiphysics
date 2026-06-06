@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "oxiphysics"
-version = "0.1.1"
+version = "0.1.2"
 description = "Python bindings for the OxiPhysics engine"
 readme = "README.md"
 license = "Apache-2.0"

@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,7 +15,6 @@ use super::summation::EwaldSummation;
 /// Cardinal B-spline of order `n` evaluated at `x`.
 ///
 /// Used for charge spreading in smooth PME.
-#[allow(dead_code)]
 pub fn bspline(n: usize, x: f64) -> f64 {
     if n == 1 {
         if (0.0..1.0).contains(&x) { 1.0 } else { 0.0 }
@@ -30,7 +28,6 @@ pub fn bspline(n: usize, x: f64) -> f64 {
 ///
 /// Given fractional coordinates `u` in \[0, grid_size), spreads using
 /// order-`p` B-splines. Returns the weight at grid point `(ix, iy, iz)`.
-#[allow(dead_code)]
 pub fn bspline_weight_3d(
     u: [f64; 3],
     grid_point: [usize; 3],
@@ -55,7 +52,6 @@ pub fn bspline_weight_3d(
 /// Distinct from [`EwaldSummation`] in that it stores a single `alpha`,
 /// `kmax`, and `box_len` (cubic box), making it easy to instantiate without
 /// building [`EwaldParams`] first.
-#[allow(dead_code)]
 pub struct EwaldSum {
     /// Ewald splitting parameter (angstrom^-1).
     pub alpha: f64,
@@ -65,7 +61,6 @@ pub struct EwaldSum {
     pub box_len: f64,
 }
 
-#[allow(dead_code)]
 impl EwaldSum {
     /// Create a new [`EwaldSum`].
     pub fn new(alpha: f64, kmax: usize, box_len: f64) -> Self {
@@ -176,7 +171,6 @@ impl EwaldSum {
 /// Spreads point charges onto a regular 3D grid using nearest-grid-point (NGP)
 /// assignment.  A full PME implementation would then FFT this grid; here the
 /// grid object stores the raw charge density for downstream use.
-#[allow(dead_code)]
 pub struct PmeGrid {
     /// Number of grid points per dimension (cubic grid).
     pub grid_size: usize,
@@ -188,7 +182,6 @@ pub struct PmeGrid {
     pub box_len: f64,
 }
 
-#[allow(dead_code)]
 impl PmeGrid {
     /// Create a new zero-initialised [`PmeGrid`].
     pub fn new(grid_size: usize, alpha: f64, box_len: f64) -> Self {
@@ -316,7 +309,6 @@ impl PmeGrid {
 /// # Arguments
 /// * `k_max`      - maximum index per dimension.
 /// * `box_lengths` - orthorhombic box lengths \[Lx, Ly, Lz\] (angstrom).
-#[allow(dead_code)]
 pub fn k_vector_list(k_max: usize, box_lengths: [f64; 3]) -> Vec<[f64; 3]> {
     let two_pi = 2.0 * std::f64::consts::PI;
     let km = k_max as i32;
@@ -347,7 +339,6 @@ pub fn k_vector_list(k_max: usize, box_lengths: [f64; 3]) -> Vec<[f64; 3]> {
 /// Decomposes into real part S_cos = Σᵢ qᵢ cos(k·rᵢ) and
 /// imaginary part S_sin = Σᵢ qᵢ sin(k·rᵢ).
 #[derive(Debug, Clone, Copy, Default)]
-#[allow(dead_code)]
 pub struct StructureFactor {
     /// Real part: Σᵢ qᵢ cos(k·rᵢ).
     pub real: f64,
@@ -355,7 +346,6 @@ pub struct StructureFactor {
     pub imag: f64,
 }
 
-#[allow(dead_code)]
 impl StructureFactor {
     /// |S(k)|² = real² + imag².
     #[inline]
@@ -395,7 +385,6 @@ impl StructureFactor {
 /// Utility for running a short velocity-Verlet MD loop with Ewald forces.
 ///
 /// Operates on plain `[f64;3]` arrays with no external dependencies.
-#[allow(dead_code)]
 pub struct EwaldForceIntegrator {
     /// Ewald summation parameters.
     pub ewald: EwaldSummation,
@@ -403,7 +392,6 @@ pub struct EwaldForceIntegrator {
     pub dt: f64,
 }
 
-#[allow(dead_code)]
 impl EwaldForceIntegrator {
     /// Create a new integrator.
     pub fn new(ewald: EwaldSummation, dt: f64) -> Self {
@@ -421,11 +409,10 @@ impl EwaldForceIntegrator {
     ///
     /// # Returns
     /// The potential energy (kJ mol⁻¹) at the new configuration.
-    #[allow(clippy::too_many_arguments)]
     pub fn step(
         &self,
-        positions: &mut Vec<[f64; 3]>,
-        velocities: &mut Vec<[f64; 3]>,
+        positions: &mut [[f64; 3]],
+        velocities: &mut [[f64; 3]],
         charges: &[f64],
         masses: &[f64],
     ) -> f64 {
@@ -469,8 +456,8 @@ impl EwaldForceIntegrator {
     /// Run for `n_steps` and record total energy at each step.
     pub fn run(
         &self,
-        positions: &mut Vec<[f64; 3]>,
-        velocities: &mut Vec<[f64; 3]>,
+        positions: &mut [[f64; 3]],
+        velocities: &mut [[f64; 3]],
         charges: &[f64],
         masses: &[f64],
         n_steps: usize,
@@ -493,7 +480,6 @@ impl EwaldSum {
     ///
     /// Uses central differences with step size `h`.
     /// Useful for testing analytic force implementations.
-    #[allow(dead_code)]
     pub fn numerical_force_component(
         &self,
         positions: &[[f64; 3]],
@@ -514,7 +500,6 @@ impl EwaldSum {
     /// Real-space forces as force array (kJ mol⁻¹ Å⁻¹).
     ///
     /// This mirrors `EwaldSummation::real_space_forces` but for the cubic-box `EwaldSum`.
-    #[allow(dead_code)]
     pub fn real_space_forces(&self, positions: &[[f64; 3]], charges: &[f64]) -> Vec<[f64; 3]> {
         let n = positions.len();
         let alpha = self.alpha;
@@ -550,7 +535,6 @@ impl EwaldSum {
     }
 
     /// Net charge of the system.
-    #[allow(dead_code)]
     pub fn net_charge(charges: &[f64]) -> f64 {
         charges.iter().sum()
     }
@@ -575,7 +559,6 @@ impl EwaldSum {
 /// * `a`         - lattice constant (angstrom); nearest-neighbour distance = a/2.
 ///
 /// Returns the Madelung constant (dimensionless).
-#[allow(dead_code)]
 pub fn madelung_constant_nacl(alpha: f64, k_max: usize, n_cells: i32, a: f64) -> f64 {
     // Build NaCl lattice in [-n_cells, n_cells]³
     let mut positions: Vec<[f64; 3]> = Vec::new();
@@ -623,7 +606,6 @@ pub fn madelung_constant_nacl(alpha: f64, k_max: usize, n_cells: i32, a: f64) ->
 /// Madelung constant for a simple 2-ion NaCl dimer (exact = 1.0).
 ///
 /// Returns the analytic Madelung constant A = 1.0 for a single ion pair.
-#[allow(dead_code)]
 pub fn madelung_constant_dimer(r: f64) -> f64 {
     // For a dimer +q/-q at separation r: E = -COULOMB_K * q^2 / r
     // Madelung A = 1.0 by definition
@@ -637,7 +619,6 @@ pub fn madelung_constant_dimer(r: f64) -> f64 {
 /// A_direct = -Σ_{n≠0} (-1)^|n| / |n|   (converges only conditionally)
 ///
 /// This uses the Ewald-accelerated form internally via [`EwaldSum`].
-#[allow(dead_code)]
 pub fn madelung_direct_lattice(n_max: i32, a: f64) -> f64 {
     let mut sum = 0.0;
     for nx in -n_max..=n_max {
@@ -668,7 +649,6 @@ pub fn madelung_direct_lattice(n_max: i32, a: f64) -> f64 {
 ///
 /// Allows parallel decomposition: split the k-vector list across threads and
 /// sum the contributions.
-#[allow(dead_code)]
 pub fn reciprocal_energy_kvecs(
     positions: &[[f64; 3]],
     charges: &[f64],
@@ -702,7 +682,6 @@ pub fn reciprocal_energy_kvecs(
 /// Compute reciprocal-space forces from a list of k-vectors.
 ///
 /// Returns a `Vec<[f64;3]>` of forces (kJ mol⁻¹ Å⁻¹).
-#[allow(dead_code)]
 pub fn reciprocal_forces_kvecs(
     positions: &[[f64; 3]],
     charges: &[f64],
@@ -746,7 +725,6 @@ pub fn reciprocal_forces_kvecs(
 // ---------------------------------------------------------------------------
 
 /// Measures how the Ewald reciprocal energy converges as `k_max` increases.
-#[allow(dead_code)]
 pub fn reciprocal_energy_convergence(
     positions: &[[f64; 3]],
     charges: &[f64],

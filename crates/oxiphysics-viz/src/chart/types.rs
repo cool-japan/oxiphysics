@@ -2,11 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// Residual convergence chart (semi-log).
-#[allow(dead_code)]
 pub struct ConvergencePlot {
     /// Iteration indices.
     pub iterations: Vec<usize>,
@@ -77,7 +75,6 @@ impl ConvergencePlot {
     }
 }
 /// Multi-series line chart with configurable legend and smooth-curve overlay.
-#[allow(dead_code)]
 pub struct MultiLinePlot {
     /// Series data.
     pub series: Vec<Series>,
@@ -179,7 +176,6 @@ impl MultiLinePlot {
     }
 }
 /// A single scatter point.
-#[allow(dead_code)]
 pub struct ScatterPoint {
     /// X coordinate.
     pub x: f64,
@@ -191,7 +187,6 @@ pub struct ScatterPoint {
     pub size: f32,
 }
 /// Error bar data for scatter or line charts.
-#[allow(dead_code)]
 pub struct ErrorBars {
     /// X positions.
     pub x: Vec<f64>,
@@ -277,7 +272,6 @@ impl ErrorBars {
     }
 }
 /// A single bubble in a 3D bubble chart.
-#[allow(dead_code)]
 pub struct BubblePoint {
     /// X coordinate.
     pub x: f64,
@@ -291,7 +285,6 @@ pub struct BubblePoint {
     pub color: [f32; 4],
 }
 /// A text annotation placed at a specific data-coordinate position.
-#[allow(dead_code)]
 pub struct Annotation {
     /// Annotation text.
     pub text: String,
@@ -343,7 +336,6 @@ impl Annotation {
     }
 }
 /// Polar plot (rose diagram) for directional or cyclic data.
-#[allow(dead_code)]
 pub struct PolarPlot {
     /// (angle_rad, radius) pairs.
     pub points: Vec<(f64, f64)>,
@@ -394,7 +386,6 @@ impl PolarPlot {
 /// Contour plot using the marching squares algorithm.
 ///
 /// Extracts iso-contour line segments from a 2D scalar field.
-#[allow(dead_code)]
 pub struct ContourPlot {
     /// Grid width (columns).
     pub width: usize,
@@ -485,7 +476,6 @@ impl ContourPlot {
     }
 }
 /// Vehicle telemetry chart.
-#[allow(dead_code)]
 pub struct SensorPlot {
     /// Telemetry samples.
     pub samples: Vec<TelemetrySample>,
@@ -530,7 +520,6 @@ impl SensorPlot {
     }
 }
 /// Logarithmic-scale axis configuration.
-#[allow(dead_code)]
 pub struct LogAxis {
     /// Lower bound (must be > 0).
     pub lo: f64,
@@ -572,7 +561,6 @@ impl LogAxis {
     }
 }
 /// 2D phase portrait: x vs dx/dt.
-#[allow(dead_code)]
 pub struct PhasePortrait {
     /// Trajectory x values.
     pub x: Vec<f64>,
@@ -634,7 +622,6 @@ impl PhasePortrait {
     }
 }
 /// Axis configuration for a chart.
-#[allow(dead_code)]
 pub struct AxisConfig {
     /// Axis label.
     pub label: String,
@@ -679,7 +666,6 @@ impl AxisConfig {
     }
 }
 /// A named data series for plotting.
-#[allow(dead_code)]
 pub struct Series {
     /// Series label.
     pub label: String,
@@ -710,7 +696,6 @@ impl Series {
     }
 }
 /// Multi-series line chart.
-#[allow(dead_code)]
 pub struct LinePlot {
     /// Data series.
     pub series: Vec<Series>,
@@ -770,7 +755,6 @@ impl LinePlot {
     }
 }
 /// 1D histogram plot.
-#[allow(dead_code)]
 pub struct HistogramPlot {
     /// Number of bins.
     pub bins: usize,
@@ -853,7 +837,6 @@ impl HistogramPlot {
     }
 }
 /// Scatter plot renderer.
-#[allow(dead_code)]
 pub struct ScatterPlot {
     /// Data points.
     pub points: Vec<ScatterPoint>,
@@ -898,7 +881,6 @@ impl ScatterPlot {
     }
 }
 /// 3D bubble chart (x, y, z = size).
-#[allow(dead_code)]
 pub struct BubbleChart {
     /// Data points.
     pub points: Vec<BubblePoint>,
@@ -948,7 +930,6 @@ impl BubbleChart {
     }
 }
 /// Parallel coordinates chart for multi-dimensional physics data.
-#[allow(dead_code)]
 pub struct ParallelCoord {
     /// Axis names.
     pub axes: Vec<String>,
@@ -1012,7 +993,6 @@ impl ParallelCoord {
     }
 }
 /// Multi-line energy time series chart.
-#[allow(dead_code)]
 pub struct EnergyTimeSeries {
     /// Time values.
     pub time: Vec<f64>,
@@ -1066,7 +1046,6 @@ impl EnergyTimeSeries {
     }
 }
 /// A single telemetry sample.
-#[allow(dead_code)]
 pub struct TelemetrySample {
     /// Timestamp (seconds).
     pub time: f64,
@@ -1086,7 +1065,6 @@ pub struct TelemetrySample {
     pub speed: f64,
 }
 /// Grouped / stacked bar chart.
-#[allow(dead_code)]
 pub struct BarChart {
     /// Group labels.
     pub group_labels: Vec<String>,
@@ -1150,7 +1128,6 @@ impl BarChart {
     }
 }
 /// Axis tick marks with formatted string labels.
-#[allow(dead_code)]
 pub struct AxisTicksLabel {
     /// Tick positions in data coordinates.
     pub positions: Vec<f64>,
@@ -1187,7 +1164,6 @@ impl AxisTicksLabel {
 /// SVG string exporter for chart rendering.
 ///
 /// Produces minimal SVG markup suitable for embedding in HTML or saving to disk.
-#[allow(dead_code)]
 pub struct SvgExporter {
     /// Canvas width in pixels.
     pub width: usize,
@@ -1258,7 +1234,6 @@ impl SvgExporter {
 /// Circular ring buffer for real-time chart updates.
 ///
 /// Maintains the last `capacity` samples in insertion order.
-#[allow(dead_code)]
 pub struct RealTimeBuffer {
     /// Maximum number of samples to retain.
     pub capacity: usize,
@@ -1305,7 +1280,6 @@ impl RealTimeBuffer {
     }
 }
 /// 2D heatmap with optional contour overlays.
-#[allow(dead_code)]
 pub struct HeatmapPlot {
     /// Grid width (columns).
     pub width: usize,
@@ -1377,7 +1351,6 @@ impl HeatmapPlot {
     }
 }
 /// Scatter plot marker shapes.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MarkerStyle {
     /// Circular marker.

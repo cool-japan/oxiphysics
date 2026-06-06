@@ -1,4 +1,3 @@
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! Covers Hagen-Poiseuille flow, slip flow (Knudsen regime), electroosmotic
 //! flow, passive micromixers and droplet microfluidics.  All quantities are
 //! in SI units unless stated otherwise.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -528,7 +525,7 @@ mod tests {
     fn test_mixing_efficiency_between_zero_and_one() {
         let mm = MicroMixer::new(100e-6, 20e-6, 10);
         let eta = mm.mixing_efficiency(50.0);
-        assert!(eta >= 0.0 && eta <= 1.0, "η = {eta}");
+        assert!((0.0..=1.0).contains(&eta), "η = {eta}");
     }
 
     #[test]

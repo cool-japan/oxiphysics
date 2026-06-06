@@ -3,8 +3,6 @@
 
 //! Smoothed-aggregation AMG hierarchy builder.
 
-#![allow(dead_code)]
-
 use crate::parallel_solver::CsrMatrix;
 use crate::solvers::amg::{
     aggregation::greedy_aggregate,
@@ -302,7 +300,6 @@ pub fn power_iteration_spectral_radius(a: &CsrMatrix, n_iters: usize) -> f64 {
 /// Jacobi-smoothed prolongator: P = (I - ω D^{-1} A) P_tent.
 ///
 /// Computed as P = P_tent - ω * D^{-1} * A * P_tent.
-#[allow(clippy::needless_range_loop)]
 pub fn jacobi_smooth_prolongator(a: &CsrMatrix, p_tent: &CsrMatrix, omega: f64) -> CsrMatrix {
     // Compute ω * D^{-1} * A * P_tent
     let d_inv = a.diagonal_preconditioner(); // = 1/A[i,i]
@@ -323,12 +320,12 @@ pub fn jacobi_smooth_prolongator(a: &CsrMatrix, p_tent: &CsrMatrix, omega: f64) 
     // Build result sparsity = union of P_tent and ap_tent column sets per row
     use std::collections::BTreeSet;
     let mut row_col_sets: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); n_fine];
-    for i in 0..n_fine {
+    for (i, row_set) in row_col_sets.iter_mut().enumerate() {
         for k in p_tent.row_offsets[i]..p_tent.row_offsets[i + 1] {
-            row_col_sets[i].insert(p_tent.col_indices[k]);
+            row_set.insert(p_tent.col_indices[k]);
         }
         for k in ap_tent.row_offsets[i]..ap_tent.row_offsets[i + 1] {
-            row_col_sets[i].insert(ap_tent.col_indices[k]);
+            row_set.insert(ap_tent.col_indices[k]);
         }
     }
 

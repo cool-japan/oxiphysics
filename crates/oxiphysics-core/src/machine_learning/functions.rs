@@ -2,33 +2,32 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{
     CrossValResult, DecisionTree, IsolationNode, KMeansResult, LinearRegression, Matrix, OobResult,
     PcaResult, TreeNode, TsneResult,
 };
 
-#[allow(missing_docs)]
+/// Compute the dot product of two equal-length slices.
 pub fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
-#[allow(dead_code, missing_docs)]
+/// Compute element-wise sum of two vectors.
 pub fn vec_add(a: &[f64], b: &[f64]) -> Vec<f64> {
     a.iter().zip(b.iter()).map(|(x, y)| x + y).collect()
 }
-#[allow(missing_docs)]
+/// Compute element-wise difference of two vectors.
 pub fn vec_sub(a: &[f64], b: &[f64]) -> Vec<f64> {
     a.iter().zip(b.iter()).map(|(x, y)| x - y).collect()
 }
-#[allow(dead_code, missing_docs)]
+/// Scale a vector by a scalar.
 pub fn vec_scale(a: &[f64], s: f64) -> Vec<f64> {
     a.iter().map(|x| x * s).collect()
 }
-#[allow(missing_docs)]
+/// Compute the Euclidean norm of a vector.
 pub fn vec_norm(a: &[f64]) -> f64 {
     dot(a, a).sqrt()
 }
-#[allow(missing_docs)]
+/// Compute the component-wise mean of a collection of vectors.
 pub fn mean_vec(data: &[Vec<f64>]) -> Vec<f64> {
     if data.is_empty() {
         return Vec::new();
@@ -43,7 +42,7 @@ pub fn mean_vec(data: &[Vec<f64>]) -> Vec<f64> {
     }
     m.iter().map(|x| x / n).collect()
 }
-#[allow(missing_docs)]
+/// Compute the component-wise variance of a collection of vectors.
 pub fn variance_vec(data: &[Vec<f64>]) -> Vec<f64> {
     let m = mean_vec(data);
     let n = data.len() as f64;
@@ -56,7 +55,9 @@ pub fn variance_vec(data: &[Vec<f64>]) -> Vec<f64> {
     }
     var.iter().map(|x| x / n).collect()
 }
-#[allow(dead_code, missing_docs)]
+/// Standardize data to zero mean and unit variance per component.
+///
+/// Returns `(standardized, mean, std_dev)`.
 pub fn standardize(data: &[Vec<f64>]) -> (Vec<Vec<f64>>, Vec<f64>, Vec<f64>) {
     let mu = mean_vec(data);
     let var = variance_vec(data);
@@ -109,18 +110,18 @@ pub fn solve_linear_system(a: &Matrix, b: &[f64]) -> Option<Vec<f64>> {
     let mut x = vec![0.0f64; n];
     for i in (0..n).rev() {
         let mut sum = rhs[i];
-        for j in i + 1..n {
-            sum -= m.get(i, j) * x[j];
+        for (j, &xj) in x.iter().enumerate().skip(i + 1) {
+            sum -= m.get(i, j) * xj;
         }
         x[i] = sum / m.get(i, i);
     }
     Some(x)
 }
-#[allow(missing_docs)]
+/// Compute the sigmoid (logistic) activation function.
 pub fn sigmoid(z: f64) -> f64 {
     1.0 / (1.0 + (-z).exp())
 }
-#[allow(dead_code, missing_docs)]
+/// Apply the sigmoid function element-wise to a slice.
 pub fn sigmoid_vec(z: &[f64]) -> Vec<f64> {
     z.iter().map(|&v| sigmoid(v)).collect()
 }
@@ -358,7 +359,7 @@ pub fn best_split(x: &[Vec<f64>], y: &[f64], min_samples: usize) -> Option<(usiz
         None
     }
 }
-#[allow(missing_docs)]
+/// Return the most frequent class label from a slice of labels.
 pub fn majority_vote(y: &[f64]) -> f64 {
     let mut counts = std::collections::HashMap::new();
     for &l in y {
@@ -370,7 +371,7 @@ pub fn majority_vote(y: &[f64]) -> f64 {
         .map(|(l, _)| l as f64)
         .unwrap_or(0.0)
 }
-#[allow(missing_docs)]
+/// Recursively build a decision tree node.
 pub fn build_tree(
     x: &[Vec<f64>],
     y: &[f64],
@@ -987,8 +988,8 @@ pub fn forward_substitution(l: &Matrix, b: &[f64]) -> Vec<f64> {
     let mut x = vec![0.0f64; n];
     for i in 0..n {
         let mut s = b[i];
-        for j in 0..i {
-            s -= l.get(i, j) * x[j];
+        for (j, &xj) in x.iter().enumerate().take(i) {
+            s -= l.get(i, j) * xj;
         }
         x[i] = s / l.get(i, i).max(1e-300);
     }
@@ -1000,8 +1001,8 @@ pub fn backward_substitution_t(l: &Matrix, b: &[f64]) -> Vec<f64> {
     let mut x = vec![0.0f64; n];
     for i in (0..n).rev() {
         let mut s = b[i];
-        for j in i + 1..n {
-            s -= l.get(j, i) * x[j];
+        for (j, &xj) in x.iter().enumerate().skip(i + 1) {
+            s -= l.get(j, i) * xj;
         }
         x[i] = s / l.get(i, i).max(1e-300);
     }

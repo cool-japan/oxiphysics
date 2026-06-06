@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use std::collections::HashMap;
 
 /// A set of anatomical landmarks.
@@ -39,12 +36,12 @@ impl LandmarkSet {
         let n = self.landmarks.len() as f64;
         let mut c = [0.0f64; 3];
         for lm in &self.landmarks {
-            for d in 0..3 {
-                c[d] += lm.position[d];
+            for (cd, &p) in c.iter_mut().zip(lm.position.iter()) {
+                *cd += p;
             }
         }
-        for d in 0..3 {
-            c[d] /= n;
+        for cd in c.iter_mut() {
+            *cd /= n;
         }
         Some(c)
     }
@@ -1249,7 +1246,6 @@ impl DicomImageData {
     }
 }
 /// STL binary exporter.
-#[allow(dead_code)]
 pub struct StlExporter;
 impl StlExporter {
     /// Serialise a list of triangles to a binary STL buffer (80-byte header + triangles).

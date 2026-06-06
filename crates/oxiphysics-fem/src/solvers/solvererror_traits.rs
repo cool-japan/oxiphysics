@@ -8,8 +8,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::SolverError;
 
 impl std::fmt::Display for SolverError {

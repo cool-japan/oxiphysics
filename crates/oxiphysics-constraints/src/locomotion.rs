@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,42 +13,36 @@ use std::f64::consts::{PI, TAU};
 // ---------------------------------------------------------------------------
 
 /// Add two 3-vectors.
-#[allow(dead_code)]
 #[inline]
 pub fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 /// Subtract two 3-vectors.
-#[allow(dead_code)]
 #[inline]
 pub fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 /// Scale a 3-vector.
-#[allow(dead_code)]
 #[inline]
 pub fn scale3(v: [f64; 3], s: f64) -> [f64; 3] {
     [v[0] * s, v[1] * s, v[2] * s]
 }
 
 /// Dot product of two 3-vectors.
-#[allow(dead_code)]
 #[inline]
 pub fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// Length of a 3-vector.
-#[allow(dead_code)]
 #[inline]
 pub fn len3(v: [f64; 3]) -> f64 {
     dot3(v, v).sqrt()
 }
 
 /// Normalize a 3-vector; returns zero vector if degenerate.
-#[allow(dead_code)]
 #[inline]
 pub fn norm3(v: [f64; 3]) -> [f64; 3] {
     let l = len3(v);
@@ -61,7 +54,6 @@ pub fn norm3(v: [f64; 3]) -> [f64; 3] {
 }
 
 /// Cross product of two 3-vectors.
-#[allow(dead_code)]
 #[inline]
 pub fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
@@ -72,21 +64,18 @@ pub fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 /// 2-vector dot product (xy plane).
-#[allow(dead_code)]
 #[inline]
 pub fn dot2(a: [f64; 2], b: [f64; 2]) -> f64 {
     a[0] * b[0] + a[1] * b[1]
 }
 
 /// 2-vector length.
-#[allow(dead_code)]
 #[inline]
 pub fn len2(v: [f64; 2]) -> f64 {
     dot2(v, v).sqrt()
 }
 
 /// 2-vector normalization.
-#[allow(dead_code)]
 #[inline]
 pub fn norm2(v: [f64; 2]) -> [f64; 2] {
     let l = len2(v);
@@ -105,7 +94,6 @@ pub fn norm2(v: [f64; 2]) -> [f64; 2] {
 ///
 /// Stores the body dimensions, movement limits, and current state for a
 /// physics-driven character.
-#[allow(dead_code)]
 pub struct CharacterController {
     /// Capsule radius (metres).
     pub radius: f64,
@@ -191,7 +179,6 @@ impl CharacterController {
 /// Walking locomotion controller.
 ///
 /// Models target velocity, turning, acceleration, and deceleration on slopes.
-#[allow(dead_code)]
 pub struct WalkController {
     /// Target walk speed (m/s).
     pub target_speed: f64,
@@ -257,13 +244,11 @@ impl WalkController {
 }
 
 /// Compute slope deceleration fraction (0..1).
-#[allow(dead_code)]
 fn slope_decel(slope_angle: f64, factor: f64) -> f64 {
     (slope_angle * factor).clamp(0.0, 1.0)
 }
 
 /// Compute signed shortest angular difference from `from` to `to`.
-#[allow(dead_code)]
 fn angle_diff(to: f64, from: f64) -> f64 {
     let mut d = to - from;
     while d > PI {
@@ -280,7 +265,6 @@ fn angle_diff(to: f64, from: f64) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Jump controller with coyote time and jump buffering.
-#[allow(dead_code)]
 pub struct JumpController {
     /// Vertical impulse applied at jump (m/s).
     pub jump_impulse: f64,
@@ -347,7 +331,6 @@ impl JumpController {
 // ---------------------------------------------------------------------------
 
 /// Ladder / wall climbing controller.
-#[allow(dead_code)]
 pub struct ClimbController {
     /// Speed along the climbing surface (m/s).
     pub climb_speed: f64,
@@ -428,7 +411,6 @@ impl ClimbController {
 // ---------------------------------------------------------------------------
 
 /// Underwater swimming controller.
-#[allow(dead_code)]
 pub struct SwimController {
     /// Buoyancy force (N/kg — upward acceleration equivalent).
     pub buoyancy: f64,
@@ -477,9 +459,8 @@ impl SwimController {
         if self.is_submerged {
             let desired_vel = scale3(norm3(swim_dir), self.swim_speed);
             // Blend towards desired
-            for i in 0..3 {
-                self.velocity[i] +=
-                    (desired_vel[i] - self.velocity[i]) * (1.0 - (-self.drag * dt).exp());
+            for (vi, dv) in self.velocity.iter_mut().zip(desired_vel.iter()) {
+                *vi += (dv - *vi) * (1.0 - (-self.drag * dt).exp());
             }
         } else {
             self.velocity[1] += gravity * dt;
@@ -502,7 +483,6 @@ impl SwimController {
 // ---------------------------------------------------------------------------
 
 /// Two-bone IK for procedural foot placement on terrain.
-#[allow(dead_code)]
 pub struct ProceduralFootIk {
     /// Upper leg length (metres).
     pub upper_length: f64,
@@ -593,7 +573,6 @@ impl ProceduralFootIk {
 // ---------------------------------------------------------------------------
 
 /// Inverted-pendulum balance controller with ZMP.
-#[allow(dead_code)]
 pub struct BalanceController {
     /// Height of the centre of mass above the ground (metres).
     pub com_height: f64,
@@ -656,7 +635,6 @@ impl BalanceController {
 }
 
 /// Test whether `point` (XZ) is inside a convex polygon.
-#[allow(dead_code)]
 fn point_in_polygon_xz(point: [f64; 2], polygon: &[[f64; 2]]) -> bool {
     let n = polygon.len();
     if n < 3 {
@@ -682,7 +660,6 @@ fn point_in_polygon_xz(point: [f64; 2], polygon: &[[f64; 2]]) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Vault controller: detects a low obstacle and computes the vault arc.
-#[allow(dead_code)]
 pub struct VaultController {
     /// Maximum obstacle height to vault (metres).
     pub max_vault_height: f64,
@@ -756,7 +733,6 @@ impl Default for VaultController {
 }
 
 /// Compute position on a parabolic vault arc at normalised time `t` ∈ \[0, 1\].
-#[allow(dead_code)]
 pub fn vault_arc_position(start: [f64; 3], end: [f64; 3], arc_height: f64, t: f64) -> [f64; 3] {
     let base = add3(scale3(start, 1.0 - t), scale3(end, t));
     let arc_y = 4.0 * arc_height * t * (1.0 - t);
@@ -768,7 +744,6 @@ pub fn vault_arc_position(start: [f64; 3], end: [f64; 3], arc_height: f64, t: f6
 // ---------------------------------------------------------------------------
 
 /// A single agent in an ORCA-based crowd simulation.
-#[allow(dead_code)]
 pub struct CrowdAgent {
     /// Agent radius (metres).
     pub radius: f64,
@@ -798,7 +773,6 @@ impl CrowdAgent {
     }
 
     /// Compute new velocity respecting ORCA half-planes from `neighbors`.
-    #[allow(clippy::too_many_arguments)]
     pub fn orca_step(&mut self, neighbors: &[CrowdAgent], dt: f64) {
         let half_planes: Vec<OrcaHalfPlane> = neighbors
             .iter()
@@ -835,7 +809,6 @@ impl CrowdAgent {
 }
 
 /// An ORCA half-plane constraint: `dot(v, normal) >= offset`.
-#[allow(dead_code)]
 pub struct OrcaHalfPlane {
     /// Outward normal of the half-plane.
     pub normal: [f64; 2],
@@ -844,7 +817,6 @@ pub struct OrcaHalfPlane {
 }
 
 /// Compute the velocity obstacle and return an ORCA half-plane for `agent` w.r.t. `other`.
-#[allow(dead_code)]
 pub fn velocity_obstacle(
     pos_a: [f64; 2],
     vel_a: [f64; 2],
@@ -889,7 +861,6 @@ pub fn velocity_obstacle(
 }
 
 /// Compute an ORCA half-plane from a velocity obstacle cone.
-#[allow(dead_code)]
 pub fn orca_half_plane(
     rel_pos: [f64; 2],
     rel_vel: [f64; 2],
@@ -905,13 +876,11 @@ pub fn orca_half_plane(
 }
 
 /// Check capsule–ground contact: returns penetration depth (positive = penetrating).
-#[allow(dead_code)]
 pub fn capsule_ground_contact(capsule_base_y: f64, ground_y: f64) -> f64 {
     ground_y - capsule_base_y
 }
 
 /// Detect whether the character is stepping up (positive) or down (negative) at a ledge.
-#[allow(dead_code)]
 pub fn step_detection(current_y: f64, ahead_y: f64, step_height: f64) -> Option<f64> {
     let delta = ahead_y - current_y;
     if delta.abs() <= step_height {
@@ -922,15 +891,12 @@ pub fn step_detection(current_y: f64, ahead_y: f64, step_height: f64) -> Option<
 }
 
 // 2D vector helpers (not exported separately)
-#[allow(dead_code)]
 fn add2(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     [a[0] + b[0], a[1] + b[1]]
 }
-#[allow(dead_code)]
 fn sub2(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     [a[0] - b[0], a[1] - b[1]]
 }
-#[allow(dead_code)]
 fn scale2(v: [f64; 2], s: f64) -> [f64; 2] {
     [v[0] * s, v[1] * s]
 }
@@ -940,7 +906,6 @@ fn scale2(v: [f64; 2], s: f64) -> [f64; 2] {
 // ---------------------------------------------------------------------------
 
 /// Classic steering behaviours for autonomous agents.
-#[allow(dead_code)]
 pub struct SteeringBehavior {
     /// Maximum force (N equivalent).
     pub max_force: f64,
@@ -1109,7 +1074,6 @@ impl SteeringBehavior {
 }
 
 /// Truncate a 2D vector to maximum magnitude.
-#[allow(dead_code)]
 fn truncate2(v: [f64; 2], max_len: f64) -> [f64; 2] {
     let l = len2(v);
     if l > max_len {

@@ -6,9 +6,6 @@
 //! Provides bead-spring chains, WLC, Rouse/Zimm models, block copolymer
 //! microphase separation, dendrimer generation, and polymer adsorption.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 mod analysis;
 mod block_copolymers;
 mod chain_models;

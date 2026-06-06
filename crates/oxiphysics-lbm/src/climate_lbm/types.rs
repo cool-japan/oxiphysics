@@ -2,11 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     CO2_PREINDUSTRIAL, CP_SEAWATER, E9X, E9Y, EARTH_RADIUS, LATENT_HEAT_ICE, RHO_SEAWATER,
     SOLAR_CONSTANT, STEFAN_BOLTZMANN, W9,
@@ -162,11 +159,11 @@ impl ClimateLbmGrid {
     }
     fn compute_insolation(nx: usize, ny: usize) -> Vec<Vec<f64>> {
         let mut ins = vec![vec![0.0_f64; nx]; ny];
-        for j in 0..ny {
+        for (j, row) in ins.iter_mut().enumerate() {
             let lat = PI * (j as f64 / (ny as f64 - 1.0) - 0.5);
             let q = SOLAR_CONSTANT / 4.0 * lat.cos().max(0.0);
-            for i in 0..nx {
-                ins[j][i] = q;
+            for cell in row.iter_mut() {
+                *cell = q;
             }
         }
         ins
@@ -207,12 +204,12 @@ impl ClimateLbmGrid {
         let nx = self.nx;
         let ny = self.ny;
         let mut f_new = vec![vec![[0.0_f64; 9]; nx]; ny];
-        for j in 0..ny {
-            for i in 0..nx {
-                for q in 0..9 {
+        for (j, row) in f_new.iter_mut().enumerate() {
+            for (i, cell) in row.iter_mut().enumerate() {
+                for (q, slot) in cell.iter_mut().enumerate() {
                     let src_i = ((i as isize - E9X[q] as isize).rem_euclid(nx as isize)) as usize;
                     let src_j = ((j as isize - E9Y[q] as isize).rem_euclid(ny as isize)) as usize;
-                    f_new[j][i][q] = self.f[src_j][src_i][q];
+                    *slot = self.f[src_j][src_i][q];
                 }
             }
         }

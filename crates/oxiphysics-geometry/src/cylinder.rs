@@ -27,21 +27,18 @@ impl Cylinder {
     }
 
     /// Surface area: 2πr² + 2πrh (two caps + lateral surface).
-    #[allow(dead_code)]
     pub fn surface_area(&self) -> Real {
         let h = 2.0 * self.half_height;
         2.0 * PI * self.radius * self.radius + 2.0 * PI * self.radius * h
     }
 
     /// Volume: πr²h (full height = 2 * half_height).
-    #[allow(dead_code)]
     pub fn volume_explicit(&self) -> Real {
         PI * self.radius * self.radius * 2.0 * self.half_height
     }
 
     /// Inertia tensor as \[\[f64;3\\];3] row-major.
     /// Ixx = Izz = m(3r²+h²)/12, Iyy = mr²/2 (Y is symmetry axis).
-    #[allow(dead_code)]
     pub fn inertia_tensor_array(&self, mass: f64) -> [[f64; 3]; 3] {
         let r2 = self.radius * self.radius;
         let h = 2.0 * self.half_height;
@@ -53,7 +50,6 @@ impl Cylinder {
 
     /// Ray cast returning (t, normal) as plain arrays.
     /// Returns `None` if no intersection within `max_toi`.
-    #[allow(dead_code)]
     pub fn ray_cast_array(
         &self,
         origin: [f64; 3],
@@ -67,7 +63,6 @@ impl Cylinder {
     }
 
     /// Closest point on (or inside) the cylinder to point `p`.
-    #[allow(dead_code)]
     pub fn closest_point(&self, p: [f64; 3]) -> [f64; 3] {
         let px = p[0];
         let py = p[1];
@@ -110,7 +105,6 @@ impl Cylinder {
     }
 
     /// Returns true if point `p` is strictly inside the cylinder.
-    #[allow(dead_code)]
     pub fn contains_point(&self, p: [f64; 3]) -> bool {
         let xz2 = p[0] * p[0] + p[2] * p[2];
         xz2 <= self.radius * self.radius && p[1].abs() <= self.half_height
@@ -120,7 +114,6 @@ impl Cylinder {
 
     /// GJK support function using plain arrays.
     /// Returns the farthest point on the cylinder in the given direction.
-    #[allow(dead_code)]
     pub fn support(&self, direction: [f64; 3]) -> [f64; 3] {
         let xz_len = (direction[0] * direction[0] + direction[2] * direction[2]).sqrt();
         let (sx, sz) = if xz_len > 1e-10 {
@@ -137,7 +130,6 @@ impl Cylinder {
 
     /// Signed distance from a point to the cylinder surface.
     /// Negative if inside, positive if outside.
-    #[allow(dead_code)]
     pub fn signed_distance(&self, p: [f64; 3]) -> f64 {
         let xz_len = (p[0] * p[0] + p[2] * p[2]).sqrt();
         let dist_side = xz_len - self.radius;
@@ -157,7 +149,6 @@ impl Cylinder {
 
     /// Closest point on the cylinder to a line segment from `a` to `b`.
     /// Returns the closest point on the cylinder surface.
-    #[allow(dead_code)]
     pub fn closest_point_to_segment(&self, a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
         // Sample several points on the segment and find the one whose
         // closest-point on cylinder is nearest.
@@ -187,7 +178,6 @@ impl Cylinder {
 
     /// Ray cast against only the top cap (y = +half_height).
     /// Returns `Some((t, normal))` if hit.
-    #[allow(dead_code)]
     pub fn ray_cast_top_cap(
         &self,
         origin: [f64; 3],
@@ -212,7 +202,6 @@ impl Cylinder {
 
     /// Ray cast against only the bottom cap (y = -half_height).
     /// Returns `Some((t, normal))` if hit.
-    #[allow(dead_code)]
     pub fn ray_cast_bottom_cap(
         &self,
         origin: [f64; 3],
@@ -237,7 +226,6 @@ impl Cylinder {
 
     /// Ray cast against only the lateral (curved) surface.
     /// Returns `Some((t, normal))` if hit.
-    #[allow(dead_code)]
     pub fn ray_cast_lateral(
         &self,
         origin: [f64; 3],
@@ -273,26 +261,22 @@ impl Cylinder {
     }
 
     /// Compute the lateral surface area (excluding caps).
-    #[allow(dead_code)]
     pub fn lateral_surface_area(&self) -> f64 {
         2.0 * PI * self.radius * 2.0 * self.half_height
     }
 
     /// Compute the cap area (one cap).
-    #[allow(dead_code)]
     pub fn cap_area(&self) -> f64 {
         PI * self.radius * self.radius
     }
 
     /// Project a point onto the cylinder axis (the Y-axis segment).
     /// Returns the clamped Y coordinate.
-    #[allow(dead_code)]
     pub fn project_on_axis(&self, p: [f64; 3]) -> f64 {
         p[1].clamp(-self.half_height, self.half_height)
     }
 
     /// Distance from a point to the cylinder axis (the Y axis segment).
-    #[allow(dead_code)]
     pub fn distance_to_axis(&self, p: [f64; 3]) -> f64 {
         let clamped_y = p[1].clamp(-self.half_height, self.half_height);
         let dy = p[1] - clamped_y;
@@ -306,7 +290,6 @@ impl Cylinder {
     ///
     /// Plane: `dot(plane_normal, x) = plane_d`.
     /// Returns `true` if any part of the finite cylinder intersects the plane.
-    #[allow(dead_code)]
     pub fn intersects_plane(&self, plane_normal: [f64; 3], plane_d: f64) -> bool {
         // The most positive and negative signed distances are attained at the
         // four extreme points: (±r_proj, ±hh, 0) projected onto the plane normal.
@@ -326,7 +309,6 @@ impl Cylinder {
     /// Cylinder SDF (Signed Distance Function).
     ///
     /// Identical to `signed_distance` but exposed under the SDF naming convention.
-    #[allow(dead_code)]
     pub fn sdf(&self, p: [f64; 3]) -> f64 {
         self.signed_distance(p)
     }
@@ -334,7 +316,6 @@ impl Cylinder {
     /// Cylinder-sphere intersection test.
     ///
     /// Returns `true` if the sphere (center + radius) overlaps the finite cylinder.
-    #[allow(dead_code)]
     pub fn intersects_sphere(&self, sphere_center: [f64; 3], sphere_radius: f64) -> bool {
         let cp = self.closest_point(sphere_center);
         let dx = sphere_center[0] - cp[0];
@@ -348,7 +329,6 @@ impl Cylinder {
     /// An infinite cylinder has the same Y axis but extends infinitely in ±Y.
     /// They intersect if the radii overlap (i.e., `|r_finite - r_infinite| ≤ lateral dist`).
     /// Since both are Y-aligned and centered at origin, this reduces to a 2-D circle test.
-    #[allow(dead_code)]
     pub fn intersects_infinite_cylinder(&self, infinite_radius: f64, center_xz: [f64; 2]) -> bool {
         // Distance between the two Y-axis lines in XZ
         let dist = (center_xz[0] * center_xz[0] + center_xz[1] * center_xz[1]).sqrt();
@@ -358,7 +338,6 @@ impl Cylinder {
 
     /// Generate `n` uniformly distributed random points on the cylinder surface
     /// using a deterministic xorshift64 PRNG.
-    #[allow(dead_code)]
     pub fn random_surface_points(&self, n: usize, seed: u64) -> Vec<[f64; 3]> {
         let mut points = Vec::with_capacity(n);
         let lat = self.lateral_surface_area();
@@ -400,13 +379,11 @@ impl Cylinder {
     }
 
     /// Cylinder support function (plain array, same as `support` but for trait-like usage).
-    #[allow(dead_code)]
     pub fn support_array(&self, direction: [f64; 3]) -> [f64; 3] {
         self.support(direction)
     }
 
     /// Full height of the cylinder (2 × half_height).
-    #[allow(dead_code)]
     pub fn full_height(&self) -> f64 {
         2.0 * self.half_height
     }
@@ -414,7 +391,6 @@ impl Cylinder {
     /// Radius of gyration about the Y (symmetry) axis.
     ///
     /// k = sqrt(Iy / m) = sqrt(r²/2) = r / sqrt(2).
-    #[allow(dead_code)]
     pub fn radius_of_gyration_y(&self) -> f64 {
         self.radius / 2.0_f64.sqrt()
     }
@@ -422,7 +398,6 @@ impl Cylinder {
     /// Radius of gyration about the X (transverse) axis.
     ///
     /// k = sqrt(Ix / m) = sqrt((3r² + h²) / 12).
-    #[allow(dead_code)]
     pub fn radius_of_gyration_x(&self, _mass: f64) -> f64 {
         let r2 = self.radius * self.radius;
         let h = 2.0 * self.half_height;
@@ -436,7 +411,6 @@ impl Cylinder {
     ///
     /// For a cylinder swept along a vector `delta` (not along its own axis),
     /// this returns the approximate swept volume: V_cyl + A_cap * |delta|.
-    #[allow(dead_code)]
     pub fn volume_swept(&self, delta: [f64; 3]) -> f64 {
         let dist = (delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]).sqrt();
         self.volume() + self.cap_area() * dist
@@ -446,7 +420,6 @@ impl Cylinder {
     ///
     /// Maps a 3-D point `p` on the cap disk to UV in `[0, 1]²`.
     /// Uses a radial projection: `u = 0.5 + x/(2r)`, `v = 0.5 + z/(2r)`.
-    #[allow(dead_code)]
     pub fn cap_uv(&self, p: [f64; 3]) -> [f64; 2] {
         let u = 0.5 + p[0] / (2.0 * self.radius);
         let v = 0.5 + p[2] / (2.0 * self.radius);
@@ -457,7 +430,6 @@ impl Cylinder {
     ///
     /// `u` is the normalised circumferential angle (azimuth), `v` is the
     /// normalised height. Both in `[0, 1]`.
-    #[allow(dead_code)]
     pub fn lateral_uv(&self, p: [f64; 3]) -> [f64; 2] {
         let theta = p[2].atan2(p[0]); // in (-π, π]
         let u = ((theta / (2.0 * PI)) + 1.0) % 1.0;
@@ -469,7 +441,6 @@ impl Cylinder {
     ///
     /// Returns `true` if `p` is inside the hollow cylinder with inner radius
     /// `inner_r` (a tube with outer radius = `self.radius`).
-    #[allow(dead_code)]
     pub fn contains_point_hollow(&self, p: [f64; 3], inner_r: f64) -> bool {
         let xz2 = p[0] * p[0] + p[2] * p[2];
         let r_inner = inner_r.max(0.0).min(self.radius);
@@ -481,7 +452,6 @@ impl Cylinder {
     /// Volume of the hollow cylinder (annular cylinder).
     ///
     /// Volume = π(R² - r²) * h where R = outer, r = inner, h = full height.
-    #[allow(dead_code)]
     pub fn volume_hollow(&self, inner_radius: f64) -> f64 {
         let r = inner_radius.max(0.0).min(self.radius);
         PI * (self.radius * self.radius - r * r) * 2.0 * self.half_height
@@ -491,7 +461,6 @@ impl Cylinder {
     ///
     /// `r_top` and `r_bottom` are radii at `+half_height` and `-half_height`.
     /// Returns the slant height of the frustum.
-    #[allow(dead_code)]
     pub fn frustum_slant_height(&self, r_top: f64, r_bottom: f64) -> f64 {
         let h = 2.0 * self.half_height;
         let dr = (r_top - r_bottom).abs();
@@ -501,7 +470,6 @@ impl Cylinder {
     /// Lateral area of a frustum with given top and bottom radii.
     ///
     /// Lateral area = π * (r_top + r_bottom) * slant_height.
-    #[allow(dead_code)]
     pub fn frustum_lateral_area(&self, r_top: f64, r_bottom: f64) -> f64 {
         let slant = self.frustum_slant_height(r_top, r_bottom);
         PI * (r_top + r_bottom) * slant
@@ -510,7 +478,6 @@ impl Cylinder {
     /// Volume of a frustum with given top and bottom radii.
     ///
     /// V = π h (r_top² + r_top*r_bottom + r_bottom²) / 3.
-    #[allow(dead_code)]
     pub fn frustum_volume(&self, r_top: f64, r_bottom: f64) -> f64 {
         let h = 2.0 * self.half_height;
         PI * h * (r_top * r_top + r_top * r_bottom + r_bottom * r_bottom) / 3.0
@@ -520,7 +487,6 @@ impl Cylinder {
     ///
     /// When the top cap is tilted at `tilt_angle` radians from horizontal,
     /// the effective cap area becomes `π r² / cos(tilt_angle)`.
-    #[allow(dead_code)]
     pub fn oblique_cap_area(&self, tilt_angle: f64) -> f64 {
         let cos_a = tilt_angle.cos().abs().max(1e-12);
         PI * self.radius * self.radius / cos_a
@@ -533,7 +499,6 @@ impl Cylinder {
     /// `u ∈ [0, 2π)` is the azimuth, `t ∈ [0, 1\]` is the height parameter.
     /// For a straight cylinder both circles have the same radius, so the
     /// ruled surface is just the lateral surface.
-    #[allow(dead_code)]
     pub fn ruled_surface_point(&self, u: f64, t: f64) -> [f64; 3] {
         let y = -self.half_height + t * 2.0 * self.half_height;
         [self.radius * u.cos(), y, self.radius * u.sin()]
@@ -544,7 +509,6 @@ impl Cylinder {
     /// If the second cylinder has the same radius but different height it is
     /// stacked end-to-end on top of this cylinder.  Returns the sum of their
     /// volumes.
-    #[allow(dead_code)]
     pub fn stacked_volume(&self, other: &Cylinder) -> f64 {
         self.volume() + other.volume()
     }
@@ -553,7 +517,6 @@ impl Cylinder {
     ///
     /// Returns the total half-height of the axis-aligned bounding box of the
     /// two cylinders stacked along the Y axis.
-    #[allow(dead_code)]
     pub fn stacked_half_height(&self, other: &Cylinder) -> f64 {
         self.half_height + other.half_height
     }
@@ -561,7 +524,6 @@ impl Cylinder {
     /// Combined bounding radius when two cylinders are stacked.
     ///
     /// Returns the maximum of the two radii.
-    #[allow(dead_code)]
     pub fn stacked_bounding_radius(&self, other: &Cylinder) -> f64 {
         self.radius.max(other.radius)
     }
@@ -569,7 +531,6 @@ impl Cylinder {
     /// Surface normal at a lateral point `p` (unit outward normal in XZ).
     ///
     /// Ignores the Y component; suitable for points on the curved surface.
-    #[allow(dead_code)]
     pub fn lateral_normal_at(&self, p: [f64; 3]) -> [f64; 3] {
         let len = (p[0] * p[0] + p[2] * p[2]).sqrt();
         if len < 1e-12 {
@@ -582,7 +543,6 @@ impl Cylinder {
     ///
     /// Returns the gradient of the SDF at `p`, i.e. the direction of
     /// fastest increase.
-    #[allow(dead_code)]
     pub fn sdf_gradient(&self, p: [f64; 3]) -> [f64; 3] {
         let eps = 1e-5;
         let sdf0 = self.sdf(p);
@@ -597,7 +557,6 @@ impl Cylinder {
     /// (lateral surface only, ignoring caps).
     ///
     /// Returns 0, 1, or 2.
-    #[allow(dead_code)]
     pub fn lateral_ray_intersection_count(&self, origin: [f64; 3], direction: [f64; 3]) -> usize {
         let a = direction[0] * direction[0] + direction[2] * direction[2];
         if a < 1e-14 {
@@ -618,7 +577,6 @@ impl Cylinder {
     /// Generate `n` points uniformly distributed along the top cap edge (rim).
     ///
     /// Returns points on the circle of radius `r` at `y = +half_height`.
-    #[allow(dead_code)]
     pub fn top_rim_points(&self, n: usize) -> Vec<[f64; 3]> {
         let n = n.max(2);
         (0..n)

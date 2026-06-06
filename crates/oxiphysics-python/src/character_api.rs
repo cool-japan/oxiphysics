@@ -5,9 +5,6 @@
 //!
 //! Exposes the kinematic capsule character controller to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::character::{CharacterConfig, CharacterController, CharacterShape};
 use pyo3::prelude::*;
 

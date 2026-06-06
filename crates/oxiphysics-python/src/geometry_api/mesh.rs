@@ -3,23 +3,11 @@
 
 //! Triangle mesh, CSG operations, and related helpers.
 
+use oxiphysics::geometry::mesh_boolean::{MeshBooleanOp, SimpleMesh, mesh_boolean};
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::shapes::{add3, cross3, dot3, len3, lerp3, normalize3, scale3, sub3};
-
-// ---------------------------------------------------------------------------
-// Helper: point-in-AABB test (pub(super) so spatial.rs can use it too)
-// ---------------------------------------------------------------------------
-
-pub(super) fn point_in_aabb(p: [f64; 3], mn: [f64; 3], mx: [f64; 3]) -> bool {
-    p[0] >= mn[0]
-        && p[0] <= mx[0]
-        && p[1] >= mn[1]
-        && p[1] <= mx[1]
-        && p[2] >= mn[2]
-        && p[2] <= mx[2]
-}
+use super::shapes::{add3, cross3, dot3, len3, lerp3, normalize3, sub3};
 
 // ---------------------------------------------------------------------------
 // Helper: compute AABB (pub(super) used by transform.rs helpers too)
@@ -278,91 +266,142 @@ impl PyTriangleMesh {
 // ---------------------------------------------------------------------------
 
 /// Result type for CSG operations between two meshes.
-///
-/// Note: Full BSP-based CSG is complex; these are structural stubs that
-/// merge/intersect vertex data in a simplified manner for API completeness.
 #[pyclass(skip_from_py_object)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PyCsg;
 
+// ---------------------------------------------------------------------------
+// Helper: convert between PyTriangleMesh (flat index buffer) and SimpleMesh
+// ---------------------------------------------------------------------------
+
+fn py_to_simple(mesh: &PyTriangleMesh) -> SimpleMesh {
+    let triangles: Vec<[usize; 3]> = mesh
+        .indices
+        .chunks(3)
+        .filter_map(|chunk| {
+            if chunk.len() == 3 {
+                Some([chunk[0], chunk[1], chunk[2]])
+            } else {
+                None
+            }
+        })
+        .collect();
+    SimpleMesh::from_data(mesh.vertices.clone(), triangles)
+}
+
+fn simple_to_py(result: SimpleMesh) -> PyTriangleMesh {
+    let indices: Vec<usize> = result
+        .triangles
+        .iter()
+        .flat_map(|&t| [t[0], t[1], t[2]])
+        .collect();
+    PyTriangleMesh::from_raw_internal(result.vertices, indices)
+}
+
 #[pymethods]
 impl PyCsg {
-    /// Union of two meshes (concatenates geometry — placeholder for full BSP).
+    /// Boolean union of two closed triangle meshes using winding-number classification.
     #[staticmethod]
     pub fn union(a: &PyTriangleMesh, b: &PyTriangleMesh) -> PyTriangleMesh {
-        let offset = a.vertices.len();
-        let mut verts = a.vertices.clone();
-        verts.extend_from_slice(&b.vertices);
-        let mut idx = a.indices.clone();
-        for &i in &b.indices {
-            idx.push(i + offset);
-        }
-        PyTriangleMesh::from_raw_internal(verts, idx)
+        let sa = py_to_simple(a);
+        let sb = py_to_simple(b);
+        simple_to_py(mesh_boolean(&sa, &sb, MeshBooleanOp::Union))
     }
 
-    /// Intersection stub: returns mesh `a` clipped by the AABB of mesh `b`.
+    /// Boolean intersection of two closed triangle meshes.
     #[staticmethod]
     pub fn intersection(a: &PyTriangleMesh, b: &PyTriangleMesh) -> PyTriangleMesh {
-        let (bmin, bmax) = compute_aabb_internal(&b.vertices);
-        let mut verts = Vec::new();
-        let mut idx = Vec::new();
-        let tri_count = a.indices.len() / 3;
-        let n = a.vertices.len();
-        let mut remap = vec![usize::MAX; n];
-        for t in 0..tri_count {
-            let ia = a.indices[t * 3];
-            let ib = a.indices[t * 3 + 1];
-            let ic = a.indices[t * 3 + 2];
-            if ia >= n || ib >= n || ic >= n {
-                continue;
-            }
-            let ctr = scale3(
-                add3(a.vertices[ia], add3(a.vertices[ib], a.vertices[ic])),
-                1.0 / 3.0,
-            );
-            if point_in_aabb(ctr, bmin, bmax) {
-                for &vi in &[ia, ib, ic] {
-                    if remap[vi] == usize::MAX {
-                        remap[vi] = verts.len();
-                        verts.push(a.vertices[vi]);
-                    }
-                    idx.push(remap[vi]);
-                }
-            }
-        }
-        PyTriangleMesh::from_raw_internal(verts, idx)
+        let sa = py_to_simple(a);
+        let sb = py_to_simple(b);
+        simple_to_py(mesh_boolean(&sa, &sb, MeshBooleanOp::Intersection))
     }
 
-    /// Subtraction stub: removes triangles whose centroid is inside mesh `b`'s AABB.
+    /// Boolean difference (A minus B) of two closed triangle meshes.
     #[staticmethod]
     pub fn subtraction(a: &PyTriangleMesh, b: &PyTriangleMesh) -> PyTriangleMesh {
-        let (bmin, bmax) = compute_aabb_internal(&b.vertices);
-        let mut verts = Vec::new();
-        let mut idx = Vec::new();
-        let tri_count = a.indices.len() / 3;
-        let n = a.vertices.len();
-        let mut remap = vec![usize::MAX; n];
-        for t in 0..tri_count {
-            let ia = a.indices[t * 3];
-            let ib = a.indices[t * 3 + 1];
-            let ic = a.indices[t * 3 + 2];
-            if ia >= n || ib >= n || ic >= n {
-                continue;
-            }
-            let ctr = scale3(
-                add3(a.vertices[ia], add3(a.vertices[ib], a.vertices[ic])),
-                1.0 / 3.0,
-            );
-            if !point_in_aabb(ctr, bmin, bmax) {
-                for &vi in &[ia, ib, ic] {
-                    if remap[vi] == usize::MAX {
-                        remap[vi] = verts.len();
-                        verts.push(a.vertices[vi]);
-                    }
-                    idx.push(remap[vi]);
-                }
-            }
-        }
-        PyTriangleMesh::from_raw_internal(verts, idx)
+        let sa = py_to_simple(a);
+        let sb = py_to_simple(b);
+        simple_to_py(mesh_boolean(&sa, &sb, MeshBooleanOp::Difference))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests for CSG operations
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a unit cube centred at `centre` with half-extent `h`.
+    fn make_cube_mesh(centre: [f64; 3], h: f64) -> PyTriangleMesh {
+        let c = centre;
+        let vertices = vec![
+            [c[0] - h, c[1] - h, c[2] - h],
+            [c[0] + h, c[1] - h, c[2] - h],
+            [c[0] + h, c[1] + h, c[2] - h],
+            [c[0] - h, c[1] + h, c[2] - h],
+            [c[0] - h, c[1] - h, c[2] + h],
+            [c[0] + h, c[1] - h, c[2] + h],
+            [c[0] + h, c[1] + h, c[2] + h],
+            [c[0] - h, c[1] + h, c[2] + h],
+        ];
+        #[rustfmt::skip]
+        let indices: Vec<usize> = vec![
+            0, 2, 1,  0, 3, 2,  // -Z
+            4, 5, 6,  4, 6, 7,  // +Z
+            0, 1, 5,  0, 5, 4,  // -Y
+            2, 3, 7,  2, 7, 6,  // +Y
+            0, 4, 7,  0, 7, 3,  // -X
+            1, 2, 6,  1, 6, 5,  // +X
+        ];
+        PyTriangleMesh::from_raw_internal(vertices, indices)
+    }
+
+    #[test]
+    fn test_csg_union_produces_triangles() {
+        let a = make_cube_mesh([0.0, 0.0, 0.0], 1.0);
+        let b = make_cube_mesh([0.5, 0.0, 0.0], 1.0);
+        let result = PyCsg::union(&a, &b);
+        assert!(
+            !result.vertices.is_empty(),
+            "union of two overlapping cubes should have vertices"
+        );
+    }
+
+    #[test]
+    fn test_csg_intersection_produces_triangles() {
+        let a = make_cube_mesh([0.0, 0.0, 0.0], 1.0);
+        let b = make_cube_mesh([0.5, 0.0, 0.0], 1.0);
+        let result = PyCsg::intersection(&a, &b);
+        assert!(
+            !result.vertices.is_empty(),
+            "intersection of two overlapping cubes should have vertices"
+        );
+    }
+
+    #[test]
+    fn test_csg_subtraction_removes_triangles() {
+        let a = make_cube_mesh([0.0, 0.0, 0.0], 1.0);
+        let b = make_cube_mesh([0.5, 0.0, 0.0], 1.0);
+        let union_result = PyCsg::union(&a, &b);
+        let diff_result = PyCsg::subtraction(&a, &b);
+        assert!(
+            diff_result.vertices.len() < union_result.vertices.len(),
+            "subtraction should have fewer vertices than union (diff={}, union={})",
+            diff_result.vertices.len(),
+            union_result.vertices.len()
+        );
+    }
+
+    #[test]
+    fn test_csg_difference_is_not_empty() {
+        let a = make_cube_mesh([0.0, 0.0, 0.0], 1.0);
+        let b = make_cube_mesh([0.5, 0.0, 0.0], 0.3);
+        let result = PyCsg::subtraction(&a, &b);
+        assert!(
+            !result.vertices.is_empty(),
+            "subtracting a small cube from a large one should leave geometry"
+        );
     }
 }

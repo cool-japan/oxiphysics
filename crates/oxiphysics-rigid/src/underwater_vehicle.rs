@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,9 +6,6 @@
 //! Implements hydrodynamic forces (buoyancy, drag, added mass), hydrostatic
 //! restoring moments, thruster allocation, acoustic propagation, and a simple
 //! depth PID controller.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ---------------------------------------------------------------------------
 // Math helpers
@@ -32,11 +28,6 @@ fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 #[inline]
 fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-#[inline]
-fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 #[inline]
@@ -205,7 +196,6 @@ impl UnderwaterVehicle {
     /// * `dt`      – timestep (s).
     ///
     /// Returns the new 12-element state.
-    #[allow(clippy::too_many_arguments)]
     pub fn step(&self, state: &[f64; 12], control: &[f64; 4], dt: f64) -> [f64; 12] {
         let phi = state[3];
         let theta = state[4];
@@ -434,9 +424,10 @@ fn solve6x6(a: &[[f64; 6]; 6], b: &[f64; 6]) -> [f64; 6] {
         // Find pivot.
         let mut max_row = col;
         let mut max_val = m[col][col].abs();
-        for row in col + 1..N {
-            if m[row][col].abs() > max_val {
-                max_val = m[row][col].abs();
+        for (off, m_row) in m[col + 1..N].iter().enumerate() {
+            let row = col + 1 + off;
+            if m_row[col].abs() > max_val {
+                max_val = m_row[col].abs();
                 max_row = row;
             }
         }
@@ -448,9 +439,9 @@ fn solve6x6(a: &[[f64; 6]; 6], b: &[f64; 6]) -> [f64; 6] {
         }
         for row in col + 1..N {
             let factor = m[row][col] / pivot;
-            for k in col..=N {
-                let sub = m[col][k] * factor;
-                m[row][k] -= sub;
+            let m_col_copy: Vec<f64> = m[col][col..=N].to_vec();
+            for (m_rk, &m_ck) in m[row][col..=N].iter_mut().zip(m_col_copy.iter()) {
+                *m_rk -= m_ck * factor;
             }
         }
     }
@@ -867,13 +858,13 @@ mod tests {
     #[test]
     fn solve6x6_identity_system() {
         let mut a = [[0.0f64; 6]; 6];
-        for i in 0..6 {
-            a[i][i] = 1.0;
+        for (i, row) in a.iter_mut().enumerate() {
+            row[i] = 1.0;
         }
         let b = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let x = solve6x6(&a, &b);
-        for i in 0..6 {
-            assert!((x[i] - b[i]).abs() < 1e-10, "x[{i}] = {}", x[i]);
+        for (i, (&xi, &bi)) in x.iter().zip(b.iter()).enumerate() {
+            assert!((xi - bi).abs() < 1e-10, "x[{i}] = {}", xi);
         }
     }
 

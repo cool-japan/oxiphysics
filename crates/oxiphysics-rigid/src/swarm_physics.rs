@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! Implements the Boids algorithm (Reynolds 1987) for emergent flocking behaviour,
 //! including separation, alignment, and cohesion steering forces, plus aggregate
 //! metrics such as the order parameter and swarm spread.
-
-#![allow(dead_code)]
 
 use rand::RngExt;
 // ---------------------------------------------------------------------------
@@ -252,7 +249,7 @@ impl SwarmSimulator {
         let n = self.agents.len();
         let mut delta_vel: Vec<[f64; 3]> = vec![[0.0; 3]; n];
 
-        for i in 0..n {
+        for (i, dv) in delta_vel.iter_mut().enumerate() {
             // Collect references to neighbours within perception radius
             let perception = self.forces.perception_radius;
             let neighbors: Vec<&SwarmAgent> = self
@@ -267,7 +264,7 @@ impl SwarmSimulator {
             let ali = boids_alignment(&self.agents[i], &neighbors, self.forces.alignment);
             let coh = boids_cohesion(&self.agents[i], &neighbors, self.forces.cohesion);
 
-            delta_vel[i] = vec3_add(vec3_add(sep, ali), coh);
+            *dv = vec3_add(vec3_add(sep, ali), coh);
         }
 
         let bs = self.box_size;

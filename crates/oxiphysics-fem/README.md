@@ -1,12 +1,12 @@
 # oxiphysics-fem
 
-**Status: [Alpha]** — v0.1.1 (2026-05-17)
+**Status: [Alpha]** — v0.1.2 (2026-06-06)
 
-[![Tests](https://img.shields.io/badge/tests-4561-brightgreen)](https://github.com/cool-japan/oxiphysics)
+[![Tests](https://img.shields.io/badge/tests-4620-brightgreen)](https://github.com/cool-japan/oxiphysics)
 [![docs.rs](https://img.shields.io/docsrs/oxiphysics-fem)](https://docs.rs/oxiphysics-fem)
 
 Full-featured Finite Element Method (FEM) library for the [OxiPhysics](https://github.com/cool-japan/oxiphysics) engine.
-124 source files, 5,273 public API items, and 4,561 tests covering the breadth of modern computational mechanics.
+124 source files, 5,273 public API items, and 4,620 tests covering the breadth of modern computational mechanics.
 
 ## Features
 
@@ -36,7 +36,7 @@ use oxiphysics_fem::{
 
 ## Notes
 
-- 124 source files, 5,273 public items, 4,561 tests — 0 stubs
+- 124 source files, 5,273 public items, 4,620 tests — 0 stubs
 - Depends on `oxiphysics-core`, `oxiphysics-geometry`, `oxiphysics-materials`
 
 ## License

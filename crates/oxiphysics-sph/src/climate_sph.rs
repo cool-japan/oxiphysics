@@ -6,8 +6,6 @@
 //! thermohaline circulation, sea ice albedo feedback, monsoon upwelling,
 //! ENSO simplified oscillator, ocean CO2 uptake, wave climate, and polar vortex.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -41,7 +39,6 @@ pub const ALBEDO_OCEAN: f64 = 0.06;
 /// * `pressure_dbar` - Pressure \[dbar\] (1 dbar ≈ 1 m depth)
 ///
 /// Returns density \[kg/m³\].
-#[allow(clippy::too_many_arguments)]
 pub fn unesco_density(temp_c: f64, salinity: f64, pressure_dbar: f64) -> f64 {
     // Pure water density (simplified polynomial)
     let t = temp_c;

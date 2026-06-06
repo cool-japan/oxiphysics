@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -632,6 +631,9 @@ impl EasingFunction {
 // PhysicsReplay
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// State snapshot returned by [`PhysicsReplay::replay_at`]: `(positions, velocities)`.
+pub type ReplaySnapshot = Option<(Vec<[f64; 3]>, Vec<[f64; 3]>)>;
+
 /// Records and replays a physics simulation trajectory.
 ///
 /// Each step stores position and velocity snapshots with an associated
@@ -667,7 +669,7 @@ impl PhysicsReplay {
     ///
     /// Linearly interpolates between the two surrounding recorded steps.
     /// Returns `None` if no steps have been recorded.
-    pub fn replay_at(&self, t: f64) -> Option<(Vec<[f64; 3]>, Vec<[f64; 3]>)> {
+    pub fn replay_at(&self, t: f64) -> ReplaySnapshot {
         let n = self.times.len();
         if n == 0 {
             return None;
@@ -986,7 +988,6 @@ fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// Given bone lengths `l1` (root→mid) and `l2` (mid→end), moves the mid joint
 /// to reach `target` from `root`.  The `mid` and `end` arguments provide the
 /// current configuration (used to determine the bend plane).
-#[allow(clippy::too_many_arguments)]
 pub fn ik_two_bone(
     root: [f64; 3],
     mid: [f64; 3],

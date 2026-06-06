@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use std::collections::HashMap;
 
@@ -608,11 +606,11 @@ impl CooperativeGame {
         let n = self.n;
         let mut swings = vec![0.0; n];
         for mask in 0u32..(1 << n) {
-            for i in 0..n {
+            for (i, swing) in swings.iter_mut().enumerate() {
                 if mask & (1 << i) != 0 {
                     let without = mask & !(1 << i);
                     if self.worth(mask) > self.worth(without) + 1e-9 {
-                        swings[i] += 1.0;
+                        *swing += 1.0;
                     }
                 }
             }
@@ -676,9 +674,9 @@ impl NormalFormGame {
         let rows = self.rows();
         let cols = self.cols();
         let mut result = Vec::new();
-        for i in 0..rows {
-            for j in 0..cols {
-                let a_best = (0..rows).all(|k| self.payoff_a[i][j] >= self.payoff_a[k][j]);
+        for (i, pa_row) in self.payoff_a.iter().enumerate() {
+            for (j, &pa_ij) in pa_row.iter().enumerate() {
+                let a_best = (0..rows).all(|k| pa_ij >= self.payoff_a[k][j]);
                 let b_best = (0..cols).all(|l| self.payoff_b[i][j] >= self.payoff_b[i][l]);
                 if a_best && b_best {
                     result.push((i, j));
@@ -692,23 +690,29 @@ impl NormalFormGame {
     /// `mixed_a[i]` is the probability A plays row `i`;
     /// `mixed_b[j]` is the probability B plays column `j`.
     pub fn expected_payoff_a(&self, mixed_a: &[f64], mixed_b: &[f64]) -> f64 {
-        let mut total = 0.0;
-        for i in 0..self.rows() {
-            for j in 0..self.cols() {
-                total += mixed_a[i] * mixed_b[j] * self.payoff_a[i][j];
-            }
-        }
-        total
+        self.payoff_a
+            .iter()
+            .zip(mixed_a.iter())
+            .map(|(row, &mai)| {
+                row.iter()
+                    .zip(mixed_b.iter())
+                    .map(|(&pa_ij, &mbj)| mai * mbj * pa_ij)
+                    .sum::<f64>()
+            })
+            .sum()
     }
     /// Compute the expected payoff for player B given mixed strategies.
     pub fn expected_payoff_b(&self, mixed_a: &[f64], mixed_b: &[f64]) -> f64 {
-        let mut total = 0.0;
-        for i in 0..self.rows() {
-            for j in 0..self.cols() {
-                total += mixed_a[i] * mixed_b[j] * self.payoff_b[i][j];
-            }
-        }
-        total
+        self.payoff_b
+            .iter()
+            .zip(mixed_a.iter())
+            .map(|(row, &mai)| {
+                row.iter()
+                    .zip(mixed_b.iter())
+                    .map(|(&pb_ij, &mbj)| mai * mbj * pb_ij)
+                    .sum::<f64>()
+            })
+            .sum()
     }
     /// Compute the best-response set for player A against a fixed `mixed_b`.
     ///
@@ -804,7 +808,7 @@ impl NormalFormGame {
     pub fn social_optimum(&self) -> (usize, usize) {
         let mut best = (0, 0);
         let mut best_val = f64::NEG_INFINITY;
-        for i in 0..self.rows() {
+        for (i, _) in self.payoff_a.iter().enumerate() {
             for j in 0..self.cols() {
                 let w = self.social_welfare(i, j);
                 if w > best_val {
@@ -871,10 +875,10 @@ impl ZeroSumGame {
     /// A saddle point is an entry that is simultaneously a row-minimum and a
     /// column-maximum.  Returns `Some((row, col))` or `None`.
     pub fn saddle_point(&self) -> Option<(usize, usize)> {
-        for i in 0..self.rows() {
-            for j in 0..self.cols() {
-                let is_row_min = (0..self.cols()).all(|l| self.payoff[i][j] <= self.payoff[i][l]);
-                let is_col_max = (0..self.rows()).all(|k| self.payoff[i][j] >= self.payoff[k][j]);
+        for (i, row) in self.payoff.iter().enumerate() {
+            for (j, &pij) in row.iter().enumerate() {
+                let is_row_min = row.iter().all(|&pl| pij <= pl);
+                let is_col_max = self.payoff.iter().all(|r| pij >= r[j]);
                 if is_row_min && is_col_max {
                     return Some((i, j));
                 }
@@ -923,12 +927,17 @@ impl ZeroSumGame {
         let total = iterations as f64;
         let mixed_a: Vec<f64> = count_a.iter().map(|&c| c as f64 / total).collect();
         let mixed_b: Vec<f64> = count_b.iter().map(|&c| c as f64 / total).collect();
-        let mut value = 0.0;
-        for i in 0..m {
-            for j in 0..n {
-                value += mixed_a[i] * mixed_b[j] * self.payoff[i][j];
-            }
-        }
+        let value: f64 = self
+            .payoff
+            .iter()
+            .zip(mixed_a.iter())
+            .map(|(row, &mai)| {
+                row.iter()
+                    .zip(mixed_b.iter())
+                    .map(|(&pij, &mbj)| mai * mbj * pij)
+                    .sum::<f64>()
+            })
+            .sum();
         value
     }
     /// Compute the dominant strategy for player A if one exists.

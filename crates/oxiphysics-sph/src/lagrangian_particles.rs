@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,9 +6,6 @@
 //! Provides tracer particles with RK4 integration, Finite-Time Lyapunov
 //! Exponents (FTLE), Lagrangian Coherent Structures (LCS) ridge detection,
 //! deformation gradient computation, and mixing diagnostics.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ══════════════════════════════════════════════════════════════════════════════
 // § 1  VECTOR HELPERS
@@ -356,8 +352,8 @@ pub fn particle_dispersion(tracers: &[TracerParticle]) -> f64 {
         }
     }
     let n = tracers.len() as f64;
-    for k in 0..3 {
-        centroid[k] /= n;
+    for ck in centroid.iter_mut() {
+        *ck /= n;
     }
 
     // MSD: average over tracers of |x(t) − centroid|²

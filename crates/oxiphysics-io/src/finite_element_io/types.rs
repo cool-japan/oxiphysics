@@ -2,14 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::if_same_then_else, clippy::manual_strip)]
 use std::collections::HashMap;
-#[allow(unused_imports)]
 use std::fmt::Write as _;
 
 use super::functions::DofIndex;
-#[allow(unused_imports)]
-use super::functions::*;
 
 /// Element type mapping between software conventions.
 #[derive(Debug, Clone)]
@@ -1030,8 +1026,7 @@ impl AbaqusInpIo {
                 } else if kw_upper.starts_with("*STEP") {
                     let step_name = Self::parse_keyword_param(line, "NAME");
                     mesh.steps.push(AnalysisStep::new(step_name));
-                } else if kw_upper.starts_with("*BOUNDARY") {
-                } else if kw_upper.starts_with("*CLOAD") {
+                } else if kw_upper.starts_with("*BOUNDARY") || kw_upper.starts_with("*CLOAD") {
                 }
                 continue;
             }
@@ -1343,14 +1338,14 @@ impl RestartCheckpoint {
             if t == "RESTART_FILE" {
                 continue;
             }
-            if t.starts_with("TITLE:") {
-                title = t["TITLE:".len()..].trim().to_string();
-            } else if t.starts_with("STEP:") {
-                step = t["STEP:".len()..].trim().parse().unwrap_or(0);
-            } else if t.starts_with("TIME:") {
-                time = t["TIME:".len()..].trim().parse().unwrap_or(0.0);
-            } else if t.starts_with("RESIDUAL_NORM:") {
-                residual_norm = t["RESIDUAL_NORM:".len()..].trim().parse().unwrap_or(0.0);
+            if let Some(rest) = t.strip_prefix("TITLE:") {
+                title = rest.trim().to_string();
+            } else if let Some(rest) = t.strip_prefix("STEP:") {
+                step = rest.trim().parse().unwrap_or(0);
+            } else if let Some(rest) = t.strip_prefix("TIME:") {
+                time = rest.trim().parse().unwrap_or(0.0);
+            } else if let Some(rest) = t.strip_prefix("RESIDUAL_NORM:") {
+                residual_norm = rest.trim().parse().unwrap_or(0.0);
             } else if t.starts_with("METADATA:") {
                 mode = "metadata";
             } else if t.starts_with("DISPLACEMENTS:") {

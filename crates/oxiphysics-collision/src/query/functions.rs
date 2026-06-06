@@ -96,7 +96,6 @@ pub trait ShapeQuery {
 }
 /// Closest point on segment \[p0, p1\] to a given point.
 /// Returns `(point, t)` where t ∈ \[0,1\].
-#[allow(dead_code)]
 pub fn closest_point_on_segment(p: [f64; 3], p0: [f64; 3], p1: [f64; 3]) -> ([f64; 3], f64) {
     let ab = sub(p1, p0);
     let ap = sub(p, p0);
@@ -109,14 +108,12 @@ pub fn closest_point_on_segment(p: [f64; 3], p0: [f64; 3], p1: [f64; 3]) -> ([f6
     (point, t)
 }
 /// Signed distance from point `p` to the segment \[p0, p1\] (unsigned, always ≥ 0).
-#[allow(dead_code)]
 pub fn dist_point_to_segment(p: [f64; 3], p0: [f64; 3], p1: [f64; 3]) -> f64 {
     let (cp, _) = closest_point_on_segment(p, p0, p1);
     norm(sub(p, cp))
 }
 /// Closest point on triangle (a, b, c) to point `p`.
 /// Returns the closest point as a `[f64; 3]`.
-#[allow(dead_code)]
 pub fn closest_point_on_triangle(p: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f64; 3] {
     let ab = sub(b, a);
     let ac = sub(c, a);
@@ -160,7 +157,6 @@ pub fn closest_point_on_triangle(p: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64;
 }
 /// Signed distance from point `p` to the triangle (a, b, c) surface.
 /// Always returns a non-negative distance (unsigned).
-#[allow(dead_code)]
 pub fn dist_point_to_triangle(p: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
     let cp = closest_point_on_triangle(p, a, b, c);
     norm(sub(p, cp))
@@ -169,7 +165,6 @@ pub fn dist_point_to_triangle(p: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3]
 /// planes.  Each plane is `[a, b, c, d]` where `ax + by + cz + d >= 0` is "inside".
 ///
 /// Returns `true` if `p` satisfies all half-spaces.
-#[allow(dead_code)]
 pub fn point_in_convex_hull(p: [f64; 3], planes: &[[f64; 4]]) -> bool {
     for plane in planes {
         let n = [plane[0], plane[1], plane[2]];
@@ -185,7 +180,6 @@ pub fn point_in_convex_hull(p: [f64; 3], planes: &[[f64; 4]]) -> bool {
 ///
 /// `triangles` is a list of `(a, b, c)` triangles; the mesh must be convex
 /// and outward-facing normals.
-#[allow(dead_code)]
 pub fn point_in_convex_mesh(p: [f64; 3], triangles: &[([f64; 3], [f64; 3], [f64; 3])]) -> bool {
     for &(a, b, c) in triangles {
         let ab = sub(b, a);
@@ -200,13 +194,11 @@ pub fn point_in_convex_mesh(p: [f64; 3], triangles: &[([f64; 3], [f64; 3], [f64;
 }
 /// Signed distance from point `p` to a convex sphere (centered at `center`, radius `r`).
 /// Negative if inside.
-#[allow(dead_code)]
 pub fn signed_dist_to_sphere(p: [f64; 3], center: [f64; 3], radius: f64) -> f64 {
     norm(sub(p, center)) - radius
 }
 /// Signed distance from point `p` to an axis-aligned box centered at `box_center`
 /// with half-extents `he`.  Negative if inside.
-#[allow(dead_code)]
 pub fn signed_dist_to_box(p: [f64; 3], box_center: [f64; 3], he: [f64; 3]) -> f64 {
     let q = [
         (p[0] - box_center[0]).abs() - he[0],
@@ -218,14 +210,12 @@ pub fn signed_dist_to_box(p: [f64; 3], box_center: [f64; 3], he: [f64; 3]) -> f6
     outside_dist + inside_dist
 }
 /// Signed distance from point `p` to a capsule with segment \[p0, p1\] and radius r.
-#[allow(dead_code)]
 pub fn signed_dist_to_capsule(p: [f64; 3], p0: [f64; 3], p1: [f64; 3], r: f64) -> f64 {
     let (cp, _) = closest_point_on_segment(p, p0, p1);
     norm(sub(p, cp)) - r
 }
 /// Ray vs sphere intersection returning the first hit time.
 /// Returns `Some(t)` if hit, `None` otherwise.
-#[allow(dead_code)]
 pub fn ray_vs_sphere(
     ray_origin: [f64; 3],
     ray_dir: [f64; 3],
@@ -237,7 +227,6 @@ pub fn ray_vs_sphere(
     sphere.ray_cast(ray_origin, ray_dir, max_toi).map(|r| r.toi)
 }
 /// Ray vs axis-aligned box intersection returning the first hit time.
-#[allow(dead_code)]
 pub fn ray_vs_box(
     ray_origin: [f64; 3],
     ray_dir: [f64; 3],
@@ -253,7 +242,6 @@ pub fn ray_vs_box(
 }
 /// Ray vs triangle intersection (Möller-Trumbore algorithm).
 /// Returns `Some(t)` if the ray hits the triangle front face.
-#[allow(dead_code)]
 pub fn ray_vs_triangle(
     ray_origin: [f64; 3],
     ray_dir: [f64; 3],
@@ -290,7 +278,6 @@ pub fn ray_vs_triangle(
 /// Moving sphere sweep vs static sphere.
 ///
 /// Returns `Some(t)` in `[0, max_t]` where the sphere first touches the static sphere.
-#[allow(dead_code)]
 pub fn sphere_sweep_vs_sphere(
     start: [f64; 3],
     velocity: [f64; 3],
@@ -327,7 +314,6 @@ pub fn sphere_sweep_vs_sphere(
 /// Moving sphere sweep vs static AABB.
 ///
 /// Uses the Minkowski sum: expand box by sphere radius and cast a ray.
-#[allow(dead_code)]
 pub fn sphere_sweep_vs_box(
     start: [f64; 3],
     velocity: [f64; 3],
@@ -357,7 +343,6 @@ pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// Test whether two axis-aligned boxes overlap (no contact data).
 ///
 /// Returns `true` if the AABB `[min_a, max_a]` overlaps `[min_b, max_b]`.
-#[allow(dead_code)]
 pub fn aabb_overlap(min_a: [f64; 3], max_a: [f64; 3], min_b: [f64; 3], max_b: [f64; 3]) -> bool {
     min_a[0] <= max_b[0]
         && max_a[0] >= min_b[0]
@@ -367,7 +352,6 @@ pub fn aabb_overlap(min_a: [f64; 3], max_a: [f64; 3], min_b: [f64; 3], max_b: [f
         && max_a[2] >= min_b[2]
 }
 /// Test whether two spheres overlap (no contact data).
-#[allow(dead_code)]
 pub fn sphere_sphere_overlap(
     center_a: [f64; 3],
     radius_a: f64,
@@ -382,7 +366,6 @@ pub fn sphere_sphere_overlap(
 /// Test whether a sphere overlaps an axis-aligned box.
 ///
 /// Uses the standard closest-point projection.
-#[allow(dead_code)]
 pub fn sphere_aabb_overlap(
     center: [f64; 3],
     radius: f64,
@@ -403,7 +386,6 @@ pub fn sphere_aabb_overlap(
 ///
 /// Computes the closest distance between the two central segments and compares
 /// it against the sum of radii.
-#[allow(dead_code)]
 pub fn capsule_capsule_overlap(
     p0_a: [f64; 3],
     p1_a: [f64; 3],
@@ -454,7 +436,6 @@ pub fn capsule_capsule_overlap(
 /// Cast a ray against a list of shapes (brute-force all-pairs).
 ///
 /// Returns a sorted list of hits (nearest first).
-#[allow(dead_code)]
 pub fn ray_cast_all_pairs(
     ray_origin: [f64; 3],
     ray_dir: [f64; 3],
@@ -487,7 +468,6 @@ pub fn ray_cast_all_pairs(
 /// Find all shapes that contain the given point (brute-force all-pairs).
 ///
 /// Returns a list of shape indices whose interiors contain `point`.
-#[allow(dead_code)]
 pub fn point_containment_all_pairs(point: [f64; 3], shapes: &[QueryShapeRef<'_>]) -> Vec<usize> {
     let mut inside = Vec::new();
     for (idx, shape) in shapes.iter().enumerate() {
@@ -505,7 +485,6 @@ pub fn point_containment_all_pairs(point: [f64; 3], shapes: &[QueryShapeRef<'_>]
 /// Query shapes potentially visible from the given frustum (brute-force).
 ///
 /// Returns a list of shape indices that are not fully culled by the frustum.
-#[allow(dead_code)]
 pub fn frustum_query(frustum: &ViewFrustum, shapes: &[QueryShapeRef<'_>]) -> Vec<usize> {
     let mut visible = Vec::new();
     for (idx, shape) in shapes.iter().enumerate() {
@@ -529,7 +508,6 @@ pub fn frustum_query(frustum: &ViewFrustum, shapes: &[QueryShapeRef<'_>]) -> Vec
 /// Find the K nearest shapes to `query_point`, sorted by ascending distance.
 ///
 /// Shapes that contain the point have a negative distance and appear first.
-#[allow(dead_code)]
 pub fn k_nearest_shapes(
     query_point: [f64; 3],
     shapes: &[QueryShapeRef<'_>],
@@ -564,7 +542,6 @@ pub fn k_nearest_shapes(
 ///
 /// Implemented by expanding each shape by `sphere_radius` (Minkowski sum) and
 /// casting a ray from `start` in the velocity direction.
-#[allow(dead_code)]
 pub fn sphere_cast_scene(
     start: [f64; 3],
     velocity: [f64; 3],
@@ -637,7 +614,6 @@ pub fn sphere_cast_scene(
 ///
 /// Both spheres move at constant velocity over the interval `[0, max_t]`.
 /// Returns `None` if no collision occurs within `max_t`.
-#[allow(dead_code)]
 pub fn compute_time_of_impact_spheres(
     center_a: [f64; 3],
     vel_a: [f64; 3],
@@ -703,7 +679,6 @@ pub fn compute_time_of_impact_spheres(
 ///
 /// Uses the separating axis theorem on all three axes.  Returns `None` if the
 /// AABBs do not collide within `[0, max_t]`.
-#[allow(dead_code)]
 pub fn compute_time_of_impact_aabbs(
     min_a: [f64; 3],
     max_a: [f64; 3],
@@ -751,7 +726,6 @@ pub fn compute_time_of_impact_aabbs(
 /// (triangle fan from centroid) to refine.  For a full convex hull this is a
 /// simplified GJK-like approach; here we use the closest-point-to-triangle
 /// test on the convex polygon formed by adjacent vertices.
-#[allow(dead_code)]
 pub fn project_point_convex(point: [f64; 3], vertices: &[[f64; 3]]) -> [f64; 3] {
     if vertices.is_empty() {
         return point;
@@ -839,7 +813,6 @@ pub(super) fn closest_point_on_triangle_local(
 /// Compute the minimum distance (and closest points) between two line segments.
 ///
 /// Segments are defined by their endpoints: `(p0_a, p1_a)` and `(p0_b, p1_b)`.
-#[allow(dead_code)]
 pub fn distance_between_segments(
     p0_a: [f64; 3],
     p1_a: [f64; 3],
@@ -885,13 +858,11 @@ pub fn distance_between_segments(
     }
 }
 /// Closest point on a sphere surface to `point`.
-#[allow(dead_code)]
 pub fn closest_point_on_sphere(point: [f64; 3], center: [f64; 3], radius: f64) -> [f64; 3] {
     let s = QuerySphere { center, radius };
     s.point_query(point).point
 }
 /// Closest point on an AABB surface to `point`.
-#[allow(dead_code)]
 pub fn closest_point_on_box(
     point: [f64; 3],
     box_center: [f64; 3],
@@ -904,7 +875,6 @@ pub fn closest_point_on_box(
     b.point_query(point).point
 }
 /// Closest point on a capsule surface to `point`.
-#[allow(dead_code)]
 pub fn closest_point_on_capsule(
     point: [f64; 3],
     p0: [f64; 3],

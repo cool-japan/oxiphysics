@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -221,8 +220,8 @@ impl RouseChain {
     /// Perform one Brownian dynamics (Euler-Maruyama) step without noise.
     pub fn deterministic_step(&mut self) {
         let forces: Vec<f64> = (0..self.n).map(|i| self.spring_force(i)).collect();
-        for i in 0..self.n {
-            self.positions[i] += forces[i] / self.zeta * self.dt;
+        for (pos, &f) in self.positions.iter_mut().zip(forces.iter()) {
+            *pos += f / self.zeta * self.dt;
         }
     }
 }
@@ -466,7 +465,7 @@ impl LangevinIntegrator {
     /// BAOAB O-step: stochastic velocity update with friction and noise.
     ///
     /// v_new = v * exp(-γ dt) + sqrt((1 - exp(-2γdt)) kT/m) * ξ.
-    pub fn o_step(&self, velocities: &mut Vec<[f64; 3]>, noise: &[[f64; 3]]) {
+    pub fn o_step(&self, velocities: &mut [[f64; 3]], noise: &[[f64; 3]]) {
         let c1 = (-self.gamma * self.dt).exp();
         for (i, v) in velocities.iter_mut().enumerate() {
             let m = self.masses[i];
@@ -479,7 +478,7 @@ impl LangevinIntegrator {
     }
 
     /// A-step: position update x += v * dt/2.
-    pub fn a_step(&self, positions: &mut Vec<[f64; 3]>, velocities: &[[f64; 3]]) {
+    pub fn a_step(&self, positions: &mut [[f64; 3]], velocities: &[[f64; 3]]) {
         let half_dt = 0.5 * self.dt;
         for (x, v) in positions.iter_mut().zip(velocities.iter()) {
             x[0] += v[0] * half_dt;
@@ -489,7 +488,7 @@ impl LangevinIntegrator {
     }
 
     /// B-step: velocity update v += F/m * dt/2.
-    pub fn b_step(&self, velocities: &mut Vec<[f64; 3]>, forces: &[[f64; 3]]) {
+    pub fn b_step(&self, velocities: &mut [[f64; 3]], forces: &[[f64; 3]]) {
         let half_dt = 0.5 * self.dt;
         for (i, (v, f)) in velocities.iter_mut().zip(forces.iter()).enumerate() {
             let m = self.masses[i];

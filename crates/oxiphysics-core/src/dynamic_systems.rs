@@ -7,8 +7,6 @@
 //! normal forms for bifurcations, Poincaré sections, flow maps and the
 //! fundamental solution matrix, and Pecora–Carroll / phase synchronisation.
 
-#![allow(dead_code)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // DiscreteMap
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1009,11 +1007,11 @@ impl SynchronizationAnalysis {
 
         let n_f = n as f64;
         let mut mi = 0.0f64;
-        for ix in 0..n_bins {
-            for iy in 0..n_bins {
-                let p_xy = joint[ix][iy] as f64 / n_f;
-                let p_x = hist_x[ix] as f64 / n_f;
-                let p_y = hist_y[iy] as f64 / n_f;
+        for (joint_row, &px_count) in joint.iter().zip(hist_x.iter()) {
+            let p_x = px_count as f64 / n_f;
+            for (jval, &py_count) in joint_row.iter().zip(hist_y.iter()) {
+                let p_xy = *jval as f64 / n_f;
+                let p_y = py_count as f64 / n_f;
                 if p_xy > 0.0 && p_x > 0.0 && p_y > 0.0 {
                     mi += p_xy * (p_xy / (p_x * p_y)).ln();
                 }

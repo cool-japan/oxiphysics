@@ -4,8 +4,6 @@
 //! Adaptive SPH refinement: particle splitting/merging, variable smoothing
 //! length, CFL time stepping, and resolution management.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

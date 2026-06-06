@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -146,7 +145,6 @@ pub struct SymplecticEuler;
 
 impl SymplecticEuler {
     /// Create a new symplectic Euler integrator.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self
     }
@@ -197,7 +195,6 @@ impl Default for PositionVerlet {
 
 impl PositionVerlet {
     /// Create a new position Verlet integrator.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             prev_positions: None,
@@ -215,12 +212,12 @@ impl Integrator for PositionVerlet {
             let cur = atoms.positions.clone();
 
             // Position Verlet: x_new = 2*x - x_old + a*dt²
-            for i in 0..n {
+            for (i, prev_pos) in prev.iter().enumerate() {
                 let inv_m = 1.0 / atoms.masses[i];
                 let accel = atoms.forces[i] * inv_m;
-                let x_new = atoms.positions[i] * 2.0 - prev[i] + accel * dt2;
+                let x_new = atoms.positions[i] * 2.0 - *prev_pos + accel * dt2;
                 // Estimate velocity: v = (x_new - x_old) / (2*dt)
-                atoms.velocities[i] = (x_new - prev[i]) * (0.5 / dt);
+                atoms.velocities[i] = (x_new - *prev_pos) * (0.5 / dt);
                 atoms.positions[i] = x_new;
             }
 
@@ -286,7 +283,6 @@ impl LangevinIntegrator {
     /// # Arguments
     /// * `gamma` – friction coefficient (s⁻¹)
     /// * `temperature` – target temperature (K)
-    #[allow(dead_code)]
     pub fn new(gamma: f64, temperature: f64) -> Self {
         Self { gamma, temperature }
     }
@@ -471,7 +467,6 @@ impl Default for PredictorCorrector {
 
 impl PredictorCorrector {
     /// Create a new predictor-corrector integrator.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             prev_forces: None,
@@ -575,7 +570,6 @@ pub struct StrangSplitting;
 
 impl StrangSplitting {
     /// Create a new Strang-splitting integrator.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self
     }
@@ -641,7 +635,6 @@ impl Default for Ruth4Integrator {
 
 impl Ruth4Integrator {
     /// Create a new 4th-order Ruth integrator.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self
     }
@@ -714,7 +707,6 @@ pub struct IntegrationErrorMonitor {
 
 impl IntegrationErrorMonitor {
     /// Create a new monitor with the given energy drift tolerance.
-    #[allow(dead_code)]
     pub fn new(tolerance: f64) -> Self {
         Self {
             e0: None,
@@ -728,7 +720,6 @@ impl IntegrationErrorMonitor {
     /// Record the current total energy.
     ///
     /// Returns the current relative drift |E − E0| / |E0|.
-    #[allow(dead_code)]
     pub fn record(&mut self, total_energy: f64) -> f64 {
         if self.e0.is_none() {
             self.e0 = Some(total_energy);
@@ -753,7 +744,6 @@ impl IntegrationErrorMonitor {
     }
 
     /// Return `true` if the current max drift exceeds the tolerance.
-    #[allow(dead_code)]
     pub fn is_drifting(&self) -> bool {
         self.max_drift > self.tolerance
     }
@@ -763,7 +753,6 @@ impl IntegrationErrorMonitor {
     /// If drift < tolerance/10, returns 1.1 (increase dt by 10%).
     /// If drift > tolerance, returns 0.5 (halve dt).
     /// Otherwise returns 1.0 (keep dt).
-    #[allow(dead_code)]
     pub fn suggest_dt_scale(&self) -> f64 {
         if self.max_drift > self.tolerance {
             0.5
@@ -775,7 +764,6 @@ impl IntegrationErrorMonitor {
     }
 
     /// Reset the monitor (e.g. after re-thermalising).
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         self.e0 = None;
         self.max_drift = 0.0;
@@ -802,7 +790,6 @@ pub struct RespaImproved {
 
 impl RespaImproved {
     /// Create a new improved RESPA integrator.
-    #[allow(dead_code)]
     pub fn new(n_inner: usize) -> Self {
         Self {
             n_inner: n_inner.max(1),
@@ -816,7 +803,6 @@ impl RespaImproved {
     /// * `dt`           – outer time step
     /// * `fast_force_fn`– callback for fast (bonded) forces; cleared and added to `atoms.forces`
     /// * `slow_force_fn`– callback for slow (non-bonded) forces; cleared and added to `atoms.forces`
-    #[allow(dead_code)]
     pub fn step_split(
         &mut self,
         atoms: &mut AtomSet,
@@ -834,9 +820,9 @@ impl RespaImproved {
         let slow_forces = atoms.forces.clone();
 
         // Outer half-kick with slow forces
-        for i in 0..n {
+        for (i, sf) in slow_forces.iter().enumerate() {
             let inv_m = 1.0 / atoms.masses[i];
-            atoms.velocities[i] += slow_forces[i] * (inv_m * half_dt_outer);
+            atoms.velocities[i] += *sf * (inv_m * half_dt_outer);
         }
 
         // Inner loop: velocity Verlet with fast forces
@@ -860,9 +846,9 @@ impl RespaImproved {
         // Outer half-kick with slow forces at new position
         slow_force_fn(atoms);
         let slow_forces_new = atoms.forces.clone();
-        for i in 0..n {
+        for (i, sfn) in slow_forces_new.iter().enumerate() {
             let inv_m = 1.0 / atoms.masses[i];
-            atoms.velocities[i] += slow_forces_new[i] * (inv_m * half_dt_outer);
+            atoms.velocities[i] += *sfn * (inv_m * half_dt_outer);
         }
     }
 }

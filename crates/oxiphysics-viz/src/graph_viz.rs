@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -79,7 +78,6 @@ impl GraphEdge {
 }
 
 /// A complete graph layout: positioned nodes plus edges.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GraphLayout {
     /// Positioned nodes.
@@ -142,13 +140,6 @@ pub fn circular_layout(n: usize, radius: f64) -> Vec<[f64; 2]> {
 // Force-directed layout (Fruchterman-Reingold)
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
-fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    (dx * dx + dy * dy).sqrt().max(1e-10)
-}
-
 /// Run Fruchterman-Reingold spring-electrical force-directed layout.
 ///
 /// - `nodes` — nodes whose `position` field is updated in-place.
@@ -157,7 +148,7 @@ fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
 ///
 /// The algorithm uses a cooling schedule: the temperature (maximum
 /// displacement per step) starts at the graph diameter and decays linearly.
-pub fn force_directed_layout(nodes: &mut Vec<GraphNode>, edges: &[GraphEdge], iters: usize) {
+pub fn force_directed_layout(nodes: &mut [GraphNode], edges: &[GraphEdge], iters: usize) {
     let n = nodes.len();
     if n == 0 {
         return;
@@ -251,7 +242,7 @@ pub fn force_directed_layout(nodes: &mut Vec<GraphNode>, edges: &[GraphEdge], it
 /// Each node's y-coordinate is set to its layer index; nodes within the same
 /// layer are spaced evenly along the x-axis.  Cycles are broken by ignoring
 /// back-edges (edges that would create a cycle are skipped).
-pub fn hierarchical_layout(nodes: &mut Vec<GraphNode>, edges: &[GraphEdge]) {
+pub fn hierarchical_layout(nodes: &mut [GraphNode], edges: &[GraphEdge]) {
     let n = nodes.len();
     if n == 0 {
         return;
@@ -272,8 +263,8 @@ pub fn hierarchical_layout(nodes: &mut Vec<GraphNode>, edges: &[GraphEdge]) {
     // Kahn's BFS-based topological sort → layer assignment
     let mut layer = vec![0usize; n];
     let mut queue: VecDeque<usize> = VecDeque::new();
-    for i in 0..n {
-        if in_degree[i] == 0 {
+    for (i, &deg) in in_degree.iter().enumerate() {
+        if deg == 0 {
             queue.push_back(i);
         }
     }
@@ -376,7 +367,6 @@ impl AdjacencyMatrix {
     }
 
     /// Number of edges (directed count; undirected edges appear twice in `adj`).
-    #[allow(dead_code)]
     pub fn edge_count(&self) -> usize {
         self.adj.iter().map(|a| a.len()).sum::<usize>()
     }
@@ -559,7 +549,6 @@ pub fn shortest_path_dijkstra(adj: &AdjacencyMatrix, src: usize, dst: usize) -> 
 // ---------------------------------------------------------------------------
 
 /// Summary statistics of a graph.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GraphStats {
     /// Number of nodes.
@@ -1089,6 +1078,10 @@ mod tests {
 
     // --- dist2 helper ---
 
+    fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+    }
+
     #[test]
     fn test_dist2_zero() {
         assert!(dist2([1.0, 2.0], [1.0, 2.0]) <= 1e-9);
@@ -1106,7 +1099,6 @@ mod tests {
 // ---------------------------------------------------------------------------
 
 /// A per-node scalar or categorical attribute used for coloring.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum NodeAttribute {
     /// A continuous scalar value (e.g. centrality, density).
@@ -1118,7 +1110,6 @@ pub enum NodeAttribute {
 /// Map a scalar attribute to an RGB color using a simple gradient.
 ///
 /// `t` in `[0,1]` maps blue→green→red.
-#[allow(dead_code)]
 pub fn scalar_to_color(t: f64) -> [f32; 3] {
     let t = t.clamp(0.0, 1.0) as f32;
     if t < 0.5 {
@@ -1134,8 +1125,7 @@ pub fn scalar_to_color(t: f64) -> [f32; 3] {
 ///
 /// The values are normalised to `[0,1]` before mapping.
 /// Returns a `Vec` of RGB triples in the same order as `nodes`.
-#[allow(dead_code)]
-pub fn color_nodes_by_scalar(nodes: &mut Vec<GraphNode>, values: &[f64]) {
+pub fn color_nodes_by_scalar(nodes: &mut [GraphNode], values: &[f64]) {
     if nodes.is_empty() || values.is_empty() {
         return;
     }
@@ -1159,8 +1149,7 @@ pub fn color_nodes_by_scalar(nodes: &mut Vec<GraphNode>, values: &[f64]) {
 /// Assign distinct colors to nodes based on a categorical attribute (e.g. community id).
 ///
 /// Up to 12 distinct hues are used; extra categories wrap around.
-#[allow(dead_code)]
-pub fn color_nodes_by_category(nodes: &mut Vec<GraphNode>, categories: &[usize]) {
+pub fn color_nodes_by_category(nodes: &mut [GraphNode], categories: &[usize]) {
     // 12 visually distinct hues (HSV h=0,30,60,...,330)
     let palette: [[f32; 3]; 12] = [
         [0.894, 0.102, 0.110], // red
@@ -1187,7 +1176,6 @@ pub fn color_nodes_by_category(nodes: &mut Vec<GraphNode>, categories: &[usize])
 // ---------------------------------------------------------------------------
 
 /// Rendering hint for a single edge: display width and alpha.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct EdgeRenderHint {
     /// Display width in pixels (or abstract units).
@@ -1202,8 +1190,6 @@ pub struct EdgeRenderHint {
 ///
 /// Weights are normalised to `[0, 1]`; the width is scaled between
 /// `min_width` and `max_width`, and the alpha between `min_alpha` and 1.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn edge_weight_hints(
     edges: &[GraphEdge],
     min_width: f32,
@@ -1251,7 +1237,6 @@ pub fn edge_weight_hints(
 /// Each node starts with its own community label.  In each iteration every
 /// node adopts the most frequent label among its neighbours (ties broken by
 /// lowest label).  Returns a community label for each node.
-#[allow(dead_code)]
 pub fn label_propagation_communities(adj: &AdjacencyMatrix, iters: usize) -> Vec<usize> {
     let n = adj.n;
     if n == 0 {
@@ -1260,7 +1245,8 @@ pub fn label_propagation_communities(adj: &AdjacencyMatrix, iters: usize) -> Vec
     let mut labels: Vec<usize> = (0..n).collect();
     for _iter in 0..iters {
         let prev = labels.clone();
-        for u in 0..n {
+        for (u, label) in labels.iter_mut().enumerate() {
+            let _ = label;
             let mut freq: HashMap<usize, usize> = HashMap::new();
             for &(v, _) in &adj.adj[u] {
                 *freq.entry(prev[v]).or_insert(0) += 1;
@@ -1275,21 +1261,19 @@ pub fn label_propagation_communities(adj: &AdjacencyMatrix, iters: usize) -> Vec
                 .filter(|&(_, &c)| c == max_count)
                 .map(|(&l, _)| l)
                 .min()
-                .unwrap_or(labels[u]);
-            labels[u] = best;
+                .unwrap_or(prev[u]);
+            *label = best;
         }
     }
     labels
 }
 
 /// Colour `nodes` based on community labels returned by [`label_propagation_communities`].
-#[allow(dead_code)]
-pub fn color_nodes_by_community(nodes: &mut Vec<GraphNode>, communities: &[usize]) {
+pub fn color_nodes_by_community(nodes: &mut [GraphNode], communities: &[usize]) {
     color_nodes_by_category(nodes, communities);
 }
 
 /// Compute the number of distinct communities in a label assignment.
-#[allow(dead_code)]
 pub fn community_count(labels: &[usize]) -> usize {
     let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
     for &l in labels {
@@ -1306,7 +1290,6 @@ pub fn community_count(labels: &[usize]) -> usize {
 ///
 /// In a real implementation this would follow a spine; here we use a simple
 /// quadratic Bézier midpoint approximation to group nearby edges.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BundledEdge {
     /// Source position.
@@ -1343,7 +1326,6 @@ impl BundledEdge {
 ///
 /// The control point is the midpoint between the edge midpoint and the
 /// centroid, scaled by `bundle_strength ∈ [0,1]`.
-#[allow(dead_code)]
 pub fn bundle_edges(
     nodes: &[GraphNode],
     edges: &[GraphEdge],
@@ -1384,7 +1366,6 @@ pub fn bundle_edges(
 // ---------------------------------------------------------------------------
 
 /// A dense adjacency matrix heatmap (all entries as f64 weight or 0/1).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AdjacencyHeatmap {
     /// Number of nodes.
@@ -1449,7 +1430,6 @@ impl AdjacencyHeatmap {
 // ---------------------------------------------------------------------------
 
 /// Viewport state for interactive graph panning and zooming.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GraphViewport {
     /// Centre of the viewport in graph-space coordinates.
@@ -1534,7 +1514,6 @@ impl GraphViewport {
 }
 
 /// Selection state for interactive graph editing.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct GraphSelection {
     /// Currently selected node ids.

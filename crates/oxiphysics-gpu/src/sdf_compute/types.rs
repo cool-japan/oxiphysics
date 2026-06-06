@@ -1,11 +1,6 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use rayon::prelude::*;
 
 /// Boolean CSG operations combining two [`SdfShape`] primitives.
@@ -101,7 +96,7 @@ impl SdfShape {
         }
     }
 }
-/// A 3-D SDF grid filled analytically via [`generate_sdf_grid`].
+/// A 3-D SDF grid filled analytically via `generate_sdf_grid`.
 ///
 /// Separate from the existing [`SdfGrid`] to keep naming unambiguous.
 #[derive(Debug, Clone)]

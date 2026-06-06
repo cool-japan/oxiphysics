@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{hoop_stress_angle, make_perp_fracture, make_perpendicular, norm3};
 
 /// Result of splitting a node at a crack path.
@@ -18,7 +15,6 @@ pub struct SplitResult {
 }
 /// A single vertex on the crack front, plus the local normal to the crack plane.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct CrackFrontVertex {
     /// Position of this front vertex in world space.
     pub position: [f64; 3],
@@ -31,7 +27,6 @@ pub struct CrackFrontVertex {
     /// Whether this vertex has been arrested.
     pub arrested: bool,
 }
-#[allow(dead_code)]
 impl CrackFrontVertex {
     /// Create a new front vertex.
     pub fn new(position: [f64; 3], normal: [f64; 3], k1: f64, k2: f64) -> Self {
@@ -74,7 +69,6 @@ impl CrackFrontVertex {
 }
 /// Tracks the full crack front: a closed or open loop of [`CrackFrontVertex`] entries.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CrackFront {
     /// Ordered list of vertices forming the crack front.
     pub vertices: Vec<CrackFrontVertex>,
@@ -89,7 +83,6 @@ pub struct CrackFront {
     /// Indices of tetrahedral elements that have been deleted due to fracture.
     pub deleted_elements: Vec<usize>,
 }
-#[allow(dead_code)]
 impl CrackFront {
     /// Create a new crack front.
     pub fn new(k1c: f64, k_branch: f64, da_min: f64, da_max: f64) -> Self {
@@ -117,7 +110,6 @@ impl CrackFront {
     /// projects the stress onto the local crack-front coordinate frame to
     /// obtain K_I and K_II via the near-tip asymptotic formula
     /// `K = σ * sqrt(2π r)` where `r` is the distance to the nearest sample.
-    #[allow(clippy::too_many_arguments)]
     pub fn estimate_sif_from_stress_field(
         &mut self,
         stress_voigt: &[[f64; 6]],
@@ -306,7 +298,6 @@ impl CrackFront {
 /// A crack may bifurcate into two branches when the mode-mixity angle or
 /// the crack speed exceeds a threshold.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct BranchingCriterion {
     /// Angle (rad) above which branching occurs.
     ///
@@ -317,7 +308,6 @@ pub struct BranchingCriterion {
     /// Half-angle of the two branches relative to the main crack direction (rad).
     pub branch_half_angle: f64,
 }
-#[allow(dead_code)]
 impl BranchingCriterion {
     /// Construct with default parameters (angle = π/8, k_ratio = 2.0, branch = π/8).
     pub fn default_params() -> Self {
@@ -489,14 +479,24 @@ impl FractureMesh {
     pub fn step(&mut self, dt: f64, gravity: [f64; 3]) {
         let forces = self.compute_forces();
         let n = self.positions.len();
-        for i in 0..n {
-            if self.fixed_nodes[i] {
+        for (i, (vel, (force, (mass, fixed)))) in self
+            .velocities
+            .iter_mut()
+            .zip(
+                forces
+                    .iter()
+                    .zip(self.masses.iter().zip(self.fixed_nodes.iter())),
+            )
+            .enumerate()
+        {
+            let _ = i;
+            if *fixed {
                 continue;
             }
-            let inv_m = 1.0 / self.masses[i];
-            self.velocities[i][0] += dt * (forces[i][0] * inv_m + gravity[0]);
-            self.velocities[i][1] += dt * (forces[i][1] * inv_m + gravity[1]);
-            self.velocities[i][2] += dt * (forces[i][2] * inv_m + gravity[2]);
+            let inv_m = 1.0 / mass;
+            for (v, (f, g)) in vel.iter_mut().zip(force.iter().zip(gravity.iter())) {
+                *v += dt * (f * inv_m + g);
+            }
         }
         for i in 0..n {
             if self.fixed_nodes[i] {
@@ -512,17 +512,25 @@ impl FractureMesh {
     pub fn step_damped(&mut self, dt: f64, gravity: [f64; 3], damping: f64) {
         let forces = self.compute_forces();
         let n = self.positions.len();
-        for i in 0..n {
-            if self.fixed_nodes[i] {
+        for (i, (vel, (force, (mass, fixed)))) in self
+            .velocities
+            .iter_mut()
+            .zip(
+                forces
+                    .iter()
+                    .zip(self.masses.iter().zip(self.fixed_nodes.iter())),
+            )
+            .enumerate()
+        {
+            let _ = i;
+            if *fixed {
                 continue;
             }
-            let inv_m = 1.0 / self.masses[i];
-            self.velocities[i][0] += dt * (forces[i][0] * inv_m + gravity[0]);
-            self.velocities[i][1] += dt * (forces[i][1] * inv_m + gravity[1]);
-            self.velocities[i][2] += dt * (forces[i][2] * inv_m + gravity[2]);
-            self.velocities[i][0] *= 1.0 - damping;
-            self.velocities[i][1] *= 1.0 - damping;
-            self.velocities[i][2] *= 1.0 - damping;
+            let inv_m = 1.0 / mass;
+            for (v, (f, g)) in vel.iter_mut().zip(force.iter().zip(gravity.iter())) {
+                *v += dt * (f * inv_m + g);
+                *v *= 1.0 - damping;
+            }
         }
         for i in 0..n {
             if self.fixed_nodes[i] {
@@ -629,7 +637,6 @@ impl CrackTip3D {
 }
 /// Which criterion to use when deciding how a crack propagates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum PropagationCriterion {
     /// Maximum hoop stress criterion (Williams 1957).
     ///
@@ -732,7 +739,6 @@ impl CrackPath {
 /// - For δ ≥ δ_c:  T = 0  (fully separated)
 ///
 /// Energy of fracture: G_c = 0.5 * T_c * δ_c
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CohesiveZone {
     /// Peak traction T_c (Pa).
@@ -746,7 +752,6 @@ pub struct CohesiveZone {
     /// Whether this interface has fully separated.
     pub separated: bool,
 }
-#[allow(dead_code)]
 impl CohesiveZone {
     /// Create a new cohesive zone element.
     pub fn new(peak_traction: f64, delta_0: f64, delta_c: f64) -> Self {
@@ -826,7 +831,6 @@ pub enum FractureMode {
     Combined,
 }
 /// A single fragment generated by fracture.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Fragment {
     /// Node indices belonging to this fragment.
@@ -838,7 +842,6 @@ pub struct Fragment {
     /// Mass of the fragment.
     pub mass: f64,
 }
-#[allow(dead_code)]
 impl Fragment {
     /// Build a fragment from a list of node indices.
     ///

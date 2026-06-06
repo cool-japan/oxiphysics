@@ -10,8 +10,6 @@
 //! **All other OxiPhysics crates should import math types from
 //! `oxiphysics_core::math` rather than depending on nalgebra directly.**
 #![warn(missing_docs)]
-#![allow(hidden_glob_reexports)]
-#![allow(ambiguous_glob_reexports)]
 
 pub mod collision;
 pub mod complex;
@@ -37,25 +35,51 @@ pub mod statistics;
 pub mod stochastic;
 pub mod tensor;
 mod traits;
-mod types;
+pub mod types;
 pub mod world;
 
 pub use dual_quaternion::*;
 pub use error::*;
-pub use interpolation::*;
+pub use interpolation::{
+    AkimaSpline, BSplineBasis, BSplineCurve, CatmullRomSpline, Grid3Params, HermiteSpline,
+    MonotoneCubicSpline, NaturalCubicSpline, NurbsCurve, RBFInterpolation, RbfKernel,
+    barycentric_2d, barycentric_interp_2d, barycentric_rational, bicubic, bilinear, bilinear_grid,
+    catmull_rom, dist3, hermite, hermite_deriv, hermite3, lerp, lerp3, monotone_cubic,
+    natural_neighbor_interp, nurbs_evaluate_with_derivative, quat_dot, quat_nlerp, quat_norm,
+    quat_normalize, quat_slerp, quat_squad, rbf_fit, rbf_interpolate, rbf_thin_plate_spline,
+    rbf_tps_evaluate, rbf_tps_fit, trilinear, trilinear_grid,
+};
 pub use linalg::{
     characteristic_poly3, det3, frobenius_norm3, inv3, is_symmetric3, polar_decomp3, qr_decomp3,
     solve3, svd3, symmetric_eigen3, symmetric_eigenvalues3, trace3,
 };
+pub use math::{Mat3, Quat, Real, Vec3};
 pub use numerics::*;
-pub use statistics::*;
+pub use statistics::{
+    BetaDistribution, ExponentialDistribution, Histogram2D, KernelDensityEstimate,
+    KernelDensityEstimate2D, MaxwellBoltzmann, NormalDistribution, PcaResult, PoissonDistribution,
+    SlidingWindowStats, StatRng, UniformDistribution, WelfordOnline, acf, autocorrelation_time,
+    block_average, boltzmann_factor, bootstrap_ci, bootstrap_se, chi_squared_gof,
+    chi_squared_statistic, chi_squared_test, correlation, correlation_matrix, covariance,
+    covariance_matrix, ecdf_at, empirical_cdf, free_energy_from_partition, histogram,
+    huber_m_estimator, iqr, kruskal_wallis_h, ks_statistic, ks_test_one_sample, ks_test_two_sample,
+    kurtosis, linear_regression, mad, mann_whitney_u, maxwell_boltzmann_speed, mean, median, pacf,
+    partition_function, pca, pca_transform, pearson_correlation, pearson_r, percentile, quartiles,
+    running_average, sample_kurtosis, sample_skewness, shapiro_wilk_w, skewness,
+    spearman_correlation, std_dev, t_test_one_sample, t_test_one_sample_full, t_test_two_sample,
+    tukey_biweight_estimator, variance, welch_t_test, wilcoxon_signed_rank,
+};
 pub use stochastic::{
     GeometricBrownianMotion, LangevinDynamics, OrnsteinUhlenbeck, RandomWalk, Rng, WienerProcess,
     autocorrelation, diffusion_coefficient, euler_maruyama, milstein,
 };
 pub use tensor::*;
 pub use traits::*;
-pub use types::*;
+pub use types::{
+    Aabb, BodyHandle, BoundingBox3D, Capsule, ColliderHandle, DefaultConfigs, MassProperties,
+    PhysicsConfig, PhysicsConfigBuilder, Plane, Plane3D, Ray, Ray3D, RayAabbHit, Sphere, TimeStep,
+    Transform, Transform3D, Triangle,
+};
 pub use world::{
     Body, BodyArena, BodyMode, BodyVelocity, Constraint, ConstraintKind, Island, PhysicsEvent,
     PhysicsWorld,

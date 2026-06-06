@@ -3,7 +3,6 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::triangle_angles_deg;
-#[allow(unused_imports)]
 use super::functions::*;
 use super::types::{
     AutoImproveSuggestion, PerTypeMeshStats, PoorShapeReason, PoorlyShapedElement,
@@ -11,7 +10,6 @@ use super::types::{
 };
 
 /// Compute per-element-type quality statistics.
-#[allow(dead_code)]
 pub fn per_type_stats(mesh: &TriangleMesh) -> PerTypeMeshStats {
     let mut stats = PerTypeMeshStats::default();
     let mut eq_ar_sum = 0.0_f32;
@@ -55,7 +53,6 @@ pub fn per_type_stats(mesh: &TriangleMesh) -> PerTypeMeshStats {
     stats
 }
 /// Generate per-triangle quality values for visualization (e.g. coloring in ParaView).
-#[allow(dead_code)]
 pub fn quality_visualization_data(mesh: &TriangleMesh) -> QualityVisualizationData {
     let n = mesh.triangles.len();
     let mut ars = Vec::with_capacity(n);
@@ -86,7 +83,6 @@ pub fn quality_visualization_data(mesh: &TriangleMesh) -> QualityVisualizationDa
     }
 }
 /// Detect poorly-shaped elements using per-element thresholds.
-#[allow(dead_code)]
 pub fn detect_poorly_shaped(
     mesh: &TriangleMesh,
     max_aspect_ratio: f32,
@@ -130,7 +126,6 @@ pub fn detect_poorly_shaped(
     poor
 }
 /// Generate automated quality improvement suggestions with priorities.
-#[allow(dead_code)]
 pub fn auto_improve_suggestions(mesh: &TriangleMesh) -> Vec<AutoImproveSuggestion> {
     let mut suggestions = Vec::new();
     let report = compute_quality_report(mesh);

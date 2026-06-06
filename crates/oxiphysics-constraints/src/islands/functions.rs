@@ -18,7 +18,6 @@ use super::types::{
 ///
 /// Each returned work item represents an independent unit of work that
 /// can be solved in parallel.
-#[allow(dead_code)]
 pub fn generate_work_items(islands: &[Island]) -> Vec<IslandWorkItem> {
     islands
         .iter()
@@ -39,7 +38,6 @@ pub fn generate_work_items(islands: &[Island]) -> Vec<IslandWorkItem> {
 ///
 /// Uses a greedy load-balancing approach: sort by cost descending, then
 /// assign each item to the partition with the least total cost so far.
-#[allow(dead_code)]
 pub fn partition_work_items(items: &[IslandWorkItem], num_partitions: usize) -> Vec<Vec<usize>> {
     if num_partitions == 0 || items.is_empty() {
         return vec![Vec::new(); num_partitions.max(1)];
@@ -61,7 +59,6 @@ pub fn partition_work_items(items: &[IslandWorkItem], num_partitions: usize) -> 
     partitions
 }
 /// Compute the total cost of work items in a partition.
-#[allow(dead_code)]
 pub fn partition_cost(items: &[IslandWorkItem], partition: &[usize]) -> usize {
     partition.iter().map(|&idx| items[idx].estimated_cost).sum()
 }
@@ -69,7 +66,6 @@ pub fn partition_cost(items: &[IslandWorkItem], partition: &[usize]) -> usize {
 /// wake up all bodies in its connected component.
 ///
 /// Returns the list of body handles that were woken up.
-#[allow(dead_code)]
 pub fn propagate_wake(
     bodies: &mut RigidBodySet,
     source: BodyHandle,
@@ -107,7 +103,6 @@ pub fn propagate_wake(
     woken
 }
 /// Wake propagation through joints as well as contacts.
-#[allow(dead_code)]
 pub fn propagate_wake_full(
     bodies: &mut RigidBodySet,
     source: BodyHandle,
@@ -136,7 +131,6 @@ pub fn propagate_wake_full(
     woken
 }
 /// Compute statistics for each island.
-#[allow(dead_code)]
 pub fn compute_island_stats(islands: &[Island], bodies: &RigidBodySet) -> Vec<IslandSolveStats> {
     islands
         .iter()
@@ -163,7 +157,6 @@ pub fn compute_island_stats(islands: &[Island], bodies: &RigidBodySet) -> Vec<Is
         .collect()
 }
 /// Find the index of the most expensive (highest constraint count) awake island.
-#[allow(dead_code)]
 pub fn most_expensive_island(islands: &[Island]) -> Option<usize> {
     islands
         .iter()
@@ -173,7 +166,6 @@ pub fn most_expensive_island(islands: &[Island]) -> Option<usize> {
         .map(|(idx, _)| idx)
 }
 /// Count total awake constraints across all islands.
-#[allow(dead_code)]
 pub fn total_awake_constraints(islands: &[Island]) -> usize {
     islands
         .iter()
@@ -182,7 +174,6 @@ pub fn total_awake_constraints(islands: &[Island]) -> usize {
         .sum()
 }
 /// Count total awake bodies across all islands.
-#[allow(dead_code)]
 pub fn total_awake_bodies(islands: &[Island]) -> usize {
     islands
         .iter()
@@ -194,7 +185,6 @@ pub fn total_awake_bodies(islands: &[Island]) -> usize {
 ///
 /// Two islands are connected when a constraint spans bodies in both.
 /// This can occur after island splitting if a joint bridges two components.
-#[allow(dead_code)]
 pub fn build_island_dependency_graph(islands: &[Island]) -> Vec<IslandDependency> {
     let mut handle_to_island: std::collections::HashMap<(u32, u32), usize> =
         std::collections::HashMap::new();
@@ -211,7 +201,6 @@ pub fn build_island_dependency_graph(islands: &[Island]) -> Vec<IslandDependency
 ///
 /// Uses Amdahl's law: the sequential fraction is estimated from the largest
 /// island's fraction of total work.
-#[allow(dead_code)]
 pub fn amdahl_speedup(islands: &[Island], n_threads: usize) -> f64 {
     if islands.is_empty() || n_threads == 0 {
         return 1.0;
@@ -236,7 +225,6 @@ pub fn amdahl_speedup(islands: &[Island], n_threads: usize) -> f64 {
 /// Heuristics:
 /// - If the island has more bodies than `body_threshold`, suggest a split.
 /// - The suggested number of parts is `ceil(bodies / body_threshold)`.
-#[allow(dead_code)]
 pub fn island_split_heuristic(
     island: &Island,
     island_index: usize,
@@ -271,7 +259,6 @@ pub fn island_split_heuristic(
     }
 }
 /// Analyse all islands and return those recommended for splitting.
-#[allow(dead_code)]
 pub fn analyse_island_splits(
     islands: &[Island],
     body_threshold: usize,
@@ -285,7 +272,6 @@ pub fn analyse_island_splits(
         .collect()
 }
 /// Compute contact graph statistics for a set of islands.
-#[allow(dead_code)]
 pub fn island_contact_graph_stats(islands: &[Island]) -> IslandContactGraphStats {
     let island_count = islands.len();
     let sleeping_count = islands.iter().filter(|i| i.sleeping).count();
@@ -349,7 +335,6 @@ pub fn island_contact_graph_stats(islands: &[Island]) -> IslandContactGraphStats
 /// sub-island that contains the first body of that constraint.
 ///
 /// Any body not mentioned in any partition is placed into the last sub-island.
-#[allow(dead_code)]
 pub fn split_island(island: &Island, partitions: &[Vec<usize>]) -> Vec<Island> {
     if partitions.is_empty() {
         return vec![island.clone()];
@@ -383,7 +368,6 @@ pub fn split_island(island: &Island, partitions: &[Vec<usize>]) -> Vec<Island> {
 /// Used when a new contact is detected between bodies that were previously in
 /// separate islands.  Sleeping state is cleared on the merged island because
 /// new contacts may introduce energy.
-#[allow(dead_code)]
 pub fn merge_islands(a: &Island, b: &Island) -> Island {
     let mut merged = Island::new();
     merged.body_handles.extend_from_slice(&a.body_handles);
@@ -398,7 +382,6 @@ pub fn merge_islands(a: &Island, b: &Island) -> Island {
 /// Merge multiple islands at the given indices into one, removing the originals.
 ///
 /// Returns the remaining islands with the merged result appended at the end.
-#[allow(dead_code)]
 pub fn merge_islands_by_index(islands: &[Island], indices: &[usize]) -> Vec<Island> {
     if indices.is_empty() {
         return islands.to_vec();
@@ -424,7 +407,6 @@ pub fn merge_islands_by_index(islands: &[Island], indices: &[usize]) -> Vec<Isla
     remaining
 }
 /// Compute the total kinetic energy of all dynamic bodies in an island.
-#[allow(dead_code)]
 pub fn island_kinetic_energy(island: &Island, bodies: &RigidBodySet) -> Real {
     let mut ke = 0.0;
     for &h in &island.body_handles {
@@ -443,7 +425,6 @@ pub fn island_kinetic_energy(island: &Island, bodies: &RigidBodySet) -> Real {
 ///
 /// This can be used as a fast pre-check before running the velocity
 /// accumulator to decide whether an island might be eligible for sleep.
-#[allow(dead_code)]
 pub fn island_energy_below_threshold(
     island: &Island,
     bodies: &RigidBodySet,
@@ -456,7 +437,6 @@ pub fn island_energy_below_threshold(
 /// If an island becomes inactive (all bodies below threshold) its bodies are
 /// put to sleep.  If a previously sleeping island has any body with energy
 /// above `wake_threshold`, all bodies in that island are woken.
-#[allow(dead_code)]
 pub fn propagate_sleep_decision(
     islands: &mut [Island],
     bodies: &mut RigidBodySet,
@@ -494,7 +474,6 @@ pub fn propagate_sleep_decision(
 ///
 /// Returns a permutation `order` such that `islands[order[0\]]` is the most
 /// expensive island to solve.
-#[allow(dead_code)]
 pub fn island_solve_order(islands: &[Island]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..islands.len())
         .filter(|&i| !islands[i].sleeping)
@@ -507,7 +486,6 @@ pub fn island_solve_order(islands: &[Island]) -> Vec<usize> {
     order
 }
 /// Returns only the awake islands sorted by descending cost.
-#[allow(dead_code)]
 pub fn awake_islands_sorted(islands: &[Island]) -> Vec<&Island> {
     let mut awake: Vec<&Island> = islands.iter().filter(|i| !i.sleeping).collect();
     awake.sort_by(|a, b| {
@@ -518,7 +496,6 @@ pub fn awake_islands_sorted(islands: &[Island]) -> Vec<&Island> {
     awake
 }
 /// Build a size summary for every island.
-#[allow(dead_code)]
 pub fn island_size_summaries(islands: &[Island]) -> Vec<IslandSizeSummary> {
     islands
         .iter()
@@ -533,12 +510,10 @@ pub fn island_size_summaries(islands: &[Island]) -> Vec<IslandSizeSummary> {
         .collect()
 }
 /// Total body count across all islands.
-#[allow(dead_code)]
 pub fn total_island_bodies(islands: &[Island]) -> usize {
     islands.iter().map(|i| i.body_handles.len()).sum()
 }
 /// Maximum body count across all islands.
-#[allow(dead_code)]
 pub fn max_island_bodies(islands: &[Island]) -> usize {
     islands
         .iter()
@@ -547,7 +522,6 @@ pub fn max_island_bodies(islands: &[Island]) -> usize {
         .unwrap_or(0)
 }
 /// Mean body count per island (returns 0.0 if there are no islands).
-#[allow(dead_code)]
 pub fn mean_island_bodies(islands: &[Island]) -> f64 {
     if islands.is_empty() {
         return 0.0;
@@ -558,12 +532,10 @@ pub fn mean_island_bodies(islands: &[Island]) -> f64 {
 ///
 /// Single-body islands can be solved with a trivial (no-constraint) solver
 /// path to avoid overhead.
-#[allow(dead_code)]
 pub fn is_degenerate(island: &Island) -> bool {
     island.body_handles.len() == 1 && island.constraint_count() == 0
 }
 /// Collect all degenerate (single-body, no-constraint) islands.
-#[allow(dead_code)]
 pub fn degenerate_islands(islands: &[Island]) -> Vec<usize> {
     islands
         .iter()
@@ -577,7 +549,6 @@ pub fn degenerate_islands(islands: &[Island]) -> Vec<usize> {
 /// A lone body with no constraints will never exchange energy through
 /// constraints; it can only move under gravity.  Callers that do not want
 /// gravity-only bodies to go to sleep should not call this function.
-#[allow(dead_code)]
 pub fn sleep_degenerate_islands(islands: &mut [Island], bodies: &mut RigidBodySet) {
     for island in islands.iter_mut() {
         if is_degenerate(island) && !island.sleeping {
@@ -595,7 +566,6 @@ pub fn sleep_degenerate_islands(islands: &mut [Island], bodies: &mut RigidBodySe
     }
 }
 /// Iterate over all bodies in an island, applying `f` to each dynamic body handle.
-#[allow(dead_code)]
 pub fn for_each_island_body<F>(island: &Island, bodies: &RigidBodySet, mut f: F)
 where
     F: FnMut(BodyHandle),
@@ -611,7 +581,6 @@ where
 /// Returns a list of [`BoundaryContact`] entries.  A contact is a boundary
 /// contact when its two bodies reside in different islands.  This information
 /// is used to decide which islands need to be merged.
-#[allow(dead_code)]
 pub fn find_boundary_contacts(
     contacts: &[ContactConstraint],
     islands: &[Island],
@@ -651,7 +620,6 @@ pub fn find_boundary_contacts(
 ///
 /// Returns a list of `(island_a, island_b)` pairs that should be merged.
 /// Duplicate pairs are deduplicated.
-#[allow(dead_code)]
 pub fn islands_to_merge(contacts: &[ContactConstraint], islands: &[Island]) -> Vec<(usize, usize)> {
     let boundary = find_boundary_contacts(contacts, islands);
     let mut pairs: Vec<(usize, usize)> = boundary

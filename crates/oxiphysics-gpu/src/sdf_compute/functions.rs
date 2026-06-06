@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use rayon::prelude::*;
 
 use super::types::{SdfGrid, SphereTraceResult, Triangle};
@@ -427,8 +426,8 @@ pub fn marching_cubes(grid: &SdfGrid, isovalue: f64) -> Vec<Triangle> {
                     grid.get(i, j + 1, k + 1),
                 ];
                 let mut cube_idx = 0u8;
-                for c in 0..8 {
-                    if vals[c] < isovalue {
+                for (c, &v) in vals.iter().enumerate() {
+                    if v < isovalue {
                         cube_idx |= 1 << c;
                     }
                 }

@@ -1,6 +1,6 @@
 # oxiphysics-softbody TODO
 
-Last updated: 2026-05-17 | Version: 0.1.1
+Last updated: 2026-06-06 | Version: 0.1.2
 
 ## Phase 1: Foundation
 - [x] Define core types and traits
@@ -45,5 +45,5 @@ Last updated: 2026-05-17 | Version: 0.1.1
 - [x] Topology optimization
 - [x] Tendon simulation
 - [x] Elastic waves and peridynamics
-- [x] 3,469 tests passing, 0 stubs
+- [x] 3,473 tests passing, 0 stubs
 

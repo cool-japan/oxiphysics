@@ -7,9 +7,6 @@
 //! Euler, Crank-Nicolson (trapezoidal), BDF2 for stiff systems, zero-crossing
 //! event detection, and trajectory storage with interpolation.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -70,16 +67,6 @@ impl OdeState {
 #[inline]
 fn vec_axpy(a: f64, x: &[f64], y: &[f64]) -> Vec<f64> {
     x.iter().zip(y.iter()).map(|(xi, yi)| a * xi + yi).collect()
-}
-
-#[inline]
-fn vec_scale(a: f64, x: &[f64]) -> Vec<f64> {
-    x.iter().map(|xi| a * xi).collect()
-}
-
-#[inline]
-fn vec_add(x: &[f64], y: &[f64]) -> Vec<f64> {
-    x.iter().zip(y.iter()).map(|(a, b)| a + b).collect()
 }
 
 #[inline]
@@ -316,7 +303,7 @@ impl DormandPrince45 {
         s: &OdeState,
         h: f64,
         f: &F,
-        k1_in: Option<&Vec<f64>>,
+        k1_in: Option<&[f64]>,
     ) -> (OdeState, f64, Vec<f64>)
     where
         F: Fn(f64, &[f64]) -> Vec<f64>,
@@ -325,8 +312,8 @@ impl DormandPrince45 {
         let y = &s.y;
         let n = y.len();
 
-        let k1 = match k1_in {
-            Some(k) => k.clone(),
+        let k1: Vec<f64> = match k1_in {
+            Some(k) => k.to_vec(),
             None => f(t, y),
         };
 
@@ -942,7 +929,6 @@ impl OdeSolution {
 // ─────────────────────────────────────────────────────────────────────────────
 // Suppress unused import of PI (used in tests)
 // ─────────────────────────────────────────────────────────────────────────────
-#[allow(unused_imports)]
 const _PI_CHECK: f64 = PI;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -951,6 +937,16 @@ const _PI_CHECK: f64 = PI;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[inline]
+    fn vec_scale(a: f64, x: &[f64]) -> Vec<f64> {
+        x.iter().map(|xi| a * xi).collect()
+    }
+
+    #[inline]
+    fn vec_add(x: &[f64], y: &[f64]) -> Vec<f64> {
+        x.iter().zip(y.iter()).map(|(a, b)| a + b).collect()
+    }
 
     // ------------------------------------------------------------------
     // OdeState

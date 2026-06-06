@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{AlchemicalResult, LambdaWindow, WhamWindow};
 
 /// Zwanzig (exponential averaging) free energy estimate.
@@ -14,7 +13,6 @@ use super::types::{AlchemicalResult, LambdaWindow, WhamWindow};
 /// * `kT`         – thermal energy k_B T in the same units as ΔU.
 ///
 /// Returns `f64::INFINITY` when the argument of the logarithm underflows to zero.
-#[allow(dead_code)]
 pub fn fep_zwanzig(du_samples: &[f64], kt: f64) -> f64 {
     if du_samples.is_empty() || kt == 0.0 {
         return 0.0;
@@ -42,7 +40,6 @@ pub(super) fn fermi(x: f64) -> f64 {
 /// * `du_backward` – ΔU = U₀ − U₁ samples from state 1.
 /// * `kt`          – thermal energy k_B T.
 /// * `tol`         – convergence tolerance (absolute, in units of energy).
-#[allow(dead_code)]
 pub fn fep_bar(du_forward: &[f64], du_backward: &[f64], kt: f64, tol: f64) -> f64 {
     let n0 = du_forward.len();
     let n1 = du_backward.len();
@@ -85,7 +82,6 @@ pub fn fep_bar(du_forward: &[f64], du_backward: &[f64], kt: f64, tol: f64) -> f6
 /// and returns the standard error of the block estimates.
 ///
 /// Returns 0 when fewer than 4 samples are available.
-#[allow(dead_code)]
 pub fn fep_uncertainty(du_samples: &[f64], kt: f64) -> f64 {
     let n = du_samples.len();
     if n < 4 {
@@ -112,7 +108,6 @@ pub fn fep_uncertainty(du_samples: &[f64], kt: f64) -> f64 {
 /// # Arguments
 /// * `lambdas`     – λ grid points (must be sorted, length ≥ 2).
 /// * `du_dlambda`  – ⟨dU/dλ⟩ at each λ point (same length as `lambdas`).
-#[allow(dead_code)]
 pub fn thermodynamic_integration(lambdas: &[f64], du_dlambda: &[f64]) -> f64 {
     let n = lambdas.len().min(du_dlambda.len());
     if n < 2 {
@@ -132,7 +127,6 @@ pub fn thermodynamic_integration(lambdas: &[f64], du_dlambda: &[f64]) -> f64 {
 /// # Arguments
 /// * `lambdas`         – λ grid points.
 /// * `du_dlambda_err`  – standard error of ⟨dU/dλ⟩ at each λ point.
-#[allow(dead_code)]
 pub fn ti_uncertainty(lambdas: &[f64], du_dlambda_err: &[f64]) -> f64 {
     let n = lambdas.len().min(du_dlambda_err.len());
     if n < 2 {
@@ -153,7 +147,6 @@ pub fn ti_uncertainty(lambdas: &[f64], du_dlambda_err: &[f64]) -> f64 {
 /// # Arguments
 /// * `work_samples` – irreversible work values W for each trajectory.
 /// * `kt`           – thermal energy k_B T.
-#[allow(dead_code)]
 pub fn jarzynski_estimate(work_samples: &[f64], kt: f64) -> f64 {
     fep_zwanzig(work_samples, kt)
 }
@@ -162,7 +155,6 @@ pub fn jarzynski_estimate(work_samples: &[f64], kt: f64) -> f64 {
 /// ΔF ≈ ⟨W⟩ − Var(W) / (2 kT)
 ///
 /// Valid when work fluctuations are small compared to kT.
-#[allow(dead_code)]
 pub fn cumulant_expansion_2nd(work_samples: &[f64], kt: f64) -> f64 {
     let n = work_samples.len();
     if n == 0 || kt == 0.0 {
@@ -194,7 +186,6 @@ pub fn cumulant_expansion_2nd(work_samples: &[f64], kt: f64) -> f64 {
 ///
 /// # Returns
 /// A `Vec` of `(bin_center, pmf)` pairs; bins with zero counts are omitted.
-#[allow(dead_code)]
 pub fn histogram_pmf(samples: &[f64], bins: usize, range: (f64, f64), kt: f64) -> Vec<(f64, f64)> {
     if samples.is_empty() || bins == 0 || range.0 >= range.1 {
         return Vec::new();
@@ -245,7 +236,6 @@ pub fn histogram_pmf(samples: &[f64], bins: usize, range: (f64, f64), kt: f64) -
 /// recomputed here from the PMF values and `n_samples` using the relationship
 /// PMF_i = −kT · ln(n_i / (n_total · Δx)).  For a direct count-based
 /// uncertainty use the raw histogram.
-#[allow(dead_code)]
 pub fn pmf_uncertainty(pmf: &[(f64, f64)], n_samples: usize) -> Vec<f64> {
     if pmf.is_empty() || n_samples == 0 {
         return Vec::new();
@@ -264,7 +254,6 @@ pub fn pmf_uncertainty(pmf: &[(f64, f64)], n_samples: usize) -> Vec<f64> {
 /// * `samples` – 1-D configuration samples.
 /// * `bins`    – number of histogram bins.
 /// * `kt`      – thermal energy k_B T (set to 1.0 for dimensionless entropy).
-#[allow(dead_code)]
 pub fn configurational_entropy(samples: &[f64], bins: usize, kt: f64) -> f64 {
     if samples.is_empty() || bins == 0 {
         return 0.0;
@@ -316,7 +305,6 @@ pub(super) fn shannon_entropy_from_counts(counts: &[usize]) -> f64 {
 /// * `x`    – samples of variable X.
 /// * `y`    – samples of variable Y (must have same length as `x`).
 /// * `bins` – number of bins per dimension.
-#[allow(dead_code)]
 pub fn mutual_information(x: &[f64], y: &[f64], bins: usize) -> f64 {
     let n = x.len().min(y.len());
     if n == 0 || bins == 0 {
@@ -355,7 +343,6 @@ pub fn mutual_information(x: &[f64], y: &[f64], bins: usize) -> f64 {
 ///
 /// Windows should be ordered from λ=0 to λ=1.
 /// Returns the total ΔF = Σ ΔF(λᵢ → λᵢ₊₁).
-#[allow(dead_code)]
 pub fn total_fep_bar(windows: &[LambdaWindow], kt: f64) -> f64 {
     if windows.len() < 2 {
         return 0.0;
@@ -367,7 +354,6 @@ pub fn total_fep_bar(windows: &[LambdaWindow], kt: f64) -> f64 {
     total
 }
 /// Compute total free energy difference using Zwanzig forward estimates.
-#[allow(dead_code)]
 pub fn total_fep_zwanzig(windows: &[LambdaWindow], kt: f64) -> f64 {
     if windows.len() < 2 {
         return 0.0;
@@ -386,7 +372,6 @@ pub fn total_fep_zwanzig(windows: &[LambdaWindow], kt: f64) -> f64 {
 /// * `decharge_windows` – λ-windows for the charge-off stage.
 /// * `vdw_windows`      – λ-windows for the vdW-off stage.
 /// * `kt`               – thermal energy kBT.
-#[allow(dead_code)]
 pub fn staged_alchemical_transformation(
     decharge_windows: &[LambdaWindow],
     vdw_windows: &[LambdaWindow],
@@ -410,7 +395,6 @@ pub fn staged_alchemical_transformation(
 /// * `epsilon` – well depth.
 /// * `sigma`   – particle radius.
 /// * `alpha`   – soft-core parameter (typically 0.5).
-#[allow(dead_code)]
 pub fn soft_core_lj(r: f64, lambda: f64, epsilon: f64, sigma: f64, alpha: f64) -> f64 {
     if r < 0.0 {
         return 0.0;
@@ -425,7 +409,6 @@ pub fn soft_core_lj(r: f64, lambda: f64, epsilon: f64, sigma: f64, alpha: f64) -
 /// Derivative of the soft-core LJ potential with respect to λ.
 ///
 /// dU_sc/dλ — needed for thermodynamic integration.
-#[allow(dead_code)]
 pub fn soft_core_lj_dlambda(r: f64, lambda: f64, epsilon: f64, sigma: f64, alpha: f64) -> f64 {
     let rs = (r / sigma).powi(6);
     let sc_term = alpha * (1.0 - lambda).powi(2) + rs;
@@ -444,7 +427,6 @@ pub fn soft_core_lj_dlambda(r: f64, lambda: f64, epsilon: f64, sigma: f64, alpha
 /// 0 indicates poor sampling.
 ///
 /// Returns an (n-1)-element vector of pairwise overlap estimates.
-#[allow(dead_code)]
 pub fn overlap_matrix(windows: &[LambdaWindow], kt: f64) -> Vec<f64> {
     if windows.len() < 2 {
         return Vec::new();
@@ -467,7 +449,6 @@ pub fn overlap_matrix(windows: &[LambdaWindow], kt: f64) -> Vec<f64> {
 /// Splits the ΔU samples into successive blocks and tracks the running
 /// estimate of ΔF.  Returns the vector of block-by-block ΔF estimates
 /// (cumulative mean up to each block).
-#[allow(dead_code)]
 pub fn fep_convergence_trace(du_samples: &[f64], n_blocks: usize, kt: f64) -> Vec<f64> {
     if du_samples.is_empty() || n_blocks == 0 {
         return Vec::new();
@@ -485,7 +466,6 @@ pub fn fep_convergence_trace(du_samples: &[f64], n_blocks: usize, kt: f64) -> Ve
 ///
 /// Returns `true` if the standard deviation of the second half is less than
 /// `tol` times the absolute value of the overall estimate.
-#[allow(dead_code)]
 pub fn fep_has_converged(du_samples: &[f64], n_blocks: usize, kt: f64, tol: f64) -> bool {
     let trace = fep_convergence_trace(du_samples, n_blocks, kt);
     if trace.len() < 4 {
@@ -522,7 +502,6 @@ pub fn fep_has_converged(du_samples: &[f64], n_blocks: usize, kt: f64, tol: f64)
 ///
 /// # Returns
 /// A `Vec<(bin_center, pmf)>` of the unbiased PMF (shifted so minimum = 0).
-#[allow(dead_code)]
 pub fn wham_pmf(
     windows: &mut [WhamWindow],
     bins: usize,
@@ -566,11 +545,11 @@ pub fn wham_pmf(
             p_unnorm[b] = if denom > 1e-300 { num / denom } else { 0.0 };
         }
         let mut max_delta = 0.0_f64;
-        for i in 0..n_windows {
+        for window in windows.iter_mut() {
             let f_new_neg_exp: f64 = (0..bins)
                 .map(|b| {
                     let xi = bin_centers[b];
-                    let u = windows[i].bias_energy(xi, kt);
+                    let u = window.bias_energy(xi, kt);
                     p_unnorm[b] * (-u).exp()
                 })
                 .sum();
@@ -579,11 +558,11 @@ pub fn wham_pmf(
             } else {
                 f64::INFINITY
             };
-            let delta = (f_new - windows[i].f_estimate).abs();
+            let delta = (f_new - window.f_estimate).abs();
             if delta > max_delta {
                 max_delta = delta;
             }
-            windows[i].f_estimate = f_new;
+            window.f_estimate = f_new;
         }
         if max_delta < tol {
             break;
@@ -619,7 +598,6 @@ pub fn wham_pmf(
 ///
 /// # Returns
 /// Free energy estimates `f_k` (length K), normalised so `f[0] = 0`.
-#[allow(dead_code)]
 pub fn mbar_free_energies(u_kn: &[Vec<f64>], n_k: &[usize], tol: f64, max_iter: usize) -> Vec<f64> {
     let k = u_kn.len();
     if k == 0 || n_k.len() != k {
@@ -684,7 +662,6 @@ pub fn mbar_free_energies(u_kn: &[Vec<f64>], n_k: &[usize], tol: f64, max_iter: 
 /// belongs to a target (unbiased) state 0 given the MBAR free energies.
 ///
 /// `W_n = 1 / (Σ_k N_k * exp(f_k - u_k(x_n)))` (unnormalised)
-#[allow(dead_code)]
 pub fn mbar_weights(u_kn: &[Vec<f64>], n_k: &[usize], f: &[f64]) -> Vec<f64> {
     let k = u_kn.len();
     let n_total: usize = n_k.iter().sum();
@@ -715,7 +692,6 @@ pub fn mbar_weights(u_kn: &[Vec<f64>], n_k: &[usize], f: &[f64]) -> Vec<f64> {
 /// Compute a MBAR observable expectation value ⟨A⟩ using pre-computed weights.
 ///
 /// `⟨A⟩ = Σ_n W_n * A_n / Σ_n W_n`
-#[allow(dead_code)]
 pub fn mbar_observable(weights: &[f64], observable: &[f64]) -> f64 {
     let n = weights.len().min(observable.len());
     if n == 0 {
@@ -741,7 +717,6 @@ pub fn mbar_observable(weights: &[f64], observable: &[f64]) -> f64 {
 /// `ΔF_{i→i+1} ≈ kT_i * ln(alpha[i] / (1 - alpha[i]))`
 ///
 /// This is a rough estimate; proper analysis requires BAR with full ΔU samples.
-#[allow(dead_code)]
 pub fn remd_free_energy_estimates(acceptance_ratios: &[f64], kt: f64) -> Vec<f64> {
     acceptance_ratios
         .iter()
@@ -761,7 +736,6 @@ pub fn remd_free_energy_estimates(acceptance_ratios: &[f64], kt: f64) -> Vec<f64
 /// * `n_bootstrap`   – number of bootstrap replicas.
 /// * `kt`            – thermal energy k_B T.
 /// * `seed_offset`   – deterministic seed for reproducible testing (uses simple LCG).
-#[allow(dead_code)]
 pub fn bootstrap_uncertainty(
     du_samples: &[f64],
     n_bootstrap: usize,
@@ -802,7 +776,6 @@ pub fn bootstrap_uncertainty(
 /// # Arguments
 /// * `du_dlambda` – ⟨dH/dλ⟩ at each quadrature point (same length as `weights`).
 /// * `weights`    – quadrature weights summing to 1.
-#[allow(dead_code)]
 pub fn ti_gaussian_quadrature(du_dlambda: &[f64], weights: &[f64]) -> f64 {
     let n = du_dlambda.len().min(weights.len());
     if n == 0 {
@@ -817,7 +790,6 @@ pub fn ti_gaussian_quadrature(du_dlambda: &[f64], weights: &[f64]) -> f64 {
 /// Five-point Gauss-Legendre quadrature nodes and weights on \[0,1\].
 ///
 /// Returns `(nodes, weights)` for integration ∫₀¹ f(λ) dλ.
-#[allow(dead_code)]
 pub fn gauss_legendre_5pt() -> ([f64; 5], [f64; 5]) {
     let nodes_11: [f64; 5] = [
         -0.906_179_845_9,
@@ -845,7 +817,6 @@ pub fn gauss_legendre_5pt() -> ([f64; 5], [f64; 5]) {
 ///
 /// Splits `samples` into blocks of size `block_size`, computes the block mean,
 /// and returns `(mean, std_err)`.
-#[allow(dead_code)]
 pub fn ti_block_average(samples: &[f64], block_size: usize) -> (f64, f64) {
     let n = samples.len();
     if n == 0 {
@@ -878,7 +849,6 @@ pub fn ti_block_average(samples: &[f64], block_size: usize) -> (f64, f64) {
 /// where f = fermi((ΔU ± ΔF) / kT).
 ///
 /// Returns the estimated standard deviation of the BAR ΔF estimate.
-#[allow(dead_code)]
 pub fn bar_uncertainty(du_forward: &[f64], du_backward: &[f64], df: f64, kt: f64) -> f64 {
     let n0 = du_forward.len();
     let n1 = du_backward.len();
@@ -907,14 +877,12 @@ pub fn bar_uncertainty(du_forward: &[f64], du_backward: &[f64], df: f64, kt: f64
 /// Compute the umbrella bias potential energy.
 ///
 /// `U_bias(ξ) = 0.5 * k * (ξ - ξ_ref)²`
-#[allow(dead_code)]
 pub fn umbrella_bias_energy(xi: f64, xi_ref: f64, k: f64) -> f64 {
     0.5 * k * (xi - xi_ref).powi(2)
 }
 /// Compute the umbrella bias force along the reaction coordinate.
 ///
 /// `F_bias = -dU_bias/dξ = -k * (ξ - ξ_ref)`
-#[allow(dead_code)]
 pub fn umbrella_bias_force(xi: f64, xi_ref: f64, k: f64) -> f64 {
     -k * (xi - xi_ref)
 }
@@ -924,7 +892,6 @@ pub fn umbrella_bias_force(xi: f64, xi_ref: f64, k: f64) -> f64 {
 /// probability estimates: `P_unbiased(ξ) ∝ P_biased(ξ) * exp(+U_bias(ξ)/kT)`.
 ///
 /// Returns normalised probabilities (sum = 1) for occupied bins.
-#[allow(dead_code)]
 pub fn unbias_histogram(
     bin_centers: &[f64],
     counts: &[u64],
@@ -967,7 +934,6 @@ pub fn unbias_histogram(
 ///
 /// Returns `(delta_f, std_err_delta_f, n_used)` where `n_used` counts finite
 /// work values.
-#[allow(dead_code)]
 pub fn jarzynski_from_smd_runs(works: &[f64], kt: f64) -> (f64, f64, usize) {
     if works.is_empty() || kt == 0.0 {
         return (0.0, 0.0, 0);
@@ -1003,7 +969,6 @@ pub fn jarzynski_from_smd_runs(works: &[f64], kt: f64) -> (f64, f64, usize) {
 /// `P_accept = min(1, exp((β_i - β_j)(E_i - E_j)))`
 ///
 /// where β = 1/(k_B T).
-#[allow(dead_code)]
 pub fn remd_swap_acceptance(
     energy_i: f64,
     energy_j: f64,
@@ -1023,7 +988,6 @@ pub fn remd_swap_acceptance(
 ///
 /// Given `n_replicas`, `t_min`, and `t_max`, returns the geometric temperature
 /// ladder that is expected to give ~25% swap acceptance (the rule of thumb).
-#[allow(dead_code)]
 pub fn remd_temperature_ladder(n_replicas: usize, t_min: f64, t_max: f64) -> Vec<f64> {
     if n_replicas < 2 || t_min <= 0.0 || t_max <= t_min {
         return vec![t_min];
@@ -1040,7 +1004,6 @@ pub fn remd_temperature_ladder(n_replicas: usize, t_min: f64, t_max: f64) -> Vec
 ///
 /// In practice, for harmonic systems: `P ≈ exp(-C_v * (β_i - β_j)^2 * kT^2 / 2)`
 /// where C_v is the heat capacity per degree of freedom.
-#[allow(dead_code)]
 pub fn remd_expected_swap_probability(temp_i: f64, temp_j: f64, n_dof: f64, kb: f64) -> f64 {
     if temp_i <= 0.0 || temp_j <= 0.0 || kb <= 0.0 || n_dof <= 0.0 {
         return 0.0;
@@ -1055,7 +1018,6 @@ pub fn remd_expected_swap_probability(temp_i: f64, temp_j: f64, n_dof: f64, kb: 
 /// Compute mean and standard error of a sample array.
 ///
 /// Returns `(mean, stderr)`.  Standard error = std / sqrt(N).
-#[allow(dead_code)]
 pub(super) fn block_mean_stderr(samples: &[f64]) -> (f64, f64) {
     let n = samples.len();
     if n == 0 {
@@ -1072,7 +1034,6 @@ pub(super) fn block_mean_stderr(samples: &[f64]) -> (f64, f64) {
 ///
 /// Accepts `n` node values `y` at positions `x` and returns the second
 /// derivatives `m[i]` (spline coefficients) for natural splines (m\[0\]=m\[n-1\]=0).
-#[allow(dead_code)]
 pub fn natural_spline_second_deriv(x: &[f64], y: &[f64]) -> Vec<f64> {
     let n = x.len();
     if n < 2 {
@@ -1401,9 +1362,9 @@ mod tests {
         let mut windows: Vec<LambdaWindow> = (0..n)
             .map(|i| LambdaWindow::new(i as f64 / (n - 1) as f64))
             .collect();
-        for i in 0..n - 1 {
+        for window in windows.iter_mut().take(n - 1) {
             for _ in 0..100 {
-                windows[i].add_forward(c);
+                window.add_forward(c);
             }
         }
         let total = total_fep_zwanzig(&windows, 1.0);

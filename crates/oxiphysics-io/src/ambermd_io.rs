@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -399,11 +398,11 @@ impl PrmtopFile {
             });
         }
 
-        for idx in 0..bond_kf.len() {
+        for (idx, &force_constant) in bond_kf.iter().enumerate() {
             file.bonds.push(PrmtopBond {
                 atom_i: idx * 2,
                 atom_j: idx * 2 + 1,
-                force_constant: bond_kf[idx],
+                force_constant,
                 eq_length: bond_eq.get(idx).copied().unwrap_or(0.0),
             });
         }

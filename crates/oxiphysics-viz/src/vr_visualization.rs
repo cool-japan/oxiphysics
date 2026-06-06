@@ -7,8 +7,6 @@
 //! encoding, physics overlay helpers, and spatial audio utilities — all
 //! implemented using only `std`, with no GPU dependency.
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // Helper math (column-major 4×4 matrices and 3-D vector ops)
 // ---------------------------------------------------------------------------
@@ -24,18 +22,6 @@ fn mat4_identity() -> Mat4 {
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ]
-}
-
-fn mat4_mul(a: &Mat4, b: &Mat4) -> Mat4 {
-    let mut out = [[0.0_f64; 4]; 4];
-    for i in 0..4 {
-        for j in 0..4 {
-            for k in 0..4 {
-                out[i][j] += a[i][k] * b[k][j];
-            }
-        }
-    }
-    out
 }
 
 fn quat_to_mat4(q: &Quat) -> Mat4 {

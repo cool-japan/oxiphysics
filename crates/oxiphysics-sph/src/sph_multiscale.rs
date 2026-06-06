@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,9 +10,6 @@
 //! - \[`interpolation_zone()`\] — identify the overlap region for scale coupling
 //! - \[`transition_kernel()`\] — smooth blending weight between scales
 //! - \[`energy_conservation_check()`\] — verify kinetic energy is conserved across a scale change
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ── Math helpers ─────────────────────────────────────────────────────────────
 
@@ -311,14 +307,14 @@ pub fn interpolate_velocity(r: [f64; 3], particles: &[Particle]) -> [f64; 3] {
         let w = cubic_spline_kernel(q);
         let vol = p.mass / (p.density + 1e-300);
         let wv = w * vol;
-        for d in 0..3 {
-            weighted_vel[d] += wv * p.vel[d];
+        for (d, vd) in weighted_vel.iter_mut().enumerate() {
+            *vd += wv * p.vel[d];
         }
         weight_sum += wv;
     }
     if weight_sum > 1e-300 {
-        for d in 0..3 {
-            weighted_vel[d] /= weight_sum;
+        for item in &mut weighted_vel {
+            *item /= weight_sum;
         }
     }
     weighted_vel

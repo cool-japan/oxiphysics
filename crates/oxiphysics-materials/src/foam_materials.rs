@@ -8,9 +8,6 @@
 //! viscoelastic foam (Prony series), crushable foam plasticity,
 //! foaming kinetics, thermal conductivity models, and impact attenuation.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ===========================================================================

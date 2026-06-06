@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests_impulse_new {
-    use super::*;
+    use super::super::functions::*;
     use crate::impulse::AngularImpulseState;
     use crate::impulse::CollisionManifold;
     use crate::impulse::ContactConstraint;

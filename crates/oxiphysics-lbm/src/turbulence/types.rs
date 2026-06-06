@@ -2,16 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::should_implement_trait)]
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
+use super::functions::{compute_turbulent_viscosity, sst_blending_f1, sst_blending_f2};
 /// Simple constant turbulent Prandtl number for heat/scalar transport.
 ///
 /// Returns the standard LES value `Pr_t = 0.4` when using the WALE model,
 /// or 0.9 for the Smagorinsky model.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TurbPrandtlPreset {
     /// Standard LES (WALE) value.
@@ -21,7 +16,6 @@ pub enum TurbPrandtlPreset {
     /// RANS k-epsilon default.
     KEpsilonRans,
 }
-#[allow(dead_code)]
 impl TurbPrandtlPreset {
     /// Return the preset turbulent Prandtl number.
     pub fn value(self) -> f64 {
@@ -37,7 +31,6 @@ impl TurbPrandtlPreset {
 /// Combines the k-ω model near walls (using F1 blending) with the k-ε model
 /// in free-stream regions. Also enforces a production limiter to prevent
 /// excessive build-up of turbulent kinetic energy in stagnation zones.
-#[allow(dead_code)]
 pub struct KOmegaSst {
     /// Kinematic viscosity ν (m²/s).
     pub nu: f64,
@@ -54,7 +47,6 @@ impl KOmegaSst {
     /// # Arguments
     /// - `nu`  — kinematic viscosity
     /// - `a1`  — Bradshaw limit constant (default 0.31)
-    #[allow(dead_code)]
     pub fn new(nu: f64, a1: f64) -> Self {
         Self {
             nu,
@@ -76,8 +68,6 @@ impl KOmegaSst {
     /// - `use_f1`         — `true` → F1, `false` → F2
     ///
     /// Returns a value in \[0, 1\].
-    #[allow(dead_code)]
-    #[allow(non_snake_case)]
     pub fn compute_blending_function(
         &self,
         k: f64,
@@ -109,7 +99,6 @@ impl KOmegaSst {
     /// - `omega` — specific dissipation rate
     ///
     /// Returns the limited production.
-    #[allow(dead_code)]
     pub fn compute_production_limiter(&self, p_k: f64, k: f64, omega: f64) -> f64 {
         const C_LIM: f64 = 10.0;
         let p_k_non_neg = p_k.max(0.0);
@@ -123,7 +112,6 @@ impl KOmegaSst {
 /// Uses the Kolmogorov scaling law to estimate the kinetic energy carried
 /// by subgrid scales between the LES filter width Δ_LES and the DNS
 /// resolution Δ_DNS.
-#[allow(dead_code)]
 pub struct LesToDns {
     /// Kolmogorov constant C_K (typically ~1.5 for 3-D isotropic turbulence).
     pub c_k: f64,
@@ -136,7 +124,6 @@ impl LesToDns {
     /// # Arguments
     /// - `c_k` — Kolmogorov constant (default ~1.5)
     /// - `cs`  — Smagorinsky constant (default ~0.1)
-    #[allow(dead_code)]
     pub fn new(c_k: f64, cs: f64) -> Self {
         Self { c_k, cs }
     }
@@ -156,7 +143,6 @@ impl LesToDns {
     /// - `delta_dns`   — DNS grid spacing (must be ≤ `delta_les`)
     ///
     /// Returns `k_sgs ≥ 0`.
-    #[allow(dead_code)]
     pub fn compute_subgrid_kinetic_energy(
         &self,
         k_resolved: f64,
@@ -174,7 +160,6 @@ impl LesToDns {
 /// Simple k-epsilon turbulence model state for a single cell.
 ///
 /// Stores the turbulent kinetic energy `k` and its dissipation rate `epsilon`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct KEpsilonState {
     /// Turbulent kinetic energy.
@@ -182,7 +167,6 @@ pub struct KEpsilonState {
     /// Turbulent dissipation rate.
     pub epsilon: f64,
 }
-#[allow(dead_code)]
 impl KEpsilonState {
     /// Create a new k-epsilon state.
     pub fn new(k: f64, epsilon: f64) -> Self {
@@ -239,7 +223,6 @@ impl KEpsilonState {
 /// The dynamic procedure computes the optimal `Cs²` at each point by
 /// applying a test filter (here: simple box average over nearest neighbors)
 /// and invoking the Germano identity.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DynamicSmagorinsky {
     /// Grid spacing (LBM units, typically 1.0).
@@ -249,7 +232,6 @@ pub struct DynamicSmagorinsky {
 }
 impl DynamicSmagorinsky {
     /// Create a new dynamic Smagorinsky model.
-    #[allow(dead_code)]
     pub fn new(dx: f64, filter_ratio: f64) -> Self {
         Self { dx, filter_ratio }
     }
@@ -264,7 +246,6 @@ impl DynamicSmagorinsky {
     /// `Cs² ≈ (s_hat - s_bar) / (alpha * s_hat^2)` (clipped to \[0, 0.04\])
     ///
     /// where `alpha = 2 * (filter_ratio² - 1) * dx²`.
-    #[allow(dead_code)]
     pub fn compute_cs_sq(&self, s_bar: f64, s_hat: f64) -> f64 {
         let alpha = 2.0 * (self.filter_ratio * self.filter_ratio - 1.0) * self.dx * self.dx;
         if s_hat.abs() < 1e-15 {
@@ -274,7 +255,6 @@ impl DynamicSmagorinsky {
         cs_sq.clamp(0.0, 0.04)
     }
     /// Compute the effective omega given grid-scale and test-scale strain rates.
-    #[allow(dead_code)]
     pub fn effective_omega(&self, omega_base: f64, s_bar: f64, s_hat: f64) -> f64 {
         let cs_sq = self.compute_cs_sq(s_bar, s_hat);
         let cs_dyn = cs_sq.sqrt();
@@ -300,9 +280,11 @@ impl SmagorinskyModel {
     pub fn new(cs_smag: f64) -> Self {
         Self { cs_smag }
     }
+}
+
+impl Default for SmagorinskyModel {
     /// Create with the standard default constant `Cs = 0.1`.
-    #[allow(dead_code)]
-    pub fn default() -> Self {
+    fn default() -> Self {
         Self { cs_smag: 0.1 }
     }
 }

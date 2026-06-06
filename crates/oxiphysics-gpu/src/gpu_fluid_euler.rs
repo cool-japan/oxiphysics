@@ -12,7 +12,6 @@
 /// A 3-D staggered MAC grid for Eulerian fluid simulation.
 ///
 /// Velocity components are face-centred; pressure and density are cell-centred.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GpuEulerGrid {
     /// Number of cells in x.
@@ -440,7 +439,6 @@ fn clamp_idx(v: f64, n: usize) -> (usize, usize, f64) {
     (i0, i1, scaled - i0 as f64)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn trilinear_u(u: &[f64], x: f64, y: f64, z: f64, nx: usize, ny: usize, nz: usize, dx: f64) -> f64 {
     let (i0, i1, tx) = clamp_idx(x / dx, nx + 1);
     let (j0, j1, ty) = clamp_idx(y / dx - 0.5, ny);
@@ -462,7 +460,6 @@ fn trilinear_u(u: &[f64], x: f64, y: f64, z: f64, nx: usize, ny: usize, nz: usiz
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn trilinear_v(v: &[f64], x: f64, y: f64, z: f64, nx: usize, ny: usize, nz: usize, dx: f64) -> f64 {
     let (i0, i1, tx) = clamp_idx(x / dx - 0.5, nx);
     let (j0, j1, ty) = clamp_idx(y / dx, ny + 1);
@@ -484,7 +481,6 @@ fn trilinear_v(v: &[f64], x: f64, y: f64, z: f64, nx: usize, ny: usize, nz: usiz
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn trilinear_w(
     w: &[f64],
     x: f64,
@@ -514,7 +510,6 @@ fn trilinear_w(
 // ── Free functions ────────────────────────────────────────────────────────────
 
 /// Statistics for a fluid simulation step.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FluidSimStats {
     /// Maximum speed across all velocity components.

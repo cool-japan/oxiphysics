@@ -6,8 +6,6 @@
 //! Provides second-order tensors (`Tensor2`), fourth-order tensors (`Tensor4`),
 //! and a Voigt notation helper for symmetric second-order tensors.
 
-#![allow(dead_code)]
-
 mod decomposition;
 mod operations;
 mod types;

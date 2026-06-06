@@ -6,8 +6,6 @@
 //! Provides Euler's rotation equations, precession/nutation rates,
 //! gyrocompass effect, RK4 integration, and spin-stabilisation analysis.
 
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Vector helpers
 // ---------------------------------------------------------------------------
@@ -46,7 +44,7 @@ fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 // ---------------------------------------------------------------------------
 
 /// Multiply two unit quaternions `p * q` (scalar-last: \[x, y, z, w\]).
-#[allow(dead_code)]
+#[cfg(test)]
 #[inline]
 fn quat_mul(p: [f64; 4], q: [f64; 4]) -> [f64; 4] {
     let [px, py, pz, pw] = p;
@@ -225,7 +223,6 @@ pub fn stabilization_time(gyro: &Gyroscope, damping: f64) -> f64 {
 /// * `iz` — axial moment of inertia (kg·m²).
 /// * `ix` — transverse moment of inertia (kg·m²).
 /// * `spin` — spin rate (rad/s) — must be non-zero.
-#[allow(dead_code)]
 pub fn spin_stabilized_satellite(iz: f64, ix: f64, spin: f64) -> bool {
     spin.abs() > 1e-15 && iz > ix
 }

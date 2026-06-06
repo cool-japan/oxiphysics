@@ -1,11 +1,8 @@
 //! Extended thermal SPH types: boundary conditions, radiation, convection, and more.
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
 use crate::thermal_sph::types::*;
 
 /// SPH thermal boundary condition applier.
@@ -155,9 +152,9 @@ impl ConductivityTensor {
     /// Apply tensor to vector: result_i = Σ_j λ_ij v_j.
     pub fn apply(&self, v: [f64; 3]) -> [f64; 3] {
         let mut out = [0.0f64; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                out[i] += self.lambda[i][j] * v[j];
+        for (i, out_i) in out.iter_mut().enumerate() {
+            for (j, &vj) in v.iter().enumerate() {
+                *out_i += self.lambda[i][j] * vj;
             }
         }
         out
@@ -360,9 +357,9 @@ impl ViscousDissipationSph {
     /// Double contraction S:S = Σ_ij S_ij².
     pub fn strain_rate_invariant(s: [[f64; 3]; 3]) -> f64 {
         let mut inv2 = 0.0;
-        for i in 0..3 {
-            for j in 0..3 {
-                inv2 += s[i][j] * s[i][j];
+        for row in &s {
+            for &v in row.iter() {
+                inv2 += v * v;
             }
         }
         inv2
@@ -840,7 +837,6 @@ impl SphHeatEquation {
     /// `div_v`: velocity divergence (1/s).
     /// `mu`: dynamic viscosity (Pa·s).
     /// `shear_rate`: local shear rate magnitude (1/s).
-    #[allow(clippy::too_many_arguments)]
     pub fn full_dtemp_dt(
         &self,
         conduction_rate: f64,
@@ -883,7 +879,6 @@ pub struct ThermalShockSph {
 }
 impl ThermalShockSph {
     /// Create a thermal shock model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         young_modulus: f64,
         poisson: f64,

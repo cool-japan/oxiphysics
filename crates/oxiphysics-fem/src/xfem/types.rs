@@ -2,10 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::f64::consts::PI;
 
 /// Coupling zone between a standard FEM region and an XFEM enriched region.
@@ -247,7 +244,6 @@ impl PhantomNodeRegistry {
 /// A 3D crack front represented as an ordered list of points.
 ///
 /// In 3D, the crack front is a curve (not just a point).
-#[allow(dead_code)]
 pub struct CrackFront3D {
     /// Ordered points along the crack front.
     pub front_points: Vec<[f64; 3]>,
@@ -256,7 +252,6 @@ pub struct CrackFront3D {
     /// Tangent direction along the crack front.
     pub tangents: Vec<[f64; 3]>,
 }
-#[allow(dead_code)]
 impl CrackFront3D {
     /// Create a straight crack front along the z-axis.
     pub fn new_straight(start: [f64; 3], end: [f64; 3], n_points: usize) -> Self {
@@ -306,12 +301,10 @@ impl CrackFront3D {
     }
 }
 /// Multiple crack system for interaction analysis.
-#[allow(dead_code)]
 pub struct MultiCrackSystem {
     /// Vector of cracks.
     pub cracks: Vec<Crack>,
 }
-#[allow(dead_code)]
 impl MultiCrackSystem {
     /// Create a new empty multi-crack system.
     pub fn new() -> Self {

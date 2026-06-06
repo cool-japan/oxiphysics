@@ -2,16 +2,13 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod extended_volume_tests {
-    use super::*;
     use crate::volume::CollisionPlane;
     use crate::volume::CollisionSphere;
     use crate::volume::TetrahedralSoftBody;
     use crate::volume::VolumeParticle;
+    use crate::volume::functions::*;
     fn make_p(pos: [f64; 3]) -> VolumeParticle {
         VolumeParticle {
             position: pos,

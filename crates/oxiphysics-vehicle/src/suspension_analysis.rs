@@ -4,34 +4,38 @@
 //! Advanced suspension analysis: kinematic geometry, damper models, comfort
 //! analysis, and NVH natural-frequency calculation.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
 // Helper vector math (no nalgebra)
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 fn vec3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
+#[cfg(test)]
 fn vec3_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
+#[cfg(test)]
 fn vec3_scale(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
 }
 
+#[cfg(test)]
 fn vec3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+#[cfg(test)]
 fn vec3_norm(a: [f64; 3]) -> f64 {
     vec3_dot(a, a).sqrt()
 }
 
+#[cfg(test)]
 fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -521,7 +525,6 @@ impl KinematicSolver {
     }
 
     /// Generate a vector of results over `n` steps of bump from `min` to `max` (m).
-    #[allow(clippy::too_many_arguments)]
     pub fn sweep_travel(
         &self,
         min_travel: f64,

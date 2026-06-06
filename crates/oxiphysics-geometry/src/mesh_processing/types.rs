@@ -2,11 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::collections::HashSet;
 
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{Face, Uv, Vertex};
 

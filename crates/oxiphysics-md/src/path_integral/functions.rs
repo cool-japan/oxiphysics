@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
 /// Reduced Planck constant (J*s).
@@ -27,8 +26,8 @@ pub(super) fn build_normal_mode_matrix(p: usize) -> Vec<f64> {
     let mut t = vec![0.0_f64; p * p];
     let inv_sqrt_p = 1.0 / pf.sqrt();
     let sqrt_2_over_p = (2.0 / pf).sqrt();
-    for n in 0..p {
-        t[n] = inv_sqrt_p;
+    for v in &mut t[..p] {
+        *v = inv_sqrt_p;
     }
     let half = p / 2;
     for k in 1..=half {
@@ -187,11 +186,11 @@ mod tests {
         ring.positions[3] = [10.0, 11.0, 12.0];
         let staging = ring.to_staging();
         let recovered = RingPolymer::from_staging(&staging, ring.n_beads);
-        for i in 0..ring.n_beads {
+        for (i, rec) in recovered.iter().enumerate() {
             assert!(
-                approx_eq3(recovered[i], ring.positions[i], 1e-10),
+                approx_eq3(*rec, ring.positions[i], 1e-10),
                 "bead {i}: {:?} != {:?}",
-                recovered[i],
+                rec,
                 ring.positions[i]
             );
         }
@@ -205,11 +204,11 @@ mod tests {
         ring.positions[3] = [10.0, 11.0, 12.0];
         let modes = ring.to_normal_modes();
         let recovered = RingPolymer::from_normal_modes(&modes, ring.n_beads);
-        for i in 0..ring.n_beads {
+        for (i, rec) in recovered.iter().enumerate() {
             assert!(
-                approx_eq3(recovered[i], ring.positions[i], 1e-10),
+                approx_eq3(*rec, ring.positions[i], 1e-10),
                 "bead {i}: {:?} != {:?}",
-                recovered[i],
+                rec,
                 ring.positions[i]
             );
         }
@@ -351,9 +350,9 @@ mod tests {
         let mut ring = RingPolymer::new(n, 1.0e-27, [1.0e-10, 0.0, 0.0]);
         let forces = vec![[0.0; 3]; n];
         RpmdStep::multi_step(&mut ring, &forces, 300.0, 1e-18, 10);
-        for i in 0..n {
-            for d in 0..3 {
-                assert!(ring.positions[i][d].is_finite());
+        for pos in &ring.positions {
+            for v in pos {
+                assert!(v.is_finite());
             }
         }
     }
@@ -455,8 +454,8 @@ mod tests {
     #[test]
     fn test_staging_frequencies_positive_for_internal() {
         let freqs = StagingTransform::staging_frequencies(4, 300.0);
-        for k in 1..4 {
-            assert!(freqs[k] > 0.0, "mode {k} frequency should be positive");
+        for (k, &freq) in freqs.iter().enumerate().skip(1) {
+            assert!(freq > 0.0, "mode {k} frequency should be positive");
         }
     }
     #[test]
@@ -523,9 +522,9 @@ mod tests {
         }
         let fs = atom.spring_forces(300.0);
         for f in &fs {
-            for d in 0..3 {
+            for v in f {
                 assert!(
-                    f[d].abs() < 1e-30,
+                    v.abs() < 1e-30,
                     "spring force should be zero for aligned replicas"
                 );
             }
@@ -561,12 +560,11 @@ mod tests {
         ];
         let u = normal_mode_transform(&positions, 4);
         assert!((u[0][0] - 1.0).abs() < 1e-12, "u[0] should equal r[0]");
-        for k in 1..4 {
-            for d in 0..3 {
+        for (k, uk) in u.iter().enumerate().skip(1) {
+            for (d, v) in uk.iter().enumerate() {
                 assert!(
-                    u[k][d].abs() < 1e-12,
-                    "u[{k}][{d}] should be ~0 for equal replicas, got {}",
-                    u[k][d]
+                    v.abs() < 1e-12,
+                    "u[{k}][{d}] should be ~0 for equal replicas, got {v}"
                 );
             }
         }
@@ -578,17 +576,37 @@ mod tests {
 /// is ũ_k = Σ_j C_{kj} r_j.  The zeroth mode is the centroid.
 pub fn normal_mode_matrix(p: usize) -> Vec<Vec<f64>> {
     use std::f64::consts::PI;
-    let mut c = vec![vec![0.0f64; p]; p];
-    for j in 0..p {
-        c[0][j] = 1.0 / (p as f64).sqrt();
-        for k in 1..=p / 2 {
-            let arg = 2.0 * PI * k as f64 * j as f64 / p as f64;
-            if k < p - k {
-                c[k][j] = (2.0 / p as f64).sqrt() * arg.cos();
-                c[p - k][j] = (2.0 / p as f64).sqrt() * arg.sin();
-            } else {
-                c[k][j] = (1.0 / p as f64).sqrt() * if j % 2 == 0 { 1.0 } else { -1.0 };
-            }
+    let inv_sqrt_p = 1.0 / (p as f64).sqrt();
+    let sqrt_2_p = (2.0 / p as f64).sqrt();
+    // Build p×p matrix C row by row.
+    // Row 0: all entries = 1/sqrt(p).
+    // Rows 1..=p/2: cos modes and sin modes interleaved.
+    let mut c = vec![vec![inv_sqrt_p; p]; p];
+    for k in 1..=p / 2 {
+        // Precompute row values to avoid simultaneous mutable borrow of two rows.
+        let row_k: Vec<f64> = (0..p)
+            .map(|j| {
+                let arg = 2.0 * PI * k as f64 * j as f64 / p as f64;
+                if k < p - k {
+                    sqrt_2_p * arg.cos()
+                } else {
+                    inv_sqrt_p * if j % 2 == 0 { 1.0 } else { -1.0 }
+                }
+            })
+            .collect();
+        let row_pk: Vec<f64> = if k < p - k {
+            (0..p)
+                .map(|j| {
+                    let arg = 2.0 * PI * k as f64 * j as f64 / p as f64;
+                    sqrt_2_p * arg.sin()
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+        c[k] = row_k;
+        if k < p - k {
+            c[p - k] = row_pk;
         }
     }
     c
@@ -624,10 +642,9 @@ pub fn normal_modes_to_beads(modes: &[[f64; 3]], c: &[Vec<f64>]) -> Vec<[f64; 3]
 /// ω_k = 2 ω_P sin(k π / P),  ω_P = P k_B T / ħ.
 pub fn normal_mode_frequencies(p: usize, temperature: f64) -> Vec<f64> {
     let omega_p = p as f64 * KB * temperature / HBAR;
-    let mut freqs = vec![0.0f64; p];
-    for k in 0..p {
-        freqs[k] = 2.0 * omega_p * (k as f64 * PI / p as f64).sin().abs();
-    }
+    let freqs: Vec<f64> = (0..p)
+        .map(|k| 2.0 * omega_p * (k as f64 * PI / p as f64).sin().abs())
+        .collect();
     freqs
 }
 /// Quantum partition function Z(β) for a harmonic oscillator.
@@ -701,17 +718,17 @@ pub fn virial_kinetic_estimator(
     let mut quantum_correction = 0.0f64;
     for i in 0..n_atoms {
         let mut centroid = [0.0f64; 3];
-        for s in 0..n_beads {
+        for bead_s in beads[i].iter().take(n_beads) {
             for d in 0..3 {
-                centroid[d] += beads[i][s][d];
+                centroid[d] += bead_s[d];
             }
         }
-        for d in 0..3 {
-            centroid[d] /= n_beads as f64;
+        for c in &mut centroid {
+            *c /= n_beads as f64;
         }
-        for s in 0..n_beads {
+        for (s, bead_s) in beads[i].iter().enumerate().take(n_beads) {
             for d in 0..3 {
-                quantum_correction += (beads[i][s][d] - centroid[d]) * forces[i][s][d];
+                quantum_correction += (bead_s[d] - centroid[d]) * forces[i][s][d];
             }
         }
     }
@@ -765,8 +782,8 @@ mod tests_pimd_ext {
     #[test]
     fn test_normal_mode_frequencies_positive() {
         let freqs = normal_mode_frequencies(4, 300.0);
-        for k in 1..4 {
-            assert!(freqs[k] > 0.0, "mode {k} frequency should be positive");
+        for (k, &v) in freqs[1..].iter().enumerate() {
+            assert!(v > 0.0, "mode {} frequency should be positive", k + 1);
         }
     }
     #[test]
@@ -833,8 +850,8 @@ mod tests_pimd_ext {
                 c[d] += b[d];
             }
         }
-        for d in 0..3 {
-            c[d] /= p_cont as f64;
+        for v in &mut c {
+            *v /= p_cont as f64;
         }
         assert!(
             (c[0] - 1.0).abs() < 1e-10,

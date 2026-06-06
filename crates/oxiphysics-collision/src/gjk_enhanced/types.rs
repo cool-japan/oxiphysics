@@ -2,11 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use super::functions::ConvexShape;
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
+use super::functions::{
+    ConvexShape, johnson_segment, johnson_tetrahedron, johnson_triangle, vlen, vlen_sq, vneg, vsub,
+};
 
 /// A sphere support shape.
 #[derive(Debug, Clone, Copy)]

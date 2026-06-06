@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use crate::math::Vec3;
 
 use super::functions::morton_encode;
-#[allow(unused_imports)]
-use super::functions::*;
 
 pub(super) enum RTreeNode<T: Clone> {
     Leaf {
@@ -245,20 +242,15 @@ impl RangeTree1D {
 /// A simplified R-tree node for bulk-loaded spatial indexing.
 ///
 /// Uses a single-level structure: the root contains a list of leaf entries,
-/// each with an AABB and a value. For large datasets, the entries are grouped
-/// into pages of size `page_size`.
-#[allow(dead_code)]
+/// each with an AABB and a value.
 pub struct FlatRTree<T: Clone> {
     pub(super) entries: Vec<(SpatialAabb, T)>,
-    pub(super) page_size: usize,
 }
-#[allow(dead_code)]
 impl<T: Clone> FlatRTree<T> {
     /// Create an empty R-tree.
-    pub fn new(page_size: usize) -> Self {
+    pub fn new(_page_size: usize) -> Self {
         Self {
             entries: Vec::new(),
-            page_size: page_size.max(1),
         }
     }
     /// Insert an entry with bounding box `aabb` and value `val`.
@@ -303,12 +295,10 @@ impl<T: Clone> FlatRTree<T> {
 /// Each node defines a ball (center + radius) that bounds all points in its
 /// subtree. Nodes are organized as a binary tree with median-split along the
 /// principal axis of the bounding ball.
-#[allow(dead_code)]
 pub struct BallTree {
     pub(super) nodes: Vec<BallTreeNode>,
     pub(super) points: Vec<Vec3>,
 }
-#[allow(dead_code)]
 impl BallTree {
     /// Build a ball tree from a list of points.
     pub fn build(points: Vec<Vec3>) -> Self {
@@ -377,7 +367,7 @@ impl BallTree {
     fn max_spread_axis(points: &[Vec3], indices: &[usize]) -> (usize, f64) {
         let mut best_axis = 0;
         let mut best_spread = 0.0f64;
-        for axis in 0..3 {
+        for (axis, _) in [0usize; 3].iter().enumerate() {
             let vals: Vec<f64> = indices.iter().map(|&i| points[i][axis]).collect();
             let min = vals.iter().cloned().fold(f64::INFINITY, f64::min);
             let max = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
@@ -882,11 +872,8 @@ impl<T: Clone> Octree<T> {
 ///
 /// Only bulk loading is supported; the tree does not support incremental inserts.
 /// Use [`RTree::query`] to find all items whose bounding boxes overlap a query AABB.
-#[allow(dead_code)]
 pub struct RTree<T: Clone> {
     pub(super) root: RTreeNode<T>,
-    /// Maximum number of entries per node (fanout).
-    pub(super) fanout: usize,
 }
 impl<T: Clone> RTree<T> {
     /// Build a bulk-loaded R-tree from a list of `(bounding_box, value)` pairs.
@@ -901,11 +888,10 @@ impl<T: Clone> RTree<T> {
                     items: vec![],
                     bbox: empty_aabb,
                 },
-                fanout,
             };
         }
         let root = Self::build_node(&mut items, fanout, 0);
-        RTree { root, fanout }
+        RTree { root }
     }
     fn compute_bbox(items: &[(SpatialAabb, T)]) -> SpatialAabb {
         let mut mn = items[0].0.min;
@@ -1022,7 +1008,6 @@ pub(crate) struct KdNode {
 ///
 /// Uses random hyperplane projections. Each hash function projects a point
 /// onto a random unit vector and quantizes to a bucket.
-#[allow(dead_code)]
 pub struct LshIndex {
     /// Number of hash functions (bands).
     pub(super) n_hashes: usize,
@@ -1035,7 +1020,6 @@ pub struct LshIndex {
     /// Stored points.
     pub(super) points: Vec<Vec3>,
 }
-#[allow(dead_code)]
 impl LshIndex {
     /// Create a new LSH index.
     ///
@@ -1150,13 +1134,11 @@ pub(super) struct BallTreeNode {
 ///
 /// Divides space into axis-aligned voxels of size `voxel_size` and stores
 /// point indices per voxel. Supports fast insertion and range queries.
-#[allow(dead_code)]
 pub struct VoxelGrid {
     pub(super) voxel_size: f64,
     pub(super) cells: std::collections::HashMap<(i64, i64, i64), Vec<usize>>,
     pub(super) points: Vec<Vec3>,
 }
-#[allow(dead_code)]
 impl VoxelGrid {
     /// Create a new voxel grid.
     pub fn new(voxel_size: f64) -> Self {
@@ -1242,7 +1224,6 @@ impl VoxelGrid {
 ///
 /// Divides space into a regular grid and stores point indices per cell.
 /// Supports range queries in O(cells) time.
-#[allow(dead_code)]
 pub struct GridSpatialIndex {
     /// Cell size.
     pub(super) cell_size: f64,
@@ -1251,7 +1232,6 @@ pub struct GridSpatialIndex {
     /// Stored points.
     pub(super) points: Vec<Vec3>,
 }
-#[allow(dead_code)]
 impl GridSpatialIndex {
     /// Create a new grid spatial index with the given cell size.
     pub fn new(cell_size: f64) -> Self {
@@ -1317,17 +1297,10 @@ impl GridSpatialIndex {
 ///
 /// Organizes 3D points by Morton code order for cache-efficient spatial queries
 /// and octree construction.
-#[allow(dead_code)]
 pub struct MortonSortedIndex {
     /// Points with their Morton codes, sorted ascending.
     pub(super) sorted: Vec<(u64, usize)>,
-    /// Quantization bounds.
-    pub(super) bounds_min: Vec3,
-    pub(super) bounds_extent: Vec3,
-    /// Number of cells per axis (power of two).
-    pub(super) n_cells: u32,
 }
-#[allow(dead_code)]
 impl MortonSortedIndex {
     /// Build a Morton-sorted index from a list of points.
     ///
@@ -1385,12 +1358,7 @@ impl MortonSortedIndex {
             })
             .collect();
         sorted.sort_unstable_by_key(|&(code, _)| code);
-        MortonSortedIndex {
-            sorted,
-            bounds_min: min,
-            bounds_extent: extent,
-            n_cells,
-        }
+        MortonSortedIndex { sorted }
     }
     /// Number of points.
     pub fn len(&self) -> usize {

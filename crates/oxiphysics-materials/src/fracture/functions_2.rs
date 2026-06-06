@@ -2,13 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::types::*;
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::fracture::functions::*;
+    use crate::fracture::types::*;
     use std::f64::consts::PI;
     #[test]
     fn test_phase_field_params_new() {

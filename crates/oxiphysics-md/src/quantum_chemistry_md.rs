@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -10,9 +9,6 @@
 //! - [`CarParrinelloMd`]: Car-Parrinello extended Lagrangian MD
 //! - [`SemiempiricalMd`]: Semiempirical methods (AM1, PM3, xTB, DFTB)
 //! - [`NebMethod`]: Nudged elastic band for reaction path finding
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -54,7 +50,6 @@ pub enum SemiempiricalMethod {
 /// Hartree-Fock level of theory: basis size, nuclear charges, and ionic
 /// positions.  Energies and forces use tight-binding-quality placeholders
 /// that reproduce the correct functional forms.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HartreeFockMd {
     /// Number of Gaussian basis functions.
@@ -123,7 +118,7 @@ impl HartreeFockMd {
     pub fn gradient(&self) -> Vec<[f64; 3]> {
         let n = self.positions.len();
         let mut grad = vec![[0.0f64; 3]; n];
-        for i in 0..n {
+        for (i, g_i) in grad.iter_mut().enumerate() {
             for j in 0..n {
                 if i == j {
                     continue;
@@ -132,8 +127,11 @@ impl HartreeFockMd {
                 let zi = self.nuclear_charges[i];
                 let zj = self.nuclear_charges[j];
                 let coeff = zi * zj / (r * r * r);
-                for k in 0..3 {
-                    grad[i][k] += coeff * (self.positions[i][k] - self.positions[j][k]);
+                for (gk, (&pi_k, &pj_k)) in g_i
+                    .iter_mut()
+                    .zip(self.positions[i].iter().zip(self.positions[j].iter()))
+                {
+                    *gk += coeff * (pi_k - pj_k);
                 }
             }
         }
@@ -146,24 +144,33 @@ impl HartreeFockMd {
     /// * `dt` – Time step in atomic units (1 a.u. ≈ 24.2 as).
     pub fn step(&mut self, dt: f64) {
         let forces = self.gradient();
-        let n = self.positions.len();
         // Half-step velocity update
-        for i in 0..n {
+        for ((vel, &m), f) in self
+            .velocities
+            .iter_mut()
+            .zip(self.masses.iter())
+            .zip(forces.iter())
+        {
             for k in 0..3 {
-                self.velocities[i][k] -= 0.5 * dt * forces[i][k] / self.masses[i];
+                vel[k] -= 0.5 * dt * f[k] / m;
             }
         }
         // Full position update
-        for i in 0..n {
+        for (pos, vel) in self.positions.iter_mut().zip(self.velocities.iter()) {
             for k in 0..3 {
-                self.positions[i][k] += dt * self.velocities[i][k];
+                pos[k] += dt * vel[k];
             }
         }
         // Second half-step velocity update with new forces
         let forces2 = self.gradient();
-        for i in 0..n {
+        for ((vel, &m), f2) in self
+            .velocities
+            .iter_mut()
+            .zip(self.masses.iter())
+            .zip(forces2.iter())
+        {
             for k in 0..3 {
-                self.velocities[i][k] -= 0.5 * dt * forces2[i][k] / self.masses[i];
+                vel[k] -= 0.5 * dt * f2[k] / m;
             }
         }
     }
@@ -182,7 +189,6 @@ impl HartreeFockMd {
 ///
 /// Holds a real-space electron density on a grid and evolves ionic positions
 /// via Hellmann-Feynman forces computed from the Kohn-Sham effective potential.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DensityFunctionalMd {
     /// Exchange-correlation functional choice.
@@ -319,7 +325,6 @@ impl DensityFunctionalMd {
 /// Propagates both ionic positions and electronic degrees of freedom
 /// (Kohn-Sham orbitals ψ) simultaneously using a fictitious electron mass μ.
 /// Orthonormality of orbitals is enforced via Gram-Schmidt.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CarParrinelloMd {
     /// Fictitious electron mass μ in atomic units.
@@ -369,12 +374,16 @@ impl CarParrinelloMd {
     /// * `dt` – Time step in atomic units.
     pub fn step(&mut self, dt: f64) {
         // Update ionic positions
-        let n_ions = self.ionic_positions.len();
         let forces = self.ionic_forces_vec();
-        for i in 0..n_ions {
+        // Update ionic positions
+        for ((pos, vel), (f, &m)) in self
+            .ionic_positions
+            .iter_mut()
+            .zip(self.ionic_velocities.iter())
+            .zip(forces.iter().zip(self.ionic_masses.iter()))
+        {
             for k in 0..3 {
-                self.ionic_positions[i][k] += dt * self.ionic_velocities[i][k]
-                    + 0.5 * dt * dt * forces[i][k] / self.ionic_masses[i];
+                pos[k] += dt * vel[k] + 0.5 * dt * dt * f[k] / m;
             }
         }
         // Update orbital coefficients
@@ -386,10 +395,14 @@ impl CarParrinelloMd {
         self.orthogonalize_orbitals();
         // Update ionic velocities (simple Euler for now)
         let forces2 = self.ionic_forces_vec();
-        for i in 0..n_ions {
+        for ((vel, &m), (f, f2)) in self
+            .ionic_velocities
+            .iter_mut()
+            .zip(self.ionic_masses.iter())
+            .zip(forces.iter().zip(forces2.iter()))
+        {
             for k in 0..3 {
-                self.ionic_velocities[i][k] +=
-                    0.5 * dt * (forces[i][k] + forces2[i][k]) / self.ionic_masses[i];
+                vel[k] += 0.5 * dt * (f[k] + f2[k]) / m;
             }
         }
     }
@@ -441,7 +454,7 @@ impl CarParrinelloMd {
     fn ionic_forces_vec(&self) -> Vec<[f64; 3]> {
         let n = self.ionic_positions.len();
         let mut f = vec![[0.0f64; 3]; n];
-        for i in 0..n {
+        for (i, f_i) in f.iter_mut().enumerate() {
             for j in 0..n {
                 if i == j {
                     continue;
@@ -449,8 +462,12 @@ impl CarParrinelloMd {
                 let r = dist(&self.ionic_positions[i], &self.ionic_positions[j]).max(1e-6);
                 // Simple 1/r^2 nuclear repulsion as placeholder
                 let coeff = 1.0 / (r * r * r);
-                for k in 0..3 {
-                    f[i][k] -= coeff * (self.ionic_positions[i][k] - self.ionic_positions[j][k]);
+                for (fk, (&pi_k, &pj_k)) in f_i.iter_mut().zip(
+                    self.ionic_positions[i]
+                        .iter()
+                        .zip(self.ionic_positions[j].iter()),
+                ) {
+                    *fk -= coeff * (pi_k - pj_k);
                 }
             }
         }
@@ -466,7 +483,6 @@ impl CarParrinelloMd {
 ///
 /// Wraps one of the fast semiempirical Hamiltonians (AM1, PM3, xTB, DFTB)
 /// and provides energy and gradient evaluation for Born-Oppenheimer MD.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SemiempiricalMd {
     /// Semiempirical Hamiltonian to use.
@@ -519,7 +535,7 @@ impl SemiempiricalMd {
     pub fn gradient(&self) -> Vec<[f64; 3]> {
         let n = self.positions.len();
         let mut g = vec![[0.0f64; 3]; n];
-        for i in 0..n {
+        for (i, g_i) in g.iter_mut().enumerate() {
             for j in 0..n {
                 if i == j {
                     continue;
@@ -528,8 +544,11 @@ impl SemiempiricalMd {
                 let zi = self.atomic_numbers[i] as f64;
                 let zj = self.atomic_numbers[j] as f64;
                 let coeff = zi * zj / (r * r * r);
-                for k in 0..3 {
-                    g[i][k] += coeff * (self.positions[i][k] - self.positions[j][k]);
+                for (gk, (&pi_k, &pj_k)) in g_i
+                    .iter_mut()
+                    .zip(self.positions[i].iter().zip(self.positions[j].iter()))
+                {
+                    *gk += coeff * (pi_k - pj_k);
                 }
             }
         }
@@ -614,7 +633,6 @@ impl SemiempiricalMd {
 /// Finds the minimum-energy path (MEP) between two stable configurations
 /// by optimizing a chain of images connected by harmonic spring forces.
 /// The climbing-image variant (CI-NEB) converges to the exact saddle point.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NebMethod {
     /// Chain of images: `images[i]` is the i-th image's atomic coordinates.
@@ -666,22 +684,21 @@ impl NebMethod {
     pub fn neb_force(&self) -> Vec<Vec<[f64; 3]>> {
         let n = self.images.len();
         let mut forces = vec![vec![[0.0f64; 3]; self.images[0].len()]; n];
-        for i in 1..(n - 1) {
+        for (i, force_row) in forces.iter_mut().enumerate().take(n - 1).skip(1) {
             let tau = self.local_tangent(i);
-            let n_atoms = self.images[i].len();
-            for a in 0..n_atoms {
+            for (a, f_ia) in force_row.iter_mut().enumerate() {
                 // Spring force component along tangent
                 let r_next = dist(&self.images[i + 1][a], &self.images[i][a]);
                 let r_prev = dist(&self.images[i][a], &self.images[i - 1][a]);
                 let f_spring = self.spring_k * (r_next - r_prev);
-                for k in 0..3 {
-                    forces[i][a][k] += f_spring * tau[k];
+                for (&tau_k, f_ia_k) in tau.iter().zip(f_ia.iter_mut()) {
+                    *f_ia_k += f_spring * tau_k;
                 }
                 // Placeholder true force perpendicular to tangent
                 let f_true = -0.1 * self.images[i][a][0];
-                for k in 0..3 {
-                    let proj = f_true * tau[k];
-                    forces[i][a][k] += f_true - proj;
+                for (&tau_k, f_ia_k) in tau.iter().zip(f_ia.iter_mut()) {
+                    let proj = f_true * tau_k;
+                    *f_ia_k += f_true - proj;
                 }
             }
         }
@@ -699,12 +716,12 @@ impl NebMethod {
             return;
         }
         let tau = self.local_tangent(ci);
-        let n_atoms = self.images[ci].len();
+        let _n_atoms = self.images[ci].len();
         // Invert tangential component of force for climbing image
-        for a in 0..n_atoms {
-            let f_tang = 0.1 * self.images[ci][a][1];
+        for img in self.images[ci].iter_mut() {
+            let f_tang = 0.1 * img[1];
             for k in 0..3 {
-                self.images[ci][a][k] -= 0.01 * f_tang * tau[k];
+                img[k] -= 0.01 * f_tang * tau[k];
             }
         }
     }
@@ -714,9 +731,10 @@ impl NebMethod {
         let n = self.images.len();
         let mut s = vec![0.0f64; n];
         for i in 1..n {
-            let n_atoms = self.images[i].len();
-            let ds: f64 = (0..n_atoms)
-                .map(|a| dist(&self.images[i][a], &self.images[i - 1][a]).powi(2))
+            let ds: f64 = self.images[i]
+                .iter()
+                .zip(self.images[i - 1].iter())
+                .map(|(a_pos, a_prev)| dist(a_pos, a_prev).powi(2))
                 .sum::<f64>()
                 .sqrt();
             s[i] = s[i - 1] + ds;
@@ -746,8 +764,12 @@ impl NebMethod {
         }
         let mut tau = [0.0f64; 3];
         for a in 0..n_atoms {
-            for k in 0..3 {
-                tau[k] += self.images[i + 1][a][k] - self.images[i - 1][a][k];
+            for (tk, (&next_k, &prev_k)) in tau.iter_mut().zip(
+                self.images[i + 1][a]
+                    .iter()
+                    .zip(self.images[i - 1][a].iter()),
+            ) {
+                *tk += next_k - prev_k;
             }
         }
         let norm = (tau[0] * tau[0] + tau[1] * tau[1] + tau[2] * tau[2])

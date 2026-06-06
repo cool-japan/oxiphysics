@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -28,7 +27,6 @@
 ///
 /// Holds the interface positions λ_i and the crossing counts used to
 /// estimate the transition rate k_AB.
-#[allow(dead_code)]
 pub struct ForwardFlux {
     /// Interface positions λ_0 < λ_1 < … < λ_n in order parameter space.
     pub interfaces: Vec<f64>,
@@ -130,7 +128,6 @@ pub fn ffs_stage(
 /// A discretised trajectory in configuration space.
 ///
 /// Each element is a 1D order parameter value along the path.
-#[allow(dead_code)]
 pub struct TpsTrajectory {
     /// Time-ordered sequence of order parameter values.
     pub frames: Vec<f64>,
@@ -177,8 +174,8 @@ impl TpsTrajectory {
         if shot_frame < new_frames.len() {
             // Shift the shot point and propagate a linear "drift"
             let perturbation = delta;
-            for i in shot_frame..new_frames.len() {
-                new_frames[i] += perturbation * (1.0 - (i - shot_frame) as f64 * 0.1).max(0.0);
+            for (i, frame) in new_frames.iter_mut().enumerate().skip(shot_frame) {
+                *frame += perturbation * (1.0 - (i - shot_frame) as f64 * 0.1).max(0.0);
             }
         }
         Self::new(new_frames)
@@ -238,7 +235,6 @@ pub fn transition_path_sampling(
 /// Weighted Ensemble walker.
 ///
 /// Each walker carries a statistical weight and occupies a progress coordinate bin.
-#[allow(dead_code)]
 pub struct WeWalker {
     /// Statistical weight of this walker.
     pub weight: f64,
@@ -260,7 +256,6 @@ impl WeWalker {
 }
 
 /// Weighted Ensemble bin set.
-#[allow(dead_code)]
 pub struct WeightedEnsemble {
     /// Walkers in the ensemble.
     pub walkers: Vec<WeWalker>,
@@ -347,7 +342,6 @@ pub fn weighted_ensemble(we: &mut WeightedEnsemble) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Milestoning state: milestone correlation matrix and MFPT estimate.
-#[allow(dead_code)]
 pub struct Milestoning {
     /// Milestone positions in order parameter space.
     pub milestones: Vec<f64>,

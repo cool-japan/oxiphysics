@@ -2,16 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(
-    clippy::if_same_then_else,
-    clippy::manual_strip,
-    clippy::should_implement_trait
-)]
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// A covalent bond entry.
-#[allow(dead_code)]
 pub struct AmberBond {
     /// Zero-based index of the first atom.
     pub i: usize,
@@ -29,7 +22,6 @@ pub struct AmberBond {
 /// - `@CA` → atom named CA
 /// - `:1-10@CA` → atom CA in residues 1-10
 /// - `@C,CA,N` → atoms C, CA, or N
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct AmberMask {
     /// Residue selection (list of residue numbers, 1-based).
@@ -37,7 +29,6 @@ pub struct AmberMask {
     /// Atom name selection (empty = all atoms).
     pub atom_names: Vec<String>,
 }
-#[allow(dead_code)]
 impl AmberMask {
     /// Parse an AMBER mask string.
     ///
@@ -63,8 +54,8 @@ impl AmberMask {
         } else {
             (mask, None)
         };
-        let residues = if res_part.starts_with(':') {
-            parse_residue_selection(&res_part[1..])?
+        let residues = if let Some(rest) = res_part.strip_prefix(':') {
+            parse_residue_selection(rest)?
         } else if res_part.is_empty() {
             Vec::new()
         } else {
@@ -259,7 +250,6 @@ impl AmberTopology {
 }
 impl AmberTopology {
     /// Sorted, deduplicated list of atom type names.
-    #[allow(dead_code)]
     pub fn atom_type_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.atoms.iter().map(|a| a.atom_type.clone()).collect();
         names.sort();
@@ -267,12 +257,10 @@ impl AmberTopology {
         names
     }
     /// Number of unique atom types.
-    #[allow(dead_code)]
     pub fn n_atom_types(&self) -> usize {
         self.atom_type_names().len()
     }
     /// Get atoms belonging to a specific residue name.
-    #[allow(dead_code)]
     pub fn atoms_in_residue(&self, res_name: &str) -> Vec<usize> {
         self.atoms
             .iter()
@@ -289,7 +277,6 @@ impl AmberTopology {
 ///  NSTEP =       50  TIME(PS) =  0.050000  TEMP(K) =  300.1  PRESS =     0.0
 ///  Etot   =   -1234.56  EKtot   =    456.78  EPtot   =   -1691.34
 /// ```
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AmberEnergyFrame {
     /// Simulation step number.
@@ -306,7 +293,6 @@ pub struct AmberEnergyFrame {
     pub e_pot: f64,
 }
 /// A dihedral entry from an AMBER FRCMOD file.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FrcmodDihedral {
     /// Atom types quadruplet (e.g., "X-CT-CT-X").
@@ -321,7 +307,6 @@ pub struct FrcmodDihedral {
     pub periodicity: f64,
 }
 /// An angle entry from an AMBER FRCMOD file.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FrcmodAngle {
     /// Atom types triplet (e.g., "HC-CT-HC").
@@ -332,7 +317,6 @@ pub struct FrcmodAngle {
     pub theta0_deg: f64,
 }
 /// A non-bonded (Lennard-Jones) entry from an AMBER FRCMOD file.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FrcmodNonbonded {
     /// Atom type.
@@ -343,7 +327,6 @@ pub struct FrcmodNonbonded {
     pub epsilon: f64,
 }
 /// A single frame from an AMBER MDCRD trajectory.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MdcrdFrame {
     /// Cartesian coordinates (Å), layout `[x0, y0, z0, x1, y1, z1, ...]`.
@@ -351,7 +334,6 @@ pub struct MdcrdFrame {
     /// Optional periodic box `[a, b, c]` (last line if present).
     pub box_dims: Option<[f64; 3]>,
 }
-#[allow(dead_code)]
 impl MdcrdFrame {
     /// Get position of atom `i` as `[x, y, z]`.
     pub fn position(&self, i: usize) -> Option<[f64; 3]> {
@@ -372,7 +354,6 @@ impl MdcrdFrame {
     }
 }
 /// Parsed AMBER FRCMOD (force field modification) file.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct FrcmodFile {
     /// Title/comment line.
@@ -386,7 +367,6 @@ pub struct FrcmodFile {
     /// Modified non-bonded (LJ) parameters.
     pub nonbonded: Vec<FrcmodNonbonded>,
 }
-#[allow(dead_code)]
 impl FrcmodFile {
     /// Parse an AMBER FRCMOD file from a string.
     ///
@@ -397,7 +377,7 @@ impl FrcmodFile {
     /// - `DIHE`  – dihedral parameters
     /// - `IMPR`  – improper dihedral parameters
     /// - `NONB`  – non-bonded (LJ) parameters
-    pub fn from_str(s: &str) -> Result<Self, String> {
+    pub fn parse(s: &str) -> Result<Self, String> {
         let mut frc = FrcmodFile::default();
         let mut section = FrcmodSection::None;
         let mut first_line = true;
@@ -533,6 +513,13 @@ impl FrcmodFile {
         self.nonbonded.iter().find(|n| n.atom_type == atom_type)
     }
 }
+
+impl std::str::FromStr for FrcmodFile {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
 /// FRCMOD section types.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum FrcmodSection {
@@ -545,7 +532,6 @@ pub(super) enum FrcmodSection {
     Nonb,
 }
 /// A minimal AMBER RST7 restart record (coordinates + optional velocities).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct AmberRst7 {
     /// Title string.
@@ -555,7 +541,6 @@ pub struct AmberRst7 {
     /// Atom velocities (Å ps⁻¹), optional.
     pub velocities: Vec<[f64; 3]>,
 }
-#[allow(dead_code)]
 impl AmberRst7 {
     /// Create a new RST7 record.
     pub fn new(title: &str, positions: Vec<[f64; 3]>) -> Self {
@@ -602,7 +587,6 @@ impl AmberRst7 {
     }
 }
 /// One atom entry from an AMBER topology file.
-#[allow(dead_code)]
 pub struct AmberAtom {
     /// Atom name (from `ATOM_NAME`).
     pub name: String,
@@ -616,7 +600,6 @@ pub struct AmberAtom {
     pub atom_type: String,
 }
 /// A dihedral (torsion) parameter from AMBER topology.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AmberDihedral {
     /// Zero-based index of atom i (first).
@@ -637,7 +620,6 @@ pub struct AmberDihedral {
     pub is_improper: bool,
 }
 /// A bond entry from an AMBER FRCMOD file.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FrcmodBond {
     /// Atom types (e.g., "CT-HC").
@@ -648,7 +630,6 @@ pub struct FrcmodBond {
     pub r0: f64,
 }
 /// Parsed AMBER coordinate (inpcrd / restart) data.
-#[allow(dead_code)]
 pub struct AmberCoordinates {
     /// Title line.
     pub title: String,
@@ -661,14 +642,13 @@ pub struct AmberCoordinates {
     /// Optional box dimensions `[a, b, c, alpha, beta, gamma]`.
     pub box_dimensions: Option<[f64; 6]>,
 }
-#[allow(dead_code)]
 impl AmberCoordinates {
     /// Parse an AMBER coordinate / restart file from a string.
     ///
     /// Format: title, natom, then coords in 12.7 format (6 per line).
     /// If the file has twice as many numbers as 3*natom, the second half
     /// is treated as velocities.
-    pub fn from_str(s: &str) -> Result<Self, String> {
+    pub fn parse(s: &str) -> Result<Self, String> {
         let lines: Vec<&str> = s.lines().collect();
         if lines.is_empty() {
             return Err("Empty coordinate file".to_string());
@@ -772,8 +752,14 @@ impl AmberCoordinates {
         s
     }
 }
+
+impl std::str::FromStr for AmberCoordinates {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
 /// A small inline AMBER force-field parameter record for a bond type.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FfBondParam {
     /// Type string of atom A (e.g., `"CT"`).
@@ -786,7 +772,6 @@ pub struct FfBondParam {
     pub r0: f64,
 }
 /// A distance restraint entry from an AMBER NMR restraint file.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AmberRestraint {
     /// Atom 1 index (0-based).
@@ -810,23 +795,17 @@ impl AmberRestraint {
     /// Compute the flat-bottom restraint penalty for a given distance `r`.
     ///
     /// Returns 0 for `r2 ≤ r ≤ r3`, quadratic outside.
-    #[allow(dead_code)]
     pub fn energy(&self, r: f64) -> f64 {
-        if r < self.r1 {
-            self.rk2 * (r - self.r2).powi(2)
-        } else if r < self.r2 {
+        if r < self.r2 {
             self.rk2 * (r - self.r2).powi(2)
         } else if r <= self.r3 {
             0.0
-        } else if r <= self.r4 {
-            self.rk3 * (r - self.r3).powi(2)
         } else {
             self.rk3 * (r - self.r3).powi(2)
         }
     }
 }
 /// A single Lennard-Jones parameter entry (per atom-type pair).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LjParameter {
     /// Index of atom type A.
@@ -857,7 +836,6 @@ impl LjParameter {
     }
 }
 /// A small inline AMBER force-field parameter record for an angle type.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FfAngleParam {
     /// Type string of atom i.
@@ -872,7 +850,6 @@ pub struct FfAngleParam {
     pub theta0_deg: f64,
 }
 /// A valence angle entry.
-#[allow(dead_code)]
 pub struct AmberAngle {
     /// Zero-based index of the first atom.
     pub i: usize,
@@ -886,7 +863,6 @@ pub struct AmberAngle {
     pub theta0: f64,
 }
 /// Periodic box dimensions for AMBER simulations.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AmberBox {
     /// Box length in X direction (Å).
@@ -902,7 +878,6 @@ pub struct AmberBox {
     /// Box angle gamma (degrees).
     pub gamma: f64,
 }
-#[allow(dead_code)]
 impl AmberBox {
     /// Create a cubic box with side length `a` (Å).
     pub fn cubic(a: f64) -> Self {
@@ -977,14 +952,12 @@ impl AmberBox {
 /// Note: this implementation writes a simplified 84-byte header without
 /// the full CHARMM title block; it is intended for testing and round-trip
 /// verification in OxiPhysics.
-#[allow(dead_code)]
 pub struct AmberDcd {
     /// Accumulated frame data (flat x, y, z per frame, f32 LE).
     pub frames: Vec<Vec<f32>>,
     /// Number of atoms (fixed across frames).
     pub n_atoms: usize,
 }
-#[allow(dead_code)]
 impl AmberDcd {
     /// Create a new DCD trajectory writer for `n_atoms` atoms.
     pub fn new(n_atoms: usize) -> Self {

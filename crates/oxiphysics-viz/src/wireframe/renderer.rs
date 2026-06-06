@@ -12,7 +12,6 @@ use super::mesh_ops::{
 
 /// An edge with per-edge color and line width, referencing vertex indices.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct WireframeEdge {
     /// Index of the first vertex.
     pub v0: usize,
@@ -24,7 +23,6 @@ pub struct WireframeEdge {
     pub line_width: f32,
 }
 
-#[allow(dead_code)]
 impl WireframeEdge {
     /// Create a new edge with the given indices, color, and width.
     pub fn new(v0: usize, v1: usize, color: [f32; 3], line_width: f32) -> Self {
@@ -57,7 +55,6 @@ impl WireframeEdge {
 /// A full wireframe mesh that stores vertices, per-vertex normals, and per-edge
 /// color/width information.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct RichWireframeMesh {
     /// Vertex positions.
     pub vertices: Vec<[f64; 3]>,
@@ -67,7 +64,6 @@ pub struct RichWireframeMesh {
     pub edges: Vec<WireframeEdge>,
 }
 
-#[allow(dead_code)]
 impl RichWireframeMesh {
     /// Create an empty mesh.
     pub fn empty() -> Self {
@@ -109,7 +105,6 @@ impl RichWireframeMesh {
 /// Builder pattern for constructing a `RichWireframeMesh` from triangle meshes or
 /// geometric primitives.  Edges are automatically deduplicated on `build()`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WireframeBuilder {
     vertices: Vec<[f64; 3]>,
     normals: Vec<[f64; 3]>,
@@ -119,7 +114,6 @@ pub struct WireframeBuilder {
     default_width: f32,
 }
 
-#[allow(dead_code)]
 impl WireframeBuilder {
     /// Create a new builder with a default color and line width.
     pub fn new(default_color: [f32; 3], default_width: f32) -> Self {
@@ -204,7 +198,6 @@ impl WireframeBuilder {
 /// Generate an axis-aligned bounding box as a `RichWireframeMesh`.
 ///
 /// `min` and `max` are the corner coordinates.
-#[allow(dead_code)]
 pub fn aabb_wireframe_rich(
     min: [f64; 3],
     max: [f64; 3],
@@ -263,7 +256,6 @@ pub fn aabb_wireframe_rich(
 /// The frustum is defined by a near plane (at distance `z_near`) and a far plane
 /// (at distance `z_far`), with half-angles `half_fov_x` and `half_fov_y` (radians).
 /// The camera is assumed to look along -Z by convention.
-#[allow(dead_code)]
 pub fn frustum_wireframe(
     z_near: f64,
     z_far: f64,
@@ -327,7 +319,6 @@ pub fn frustum_wireframe(
 /// Generate a frustum wireframe from a view/projection matrix representation,
 /// defined by `fov_y_deg` (full vertical FOV), `aspect` (width/height),
 /// `z_near`, and `z_far`.
-#[allow(dead_code)]
 pub fn frustum_wireframe_from_fov(
     fov_y_deg: f64,
     aspect: f64,
@@ -350,7 +341,6 @@ pub fn frustum_wireframe_from_fov(
 /// triangle (with a depth offset tolerance) are classified as hidden.
 ///
 /// Returns `(visible_edges, hidden_edges)` as index lists into `edges`.
-#[allow(dead_code)]
 pub fn classify_hidden_lines(
     vertices: &[[f64; 3]],
     edges: &[WireframeEdge],
@@ -461,8 +451,6 @@ pub fn classify_hidden_lines(
 /// Generate a combined wireframe overlay: all edges as a base, feature edges highlighted,
 /// silhouette edges thick. Returns three `WireframeBatch` objects in order:
 /// `(all_edges, feature_edges, silhouette_edges)`.
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
 pub fn generate_wireframe_overlay(
     positions: &[[f64; 3]],
     indices: &[usize],
@@ -680,7 +668,6 @@ mod rich_wireframe_tests {
 /// A stateful wireframe renderer that accumulates line segments into a buffer,
 /// providing high-level draw methods for common physics debug shapes.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WireframeRenderer {
     /// Accumulated GPU-ready line segments.
     pub buffer: Vec<WireSegmentGpu>,
@@ -690,7 +677,6 @@ pub struct WireframeRenderer {
     pub default_color: [f64; 3],
 }
 
-#[allow(dead_code)]
 impl WireframeRenderer {
     /// Create a new renderer with the given default color and line width.
     pub fn new(default_color: [f64; 3], default_width: f64) -> Self {
@@ -795,7 +781,6 @@ impl WireframeRenderer {
     }
 
     /// Draw a sphere with latitude/longitude lines (more detail).
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_sphere_latlon(
         &mut self,
         center: [f64; 3],
@@ -1014,7 +999,6 @@ impl WireframeRenderer {
     ///
     /// The frustum is defined by near/far distances and horizontal/vertical half-FOV angles.
     /// The camera looks along -Z by convention.
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_frustum(
         &mut self,
         z_near: f64,

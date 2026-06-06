@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::type_complexity)]
 use crate::narrowphase::epa::Epa;
 use crate::narrowphase::gjk::{Gjk, GjkResult};
 use crate::narrowphase::specialized;
@@ -15,8 +14,18 @@ use super::types::{
     NarrowPhaseDispatcher, NarrowPhaseResult, ShapeType, SimpleHeightField, SpeculativeConfig,
 };
 
+/// Batch entry for speculative contact generation.
+pub type SpecBatchEntry<'a> = (
+    &'a dyn Shape,
+    &'a Transform,
+    [f64; 3],
+    &'a dyn Shape,
+    &'a Transform,
+    [f64; 3],
+    CollisionPair,
+);
+
 /// Map shape types to a numeric ordinal for canonical ordering.
-#[allow(dead_code)]
 pub(super) fn shape_type_ordinal(t: ShapeType) -> u32 {
     match t {
         ShapeType::Sphere => 0,
@@ -40,7 +49,6 @@ pub type NarrowPhaseFn = fn(
     transform_b: &Transform,
     pair: CollisionPair,
 ) -> NarrowPhaseResult;
-#[allow(dead_code)]
 pub(super) fn sphere_capsule_dispatch(
     shape_a: &dyn Shape,
     transform_a: &Transform,
@@ -83,7 +91,6 @@ pub(super) fn sphere_capsule_dispatch(
     m.add_contact(contact);
     NarrowPhaseResult::contact(m)
 }
-#[allow(dead_code)]
 pub(super) fn gjk_fallback_dispatch(
     shape_a: &dyn Shape,
     transform_a: &Transform,
@@ -98,7 +105,6 @@ pub(super) fn gjk_fallback_dispatch(
 }
 /// Dispatch against a compound shape by testing each child shape individually
 /// and collecting all contacts.
-#[allow(dead_code)]
 pub fn dispatch_compound(
     dispatcher: &NarrowPhaseDispatcher,
     compound_shapes: &[(ShapeType, &dyn Shape, Transform)],
@@ -231,8 +237,6 @@ pub(super) fn as_capsule(shape: &dyn Shape) -> Option<&Capsule> {
 ///
 /// `use_aabb_pruning` enables a cheap AABB overlap pre-filter; when false
 /// every sub-shape pair is tested unconditionally.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn dispatch_compound_compound(
     dispatcher: &NarrowPhaseDispatcher,
     compound_a: &CompoundShape,
@@ -300,14 +304,12 @@ pub fn dispatch_compound_compound(
     }
 }
 /// Compose a parent world transform with a local child transform.
-#[allow(dead_code)]
 pub(super) fn compose_transforms(parent: &Transform, local: &Transform) -> Transform {
     parent.compose(local)
 }
 /// Dispatch a convex sphere against a heightfield.
 ///
 /// Returns a `NarrowPhaseResult` using the heightfield's sphere test.
-#[allow(dead_code)]
 pub fn dispatch_heightfield_sphere(
     hf: &SimpleHeightField,
     sphere_center: [f64; 3],
@@ -335,7 +337,6 @@ pub fn dispatch_heightfield_sphere(
 /// Mid-phase mesh vs mesh AABB overlap test.
 ///
 /// Returns the pairs `(i, j)` of triangle indices whose AABBs overlap.
-#[allow(dead_code)]
 pub fn mesh_mesh_aabb_mid_phase(
     triangles_a: &[MeshTriangle],
     triangles_b: &[MeshTriangle],
@@ -1004,7 +1005,6 @@ mod tests {
 ///
 /// Returns the clipped polygon.  Used as a building block for Sutherland-Hodgman
 /// polygon clipping in multi-contact generation.
-#[allow(dead_code)]
 pub(super) fn clip_polygon_by_halfspace(
     polygon: &[[f64; 2]],
     plane_point: [f64; 2],
@@ -1043,7 +1043,6 @@ pub(super) fn clip_polygon_by_halfspace(
 ///
 /// `face_a` and `face_b` are arrays of 4 vertices (world-space XZ plane).
 /// Returns a `ContactPatch` with up to 8 contact points.
-#[allow(dead_code)]
 pub fn clip_box_faces_2d(
     face_a: [[f64; 2]; 4],
     face_b: [[f64; 2]; 4],
@@ -1071,7 +1070,6 @@ pub fn clip_box_faces_2d(
 /// using SAT-derived reference/incident face clipping.
 ///
 /// Returns up to 4 contact points in world space.
-#[allow(dead_code)]
 pub fn box_box_manifold_clip(
     box_a: &BoxShape,
     transform_a: &oxiphysics_core::Transform,
@@ -1140,8 +1138,6 @@ pub fn box_box_manifold_clip(
 ///
 /// The contact depth is reported as the current gap (negative = overlapping)
 /// so the solver can distinguish pre-contact from post-contact.
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
 pub fn generate_speculative_contacts(
     shape_a: &dyn Shape,
     transform_a: &oxiphysics_core::Transform,
@@ -1193,7 +1189,6 @@ pub fn generate_speculative_contacts(
 ///
 /// Tests each convex piece of the mesh against the convex shape using GJK,
 /// collecting all contacts.  An AABB pre-filter limits the number of tests.
-#[allow(dead_code)]
 pub fn dispatch_concave_vs_convex(
     mesh: &ConcaveMesh,
     mesh_transform: &oxiphysics_core::Transform,
@@ -1263,7 +1258,6 @@ pub fn dispatch_concave_vs_convex(
 ///
 /// Samples the heightfield at all grid cells within the convex shape's bounding
 /// sphere and returns contacts for any penetrating cells.
-#[allow(dead_code)]
 pub fn dispatch_heightfield_convex_generic(
     hf: &SimpleHeightField,
     convex_pos: [f64; 3],
@@ -1321,7 +1315,6 @@ pub fn dispatch_heightfield_convex_generic(
 ///
 /// Useful when multiple overlapping tests on the same pair produce different
 /// contacts; merging ensures the constraint solver sees the full picture.
-#[allow(dead_code)]
 pub fn merge_manifolds(
     manifold_a: ContactManifold,
     manifold_b: ContactManifold,
@@ -1343,7 +1336,6 @@ pub fn merge_manifolds(
     merged
 }
 /// Flip a contact manifold (swap A and B, negate normal).
-#[allow(dead_code)]
 pub fn flip_manifold(manifold: &mut ContactManifold) {
     for c in &mut manifold.contacts {
         c.normal = -c.normal;
@@ -1351,19 +1343,16 @@ pub fn flip_manifold(manifold: &mut ContactManifold) {
     }
 }
 /// Scale contact depths by a factor (e.g. for bias / slop removal).
-#[allow(dead_code)]
 pub fn scale_contact_depths(manifold: &mut ContactManifold, scale: f64) {
     for c in &mut manifold.contacts {
         c.depth *= scale;
     }
 }
 /// Remove contacts with depth below `min_depth`.
-#[allow(dead_code)]
 pub fn prune_shallow_contacts(manifold: &mut ContactManifold, min_depth: f64) {
     manifold.contacts.retain(|c| c.depth >= min_depth);
 }
 /// Translate all contact points by a world-space offset.
-#[allow(dead_code)]
 pub fn translate_manifold(manifold: &mut ContactManifold, offset: oxiphysics_core::math::Vec3) {
     for c in &mut manifold.contacts {
         c.point_a += offset;
@@ -1373,17 +1362,8 @@ pub fn translate_manifold(manifold: &mut ContactManifold, offset: oxiphysics_cor
 /// Generate speculative contacts for all pairs in a batch.
 ///
 /// Returns one manifold per pair (or `None` if the pair is too far apart).
-#[allow(dead_code)]
-pub fn batch_speculative_contacts(
-    pairs: &[(
-        &dyn Shape,
-        &oxiphysics_core::Transform,
-        [f64; 3],
-        &dyn Shape,
-        &oxiphysics_core::Transform,
-        [f64; 3],
-        CollisionPair,
-    )],
+pub fn batch_speculative_contacts<'a>(
+    pairs: &[SpecBatchEntry<'a>],
     config: &SpeculativeConfig,
 ) -> Vec<Option<ContactManifold>> {
     pairs

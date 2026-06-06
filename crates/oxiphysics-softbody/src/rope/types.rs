@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use crate::constraint::{DistanceConstraint, SoftConstraint};
 use crate::particle::{SoftBody, SoftParticle};
@@ -194,7 +192,6 @@ impl Rope {
     /// with `radius`. Nodes inside the sphere are pushed to the surface.
     ///
     /// Returns the list of collisions that were resolved.
-    #[allow(dead_code)]
     pub fn collide_sphere(&mut self, center: [f64; 3], radius: f64) -> Vec<RopeCollision> {
         let mut collisions = Vec::new();
         for i in 0..self.nodes.len() {
@@ -220,7 +217,6 @@ impl Rope {
     /// `plane_point` and `plane_normal` (must be unit length).
     ///
     /// Nodes below the plane are pushed onto it.
-    #[allow(dead_code)]
     pub fn collide_plane(
         &mut self,
         plane_point: [f64; 3],
@@ -249,7 +245,6 @@ impl Rope {
     /// Checks all non-adjacent node pairs separated by more than `skip_adjacent`
     /// segments. If two nodes are closer than `min_distance`, they are pushed
     /// apart symmetrically.
-    #[allow(dead_code)]
     pub fn resolve_self_collision(&mut self, min_distance: f64, skip_adjacent: usize) {
         let n = self.nodes.len();
         for i in 0..n {
@@ -276,8 +271,6 @@ impl Rope {
     ///
     /// The cylinder axis runs from `axis_start` to `axis_end` with `radius`.
     /// Nodes inside the cylinder are projected onto its surface.
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
     pub fn collide_cylinder(
         &mut self,
         axis_start: [f64; 3],
@@ -325,7 +318,6 @@ impl Rope {
     ///
     /// This is an approximate catenary using iterative Newton's method on the
     /// catenary parameter `a`.
-    #[allow(dead_code)]
     pub fn catenary_positions(
         start: [f64; 3],
         end: [f64; 3],
@@ -384,7 +376,6 @@ impl Rope {
     /// Detect whether the rope is taut (stretched to near its rest length).
     ///
     /// Returns `true` if `total_length() >= rest_length * (1.0 - tolerance)`.
-    #[allow(dead_code)]
     pub fn is_taut(&self, tolerance: f64) -> bool {
         let rest = self.segment_length * (self.nodes.len() - 1) as f64;
         self.total_length() >= rest * (1.0 - tolerance)
@@ -394,7 +385,6 @@ impl Rope {
     /// If any segment exceeds `max_stretch_ratio * segment_length`, the nodes
     /// are pulled back. This is a refinement pass that can be called after
     /// the standard distance constraints.
-    #[allow(dead_code)]
     pub fn enforce_max_stretch(&mut self, max_stretch_ratio: f64) {
         let max_len = self.segment_length * max_stretch_ratio;
         let n = self.nodes.len();
@@ -428,7 +418,6 @@ impl Rope {
     ///
     /// Returns a vector of length `n_nodes - 1` with the estimated tension
     /// in each segment, based on the displacement from rest length and stiffness.
-    #[allow(dead_code)]
     pub fn segment_tensions(&self) -> Vec<f64> {
         let n = self.nodes.len();
         let mut tensions = Vec::with_capacity(n - 1);
@@ -441,12 +430,10 @@ impl Rope {
         tensions
     }
     /// Maximum tension across all segments.
-    #[allow(dead_code)]
     pub fn max_tension(&self) -> f64 {
         self.segment_tensions().into_iter().fold(0.0_f64, f64::max)
     }
     /// Compute kinetic energy of the rope: 0.5 * sum(m * |v|^2).
-    #[allow(dead_code)]
     pub fn kinetic_energy(&self) -> f64 {
         self.nodes
             .iter()
@@ -455,7 +442,6 @@ impl Rope {
             .sum()
     }
     /// Compute gravitational potential energy relative to `ref_y`.
-    #[allow(dead_code)]
     pub fn potential_energy(&self, gravity_y: f64, ref_y: f64) -> f64 {
         self.nodes
             .iter()
@@ -479,7 +465,6 @@ impl Rope {
     /// * `gravity_y` – gravitational acceleration magnitude (m/s²).
     ///
     /// Returns a vector of tension magnitudes at each node (N).
-    #[allow(dead_code)]
     pub fn compute_catenary_tension(&self, gravity_y: f64) -> Vec<f64> {
         let n = self.nodes.len();
         if n < 2 {
@@ -525,7 +510,6 @@ impl Rope {
     /// * `gravity_y`      – gravitational acceleration magnitude (m/s²).
     ///
     /// Returns the effective bending stiffness (N·m²).
-    #[allow(dead_code)]
     pub fn compute_dynamic_stiffness(
         &self,
         youngs_modulus: f64,
@@ -557,7 +541,6 @@ impl Rope {
     /// * `max_twist` – maximum allowed twist per segment (radians).
     /// * `compliance` – XPBD compliance for the twist correction (m²/N).  0 = rigid.
     /// * `dt`         – current time step (s).
-    #[allow(dead_code)]
     pub fn apply_twist_constraint(&mut self, max_twist: f64, compliance: f64, dt: f64) {
         let n = self.nodes.len();
         if n < 3 {
@@ -599,7 +582,6 @@ impl Rope {
     }
 }
 /// A single elastic segment connecting two particles.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RopeSegment {
     /// Position of the first endpoint.
@@ -613,7 +595,6 @@ pub struct RopeSegment {
     /// Stretch stiffness (spring constant, N/m).
     pub k_stretch: f64,
 }
-#[allow(dead_code)]
 impl RopeSegment {
     /// Create a new segment.
     pub fn new(p0: [f64; 3], p1: [f64; 3], rest_length: f64, mass: f64, k_stretch: f64) -> Self {
@@ -648,7 +629,6 @@ impl RopeSegment {
 /// - `E` is the elastic (Young's) modulus (spring constant).
 /// - `η` is the viscosity coefficient (damper constant).
 /// - `ε` is the engineering strain `(l - l₀) / l₀`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ViscoelasticSegment {
     /// Index of the first node.
@@ -664,7 +644,6 @@ pub struct ViscoelasticSegment {
     /// Previous strain (for finite-difference strain rate).
     pub prev_strain: f64,
 }
-#[allow(dead_code)]
 impl ViscoelasticSegment {
     /// Create a new segment between nodes `a` and `b`.
     pub fn new(node_a: usize, node_b: usize, rest_length: f64, ea: f64, eta_a: f64) -> Self {
@@ -736,7 +715,6 @@ impl RopeNode {
     }
 }
 /// Result of a rope–sphere collision check.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RopeCollision {
     /// Index of the colliding node.
@@ -747,7 +725,6 @@ pub struct RopeCollision {
     pub normal: [f64; 3],
 }
 /// A rope built from [`ViscoelasticSegment`]s.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ViscoelasticRope {
     /// Node positions.
@@ -761,10 +738,8 @@ pub struct ViscoelasticRope {
     /// Viscoelastic segments.
     pub segments: Vec<ViscoelasticSegment>,
 }
-#[allow(dead_code)]
 impl ViscoelasticRope {
     /// Build a straight viscoelastic rope with `n` nodes.
-    #[allow(clippy::too_many_arguments)]
     pub fn new_straight(
         n: usize,
         start: [f64; 3],
@@ -803,15 +778,15 @@ impl ViscoelasticRope {
             forces[seg.node_a] = add3(forces[seg.node_a], fa);
             forces[seg.node_b] = add3(forces[seg.node_b], fb);
         }
-        for i in 0..n {
+        for (i, f) in forces.iter().enumerate().take(n) {
             if self.fixed[i] {
                 continue;
             }
             let inv_m = 1.0 / self.masses[i].max(1e-30);
             let a = [
-                forces[i][0] * inv_m + gravity[0],
-                forces[i][1] * inv_m + gravity[1],
-                forces[i][2] * inv_m + gravity[2],
+                f[0] * inv_m + gravity[0],
+                f[1] * inv_m + gravity[1],
+                f[2] * inv_m + gravity[2],
             ];
             self.velocities[i] = add3(self.velocities[i], scale3(a, dt));
             self.positions[i] = add3(self.positions[i], scale3(self.velocities[i], dt));
@@ -920,7 +895,6 @@ impl HairStrand {
 /// This is the flat-array representation (positions / velocities / masses /
 /// rest_lengths) requested for the new API.  The original [`Rope`] (node-based)
 /// is kept for backward compatibility.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RopeVerlet {
     /// Particle positions.
@@ -934,7 +908,6 @@ pub struct RopeVerlet {
     /// Whether each particle is fixed (pinned).
     pub fixed: Vec<bool>,
 }
-#[allow(dead_code)]
 impl RopeVerlet {
     /// Create a straight rope with `n` particles, starting at `start` and
     /// extending in `direction` (normalised internally).
@@ -1092,7 +1065,6 @@ impl HairSystem {
 /// orthonormal frame (d1, d2, d3) to every segment:
 /// - `d3` is the tangent (unit) to the centreline.
 /// - `d1`, `d2` are two directors that track twist around the tangent.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct MaterialFrame {
     /// First director (spans the cross-section).
@@ -1102,7 +1074,6 @@ pub struct MaterialFrame {
     /// Tangent director (along the centreline).
     pub d3: [f64; 3],
 }
-#[allow(dead_code)]
 impl MaterialFrame {
     /// Construct a frame from the segment tangent.
     ///
@@ -1148,7 +1119,6 @@ impl MaterialFrame {
 /// The rod stores a sequence of positions and one material frame per *segment*
 /// (one fewer than nodes).  Bending and twisting energies are computed from
 /// the discrete Darboux vector at each interior node.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct KirchhoffRod {
     /// Node positions along the centreline.
@@ -1162,7 +1132,6 @@ pub struct KirchhoffRod {
     /// Twisting stiffness GJ (N·m²).
     pub twisting_stiffness: f64,
 }
-#[allow(dead_code)]
 impl KirchhoffRod {
     /// Build a straight rod with `n` nodes and uniform rest length `seg_len`.
     ///

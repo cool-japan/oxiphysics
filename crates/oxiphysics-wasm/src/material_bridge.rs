@@ -7,9 +7,6 @@
 //! fatigue, viscoelastic, thermal, and equation-of-state computations,
 //! ready for serialisation across the WASM boundary.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 

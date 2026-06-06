@@ -2,13 +2,184 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::items_after_test_module)]
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
+#[cfg(test)]
 use super::types::*;
 use crate::sparse::CsrMatrix;
+/// GMRES solver for sparse systems (Arnoldi-based, restart = `max_iter`).
+///
+/// Solves `A x = b` iteratively using the Generalized Minimal Residual method.
+///
+/// # Arguments
+/// * `a`        – sparse CSR matrix
+/// * `b`        – right-hand side
+/// * `max_iter` – maximum Krylov subspace size (= restart dimension)
+/// * `tol`      – convergence tolerance on relative residual ‖r‖/‖b‖
+pub fn fem_gmres(a: &CsrMatrix, b: &[f64], max_iter: usize, tol: f64) -> Vec<f64> {
+    let n = b.len();
+    let mut x = vec![0.0_f64; n];
+    let b_norm: f64 = b.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if b_norm < 1e-60 {
+        return x;
+    }
+    let mut r: Vec<f64> = b.to_vec();
+    for _restart in 0..=max_iter {
+        let r_norm: f64 = r.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if r_norm / b_norm < tol {
+            break;
+        }
+        let m = max_iter.min(n);
+        let mut v_basis: Vec<Vec<f64>> = Vec::with_capacity(m + 1);
+        let mut h = vec![vec![0.0_f64; m]; m + 1];
+        let mut g = vec![0.0_f64; m + 1];
+        let v0: Vec<f64> = r.iter().map(|&v| v / r_norm).collect();
+        v_basis.push(v0);
+        g[0] = r_norm;
+        let mut cos_vals = vec![0.0_f64; m];
+        let mut sin_vals = vec![0.0_f64; m];
+        let mut k = 0usize;
+        while k < m {
+            let mut w = vec![0.0_f64; n];
+            for (row, w_row) in w.iter_mut().enumerate() {
+                for idx in a.row_ptr[row]..a.row_ptr[row + 1] {
+                    *w_row += a.values[idx] * v_basis[k][a.col_indices[idx]];
+                }
+            }
+            for j in 0..=k {
+                h[j][k] = w
+                    .iter()
+                    .zip(v_basis[j].iter())
+                    .map(|(wi, vj)| wi * vj)
+                    .sum();
+                for (i, w_i) in w.iter_mut().enumerate() {
+                    *w_i -= h[j][k] * v_basis[j][i];
+                }
+            }
+            let w_norm: f64 = w.iter().map(|v| v * v).sum::<f64>().sqrt();
+            h[k + 1][k] = w_norm;
+            for j in 0..k {
+                let tmp = cos_vals[j] * h[j][k] + sin_vals[j] * h[j + 1][k];
+                h[j + 1][k] = -sin_vals[j] * h[j][k] + cos_vals[j] * h[j + 1][k];
+                h[j][k] = tmp;
+            }
+            let denom = (h[k][k] * h[k][k] + h[k + 1][k] * h[k + 1][k]).sqrt();
+            if denom < 1e-60 {
+                k += 1;
+                break;
+            }
+            cos_vals[k] = h[k][k] / denom;
+            sin_vals[k] = h[k + 1][k] / denom;
+            h[k][k] = cos_vals[k] * h[k][k] + sin_vals[k] * h[k + 1][k];
+            h[k + 1][k] = 0.0;
+            g[k + 1] = -sin_vals[k] * g[k];
+            g[k] *= cos_vals[k];
+            if w_norm > 1e-60 {
+                v_basis.push(w.iter().map(|&v| v / w_norm).collect());
+            } else {
+                v_basis.push(vec![0.0; n]);
+            }
+            k += 1;
+            if g[k].abs() / b_norm < tol {
+                break;
+            }
+        }
+        let mut y = vec![0.0_f64; k];
+        for i in (0..k).rev() {
+            let mut s = g[i];
+            for j in (i + 1)..k {
+                s -= h[i][j] * y[j];
+            }
+            y[i] = if h[i][i].abs() > 1e-60 {
+                s / h[i][i]
+            } else {
+                0.0
+            };
+        }
+        for j in 0..k {
+            for i in 0..n {
+                x[i] += y[j] * v_basis[j][i];
+            }
+        }
+        r = b.to_vec();
+        for (row, r_row) in r.iter_mut().enumerate() {
+            let ax_row: f64 = (a.row_ptr[row]..a.row_ptr[row + 1])
+                .map(|idx| a.values[idx] * x[a.col_indices[idx]])
+                .sum();
+            *r_row -= ax_row;
+        }
+        if r.iter().map(|v| v * v).sum::<f64>().sqrt() / b_norm < tol {
+            break;
+        }
+    }
+    x
+}
+/// AMG smoother step: apply `n_smooth` Gauss-Seidel sweeps as a simple
+/// Algebraic Multigrid smoother.
+///
+/// In a full AMG cycle this would alternate with coarse-grid corrections.
+/// Here we expose just the smoothing step for testing and composition.
+///
+/// # Arguments
+/// * `a`        – system matrix (CSR)
+/// * `b`        – right-hand side
+/// * `x_in`     – initial guess
+/// * `n_smooth` – number of Gauss-Seidel sweeps
+pub fn amg_smooth_step(a: &CsrMatrix, b: &[f64], x_in: &[f64], n_smooth: usize) -> Vec<f64> {
+    let n = b.len();
+    let mut x = x_in.to_vec();
+    for _sweep in 0..n_smooth {
+        for i in 0..n {
+            let row_start = a.row_ptr[i];
+            let row_end = a.row_ptr[i + 1];
+            let mut diag = 0.0_f64;
+            let mut off = 0.0_f64;
+            for idx in row_start..row_end {
+                let j = a.col_indices[idx];
+                if j == i {
+                    diag = a.values[idx];
+                } else {
+                    off += a.values[idx] * x[j];
+                }
+            }
+            if diag.abs() > 1e-60 {
+                x[i] = (b[i] - off) / diag;
+            }
+        }
+    }
+    x
+}
+/// ILU(0) preconditioned iterative solver.
+///
+/// Computes an ILU(0) factorisation of the dense matrix `a` (row-major, n×n),
+/// then uses it as a preconditioner in a preconditioned Richardson iteration
+/// until convergence or `max_iter` steps.
+///
+/// # Arguments
+/// * `a`        – dense n×n matrix (row-major)
+/// * `b`        – right-hand side
+/// * `n`        – system size
+/// * `max_iter` – maximum iterations
+/// * `tol`      – convergence tolerance
+pub fn ilu0_precond_solve(a: &[f64], b: &[f64], n: usize, max_iter: usize, tol: f64) -> Vec<f64> {
+    let (l_mat, u_mat) = ilu0_dense(a, n);
+    let mut x = vec![0.0_f64; n];
+    for _iter in 0..max_iter {
+        let mut r = b.to_vec();
+        for i in 0..n {
+            let ax_i: f64 = (0..n).map(|j| a[i * n + j] * x[j]).sum();
+            r[i] -= ax_i;
+        }
+        let r_norm: f64 = r.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if r_norm < tol {
+            break;
+        }
+        let z = ilu0_solve(&l_mat, &u_mat, &r, n);
+        for i in 0..n {
+            x[i] += z[i];
+        }
+    }
+    x
+}
 
 #[cfg(test)]
 mod tests {
@@ -597,8 +768,8 @@ mod tests {
                 .map(|idx| a.values[idx] * x[a.col_indices[idx]])
                 .sum()
         };
-        for i in 0..3 {
-            assert!((matvec(i) - b[i]).abs() < 1e-8, "row {i}: Ax={}", matvec(i));
+        for (i, &bi) in b.iter().enumerate() {
+            assert!((matvec(i) - bi).abs() < 1e-8, "row {i}: Ax={}", matvec(i));
         }
     }
     #[test]
@@ -672,8 +843,8 @@ mod tests {
         let b = [4.0_f64, 6.0, 8.0];
         let x0 = vec![0.0_f64; n];
         let x = amg_smooth_step(&a, &b, &x0, 10);
-        for i in 0..n {
-            assert!((x[i] - b[i] / 2.0).abs() < 1e-10, "x[{i}] = {}", x[i]);
+        for (i, (&xi, &bi)) in x.iter().zip(b.iter()).enumerate() {
+            assert!((xi - bi / 2.0).abs() < 1e-10, "x[{i}] = {}", xi);
         }
     }
     #[test]
@@ -682,8 +853,8 @@ mod tests {
         let a = vec![3.0_f64, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 7.0];
         let b = vec![3.0_f64, 5.0, 7.0];
         let x = ilu0_precond_solve(&a, &b, n, 20, 1e-12);
-        for i in 0..n {
-            assert!((x[i] - 1.0).abs() < 1e-8, "x[{i}] = {}", x[i]);
+        for (i, &xi) in x.iter().enumerate() {
+            assert!((xi - 1.0).abs() < 1e-8, "x[{i}] = {}", xi);
         }
     }
     #[test]
@@ -734,181 +905,4 @@ mod tests {
             assert!(xi.is_finite(), "x = {xi}");
         }
     }
-}
-/// GMRES solver for sparse systems (Arnoldi-based, restart = `max_iter`).
-///
-/// Solves `A x = b` iteratively using the Generalized Minimal Residual method.
-///
-/// # Arguments
-/// * `a`        – sparse CSR matrix
-/// * `b`        – right-hand side
-/// * `max_iter` – maximum Krylov subspace size (= restart dimension)
-/// * `tol`      – convergence tolerance on relative residual ‖r‖/‖b‖
-#[allow(dead_code)]
-pub fn fem_gmres(a: &CsrMatrix, b: &[f64], max_iter: usize, tol: f64) -> Vec<f64> {
-    let n = b.len();
-    let mut x = vec![0.0_f64; n];
-    let b_norm: f64 = b.iter().map(|v| v * v).sum::<f64>().sqrt();
-    if b_norm < 1e-60 {
-        return x;
-    }
-    let mut r: Vec<f64> = b.to_vec();
-    for _restart in 0..=max_iter {
-        let r_norm: f64 = r.iter().map(|v| v * v).sum::<f64>().sqrt();
-        if r_norm / b_norm < tol {
-            break;
-        }
-        let m = max_iter.min(n);
-        let mut v_basis: Vec<Vec<f64>> = Vec::with_capacity(m + 1);
-        let mut h = vec![vec![0.0_f64; m]; m + 1];
-        let mut g = vec![0.0_f64; m + 1];
-        let v0: Vec<f64> = r.iter().map(|&v| v / r_norm).collect();
-        v_basis.push(v0);
-        g[0] = r_norm;
-        let mut cos_vals = vec![0.0_f64; m];
-        let mut sin_vals = vec![0.0_f64; m];
-        let mut k = 0usize;
-        while k < m {
-            let mut w = vec![0.0_f64; n];
-            for row in 0..a.nrows {
-                for idx in a.row_ptr[row]..a.row_ptr[row + 1] {
-                    w[row] += a.values[idx] * v_basis[k][a.col_indices[idx]];
-                }
-            }
-            for j in 0..=k {
-                h[j][k] = w
-                    .iter()
-                    .zip(v_basis[j].iter())
-                    .map(|(wi, vj)| wi * vj)
-                    .sum();
-                for i in 0..n {
-                    w[i] -= h[j][k] * v_basis[j][i];
-                }
-            }
-            let w_norm: f64 = w.iter().map(|v| v * v).sum::<f64>().sqrt();
-            h[k + 1][k] = w_norm;
-            for j in 0..k {
-                let tmp = cos_vals[j] * h[j][k] + sin_vals[j] * h[j + 1][k];
-                h[j + 1][k] = -sin_vals[j] * h[j][k] + cos_vals[j] * h[j + 1][k];
-                h[j][k] = tmp;
-            }
-            let denom = (h[k][k] * h[k][k] + h[k + 1][k] * h[k + 1][k]).sqrt();
-            if denom < 1e-60 {
-                k += 1;
-                break;
-            }
-            cos_vals[k] = h[k][k] / denom;
-            sin_vals[k] = h[k + 1][k] / denom;
-            h[k][k] = cos_vals[k] * h[k][k] + sin_vals[k] * h[k + 1][k];
-            h[k + 1][k] = 0.0;
-            g[k + 1] = -sin_vals[k] * g[k];
-            g[k] *= cos_vals[k];
-            if w_norm > 1e-60 {
-                v_basis.push(w.iter().map(|&v| v / w_norm).collect());
-            } else {
-                v_basis.push(vec![0.0; n]);
-            }
-            k += 1;
-            if g[k].abs() / b_norm < tol {
-                break;
-            }
-        }
-        let mut y = vec![0.0_f64; k];
-        for i in (0..k).rev() {
-            let mut s = g[i];
-            for j in (i + 1)..k {
-                s -= h[i][j] * y[j];
-            }
-            y[i] = if h[i][i].abs() > 1e-60 {
-                s / h[i][i]
-            } else {
-                0.0
-            };
-        }
-        for j in 0..k {
-            for i in 0..n {
-                x[i] += y[j] * v_basis[j][i];
-            }
-        }
-        r = b.to_vec();
-        for row in 0..a.nrows {
-            let ax_row: f64 = (a.row_ptr[row]..a.row_ptr[row + 1])
-                .map(|idx| a.values[idx] * x[a.col_indices[idx]])
-                .sum();
-            r[row] -= ax_row;
-        }
-        if r.iter().map(|v| v * v).sum::<f64>().sqrt() / b_norm < tol {
-            break;
-        }
-    }
-    x
-}
-/// AMG smoother step: apply `n_smooth` Gauss-Seidel sweeps as a simple
-/// Algebraic Multigrid smoother.
-///
-/// In a full AMG cycle this would alternate with coarse-grid corrections.
-/// Here we expose just the smoothing step for testing and composition.
-///
-/// # Arguments
-/// * `a`        – system matrix (CSR)
-/// * `b`        – right-hand side
-/// * `x_in`     – initial guess
-/// * `n_smooth` – number of Gauss-Seidel sweeps
-#[allow(dead_code)]
-pub fn amg_smooth_step(a: &CsrMatrix, b: &[f64], x_in: &[f64], n_smooth: usize) -> Vec<f64> {
-    let n = b.len();
-    let mut x = x_in.to_vec();
-    for _sweep in 0..n_smooth {
-        for i in 0..n {
-            let row_start = a.row_ptr[i];
-            let row_end = a.row_ptr[i + 1];
-            let mut diag = 0.0_f64;
-            let mut off = 0.0_f64;
-            for idx in row_start..row_end {
-                let j = a.col_indices[idx];
-                if j == i {
-                    diag = a.values[idx];
-                } else {
-                    off += a.values[idx] * x[j];
-                }
-            }
-            if diag.abs() > 1e-60 {
-                x[i] = (b[i] - off) / diag;
-            }
-        }
-    }
-    x
-}
-/// ILU(0) preconditioned iterative solver.
-///
-/// Computes an ILU(0) factorisation of the dense matrix `a` (row-major, n×n),
-/// then uses it as a preconditioner in a preconditioned Richardson iteration
-/// until convergence or `max_iter` steps.
-///
-/// # Arguments
-/// * `a`        – dense n×n matrix (row-major)
-/// * `b`        – right-hand side
-/// * `n`        – system size
-/// * `max_iter` – maximum iterations
-/// * `tol`      – convergence tolerance
-#[allow(dead_code)]
-pub fn ilu0_precond_solve(a: &[f64], b: &[f64], n: usize, max_iter: usize, tol: f64) -> Vec<f64> {
-    let (l_mat, u_mat) = ilu0_dense(a, n);
-    let mut x = vec![0.0_f64; n];
-    for _iter in 0..max_iter {
-        let mut r = b.to_vec();
-        for i in 0..n {
-            let ax_i: f64 = (0..n).map(|j| a[i * n + j] * x[j]).sum();
-            r[i] -= ax_i;
-        }
-        let r_norm: f64 = r.iter().map(|v| v * v).sum::<f64>().sqrt();
-        if r_norm < tol {
-            break;
-        }
-        let z = ilu0_solve(&l_mat, &u_mat, &r, n);
-        for i in 0..n {
-            x[i] += z[i];
-        }
-    }
-    x
 }

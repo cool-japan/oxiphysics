@@ -3,8 +3,6 @@
 
 //! Error types for oxiphysics-gpu
 
-#![allow(dead_code)]
-
 use thiserror::Error;
 
 /// Main error type for the gpu module.
@@ -253,7 +251,6 @@ pub fn arg_mismatch_err(kernel: impl Into<String>, expected: usize, got: usize) 
 }
 
 /// Build a [`Error::GridIndexOutOfBounds`] error.
-#[allow(clippy::too_many_arguments)]
 pub fn grid_oob_err(i: usize, j: usize, k: usize, nx: usize, ny: usize, nz: usize) -> Error {
     Error::GridIndexOutOfBounds {
         i,

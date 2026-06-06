@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
 use super::functions::vec3_norm;
-#[allow(unused_imports)]
-use super::functions::*;
 
 /// Regular and irregular wave load models.
 ///
@@ -257,8 +254,8 @@ impl ImmersedBoundaryBody {
     pub fn total_force(&self) -> [f64; 3] {
         let mut f = [0.0f64; 3];
         for m in &self.markers {
-            for i in 0..3 {
-                f[i] += m.ib_force[i];
+            for (f_i, ibf_i) in f.iter_mut().zip(m.ib_force.iter()) {
+                *f_i += ibf_i;
             }
         }
         f
@@ -422,7 +419,6 @@ pub struct GallopingAnalysis {
 }
 impl GallopingAnalysis {
     /// Create a galloping analysis model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         air_density: f64,
         wind_speed: f64,
@@ -504,7 +500,6 @@ pub struct FlutterAnalysis {
 }
 impl FlutterAnalysis {
     /// Create a flutter analysis model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ei: f64,
         gj: f64,
@@ -584,7 +579,6 @@ pub struct TallBuildingWindResponse {
 }
 impl TallBuildingWindResponse {
     /// Create a tall building wind response model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         height: f64,
         width: f64,
@@ -743,7 +737,6 @@ pub struct HydroelasticBeam {
 }
 impl HydroelasticBeam {
     /// Create a hydroelastic beam model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         length: f64,
         ei: f64,
@@ -827,7 +820,6 @@ pub struct VivLockIn {
 }
 impl VivLockIn {
     /// Create a VIV lock-in model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         diameter: f64,
         mass_ratio: f64,
@@ -1173,9 +1165,9 @@ impl AddedMassMatrix {
     /// `a_vec` = \[ax, ay, az, αx, αy, αz\].  Returns force/moment vector.
     pub fn force_from_acceleration(&self, a_vec: [f64; 6]) -> [f64; 6] {
         let mut result = [0.0f64; 6];
-        for i in 0..6 {
-            for j in 0..6 {
-                result[i] += self.matrix[i][j] * a_vec[j];
+        for (res_i, mat_row) in result.iter_mut().zip(self.matrix.iter()) {
+            for (m_ij, a_j) in mat_row.iter().zip(a_vec.iter()) {
+                *res_i += m_ij * a_j;
             }
         }
         result
@@ -1364,7 +1356,6 @@ pub struct AeroelasticCoupling {
 }
 impl AeroelasticCoupling {
     /// Create an aeroelastic analysis model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         air_density: f64,
         span: f64,
@@ -1547,7 +1538,6 @@ pub struct MonolithicFsiCoupling {
 }
 impl MonolithicFsiCoupling {
     /// Create a monolithic FSI coupler.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         structural_mass: f64,
         structural_stiffness: f64,
@@ -1618,16 +1608,16 @@ impl RadiationDampingMatrix {
     }
     /// Set diagonal radiation damping (simplified diagonal model).
     pub fn set_diagonal(&mut self, b: [f64; 6]) {
-        for i in 0..6 {
-            self.matrix[i][i] = b[i];
+        for (i, (mat_row, b_i)) in self.matrix.iter_mut().zip(b.iter()).enumerate() {
+            mat_row[i] = *b_i;
         }
     }
     /// Damping force from velocity vector.
     pub fn force_from_velocity(&self, vel: [f64; 6]) -> [f64; 6] {
         let mut result = [0.0f64; 6];
-        for i in 0..6 {
-            for j in 0..6 {
-                result[i] += self.matrix[i][j] * vel[j];
+        for (res_i, mat_row) in result.iter_mut().zip(self.matrix.iter()) {
+            for (m_ij, v_j) in mat_row.iter().zip(vel.iter()) {
+                *res_i += m_ij * v_j;
             }
         }
         result
@@ -1664,7 +1654,6 @@ pub struct PartitionedFsiCoupling {
 }
 impl PartitionedFsiCoupling {
     /// Create a partitioned FSI coupler.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(structural_mass: f64, structural_stiffness: f64, structural_damping: f64) -> Self {
         Self {
             max_iterations: 20,

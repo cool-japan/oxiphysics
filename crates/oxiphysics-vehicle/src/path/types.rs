@@ -344,7 +344,6 @@ impl CubicSpline2D {
     }
 }
 /// A simplified racing line built from track edge points.
-#[allow(dead_code)]
 pub struct RacingLine {
     /// Racing line points `[x, y, z]`.
     pub points: Vec<[f64; 3]>,
@@ -359,7 +358,6 @@ impl RacingLine {
     /// inside of a curve are detected by looking for curvature sign changes.
     ///
     /// `n_pts` is the desired number of output points (resampled uniformly).
-    #[allow(dead_code)]
     pub fn from_track_edges(left: &[[f64; 3]], right: &[[f64; 3]], n_pts: usize) -> Self {
         let m = left.len().min(right.len());
         assert!(m >= 2, "need at least 2 edge points");
@@ -526,7 +524,6 @@ impl CubicSplinePath {
     /// Uses Catmull-Rom tangents: at interior waypoints the tangent is the
     /// centred finite difference of the neighbouring positions.  At the
     /// endpoints the one-sided difference is used.
-    #[allow(dead_code)]
     pub fn from_waypoints(pts: &[[f64; 3]]) -> Self {
         let n = pts.len();
         assert!(n >= 2, "CubicSplinePath requires at least 2 waypoints");
@@ -566,7 +563,6 @@ impl CubicSplinePath {
         }
     }
     /// Sample the path at normalised arc-length parameter `t ∈ [0, 1]`.
-    #[allow(dead_code)]
     pub fn sample(&self, t: f64) -> [f64; 3] {
         let n = self.waypoints.len();
         if n == 1 {
@@ -582,7 +578,6 @@ impl CubicSplinePath {
         )
     }
     /// Normalised tangent direction at `t ∈ [0, 1]`.
-    #[allow(dead_code)]
     pub fn tangent_at(&self, t: f64) -> [f64; 3] {
         let n = self.waypoints.len();
         if n == 1 {
@@ -601,7 +596,6 @@ impl CubicSplinePath {
     /// Unsigned curvature (1/m) at `t ∈ [0, 1]`.
     ///
     /// Uses the standard formula κ = |r' × r''| / |r'|³.
-    #[allow(dead_code)]
     pub fn curvature_at(&self, t: f64) -> f64 {
         let n = self.waypoints.len();
         if n == 1 {
@@ -646,7 +640,6 @@ pub struct Waypoint {
     pub heading: f64,
 }
 /// A complete track description made from an ordered list of segments.
-#[allow(dead_code)]
 pub struct TrackLayout {
     /// Track name.
     pub name: String,
@@ -655,7 +648,6 @@ pub struct TrackLayout {
 }
 impl TrackLayout {
     /// Create an empty track with the given name.
-    #[allow(dead_code)]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -663,22 +655,18 @@ impl TrackLayout {
         }
     }
     /// Append a segment to the track.
-    #[allow(dead_code)]
     pub fn add_segment(&mut self, seg: TrackSegment) {
         self.segments.push(seg);
     }
     /// Total track length in metres.
-    #[allow(dead_code)]
     pub fn total_length(&self) -> f64 {
         self.segments.iter().map(|s| s.length()).sum()
     }
     /// Number of segments.
-    #[allow(dead_code)]
     pub fn num_segments(&self) -> usize {
         self.segments.len()
     }
     /// Number of corner segments (arcs and chicanes).
-    #[allow(dead_code)]
     pub fn num_corners(&self) -> usize {
         self.segments
             .iter()
@@ -686,7 +674,6 @@ impl TrackLayout {
             .count()
     }
     /// Total corner length (sum of arc and chicane lengths) in metres.
-    #[allow(dead_code)]
     pub fn corner_length(&self) -> f64 {
         self.segments
             .iter()
@@ -695,7 +682,6 @@ impl TrackLayout {
             .sum()
     }
     /// Fraction of the track made up of corners (0–1).
-    #[allow(dead_code)]
     pub fn corner_fraction(&self) -> f64 {
         let total = self.total_length();
         if total < 1e-12 {
@@ -707,7 +693,6 @@ impl TrackLayout {
     /// of the first segment).
     ///
     /// Returns the 2-D position `[x, y]`, or `None` if the track has no segments.
-    #[allow(dead_code)]
     pub fn sample_at_distance(&self, s: f64) -> Option<[f64; 2]> {
         if self.segments.is_empty() {
             return None;
@@ -729,7 +714,6 @@ impl TrackLayout {
 /// Each entry in `points` and `alphas` corresponds to one input row
 /// (left/right edge pair).  `alpha = 0` is the left edge; `alpha = 1` is
 /// the right edge.
-#[allow(dead_code)]
 pub struct MinCurvatureRacingLine {
     /// Optimised 2-D racing line points.
     pub points: Vec<[f64; 2]>,
@@ -749,7 +733,6 @@ impl MinCurvatureRacingLine {
     ///
     /// The optimisation minimises `Σ κᵢ²` subject to each point lying on the
     /// segment between the corresponding left and right edge points.
-    #[allow(dead_code)]
     pub fn optimize(left: &[[f64; 2]], right: &[[f64; 2]], iters: usize) -> Self {
         let n = left.len().min(right.len());
         assert!(n >= 3, "need at least 3 edge pairs");
@@ -800,7 +783,6 @@ impl MinCurvatureRacingLine {
             .collect()
     }
     /// Mean curvature of the optimised line.
-    #[allow(dead_code)]
     pub fn mean_curvature(&self) -> f64 {
         if self.curvatures.is_empty() {
             return 0.0;
@@ -808,7 +790,6 @@ impl MinCurvatureRacingLine {
         self.curvatures.iter().sum::<f64>() / self.curvatures.len() as f64
     }
     /// Maximum curvature on the optimised line.
-    #[allow(dead_code)]
     pub fn max_curvature(&self) -> f64 {
         self.curvatures.iter().cloned().fold(0.0_f64, f64::max)
     }
@@ -820,7 +801,6 @@ impl MinCurvatureRacingLine {
 /// 1. The current arc-length fraction `s/L`.
 /// 2. A speed set-point limited by curvature and grip.
 /// 3. A steering command using pure-pursuit with adaptive look-ahead.
-#[allow(dead_code)]
 pub struct ArcLengthController {
     /// The reference path.
     pub path: CubicSplinePath,
@@ -840,7 +820,6 @@ impl ArcLengthController {
     /// * `wheelbase`    – vehicle wheelbase (m)
     /// * `lookahead_min` – minimum look-ahead distance (m)
     /// * `v_max`        – maximum speed set-point (m/s)
-    #[allow(dead_code)]
     pub fn new(path: CubicSplinePath, wheelbase: f64, lookahead_min: f64, v_max: f64) -> Self {
         let pursuit = PurePursuitController::new(lookahead_min, wheelbase);
         Self {
@@ -852,7 +831,6 @@ impl ArcLengthController {
         }
     }
     /// Convert an arc-length distance `s` to a normalised fraction `t ∈ [0, 1]`.
-    #[allow(dead_code)]
     pub fn arc_fraction(&self, s: f64) -> f64 {
         if self.path.total_length < 1e-15 {
             return 0.0;
@@ -862,7 +840,6 @@ impl ArcLengthController {
     /// Compute the speed set-point at arc distance `s` (m/s).
     ///
     /// Limited by curvature and grip: `v = sqrt(mu * g / kappa)`.
-    #[allow(dead_code)]
     pub fn target_speed_at_arc(&self, s: f64, friction: f64, gravity: f64) -> f64 {
         let t = self.arc_fraction(s);
         let kappa = self.path.curvature_at(t).max(1e-9);
@@ -878,7 +855,6 @@ impl ArcLengthController {
     ///
     /// The look-ahead distance is adapted based on curvature:
     /// shorter in tight corners, longer on straights.
-    #[allow(dead_code)]
     pub fn steering_command(
         &mut self,
         vehicle_pos: [f64; 3],
@@ -903,7 +879,6 @@ impl ArcLengthController {
     ///
     /// Searches over `n_samples` uniformly spaced samples and returns the arc
     /// distance `s ∈ [0, total_length]`.
-    #[allow(dead_code)]
     pub fn nearest_arc(&self, world_pos: [f64; 3], n_samples: usize) -> f64 {
         let n = n_samples.max(2);
         let mut best_s = 0.0f64;
@@ -929,7 +904,6 @@ impl ArcLengthController {
 /// - `tangent`  – unit tangent T (direction of travel)
 /// - `normal`   – unit principal normal N (pointing toward the centre of curvature)
 /// - `binormal` – unit binormal B = T × N
-#[allow(dead_code)]
 pub struct FrenetFrame {
     /// Unit tangent vector.
     pub tangent: [f64; 3],
@@ -945,7 +919,6 @@ impl FrenetFrame {
     ///
     /// Uses the first and second derivatives of the spline at `t` to construct
     /// the Frenet–Serret basis.
-    #[allow(dead_code)]
     pub fn compute(path: &CubicSplinePath, t: f64) -> Self {
         let n = path.waypoints.len();
         if n < 2 {
@@ -987,7 +960,6 @@ impl FrenetFrame {
         }
     }
     /// Returns `true` if the Frenet basis is right-handed (det ≈ +1).
-    #[allow(dead_code)]
     pub fn is_right_handed(&self) -> bool {
         let det_approx = vec3_cross(self.tangent, self.normal)[0] * self.binormal[0]
             + vec3_cross(self.tangent, self.normal)[1] * self.binormal[1]
@@ -1027,7 +999,6 @@ pub enum TrackSegment {
 }
 impl TrackSegment {
     /// Arc-length of this segment in metres.
-    #[allow(dead_code)]
     pub fn length(&self) -> f64 {
         match self {
             TrackSegment::Straight { start, end } => {
@@ -1052,7 +1023,6 @@ impl TrackSegment {
         }
     }
     /// Sample a point on the segment at fraction `t ∈ [0, 1]`.
-    #[allow(dead_code)]
     pub fn sample(&self, t: f64) -> [f64; 2] {
         let t = t.clamp(0.0, 1.0);
         match self {
@@ -1105,7 +1075,6 @@ impl TrackSegment {
     ///
     /// Straights have zero curvature; arcs have constant curvature = 1/R;
     /// chicanes report the average of three-point curvatures.
-    #[allow(dead_code)]
     pub fn mean_curvature(&self) -> f64 {
         match self {
             TrackSegment::Straight { .. } => 0.0,

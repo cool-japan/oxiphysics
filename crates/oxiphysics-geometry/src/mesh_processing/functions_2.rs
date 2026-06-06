@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{Face, Vertex};
 use super::functions::{vec3_add, vec3_normalize, vec3_scale};
@@ -229,8 +227,8 @@ mod tests {
         let m = tet();
         let adj = m.build_adjacency();
         assert_eq!(adj.len(), 4);
-        for i in 0..4 {
-            assert_eq!(adj[i].len(), 3, "vertex {i} should have 3 neighbours");
+        for (i, nbrs) in adj.iter().enumerate() {
+            assert_eq!(nbrs.len(), 3, "vertex {i} should have 3 neighbours");
         }
     }
     #[test]

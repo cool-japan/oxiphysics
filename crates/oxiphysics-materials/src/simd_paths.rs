@@ -43,8 +43,6 @@
 //! assert!(pts.stress_xx[0] > 0.0);
 //! ```
 
-#![allow(dead_code)]
-
 // ── SoaMaterialPoints ─────────────────────────────────────────────────────────
 
 /// Structure-of-Arrays storage for `n` material integration points.

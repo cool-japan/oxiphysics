@@ -53,7 +53,6 @@ fn next_usize<'a>(iter: &mut SplitAsciiWhitespace<'a>) -> Result<usize, IoError>
 ///
 /// Coordinates are stored in row-major order with the fastest index being
 /// `i` (x-direction), then `j` (y-direction), then `k` (z-direction).
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plot3dBlock {
     /// Number of grid points in the i-direction.
@@ -78,7 +77,6 @@ impl Plot3dBlock {
 }
 
 /// A multi-block PLOT3D structured grid.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Plot3dGrid {
     /// Ordered list of structured blocks.
@@ -176,7 +174,6 @@ pub fn write_plot3d_grid(grid: &Plot3dGrid) -> String {
 // ── Solution ─────────────────────────────────────────────────────────────────
 
 /// Free-stream reference parameters stored per block in a `.q` file.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plot3dFreestream {
     /// Mach number.
@@ -193,7 +190,6 @@ pub struct Plot3dFreestream {
 ///
 /// The five conservative variables used in the PLOT3D `.q` format are
 /// stored: density, three momentum components, and total energy.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plot3dQPoint {
     /// Density ρ.
@@ -209,7 +205,6 @@ pub struct Plot3dQPoint {
 }
 
 /// A single solution block in a PLOT3D `.q` file.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Plot3dSolutionBlock {
     /// Grid dimensions matching the corresponding [`Plot3dBlock`].
@@ -232,7 +227,6 @@ impl Plot3dSolutionBlock {
 }
 
 /// A multi-block PLOT3D solution.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Plot3dSolution {
     /// Ordered list of solution blocks.

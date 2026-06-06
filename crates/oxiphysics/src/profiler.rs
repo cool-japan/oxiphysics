@@ -36,9 +36,6 @@
 //! println!("folded:\n{}", report.to_folded_stacks());
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -74,8 +71,6 @@ struct ArenaNode {
     call_count: u64,
     total_ns: u64,
     max_ns: u64,
-    /// Reserved field (not used in arena; children are rebuilt in `end_frame`).
-    first_child: Option<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +210,6 @@ impl ProfilerSession {
                     call_count: 0,
                     total_ns: 0,
                     max_ns: 0,
-                    first_child: None,
                 });
                 idx
             });

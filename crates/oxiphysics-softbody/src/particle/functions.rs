@@ -8,7 +8,6 @@ use super::types::{LifeParticle, Particle, ParticleCluster};
 ///
 /// Given integer grid coordinates (x, y, z) each up to 21 bits, returns a 63-bit
 /// Morton code by interleaving the bits.
-#[allow(dead_code)]
 pub fn morton_code_3d(x: u32, y: u32, z: u32) -> u64 {
     fn spread(v: u32) -> u64 {
         let mut v64 = v as u64;
@@ -25,7 +24,6 @@ pub fn morton_code_3d(x: u32, y: u32, z: u32) -> u64 {
 ///
 /// `cell_size` is the size of each Morton grid cell. Returns the sort permutation
 /// (indices into the original array, sorted by Morton code).
-#[allow(dead_code)]
 pub fn sort_particles_morton(particles: &[Particle], cell_size: f64) -> Vec<usize> {
     if cell_size < 1e-15 || particles.is_empty() {
         return (0..particles.len()).collect();
@@ -59,7 +57,6 @@ pub fn sort_particles_morton(particles: &[Particle], cell_size: f64) -> Vec<usiz
 /// Cluster particles into `k` groups using Lloyd's algorithm (k-means).
 ///
 /// Returns a list of clusters with member indices.
-#[allow(dead_code)]
 pub fn cluster_particles(
     particles: &[Particle],
     k: usize,
@@ -108,7 +105,6 @@ pub fn cluster_particles(
 /// Uses the SPH kernel: `f(x) = Σ (m_j / ρ_j) * f_j * W(|x - x_j|, h)`
 ///
 /// If density is unknown, pass `1.0` for each `densities[j]`.
-#[allow(dead_code)]
 pub fn interpolate_scalar(
     query: [f64; 3],
     particles: &[Particle],
@@ -147,7 +143,6 @@ pub fn interpolate_scalar(
     if denom > 1e-15 { num / denom } else { 0.0 }
 }
 /// Interpolate a per-particle 3D vector property at an arbitrary position.
-#[allow(dead_code)]
 pub fn interpolate_vector(
     query: [f64; 3],
     particles: &[Particle],
@@ -167,7 +162,6 @@ pub fn interpolate_vector(
     result
 }
 /// Halton low-discrepancy sequence, element `n` in base `b`.
-#[allow(dead_code)]
 pub(super) fn halton(mut n: usize, b: usize) -> f64 {
     let mut f = 1.0_f64;
     let mut r = 0.0_f64;
@@ -257,7 +251,6 @@ pub type Rgba = [f32; 4];
 /// `camera_dir` is the camera's forward direction (normalized).
 /// Returns the indices of particles sorted from back (most negative depth)
 /// to front (most positive depth) — i.e. furthest first for back-to-front.
-#[allow(dead_code)]
 pub fn sort_particles_by_depth(
     particles: &[Particle],
     camera_pos: [f64; 3],
@@ -280,7 +273,6 @@ pub fn sort_particles_by_depth(
 /// Sort `LifeParticle` entries by depth for rendering.
 ///
 /// Returns back-to-front order (most distant particle first).
-#[allow(dead_code)]
 pub fn sort_life_particles_by_depth(
     particles: &[LifeParticle],
     camera_pos: [f64; 3],
@@ -305,7 +297,6 @@ pub fn sort_life_particles_by_depth(
 ///
 /// Equivalent to depth sort by distance (not signed depth).
 /// Returns back-to-front order.
-#[allow(dead_code)]
 pub fn sort_particles_by_distance(particles: &[Particle], camera_pos: [f64; 3]) -> Vec<usize> {
     let mut dists: Vec<(f64, usize)> = particles
         .iter()

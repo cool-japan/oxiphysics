@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,9 +16,6 @@
 //! - [`CommunityDetection`]: modularity Q, greedy modularity maximization
 //! - [`NetworkRobustness`]: percolation threshold, giant component fraction
 //! - [`SmallWorld`]: Watts-Strogatz rewiring, clustering coefficient, path length
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::collections::{HashMap, VecDeque};
 use std::f64::consts::PI;
@@ -437,7 +433,7 @@ impl OpinionDynamics {
     /// Runs `steps` of the Deffuant model on `opinions` (modified in place).
     ///
     /// At each step a random pair is chosen; if they are within ε they converge.
-    pub fn run(&self, opinions: &mut Vec<f64>, steps: usize, seed: u64) {
+    pub fn run(&self, opinions: &mut [f64], steps: usize, seed: u64) {
         let n = opinions.len();
         if n < 2 {
             return;
@@ -497,13 +493,13 @@ impl DeGrootModel {
     pub fn from_graph(graph: &NetworkGraph) -> Self {
         let n = graph.n;
         let mut trust = vec![vec![0.0f64; n]; n];
-        for u in 0..n {
+        for (u, row) in trust.iter_mut().enumerate() {
             let deg = graph.adj[u].len();
             if deg == 0 {
-                trust[u][u] = 1.0;
+                row[u] = 1.0;
             } else {
                 for &(v, _) in &graph.adj[u] {
-                    trust[u][v] = 1.0 / deg as f64;
+                    row[v] = 1.0 / deg as f64;
                 }
             }
         }
@@ -519,9 +515,9 @@ impl DeGrootModel {
     pub fn step(&self, opinions: &[f64]) -> Vec<f64> {
         let n = opinions.len();
         let mut next = vec![0.0; n];
-        for i in 0..n {
-            for j in 0..n {
-                next[i] += self.trust[i][j] * opinions[j];
+        for (i, ni) in next.iter_mut().enumerate() {
+            for (j, &oj) in opinions.iter().enumerate() {
+                *ni += self.trust[i][j] * oj;
             }
         }
         next
@@ -561,7 +557,7 @@ impl VoterModel {
     }
 
     /// Runs `steps` asynchronous updates on integer `opinions` (values 0..n_states-1).
-    pub fn run(&self, graph: &NetworkGraph, opinions: &mut Vec<usize>, steps: usize, seed: u64) {
+    pub fn run(&self, graph: &NetworkGraph, opinions: &mut [usize], steps: usize, seed: u64) {
         let n = graph.n;
         if n == 0 {
             return;
@@ -816,12 +812,12 @@ impl RandomWalkGraph {
         let mut pi = vec![1.0 / n as f64; n];
         for _ in 0..max_iter {
             let mut next = vec![0.0f64; n];
-            for u in 0..n {
+            for (u, &piu) in pi.iter().enumerate() {
                 let deg = self.graph.adj[u].len();
                 if deg == 0 {
                     continue;
                 }
-                let w = pi[u] / deg as f64;
+                let w = piu / deg as f64;
                 for &(v, _) in &self.graph.adj[u] {
                     next[v] += w;
                 }

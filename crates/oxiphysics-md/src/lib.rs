@@ -29,14 +29,13 @@
 //! - **Free energy perturbation** ([`fep`]): TI, Zwanzig, and BAR alchemical estimators.
 //! - **Steered MD** ([`steered_md`]): Constant-velocity and constant-force pulling protocols.
 #![warn(missing_docs)]
-#![allow(ambiguous_glob_reexports)]
-#![allow(dead_code)]
 
 pub mod coarse_grain;
 pub mod coarse_grained;
 pub mod crystal_growth;
 pub mod fitting;
-pub use coarse_grained::*;
+pub use coarse_grained::functions;
+pub use coarse_grained::types;
 pub mod amber;
 pub mod atom;
 pub mod autograd_bridge;

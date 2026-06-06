@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +7,6 @@
 //! integration.
 //!
 //! All arithmetic uses plain `f64` and `[f64; 3]` arrays — no nalgebra.
-
-#![allow(dead_code)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper vector arithmetic on [f64; 3]
@@ -159,7 +156,6 @@ pub struct FixedPointResult {
 ///
 /// `max_iter` limits the number of Newton steps; `tol` is the residual
 /// stopping criterion.
-#[allow(clippy::too_many_arguments)]
 pub fn find_fixed_point(
     sys: &dyn OdeSystem,
     x0: &[f64],
@@ -331,26 +327,26 @@ pub fn lyapunov_exponents_qr(sys: &dyn OdeSystem, x0: &[f64], h: f64, n_steps: u
         // Advance each tangent vector using the linearised flow
         let jac = numerical_jacobian(sys, t, &x, 1e-6);
         let mut new_q: Vec<Vec<f64>> = Vec::with_capacity(n);
-        for col in 0..n {
+        for q_col in q.iter() {
             // w = J * q[col]
             let mut w = vec![0.0f64; n];
             for i in 0..n {
                 for j in 0..n {
-                    w[i] += jac[i * n + j] * q[col][j];
+                    w[i] += jac[i * n + j] * q_col[j];
                 }
             }
             // w = w * h + q[col]  (Euler tangent advance)
-            let evolved: Vec<f64> = (0..n).map(|i| q[col][i] + h * w[i]).collect();
+            let evolved: Vec<f64> = (0..n).map(|i| q_col[i] + h * w[i]).collect();
             new_q.push(evolved);
         }
         // Gram–Schmidt orthonormalisation
         let mut r_diag = vec![0.0f64; n];
         for col in 0..n {
             let mut v = new_q[col].clone();
-            for prev in 0..col {
-                let proj: f64 = (0..n).map(|i| q[prev][i] * v[i]).sum();
-                for i in 0..n {
-                    v[i] -= proj * q[prev][i];
+            for qrow in q[..col].iter() {
+                let proj: f64 = qrow.iter().zip(v.iter()).map(|(qi, vi)| qi * vi).sum();
+                for (vi, qi) in v.iter_mut().zip(qrow.iter()) {
+                    *vi -= proj * qi;
                 }
             }
             let norm: f64 = v.iter().map(|vi| vi * vi).sum::<f64>().sqrt();
@@ -1150,7 +1146,6 @@ pub struct DuffingOscillator {
 
 impl DuffingOscillator {
     /// Create a Duffing oscillator.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(delta: f64, alpha: f64, beta: f64, gamma: f64, omega: f64) -> Self {
         Self {
             delta,
@@ -1338,36 +1333,52 @@ impl HamiltonianSystem for HarmonicOscillatorHam {
 // Saddle connection / heteroclinic / homoclinic helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Configuration for heteroclinic orbit detection.
+#[derive(Debug, Clone)]
+pub struct HeteroclinicConfig {
+    /// Perturbation magnitude along the unstable direction from `fp_a`.
+    pub eps_perturb: f64,
+    /// Integration step size.
+    pub h: f64,
+    /// Maximum number of integration steps.
+    pub n_steps: usize,
+    /// Convergence tolerance (distance to `fp_b`).
+    pub tol: f64,
+}
+
 /// Check whether two fixed points are connected by a heteroclinic orbit.
 ///
 /// A rudimentary test: integrate from near the unstable manifold of `fp_a`
-/// and check if the trajectory approaches `fp_b` within `tol`.
+/// and check if the trajectory approaches `fp_b` within `cfg.tol`.
 ///
-/// Returns the time at which the trajectory first enters the `tol`-ball
-/// around `fp_b`, or `None` if it does not within `n_steps` steps.
-#[allow(clippy::too_many_arguments)]
+/// Returns the time at which the trajectory first enters the `cfg.tol`-ball
+/// around `fp_b`, or `None` if it does not within `cfg.n_steps` steps.
 pub fn detect_heteroclinic(
     sys: &dyn OdeSystem,
     fp_a: &[f64],
     fp_b: &[f64],
     unstable_dir: &[f64],
-    eps_perturb: f64,
-    h: f64,
-    n_steps: usize,
-    tol: f64,
+    cfg: &HeteroclinicConfig,
 ) -> Option<f64> {
-    let n = fp_a.len();
-    let mut x: Vec<f64> = (0..n)
-        .map(|i| fp_a[i] + eps_perturb * unstable_dir[i])
+    let _n = fp_a.len();
+    let mut x: Vec<f64> = fp_a
+        .iter()
+        .zip(unstable_dir.iter())
+        .map(|(&a, &d)| a + cfg.eps_perturb * d)
         .collect();
     let mut t = 0.0f64;
-    for _ in 0..n_steps {
-        let dist: f64 = (0..n).map(|i| (x[i] - fp_b[i]).powi(2)).sum::<f64>().sqrt();
-        if dist < tol {
+    for _ in 0..cfg.n_steps {
+        let dist: f64 = x
+            .iter()
+            .zip(fp_b.iter())
+            .map(|(&xi, &bi)| (xi - bi).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        if dist < cfg.tol {
             return Some(t);
         }
-        x = rk4_step(sys, t, &x, h);
-        t += h;
+        x = rk4_step(sys, t, &x, cfg.h);
+        t += cfg.h;
     }
     None
 }
@@ -1966,17 +1977,14 @@ mod tests {
     #[test]
     fn test_detect_heteroclinic_none() {
         let sys = ShoOde { omega: 1.0 };
+        let cfg = HeteroclinicConfig {
+            eps_perturb: 0.01,
+            h: 0.01,
+            n_steps: 100,
+            tol: 0.1,
+        };
         // SHO has no heteroclinic orbits; expect None quickly
-        let result = detect_heteroclinic(
-            &sys,
-            &[0.0, 0.0],
-            &[5.0, 0.0],
-            &[1.0, 0.0],
-            0.01,
-            0.01,
-            100,
-            0.1,
-        );
+        let result = detect_heteroclinic(&sys, &[0.0, 0.0], &[5.0, 0.0], &[1.0, 0.0], &cfg);
         // SHO oscillates, won't converge to [5,0] — may return None
         // (just ensure it doesn't panic)
         let _ = result;

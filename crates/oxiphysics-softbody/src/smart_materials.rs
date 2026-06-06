@@ -13,11 +13,6 @@
 //! - [`PhotothermalActuator`]: light-driven thermal expansion.
 //! - Free function [`kelvin_voigt_response`]: viscoelastic strain update.
 
-#![allow(dead_code)]
-
-#[allow(unused_imports)]
-use std::f64::consts::PI;
-
 // ── Hydrogel ──────────────────────────────────────────────────────────────────
 
 /// Flory–Huggins hydrogel model.
@@ -511,7 +506,6 @@ pub fn maxwell_stress_update(strain_rate: f64, e: f64, eta: f64, dt: f64, sigma_
 /// * `eps_maxwell_prev` — previous Maxwell branch strain.
 ///
 /// Returns `(eps_new, eps_maxwell_new)`.
-#[allow(clippy::too_many_arguments)]
 pub fn standard_linear_solid_update(
     sigma: f64,
     e_eq: f64,
@@ -895,12 +889,5 @@ mod tests {
             eps2 >= eps1,
             "higher stress should give larger or equal strain update"
         );
-    }
-
-    // Helper to check PI usage.
-    #[test]
-    fn test_pi_constant_used() {
-        // Ensures PI is referenced (suppresses dead-code lint in test context).
-        assert!((PI - std::f64::consts::PI).abs() < 1e-15);
     }
 }

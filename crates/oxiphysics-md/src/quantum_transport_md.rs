@@ -32,7 +32,6 @@ pub mod constants {
 
 /// Complex number type for quantum calculations.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub struct Complex {
     /// Real part
     pub re: f64,
@@ -42,13 +41,11 @@ pub struct Complex {
 
 impl Complex {
     /// Creates a new complex number.
-    #[allow(dead_code)]
     pub fn new(re: f64, im: f64) -> Self {
         Self { re, im }
     }
 
     /// Returns the complex conjugate.
-    #[allow(dead_code)]
     pub fn conj(&self) -> Self {
         Self {
             re: self.re,
@@ -57,19 +54,16 @@ impl Complex {
     }
 
     /// Returns the modulus squared |z|².
-    #[allow(dead_code)]
     pub fn norm_sq(&self) -> f64 {
         self.re * self.re + self.im * self.im
     }
 
     /// Returns the modulus |z|.
-    #[allow(dead_code)]
     pub fn norm(&self) -> f64 {
         self.norm_sq().sqrt()
     }
 
     /// Multiplies two complex numbers.
-    #[allow(dead_code)]
     pub fn mul(&self, other: &Self) -> Self {
         Self {
             re: self.re * other.re - self.im * other.im,
@@ -78,7 +72,6 @@ impl Complex {
     }
 
     /// Adds two complex numbers.
-    #[allow(dead_code)]
     pub fn add(&self, other: &Self) -> Self {
         Self {
             re: self.re + other.re,
@@ -87,7 +80,6 @@ impl Complex {
     }
 
     /// Subtracts two complex numbers.
-    #[allow(dead_code)]
     pub fn sub(&self, other: &Self) -> Self {
         Self {
             re: self.re - other.re,
@@ -96,7 +88,6 @@ impl Complex {
     }
 
     /// Divides two complex numbers.
-    #[allow(dead_code)]
     pub fn div(&self, other: &Self) -> Self {
         let denom = other.norm_sq();
         Self {
@@ -129,7 +120,6 @@ impl TightBindingModel {
     /// * `n_sites` - Number of lattice sites
     /// * `on_site` - On-site energies for each site
     /// * `dim` - Dimensionality (1 or 2)
-    #[allow(dead_code)]
     pub fn new(n_sites: usize, on_site: Vec<f64>, dim: usize) -> Self {
         Self {
             n_sites,
@@ -145,7 +135,6 @@ impl TightBindingModel {
     /// * `n_sites` - Number of sites
     /// * `epsilon` - On-site energy (uniform)
     /// * `t` - Nearest-neighbor hopping integral
-    #[allow(dead_code)]
     pub fn uniform_chain(n_sites: usize, epsilon: f64, t: f64) -> Self {
         let on_site = vec![epsilon; n_sites];
         let mut model = Self::new(n_sites, on_site, 1);
@@ -157,14 +146,12 @@ impl TightBindingModel {
     }
 
     /// Adds a hopping term between sites i and j.
-    #[allow(dead_code)]
     pub fn add_hopping(&mut self, i: usize, j: usize, t: f64) {
         self.hoppings.push((i, j, t));
         self.hoppings.push((j, i, t));
     }
 
     /// Builds the full Hamiltonian matrix as a flat row-major array.
-    #[allow(dead_code)]
     pub fn build_hamiltonian(&self) -> Vec<f64> {
         let n = self.n_sites;
         let mut h = vec![0.0_f64; n * n];
@@ -180,7 +167,6 @@ impl TightBindingModel {
     /// Computes eigenvalues via Jacobi iteration.
     ///
     /// Returns eigenvalues in ascending order.
-    #[allow(dead_code)]
     pub fn eigenvalues(&self) -> Vec<f64> {
         let n = self.n_sites;
         let h = self.build_hamiltonian();
@@ -188,7 +174,6 @@ impl TightBindingModel {
     }
 
     /// Returns the band width (max - min eigenvalue).
-    #[allow(dead_code)]
     pub fn band_width(&self) -> f64 {
         let eigs = self.eigenvalues();
         if eigs.is_empty() {
@@ -202,7 +187,6 @@ impl TightBindingModel {
     /// # Arguments
     /// * `energy` - Energy at which to evaluate DOS
     /// * `eta` - Lorentzian broadening width
-    #[allow(dead_code)]
     pub fn density_of_states(&self, energy: f64, eta: f64) -> f64 {
         let eigs = self.eigenvalues();
         let mut dos = 0.0;
@@ -214,7 +198,6 @@ impl TightBindingModel {
 }
 
 /// Jacobi iteration to find eigenvalues of a symmetric matrix.
-#[allow(dead_code)]
 fn jacobi_eigenvalues(mat: &[f64], n: usize) -> Vec<f64> {
     let mut a = mat.to_vec();
     let max_iter = 100 * n * n;
@@ -290,7 +273,6 @@ impl LandauerTransmission {
     /// * `fermi_energy` - Fermi energy in eV
     /// * `n_channels` - Number of transport channels
     /// * `gamma_lead` - Lead broadening (imaginary self-energy)
-    #[allow(dead_code)]
     pub fn new(fermi_energy: f64, n_channels: usize, gamma_lead: f64) -> Self {
         Self {
             fermi_energy,
@@ -307,7 +289,6 @@ impl LandauerTransmission {
     /// * `energy` - Energy at which to compute transmission
     /// * `on_site` - On-site energies along the chain
     /// * `hopping` - Nearest-neighbor hopping integral
-    #[allow(dead_code)]
     pub fn transfer_matrix_transmission(&self, energy: f64, on_site: &[f64], hopping: f64) -> f64 {
         if hopping.abs() < 1e-15 {
             return 0.0;
@@ -341,7 +322,6 @@ impl LandauerTransmission {
     /// Computes multichannel Landauer-Büttiker transmission.
     ///
     /// For a perfect conductor with N channels, T = N.
-    #[allow(dead_code)]
     pub fn multichannel_transmission(&self, transmission_per_channel: &[f64]) -> f64 {
         transmission_per_channel.iter().sum()
     }
@@ -350,13 +330,11 @@ impl LandauerTransmission {
     ///
     /// # Arguments
     /// * `transmission` - Total transmission coefficient
-    #[allow(dead_code)]
     pub fn conductance(&self, transmission: f64) -> f64 {
         constants::G_QUANTUM * transmission
     }
 
     /// Computes perfect conductor conductance: G = N * 2e²/h.
-    #[allow(dead_code)]
     pub fn perfect_conductor_conductance(&self) -> f64 {
         constants::G_QUANTUM * self.n_channels as f64
     }
@@ -386,7 +364,6 @@ impl GreensFunctionMd {
     /// * `gamma_left` - Left lead broadening
     /// * `gamma_right` - Right lead broadening
     /// * `eta` - Regularization parameter
-    #[allow(dead_code)]
     pub fn new(n_device: usize, gamma_left: f64, gamma_right: f64, eta: f64) -> Self {
         Self {
             n_device,
@@ -404,7 +381,6 @@ impl GreensFunctionMd {
     /// # Arguments
     /// * `energy` - Energy argument E + iη
     /// * `hamiltonian` - Device Hamiltonian (flat row-major)
-    #[allow(dead_code)]
     pub fn retarded_greens_function(&self, energy: f64, hamiltonian: &[f64]) -> Vec<Complex> {
         let n = self.n_device;
         // Build (E + iη - H - Σ) matrix
@@ -439,7 +415,6 @@ impl GreensFunctionMd {
     ///
     /// # Arguments
     /// * `greens_diag` - Diagonal elements of G^R
-    #[allow(dead_code)]
     pub fn local_dos(&self, greens_diag: &[Complex]) -> Vec<f64> {
         greens_diag
             .iter()
@@ -448,7 +423,6 @@ impl GreensFunctionMd {
     }
 
     /// Computes the spectral function A = i(G^R - G^A) = -2 Im G^R.
-    #[allow(dead_code)]
     pub fn spectral_function(&self, greens_diag: &[Complex]) -> Vec<f64> {
         greens_diag.iter().map(|g| -2.0 * g.im).collect()
     }
@@ -461,7 +435,6 @@ impl GreensFunctionMd {
     /// # Arguments
     /// * `energy` - Energy at which to compute T
     /// * `hamiltonian` - Device Hamiltonian
-    #[allow(dead_code)]
     pub fn transmission_fisher_lee(&self, energy: f64, hamiltonian: &[f64]) -> f64 {
         let n = self.n_device;
         let gf = self.retarded_greens_function(energy, hamiltonian);
@@ -472,7 +445,6 @@ impl GreensFunctionMd {
 }
 
 /// Invert a complex matrix using Gauss-Jordan elimination.
-#[allow(dead_code)]
 fn invert_complex_matrix(re: &[f64], im: &[f64], n: usize) -> Vec<Complex> {
     // Augmented matrix [A | I] for complex A
     let mut aug_re = vec![0.0_f64; n * 2 * n];
@@ -562,7 +534,6 @@ impl NonEquilibriumMd {
     /// * `temperature` - Temperature in Kelvin
     /// * `mu_left` - Left lead chemical potential
     /// * `mu_right` - Right lead chemical potential
-    #[allow(dead_code)]
     pub fn new(temperature: f64, mu_left: f64, mu_right: f64) -> Self {
         Self {
             temperature,
@@ -578,7 +549,6 @@ impl NonEquilibriumMd {
     /// # Arguments
     /// * `energy` - Energy in eV
     /// * `mu` - Chemical potential in eV
-    #[allow(dead_code)]
     pub fn fermi_dirac(&self, energy: f64, mu: f64) -> f64 {
         let kt = constants::K_BOLTZMANN * self.temperature / constants::E_CHARGE; // in eV
         if kt < 1e-15 {
@@ -604,7 +574,6 @@ impl NonEquilibriumMd {
     /// * `gf` - Green's function calculator
     /// * `hamiltonian` - Device Hamiltonian
     /// * `n_points` - Number of integration points
-    #[allow(dead_code)]
     pub fn current(&self, gf: &GreensFunctionMd, hamiltonian: &[f64], n_points: usize) -> f64 {
         let bias = self.mu_left - self.mu_right;
         if bias.abs() < 1e-15 {
@@ -627,7 +596,6 @@ impl NonEquilibriumMd {
     }
 
     /// Computes the differential conductance dJ/dV at zero bias.
-    #[allow(dead_code)]
     pub fn zero_bias_conductance(&self, transmission_at_fermi: f64) -> f64 {
         constants::G_QUANTUM * transmission_at_fermi
     }
@@ -653,7 +621,6 @@ impl ElectronPhononCoupling {
     /// * `alpha` - Fröhlich coupling constant
     /// * `omega_lo` - LO phonon frequency
     /// * `temperature` - Temperature in Kelvin
-    #[allow(dead_code)]
     pub fn new(alpha: f64, omega_lo: f64, temperature: f64) -> Self {
         Self {
             alpha,
@@ -665,7 +632,6 @@ impl ElectronPhononCoupling {
     /// Computes the polaron effective mass ratio m*/m_e.
     ///
     /// In weak coupling: m*/m = 1 + α/6
-    #[allow(dead_code)]
     pub fn polaron_mass_ratio(&self) -> f64 {
         1.0 + self.alpha / 6.0
     }
@@ -676,7 +642,6 @@ impl ElectronPhononCoupling {
     ///
     /// # Arguments
     /// * `energy` - Electron energy
-    #[allow(dead_code)]
     pub fn self_energy_imaginary(&self, energy: f64) -> f64 {
         let n_be = self.bose_einstein(self.omega_lo);
         // Imaginary self-energy from absorption
@@ -693,7 +658,6 @@ impl ElectronPhononCoupling {
     /// Bose-Einstein distribution for phonons.
     ///
     /// n(ω) = 1 / (exp(ħω/kT) - 1)
-    #[allow(dead_code)]
     pub fn bose_einstein(&self, omega: f64) -> f64 {
         let kt = constants::K_BOLTZMANN * self.temperature;
         let x = constants::HBAR * omega / kt;
@@ -712,7 +676,6 @@ impl ElectronPhononCoupling {
     ///
     /// # Arguments
     /// * `base_resistivity` - Residual resistivity at T=0
-    #[allow(dead_code)]
     pub fn resistivity(&self, base_resistivity: f64) -> f64 {
         let n_be = self.bose_einstein(self.omega_lo);
         // Simple model: extra scattering ∝ phonon occupation
@@ -744,7 +707,6 @@ impl MdTransportCoupling {
     /// * `t0` - Base hopping integral in eV
     /// * `hopping_fluctuation` - Fluctuation amplitude
     /// * `fermi_energy` - Fermi energy in eV
-    #[allow(dead_code)]
     pub fn new(t0: f64, hopping_fluctuation: f64, fermi_energy: f64) -> Self {
         Self {
             t0,
@@ -761,7 +723,6 @@ impl MdTransportCoupling {
     /// * `positions` - Atom positions along the chain
     /// * `eq_spacing` - Equilibrium bond spacing
     /// * `gf` - Green's function calculator
-    #[allow(dead_code)]
     pub fn update_frame(&mut self, positions: &[[f64; 3]], eq_spacing: f64, gf: &GreensFunctionMd) {
         let n = positions.len();
         if n < 2 {
@@ -784,7 +745,6 @@ impl MdTransportCoupling {
     }
 
     /// Returns the time-averaged transmission at the Fermi energy.
-    #[allow(dead_code)]
     pub fn average_transmission(&self) -> f64 {
         if self.n_frames == 0 {
             return 0.0;
@@ -793,7 +753,6 @@ impl MdTransportCoupling {
     }
 
     /// Returns the number of frames processed.
-    #[allow(dead_code)]
     pub fn n_frames(&self) -> usize {
         self.n_frames
     }
@@ -823,7 +782,6 @@ impl WignerFunction {
     /// * `psi_im` - Imaginary part
     /// * `x_grid` - Position grid
     /// * `p_grid` - Momentum grid
-    #[allow(dead_code)]
     pub fn from_wavefunction(
         psi_re: &[f64],
         psi_im: &[f64],
@@ -875,7 +833,6 @@ impl WignerFunction {
     /// Integrates the Wigner function over momentum to get the position density.
     ///
     /// n(x) = ∫ W(x,p) dp = |ψ(x)|²
-    #[allow(dead_code)]
     pub fn position_density(&self) -> Vec<f64> {
         let np = self.p_grid.len();
         let dp = if np > 1 {
@@ -892,7 +849,6 @@ impl WignerFunction {
     /// Integrates the Wigner function over all phase space.
     ///
     /// Should equal 1 for a normalized wavefunction.
-    #[allow(dead_code)]
     pub fn total_weight(&self) -> f64 {
         let np = self.p_grid.len();
         let nx = self.x_grid.len();
@@ -939,7 +895,6 @@ impl BoltzmannTransport {
     /// * `mu` - Chemical potential in eV
     /// * `d_ep` - Deformation potential
     /// * `omega_ph` - Phonon energy
-    #[allow(dead_code)]
     pub fn new(temperature: f64, mu: f64, d_ep: f64, omega_ph: f64) -> Self {
         Self {
             temperature,
@@ -955,7 +910,6 @@ impl BoltzmannTransport {
     ///
     /// # Arguments
     /// * `energy` - Electron energy in eV
-    #[allow(dead_code)]
     pub fn relaxation_time(&self, energy: f64) -> f64 {
         let kt = constants::K_BOLTZMANN * self.temperature / constants::E_CHARGE; // eV
         if self.d_ep.abs() < 1e-15 || kt < 1e-15 {
@@ -972,7 +926,6 @@ impl BoltzmannTransport {
     /// # Arguments
     /// * `energies` - Energy eigenvalues
     /// * `velocities` - Group velocities at each k-point
-    #[allow(dead_code)]
     pub fn conductivity(&self, energies: &[f64], velocities: &[f64]) -> f64 {
         let kt = constants::K_BOLTZMANN * self.temperature / constants::E_CHARGE;
         if kt < 1e-15 {
@@ -1003,7 +956,6 @@ impl BoltzmannTransport {
     /// # Arguments
     /// * `energies` - Energy eigenvalues
     /// * `velocities` - Group velocities
-    #[allow(dead_code)]
     pub fn seebeck_coefficient(&self, energies: &[f64], velocities: &[f64]) -> f64 {
         let kt = constants::K_BOLTZMANN * self.temperature / constants::E_CHARGE;
         if kt < 1e-15 {

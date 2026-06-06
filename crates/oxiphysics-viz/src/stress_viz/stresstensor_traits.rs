@@ -11,9 +11,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::StressTensor;
 
 impl Default for StressTensor {
@@ -26,8 +23,8 @@ impl std::ops::Add for StressTensor {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
         let mut v = [0.0f64; 6];
-        for i in 0..6 {
-            v[i] = self.voigt[i] + rhs.voigt[i];
+        for (v_i, (a, b)) in v.iter_mut().zip(self.voigt.iter().zip(rhs.voigt.iter())) {
+            *v_i = a + b;
         }
         Self::new(v)
     }
@@ -37,8 +34,8 @@ impl std::ops::Sub for StressTensor {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
         let mut v = [0.0f64; 6];
-        for i in 0..6 {
-            v[i] = self.voigt[i] - rhs.voigt[i];
+        for (v_i, (a, b)) in v.iter_mut().zip(self.voigt.iter().zip(rhs.voigt.iter())) {
+            *v_i = a - b;
         }
         Self::new(v)
     }

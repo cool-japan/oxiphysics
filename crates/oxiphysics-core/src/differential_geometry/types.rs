@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
 use super::functions::*;
@@ -56,9 +55,9 @@ impl MetricTensorND {
     pub fn new(dim: usize, components: &[[f64; MAX_DIM]; MAX_DIM]) -> Self {
         assert!(dim <= MAX_DIM, "Dimension exceeds MAX_DIM");
         let mut g = [[0.0; MAX_DIM]; MAX_DIM];
-        for i in 0..dim {
-            for j in 0..dim {
-                g[i][j] = components[i][j];
+        for (gi, ci) in g.iter_mut().zip(components.iter()).take(dim) {
+            for (gij, cij) in gi.iter_mut().zip(ci.iter()).take(dim) {
+                *gij = *cij;
             }
         }
         Self { dim, g }
@@ -70,8 +69,8 @@ impl MetricTensorND {
         let dim = signature.len();
         assert!(dim <= MAX_DIM);
         let mut g = [[0.0; MAX_DIM]; MAX_DIM];
-        for i in 0..dim {
-            g[i][i] = signature[i];
+        for (i, &sig_i) in signature.iter().enumerate() {
+            g[i][i] = sig_i;
         }
         Self { dim, g }
     }
@@ -89,18 +88,18 @@ impl MetricTensorND {
     pub fn inverse(&self) -> [[f64; MAX_DIM]; MAX_DIM] {
         let n = self.dim;
         let mut aug = [[0.0_f64; 2 * MAX_DIM]; MAX_DIM];
-        for i in 0..n {
-            for j in 0..n {
-                aug[i][j] = self.g[i][j];
+        for (i, aug_row) in aug.iter_mut().enumerate().take(n) {
+            for (j, cell) in aug_row.iter_mut().enumerate().take(n) {
+                *cell = self.g[i][j];
             }
-            aug[i][n + i] = 1.0;
+            aug_row[n + i] = 1.0;
         }
         for col in 0..n {
             let mut max_row = col;
             let mut max_val = aug[col][col].abs();
-            for row in (col + 1)..n {
-                if aug[row][col].abs() > max_val {
-                    max_val = aug[row][col].abs();
+            for (row, aug_row) in aug.iter().enumerate().skip(col + 1).take(n - col - 1) {
+                if aug_row[col].abs() > max_val {
+                    max_val = aug_row[col].abs();
                     max_row = row;
                 }
             }
@@ -108,16 +107,17 @@ impl MetricTensorND {
             let pivot = aug[col][col];
             assert!(pivot.abs() > 1e-15, "Singular metric tensor");
             let inv_pivot = 1.0 / pivot;
-            for j in 0..(2 * n) {
-                aug[col][j] *= inv_pivot;
+            for cell in aug[col].iter_mut().take(2 * n) {
+                *cell *= inv_pivot;
             }
             for row in 0..n {
                 if row == col {
                     continue;
                 }
                 let factor = aug[row][col];
-                for j in 0..(2 * n) {
-                    aug[row][j] -= factor * aug[col][j];
+                let col_vals: Vec<f64> = aug[col][..2 * n].to_vec();
+                for (cell, &cv) in aug[row][..2 * n].iter_mut().zip(col_vals.iter()) {
+                    *cell -= factor * cv;
                 }
             }
         }
@@ -143,10 +143,10 @@ impl MetricTensorND {
             4 => {
                 let m = self.g;
                 let mut det = 0.0;
-                for j in 0..4 {
+                for (j, &m0j) in m[0].iter().enumerate() {
                     let sign = if j % 2 == 0 { 1.0 } else { -1.0 };
                     let minor = self.minor_3x3(0, j);
-                    det += sign * m[0][j] * minor;
+                    det += sign * m0j * minor;
                 }
                 det
             }
@@ -183,9 +183,9 @@ impl MetricTensorND {
     pub fn raise_index(&self, v_lower: &[f64; MAX_DIM]) -> [f64; MAX_DIM] {
         let ginv = self.inverse();
         let mut result = [0.0; MAX_DIM];
-        for i in 0..self.dim {
-            for j in 0..self.dim {
-                result[i] += ginv[i][j] * v_lower[j];
+        for (i, r) in result.iter_mut().enumerate().take(self.dim) {
+            for (j, &vl) in v_lower.iter().enumerate().take(self.dim) {
+                *r += ginv[i][j] * vl;
             }
         }
         result
@@ -193,9 +193,9 @@ impl MetricTensorND {
     /// Lower an index: v_i = g_{ij} v^j.
     pub fn lower_index(&self, v_upper: &[f64; MAX_DIM]) -> [f64; MAX_DIM] {
         let mut result = [0.0; MAX_DIM];
-        for i in 0..self.dim {
-            for j in 0..self.dim {
-                result[i] += self.g[i][j] * v_upper[j];
+        for (i, r) in result.iter_mut().enumerate().take(self.dim) {
+            for (j, &vu) in v_upper.iter().enumerate().take(self.dim) {
+                *r += self.g[i][j] * vu;
             }
         }
         result
@@ -203,9 +203,9 @@ impl MetricTensorND {
     /// Inner product of two vectors using this metric: g_{ij} u^i v^j.
     pub fn inner_product(&self, u: &[f64; MAX_DIM], v: &[f64; MAX_DIM]) -> f64 {
         let mut result = 0.0;
-        for i in 0..self.dim {
-            for j in 0..self.dim {
-                result += self.g[i][j] * u[i] * v[j];
+        for (i, &ui) in u.iter().enumerate().take(self.dim) {
+            for (j, &vj) in v.iter().enumerate().take(self.dim) {
+                result += self.g[i][j] * ui * vj;
             }
         }
         result
@@ -546,7 +546,6 @@ impl So3 {
 /// `point` is the coordinate at which to evaluate.
 /// `dim` is the manifold dimension.
 /// `h` is the finite-difference step size.
-#[allow(clippy::too_many_arguments)]
 pub struct LeviCivitaConnection {
     /// Christoffel symbols Gamma^sigma_{mu nu}, stored as \[sigma\]\[mu\]\[nu\].
     pub christoffel: [[[f64; MAX_DIM]; MAX_DIM]; MAX_DIM],
@@ -626,11 +625,10 @@ impl RiemannTensor {
             p_minus[lambda] -= h;
             let conn_plus = LeviCivitaConnection::from_metric_fn(metric_fn, &p_plus, dim, h);
             let conn_minus = LeviCivitaConnection::from_metric_fn(metric_fn, &p_minus, dim, h);
-            for sigma in 0..dim {
-                for mu in 0..dim {
-                    for nu in 0..dim {
-                        dchristoffel[lambda][sigma][mu][nu] = (conn_plus.christoffel[sigma][mu]
-                            [nu]
+            for (sigma, ds) in dchristoffel[lambda].iter_mut().enumerate().take(dim) {
+                for (mu, dm) in ds.iter_mut().enumerate().take(dim) {
+                    for (nu, cell) in dm.iter_mut().enumerate().take(dim) {
+                        *cell = (conn_plus.christoffel[sigma][mu][nu]
                             - conn_minus.christoffel[sigma][mu][nu])
                             / (2.0 * h);
                     }
@@ -731,13 +729,13 @@ impl RicciTensor {
     pub fn from_riemann(riemann: &RiemannTensor) -> Self {
         let dim = riemann.dim;
         let mut components = [[0.0_f64; MAX_DIM]; MAX_DIM];
-        for mu in 0..dim {
-            for nu in 0..dim {
+        for (mu, row) in components.iter_mut().enumerate().take(dim) {
+            for (nu, cell) in row.iter_mut().enumerate().take(dim) {
                 let mut val = 0.0;
                 for lambda in 0..dim {
                     val += riemann.components[lambda][mu][lambda][nu];
                 }
-                components[mu][nu] = val;
+                *cell = val;
             }
         }
         Self { components, dim }

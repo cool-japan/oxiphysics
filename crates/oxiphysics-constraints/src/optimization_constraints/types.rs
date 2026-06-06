@@ -2,10 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// Result of an LCP solve.
 #[derive(Clone, Debug)]
 pub struct LcpResult {

@@ -16,7 +16,6 @@
 // ---------------------------------------------------------------------------
 
 /// LBM simulation parameters.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LbmParameters {
     /// BGK relaxation frequency omega (must be in (0, 2) for stability).
@@ -68,7 +67,6 @@ impl LbmParameters {
 /// Check von Neumann stability for BGK: omega must be in (0, 2).
 ///
 /// Returns `true` if omega is in the stable range (0, 2), exclusive.
-#[allow(dead_code)]
 pub fn stability_analysis(omega: f64) -> bool {
     omega > 0.0 && omega < 2.0
 }
@@ -76,7 +74,6 @@ pub fn stability_analysis(omega: f64) -> bool {
 /// Compute the stability margin: distance from omega to the nearest boundary.
 ///
 /// Returns `min(omega, 2.0 - omega)` for omega in (0, 2), else a negative value.
-#[allow(dead_code)]
 pub fn stability_margin(omega: f64) -> f64 {
     if !stability_analysis(omega) {
         return f64::NEG_INFINITY;
@@ -97,7 +94,6 @@ pub fn stability_margin(omega: f64) -> f64 {
 /// - `omega_plus`: symmetric relaxation frequency (controls viscosity)
 ///
 /// Returns `omega_minus` such that `tau_plus * tau_minus = magic`.
-#[allow(dead_code)]
 pub fn optimal_relaxation(omega_plus: f64, magic: f64) -> f64 {
     let tau_plus = 1.0 / omega_plus;
     // tau_minus = magic / tau_plus
@@ -119,7 +115,6 @@ pub const TRT_MAGIC: f64 = 3.0 / 16.0;
 /// - `ux_new`, `uy_new`: velocity components at current step (length n)
 ///
 /// Returns the L2 norm normalized by the number of nodes.
-#[allow(dead_code)]
 pub fn convergence_criterion(
     ux_old: &[f64],
     uy_old: &[f64],
@@ -161,7 +156,6 @@ pub fn convergence_criterion(
 /// - `tol`: tolerance for bisection convergence
 ///
 /// Returns the omega value achieving the target Re, clamped to (0.01, 1.99).
-#[allow(dead_code)]
 pub fn auto_tune_omega(target_re: f64, u_char: f64, l_char: f64, tol: f64) -> f64 {
     // nu = cs2 * (1/omega - 0.5), Re = u * l / nu
     // => 1/omega - 0.5 = u*l / (Re * cs2)
@@ -203,7 +197,6 @@ pub fn auto_tune_omega(target_re: f64, u_char: f64, l_char: f64, tol: f64) -> f6
 /// - `n_nodes`: total lattice nodes updated
 /// - `n_steps`: number of timesteps executed
 /// - `elapsed_secs`: wall-clock time in seconds
-#[allow(dead_code)]
 pub fn performance_metrics(n_nodes: usize, n_steps: usize, elapsed_secs: f64) -> f64 {
     if elapsed_secs <= 0.0 {
         return 0.0;
@@ -228,7 +221,6 @@ pub fn performance_metrics(n_nodes: usize, n_steps: usize, elapsed_secs: f64) ->
 /// - `q_fine`:   quantity of interest on fine grid
 /// - `r`:        grid refinement ratio (e.g. 2.0)
 /// - `p`:        observed convergence order (e.g. 2.0 for second-order)
-#[allow(dead_code)]
 pub fn grid_refinement_error(q_coarse: f64, q_fine: f64, r: f64, p: f64) -> f64 {
     let factor = r.powf(p) - 1.0;
     if factor.abs() < 1e-30 {
@@ -245,7 +237,6 @@ pub fn grid_refinement_error(q_coarse: f64, q_fine: f64, r: f64, p: f64) -> f64 
 /// # Arguments
 /// - `q_coarse`, `q_medium`, `q_fine`: quantity at three grid levels
 /// - `r`: refinement ratio between consecutive levels
-#[allow(dead_code)]
 pub fn convergence_order(q_coarse: f64, q_medium: f64, q_fine: f64, r: f64) -> f64 {
     let num = (q_coarse - q_medium).abs();
     let den = (q_medium - q_fine).abs();

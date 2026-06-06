@@ -8,12 +8,6 @@ use super::types::{
     FourBarAnalysis, FourBarLinkage, GrashofClass, InvoluteGear, JointClass, RotatingMass,
 };
 
-#[allow(dead_code)]
-#[inline]
-pub(super) fn clamp(v: f64, lo: f64, hi: f64) -> f64 {
-    v.clamp(lo, hi)
-}
-#[allow(dead_code)]
 #[inline]
 pub(super) fn sq(x: f64) -> f64 {
     x * x
@@ -21,14 +15,12 @@ pub(super) fn sq(x: f64) -> f64 {
 /// Test Grashof condition for given link lengths.
 ///
 /// Returns `true` when the shortest + longest ≤ sum of remaining two.
-#[allow(dead_code)]
 pub fn grashof_condition(l1: f64, l2: f64, l3: f64, l4: f64) -> bool {
     FourBarLinkage::new(l1, l2, l3, l4).grashof()
 }
 /// Compute `theta3` and `theta4` for a four-bar linkage at crank angle `theta2`.
 ///
 /// Returns `(theta3, theta4)` in radians, or `None` on error.
-#[allow(dead_code)]
 pub fn four_bar_angles(l1: f64, l2: f64, l3: f64, l4: f64, theta2: f64) -> Option<(f64, f64)> {
     let fb = FourBarLinkage::new(l1, l2, l3, l4);
     let theta4 = fb.follower_angle(theta2)?;
@@ -52,14 +44,12 @@ pub(super) fn self_k5(_l1: f64, l2: f64, l3: f64, _l4: f64) -> f64 {
     (sq(l2) + sq(l3) - sq(_l1) - sq(_l4)) / (2.0 * l2 * l3)
 }
 /// Compute compound gear ratio from a series of (drive, driven) tooth counts.
-#[allow(dead_code)]
 pub fn gear_ratio_compound(stages: &[(u32, u32)]) -> f64 {
     stages
         .iter()
         .fold(1.0, |acc, &(drv, drvn)| acc * drvn as f64 / drv as f64)
 }
 /// Sample involute profile points for a gear with `teeth` and `module`.
-#[allow(dead_code)]
 pub fn involute_profile(teeth: u32, module: f64, points: usize) -> Vec<[f64; 2]> {
     let r = module * teeth as f64 / 2.0;
     (0..points)
@@ -275,7 +265,6 @@ mod tests {
 /// (including ground) and `f_i` is the DOF of joint `i`.
 ///
 /// Returns the mobility (number of independent inputs needed).
-#[allow(dead_code)]
 pub fn grubler_kutzbach_spatial(n_links: u32, joints: &[JointClass]) -> i32 {
     let lambda = 6_i32;
     let n = n_links as i32;
@@ -285,7 +274,6 @@ pub fn grubler_kutzbach_spatial(n_links: u32, joints: &[JointClass]) -> i32 {
 /// Grübler-Kutzbach mobility formula for planar (2-D) mechanisms.
 ///
 /// `M = 3*(n - 1) - Σ(3 - f_i)`.
-#[allow(dead_code)]
 pub fn grubler_kutzbach_planar(n_links: u32, joints: &[JointClass]) -> i32 {
     let lambda = 3_i32;
     let n = n_links as i32;
@@ -293,7 +281,6 @@ pub fn grubler_kutzbach_planar(n_links: u32, joints: &[JointClass]) -> i32 {
     lambda * (n - 1) - constraint_sum
 }
 /// Classify a four-bar linkage according to the Grashof criterion.
-#[allow(dead_code)]
 pub fn grashof_classify(l1: f64, l2: f64, l3: f64, l4: f64) -> GrashofClass {
     let links = [l1, l2, l3, l4];
     let s = links.iter().cloned().fold(f64::MAX, f64::min);
@@ -319,20 +306,17 @@ pub fn grashof_classify(l1: f64, l2: f64, l3: f64, l4: f64) -> GrashofClass {
 /// Compute the connecting-rod angle `phi` from the slider-crank geometry.
 ///
 /// `phi = arcsin(r/l * sin(theta))`, where `r` = crank radius, `l` = rod length.
-#[allow(dead_code)]
 pub fn slider_crank_rod_angle(crank_radius: f64, rod_length: f64, theta: f64) -> f64 {
     let ratio = crank_radius / rod_length * theta.sin();
     ratio.clamp(-1.0, 1.0).asin()
 }
 /// Compute the ratio parameter λ = r/l (crank ratio) for a slider-crank.
-#[allow(dead_code)]
 pub fn slider_crank_lambda(crank_radius: f64, rod_length: f64) -> f64 {
     crank_radius / rod_length
 }
 /// Approximate piston velocity (m/s) using the Fourier series expansion.
 ///
 /// First two terms: `v ≈ -r*ω*(sin θ + λ/2 * sin 2θ)`.
-#[allow(dead_code)]
 pub fn piston_velocity_approx(crank_radius: f64, rod_length: f64, omega: f64, theta: f64) -> f64 {
     let lambda = slider_crank_lambda(crank_radius, rod_length);
     -crank_radius * omega * (theta.sin() + lambda / 2.0 * (2.0 * theta).sin())
@@ -340,7 +324,6 @@ pub fn piston_velocity_approx(crank_radius: f64, rod_length: f64, omega: f64, th
 /// Polynomial (1-2-3) cam profile for simple rise motions.
 ///
 /// Returns normalised displacement `s/h` ∈ \[0,1\] given `tau` ∈ \[0,1\].
-#[allow(dead_code)]
 pub fn cam_polynomial_123(tau: f64) -> f64 {
     let t = tau.clamp(0.0, 1.0);
     3.0 * t * t - 2.0 * t * t * t
@@ -348,7 +331,6 @@ pub fn cam_polynomial_123(tau: f64) -> f64 {
 /// Polynomial (3-4-5) cam profile (zero velocity and acceleration at endpoints).
 ///
 /// Returns normalised displacement `s/h` ∈ \[0,1\].
-#[allow(dead_code)]
 pub fn cam_polynomial_345(tau: f64) -> f64 {
     let t = tau.clamp(0.0, 1.0);
     10.0 * t.powi(3) - 15.0 * t.powi(4) + 6.0 * t.powi(5)
@@ -356,7 +338,6 @@ pub fn cam_polynomial_345(tau: f64) -> f64 {
 /// Polynomial (4-5-6-7) cam profile (zero velocity, acceleration, jerk at endpoints).
 ///
 /// Returns normalised displacement `s/h` ∈ \[0,1\].
-#[allow(dead_code)]
 pub fn cam_polynomial_4567(tau: f64) -> f64 {
     let t = tau.clamp(0.0, 1.0);
     35.0 * t.powi(4) - 84.0 * t.powi(5) + 70.0 * t.powi(6) - 20.0 * t.powi(7)
@@ -364,7 +345,6 @@ pub fn cam_polynomial_4567(tau: f64) -> f64 {
 /// Cycloidal cam profile (zero velocity and acceleration at endpoints).
 ///
 /// Returns normalised displacement `s/h` ∈ \[0,1\].
-#[allow(dead_code)]
 pub fn cam_cycloidal(tau: f64) -> f64 {
     let t = tau.clamp(0.0, 1.0);
     t - (2.0 * PI * t).sin() / (2.0 * PI)
@@ -372,7 +352,6 @@ pub fn cam_cycloidal(tau: f64) -> f64 {
 /// Double-harmonic cam profile.
 ///
 /// Returns normalised displacement.
-#[allow(dead_code)]
 pub fn cam_double_harmonic(tau: f64) -> f64 {
     let t = tau.clamp(0.0, 1.0);
     0.25 * (1.0 - (PI * t).cos()) - 0.125 * (1.0 - (2.0 * PI * t).cos())
@@ -380,7 +359,6 @@ pub fn cam_double_harmonic(tau: f64) -> f64 {
 /// Trigonometric (modified trapezoid) cam profile.
 ///
 /// Returns normalised displacement.
-#[allow(dead_code)]
 pub fn cam_modified_trapezoid(tau: f64) -> f64 {
     let t = tau.clamp(0.0, 1.0);
     if t < 0.25 {
@@ -394,7 +372,6 @@ pub fn cam_modified_trapezoid(tau: f64) -> f64 {
 /// Compute the maximum pressure angle (radians) for a cam profile.
 ///
 /// Uses numerical search over `n_pts` sample points.
-#[allow(dead_code)]
 pub fn cam_max_pressure_angle(
     base_radius: f64,
     lift: f64,
@@ -419,14 +396,12 @@ pub fn cam_max_pressure_angle(
 /// Compute cam pitch curve radius at normalised position `tau`.
 ///
 /// Pitch curve radius = base_radius + displacement.
-#[allow(dead_code)]
 pub fn cam_pitch_radius(base_radius: f64, lift: f64, tau: f64, profile_fn: fn(f64) -> f64) -> f64 {
     base_radius + lift * profile_fn(tau.clamp(0.0, 1.0))
 }
 /// Cam radius of curvature at `tau` (numerically).
 ///
 /// Uses: `ρ = (r² + (dr/dθ)²)^(3/2) / |r² + 2*(dr/dθ)² - r*(d²r/dθ²)|`.
-#[allow(dead_code)]
 pub fn cam_radius_of_curvature(
     base_radius: f64,
     lift: f64,
@@ -448,7 +423,6 @@ pub fn cam_radius_of_curvature(
 /// Contact ratio for a meshing pair of involute gears.
 ///
 /// ε = (length of contact path) / (base pitch).
-#[allow(dead_code)]
 pub fn contact_ratio(gear1: &InvoluteGear, gear2: &InvoluteGear) -> f64 {
     let ra1 = gear1.addendum_radius();
     let rb1 = gear1.base_radius();
@@ -463,7 +437,6 @@ pub fn contact_ratio(gear1: &InvoluteGear, gear2: &InvoluteGear) -> f64 {
     (approach + recess) / pb.max(1e-15)
 }
 /// Minimum number of teeth to avoid undercutting (standard gear, no profile shift).
-#[allow(dead_code)]
 pub fn min_teeth_no_undercut(pressure_angle_deg: f64) -> u32 {
     let phi = pressure_angle_deg.to_radians();
     (2.0 / phi.sin().powi(2)).ceil() as u32
@@ -471,7 +444,6 @@ pub fn min_teeth_no_undercut(pressure_angle_deg: f64) -> u32 {
 /// Compute the working pressure angle for a non-standard centre distance.
 ///
 /// `cos(φ') = (r_b1 + r_b2) / a'`.
-#[allow(dead_code)]
 pub fn working_pressure_angle(gear1: &InvoluteGear, gear2: &InvoluteGear, centre_dist: f64) -> f64 {
     let rb_sum = gear1.base_radius() + gear2.base_radius();
     (rb_sum / centre_dist.max(1e-15)).clamp(-1.0, 1.0).acos()
@@ -479,7 +451,6 @@ pub fn working_pressure_angle(gear1: &InvoluteGear, gear2: &InvoluteGear, centre
 /// Hertz contact stress between two cylindrical gear teeth (Pa).
 ///
 /// `σ_H = sqrt(F * E_eff / (π * b * ρ_eq))`.
-#[allow(dead_code)]
 pub fn hertz_contact_stress(
     force: f64,
     face_width: f64,
@@ -493,14 +464,12 @@ pub fn hertz_contact_stress(
 /// Velocity ratio for a double Cardan (constant velocity) joint.
 ///
 /// Returns exactly 1.0 regardless of angle if shafts are equal and opposite.
-#[allow(dead_code)]
 pub fn double_cardan_velocity_ratio(_shaft_angle: f64, _theta: f64) -> f64 {
     1.0
 }
 /// Static balance check: sum of m·r vectors ≈ 0.
 ///
 /// Returns the residual force magnitude (m·r units, multiply by ω² for force).
-#[allow(dead_code)]
 pub fn static_balance_residual(masses: &[RotatingMass]) -> f64 {
     let sx: f64 = masses.iter().map(|m| m.mr_vector()[0]).sum();
     let sy: f64 = masses.iter().map(|m| m.mr_vector()[1]).sum();
@@ -509,7 +478,6 @@ pub fn static_balance_residual(masses: &[RotatingMass]) -> f64 {
 /// Dynamic balance check: sum of m·r·l moment vectors ≈ 0.
 ///
 /// Returns the residual moment magnitude (m·r·l units).
-#[allow(dead_code)]
 pub fn dynamic_balance_residual(masses: &[RotatingMass]) -> f64 {
     let sx: f64 = masses.iter().map(|m| m.mrl_vector()[0]).sum();
     let sy: f64 = masses.iter().map(|m| m.mrl_vector()[1]).sum();
@@ -518,7 +486,6 @@ pub fn dynamic_balance_residual(masses: &[RotatingMass]) -> f64 {
 /// Compute the balancing mass required for static balance in a given plane.
 ///
 /// Returns `(mass_kg, angle_rad)` of a balance mass at `balance_radius`.
-#[allow(dead_code)]
 pub fn static_balance_mass(masses: &[RotatingMass], balance_radius: f64) -> (f64, f64) {
     let sx: f64 = masses.iter().map(|m| m.mr_vector()[0]).sum();
     let sy: f64 = masses.iter().map(|m| m.mr_vector()[1]).sum();
@@ -531,8 +498,6 @@ pub fn static_balance_mass(masses: &[RotatingMass], balance_radius: f64) -> (f64
 ///
 /// `plane_a_axial` and `plane_b_axial` are the axial positions of the two
 /// correction planes. Returns `(mass_a, angle_a, mass_b, angle_b)`.
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
 pub fn dalby_balance(
     masses: &[RotatingMass],
     plane_a_axial: f64,
@@ -566,7 +531,6 @@ pub fn dalby_balance(
 /// Bearing reaction forces from a rotating shaft with known unbalance.
 ///
 /// Returns `(F_bearing_a, F_bearing_b)` in Newtons given angular speed `omega`.
-#[allow(dead_code)]
 pub fn bearing_reactions(
     masses: &[RotatingMass],
     bearing_a_pos: f64,
@@ -601,7 +565,6 @@ pub fn bearing_reactions(
 /// At the extended dead-centre the coupler + crank are aligned (l2 + l3 diagonal = l4 + l1).
 /// At the folded dead-centre the coupler folds back over the crank.
 /// Both angles derived from the law of cosines applied to the closed loop.
-#[allow(dead_code)]
 pub fn crank_rocker_dead_centres(l1: f64, l2: f64, l3: f64, l4: f64) -> Option<(f64, f64)> {
     let diag_ext = l2 + l3;
     let cos_ext = (sq(l1) + sq(l4) - sq(diag_ext)) / (2.0 * l1 * l4).max(1e-15);
@@ -615,7 +578,6 @@ pub fn crank_rocker_dead_centres(l1: f64, l2: f64, l3: f64, l4: f64) -> Option<(
 /// Compute mechanical advantage of a four-bar linkage at crank angle `theta2`.
 ///
 /// MA = (output link angular velocity) / (input link angular velocity) * (r4/r2).
-#[allow(dead_code)]
 pub fn four_bar_mechanical_advantage(
     l1: f64,
     l2: f64,
@@ -633,7 +595,6 @@ pub fn four_bar_mechanical_advantage(
 /// Coupler curve: compute a series of coupler point positions.
 ///
 /// `cp_x` and `cp_y` are the coupler point offsets from coupler midpoint.
-#[allow(dead_code)]
 pub fn coupler_curve(
     l1: f64,
     l2: f64,
@@ -658,7 +619,6 @@ pub fn coupler_curve(
     points
 }
 /// Limit stop: compute max/min crank angle for a constrained follower.
-#[allow(dead_code)]
 pub fn follower_angle_range(l1: f64, l2: f64, l3: f64, l4: f64, n_steps: usize) -> (f64, f64) {
     let mut min_theta4 = f64::MAX;
     let mut max_theta4 = f64::MIN;

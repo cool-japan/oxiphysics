@@ -1,16 +1,10 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions_2::*;
+use super::functions::{PICKLE_MAGIC, PICKLE_VERSION};
 use crate::Error;
 use crate::types::{PyContactResult, PyVec3};
 use serde::{Deserialize, Serialize};
-
-#[allow(unused_imports)]
-use super::functions::*;
-use super::functions::{PICKLE_MAGIC, PICKLE_VERSION};
 
 use std::collections::HashMap;
 
@@ -291,7 +285,6 @@ pub struct BodyDict {
 }
 impl BodyDict {
     /// Convert from `SimBodyState`.
-    #[allow(dead_code)]
     pub fn from_sim_body(b: &SimBodyState) -> Self {
         Self {
             handle: b.handle,
@@ -305,7 +298,6 @@ impl BodyDict {
         }
     }
     /// Convert back to `SimBodyState`.
-    #[allow(dead_code)]
     pub fn to_sim_body(&self) -> SimBodyState {
         SimBodyState {
             handle: self.handle,
@@ -338,12 +330,10 @@ pub struct PickleEnvelope {
 }
 impl PickleEnvelope {
     /// Wrap a snapshot in a pickle envelope.
-    #[allow(dead_code)]
     pub fn new(snapshot: SimulationSnapshot) -> Self {
         Self { snapshot }
     }
     /// Serialize to bytes.
-    #[allow(dead_code)]
     pub fn to_bytes(&self) -> Vec<u8> {
         let json = self.snapshot.to_json();
         let payload = json.as_bytes();
@@ -356,7 +346,6 @@ impl PickleEnvelope {
         buf
     }
     /// Deserialize from bytes.
-    #[allow(dead_code)]
     pub fn from_bytes(data: &[u8]) -> Result<Self, Error> {
         if data.len() < 10 {
             return Err(Error::General("pickle envelope too short".to_string()));
@@ -375,7 +364,6 @@ impl PickleEnvelope {
         Ok(Self { snapshot })
     }
     /// Serialize to a hex string (for embedding in Python source).
-    #[allow(dead_code)]
     pub fn to_hex(&self) -> String {
         self.to_bytes()
             .iter()
@@ -394,7 +382,6 @@ pub struct SchemaValidationResult {
 }
 impl SchemaValidationResult {
     /// Create a passing result.
-    #[allow(dead_code)]
     pub fn ok() -> Self {
         Self {
             is_valid: true,
@@ -402,7 +389,6 @@ impl SchemaValidationResult {
         }
     }
     /// Create a failing result with a single error.
-    #[allow(dead_code)]
     pub fn err(msg: impl Into<String>) -> Self {
         Self {
             is_valid: false,
@@ -427,7 +413,6 @@ pub struct NumpyPositionArray {
 }
 impl NumpyPositionArray {
     /// Build a position array from a snapshot.
-    #[allow(dead_code)]
     pub fn from_snapshot(snap: &SimulationSnapshot) -> Self {
         let n = snap.bodies.len();
         let mut data = Vec::with_capacity(n * 3);
@@ -442,7 +427,6 @@ impl NumpyPositionArray {
         }
     }
     /// Build a velocity array from a snapshot.
-    #[allow(dead_code)]
     pub fn velocity_array(snap: &SimulationSnapshot) -> Self {
         let n = snap.bodies.len();
         let mut data = Vec::with_capacity(n * 3);
@@ -457,7 +441,6 @@ impl NumpyPositionArray {
         }
     }
     /// Get the position of body at row `i` as `[x, y, z]`.
-    #[allow(dead_code)]
     pub fn get_row(&self, i: usize) -> Option<[f64; 3]> {
         if i >= self.shape[0] {
             return None;
@@ -466,22 +449,18 @@ impl NumpyPositionArray {
         Some([self.data[base], self.data[base + 1], self.data[base + 2]])
     }
     /// Number of rows (bodies).
-    #[allow(dead_code)]
     pub fn n_rows(&self) -> usize {
         self.shape[0]
     }
     /// Total number of f64 elements.
-    #[allow(dead_code)]
     pub fn size(&self) -> usize {
         self.data.len()
     }
     /// Serialize to JSON.
-    #[allow(dead_code)]
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
     }
     /// Serialize data to raw bytes (f64 LE).
-    #[allow(dead_code)]
     pub fn to_raw_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(self.data.len() * 8);
         for &v in &self.data {
@@ -692,12 +671,10 @@ pub struct ExportBatch {
 }
 impl ExportBatch {
     /// Serialize to JSON.
-    #[allow(dead_code)]
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
     }
     /// Deserialize from JSON.
-    #[allow(dead_code)]
     pub fn from_json(json: &str) -> Result<Self, Error> {
         serde_json::from_str(json)
             .map_err(|e| Error::General(format!("ExportBatch deserialization: {e}")))
@@ -752,7 +729,6 @@ pub struct SnapshotDict {
 }
 impl SnapshotDict {
     /// Build from a `SimulationSnapshot`.
-    #[allow(dead_code)]
     pub fn from_snapshot(snap: &SimulationSnapshot) -> Self {
         Self {
             version: snap.version,
@@ -764,7 +740,6 @@ impl SnapshotDict {
         }
     }
     /// Convert back to `SimulationSnapshot`.
-    #[allow(dead_code)]
     pub fn to_snapshot(&self) -> SimulationSnapshot {
         let bodies: Vec<SimBodyState> = self.bodies.iter().map(|b| b.to_sim_body()).collect();
         let sleeping_count = bodies.iter().filter(|b| b.is_sleeping).count();
@@ -780,12 +755,10 @@ impl SnapshotDict {
         }
     }
     /// Serialize to JSON string (like Python's `json.dumps`).
-    #[allow(dead_code)]
     pub fn to_dict_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
     }
     /// Deserialize from JSON string.
-    #[allow(dead_code)]
     pub fn from_dict_json(json: &str) -> Result<Self, Error> {
         serde_json::from_str(json)
             .map_err(|e| Error::General(format!("SnapshotDict deserialization: {e}")))
@@ -793,7 +766,6 @@ impl SnapshotDict {
 }
 /// Difference report between two snapshots.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SnapshotDiff {
     /// Handles present in A but not in B (removed bodies).
     pub removed: Vec<u32>,
@@ -818,7 +790,6 @@ impl SnapshotDiff {
 }
 /// Validation result for a deserialized snapshot.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ValidationResult {
     /// Whether the snapshot is valid.
     pub is_valid: bool,

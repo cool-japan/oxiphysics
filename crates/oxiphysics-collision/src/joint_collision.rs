@@ -1,4 +1,3 @@
-#![allow(clippy::if_same_then_else)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +7,6 @@
 //! joint friction as a constraint, compliance at limits, and warm-starting.
 //!
 //! All arithmetic uses plain `f64` and `[f64; 3]` arrays — no nalgebra.
-
-#![allow(dead_code)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Basic 3-vector helpers
@@ -200,7 +197,6 @@ pub struct JointLimitConstraint {
 
 impl JointLimitConstraint {
     /// Create a joint limit constraint.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         body_a: usize,
         body_b: usize,
@@ -415,7 +411,6 @@ pub struct CableChainLimit {
 
 impl CableChainLimit {
     /// Create a cable/chain limit.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         body_a: usize,
         body_b: usize,
@@ -567,7 +562,6 @@ pub struct MotorHardLimit {
 
 impl MotorHardLimit {
     /// Create a motor hard limit.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(max_torque: f64, max_velocity: f64, lower: f64, upper: f64, inertia: f64) -> Self {
         Self {
             max_torque,
@@ -653,7 +647,8 @@ impl JointFrictionConstraint {
     pub fn max_friction_impulse(&self, inv_mass_eff: f64, dt: f64) -> f64 {
         let _ = dt;
         let max_f = self.friction_coefficient * self.normal_force.abs();
-        if inv_mass_eff < 1e-14 { max_f } else { max_f }
+        let _ = inv_mass_eff;
+        max_f
     }
 
     /// Compute the friction impulse needed to bring joint velocity to zero,
@@ -979,7 +974,6 @@ pub struct PrismaticJointLimit {
 
 impl PrismaticJointLimit {
     /// Create a prismatic joint limit.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         body_a: usize,
         body_b: usize,
@@ -1071,7 +1065,6 @@ pub struct RevoluteJointLimit {
 
 impl RevoluteJointLimit {
     /// Create a revolute joint limit.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         body_a: usize,
         body_b: usize,

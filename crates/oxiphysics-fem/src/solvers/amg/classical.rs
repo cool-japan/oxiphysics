@@ -3,8 +3,6 @@
 
 //! Classical (Ruge-Stüben) AMG hierarchy builder.
 
-#![allow(dead_code)]
-
 use crate::parallel_solver::CsrMatrix;
 use crate::solvers::amg::{
     cycle::{AmgHierarchy, AmgLevel},
@@ -129,7 +127,6 @@ pub fn extract_diagonal(a: &CsrMatrix) -> Vec<f64> {
 ///   (note: both numerator and denominator include the actual A[i,c] values,
 ///   which are negative for M-matrices; the ratio comes out positive = correct weight)
 /// - F-point with no C-neighbors: fallback injection to nearest C-point
-#[allow(clippy::too_many_arguments)]
 fn build_prolongation(
     a: &CsrMatrix,
     is_c: &[bool],

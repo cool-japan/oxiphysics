@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod piezo_extended_tests2 {
-    use super::*;
+
     use crate::piezo::*;
     #[test]
     fn test_pvdf_capacitance_positive() {

@@ -2,14 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::PlateParams;
 
 /// Navier series first-term maximum deflection for a uniformly-loaded
 /// simply-supported rectangular plate.
 ///
 /// w_max = 0.00406 · q · a⁴ / D  (square plate)
-#[allow(dead_code)]
 pub fn max_deflection_uniform_load(load: f64, a: f64, _b: f64, params: &PlateParams) -> f64 {
     let d = params.flexural_rigidity();
     0.00406 * load * a * a * a * a / d
@@ -17,7 +15,6 @@ pub fn max_deflection_uniform_load(load: f64, a: f64, _b: f64, params: &PlatePar
 /// Natural frequency of simply-supported rectangular plate, mode (m, n).
 ///
 /// f_mn = π²/2 · (m²/a² + n²/b²) · √(D / (ρ·h))
-#[allow(dead_code)]
 pub fn natural_frequency_mn(m: u32, n: u32, a: f64, b: f64, d: f64, rho: f64, h: f64) -> f64 {
     use std::f64::consts::PI;
     let mf = m as f64;
@@ -25,33 +22,28 @@ pub fn natural_frequency_mn(m: u32, n: u32, a: f64, b: f64, d: f64, rho: f64, h:
     PI * PI / 2.0 * (mf * mf / (a * a) + nf * nf / (b * b)) * (d / (rho * h)).sqrt()
 }
 /// Maximum membrane stiffness: N_max = E·h / (1−ν²).
-#[allow(dead_code)]
 pub fn membrane_stiffness(e: f64, nu: f64, h: f64) -> f64 {
     e * h / (1.0 - nu * nu)
 }
 /// Classical external pressure at buckling of a thin cylindrical shell.
 ///
 /// p_cr = 2·E·(h/R)³ / (3·(1−ν²))
-#[allow(dead_code)]
 pub fn cylindrical_shell_buckling(e: f64, nu: f64, r: f64, h: f64) -> f64 {
     2.0 * e * (h / r).powi(3) / (3.0 * (1.0 - nu * nu))
 }
 /// Classical external pressure at buckling of a thin spherical shell.
 ///
 /// p_cr = 2·E / √(3·(1−ν²)) · (h/R)²
-#[allow(dead_code)]
 pub fn spherical_shell_buckling(e: f64, nu: f64, r: f64, h: f64) -> f64 {
     2.0 * e / (3.0 * (1.0 - nu * nu)).sqrt() * (h / r).powi(2)
 }
 /// Aspect ratio of a plate: a/b.
-#[allow(dead_code)]
 pub fn aspect_ratio(a: f64, b: f64) -> f64 {
     a / b
 }
 /// Center deflection of a simply-supported square plate under a concentrated load.
 ///
 /// w = 0.01160 · P · a² / D
-#[allow(dead_code)]
 pub fn plate_concentrated_load_deflection(p: f64, a: f64, d: f64) -> f64 {
     0.01160 * p * a * a / d
 }
@@ -76,12 +68,12 @@ mod tests {
     fn test_kirchhoff_constitutive_symmetric() {
         let plate = KirchhoffPlate::new(0.01, 210e9, 0.3, 7800.0);
         let dm = plate.constitutive_matrix();
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in dm.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (dm[i][j] - dm[j][i]).abs() < 1e-6,
+                    (val - dm[j][i]).abs() < 1e-6,
                     "D_plate not symmetric at [{i},{j}]: {} vs {}",
-                    dm[i][j],
+                    val,
                     dm[j][i]
                 );
             }
@@ -127,11 +119,11 @@ mod tests {
         let elem = MembraneTriangle::new(0.01, 200e9, 0.3);
         let nodes = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
         let k = elem.stiffness_2d(&nodes);
-        for i in 0..6 {
+        for (i, row) in k.iter().enumerate() {
             assert!(
-                k[i][i] > 0.0,
+                row[i] > 0.0,
                 "stiffness diagonal k[{i}][{i}] = {} should be positive",
-                k[i][i]
+                row[i]
             );
         }
     }
@@ -145,12 +137,12 @@ mod tests {
             "D[0][0]: got {}, expected {expected_d00}",
             d[0][0]
         );
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in d.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (d[i][j] - d[j][i]).abs() < 1e-6,
+                    (val - d[j][i]).abs() < 1e-6,
                     "D not symmetric at [{i},{j}]: {} vs {}",
-                    d[i][j],
+                    val,
                     d[j][i]
                 );
             }
@@ -173,10 +165,10 @@ mod tests {
     fn test_plate_params_bending_stiffness_symmetric() {
         let p = PlateParams::new(200e9, 0.3, 0.01);
         let db = p.bending_stiffness_matrix();
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in db.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (db[i][j] - db[j][i]).abs() < 1e-6,
+                    (val - db[j][i]).abs() < 1e-6,
                     "Db not symmetric at [{i},{j}]"
                 );
             }
@@ -224,11 +216,11 @@ mod tests {
         let params = PlateParams::new(200e9, 0.3, 0.01);
         let elem = RectPlateElement::new(params, 0.5, 0.5);
         let k = elem.stiffness_matrix_12x12();
-        for i in 0..12 {
+        for (i, row) in k.iter().enumerate() {
             assert!(
-                k[i][i] > 0.0,
+                row[i] > 0.0,
                 "k[{i}][{i}] should be positive, got {}",
-                k[i][i]
+                row[i]
             );
         }
     }
@@ -245,8 +237,8 @@ mod tests {
         let params = PlateParams::new(200e9, 0.3, 0.01);
         let elem = RectPlateElement::new(params, 0.5, 0.5);
         let m = elem.consistent_mass_matrix(7800.0);
-        for i in 0..12 {
-            assert!(m[i][i] > 0.0, "m[{i}][{i}] should be positive");
+        for (i, row) in m.iter().enumerate() {
+            assert!(row[i] > 0.0, "m[{i}][{i}] should be positive");
         }
     }
     #[test]
@@ -428,12 +420,12 @@ mod tests {
             thicknesses,
         );
         let abd = lam.abd_matrix();
-        for i in 3..6 {
-            for j in 0..3 {
+        for (i, row) in abd.iter().enumerate().skip(3) {
+            for (j, &val) in row.iter().enumerate().take(3) {
                 assert!(
-                    abd[i][j].abs() < 1.0,
+                    val.abs() < 1.0,
                     "B[{i}][{j}]={} should be ~0 for symmetric laminate",
-                    abd[i][j]
+                    val
                 );
             }
         }
@@ -470,12 +462,12 @@ mod tests {
     fn test_ply_layer_q_matrix_symmetry() {
         let ply = PlyLayer::new(150e9, 12e9, 5e9, 0.28, 0.005);
         let q = ply.q_matrix_global(std::f64::consts::PI / 6.0);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in q.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (q[i][j] - q[j][i]).abs() < 1.0,
+                    (val - q[j][i]).abs() < 1.0,
                     "Q[{i}][{j}]={} vs Q[{j}][{i}]={}",
-                    q[i][j],
+                    val,
                     q[j][i]
                 );
             }

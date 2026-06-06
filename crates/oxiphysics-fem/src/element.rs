@@ -212,10 +212,8 @@ impl LinearTetrahedron {
 /// |/   |/
 /// 0----1
 /// ```
-#[allow(dead_code)]
 pub struct HexahedralElement;
 
-#[allow(dead_code)]
 impl HexahedralElement {
     /// Evaluate the 8 shape functions at natural coordinates `(xi, eta, zeta)`.
     ///
@@ -344,10 +342,8 @@ impl HexahedralElement {
 ///
 /// This element has 8 corner nodes and 12 mid-edge nodes, providing
 /// quadratic interpolation along the edges without interior nodes.
-#[allow(dead_code)]
 pub struct SerendipityElement;
 
-#[allow(dead_code)]
 impl SerendipityElement {
     /// Evaluate the 20 shape functions at natural coordinates `(xi, eta, zeta)`.
     ///
@@ -426,7 +422,6 @@ impl SerendipityElement {
 ///
 /// A condition number close to 1 indicates a well-shaped element.
 /// Large condition numbers indicate poor element quality (distorted).
-#[allow(dead_code)]
 pub fn jacobian_condition_number(j: &[[f64; 3]; 3]) -> f64 {
     // Frobenius norm
     let mut frob2 = 0.0;
@@ -466,7 +461,6 @@ pub fn jacobian_condition_number(j: &[[f64; 3]; 3]) -> f64 {
 /// The aspect ratio is defined as the ratio of the longest edge
 /// to the shortest edge. A value of 1.0 indicates a regular (equilateral)
 /// tetrahedron. Higher values indicate more elongated elements.
-#[allow(dead_code)]
 pub fn tet_aspect_ratio(nodes: &[[f64; 3]; 4]) -> f64 {
     let edges = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 
@@ -498,7 +492,6 @@ pub fn tet_aspect_ratio(nodes: &[[f64; 3]; 4]) -> f64 {
 /// Skewness is defined as `1 - V / V_ideal` where `V_ideal` is the
 /// volume of an equilateral tetrahedron with the same average edge length.
 /// A value of 0 is ideal; values approaching 1 indicate degenerate elements.
-#[allow(dead_code)]
 pub fn tet_skewness(nodes: &[[f64; 3]; 4]) -> f64 {
     let edges = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 
@@ -548,7 +541,6 @@ pub fn tet_skewness(nodes: &[[f64; 3]; 4]) -> f64 {
 /// This is defined as `3 * r_in / r_circ` where `r_in` is the inradius
 /// and `r_circ` is the circumradius. The value is 1 for a regular
 /// tetrahedron and approaches 0 for degenerate elements.
-#[allow(dead_code)]
 pub fn tet_radius_ratio(nodes: &[[f64; 3]; 4]) -> f64 {
     // Compute volume
     let x10 = [
@@ -639,7 +631,6 @@ pub fn tet_radius_ratio(nodes: &[[f64; 3]; 4]) -> f64 {
 /// # Returns
 ///
 /// Nodal stresses: `Vec` of length `num_nodes`, each entry is `[f64; 6]`.
-#[allow(dead_code)]
 pub fn nodal_stress_averaging(
     num_nodes: usize,
     elements: &[[usize; 4]],
@@ -674,7 +665,6 @@ pub fn nodal_stress_averaging(
 /// `sigma = [sig_xx, sig_yy, sig_zz, tau_xy, tau_yz, tau_xz]`
 ///
 /// Formula: `sigma_vm = sqrt(0.5 * ((s1-s2)^2 + (s2-s3)^2 + (s3-s1)^2) + 3*(t12^2+t23^2+t13^2))`
-#[allow(dead_code)]
 pub fn von_mises_stress(sigma: &[f64; 6]) -> f64 {
     let s = sigma;
     let vm2 = 0.5 * ((s[0] - s[1]).powi(2) + (s[1] - s[2]).powi(2) + (s[2] - s[0]).powi(2))
@@ -683,7 +673,6 @@ pub fn von_mises_stress(sigma: &[f64; 6]) -> f64 {
 }
 
 /// Compute the hydrostatic (mean) stress from a Voigt stress tensor.
-#[allow(dead_code)]
 pub fn hydrostatic_stress(sigma: &[f64; 6]) -> f64 {
     (sigma[0] + sigma[1] + sigma[2]) / 3.0
 }
@@ -691,7 +680,6 @@ pub fn hydrostatic_stress(sigma: &[f64; 6]) -> f64 {
 /// Compute deviatoric stress tensor from a Voigt stress tensor.
 ///
 /// Returns the deviatoric part: `s_ij = sigma_ij - sigma_h * delta_ij`
-#[allow(dead_code)]
 pub fn deviatoric_stress(sigma: &[f64; 6]) -> [f64; 6] {
     let p = hydrostatic_stress(sigma);
     [
@@ -709,7 +697,6 @@ pub fn deviatoric_stress(sigma: &[f64; 6]) -> [f64; 6] {
 ///
 /// For a linear tetrahedron with a single integration point (centroid),
 /// the extrapolated nodal values are all equal to the centroid value.
-#[allow(dead_code)]
 pub fn extrapolate_to_nodes_tet(centroid_value: &[f64; 6]) -> [[f64; 6]; 4] {
     [*centroid_value; 4]
 }
@@ -725,7 +712,6 @@ pub fn extrapolate_to_nodes_tet(centroid_value: &[f64; 6]) -> [[f64; 6]; 4] {
 /// * `target` - Physical coordinates of the target node
 /// * `centroids` - Centroid coordinates of surrounding elements
 /// * `stresses` - Centroid stresses `[sig_xx, sig_yy, sig_zz, tau_xy, tau_yz, tau_xz]`
-#[allow(dead_code)]
 pub fn spr_recovery(target: [f64; 3], centroids: &[[f64; 3]], stresses: &[[f64; 6]]) -> [f64; 6] {
     let n = centroids.len();
     if n == 0 {
@@ -768,8 +754,6 @@ pub fn spr_recovery(target: [f64; 3], centroids: &[[f64; 3]], stresses: &[[f64; 
 }
 
 /// Solve a 4x4 linear system using Gaussian elimination with partial pivoting.
-#[allow(dead_code)]
-#[allow(clippy::needless_range_loop)]
 fn solve_4x4(a: &[[f64; 4]; 4], b: &[f64; 4]) -> [f64; 4] {
     let mut m = [[0.0; 5]; 4]; // augmented matrix
     for i in 0..4 {
@@ -784,7 +768,8 @@ fn solve_4x4(a: &[[f64; 4]; 4], b: &[f64; 4]) -> [f64; 4] {
         // Find pivot
         let mut max_val = m[col][col].abs();
         let mut max_row = col;
-        for row in (col + 1)..4 {
+        for (idx, row) in ((col + 1)..4usize).enumerate() {
+            let _ = idx;
             if m[row][col].abs() > max_val {
                 max_val = m[row][col].abs();
                 max_row = row;
@@ -801,7 +786,8 @@ fn solve_4x4(a: &[[f64; 4]; 4], b: &[f64; 4]) -> [f64; 4] {
         let pivot = m[col][col];
         for row in (col + 1)..4 {
             let factor = m[row][col] / pivot;
-            for c in col..5 {
+            for (idx, c) in (col..5usize).enumerate() {
+                let _ = idx;
                 m[row][c] -= factor * m[col][c];
             }
         }
@@ -837,7 +823,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_element_stiffness_symmetry() {
         let nodes = [
             Vec3::new(0.0, 0.0, 0.0),
@@ -853,14 +838,14 @@ mod tests {
         let ke = LinearTetrahedron::element_stiffness(&nodes, &d);
 
         // Check symmetry
-        for i in 0..12 {
-            for j in 0..12 {
-                let diff = (ke[i][j] - ke[j][i]).abs();
-                let scale = ke[i][j].abs().max(ke[j][i].abs()).max(1.0);
+        for (i, row) in ke.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                let diff = (val - ke[j][i]).abs();
+                let scale = val.abs().max(ke[j][i].abs()).max(1.0);
                 assert!(
                     diff / scale < 1e-10,
                     "Stiffness not symmetric at ({i},{j}): {} vs {}",
-                    ke[i][j],
+                    val,
                     ke[j][i]
                 );
             }
@@ -1002,7 +987,6 @@ mod tests {
     }
 
     /// Rigid body mode: zero internal forces under uniform translation.
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_element_stiffness_rigid_body_zero_force() {
         let nodes = [
@@ -1015,11 +999,8 @@ mod tests {
         let ke = LinearTetrahedron::element_stiffness(&nodes, &d);
 
         let u_rb = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-        for i in 0..12 {
-            let mut fi = 0.0;
-            for j in 0..12 {
-                fi += ke[i][j] * u_rb[j];
-            }
+        for (i, row) in ke.iter().enumerate() {
+            let fi: f64 = row.iter().zip(u_rb.iter()).map(|(&k, &u)| k * u).sum();
             assert!(fi.abs() < 1e-6, "K*u_rb[{i}] = {fi:.3e}, should be ~0");
         }
     }
@@ -1156,18 +1137,17 @@ mod tests {
     }
 
     /// Inverse of a 3x3 identity should be identity.
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_inv3x3_identity() {
         let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let inv = HexahedralElement::inv3x3(&id).unwrap();
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in inv.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (inv[i][j] - expected).abs() < 1e-14,
+                    (val - expected).abs() < 1e-14,
                     "inv[{i}][{j}] = {}, expected {expected}",
-                    inv[i][j]
+                    val
                 );
             }
         }
@@ -1195,7 +1175,6 @@ mod tests {
     }
 
     /// At corner nodes, only the corresponding corner shape function is 1.
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_serendipity_corner_nodes() {
         let corners = [
@@ -1216,11 +1195,11 @@ mod tests {
                 n[node_idx]
             );
             // All mid-edge functions should be 0 at corner nodes
-            for i in 8..20 {
+            for (i, &ni) in n.iter().enumerate().skip(8).take(12) {
                 assert!(
-                    n[i].abs() < 1e-12,
+                    ni.abs() < 1e-12,
                     "Mid-edge N_{i} at corner {node_idx} = {}, expected 0",
-                    n[i]
+                    ni
                 );
             }
         }
@@ -1317,18 +1296,17 @@ mod tests {
     // ── Stress recovery tests ───────────────────────────────────────────────
 
     /// Nodal averaging for a single element should return the element stress.
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_nodal_stress_averaging_single_element() {
         let elements = vec![[0, 1, 2, 3]];
         let stresses = vec![[100.0, 50.0, 30.0, 10.0, 5.0, 3.0]];
         let nodal = nodal_stress_averaging(4, &elements, &stresses);
-        for node in 0..4 {
-            for c in 0..6 {
+        for (node, row) in nodal.iter().enumerate() {
+            for (c, &val) in row.iter().enumerate() {
                 assert!(
-                    (nodal[node][c] - stresses[0][c]).abs() < 1e-12,
+                    (val - stresses[0][c]).abs() < 1e-12,
                     "node {node} comp {c}: {} vs {}",
-                    nodal[node][c],
+                    val,
                     stresses[0][c]
                 );
             }
@@ -1406,7 +1384,6 @@ mod tests {
     }
 
     /// SPR recovery with single element returns the element stress.
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_spr_recovery_single() {
         let target = [0.0, 0.0, 0.0];
@@ -1416,8 +1393,8 @@ mod tests {
         // With single point, any polynomial fit is exact at that point
         // but extrapolated to target; result depends on linear fit
         // Just verify it returns a finite result
-        for c in 0..6 {
-            assert!(recovered[c].is_finite(), "comp {c} is not finite");
+        for (c, &val) in recovered.iter().enumerate() {
+            assert!(val.is_finite(), "comp {c} is not finite");
         }
     }
 
@@ -1446,14 +1423,13 @@ mod tests {
     }
 
     /// Extrapolation to nodes for tet should give uniform value.
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_extrapolate_to_nodes_tet() {
         let val = [100.0, 50.0, 30.0, 10.0, 5.0, 3.0];
         let nodal = extrapolate_to_nodes_tet(&val);
-        for i in 0..4 {
-            for c in 0..6 {
-                assert!((nodal[i][c] - val[c]).abs() < 1e-14);
+        for row in &nodal {
+            for (c, &nv) in row.iter().enumerate() {
+                assert!((nv - val[c]).abs() < 1e-14);
             }
         }
     }

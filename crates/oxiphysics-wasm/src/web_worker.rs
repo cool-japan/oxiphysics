@@ -54,7 +54,7 @@
 //! };
 //!
 //! let max_bodies = 64;
-//! let shared = SharedStateBuffer::new(max_bodies);
+//! let mut shared = SharedStateBuffer::new(max_bodies);
 //! assert_eq!(shared.max_bodies(), max_bodies);
 //! assert_eq!(shared.read_step_count(), 0);
 //!

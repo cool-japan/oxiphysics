@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,7 +14,6 @@ use std::io::{self, Write};
 // ---------------------------------------------------------------------------
 
 /// Errors produced by the time-series I/O subsystem.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub enum TsError {
     /// Length mismatch between two arrays.
@@ -72,7 +70,6 @@ impl std::error::Error for TsError {}
 // ---------------------------------------------------------------------------
 
 /// A single time-stamped scalar sample.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sample {
     /// Timestamp in seconds (or any consistent unit).
@@ -83,7 +80,6 @@ pub struct Sample {
 
 impl Sample {
     /// Construct a new sample.
-    #[allow(dead_code)]
     pub fn new(time: f64, value: f64) -> Self {
         Self { time, value }
     }
@@ -94,7 +90,6 @@ impl Sample {
 // ---------------------------------------------------------------------------
 
 /// A single named signal channel.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Channel {
     /// Human-readable name, e.g. `"temperature"`.
@@ -109,7 +104,6 @@ pub struct Channel {
 
 impl Channel {
     /// Create a new empty channel.
-    #[allow(dead_code)]
     pub fn new(name: impl Into<String>, unit: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -120,32 +114,27 @@ impl Channel {
     }
 
     /// Push one sample.
-    #[allow(dead_code)]
     pub fn push(&mut self, time: f64, value: f64) {
         self.times.push(time);
         self.values.push(value);
     }
 
     /// Number of samples.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.times.len()
     }
 
     /// Return `true` when there are no samples.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.times.is_empty()
     }
 
     /// Minimum value over all samples, or `NAN` if empty.
-    #[allow(dead_code)]
     pub fn min_value(&self) -> f64 {
         self.values.iter().cloned().fold(f64::INFINITY, f64::min)
     }
 
     /// Maximum value over all samples, or `NAN` if empty.
-    #[allow(dead_code)]
     pub fn max_value(&self) -> f64 {
         self.values
             .iter()
@@ -154,7 +143,6 @@ impl Channel {
     }
 
     /// Arithmetic mean of all values, or `NAN` if empty.
-    #[allow(dead_code)]
     pub fn mean(&self) -> f64 {
         if self.values.is_empty() {
             return f64::NAN;
@@ -163,7 +151,6 @@ impl Channel {
     }
 
     /// Sample variance (population).
-    #[allow(dead_code)]
     pub fn variance(&self) -> f64 {
         if self.values.is_empty() {
             return f64::NAN;
@@ -173,14 +160,12 @@ impl Channel {
     }
 
     /// Standard deviation (population).
-    #[allow(dead_code)]
     pub fn std_dev(&self) -> f64 {
         self.variance().sqrt()
     }
 
     /// Linearly interpolate the value at arbitrary time `t`.
     /// Clamps to the boundary if `t` is out of range.
-    #[allow(dead_code)]
     pub fn interp_linear(&self, t: f64) -> f64 {
         let n = self.times.len();
         if n == 0 {
@@ -205,7 +190,6 @@ impl Channel {
     }
 
     /// Cubic (Catmull-Rom) spline interpolation at time `t`.
-    #[allow(dead_code)]
     pub fn interp_cubic(&self, t: f64) -> f64 {
         let n = self.times.len();
         if n < 4 {
@@ -239,7 +223,6 @@ impl Channel {
 }
 
 /// Catmull-Rom spline helper (one-dimensional).
-#[allow(dead_code)]
 fn catmull_rom(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
     let t2 = t * t;
     let t3 = t2 * t;
@@ -254,7 +237,6 @@ fn catmull_rom(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Multi-channel time series container.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct MultiChannelSeries {
     /// Ordered channel list.
@@ -265,13 +247,11 @@ pub struct MultiChannelSeries {
 
 impl MultiChannelSeries {
     /// Create an empty container.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Add a channel and return its index.
-    #[allow(dead_code)]
     pub fn add_channel(&mut self, ch: Channel) -> usize {
         let idx = self.channels.len();
         self.channels.push(ch);
@@ -279,31 +259,26 @@ impl MultiChannelSeries {
     }
 
     /// Number of channels.
-    #[allow(dead_code)]
     pub fn num_channels(&self) -> usize {
         self.channels.len()
     }
 
     /// Borrow channel by index.
-    #[allow(dead_code)]
     pub fn channel(&self, idx: usize) -> Option<&Channel> {
         self.channels.get(idx)
     }
 
     /// Mutable borrow channel by index.
-    #[allow(dead_code)]
     pub fn channel_mut(&mut self, idx: usize) -> Option<&mut Channel> {
         self.channels.get_mut(idx)
     }
 
     /// Find a channel by name.
-    #[allow(dead_code)]
     pub fn channel_by_name(&self, name: &str) -> Option<&Channel> {
         self.channels.iter().find(|c| c.name == name)
     }
 
     /// Insert metadata.
-    #[allow(dead_code)]
     pub fn set_metadata(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.metadata.insert(key.into(), value.into());
     }
@@ -314,7 +289,6 @@ impl MultiChannelSeries {
 // ---------------------------------------------------------------------------
 
 /// Resampling method.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ResampleMethod {
     /// Piecewise linear interpolation.
@@ -325,7 +299,6 @@ pub enum ResampleMethod {
 
 /// Resample `channel` onto a new uniform grid with `n_samples` points
 /// spanning from `t_start` to `t_end`.
-#[allow(dead_code)]
 pub fn resample_uniform(
     channel: &Channel,
     t_start: f64,
@@ -353,7 +326,6 @@ pub fn resample_uniform(
 }
 
 /// Resample `channel` onto an explicit list of target timestamps.
-#[allow(dead_code)]
 pub fn resample_to_times(
     channel: &Channel,
     target_times: &[f64],
@@ -376,7 +348,6 @@ pub fn resample_to_times(
 
 /// Apply a simple causal moving-average filter in-place.
 /// `window` is the number of samples (≥ 1).
-#[allow(dead_code)]
 pub fn moving_average(values: &[f64], window: usize) -> Vec<f64> {
     let n = values.len();
     let w = window.max(1);
@@ -400,7 +371,6 @@ pub fn moving_average(values: &[f64], window: usize) -> Vec<f64> {
 // ---------------------------------------------------------------------------
 
 /// Butterworth filter type.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FilterType {
     /// Low-pass filter.
@@ -410,7 +380,6 @@ pub enum FilterType {
 }
 
 /// Coefficients for a single biquad (2nd-order IIR) section.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct BiquadCoeffs {
     /// Feed-forward coefficients b0, b1, b2.
@@ -422,7 +391,6 @@ pub struct BiquadCoeffs {
 impl BiquadCoeffs {
     /// Design a single 2nd-order Butterworth section.
     /// `fc` is the cut-off frequency in Hz, `fs` is the sample rate in Hz.
-    #[allow(dead_code)]
     pub fn butterworth_2nd(fc: f64, fs: f64, filter_type: FilterType) -> Self {
         // Bilinear-transform design for 2nd-order Butterworth
         let omega = std::f64::consts::PI * fc / fs;
@@ -457,7 +425,6 @@ impl BiquadCoeffs {
     }
 
     /// Apply this biquad section to `input`, return filtered output.
-    #[allow(dead_code)]
     pub fn apply(&self, input: &[f64]) -> Vec<f64> {
         let mut out = vec![0.0_f64; input.len()];
         let mut w1 = 0.0_f64;
@@ -472,7 +439,6 @@ impl BiquadCoeffs {
     }
 
     /// Zero-phase forward-backward filtering (doubles the filter order).
-    #[allow(dead_code)]
     pub fn apply_zero_phase(&self, input: &[f64]) -> Vec<f64> {
         let forward = self.apply(input);
         let rev: Vec<f64> = forward.iter().cloned().rev().collect();
@@ -486,12 +452,10 @@ impl BiquadCoeffs {
 // ---------------------------------------------------------------------------
 
 /// A complex number stored as `(real, imag)`.
-#[allow(dead_code)]
 pub type Complex = (f64, f64);
 
 /// Compute the in-place radix-2 DIT FFT of `buf` (length must be a power of 2).
 /// `inverse` == true → IFFT (no 1/N normalisation; caller must divide).
-#[allow(dead_code)]
 pub fn fft_inplace(buf: &mut [(f64, f64)], inverse: bool) {
     let n = buf.len();
     // Bit-reversal permutation
@@ -538,7 +502,6 @@ pub fn fft_inplace(buf: &mut [(f64, f64)], inverse: bool) {
 
 /// Compute the FFT of real-valued data.  Returns complex spectrum of length N/2+1.
 /// `data` length must be a power of two.
-#[allow(dead_code)]
 pub fn rfft(data: &[f64]) -> Result<Vec<Complex>, TsError> {
     let n = data.len();
     if n == 0 || (n & (n - 1)) != 0 {
@@ -551,7 +514,6 @@ pub fn rfft(data: &[f64]) -> Result<Vec<Complex>, TsError> {
 
 /// Compute the power spectral density (one-sided, in units of value²/Hz)
 /// from `rfft` output given sample rate `fs`.
-#[allow(dead_code)]
 pub fn power_spectrum(rfft_out: &[Complex], n: usize, fs: f64) -> Vec<f64> {
     let scale = 2.0 / (n as f64 * fs);
     rfft_out
@@ -566,7 +528,6 @@ pub fn power_spectrum(rfft_out: &[Complex], n: usize, fs: f64) -> Vec<f64> {
 }
 
 /// Frequency axis (Hz) matching `rfft` output for signal of length `n` at rate `fs`.
-#[allow(dead_code)]
 pub fn rfft_frequencies(n: usize, fs: f64) -> Vec<f64> {
     (0..=n / 2).map(|k| k as f64 * fs / n as f64).collect()
 }
@@ -576,7 +537,6 @@ pub fn rfft_frequencies(n: usize, fs: f64) -> Vec<f64> {
 // ---------------------------------------------------------------------------
 
 /// Welch window type.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WindowType {
     /// Rectangular (no windowing).
@@ -590,7 +550,6 @@ pub enum WindowType {
 }
 
 /// Generate a window function of length `n`.
-#[allow(dead_code)]
 pub fn make_window(wtype: WindowType, n: usize) -> Vec<f64> {
     use std::f64::consts::TAU;
     match wtype {
@@ -612,8 +571,6 @@ pub fn make_window(wtype: WindowType, n: usize) -> Vec<f64> {
 
 /// Compute the Welch power spectral density estimate.
 /// `segment_len` must be a power of two; `overlap` is in (0..segment_len).
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn welch_psd(
     data: &[f64],
     fs: f64,
@@ -669,7 +626,6 @@ pub fn welch_psd(
 // ---------------------------------------------------------------------------
 
 /// Compute the (biased) autocorrelation of `x` for lags 0..=max_lag.
-#[allow(dead_code)]
 pub fn autocorrelation(x: &[f64], max_lag: usize) -> Vec<f64> {
     let n = x.len();
     let mean = x.iter().sum::<f64>() / n as f64;
@@ -690,7 +646,6 @@ pub fn autocorrelation(x: &[f64], max_lag: usize) -> Vec<f64> {
 
 /// Compute the (biased) cross-correlation of `x` and `y` for lags -(max_lag)..=max_lag.
 /// Returns (lag_vector, ccf_values).
-#[allow(dead_code)]
 pub fn cross_correlation(x: &[f64], y: &[f64], max_lag: usize) -> (Vec<i64>, Vec<f64>) {
     let n = x.len().min(y.len());
     let mx = x[..n].iter().sum::<f64>() / n as f64;
@@ -731,7 +686,6 @@ pub fn cross_correlation(x: &[f64], y: &[f64], max_lag: usize) -> (Vec<i64>, Vec
 // ---------------------------------------------------------------------------
 
 /// A detected peak with its index, timestamp, and value.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Peak {
     /// Sample index.
@@ -746,7 +700,6 @@ pub struct Peak {
 
 /// Detect local maxima in `channel`.
 /// `min_prominence` filters weak peaks; `min_distance` is the minimum index separation.
-#[allow(dead_code)]
 pub fn detect_peaks(channel: &Channel, min_prominence: f64, min_distance: usize) -> Vec<Peak> {
     let n = channel.values.len();
     if n < 3 {
@@ -800,7 +753,6 @@ pub fn detect_peaks(channel: &Channel, min_prominence: f64, min_distance: usize)
 // ---------------------------------------------------------------------------
 
 /// An anomalous sample identified by index.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Anomaly {
     /// Sample index.
@@ -814,7 +766,6 @@ pub struct Anomaly {
 }
 
 /// Z-score anomaly detection: flag samples where |z| > `threshold`.
-#[allow(dead_code)]
 pub fn anomalies_zscore(channel: &Channel, threshold: f64) -> Vec<Anomaly> {
     let mean = channel.mean();
     let std = channel.std_dev();
@@ -843,7 +794,6 @@ pub fn anomalies_zscore(channel: &Channel, threshold: f64) -> Vec<Anomaly> {
 
 /// IQR-based anomaly detection.
 /// Flags values below Q1 − 1.5·IQR or above Q3 + 1.5·IQR (or custom `k`).
-#[allow(dead_code)]
 pub fn anomalies_iqr(channel: &Channel, k: f64) -> Vec<Anomaly> {
     let mut sorted = channel.values.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -885,7 +835,6 @@ pub fn anomalies_iqr(channel: &Channel, k: f64) -> Vec<Anomaly> {
 // ---------------------------------------------------------------------------
 
 /// Write a single channel to CSV (time, value) using any `Write` sink.
-#[allow(dead_code)]
 pub fn write_channel_csv<W: Write>(w: &mut W, channel: &Channel) -> io::Result<()> {
     writeln!(w, "time_s,{}", channel.name)?;
     for (t, v) in channel.times.iter().zip(channel.values.iter()) {
@@ -896,7 +845,6 @@ pub fn write_channel_csv<W: Write>(w: &mut W, channel: &Channel) -> io::Result<(
 
 /// Write a `MultiChannelSeries` to CSV.  First column is `time_s`, then one
 /// column per channel.  All channels are assumed to have identical timestamps.
-#[allow(dead_code)]
 pub fn write_multi_channel_csv<W: Write>(w: &mut W, mcs: &MultiChannelSeries) -> io::Result<()> {
     if mcs.channels.is_empty() {
         return Ok(());
@@ -921,7 +869,6 @@ pub fn write_multi_channel_csv<W: Write>(w: &mut W, mcs: &MultiChannelSeries) ->
 }
 
 /// Parse a two-column CSV (time, value) into a `Channel`.
-#[allow(dead_code)]
 pub fn read_channel_csv(text: &str, name: &str, unit: &str) -> Result<Channel, TsError> {
     let mut ch = Channel::new(name, unit);
     for (line_no, line) in text.lines().enumerate() {
@@ -947,7 +894,6 @@ pub fn read_channel_csv(text: &str, name: &str, unit: &str) -> Result<Channel, T
 // ---------------------------------------------------------------------------
 
 /// Serialise a `Channel` to a compact JSON string.
-#[allow(dead_code)]
 pub fn channel_to_json(channel: &Channel) -> String {
     let pairs: Vec<String> = channel
         .times
@@ -965,7 +911,6 @@ pub fn channel_to_json(channel: &Channel) -> String {
 
 /// Deserialise a `Channel` from a minimal JSON string (as produced by `channel_to_json`).
 /// This is a hand-rolled parser to avoid a serde dependency.
-#[allow(dead_code)]
 pub fn channel_from_json(json: &str) -> Result<Channel, TsError> {
     // Very naive extractor: find name, unit, then parse [t,v] pairs
     fn extract_string_field<'a>(json: &'a str, key: &str) -> Option<&'a str> {
@@ -1009,7 +954,6 @@ pub fn channel_from_json(json: &str) -> Result<Channel, TsError> {
 // ---------------------------------------------------------------------------
 
 /// Serialise a `Channel` to raw binary (little-endian f64 interleaved t/v pairs).
-#[allow(dead_code)]
 pub fn channel_to_binary(channel: &Channel) -> Vec<u8> {
     let mut buf = Vec::with_capacity(channel.len() * 16);
     for (&t, &v) in channel.times.iter().zip(channel.values.iter()) {
@@ -1020,7 +964,6 @@ pub fn channel_to_binary(channel: &Channel) -> Vec<u8> {
 }
 
 /// Deserialise a `Channel` from the binary format produced by `channel_to_binary`.
-#[allow(dead_code)]
 pub fn channel_from_binary(data: &[u8], name: &str, unit: &str) -> Result<Channel, TsError> {
     if !data.len().is_multiple_of(16) {
         return Err(TsError::Parse(format!(
@@ -1043,7 +986,6 @@ pub fn channel_from_binary(data: &[u8], name: &str, unit: &str) -> Result<Channe
 
 /// A streaming time-series writer that flushes to an underlying `Write` sink
 /// in chunks, enabling memory-efficient handling of very large time series.
-#[allow(dead_code)]
 pub struct StreamingTsWriter<W: Write> {
     /// Underlying writer.
     sink: W,
@@ -1059,7 +1001,6 @@ pub struct StreamingTsWriter<W: Write> {
 
 impl<W: Write> StreamingTsWriter<W> {
     /// Create a new streaming writer with a given buffer size.
-    #[allow(dead_code)]
     pub fn new(sink: W, name: impl Into<String>, flush_threshold: usize) -> Self {
         Self {
             sink,
@@ -1071,7 +1012,6 @@ impl<W: Write> StreamingTsWriter<W> {
     }
 
     /// Push one sample. Auto-flushes when the buffer is full.
-    #[allow(dead_code)]
     pub fn push(&mut self, time: f64, value: f64) -> io::Result<()> {
         if !self.header_written {
             writeln!(self.sink, "time_s,{}", self.name)?;
@@ -1085,7 +1025,6 @@ impl<W: Write> StreamingTsWriter<W> {
     }
 
     /// Flush the internal buffer to the underlying writer.
-    #[allow(dead_code)]
     pub fn flush(&mut self) -> io::Result<()> {
         for (t, v) in self.buffer.drain(..) {
             writeln!(self.sink, "{t:.9e},{v:.9e}")?;
@@ -1094,7 +1033,6 @@ impl<W: Write> StreamingTsWriter<W> {
     }
 
     /// Finish writing; flushes remaining samples.
-    #[allow(dead_code)]
     pub fn finish(mut self) -> io::Result<W> {
         self.flush()?;
         Ok(self.sink)
@@ -1103,7 +1041,6 @@ impl<W: Write> StreamingTsWriter<W> {
 
 /// A buffered time-series reader that reads CSV data line-by-line without
 /// loading the entire file into memory.
-#[allow(dead_code)]
 pub struct BufferedTsReader {
     /// Accumulated samples so far.
     pub samples: Vec<(f64, f64)>,
@@ -1113,7 +1050,6 @@ pub struct BufferedTsReader {
 
 impl BufferedTsReader {
     /// Create a new reader.
-    #[allow(dead_code)]
     pub fn new(chunk_size: usize) -> Self {
         Self {
             samples: Vec::new(),
@@ -1122,7 +1058,6 @@ impl BufferedTsReader {
     }
 
     /// Feed a chunk of CSV text into the reader.
-    #[allow(dead_code)]
     pub fn feed(&mut self, text: &str, skip_header: bool) -> Result<(), TsError> {
         for (i, line) in text.lines().enumerate() {
             if i == 0 && skip_header {
@@ -1147,7 +1082,6 @@ impl BufferedTsReader {
     }
 
     /// Convert accumulated samples into a `Channel`.
-    #[allow(dead_code)]
     pub fn into_channel(self, name: &str, unit: &str) -> Channel {
         let mut ch = Channel::new(name, unit);
         for (t, v) in self.samples {
@@ -1157,7 +1091,6 @@ impl BufferedTsReader {
     }
 
     /// Chunk size hint for external callers.
-    #[allow(dead_code)]
     pub fn chunk_size(&self) -> usize {
         self.chunk_size
     }
@@ -1168,7 +1101,6 @@ impl BufferedTsReader {
 // ---------------------------------------------------------------------------
 
 /// Dominant frequency (Hz) in a signal, estimated from FFT peak.
-#[allow(dead_code)]
 pub fn dominant_frequency(data: &[f64], fs: f64) -> Result<f64, TsError> {
     let n = data.len();
     if n < 2 {
@@ -1195,7 +1127,6 @@ pub fn dominant_frequency(data: &[f64], fs: f64) -> Result<f64, TsError> {
 }
 
 /// Next power of two ≥ n.
-#[allow(dead_code)]
 pub fn next_pow2(n: usize) -> usize {
     if n == 0 {
         return 1;
@@ -1209,7 +1140,6 @@ pub fn next_pow2(n: usize) -> usize {
 
 /// Total harmonic distortion (THD) estimate: ratio of harmonic power to fundamental.
 /// `fundamental_freq` in Hz, `n_harmonics` harmonics to sum above fundamental.
-#[allow(dead_code)]
 pub fn total_harmonic_distortion(
     data: &[f64],
     fs: f64,
@@ -1254,7 +1184,6 @@ pub fn total_harmonic_distortion(
 // ---------------------------------------------------------------------------
 
 /// Root-mean-square of a slice.
-#[allow(dead_code)]
 pub fn rms(data: &[f64]) -> f64 {
     if data.is_empty() {
         return 0.0;
@@ -1263,7 +1192,6 @@ pub fn rms(data: &[f64]) -> f64 {
 }
 
 /// Percentile of `data` (0.0–100.0) using linear interpolation.
-#[allow(dead_code)]
 pub fn percentile(data: &[f64], p: f64) -> f64 {
     if data.is_empty() {
         return f64::NAN;
@@ -1283,7 +1211,6 @@ pub fn percentile(data: &[f64], p: f64) -> f64 {
 }
 
 /// Median absolute deviation (MAD) of `data`.
-#[allow(dead_code)]
 pub fn mad(data: &[f64]) -> f64 {
     let med = percentile(data, 50.0);
     let devs: Vec<f64> = data.iter().map(|v| (v - med).abs()).collect();
@@ -1295,7 +1222,6 @@ pub fn mad(data: &[f64]) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// A fixed-capacity circular ring buffer for real-time time-series streaming.
-#[allow(dead_code)]
 pub struct RingBuffer {
     times: Vec<f64>,
     values: Vec<f64>,
@@ -1306,7 +1232,6 @@ pub struct RingBuffer {
 
 impl RingBuffer {
     /// Create a ring buffer with given capacity.
-    #[allow(dead_code)]
     pub fn new(capacity: usize) -> Self {
         let cap = capacity.max(1);
         Self {
@@ -1319,7 +1244,6 @@ impl RingBuffer {
     }
 
     /// Push one sample, overwriting the oldest if full.
-    #[allow(dead_code)]
     pub fn push(&mut self, time: f64, value: f64) {
         let idx = (self.head + self.len) % self.capacity;
         if self.len < self.capacity {
@@ -1334,19 +1258,16 @@ impl RingBuffer {
     }
 
     /// Number of valid samples.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.len
     }
 
     /// Return `true` when empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Drain all samples into a `Channel` (chronological order).
-    #[allow(dead_code)]
     pub fn drain_to_channel(&mut self, name: &str, unit: &str) -> Channel {
         let mut ch = Channel::new(name, unit);
         for i in 0..self.len {
@@ -1359,7 +1280,6 @@ impl RingBuffer {
     }
 
     /// View current samples as a `Channel` without consuming the buffer.
-    #[allow(dead_code)]
     pub fn snapshot(&self, name: &str, unit: &str) -> Channel {
         let mut ch = Channel::new(name, unit);
         for i in 0..self.len {
@@ -1546,9 +1466,9 @@ mod tests {
         let data = vec![1.0_f64; 8];
         let spec = rfft(&data).unwrap();
         assert!((spec[0].0 - 8.0).abs() < 1e-10); // DC bin = sum
-        for k in 1..spec.len() {
-            assert!(spec[k].0.abs() < 1e-10);
-            assert!(spec[k].1.abs() < 1e-10);
+        for bin in spec.iter().skip(1) {
+            assert!(bin.0.abs() < 1e-10);
+            assert!(bin.1.abs() < 1e-10);
         }
     }
 

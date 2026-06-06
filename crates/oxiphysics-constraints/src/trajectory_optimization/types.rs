@@ -2,10 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
+use super::functions::{
+    bspline_basis, bspline_basis_derivative, dot, mat_vec, norm, vec_add, vec_lerp, vec_scale,
+    vec_sub,
+};
+
 /// Velocity and acceleration bounds.
 #[derive(Debug, Clone)]
 pub struct DynamicLimits {

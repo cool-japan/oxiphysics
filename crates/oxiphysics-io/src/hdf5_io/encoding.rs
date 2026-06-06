@@ -3,8 +3,6 @@
 
 //! Byte-layout simulation for object headers and superblock encoding.
 
-#![allow(dead_code)]
-
 use super::file::{Hdf5ObjectHeader, Hdf5Superblock};
 use super::types::{Hdf5Error, Hdf5Result};
 

@@ -50,8 +50,6 @@
 //! let _ = coupling.compute_delta_lambda(&mesh, [0.0, -1.0, 0.0], 1.0, 0.1);
 //! ```
 
-#![allow(dead_code)]
-
 // ── DeformableNodeId ─────────────────────────────────────────────────────────
 
 /// Opaque identifier for a node in a deformable mesh.
@@ -142,7 +140,6 @@ impl RigidDeformableCoupling {
     /// Create a barycentric coupling with 4 nodes and corresponding weights.
     ///
     /// Weights must sum to 1.0.
-    #[allow(clippy::too_many_arguments)]
     pub fn new_barycentric(
         nodes: [DeformableNodeId; 4],
         weights: [f64; 4],

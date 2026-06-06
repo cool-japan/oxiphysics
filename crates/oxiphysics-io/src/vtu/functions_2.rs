@@ -2,13 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use crate::vtu::types::*;
 #[cfg(test)]
 mod tests_vtu_expanded {
-    use super::*;
+    use crate::vtu::*;
     #[test]
     fn test_field_add() {
         let a = vec![1.0, 2.0, 3.0];

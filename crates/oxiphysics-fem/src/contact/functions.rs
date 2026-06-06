@@ -9,7 +9,6 @@ use super::types::{ContactPair, FrictionStatus};
 /// k_contact = 4/3 * E* * sqrt(R*)
 ///
 /// This is the linearized contact stiffness at approach delta.
-#[allow(dead_code)]
 pub fn hertz_contact_stiffness(e_star: f64, r_star: f64, approach: f64) -> f64 {
     if approach <= 0.0 {
         return 0.0;
@@ -19,7 +18,6 @@ pub fn hertz_contact_stiffness(e_star: f64, r_star: f64, approach: f64) -> f64 {
 /// Compute the contact energy for Hertz contact.
 ///
 /// U = 8/15 * E* * sqrt(R*) * delta^(5/2)
-#[allow(dead_code)]
 pub fn hertz_contact_energy(e_star: f64, r_star: f64, approach: f64) -> f64 {
     if approach <= 0.0 {
         return 0.0;
@@ -422,7 +420,6 @@ mod tests_extended {
 /// Detect node-to-face contact by checking each node against every triangular
 /// face.  Returns all pairs where the signed distance is negative (penetrating)
 /// or within a small tolerance.
-#[allow(dead_code)]
 pub fn detect_node_face_contact(nodes: &[[f64; 3]], faces: &[[usize; 3]]) -> Vec<ContactPair> {
     let mut pairs = Vec::new();
     let tol = 1e-10_f64;
@@ -482,7 +479,6 @@ pub fn detect_node_face_contact(nodes: &[[f64; 3]], faces: &[[usize; 3]]) -> Vec
 /// effective radius, and indentation depth `delta`.
 ///
 /// F = (4/3) * E_eff * sqrt(R_eff) * delta^(3/2)
-#[allow(dead_code)]
 pub fn hertz_contact_force(
     e1: f64,
     nu1: f64,
@@ -504,7 +500,6 @@ pub fn hertz_contact_force(
 /// and applied force F.
 ///
 /// a = ( (3 * F) / (4 * E_eff * sqrt(R_eff)) )^(2/3)
-#[allow(dead_code)]
 pub fn hertz_contact_radius(e_eff: f64, r_eff: f64, f: f64) -> f64 {
     if f <= 0.0 || e_eff <= 0.0 || r_eff <= 0.0 {
         return 0.0;
@@ -595,7 +590,6 @@ mod tests_contact_new {
 /// Evaluate Coulomb friction status.
 ///
 /// Returns [`FrictionStatus`] based on gap, tangential trial force, and friction limit.
-#[allow(dead_code)]
 pub fn coulomb_status(
     gap: f64,
     tangential_trial: f64,
@@ -615,14 +609,12 @@ pub fn coulomb_status(
 /// Regularized Coulomb friction using a hyperbolic tangent smoothing.
 ///
 /// `t_f = mu * |f_n| * tanh(slip_vel / epsilon)`
-#[allow(dead_code)]
 pub fn regularized_friction_force(mu: f64, normal_force: f64, slip_vel: f64, epsilon: f64) -> f64 {
     mu * normal_force.abs() * (slip_vel / epsilon).tanh()
 }
 /// Penalty-based tangential contact force (stick-slip).
 ///
 /// If the penalty tangential force exceeds `mu * |f_n|`, it is capped (slip).
-#[allow(dead_code)]
 pub fn penalty_tangential_force(slip: f64, k_t: f64, normal_force: f64, mu: f64) -> f64 {
     let trial = k_t * slip;
     let limit = mu * normal_force.abs();
@@ -636,7 +628,6 @@ pub fn penalty_tangential_force(slip: f64, k_t: f64, normal_force: f64, mu: f64)
 ///
 /// Updates trial tangential force by projecting onto Coulomb cone.
 /// Returns `(corrected_slip, corrected_force, slipped)`.
-#[allow(dead_code)]
 pub fn return_mapping_coulomb_2d(
     trial_t: [f64; 2],
     normal_force: f64,
@@ -656,7 +647,6 @@ pub fn return_mapping_coulomb_2d(
 ///
 /// Returns the signed perpendicular distance from point `p` to segment `(a, b)`.
 /// Negative means penetration (node on wrong side).
-#[allow(dead_code)]
 pub fn gap_node_to_segment_2d(
     p: [f64; 2],
     seg_a: [f64; 2],
@@ -684,19 +674,16 @@ pub fn gap_node_to_segment_2d(
 /// `tau_max(z) = p0 * f(z/a)` where `f` is a tabulated function.
 /// Here we use the approximate formula by Johnson (1985):
 /// `tau_max ≈ 0.31 * p0` at `z ≈ 0.47 * a`.
-#[allow(dead_code)]
 pub fn hertz_max_shear_stress(p0: f64) -> f64 {
     0.31 * p0
 }
 /// Depth of maximum shear stress beneath circular Hertz contact.
-#[allow(dead_code)]
 pub fn hertz_max_shear_depth(a: f64) -> f64 {
     0.47 * a
 }
 /// Hertz subsurface stress field (approximate) at depth `z`, radius `r` from axis.
 ///
 /// Returns `[sigma_r, sigma_z, tau_rz]` using the Sneddon approximation.
-#[allow(dead_code)]
 pub fn hertz_subsurface_stress(p0: f64, a: f64, z: f64, r: f64) -> [f64; 3] {
     let zeta = z / a;
     let rho = r / a;
@@ -710,14 +697,12 @@ pub fn hertz_subsurface_stress(p0: f64, a: f64, z: f64, r: f64) -> [f64; 3] {
 ///
 /// Returns the tangential displacement `delta_t` under tangential force `Q`.
 /// `Q < mu * P` is assumed (no slip).
-#[allow(dead_code)]
 pub fn mindlin_tangential_compliance(q: f64, _p: f64, a: f64, e_star: f64, _nu: f64) -> f64 {
     3.0 * q / (16.0 * e_star * a)
 }
 /// Rolling resistance torque (simple model).
 ///
 /// `M = mu_r * P * R`
-#[allow(dead_code)]
 pub fn rolling_resistance_torque(mu_r: f64, normal_force: f64, r: f64) -> f64 {
     mu_r * normal_force * r
 }

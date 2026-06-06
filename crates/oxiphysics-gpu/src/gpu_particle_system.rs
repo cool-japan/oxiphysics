@@ -164,7 +164,6 @@ pub fn spawn_burst(system: &mut GpuParticleSystem, n: usize) {
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-#[allow(dead_code)]
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }

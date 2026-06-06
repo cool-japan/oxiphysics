@@ -15,8 +15,6 @@
 //! - Cathodic protection design (impressed-current and sacrificial anode)
 //! - Corrosion inhibitor efficiency
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // Physical constants
 // ---------------------------------------------------------------------------
@@ -548,7 +546,6 @@ impl SccrModel {
     /// * `sigma` – applied stress \[MPa\]
     /// * `geometry_factor_y` – geometry correction factor Y (≈ 1.0 for centre crack)
     /// * `steps` – integration steps
-    #[allow(clippy::too_many_arguments)]
     pub fn time_to_fracture(
         &self,
         a0: f64,

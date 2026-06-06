@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +7,6 @@
 //! search, k-nearest neighbours, radius queries, and self-collision pair
 //! detection.  A dynamic wrapper ([`KdTreeCollisionDetector`]) allows
 //! incremental insertions followed by bulk rebuilds.
-
-#![allow(dead_code)]
 
 use std::collections::BinaryHeap;
 
@@ -51,47 +48,52 @@ impl Aabb3 {
 
     /// Expand this AABB to contain `point`.
     pub fn expand(&mut self, point: &[f64; 3]) {
-        for i in 0..3 {
-            if point[i] < self.min[i] {
-                self.min[i] = point[i];
+        self.min.iter_mut().zip(point.iter()).for_each(|(m, &p)| {
+            if p < *m {
+                *m = p;
             }
-            if point[i] > self.max[i] {
-                self.max[i] = point[i];
+        });
+        self.max.iter_mut().zip(point.iter()).for_each(|(m, &p)| {
+            if p > *m {
+                *m = p;
             }
-        }
+        });
     }
 
     /// Return `true` if this AABB overlaps `other`.
     pub fn overlaps(&self, other: &Self) -> bool {
-        for i in 0..3 {
-            if self.min[i] > other.max[i] || self.max[i] < other.min[i] {
-                return false;
-            }
-        }
-        true
+        self.min
+            .iter()
+            .zip(self.max.iter())
+            .zip(other.min.iter().zip(other.max.iter()))
+            .all(|((&mn, &mx), (&omn, &omx))| mn <= omx && mx >= omn)
     }
 
     /// Return `true` if `point` is inside or on the boundary of this AABB.
     pub fn contains_point(&self, point: &[f64; 3]) -> bool {
-        for i in 0..3 {
-            if point[i] < self.min[i] || point[i] > self.max[i] {
-                return false;
-            }
-        }
-        true
+        self.min
+            .iter()
+            .zip(self.max.iter())
+            .zip(point.iter())
+            .all(|((&mn, &mx), &p)| p >= mn && p <= mx)
     }
 
     /// Return the squared minimum distance from `point` to this AABB.
     pub fn min_dist_sq(&self, point: &[f64; 3]) -> f64 {
-        let mut d = 0.0_f64;
-        for i in 0..3 {
-            if point[i] < self.min[i] {
-                d += (self.min[i] - point[i]).powi(2);
-            } else if point[i] > self.max[i] {
-                d += (point[i] - self.max[i]).powi(2);
-            }
-        }
-        d
+        self.min
+            .iter()
+            .zip(self.max.iter())
+            .zip(point.iter())
+            .map(|((&mn, &mx), &p)| {
+                if p < mn {
+                    (mn - p).powi(2)
+                } else if p > mx {
+                    (p - mx).powi(2)
+                } else {
+                    0.0
+                }
+            })
+            .sum()
     }
 
     /// Compute the AABB that encloses a slice of points.
@@ -183,7 +185,7 @@ impl KdTree {
         }
         let n = points.len();
         let mut indices: Vec<usize> = (0..n).collect();
-        let root = Some(build_node(&points, &mut indices, 0));
+        let root = Some(build_node(&points, &mut indices));
         Self { root, points }
     }
 
@@ -234,13 +236,13 @@ impl KdTree {
     /// Find all pairs `(i, j)` with `i < j` where the distance between
     /// points `i` and `j` is ≤ `radius`.
     pub fn self_collision_pairs(&self, radius: f64) -> Vec<(usize, usize)> {
-        let n = self.points.len();
+        let _n = self.points.len();
         let r2 = radius * radius;
         let mut pairs = Vec::new();
-        for i in 0..n {
-            let candidates = self.range_query(&self.points[i], radius);
+        for (i, pt) in self.points.iter().enumerate() {
+            let candidates = self.range_query(pt, radius);
             for j in candidates {
-                if j > i && dist_sq(&self.points[i], &self.points[j]) <= r2 {
+                if j > i && dist_sq(pt, &self.points[j]) <= r2 {
                     pairs.push((i, j));
                 }
             }
@@ -254,8 +256,7 @@ impl KdTree {
 // Tree-building internals
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[allow(clippy::only_used_in_recursion)]
-fn build_node(points: &[[f64; 3]], indices: &mut [usize], depth: usize) -> KdNode {
+fn build_node(points: &[[f64; 3]], indices: &mut [usize]) -> KdNode {
     let aabb = Aabb3::from_points(&indices.iter().map(|&i| points[i]).collect::<Vec<_>>());
 
     if indices.len() <= LEAF_SIZE {
@@ -287,8 +288,8 @@ fn build_node(points: &[[f64; 3]], indices: &mut [usize], depth: usize) -> KdNod
     let split_val = points[indices[mid]][split_dim];
 
     let (left_idx, right_idx) = indices.split_at_mut(mid);
-    let left = Box::new(build_node(points, left_idx, depth + 1));
-    let right = Box::new(build_node(points, right_idx, depth + 1));
+    let left = Box::new(build_node(points, left_idx));
+    let right = Box::new(build_node(points, right_idx));
 
     KdNode::Internal {
         split_dim,
@@ -444,8 +445,6 @@ pub struct KdTreeCollisionDetector {
     tree: KdTree,
     /// User-supplied IDs for each point in the tree.
     ids: Vec<usize>,
-    /// Pre-allocated capacity hint.
-    capacity: usize,
 }
 
 impl KdTreeCollisionDetector {
@@ -455,7 +454,6 @@ impl KdTreeCollisionDetector {
             pending: Vec::with_capacity(capacity),
             tree: KdTree::build(vec![]),
             ids: Vec::with_capacity(capacity),
-            capacity,
         }
     }
 

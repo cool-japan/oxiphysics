@@ -8,9 +8,6 @@
 //! muscle groups, fatigue, and utility functions for musculotendon geometry and
 //! EMG-based optimal fibre length estimation.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Helper math
 // ---------------------------------------------------------------------------

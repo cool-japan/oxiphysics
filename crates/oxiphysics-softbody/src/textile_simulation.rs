@@ -14,9 +14,6 @@
 //! * [`FabricCollision`] — Self-collision with vertex-face detection, friction, layered fabric.
 //! * [`GarmentDraping`] — Gravity draping simulation, seam constraints, fitting metrics.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use oxiphysics_core::math::{Real, Vec3};
 
 // ─── YarnModel ────────────────────────────────────────────────────────────────

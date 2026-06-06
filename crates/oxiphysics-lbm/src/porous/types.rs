@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{CX, CY, OPP, W};
 
 /// Analytical Darcy flow model.
@@ -200,21 +197,21 @@ impl DbfLbmD2Q9 {
                 NodeType::Fluid => {
                     let (rho, u) = self.macros(idx);
                     let feq = PorousMediumD2Q9::equilibrium(rho, u);
-                    for k in 0..9 {
-                        self.f[idx][k] += omega * (feq[k] - self.f[idx][k]);
+                    for (fi, &feq_i) in self.f[idx].iter_mut().zip(feq.iter()) {
+                        *fi += omega * (feq_i - *fi);
                     }
                 }
                 NodeType::PorousMedia(phi) => {
                     let (rho, u) = self.macros(idx);
                     let u_eff = [u[0] * phi, u[1] * phi];
                     let feq = PorousMediumD2Q9::equilibrium(rho, u_eff);
-                    for k in 0..9 {
-                        self.f[idx][k] += omega * (feq[k] - self.f[idx][k]);
+                    for (fi, &feq_i) in self.f[idx].iter_mut().zip(feq.iter()) {
+                        *fi += omega * (feq_i - *fi);
                     }
                     if let Some(ref bf) = self.body_force {
                         let fi_force = bf.guo_forcing_d2q9(u[0], u[1], omega);
-                        for k in 0..9 {
-                            self.f[idx][k] += fi_force[k];
+                        for (fi, &ffi) in self.f[idx].iter_mut().zip(fi_force.iter()) {
+                            *fi += ffi;
                         }
                     }
                 }
@@ -514,16 +511,16 @@ impl PorousMediumD2Q9 {
                 NodeType::Fluid => {
                     let (rho, u) = self.macros(idx);
                     let feq = Self::equilibrium(rho, u);
-                    for k in 0..9 {
-                        self.f[idx][k] += omega * (feq[k] - self.f[idx][k]);
+                    for (fi, &feq_i) in self.f[idx].iter_mut().zip(feq.iter()) {
+                        *fi += omega * (feq_i - *fi);
                     }
                 }
                 NodeType::PorousMedia(phi) => {
                     let (rho, u) = self.macros(idx);
                     let u_eff = [u[0] * phi, u[1] * phi];
                     let feq = Self::equilibrium(rho, u_eff);
-                    for k in 0..9 {
-                        self.f[idx][k] += omega * (feq[k] - self.f[idx][k]);
+                    for (fi, &feq_i) in self.f[idx].iter_mut().zip(feq.iter()) {
+                        *fi += omega * (feq_i - *fi);
                     }
                 }
             }
@@ -705,7 +702,6 @@ impl ForchheimerBodyForce {
         }
     }
     /// Compute force vector \[Fx, Fy\] per unit volume at a given velocity \[ux, uy\].
-    #[allow(clippy::too_many_arguments)]
     pub fn force(&self, ux: f64, uy: f64) -> [f64; 2] {
         let u_mag = (ux * ux + uy * uy).sqrt();
         let mu = self.rho * self.nu;
@@ -932,7 +928,6 @@ impl PartialBounceBack {
 /// Provides methods for computing permeability (Kozeny-Carman),
 /// Forchheimer inertia corrections, and effective diffusivity using
 /// tortuosity models, all in a single convenient struct.
-#[allow(dead_code)]
 pub struct PorousMedia {
     /// Porosity φ ∈ (0, 1].
     pub porosity: f64,
@@ -948,7 +943,6 @@ impl PorousMedia {
     /// - `porosity`          — void fraction φ ∈ (0, 1]
     /// - `particle_diameter` — characteristic grain size d_p (m)
     /// - `free_diffusivity`  — molecular diffusivity D₀ (m²/s)
-    #[allow(dead_code)]
     pub fn new(porosity: f64, particle_diameter: f64, free_diffusivity: f64) -> Self {
         Self {
             porosity,
@@ -969,7 +963,6 @@ impl PorousMedia {
     /// # Arguments
     /// - `kozeny_const` — Kozeny-Blake constant (default 180; pass 0.0 to use
     ///   the default value of 180)
-    #[allow(dead_code)]
     pub fn compute_kozeny_carman(&self, kozeny_const: f64) -> f64 {
         let phi = self.porosity;
         if phi <= 0.0 || phi >= 1.0 {
@@ -1003,7 +996,6 @@ impl PorousMedia {
     /// - `density`    — fluid density ρ (kg/m³)
     /// - `c_f`        — Forchheimer coefficient C_F (dimensionless; default ~0.55
     ///   if ≤ 0)
-    #[allow(dead_code)]
     pub fn compute_forchheimer_correction(
         &self,
         velocity: f64,
@@ -1040,7 +1032,6 @@ impl PorousMedia {
     /// - `tortuosity_value`— used only for `model = "constant"`
     ///
     /// Returns D_eff (m²/s).
-    #[allow(dead_code)]
     pub fn compute_effective_diffusivity(&self, model: &str, tortuosity_value: f64) -> f64 {
         let phi = self.porosity.max(1e-30);
         let tau = match model {

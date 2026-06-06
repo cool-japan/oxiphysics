@@ -7,8 +7,6 @@
 //! SPH, MD), with error context chaining, recovery suggestions, and diagnostic
 //! information.
 
-#![allow(dead_code)]
-
 use thiserror::Error;
 
 /// Main error type for the core module (legacy)

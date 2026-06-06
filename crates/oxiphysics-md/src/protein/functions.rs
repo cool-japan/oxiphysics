@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{
     AminoAcid, ProteinChain, RamachandranRegion, RamachandranStats, Residue, SecondaryStructure,
 };
@@ -166,7 +165,6 @@ pub fn accessible_surface_area_simplified(chain: &ProteinChain, probe_radius: f6
 ///
 /// Both chains must have the same number of residues.
 /// Returns 0.0 if chains are empty.
-#[allow(dead_code)]
 pub fn rmsd(chain_a: &ProteinChain, chain_b: &ProteinChain) -> f64 {
     let n = chain_a.residues.len().min(chain_b.residues.len());
     if n == 0 {
@@ -185,7 +183,6 @@ pub fn rmsd(chain_a: &ProteinChain, chain_b: &ProteinChain) -> f64 {
     (sum_sq / n as f64).sqrt()
 }
 /// Classify a (phi, psi) pair into a Ramachandran region (angles in radians).
-#[allow(dead_code)]
 pub fn ramachandran_region(phi_rad: f64, psi_rad: f64) -> RamachandranRegion {
     let phi = phi_rad.to_degrees();
     let psi = psi_rad.to_degrees();
@@ -206,14 +203,13 @@ pub fn ramachandran_region(phi_rad: f64, psi_rad: f64) -> RamachandranRegion {
 /// Compute the all-residue Cα distance matrix.
 ///
 /// Returns an n×n matrix where entry \[i\]\[j\] is the Cα-Cα distance in Angstroms.
-#[allow(dead_code)]
 pub fn residue_distance_matrix(chain: &ProteinChain) -> Vec<Vec<f64>> {
     let n = chain.residues.len();
     let mut mat = vec![vec![0.0f64; n]; n];
-    for i in 0..n {
-        for j in 0..n {
+    for (i, row) in mat.iter_mut().enumerate() {
+        for (j, cell) in row.iter_mut().enumerate() {
             if i != j {
-                mat[i][j] = ca_distance(
+                *cell = ca_distance(
                     &chain.residues[i].ca_position,
                     &chain.residues[j].ca_position,
                 );
@@ -232,7 +228,6 @@ pub fn residue_distance_matrix(chain: &ProteinChain) -> Vec<Vec<f64>> {
 /// - Strand: consecutive residues where the Cα distances i→i+1 and i+1→i+2
 ///   are all within \[3.5, 4.1\] Å and the Cα angle i→i+1→i+2 > 140°.
 /// - Otherwise: coil.
-#[allow(dead_code)]
 pub fn assign_secondary_structure(chain: &ProteinChain) -> Vec<SecondaryStructure> {
     let n = chain.residues.len();
     let mut ss = vec![SecondaryStructure::Coil; n];
@@ -253,8 +248,8 @@ pub fn assign_secondary_structure(chain: &ProteinChain) -> Vec<SecondaryStructur
             &chain.residues[i + 3].ca_position,
         );
         if (3.5..=4.2).contains(&d01) && (3.5..=4.2).contains(&d12) && (3.5..=4.2).contains(&d23) {
-            for k in i..=(i + 3) {
-                ss[k] = SecondaryStructure::Helix;
+            for s in ss[i..=(i + 3)].iter_mut() {
+                *s = SecondaryStructure::Helix;
             }
         }
     }
@@ -287,9 +282,9 @@ pub fn assign_secondary_structure(chain: &ProteinChain) -> Vec<SecondaryStructur
                 let cos_a = dot3(u, v) / (un * vn);
                 let angle = cos_a.clamp(-1.0, 1.0).acos().to_degrees();
                 if angle > 130.0 {
-                    for k in i..=(i + 2) {
-                        if ss[k] == SecondaryStructure::Coil {
-                            ss[k] = SecondaryStructure::Strand;
+                    for s in ss[i..=(i + 2)].iter_mut() {
+                        if *s == SecondaryStructure::Coil {
+                            *s = SecondaryStructure::Strand;
                         }
                     }
                 }
@@ -302,7 +297,6 @@ pub fn assign_secondary_structure(chain: &ProteinChain) -> Vec<SecondaryStructur
 ///
 /// Uses a Lennard-Jones-like potential with well depth derived from the
 /// hydrophobicity product of the two residues.
-#[allow(dead_code)]
 pub fn residue_pair_energy(res_i: &Residue, res_j: &Residue) -> f64 {
     let r = ca_distance(&res_i.ca_position, &res_j.ca_position);
     if r < 1e-10 {
@@ -317,7 +311,6 @@ pub fn residue_pair_energy(res_i: &Residue, res_j: &Residue) -> f64 {
     4.0 * epsilon * (sr6 * sr6 - sr6)
 }
 /// Total protein energy from pairwise residue interactions + backbone bonds.
-#[allow(dead_code)]
 pub fn protein_total_energy(chain: &ProteinChain, bond_k: f64) -> f64 {
     let n = chain.residues.len();
     let mut e = backbone_bond_energy(chain, bond_k);
@@ -332,7 +325,6 @@ pub fn protein_total_energy(chain: &ProteinChain, bond_k: f64) -> f64 {
 ///
 /// Uses a match score of +1, mismatch of -1, and gap penalty of -2.
 /// Returns the alignment score.
-#[allow(dead_code)]
 pub fn needleman_wunsch(seq_a: &[AminoAcid], seq_b: &[AminoAcid]) -> i32 {
     let n = seq_a.len();
     let m = seq_b.len();
@@ -340,11 +332,11 @@ pub fn needleman_wunsch(seq_a: &[AminoAcid], seq_b: &[AminoAcid]) -> i32 {
     pub(super) const MATCH: i32 = 1;
     pub(super) const MISMATCH: i32 = -1;
     let mut dp = vec![vec![0i32; m + 1]; n + 1];
-    for i in 0..=n {
-        dp[i][0] = -(i as i32) * 2;
+    for (i, row) in dp.iter_mut().enumerate() {
+        row[0] = -(i as i32) * 2;
     }
-    for j in 0..=m {
-        dp[0][j] = -(j as i32) * 2;
+    for (j, v) in dp[0].iter_mut().enumerate() {
+        *v = -(j as i32) * 2;
     }
     for i in 1..=n {
         for j in 1..=m {
@@ -363,7 +355,6 @@ pub fn needleman_wunsch(seq_a: &[AminoAcid], seq_b: &[AminoAcid]) -> i32 {
 /// Sequence identity fraction between two chains (using trivial pairwise alignment).
 ///
 /// Returns the fraction of identical positions in the shorter sequence.
-#[allow(dead_code)]
 pub fn sequence_identity(chain_a: &ProteinChain, chain_b: &ProteinChain) -> f64 {
     let n = chain_a.residues.len().min(chain_b.residues.len());
     if n == 0 {
@@ -388,7 +379,6 @@ pub(super) fn norm3(a: [f64; 3]) -> f64 {
 /// E = -epsilon * exp(-r² / (2 * sigma²)) for r < r_cutoff
 ///
 /// Returns the H-bond energy in arbitrary units (negative = stabilising).
-#[allow(dead_code)]
 pub fn hydrogen_bond_energy(
     donor_pos: [f64; 3],
     acceptor_pos: [f64; 3],
@@ -409,7 +399,6 @@ pub fn hydrogen_bond_energy(
 ///
 /// Considers all residue pairs (i, j) with |i - j| >= 3.
 /// Uses Cα positions as a proxy for N and O positions.
-#[allow(dead_code)]
 pub fn total_hbond_energy(chain: &ProteinChain, epsilon: f64, sigma: f64, cutoff: f64) -> f64 {
     let n = chain.residues.len();
     let mut e = 0.0;
@@ -430,7 +419,6 @@ pub fn total_hbond_energy(chain: &ProteinChain, epsilon: f64, sigma: f64, cutoff
     e
 }
 /// Compute Ramachandran statistics from a list of (phi, psi) pairs.
-#[allow(dead_code)]
 pub fn ramachandran_statistics(phi_psi_pairs: &[(f64, f64)]) -> RamachandranStats {
     let n = phi_psi_pairs.len();
     if n == 0 {
@@ -467,7 +455,6 @@ pub fn ramachandran_statistics(phi_psi_pairs: &[(f64, f64)]) -> RamachandranStat
 /// Compute the end-to-end distance for a chain.
 ///
 /// Returns the distance between the first and last Cα atoms.
-#[allow(dead_code)]
 pub fn end_to_end_distance(chain: &ProteinChain) -> f64 {
     let n = chain.residues.len();
     if n < 2 {
@@ -482,7 +469,6 @@ pub fn end_to_end_distance(chain: &ProteinChain) -> f64 {
 ///
 /// R_g = sqrt(Σ m_i |r_i - r_cm|² / Σ m_i)
 /// Here we use unit masses for Cα atoms.
-#[allow(dead_code)]
 pub fn radius_of_gyration_full(chain: &ProteinChain) -> f64 {
     let n = chain.residues.len();
     if n == 0 {
@@ -511,7 +497,6 @@ pub fn radius_of_gyration_full(chain: &ProteinChain) -> f64 {
     (sum_sq / nf).sqrt()
 }
 /// Radius of gyration in 2D projection (xy-plane).
-#[allow(dead_code)]
 pub fn radius_of_gyration_2d(chain: &ProteinChain) -> f64 {
     let n = chain.residues.len();
     if n == 0 {
@@ -532,19 +517,18 @@ pub fn radius_of_gyration_2d(chain: &ProteinChain) -> f64 {
     (sum_sq / nf).sqrt()
 }
 /// Binary contact map: entry (i,j) = 1 if Cα-Cα distance < cutoff, else 0.
-#[allow(dead_code)]
 pub fn binary_contact_map(chain: &ProteinChain, cutoff: f64) -> Vec<Vec<u8>> {
     let n = chain.residues.len();
     let mut map = vec![vec![0u8; n]; n];
-    for i in 0..n {
-        for j in 0..n {
+    for (i, row) in map.iter_mut().enumerate() {
+        for (j, cell) in row.iter_mut().enumerate() {
             if i != j {
                 let r = ca_distance(
                     &chain.residues[i].ca_position,
                     &chain.residues[j].ca_position,
                 );
                 if r <= cutoff {
-                    map[i][j] = 1;
+                    *cell = 1;
                 }
             }
         }
@@ -552,13 +536,11 @@ pub fn binary_contact_map(chain: &ProteinChain, cutoff: f64) -> Vec<Vec<u8>> {
     map
 }
 /// Number of contacts in the contact map.
-#[allow(dead_code)]
 pub fn contact_map_count(map: &[Vec<u8>]) -> usize {
-    let n = map.len();
     let mut cnt = 0;
-    for i in 0..n {
-        for j in (i + 1)..n {
-            if map[i][j] == 1 {
+    for (i, row) in map.iter().enumerate() {
+        for v in row.iter().skip(i + 1) {
+            if *v == 1 {
                 cnt += 1;
             }
         }
@@ -566,7 +548,6 @@ pub fn contact_map_count(map: &[Vec<u8>]) -> usize {
     cnt
 }
 /// Contact density: contacts per residue pair.
-#[allow(dead_code)]
 pub fn contact_density(chain: &ProteinChain, cutoff: f64) -> f64 {
     let n = chain.residues.len();
     if n < 2 {
@@ -578,7 +559,6 @@ pub fn contact_density(chain: &ProteinChain, cutoff: f64) -> f64 {
     cnt / n_pairs
 }
 /// Average contact distance for pairs in contact.
-#[allow(dead_code)]
 pub fn mean_contact_distance(chain: &ProteinChain, cutoff: f64) -> f64 {
     let n = chain.residues.len();
     let mut sum = 0.0;
@@ -896,21 +876,17 @@ mod tests {
     fn test_distance_matrix_diagonal_zero() {
         let chain = make_linear_chain(4);
         let mat = residue_distance_matrix(&chain);
-        for i in 0..4 {
-            assert!(
-                mat[i][i].abs() < 1e-12,
-                "Diagonal should be 0, got {}",
-                mat[i][i]
-            );
+        for (i, row) in mat.iter().enumerate() {
+            assert!(row[i].abs() < 1e-12, "Diagonal should be 0, got {}", row[i]);
         }
     }
     #[test]
     fn test_distance_matrix_symmetric() {
         let chain = make_linear_chain(4);
         let mat = residue_distance_matrix(&chain);
-        for i in 0..4 {
-            for j in 0..4 {
-                assert!((mat[i][j] - mat[j][i]).abs() < 1e-12);
+        for (i, row) in mat.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - mat[j][i]).abs() < 1e-12);
             }
         }
     }

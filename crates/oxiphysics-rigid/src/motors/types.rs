@@ -1,15 +1,11 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 /// Enhanced thermal model for a motor with winding and housing nodes.
 ///
 /// Two-node lumped model:
 /// - Node 1: winding (temperature rises fastest)
 /// - Node 2: housing / case (coupled to ambient)
-#[allow(dead_code)]
 pub struct MotorThermalTwoNode {
     /// Winding temperature (°C).
     pub t_winding: f64,
@@ -30,7 +26,6 @@ pub struct MotorThermalTwoNode {
 }
 impl MotorThermalTwoNode {
     /// Create a two-node thermal model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         t_ambient: f64,
         t_max_winding: f64,
@@ -84,7 +79,6 @@ impl MotorThermalTwoNode {
 /// Piecewise-linear motor efficiency curve.
 ///
 /// Stores (speed, efficiency) data points and interpolates between them.
-#[allow(dead_code)]
 pub struct MotorEfficiencyCurve {
     /// Speed sample points (rad/s), must be sorted ascending.
     pub speeds: Vec<f64>,
@@ -297,8 +291,6 @@ pub struct DcMotor {
 }
 impl DcMotor {
     /// Create a new DC motor.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(non_snake_case)]
     pub fn new(
         resistance: f64,
         inductance: f64,
@@ -420,17 +412,15 @@ impl DcMotor {
 /// ```
 ///
 /// where `P` is the number of poles.
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub struct PmsmMotor {
     /// Number of poles (must be even).
-    pub P: u32,
+    pub p: u32,
     /// Stator resistance per phase (Ω).
-    pub R_s: f64,
+    pub r_s: f64,
     /// d-axis inductance (H).
-    pub L_d: f64,
+    pub l_d: f64,
     /// q-axis inductance (H).
-    pub L_q: f64,
+    pub l_q: f64,
     /// Permanent magnet flux linkage λ_pm (Wb).
     pub lambda_pm: f64,
     /// d-axis current (A).
@@ -442,32 +432,30 @@ pub struct PmsmMotor {
     /// Mechanical angular velocity ω_m (rad/s).
     pub omega_m: f64,
     /// Rotor inertia (kg·m²).
-    pub J: f64,
+    pub j: f64,
     /// Viscous friction (N·m·s/rad).
-    pub B: f64,
+    pub b: f64,
 }
 impl PmsmMotor {
     /// Create a new PMSM.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(non_snake_case)]
-    pub fn new(P: u32, R_s: f64, L_d: f64, L_q: f64, lambda_pm: f64, J: f64, B: f64) -> Self {
+    pub fn new(p: u32, r_s: f64, l_d: f64, l_q: f64, lambda_pm: f64, j: f64, b: f64) -> Self {
         Self {
-            P,
-            R_s,
-            L_d,
-            L_q,
+            p,
+            r_s,
+            l_d,
+            l_q,
             lambda_pm,
             i_d: 0.0,
             i_q: 0.0,
             omega_e: 0.0,
             omega_m: 0.0,
-            J,
-            B,
+            j,
+            b,
         }
     }
     /// Electrical-to-mechanical speed ratio.
     pub fn pole_pairs(&self) -> f64 {
-        self.P as f64 / 2.0
+        self.p as f64 / 2.0
     }
     /// Update electrical speed from mechanical speed.
     pub fn sync_electrical_speed(&mut self) {
@@ -476,15 +464,15 @@ impl PmsmMotor {
     /// Electromagnetic torque from the d-q currents (N·m).
     pub fn torque(&self) -> f64 {
         let pp = self.pole_pairs();
-        (3.0 / 2.0) * pp * (self.lambda_pm * self.i_q + (self.L_d - self.L_q) * self.i_d * self.i_q)
+        (3.0 / 2.0) * pp * (self.lambda_pm * self.i_q + (self.l_d - self.l_q) * self.i_d * self.i_q)
     }
     /// d-axis voltage required to maintain `i_d` at steady state.
     pub fn steady_state_vd(&self) -> f64 {
-        self.R_s * self.i_d - self.omega_e * self.L_q * self.i_q
+        self.r_s * self.i_d - self.omega_e * self.l_q * self.i_q
     }
     /// q-axis voltage required to maintain `i_q` at steady state.
     pub fn steady_state_vq(&self) -> f64 {
-        self.R_s * self.i_q + self.omega_e * (self.L_d * self.i_d + self.lambda_pm)
+        self.r_s * self.i_q + self.omega_e * (self.l_d * self.i_d + self.lambda_pm)
     }
     /// Maximum torque per ampere (MTPA) current angle (rad).
     ///
@@ -496,20 +484,18 @@ impl PmsmMotor {
     /// ```
     ///
     /// `I_magnitude` is the total current amplitude in A.
-    #[allow(non_snake_case)]
-    pub fn mtpa_angle(&self, I_magnitude: f64) -> f64 {
-        let saliency = self.L_d - self.L_q;
+    pub fn mtpa_angle(&self, i_magnitude: f64) -> f64 {
+        let saliency = self.l_d - self.l_q;
         if saliency.abs() < 1e-12 {
             return 0.0;
         }
-        0.5 * (-self.lambda_pm / (saliency * I_magnitude)).atan()
+        0.5 * (-self.lambda_pm / (saliency * i_magnitude)).atan()
     }
     /// Set i_d and i_q from a total current magnitude and MTPA angle.
-    #[allow(non_snake_case)]
-    pub fn set_mtpa_currents(&mut self, I_magnitude: f64) {
-        let beta = self.mtpa_angle(I_magnitude);
-        self.i_d = I_magnitude * beta.sin();
-        self.i_q = I_magnitude * beta.cos();
+    pub fn set_mtpa_currents(&mut self, i_magnitude: f64) {
+        let beta = self.mtpa_angle(i_magnitude);
+        self.i_d = i_magnitude * beta.sin();
+        self.i_q = i_magnitude * beta.cos();
     }
     /// Flux-weakening: reduce i_d to operate above base speed.
     ///
@@ -520,20 +506,19 @@ impl PmsmMotor {
     /// ```
     ///
     /// Clamps i_d to zero if it would become positive (no field strengthening).
-    #[allow(non_snake_case)]
-    pub fn flux_weaken(&mut self, V_max: f64) {
+    pub fn flux_weaken(&mut self, v_max: f64) {
         if self.omega_e.abs() < 1e-12 {
             self.i_d = 0.0;
             return;
         }
-        let i_d_fw = (V_max / self.omega_e.abs() - self.lambda_pm) / self.L_d;
+        let i_d_fw = (v_max / self.omega_e.abs() - self.lambda_pm) / self.l_d;
         self.i_d = i_d_fw.min(0.0);
     }
     /// Integrate rotor dynamics for timestep `dt` (s) with applied load
     /// torque `tau_load` (N·m) opposing motion.
     pub fn integrate_mechanics(&mut self, tau_load: f64, dt: f64) {
         let tau_em = self.torque();
-        let alpha = (tau_em - tau_load - self.B * self.omega_m) / self.J;
+        let alpha = (tau_em - tau_load - self.b * self.omega_m) / self.j;
         self.omega_m += alpha * dt;
         self.sync_electrical_speed();
     }
@@ -541,7 +526,7 @@ impl PmsmMotor {
     ///
     /// `v_d` is the commanded d-axis voltage.
     pub fn integrate_id(&mut self, v_d: f64, dt: f64) {
-        let di_d = (v_d - self.R_s * self.i_d + self.omega_e * self.L_q * self.i_q) / self.L_d;
+        let di_d = (v_d - self.r_s * self.i_d + self.omega_e * self.l_q * self.i_q) / self.l_d;
         self.i_d += di_d * dt;
     }
     /// Integrate q-axis current using forward Euler.
@@ -549,13 +534,13 @@ impl PmsmMotor {
     /// `v_q` is the commanded q-axis voltage.
     pub fn integrate_iq(&mut self, v_q: f64, dt: f64) {
         let di_q =
-            (v_q - self.R_s * self.i_q - self.omega_e * (self.L_d * self.i_d + self.lambda_pm))
-                / self.L_q;
+            (v_q - self.r_s * self.i_q - self.omega_e * (self.l_d * self.i_d + self.lambda_pm))
+                / self.l_q;
         self.i_q += di_q * dt;
     }
     /// Copper loss: P_cu = (3/2) · R_s · (i_d² + i_q²)  \[W\]
     pub fn copper_loss(&self) -> f64 {
-        1.5 * self.R_s * (self.i_d * self.i_d + self.i_q * self.i_q)
+        1.5 * self.r_s * (self.i_d * self.i_d + self.i_q * self.i_q)
     }
     /// Back-EMF magnitude |E| = ω_e · λ_pm  \[V\]
     pub fn back_emf(&self) -> f64 {
@@ -667,7 +652,6 @@ impl DcMotorEfficiencyMap {
 ///
 /// Limits jerk to produce smooth acceleration transitions, reducing mechanical
 /// vibration in precision positioning systems.
-#[allow(dead_code)]
 pub struct SCurveProfile {
     /// Maximum velocity (units/s).
     pub v_max: f64,
@@ -855,7 +839,6 @@ impl ServoMotor {
 }
 /// PID auto-tuner that records step-response data and estimates ku, tu via
 /// relay feedback.  Uses a simple bang-bang relay of amplitude `relay_amp`.
-#[allow(dead_code)]
 pub struct RelayAutoTuner {
     /// Relay output amplitude.
     pub relay_amp: f64,
@@ -945,25 +928,23 @@ impl RelayAutoTuner {
 ///
 /// where `N_r` is the number of rotor teeth, `θ` is mechanical angle, `iA` and
 /// `iB` are the phase currents.
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub struct StepperMotor {
     /// Rotor tooth count (determines step resolution).
-    pub N_r: u32,
+    pub n_r: u32,
     /// Phase resistance in Ω.
-    pub R_phase: f64,
+    pub r_phase: f64,
     /// Phase inductance in H.
-    pub L_phase: f64,
+    pub l_phase: f64,
     /// Torque constant K_t (N·m/A).
-    pub K_t: f64,
+    pub k_t: f64,
     /// Detent torque amplitude (N·m).
-    pub T_detent: f64,
+    pub t_detent: f64,
     /// Current supply voltage (V) per phase.
-    pub V_supply: f64,
+    pub v_supply: f64,
     /// Phase A current (A).
-    pub iA: f64,
+    pub i_a: f64,
     /// Phase B current (A).
-    pub iB: f64,
+    pub i_b: f64,
     /// Mechanical angle (rad).
     pub theta: f64,
     /// Mechanical angular velocity (rad/s).
@@ -977,27 +958,25 @@ impl StepperMotor {
     /// Create a new stepper motor.
     ///
     /// `N_r` is typically 50 for a standard 200-step/rev motor.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(non_snake_case)]
     pub fn new(
-        N_r: u32,
-        R_phase: f64,
-        L_phase: f64,
-        K_t: f64,
-        T_detent: f64,
-        V_supply: f64,
+        n_r: u32,
+        r_phase: f64,
+        l_phase: f64,
+        k_t: f64,
+        t_detent: f64,
+        v_supply: f64,
         inertia: f64,
         damping: f64,
     ) -> Self {
         Self {
-            N_r,
-            R_phase,
-            L_phase,
-            K_t,
-            T_detent,
-            V_supply,
-            iA: 0.0,
-            iB: 0.0,
+            n_r,
+            r_phase,
+            l_phase,
+            k_t,
+            t_detent,
+            v_supply,
+            i_a: 0.0,
+            i_b: 0.0,
             theta: 0.0,
             omega: 0.0,
             inertia,
@@ -1008,9 +987,8 @@ impl StepperMotor {
     ///
     /// For a 2-phase stepper, a full step advances the electrical angle by
     /// π/2.  One mechanical step = π / (2 · N_r).
-    #[allow(non_snake_case)]
-    pub fn electrical_angle(n: i64, N_r: u32) -> f64 {
-        n as f64 * std::f64::consts::FRAC_PI_2 / N_r as f64
+    pub fn electrical_angle(n: i64, n_r: u32) -> f64 {
+        n as f64 * std::f64::consts::FRAC_PI_2 / n_r as f64
     }
     /// Set the phase currents for a target electrical angle `phi_e` with peak
     /// current `I_peak`.
@@ -1019,10 +997,9 @@ impl StepperMotor {
     /// iA = I_peak · cos(phi_e)
     /// iB = I_peak · sin(phi_e)
     /// ```
-    #[allow(non_snake_case)]
-    pub fn set_phase_currents(&mut self, phi_e: f64, I_peak: f64) {
-        self.iA = I_peak * phi_e.cos();
-        self.iB = I_peak * phi_e.sin();
+    pub fn set_phase_currents(&mut self, phi_e: f64, i_peak: f64) {
+        self.i_a = i_peak * phi_e.cos();
+        self.i_b = i_peak * phi_e.sin();
     }
     /// Electromagnetic torque at the current state.
     ///
@@ -1030,8 +1007,8 @@ impl StepperMotor {
     /// τ_em = K_t · (iA · sin(N_r θ) − iB · cos(N_r θ))
     /// ```
     pub fn electromagnetic_torque(&self) -> f64 {
-        let nr_theta = self.N_r as f64 * self.theta;
-        self.K_t * (self.iA * nr_theta.sin() - self.iB * nr_theta.cos())
+        let nr_theta = self.n_r as f64 * self.theta;
+        self.k_t * (self.i_a * nr_theta.sin() - self.i_b * nr_theta.cos())
     }
     /// Detent torque at the current angle.
     ///
@@ -1041,7 +1018,7 @@ impl StepperMotor {
     /// τ_det = T_detent · sin(2 · N_r · θ)
     /// ```
     pub fn detent_torque(&self) -> f64 {
-        (2.0 * self.N_r as f64 * self.theta).sin() * self.T_detent
+        (2.0 * self.n_r as f64 * self.theta).sin() * self.t_detent
     }
     /// Net torque (electromagnetic + detent − damping).
     pub fn net_torque(&self) -> f64 {
@@ -1056,14 +1033,12 @@ impl StepperMotor {
     /// ```text
     /// τ_hold ≈ K_t · I_peak · N_r · sin(N_r · delta_theta)
     /// ```
-    #[allow(non_snake_case)]
-    pub fn holding_torque(&self, I_peak: f64, delta_theta: f64) -> f64 {
-        self.K_t * I_peak * (self.N_r as f64 * delta_theta).sin()
+    pub fn holding_torque(&self, i_peak: f64, delta_theta: f64) -> f64 {
+        self.k_t * i_peak * (self.n_r as f64 * delta_theta).sin()
     }
     /// Maximum static holding torque = K_t · I_peak.
-    #[allow(non_snake_case)]
-    pub fn max_holding_torque(&self, I_peak: f64) -> f64 {
-        self.K_t * I_peak
+    pub fn max_holding_torque(&self, i_peak: f64) -> f64 {
+        self.k_t * i_peak
     }
     /// Integrate the stepper dynamics for a time step `dt` using semi-implicit
     /// Euler.  External load torque `tau_load` opposes motion.
@@ -1075,7 +1050,7 @@ impl StepperMotor {
     }
     /// Number of full steps per revolution.
     pub fn steps_per_rev(&self) -> u32 {
-        4 * self.N_r
+        4 * self.n_r
     }
     /// Mechanical angle per full step (rad).
     pub fn step_angle_rad(&self) -> f64 {
@@ -1155,7 +1130,6 @@ impl MotorCurrentLimiter {
 }
 /// A single gear stage with a ratio and efficiency.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct GearStage {
     /// Gear ratio (output_speed / input_speed).  Values < 1 reduce speed.
     pub ratio: f64,
@@ -1179,10 +1153,9 @@ impl GearStage {
     pub fn output_speed(&self, omega_in: f64) -> f64 {
         omega_in * self.ratio
     }
-    /// Power loss in the stage at input power `P_in`.
-    #[allow(non_snake_case)]
-    pub fn power_loss(&self, P_in: f64) -> f64 {
-        P_in * (1.0 - self.efficiency)
+    /// Power loss in the stage at input power `p_in`.
+    pub fn power_loss(&self, p_in: f64) -> f64 {
+        p_in * (1.0 - self.efficiency)
     }
 }
 /// Chain of gear stages (planetary, spur, worm, etc.) with series-efficiency
@@ -1191,7 +1164,6 @@ impl GearStage {
 /// The overall gear ratio is the product of all individual ratios.
 /// The overall efficiency is the product of all individual efficiencies.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct GearboxChain {
     /// Ordered list of gear stages from input to output.
     pub stages: Vec<GearStage>,
@@ -1223,10 +1195,9 @@ impl GearboxChain {
     pub fn output_speed(&self, omega_in: f64) -> f64 {
         omega_in * self.overall_ratio()
     }
-    /// Total power loss across all stages at input power `P_in` (W).
-    #[allow(non_snake_case)]
-    pub fn total_power_loss(&self, P_in: f64) -> f64 {
-        P_in * (1.0 - self.overall_efficiency())
+    /// Total power loss across all stages at input power `p_in` (W).
+    pub fn total_power_loss(&self, p_in: f64) -> f64 {
+        p_in * (1.0 - self.overall_efficiency())
     }
     /// Back-drive torque: torque required at the output to overcome static
     /// friction and back-drive the input.
@@ -1251,7 +1222,6 @@ impl GearboxChain {
 }
 /// Phase of a trapezoidal velocity profile.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum TrapPhase {
     /// Accelerating toward cruise velocity.
     Accelerating,
@@ -1330,7 +1300,6 @@ impl HydraulicActuator {
     /// The result is additionally clamped so that the actuator cannot exceed
     /// the maximum flow it can physically absorb (bore area × maximum speed of
     /// `stroke / 0.1 s` as a conservative limit).
-    #[allow(clippy::too_many_arguments)]
     pub fn compute_flow_rate(
         &self,
         cd: f64,

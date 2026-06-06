@@ -15,17 +15,12 @@
 //! - [`ElastocaloricMaterial`] — shape memory alloy caloric effect
 //! - [`SpinCaloritronics`] — Seebeck spin tunneling, spin Peltier/Nernst effects
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Physical constants
 // ---------------------------------------------------------------------------
 
 /// Boltzmann constant \[J/K\].
 const K_B: f64 = 1.380_649e-23;
-/// Avogadro constant \[mol⁻¹\].
-const N_A: f64 = 6.022_140_76e23;
 /// Bohr magneton μ_B \[J/T\].
 const MU_B: f64 = 9.274_010_08e-24;
 /// Vacuum permeability μ₀ \[T·m/A\].

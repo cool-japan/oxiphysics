@@ -6,8 +6,6 @@
 //! Provides time-of-impact (TOI) computation for moving shapes: spheres,
 //! capsules, boxes, and general convex shapes. Uses `[f64; 3]` for 3D vectors.
 
-#![allow(dead_code)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Vector helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -43,14 +41,6 @@ fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
 
 fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
     len3(sub3(a, b))
-}
-
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -466,7 +456,6 @@ pub struct CapsuleCast;
 
 impl CapsuleCast {
     /// Capsule vs capsule TOI via conservative advancement.
-    #[allow(clippy::too_many_arguments)]
     pub fn vs_capsule(
         motion: &LinearMotion,
         local_a: [f64; 3],
@@ -505,7 +494,6 @@ impl CapsuleCast {
     }
 
     /// Capsule vs axis-aligned box TOI.
-    #[allow(clippy::too_many_arguments)]
     pub fn vs_box(
         motion: &LinearMotion,
         local_a: [f64; 3],
@@ -603,7 +591,6 @@ pub struct BoxCast;
 
 impl BoxCast {
     /// Box vs box TOI via conservative advancement.
-    #[allow(clippy::too_many_arguments)]
     pub fn vs_box(
         motion: &LinearMotion,
         half_a: [f64; 3],
@@ -641,7 +628,6 @@ impl BoxCast {
     }
 
     /// Box vs triangle TOI via conservative advancement.
-    #[allow(clippy::too_many_arguments)]
     pub fn vs_triangle(
         motion: &LinearMotion,
         half_extents: [f64; 3],
@@ -878,24 +864,6 @@ impl MeshBvhCast {
     pub fn new(vertices: Vec<[f64; 3]>, indices: Vec<usize>) -> Self {
         assert!(indices.len().is_multiple_of(3));
         Self { vertices, indices }
-    }
-
-    /// Computes AABB of triangle tri_idx.
-    fn tri_aabb(&self, tri_idx: usize) -> ([f64; 3], [f64; 3]) {
-        let v0 = self.vertices[self.indices[3 * tri_idx]];
-        let v1 = self.vertices[self.indices[3 * tri_idx + 1]];
-        let v2 = self.vertices[self.indices[3 * tri_idx + 2]];
-        let lo = [
-            v0[0].min(v1[0]).min(v2[0]),
-            v0[1].min(v1[1]).min(v2[1]),
-            v0[2].min(v1[2]).min(v2[2]),
-        ];
-        let hi = [
-            v0[0].max(v1[0]).max(v2[0]),
-            v0[1].max(v1[1]).max(v2[1]),
-            v0[2].max(v1[2]).max(v2[2]),
-        ];
-        (lo, hi)
     }
 
     /// Casts a moving sphere against the mesh.

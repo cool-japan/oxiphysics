@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -18,9 +17,6 @@
 //! - **Memory kernels**: power-law, exponential, Mittag-Leffler
 //! - **Fractional oscillator** (Bagley-Torvik, fractional spring-dashpot)
 //! - **Lévy stable distributions**: characteristic function and sampling
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -190,10 +186,10 @@ pub fn rl_integral(f_values: &[f64], h: f64, alpha: f64) -> f64 {
     let g_alpha1 = gamma(alpha + 1.0);
     let mut sum = 0.0_f64;
     let n_idx = n - 1;
-    for j in 0..n {
+    for (j, &fv) in f_values.iter().enumerate() {
         let k = n_idx - j; // k = n-1-j goes from n-1 down to 0
         let b = (k as f64 + 1.0).powf(alpha) - (k as f64).powf(alpha);
-        sum += b * f_values[j];
+        sum += b * fv;
     }
     h.powf(alpha) * sum / g_alpha1
 }

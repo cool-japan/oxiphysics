@@ -2,9 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
+#[cfg(test)]
 use crate::pressure_solvers::types_advanced::*;
-#[allow(unused_imports)]
+#[cfg(test)]
 use crate::pressure_solvers::types_core::*;
 
 /// Compute the Tait equation-of-state bulk modulus constant `B`.

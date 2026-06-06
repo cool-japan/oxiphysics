@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,8 +15,6 @@
 //! - [`SphVtkExporter`]: Export to VTK PolyData XML format
 //! - [`SphForceBalance`]: Pressure/viscous/body/surface tension force diagnostics
 //! - [`SphConvergence`]: L2 error vs analytical solution, convergence rate
-
-#![allow(dead_code)]
 
 // ============================================================================
 // Field Interpolation
@@ -285,8 +282,8 @@ impl VelocityGradient {
     /// Second invariant of strain rate tensor: Q = -0.5 * S_ij * S_ij.
     pub fn second_invariant_s(s: &[f64; 9]) -> f64 {
         let mut q = 0.0;
-        for i in 0..9 {
-            q += s[i] * s[i];
+        for &v in s.iter() {
+            q += v * v;
         }
         -0.5 * q
     }

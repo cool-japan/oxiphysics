@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +7,6 @@
 //! using plain Rust loops as a CPU fallback. The API mirrors what would run on
 //! a GPU kernel dispatch, making it straightforward to swap in a real GPU
 //! backend without changing call-sites.
-
-#![allow(dead_code)]
 
 use std::f32::consts::PI;
 
@@ -133,18 +130,17 @@ pub fn compute_density_gpu(buf: &GpuSphBuffer, params: &GpuSphParams) -> Vec<f32
     // Assume unit mass per particle (mass can be encoded separately)
     let mass = 1.0_f32;
     let mut densities = vec![0.0_f32; n];
-    for i in 0..n {
-        let pi = buf.positions[i];
-        let mut rho = 0.0_f32;
+    for (rho, &pi) in densities.iter_mut().zip(buf.positions.iter()) {
+        let mut acc = 0.0_f32;
         for j in 0..n {
             let pj = buf.positions[j];
             let dx = pi[0] - pj[0];
             let dy = pi[1] - pj[1];
             let dz = pi[2] - pj[2];
             let r = (dx * dx + dy * dy + dz * dz).sqrt();
-            rho += mass * sph_kernel_gpu(r, h);
+            acc += mass * sph_kernel_gpu(r, h);
         }
-        densities[i] = rho;
+        *rho = acc;
     }
     densities
 }
@@ -171,7 +167,6 @@ pub fn compute_pressure_gpu(densities: &[f32], params: &GpuSphParams) -> Vec<f32
 ///
 /// Uses the symmetric SPH momentum equation:
 /// `f_i = -Σ_j m_j (P_i/ρ_i² + P_j/ρ_j²) ∇W`
-#[allow(clippy::too_many_arguments)]
 pub fn compute_pressure_force_gpu(
     buf: &GpuSphBuffer,
     pressures: &[f32],
@@ -182,19 +177,17 @@ pub fn compute_pressure_force_gpu(
     let mass = 1.0_f32;
     let mut forces = vec![[0.0_f32; 3]; n];
 
-    for i in 0..n {
-        let pi = buf.positions[i];
+    for (i, (force, &pi)) in forces.iter_mut().zip(buf.positions.iter()).enumerate() {
         let rho_i = buf.densities[i].max(1e-6);
         let p_i = pressures[i];
         let mut fx = 0.0_f32;
         let mut fy = 0.0_f32;
         let mut fz = 0.0_f32;
 
-        for j in 0..n {
+        for (j, &pj) in buf.positions.iter().enumerate() {
             if i == j {
                 continue;
             }
-            let pj = buf.positions[j];
             let dx = pi[0] - pj[0];
             let dy = pi[1] - pj[1];
             let dz = pi[2] - pj[2];
@@ -210,7 +203,7 @@ pub fn compute_pressure_force_gpu(
             fy += coeff * dy;
             fz += coeff * dz;
         }
-        forces[i] = [fx, fy, fz];
+        *force = [fx, fy, fz];
     }
     forces
 }
@@ -225,20 +218,20 @@ pub fn compute_viscosity_force_gpu(buf: &GpuSphBuffer, params: &GpuSphParams) ->
     let mass = 1.0_f32;
     let mut forces = vec![[0.0_f32; 3]; n];
 
-    for i in 0..n {
-        let pi = buf.positions[i];
-        let vi = buf.velocities[i];
+    for (i, (force, (&pi, &vi))) in forces
+        .iter_mut()
+        .zip(buf.positions.iter().zip(buf.velocities.iter()))
+        .enumerate()
+    {
         let rho_i = buf.densities[i].max(1e-6);
         let mut fx = 0.0_f32;
         let mut fy = 0.0_f32;
         let mut fz = 0.0_f32;
 
-        for j in 0..n {
+        for (j, (&pj, &vj)) in buf.positions.iter().zip(buf.velocities.iter()).enumerate() {
             if i == j {
                 continue;
             }
-            let pj = buf.positions[j];
-            let vj = buf.velocities[j];
             let dx = pi[0] - pj[0];
             let dy = pi[1] - pj[1];
             let dz = pi[2] - pj[2];
@@ -256,10 +249,10 @@ pub fn compute_viscosity_force_gpu(buf: &GpuSphBuffer, params: &GpuSphParams) ->
             fy += coeff * dvy;
             fz += coeff * dvz;
         }
-        forces[i] = [
-            forces[i][0] + fx / rho_i,
-            forces[i][1] + fy / rho_i,
-            forces[i][2] + fz / rho_i,
+        *force = [
+            force[0] + fx / rho_i,
+            force[1] + fy / rho_i,
+            force[2] + fz / rho_i,
         ];
     }
     forces
@@ -272,14 +265,17 @@ pub fn compute_viscosity_force_gpu(buf: &GpuSphBuffer, params: &GpuSphParams) ->
 /// Updates velocities and positions in-place:
 /// `v += f * dt`, `x += v * dt`.
 pub fn integrate_sph_gpu(buf: &mut GpuSphBuffer, forces: &[[f32; 3]], dt: f32) {
-    let n = buf.positions.len();
-    for i in 0..n {
-        buf.velocities[i][0] += forces[i][0] * dt;
-        buf.velocities[i][1] += forces[i][1] * dt;
-        buf.velocities[i][2] += forces[i][2] * dt;
-        buf.positions[i][0] += buf.velocities[i][0] * dt;
-        buf.positions[i][1] += buf.velocities[i][1] * dt;
-        buf.positions[i][2] += buf.velocities[i][2] * dt;
+    for (vel, (pos, &f)) in buf
+        .velocities
+        .iter_mut()
+        .zip(buf.positions.iter_mut().zip(forces.iter()))
+    {
+        vel[0] += f[0] * dt;
+        vel[1] += f[1] * dt;
+        vel[2] += f[2] * dt;
+        pos[0] += vel[0] * dt;
+        pos[1] += vel[1] * dt;
+        pos[2] += vel[2] * dt;
     }
 }
 

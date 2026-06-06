@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -62,7 +61,6 @@ impl NeumannBc {
 // ── DirichletBC (scalar DOF form) ─────────────────────────────────────────────
 
 /// Dirichlet BC targeting an arbitrary scalar DOF index (not restricted to ×3 layout).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DirichletBC {
     /// Global node id.
@@ -73,7 +71,6 @@ pub struct DirichletBC {
     pub value: f64,
 }
 
-#[allow(dead_code)]
 impl DirichletBC {
     /// Create a new scalar-DOF Dirichlet BC.
     pub fn new(node_id: usize, dof: usize, value: f64) -> Self {
@@ -88,7 +85,6 @@ impl DirichletBC {
 // ── NeumannBC (scalar DOF form) ───────────────────────────────────────────────
 
 /// Neumann BC applying a scalar force to a single DOF.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NeumannBC {
     /// Global node id.
@@ -99,7 +95,6 @@ pub struct NeumannBC {
     pub force: f64,
 }
 
-#[allow(dead_code)]
 impl NeumannBC {
     /// Create a new scalar-DOF Neumann BC.
     pub fn new(node_id: usize, dof: usize, force: f64) -> Self {
@@ -117,7 +112,6 @@ impl NeumannBC {
 ///
 /// Adds a spring stiffness `stiffness` to the diagonal and a corresponding
 /// force contribution `stiffness * value` to the RHS.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RobinBC {
     /// Global node id.
@@ -130,7 +124,6 @@ pub struct RobinBC {
     pub value: f64,
 }
 
-#[allow(dead_code)]
 impl RobinBC {
     /// Create a new Robin BC.
     pub fn new(node_id: usize, dof: usize, stiffness: f64, value: f64) -> Self {
@@ -159,7 +152,6 @@ impl RobinBC {
 ///   K_diag\[i\] += α,  f\[i\] += g
 ///
 /// The improved variant also supports a damping (velocity-dependent) term.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RobinBCImproved {
     /// Global node id.
@@ -176,7 +168,6 @@ pub struct RobinBCImproved {
     pub damping: f64,
 }
 
-#[allow(dead_code)]
 impl RobinBCImproved {
     /// Create a new improved Robin BC.
     pub fn new(node_id: usize, dof: usize, alpha: f64, beta: f64, g: f64) -> Self {
@@ -224,7 +215,6 @@ impl RobinBCImproved {
 ///
 /// Enforces u\[master\] == u\[slave\] (optionally with an offset).
 /// Applied via the penalty method or elimination.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PeriodicBC {
     /// Master node id.
@@ -237,7 +227,6 @@ pub struct PeriodicBC {
     pub offset: f64,
 }
 
-#[allow(dead_code)]
 impl PeriodicBC {
     /// Create a new periodic BC with zero offset.
     pub fn new(master_node: usize, slave_node: usize, dof: usize) -> Self {
@@ -275,7 +264,6 @@ impl PeriodicBC {
 /// Enforces u_slave = u_master + offset by adding penalty terms:
 ///   K\[s,s\] += penalty,  K\[m,m\] += penalty,  K\[s,m\] -= penalty,  K\[m,s\] -= penalty
 ///   f\[s\] += penalty * offset,  f\[m\] -= penalty * offset
-#[allow(dead_code)]
 pub fn apply_periodic_dense_penalty(
     k: &mut [f64],
     f: &mut [f64],
@@ -301,7 +289,6 @@ pub fn apply_periodic_dense_penalty(
 ///
 /// Row and column of slave DOF are modified so that the slave equation
 /// becomes: u_slave - u_master = offset.
-#[allow(dead_code)]
 pub fn apply_periodic_dense_elimination(
     k: &mut [f64],
     f: &mut [f64],
@@ -340,7 +327,6 @@ pub fn apply_periodic_dense_elimination(
 ///
 /// Enforces zero displacement normal to the symmetry plane.
 /// The plane is defined by specifying which DOF is constrained to zero.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SymmetryBC {
     /// Node indices on the symmetry plane.
@@ -349,7 +335,6 @@ pub struct SymmetryBC {
     pub constrained_dof: usize,
 }
 
-#[allow(dead_code)]
 impl SymmetryBC {
     /// Create a new symmetry BC.
     pub fn new(nodes: Vec<usize>, constrained_dof: usize) -> Self {
@@ -381,7 +366,6 @@ impl SymmetryBC {
 ///
 /// The prescribed value is a function of time: u(t) = amplitude * f(t)
 /// where f(t) is one of several built-in time functions.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum TimeFunction {
     /// Constant value.
@@ -413,7 +397,6 @@ pub enum TimeFunction {
     },
 }
 
-#[allow(dead_code)]
 impl TimeFunction {
     /// Evaluate the time function at time `t`.
     pub fn evaluate(&self, t: f64) -> f64 {
@@ -453,7 +436,6 @@ impl TimeFunction {
 }
 
 /// Time-dependent Dirichlet BC.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TimeDependentBC {
     /// Node id.
@@ -466,7 +448,6 @@ pub struct TimeDependentBC {
     pub time_function: TimeFunction,
 }
 
-#[allow(dead_code)]
 impl TimeDependentBC {
     /// Create a new time-dependent BC.
     pub fn new(node_id: usize, dof: usize, amplitude: f64, time_function: TimeFunction) -> Self {
@@ -490,7 +471,6 @@ impl TimeDependentBC {
 }
 
 /// Apply time-dependent Dirichlet BCs at a given time instant.
-#[allow(dead_code)]
 pub fn apply_time_dependent_dense(
     k: &mut [f64],
     f: &mut [f64],
@@ -503,7 +483,6 @@ pub fn apply_time_dependent_dense(
 }
 
 /// Apply time-dependent Dirichlet BCs to a sparse system.
-#[allow(dead_code)]
 pub fn apply_time_dependent_sparse(
     k: &mut CsrMatrix,
     f: &mut [f64],
@@ -520,7 +499,6 @@ pub fn apply_time_dependent_sparse(
 // ── ContactBC ─────────────────────────────────────────────────────────────────
 
 /// Penalty-based contact boundary condition between pairs of nodes.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ContactBC {
     /// Pairs of (node_a, node_b) in contact.
@@ -531,7 +509,6 @@ pub struct ContactBC {
     pub penalty: f64,
 }
 
-#[allow(dead_code)]
 impl ContactBC {
     /// Create a new contact BC.
     pub fn new(node_pairs: Vec<(usize, usize)>, gap: f64, penalty: f64) -> Self {
@@ -549,7 +526,6 @@ impl ContactBC {
 ///
 /// For example, a roller support constrains displacement in one direction
 /// while allowing free movement (zero force) in others.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MixedBC {
     /// Node id.
@@ -560,7 +536,6 @@ pub struct MixedBC {
     pub neumann_dofs: Vec<(usize, f64)>,
 }
 
-#[allow(dead_code)]
 impl MixedBC {
     /// Create a new mixed BC.
     pub fn new(
@@ -635,10 +610,9 @@ impl MixedBC {
 ///
 /// A large `penalty` (e.g. 1e30 × max diagonal) enforces the BC while keeping
 /// the matrix non-singular.
-#[allow(dead_code)]
 pub fn apply_dirichlet_dense_penalty(
-    k: &mut Vec<f64>,
-    f: &mut Vec<f64>,
+    k: &mut [f64],
+    f: &mut [f64],
     n_dofs: usize,
     bcs: &[DirichletBC],
     penalty: f64,
@@ -659,7 +633,6 @@ pub fn apply_dirichlet_dense_penalty(
 /// - Row `i` is zeroed and `K[i,i]` set to 1
 /// - Column `i` is zeroed
 /// - `f[i] = u_i`
-#[allow(dead_code)]
 pub fn apply_dirichlet_dense(k: &mut [f64], f: &mut [f64], n_dofs: usize, bcs: &[DirichletBC]) {
     for bc in bcs {
         let dof = bc.node_id * 3 + bc.dof;
@@ -685,7 +658,6 @@ pub fn apply_dirichlet_dense(k: &mut [f64], f: &mut [f64], n_dofs: usize, bcs: &
 }
 
 /// Apply Neumann BCs to a dense force vector.
-#[allow(dead_code)]
 pub fn apply_neumann_scalar(f: &mut [f64], n_dofs: usize, bcs: &[NeumannBC]) {
     for bc in bcs {
         let i = bc.node_id * 3 + bc.dof;
@@ -695,7 +667,6 @@ pub fn apply_neumann_scalar(f: &mut [f64], n_dofs: usize, bcs: &[NeumannBC]) {
 }
 
 /// Apply Robin BCs to a dense stiffness matrix and force vector.
-#[allow(dead_code)]
 pub fn apply_robin(k: &mut [f64], f: &mut [f64], n_dofs: usize, bcs: &[RobinBC]) {
     for bc in bcs {
         let i = bc.global_dof(3);
@@ -706,7 +677,6 @@ pub fn apply_robin(k: &mut [f64], f: &mut [f64], n_dofs: usize, bcs: &[RobinBC])
 }
 
 /// Apply improved Robin BCs to a dense stiffness matrix and force vector.
-#[allow(dead_code)]
 pub fn apply_robin_improved(
     k: &mut [f64],
     f: &mut [f64],
@@ -726,7 +696,6 @@ pub fn apply_robin_improved(
 /// For each prescribed DOF `i` with value `u_i`:
 /// - The diagonal entry `K[i,i]` is increased by `penalty`
 /// - `f[i]` is increased by `penalty * u_i`
-#[allow(dead_code)]
 pub fn apply_dirichlet_sparse_penalty(
     k: &mut CsrMatrix,
     f: &mut [f64],
@@ -751,7 +720,6 @@ pub fn apply_dirichlet_sparse_penalty(
 }
 
 /// Apply Robin BCs to a sparse CSR matrix and force vector.
-#[allow(dead_code)]
 pub fn apply_robin_sparse(k: &mut CsrMatrix, f: &mut [f64], bcs: &[RobinBC], dofs_per_node: usize) {
     for bc in bcs {
         let i = bc.global_dof(dofs_per_node);
@@ -771,7 +739,6 @@ pub fn apply_robin_sparse(k: &mut CsrMatrix, f: &mut [f64], bcs: &[RobinBC], dof
 }
 
 /// Apply Neumann BCs to a sparse system force vector (scalar DOF form).
-#[allow(dead_code)]
 pub fn apply_neumann_sparse(f: &mut [f64], bcs: &[NeumannBC]) {
     for bc in bcs {
         let i = bc.node_id * 3 + bc.dof;
@@ -784,7 +751,6 @@ pub fn apply_neumann_sparse(f: &mut [f64], bcs: &[NeumannBC]) {
 // ── BoundarySet ───────────────────────────────────────────────────────────────
 
 /// Collection of all boundary conditions for a FEM system.
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct BoundarySet {
     dirichlet: Vec<DirichletBC>,
@@ -796,7 +762,6 @@ pub struct BoundarySet {
     mixed: Vec<MixedBC>,
 }
 
-#[allow(dead_code)]
 impl BoundarySet {
     /// Create an empty boundary set.
     pub fn new() -> Self {
@@ -853,7 +818,7 @@ impl BoundarySet {
     ///
     /// Order: Neumann first (adds forces), then Robin (adds stiffness and
     /// forces), then Dirichlet (elimination, overrides other contributions).
-    pub fn apply_all(&self, k: &mut Vec<f64>, f: &mut Vec<f64>, n_dofs: usize, penalty: f64) {
+    pub fn apply_all(&self, k: &mut [f64], f: &mut [f64], n_dofs: usize, penalty: f64) {
         // Mixed BCs (Neumann part)
         for bc in &self.mixed {
             let (_, neumann) = bc.to_separate_bcs();
@@ -884,11 +849,10 @@ impl BoundarySet {
     }
 
     /// Apply all BCs including time-dependent ones at a given time.
-    #[allow(clippy::too_many_arguments)]
     pub fn apply_all_at_time(
         &self,
-        k: &mut Vec<f64>,
-        f: &mut Vec<f64>,
+        k: &mut [f64],
+        f: &mut [f64],
         n_dofs: usize,
         penalty: f64,
         t: f64,

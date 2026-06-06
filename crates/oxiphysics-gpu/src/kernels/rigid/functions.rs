@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{AccumulatedImpulse, RigidBodyState};
 
 /// Quaternion multiplication: `q_out = q_a * q_b`.
@@ -109,13 +108,13 @@ pub fn integrate_rk4(
                 h: f64|
      -> RigidBodyState {
         let mut ns = *s;
-        for k in 0..3 {
-            ns.position[k] = s.position[k] + dp[k] * h;
-            ns.velocity[k] = s.velocity[k] + dv[k] * h;
-            ns.angular_velocity[k] = s.angular_velocity[k] + dw[k] * h;
+        for (k, (&dp_k, (&dv_k, &dw_k))) in dp.iter().zip(dv.iter().zip(dw.iter())).enumerate() {
+            ns.position[k] = s.position[k] + dp_k * h;
+            ns.velocity[k] = s.velocity[k] + dv_k * h;
+            ns.angular_velocity[k] = s.angular_velocity[k] + dw_k * h;
         }
-        for k in 0..4 {
-            ns.orientation[k] = s.orientation[k] + dq[k] * h;
+        for (k, &dq_k) in dq.iter().enumerate() {
+            ns.orientation[k] = s.orientation[k] + dq_k * h;
         }
         ns.orientation = quat_normalise(ns.orientation);
         ns
@@ -613,14 +612,13 @@ pub fn integrate_semi_implicit(
     s.angular_velocity[1] += alpha[1] * dt;
     s.angular_velocity[2] += alpha[2] * dt;
     let dq = quat_derivative(s.orientation, s.angular_velocity);
-    for k in 0..4 {
-        s.orientation[k] += dq[k] * dt;
+    for (ok, &dqk) in s.orientation.iter_mut().zip(dq.iter()) {
+        *ok += dqk * dt;
     }
     s.orientation = quat_normalise(s.orientation);
     s
 }
 /// GPU-batch semi-implicit Euler: integrate all bodies in a slice.
-#[allow(clippy::too_many_arguments)]
 pub fn batch_integrate_semi_implicit(
     states: &mut [RigidBodyState],
     forces: &[[f64; 3]],
@@ -653,8 +651,8 @@ pub fn integrate_angular_velocity_only(
         s.angular_velocity[1] += alpha[1] * dt;
         s.angular_velocity[2] += alpha[2] * dt;
         let dq = quat_derivative(s.orientation, s.angular_velocity);
-        for k in 0..4 {
-            s.orientation[k] += dq[k] * dt;
+        for (ok, &dqk) in s.orientation.iter_mut().zip(dq.iter()) {
+            *ok += dqk * dt;
         }
         s.orientation = quat_normalise(s.orientation);
     }

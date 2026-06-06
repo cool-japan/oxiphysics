@@ -28,8 +28,6 @@
 //! still contain the full numerical check so the ignore attribute can be
 //! removed the moment the solver is fixed.
 
-#![allow(missing_docs)]
-
 #[path = "regression_harness.rs"]
 mod harness;
 

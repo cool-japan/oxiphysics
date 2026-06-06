@@ -27,7 +27,6 @@ pub struct MaterialEntry {
 
 impl MaterialEntry {
     /// Create a new material entry with all fields.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: impl Into<String>,
         density: f64,

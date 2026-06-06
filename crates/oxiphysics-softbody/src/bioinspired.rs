@@ -7,9 +7,6 @@
 //! cephalopod arm mechanics, crawling robots, and a central pattern generator
 //! (CPG) oscillator for rhythmic gait control.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -21,6 +18,7 @@ fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
     x.max(lo).min(hi)
 }
 
+#[cfg(test)]
 #[inline]
 fn norm3(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()

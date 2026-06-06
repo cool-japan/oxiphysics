@@ -19,7 +19,6 @@
 /// - `v` — characteristic velocity \[m/s\].
 /// - `l` — characteristic length \[m\].
 /// - `mu` — dynamic viscosity \[Pa·s\].
-#[allow(dead_code)]
 pub fn reynolds_number(rho: f64, v: f64, l: f64, mu: f64) -> f64 {
     rho * v * l / mu
 }
@@ -30,7 +29,6 @@ pub fn reynolds_number(rho: f64, v: f64, l: f64, mu: f64) -> f64 {
 ///
 /// - `v` — flow speed \[m/s\].
 /// - `c_sound` — speed of sound in the medium \[m/s\].
-#[allow(dead_code)]
 pub fn mach_number(v: f64, c_sound: f64) -> f64 {
     v / c_sound
 }
@@ -42,7 +40,6 @@ pub fn mach_number(v: f64, c_sound: f64) -> f64 {
 /// - `v` — characteristic velocity \[m/s\].
 /// - `g` — gravitational acceleration \[m/s²\].
 /// - `l` — characteristic length \[m\].
-#[allow(dead_code)]
 pub fn froude_number(v: f64, g: f64, l: f64) -> f64 {
     v / (g * l).sqrt()
 }
@@ -54,7 +51,6 @@ pub fn froude_number(v: f64, g: f64, l: f64) -> f64 {
 /// - `f` — frequency of oscillation \[Hz\].
 /// - `l` — characteristic length \[m\].
 /// - `v` — characteristic velocity \[m/s\].
-#[allow(dead_code)]
 pub fn strouhal_number(f: f64, l: f64, v: f64) -> f64 {
     f * l / v
 }
@@ -67,7 +63,6 @@ pub fn strouhal_number(f: f64, l: f64, v: f64) -> f64 {
 /// - `v` — characteristic velocity \[m/s\].
 /// - `l` — characteristic length \[m\].
 /// - `sigma` — surface tension \[N/m\].
-#[allow(dead_code)]
 pub fn weber_number(rho: f64, v: f64, l: f64, sigma: f64) -> f64 {
     rho * v * v * l / sigma
 }
@@ -79,7 +74,6 @@ pub fn weber_number(rho: f64, v: f64, l: f64, sigma: f64) -> f64 {
 ///
 /// - `lambda_mfp` — mean free path \[m\].
 /// - `l` — characteristic length \[m\].
-#[allow(dead_code)]
 pub fn knudsen_number(lambda_mfp: f64, l: f64) -> f64 {
     lambda_mfp / l
 }
@@ -95,7 +89,6 @@ pub fn knudsen_number(lambda_mfp: f64, l: f64) -> f64 {
 /// - `h` — convective heat transfer coefficient \[W/(m²·K)\].
 /// - `l` — characteristic length \[m\].
 /// - `k_thermal` — thermal conductivity \[W/(m·K)\].
-#[allow(dead_code)]
 pub fn nusselt_number(h: f64, l: f64, k_thermal: f64) -> f64 {
     h * l / k_thermal
 }
@@ -107,7 +100,6 @@ pub fn nusselt_number(h: f64, l: f64, k_thermal: f64) -> f64 {
 /// - `mu` — dynamic viscosity \[Pa·s\].
 /// - `cp` — specific heat capacity at constant pressure \[J/(kg·K)\].
 /// - `k` — thermal conductivity \[W/(m·K)\].
-#[allow(dead_code)]
 pub fn prandtl_number(mu: f64, cp: f64, k: f64) -> f64 {
     mu * cp / k
 }
@@ -121,7 +113,6 @@ pub fn prandtl_number(mu: f64, cp: f64, k: f64) -> f64 {
 /// - `delta_t` — temperature difference \[K\].
 /// - `l` — characteristic length \[m\].
 /// - `nu` — kinematic viscosity \[m²/s\].
-#[allow(dead_code)]
 pub fn grashof_number(g: f64, beta: f64, delta_t: f64, l: f64, nu: f64) -> f64 {
     g * beta * delta_t * l * l * l / (nu * nu)
 }
@@ -133,7 +124,6 @@ pub fn grashof_number(g: f64, beta: f64, delta_t: f64, l: f64, nu: f64) -> f64 {
 /// - `v` — characteristic velocity \[m/s\].
 /// - `l` — characteristic length \[m\].
 /// - `d` — diffusion coefficient \[m²/s\].
-#[allow(dead_code)]
 pub fn peclet_number(v: f64, l: f64, d: f64) -> f64 {
     v * l / d
 }
@@ -146,7 +136,6 @@ pub fn peclet_number(v: f64, l: f64, d: f64) -> f64 {
 ///
 /// Used in natural convection; equals the product of the Grashof and Prandtl
 /// numbers.
-#[allow(dead_code)]
 pub fn rayleigh_number(g: f64, beta: f64, delta_t: f64, l: f64, nu: f64, alpha: f64) -> f64 {
     g * beta * delta_t * l * l * l / (nu * alpha)
 }
@@ -158,7 +147,6 @@ pub fn rayleigh_number(g: f64, beta: f64, delta_t: f64, l: f64, nu: f64, alpha: 
 /// - `h` — convective heat transfer coefficient \[W/(m²·K)\].
 /// - `l` — characteristic length \[m\].
 /// - `k_s` — solid thermal conductivity \[W/(m·K)\].
-#[allow(dead_code)]
 pub fn biot_number(h: f64, l: f64, k_s: f64) -> f64 {
     h * l / k_s
 }
@@ -170,7 +158,6 @@ pub fn biot_number(h: f64, l: f64, k_s: f64) -> f64 {
 /// - `delta_p` — pressure drop \[Pa\].
 /// - `rho` — fluid density \[kg/m³\].
 /// - `v` — characteristic velocity \[m/s\].
-#[allow(dead_code)]
 pub fn euler_number(delta_p: f64, rho: f64, v: f64) -> f64 {
     delta_p / (rho * v * v)
 }
@@ -183,7 +170,6 @@ pub fn euler_number(delta_p: f64, rho: f64, v: f64) -> f64 {
 /// - `t_p` — particle relaxation time \[s\].
 /// - `v` — characteristic velocity \[m/s\].
 /// - `l` — characteristic length \[m\].
-#[allow(dead_code)]
 pub fn stokes_number(t_p: f64, v: f64, l: f64) -> f64 {
     t_p * v / l
 }
@@ -197,7 +183,6 @@ pub fn stokes_number(t_p: f64, v: f64, l: f64) -> f64 {
 /// - `rho_f` — fluid density \[kg/m³\].
 /// - `rho_p` — particle/second-phase density \[kg/m³\].
 /// - `mu` — dynamic viscosity \[Pa·s\].
-#[allow(dead_code)]
 pub fn archimedes_number(g: f64, l: f64, rho_f: f64, rho_p: f64, mu: f64) -> f64 {
     g * l * l * l * rho_f * (rho_p - rho_f) / (mu * mu)
 }

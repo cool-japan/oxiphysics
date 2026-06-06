@@ -2,10 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::type_complexity)]
-#[allow(unused_imports)]
-use super::functions::*;
 use std::collections::HashMap;
+
+/// Panel index `(row, col)` → axis range `((x_min, x_max), (y_min, y_max))`.
+pub type PanelAxisRanges = HashMap<(usize, usize), ((f64, f64), (f64, f64))>;
 
 /// A vertex on a 3D surface.
 #[derive(Debug, Clone, Copy)]
@@ -666,7 +666,6 @@ impl PlotColor {
         Self::rgb(1.0, 0.0, 1.0)
     }
     /// Blend two colors at parameter `t ∈ [0, 1]`.
-    #[allow(clippy::should_implement_trait)]
     pub fn lerp(a: PlotColor, b: PlotColor, t: f32) -> Self {
         Self {
             r: a.r + t * (b.r - a.r),
@@ -1086,6 +1085,9 @@ impl SvgExporter {
         svg
     }
 }
+/// 2D vector field function signature: `(x, y) → (dx, dy)`.
+pub type VectorField2dFn = fn(f64, f64) -> (f64, f64);
+
 /// An equilibrium point for a dynamical system.
 #[derive(Debug, Clone)]
 pub struct EquilibriumPoint {
@@ -1116,7 +1118,7 @@ pub struct PhasePortrait {
     /// Resolution of the background vector field grid.
     pub vector_field_resolution: usize,
     /// 2D vector field function: (x, y) → (dx, dy).
-    pub vector_field_2d: Option<fn(f64, f64) -> (f64, f64)>,
+    pub vector_field_2d: Option<VectorField2dFn>,
 }
 impl PhasePortrait {
     /// Create an empty phase portrait.
@@ -1275,7 +1277,7 @@ pub struct PlotLayout {
     /// Panels in this layout.
     pub panels: Vec<PlotPanel>,
     /// Per-panel axis ranges: key = `(row, col)`, value = `((x0,x1),(y0,y1))`.
-    pub axis_ranges: HashMap<(usize, usize), ((f64, f64), (f64, f64))>,
+    pub axis_ranges: PanelAxisRanges,
     /// Figure width in points/pixels.
     pub width: u32,
     /// Figure height in points/pixels.

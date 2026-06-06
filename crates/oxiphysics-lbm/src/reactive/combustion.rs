@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -59,7 +58,6 @@ const CS2: f64 = 1.0 / 3.0;
 /// ```
 ///
 /// with BGK relaxation time `tau_s = D_s / cs² + 0.5`.
-#[allow(dead_code)]
 pub struct SpeciesGrid {
     /// Domain width (cells in x).
     pub nx: usize,
@@ -73,7 +71,6 @@ pub struct SpeciesGrid {
     pub g: Vec<Vec<[f64; 9]>>,
 }
 
-#[allow(dead_code)]
 impl SpeciesGrid {
     /// Create a new `SpeciesGrid` with all concentrations zero.
     ///
@@ -97,11 +94,11 @@ impl SpeciesGrid {
     /// `g_eq_i = w_i * c * (1 + (e_i · u) / cs²)`
     pub fn equilibrium(c: f64, ux: f64, uy: f64) -> [f64; 9] {
         let mut geq = [0.0_f64; 9];
-        for i in 0..9 {
-            let cx = C[i].0 as f64;
-            let cy = C[i].1 as f64;
+        for (geq_i, (&c_vel, &w)) in geq.iter_mut().zip(C.iter().zip(W.iter())) {
+            let cx = c_vel.0 as f64;
+            let cy = c_vel.1 as f64;
             let eu = cx * ux + cy * uy;
-            geq[i] = W[i] * c * (1.0 + eu / CS2);
+            *geq_i = w * c * (1.0 + eu / CS2);
         }
         geq
     }
@@ -120,16 +117,15 @@ impl SpeciesGrid {
     ///
     /// `velocities[k] = [ux, uy]` for each cell `k`.
     pub fn collide(&mut self, velocities: &[[f64; 2]]) {
-        let n = self.nx * self.ny;
         for s in 0..self.n_species {
             let omega_s = 1.0 / (self.diffusivities[s] / CS2 + 0.5);
-            for k in 0..n {
-                let c = self.concentration(s, k);
+            for (k, g_sk) in self.g[s].iter_mut().enumerate() {
+                let c: f64 = g_sk.iter().sum();
                 let ux = velocities[k][0];
                 let uy = velocities[k][1];
                 let geq = Self::equilibrium(c, ux, uy);
-                for i in 0..9 {
-                    self.g[s][k][i] -= omega_s * (self.g[s][k][i] - geq[i]);
+                for (i, g_ski) in g_sk.iter_mut().enumerate() {
+                    *g_ski -= omega_s * (*g_ski - geq[i]);
                 }
             }
         }
@@ -139,7 +135,6 @@ impl SpeciesGrid {
     pub fn stream(&mut self) {
         let nx = self.nx;
         let ny = self.ny;
-        let n = nx * ny;
         for s in 0..self.n_species {
             let g_old = self.g[s].clone();
             for y in 0..ny {
@@ -155,7 +150,6 @@ impl SpeciesGrid {
                     }
                 }
             }
-            let _ = n; // suppress unused warning
         }
     }
 
@@ -164,9 +158,9 @@ impl SpeciesGrid {
     pub fn apply_source(&mut self, s: usize, delta_c: &[f64]) {
         let n = self.nx * self.ny;
         assert_eq!(delta_c.len(), n);
-        for k in 0..n {
-            for i in 0..9 {
-                self.g[s][k][i] += W[i] * delta_c[k];
+        for (k, g_sk) in self.g[s].iter_mut().enumerate() {
+            for (i, g_ski) in g_sk.iter_mut().enumerate() {
+                *g_ski += W[i] * delta_c[k];
             }
         }
     }
@@ -186,7 +180,6 @@ impl SpeciesGrid {
 ///
 /// Convention used by `CombustionReactor`:
 /// 0 = CH4, 1 = O2, 2 = CO2, 3 = H2O
-#[allow(dead_code)]
 pub mod combustion_indices {
     /// Species index for methane (CH₄).
     pub const CH4: usize = 0;
@@ -203,13 +196,11 @@ pub mod combustion_indices {
 /// Stoichiometric coefficients for CH4 + 2 O2 → CO2 + 2 H2O.
 ///
 /// Negative = consumed, positive = produced.  Units: moles per mole CH4 consumed.
-#[allow(dead_code)]
 pub const COMBUSTION_STOICH: [f64; 4] = [-1.0, -2.0, 1.0, 2.0];
 
 /// Standard heat of combustion of CH4: ΔH_rxn = –890 kJ/mol (exothermic).
 ///
 /// In lattice units this is scaled to a dimensionless value by the user.
-#[allow(dead_code)]
 pub const DELTA_H_COMBUSTION: f64 = -890_000.0; // J/mol (physical)
 
 /// Single-step combustion reactor: CH4 + 2 O2 → CO2 + 2 H2O.
@@ -222,7 +213,6 @@ pub const DELTA_H_COMBUSTION: f64 = -890_000.0; // J/mol (physical)
 ///
 /// where concentrations are mole fractions or molar concentrations.
 /// Temperature is updated each step by the exothermic heat release.
-#[allow(dead_code)]
 pub struct CombustionReactor {
     /// Number of grid cells.
     pub n_cells: usize,
@@ -240,7 +230,6 @@ pub struct CombustionReactor {
     pub heat_capacity: f64,
 }
 
-#[allow(dead_code)]
 impl CombustionReactor {
     /// Create a combustion reactor for `n_cells` grid cells at initial temperature `t0`.
     ///
@@ -299,8 +288,8 @@ impl CombustionReactor {
             };
             let r_eff = rate.min(max_rate_ch4).min(max_rate_o2);
             // Update each species using the stoichiometrically consistent rate.
-            for s in 0..4 {
-                let delta = COMBUSTION_STOICH[s] * r_eff * dt;
+            for (s, stoich) in COMBUSTION_STOICH.iter().enumerate() {
+                let delta = stoich * r_eff * dt;
                 self.c[0][s][k] = (self.c[0][s][k] + delta).max(0.0);
             }
             // Exothermic heat release: ΔT = -ΔH * r_eff * dt / Cp
@@ -327,7 +316,6 @@ impl CombustionReactor {
 /// ```
 ///
 /// `delta_h` is positive for exothermic reactions (releases heat).
-#[allow(dead_code)]
 pub fn apply_heat_source(temperature: &mut [f64], reaction_rates: &[f64], delta_h: f64, dt: f64) {
     debug_assert_eq!(temperature.len(), reaction_rates.len());
     for (t, &r) in temperature.iter_mut().zip(reaction_rates.iter()) {
@@ -342,7 +330,6 @@ pub fn apply_heat_source(temperature: &mut [f64], reaction_rates: &[f64], delta_
 ///
 /// `rate_field[k]` is the scalar reaction rate at cell `k`.
 /// `stoichiometry` has length `n_species`.
-#[allow(dead_code)]
 pub fn species_source_terms(stoichiometry: &[f64], rate_field: &[f64]) -> Vec<Vec<f64>> {
     let n_cells = rate_field.len();
     let n_species = stoichiometry.len();
@@ -363,7 +350,6 @@ pub fn species_source_terms(stoichiometry: &[f64], rate_field: &[f64]) -> Vec<Ve
 ///
 /// The flame front is defined as the location of maximum temperature gradient
 /// magnitude `|∇T|` along horizontal slices.
-#[allow(dead_code)]
 pub struct FlameFrontTracker {
     /// Threshold for `|∇T|` to qualify as "on the flame front".
     pub grad_threshold: f64,
@@ -371,7 +357,6 @@ pub struct FlameFrontTracker {
     pub history: Vec<(f64, f64)>,
 }
 
-#[allow(dead_code)]
 impl FlameFrontTracker {
     /// Create a new flame-front tracker.
     pub fn new(grad_threshold: f64) -> Self {
@@ -819,9 +804,9 @@ impl ElementaryReactionLbm {
     }
 
     /// Diffusion step for a single species (explicit FD, periodic BC).
-    fn diffuse(c: &mut Vec<f64>, nx: usize, ny: usize, d: f64, dt: f64, dx: f64) {
+    fn diffuse(c: &mut [f64], nx: usize, ny: usize, d: f64, dt: f64, dx: f64) {
         let coeff = d * dt / (dx * dx);
-        let old = c.clone();
+        let old = c.to_vec();
         for j in 0..ny {
             for i in 0..nx {
                 let ip = (i + 1) % nx;
@@ -895,7 +880,6 @@ impl ElementaryReactionLbm {
 ///   delta = heat loss / heat generation parameter
 ///
 /// Critical condition: delta_cr = e^-1 ≈ 0.368 (classical Semenov).
-#[allow(dead_code)]
 pub struct SemenovExplosion;
 
 impl SemenovExplosion {
@@ -997,11 +981,11 @@ impl MultiSpeciesDiffusion {
     /// Equilibrium scalar distribution for concentration c, velocity u.
     fn equilibrium(c: f64, u: [f64; 2]) -> [f64; 9] {
         let mut geq = [0.0_f64; 9];
-        for k in 0..9 {
-            let cx = C[k].0 as f64;
-            let cy = C[k].1 as f64;
+        for (geq_k, (&c_vel, &w)) in geq.iter_mut().zip(C.iter().zip(W.iter())) {
+            let cx = c_vel.0 as f64;
+            let cy = c_vel.1 as f64;
             let eu = cx * u[0] + cy * u[1];
-            geq[k] = W[k] * c * (1.0 + eu / CS2);
+            *geq_k = w * c * (1.0 + eu / CS2);
         }
         geq
     }
@@ -1018,17 +1002,17 @@ impl MultiSpeciesDiffusion {
 
     /// BGK collision for all species with Guo source terms.
     pub fn collide(&mut self, velocities: &[[f64; 2]]) {
-        let n = self.nx * self.ny;
         for s in 0..self.n_species {
             let omega_s = 1.0 / (self.diffusivities[s] / CS2 + 0.5);
-            for k in 0..n {
-                let c = self.concentration(s, k);
+            for (k, g_sk) in self.g[s].iter_mut().enumerate() {
+                let c: f64 = g_sk.iter().sum();
                 let u = velocities[k];
+                let src_k = self.sources[s][k];
                 let geq = Self::equilibrium(c, u);
-                for i in 0..9 {
-                    self.g[s][k][i] -= omega_s * (self.g[s][k][i] - geq[i]);
+                for (i, g_ski) in g_sk.iter_mut().enumerate() {
+                    *g_ski -= omega_s * (*g_ski - geq[i]);
                     // Add reaction source term (Guo scheme: equally distributed).
-                    self.g[s][k][i] += W[i] * self.sources[s][k];
+                    *g_ski += W[i] * src_k;
                 }
             }
         }

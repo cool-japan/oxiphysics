@@ -17,9 +17,6 @@
 //! * [`LagrangePoints`] — L1–L5 for circular restricted 3-body problem.
 //! * [`TleParser`] — TLE parsing and SGP4-like propagation.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─── Physical constants ────────────────────────────────────────────────────────

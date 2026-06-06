@@ -195,7 +195,6 @@ impl Error {
     }
 
     /// Create a [`Error::TableOutOfRange`] error.
-    #[allow(clippy::too_many_arguments)]
     pub fn table_out_of_range(
         table: &'static str,
         variable: &'static str,

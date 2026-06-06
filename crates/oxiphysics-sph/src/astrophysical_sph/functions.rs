@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Auto-generated module
 //
 // 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
@@ -157,22 +156,21 @@ pub fn leapfrog_step(
     viscosity: &ArtificialViscosity,
 ) {
     let _ = viscosity;
-    let n = particles.len();
-    for i in 0..n {
-        if particles[i].is_sink {
+    for p in particles.iter_mut() {
+        if p.is_sink {
             continue;
         }
-        for d in 0..3 {
-            particles[i].vel[d] += 0.5 * dt * particles[i].acc[d];
+        for (v, &a) in p.vel.iter_mut().zip(p.acc.iter()) {
+            *v += 0.5 * dt * a;
         }
-        particles[i].internal_energy += 0.5 * dt * particles[i].du_dt;
-        if particles[i].internal_energy < 0.0 {
-            particles[i].internal_energy = 0.0;
+        p.internal_energy += 0.5 * dt * p.du_dt;
+        if p.internal_energy < 0.0 {
+            p.internal_energy = 0.0;
         }
     }
-    for i in 0..n {
-        for d in 0..3 {
-            particles[i].pos[d] += dt * particles[i].vel[d];
+    for p in particles.iter_mut() {
+        for (pos_d, &vel_d) in p.pos.iter_mut().zip(p.vel.iter()) {
+            *pos_d += dt * vel_d;
         }
     }
     compute_density(particles);
@@ -181,16 +179,16 @@ pub fn leapfrog_step(
         p.acc = [0.0; 3];
     }
     gravity.compute_gravity(particles);
-    for i in 0..n {
-        if particles[i].is_sink {
+    for p in particles.iter_mut() {
+        if p.is_sink {
             continue;
         }
-        for d in 0..3 {
-            particles[i].vel[d] += 0.5 * dt * particles[i].acc[d];
+        for (v, &a) in p.vel.iter_mut().zip(p.acc.iter()) {
+            *v += 0.5 * dt * a;
         }
-        particles[i].internal_energy += 0.5 * dt * particles[i].du_dt;
-        if particles[i].internal_energy < 0.0 {
-            particles[i].internal_energy = 0.0;
+        p.internal_energy += 0.5 * dt * p.du_dt;
+        if p.internal_energy < 0.0 {
+            p.internal_energy = 0.0;
         }
     }
 }
@@ -318,35 +316,35 @@ mod tests {
     #[test]
     fn test_artificial_viscosity_approaching() {
         let visc = ArtificialViscosity::standard();
-        let pi_ij = visc.compute_pi(
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [-1.0, 0.0, 0.0],
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            0.5,
-            0.5,
-        );
+        let pi_ij = visc.compute_pi(ViscoPair {
+            ri: [0.0, 0.0, 0.0],
+            rj: [1.0, 0.0, 0.0],
+            vi: [1.0, 0.0, 0.0],
+            vj: [-1.0, 0.0, 0.0],
+            rho_i: 1.0,
+            rho_j: 1.0,
+            cs_i: 1.0,
+            cs_j: 1.0,
+            hi: 0.5,
+            hj: 0.5,
+        });
         assert!(pi_ij > 0.0);
     }
     #[test]
     fn test_artificial_viscosity_receding() {
         let visc = ArtificialViscosity::standard();
-        let pi_ij = visc.compute_pi(
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [-1.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            0.5,
-            0.5,
-        );
+        let pi_ij = visc.compute_pi(ViscoPair {
+            ri: [0.0, 0.0, 0.0],
+            rj: [1.0, 0.0, 0.0],
+            vi: [-1.0, 0.0, 0.0],
+            vj: [1.0, 0.0, 0.0],
+            rho_i: 1.0,
+            rho_j: 1.0,
+            cs_i: 1.0,
+            cs_j: 1.0,
+            hi: 0.5,
+            hj: 0.5,
+        });
         assert!(pi_ij.abs() < 1e-14);
     }
     #[test]
@@ -523,7 +521,6 @@ mod tests {
     }
 }
 /// Build a Barnes-Hut octree from particle positions and masses.
-#[allow(dead_code)]
 pub fn build_barnes_hut_tree(
     positions: &[[f64; 3]],
     masses: &[f64],
@@ -555,8 +552,6 @@ pub fn build_barnes_hut_tree(
     root
 }
 /// Compute gravitational accelerations on all particles using Barnes-Hut.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn barnes_hut_gravity(
     positions: &[[f64; 3]],
     masses: &[f64],
@@ -573,7 +568,6 @@ pub fn barnes_hut_gravity(
 }
 /// Compute the cooling rate per unit volume \[erg cm^-3 s^-1\] given
 /// temperature T \[K\] and number density n \[cm^-3\].
-#[allow(dead_code)]
 pub fn cooling_rate(func: CoolingFunction, temperature: f64, number_density: f64) -> f64 {
     let n2 = number_density * number_density;
     match func {
@@ -615,7 +609,6 @@ pub fn cooling_rate(func: CoolingFunction, temperature: f64, number_density: f64
     }
 }
 /// Compute the cooling time t_cool = (3/2) n k_B T / Λ.
-#[allow(dead_code)]
 pub fn cooling_time(func: CoolingFunction, temperature: f64, number_density: f64) -> f64 {
     let lambda = cooling_rate(func, temperature, number_density);
     if lambda <= 0.0 {
@@ -627,7 +620,6 @@ pub fn cooling_time(func: CoolingFunction, temperature: f64, number_density: f64
 /// Apply radiative cooling to internal energy over a timestep dt.
 ///
 /// Uses implicit (backward-Euler style) subcycling if dt > t_cool.
-#[allow(dead_code)]
 pub fn apply_cooling(
     func: CoolingFunction,
     internal_energy: f64,

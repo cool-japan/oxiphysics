@@ -2,8 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
+
 /// Biphasic model for articular cartilage.
 ///
 /// Cartilage is modeled as a mixture of a solid matrix (proteoglycan-collagen
@@ -88,11 +88,10 @@ impl CartilageBiphasic {
         sigma
     }
     /// Compute the total stress (effective + fluid pressure).
-    #[allow(clippy::needless_range_loop)]
     pub fn total_stress(&self, strain: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
         let mut sigma = self.effective_stress(strain);
-        for i in 0..3 {
-            sigma[i][i] -= self.fluid_pressure;
+        for (i, row) in sigma.iter_mut().enumerate() {
+            row[i] -= self.fluid_pressure;
         }
         sigma
     }
@@ -852,15 +851,14 @@ impl TissueGrowth {
         }
     }
     /// Update the growth tensor for anisotropic (directional) growth.
-    #[allow(clippy::needless_range_loop)]
     pub fn update_anisotropic(&mut self, current_stress: f64, direction: &[f64; 3], dt: f64) {
         let stress_ratio = current_stress / self.target_stress;
         let d_theta = self.growth_rate * (stress_ratio - 1.0) * dt;
         let nn = outer3(direction, direction);
-        for i in 0..3 {
-            for j in 0..3 {
-                let new_val = self.growth_tensor[i][j] + d_theta * nn[i][j];
-                self.growth_tensor[i][j] = if i == j {
+        for (i, (gt_row, nn_row)) in self.growth_tensor.iter_mut().zip(nn.iter()).enumerate() {
+            for (j, (gt_ij, &nn_ij)) in gt_row.iter_mut().zip(nn_row.iter()).enumerate() {
+                let new_val = *gt_ij + d_theta * nn_ij;
+                *gt_ij = if i == j {
                     clamp(new_val, 1.0, self.max_growth)
                 } else {
                     new_val

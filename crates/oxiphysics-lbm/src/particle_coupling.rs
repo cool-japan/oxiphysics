@@ -1,5 +1,3 @@
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,7 +14,6 @@ use std::f64::consts::PI;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A coupled particle tracked in the fluid domain.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CoupledParticle {
     /// Position \[x, y\] in lattice units.
@@ -35,7 +32,6 @@ pub struct CoupledParticle {
 
 impl CoupledParticle {
     /// Create a new coupled particle.
-    #[allow(dead_code)]
     pub fn new(position: [f64; 2], velocity: [f64; 2], mass: f64, radius: f64, id: usize) -> Self {
         Self {
             position,
@@ -49,7 +45,6 @@ impl CoupledParticle {
 }
 
 /// Macroscopic fluid state at a single cell.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct FluidCell {
     /// Fluid density.
@@ -62,7 +57,6 @@ pub struct FluidCell {
 
 impl FluidCell {
     /// Create a new fluid cell state.
-    #[allow(dead_code)]
     pub fn new(rho: f64, ux: f64, uy: f64) -> Self {
         Self { rho, ux, uy }
     }
@@ -73,14 +67,12 @@ impl FluidCell {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Collection of drag force models.
-#[allow(dead_code)]
 pub struct DragForce;
 
 impl DragForce {
     /// Stokes drag: **F = 6 π μ r (u_fluid − u_particle)**.
     ///
     /// Valid for low Reynolds number (Re ≪ 1).
-    #[allow(dead_code)]
     pub fn stokes_drag(particle: &CoupledParticle, fluid: &FluidCell, viscosity: f64) -> [f64; 2] {
         let factor = 6.0 * PI * viscosity * particle.radius;
         let fx = factor * (fluid.ux - particle.velocity[0]);
@@ -89,7 +81,6 @@ impl DragForce {
     }
 
     /// Particle Reynolds number: **Re = 2 r |u_slip| / ν**.
-    #[allow(dead_code)]
     pub fn reynolds_number(particle: &CoupledParticle, fluid: &FluidCell, viscosity: f64) -> f64 {
         let dux = fluid.ux - particle.velocity[0];
         let duy = fluid.uy - particle.velocity[1];
@@ -109,7 +100,6 @@ impl DragForce {
     /// - Re ≥ 1000: `Cd = 0.44`
     ///
     /// Force: `F = 0.5 * Cd * rho_f * A * |slip|² * slip_hat`
-    #[allow(dead_code)]
     pub fn schiller_naumann_drag(
         particle: &CoupledParticle,
         fluid: &FluidCell,
@@ -151,7 +141,6 @@ impl DragForce {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Two-way particle–fluid coupling on a 2-D Cartesian grid.
-#[allow(dead_code)]
 pub struct TwoWayCoupling {
     /// Number of grid cells in x.
     pub nx: usize,
@@ -163,7 +152,6 @@ pub struct TwoWayCoupling {
 
 impl TwoWayCoupling {
     /// Create a new coupling manager.
-    #[allow(dead_code)]
     pub fn new(nx: usize, ny: usize, dx: f64) -> Self {
         Self { nx, ny, dx }
     }
@@ -172,7 +160,6 @@ impl TwoWayCoupling {
     ///
     /// `fluid_u` is a flat `nx × ny` array of `(ux, uy)` pairs indexed as
     /// `[iy * nx + ix]`.  Positions outside the domain are clamped.
-    #[allow(dead_code)]
     pub fn interpolate_fluid_velocity(&self, fluid_u: &[(f64, f64)], pos: [f64; 2]) -> [f64; 2] {
         let nx = self.nx as f64;
         let ny = self.ny as f64;
@@ -212,7 +199,6 @@ impl TwoWayCoupling {
     /// Distribute particle reaction forces to the nearest grid cell.
     ///
     /// Returns a flat `nx × ny` array of `[fx, fy]` force densities.
-    #[allow(dead_code)]
     pub fn spread_particle_force(
         &self,
         particles: &[CoupledParticle],
@@ -237,7 +223,6 @@ impl TwoWayCoupling {
     ///
     /// Velocity update: `v^{n+1} = v^n + (drag + gravity) / m * dt`
     /// Position update: `x^{n+1} = x^n + v^{n+1} * dt`
-    #[allow(dead_code)]
     pub fn update_particle(
         &self,
         particle: &mut CoupledParticle,
@@ -265,7 +250,6 @@ impl TwoWayCoupling {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Void-fraction (fluid volume fraction) utilities.
-#[allow(dead_code)]
 pub struct VoidFraction;
 
 impl VoidFraction {
@@ -274,7 +258,6 @@ impl VoidFraction {
     /// Each particle contributes its projected area `π r²` to the cell it
     /// occupies.  The void fraction is `ε = 1 − solid_fraction`, clamped to
     /// `[0, 1]`.
-    #[allow(dead_code)]
     pub fn compute_void_fraction(
         particles: &[CoupledParticle],
         nx: usize,
@@ -299,7 +282,6 @@ impl VoidFraction {
     }
 
     /// Apply the Wen–Yu void-fraction correction to drag: **F_corr = F · ε^{−2.65}**.
-    #[allow(dead_code)]
     pub fn corrected_drag(drag: [f64; 2], void_fraction: f64) -> [f64; 2] {
         let eps = void_fraction.clamp(f64::EPSILON, 1.0);
         let factor = eps.powf(-2.65);
@@ -312,7 +294,6 @@ impl VoidFraction {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Particle–wall and particle–particle collision handling.
-#[allow(dead_code)]
 pub struct ParticleCollision;
 
 impl ParticleCollision {
@@ -320,7 +301,6 @@ impl ParticleCollision {
     ///
     /// Domain walls are at `x = 0`, `x = (nx-1)*dx`, `y = 0`, and
     /// `y = (ny-1)*dx`.
-    #[allow(dead_code)]
     pub fn detect_particle_wall(particle: &CoupledParticle, nx: usize, ny: usize, dx: f64) -> bool {
         let r = particle.radius;
         let x = particle.position[0];
@@ -335,7 +315,6 @@ impl ParticleCollision {
     ///
     /// The particle velocity is reversed in the penetrated direction, and the
     /// position is corrected so the particle sits tangent to the wall.
-    #[allow(dead_code)]
     pub fn reflect_from_wall(
         particle: &mut CoupledParticle,
         nx: usize,
@@ -374,7 +353,6 @@ impl ParticleCollision {
     /// Only applies if the particles overlap (`|r12| < r1 + r2`).
     /// Uses the 1-D impulse formula along the line of centres, with
     /// coefficient of restitution `e`.
-    #[allow(dead_code)]
     pub fn particle_particle_collision(
         p1: &mut CoupledParticle,
         p2: &mut CoupledParticle,
@@ -431,7 +409,6 @@ impl ParticleCollision {
 /// **v_s = 2 r² (ρ_p − ρ_f) g / (9 μ)**
 ///
 /// Positive value means downward (gravity direction).
-#[allow(dead_code)]
 pub fn settling_velocity_stokes(
     radius: f64,
     rho_particle: f64,
@@ -661,7 +638,7 @@ mod tests {
         let p = make_particle([2.0, 2.0], [0.0, 0.0], 5.0);
         let vf = VoidFraction::compute_void_fraction(&[p], 5, 5, 1.0);
         for &v in &vf {
-            assert!(v >= 0.0 && v <= 1.0, "Void fraction out of range: {v}");
+            assert!((0.0..=1.0).contains(&v), "Void fraction out of range: {v}");
         }
     }
 
@@ -807,7 +784,6 @@ mod tests {
 
 /// A 3-D coupled particle that tracks position, velocity, angular velocity,
 /// and all associated forces/torques.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CoupledParticle3D {
     /// Position \[x, y, z\] in lattice units.
@@ -828,7 +804,6 @@ pub struct CoupledParticle3D {
     pub id: usize,
 }
 
-#[allow(dead_code)]
 impl CoupledParticle3D {
     /// Create a new 3-D coupled particle.
     pub fn new(position: [f64; 3], velocity: [f64; 3], mass: f64, radius: f64, id: usize) -> Self {
@@ -894,10 +869,8 @@ impl CoupledParticle3D {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Particle lift force utilities.
-#[allow(dead_code)]
 pub struct LiftForce;
 
-#[allow(dead_code)]
 impl LiftForce {
     /// Saffman lift force on a particle in a shear flow.
     ///
@@ -966,10 +939,8 @@ impl LiftForce {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Torque on a particle due to fluid velocity gradients.
-#[allow(dead_code)]
 pub struct FluidTorque;
 
-#[allow(dead_code)]
 impl FluidTorque {
     /// Hydrodynamic torque on a sphere in a linear shear flow.
     ///
@@ -1005,7 +976,6 @@ impl FluidTorque {
 /// Integrate the angular velocity of a set of 3-D particles one timestep.
 ///
 /// Uses the semi-implicit Euler: ω^{n+1} = ω^n + (T/I) * dt
-#[allow(dead_code)]
 pub fn integrate_rotations(particles: &mut [CoupledParticle3D], dt: f64) {
     for p in particles.iter_mut() {
         p.integrate_rotation(dt);
@@ -1013,7 +983,6 @@ pub fn integrate_rotations(particles: &mut [CoupledParticle3D], dt: f64) {
 }
 
 /// Integrate the translations of a set of 3-D particles one timestep.
-#[allow(dead_code)]
 pub fn integrate_translations(particles: &mut [CoupledParticle3D], dt: f64) {
     for p in particles.iter_mut() {
         p.integrate_translation(dt);
@@ -1030,7 +999,6 @@ pub fn integrate_translations(particles: &mut [CoupledParticle3D], dt: f64) {
 ///
 /// Identical to [`settling_velocity_stokes`] but explicitly returns the
 /// terminal velocity signed positive downward.
-#[allow(dead_code)]
 pub fn terminal_settling_velocity(
     radius: f64,
     rho_particle: f64,
@@ -1048,8 +1016,6 @@ pub fn terminal_settling_velocity(
 /// The equation of motion is:
 /// m * dv/dt = F_drag + F_buoyancy + F_gravity
 ///            = -6π μ r v + (rho_p - rho_f) V g_mag downward
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn simulate_settling(
     radius: f64,
     rho_particle: f64,
@@ -1091,7 +1057,6 @@ pub fn simulate_settling(
 ///   S_ij = - Σ_{particles in cell} F_p / (cell_volume)
 ///
 /// Returns a flat `nx × ny` array of `[sx, sy]`.
-#[allow(dead_code)]
 pub fn fluid_momentum_source(
     particles: &[CoupledParticle],
     nx: usize,
@@ -1113,7 +1078,6 @@ pub fn fluid_momentum_source(
 /// Compute local particle volume fraction (solid fraction) on the grid.
 ///
 /// Returns the particle volume fraction ε_p = V_particle / V_cell for each cell.
-#[allow(dead_code)]
 pub fn particle_volume_fraction(
     particles: &[CoupledParticle],
     nx: usize,
@@ -1137,7 +1101,6 @@ pub fn particle_volume_fraction(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Manager for a collection of 3-D coupled particles with fluid interaction.
-#[allow(dead_code)]
 pub struct ParticleSystem3D {
     /// All tracked particles.
     pub particles: Vec<CoupledParticle3D>,
@@ -1149,7 +1112,6 @@ pub struct ParticleSystem3D {
     pub rho_fluid: f64,
 }
 
-#[allow(dead_code)]
 impl ParticleSystem3D {
     /// Create an empty system.
     pub fn new(gravity: [f64; 3], viscosity: f64, rho_fluid: f64) -> Self {
@@ -1190,8 +1152,12 @@ impl ParticleSystem3D {
         let mu = self.viscosity;
         for p in &mut self.particles {
             let factor = 6.0 * PI * mu * p.radius;
-            for k in 0..3 {
-                p.force[k] += factor * (fluid_vel[k] - p.velocity[k]);
+            for (f_k, (&fv_k, &vel_k)) in p
+                .force
+                .iter_mut()
+                .zip(fluid_vel.iter().zip(p.velocity.iter()))
+            {
+                *f_k += factor * (fv_k - vel_k);
             }
         }
     }
@@ -1222,8 +1188,8 @@ impl ParticleSystem3D {
         }
         let mut com = [0.0_f64; 3];
         for p in &self.particles {
-            for k in 0..3 {
-                com[k] += p.mass * p.position[k];
+            for (com_k, &pos_k) in com.iter_mut().zip(p.position.iter()) {
+                *com_k += p.mass * pos_k;
             }
         }
         let inv = 1.0 / total_mass;

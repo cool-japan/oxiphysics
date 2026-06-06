@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use rayon::prelude::*;
 
 use super::types::{LoadBalancePlan, LoadBalanceStrategy, WorkStealQueue};
@@ -160,8 +159,7 @@ pub fn parallel_aabb_pairs(aabbs: &[([f64; 3], [f64; 3])]) -> Vec<(usize, usize)
         .flat_map(|i| {
             let mut local = Vec::new();
             let (min_i, max_i) = aabbs[i];
-            for j in (i + 1)..n {
-                let (min_j, max_j) = aabbs[j];
+            for (j, &(min_j, max_j)) in aabbs.iter().enumerate().skip(i + 1) {
                 let overlap = (0..3).all(|k| min_i[k] <= max_j[k] && min_j[k] <= max_i[k]);
                 if overlap {
                     local.push((i, j));
@@ -185,24 +183,20 @@ pub fn parallel_for(n: usize, chunk_size: usize, f: impl Fn(usize)) {
     }
 }
 /// Parallel sum reduction using Rayon.
-#[allow(dead_code)]
 pub fn parallel_reduce_sum(data: &[f64]) -> f64 {
     data.par_iter().copied().sum()
 }
 /// Parallel max reduction using Rayon.
-#[allow(dead_code)]
 pub fn parallel_reduce_max(data: &[f64]) -> f64 {
     data.par_iter()
         .copied()
         .reduce(|| f64::NEG_INFINITY, f64::max)
 }
 /// Parallel min reduction using Rayon.
-#[allow(dead_code)]
 pub fn parallel_reduce_min(data: &[f64]) -> f64 {
     data.par_iter().copied().reduce(|| f64::INFINITY, f64::min)
 }
 /// Parallel dot product of two slices.
-#[allow(dead_code)]
 pub fn parallel_dot_product(a: &[f64], b: &[f64]) -> f64 {
     a.par_iter()
         .zip(b.par_iter())
@@ -210,13 +204,11 @@ pub fn parallel_dot_product(a: &[f64], b: &[f64]) -> f64 {
         .sum()
 }
 /// Parallel L2 norm (Euclidean norm).
-#[allow(dead_code)]
 pub fn parallel_norm2(data: &[f64]) -> f64 {
     let sum_sq: f64 = data.par_iter().map(|&x| x * x).sum();
     sum_sq.sqrt()
 }
 /// Parallel mean.
-#[allow(dead_code)]
 pub fn parallel_mean(data: &[f64]) -> f64 {
     if data.is_empty() {
         return 0.0;
@@ -225,7 +217,6 @@ pub fn parallel_mean(data: &[f64]) -> f64 {
     sum / data.len() as f64
 }
 /// Parallel variance (population variance).
-#[allow(dead_code)]
 pub fn parallel_variance(data: &[f64]) -> f64 {
     if data.is_empty() {
         return 0.0;
@@ -235,7 +226,6 @@ pub fn parallel_variance(data: &[f64]) -> f64 {
     sum_sq / data.len() as f64
 }
 /// Two-pass parallel reduction: compute both sum and count in one pass.
-#[allow(dead_code)]
 pub fn parallel_sum_count(data: &[f64]) -> (f64, usize) {
     data.par_iter()
         .copied()
@@ -246,7 +236,6 @@ pub fn parallel_sum_count(data: &[f64]) -> (f64, usize) {
 ///
 /// `identity` is the identity element for the operator (e.g. 0.0 for add).
 /// `op` must be associative and commutative for correctness.
-#[allow(dead_code)]
 pub fn parallel_reduce_custom(
     data: &[f64],
     identity: f64,
@@ -259,7 +248,6 @@ pub fn parallel_reduce_custom(
 /// Phase 1: compute partial sums in chunks (parallel).
 /// Phase 2: propagate offsets (sequential).
 /// Phase 3: apply offsets within chunks (parallel).
-#[allow(dead_code)]
 pub fn parallel_exclusive_scan(data: &[f64]) -> Vec<f64> {
     let n = data.len();
     if n == 0 {
@@ -293,7 +281,6 @@ pub fn parallel_exclusive_scan(data: &[f64]) -> Vec<f64> {
     result
 }
 /// Parallel inclusive prefix sum.
-#[allow(dead_code)]
 pub fn parallel_inclusive_scan(data: &[f64]) -> Vec<f64> {
     let n = data.len();
     if n == 0 {
@@ -330,7 +317,6 @@ pub fn parallel_inclusive_scan(data: &[f64]) -> Vec<f64> {
 ///
 /// `segment_ids` assigns each element to a segment. When the segment ID
 /// changes, the accumulator resets. Segments must be contiguous.
-#[allow(dead_code)]
 pub fn segmented_exclusive_scan(data: &[f64], segment_ids: &[usize]) -> Vec<f64> {
     let n = data.len();
     let mut result = vec![0.0; n];
@@ -352,12 +338,10 @@ pub fn segmented_exclusive_scan(data: &[f64], segment_ids: &[usize]) -> Vec<f64>
 /// Parallel sort of f64 values (ascending).
 ///
 /// Uses Rayon's parallel sort. NaN values are placed at the end.
-#[allow(dead_code)]
 pub fn parallel_sort_f64(data: &mut [f64]) {
     data.par_sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 }
 /// Parallel argsort: returns indices that would sort `data` in ascending order.
-#[allow(dead_code)]
 pub fn parallel_argsort(data: &[f64]) -> Vec<usize> {
     let mut indices: Vec<usize> = (0..data.len()).collect();
     indices.par_sort_unstable_by(|&a, &b| {
@@ -368,7 +352,6 @@ pub fn parallel_argsort(data: &[f64]) -> Vec<usize> {
     indices
 }
 /// Parallel sort by key: sorts `items` based on `key_fn`.
-#[allow(dead_code)]
 pub fn parallel_sort_by_key<T: Send>(items: &mut [T], key_fn: impl Fn(&T) -> f64 + Sync + Send) {
     items.par_sort_unstable_by(|a, b| {
         let ka = key_fn(a);
@@ -379,7 +362,6 @@ pub fn parallel_sort_by_key<T: Send>(items: &mut [T], key_fn: impl Fn(&T) -> f64
 /// Parallel partition: split data into two groups based on a predicate.
 ///
 /// Returns `(true_group, false_group)`.
-#[allow(dead_code)]
 pub fn parallel_partition<T: Send + Sync + Clone>(
     data: &[T],
     predicate: impl Fn(&T) -> bool + Sync + Send,
@@ -389,7 +371,6 @@ pub fn parallel_partition<T: Send + Sync + Clone>(
     (left, right)
 }
 /// Parallel rank: compute the rank of each element (0-based) in sorted order.
-#[allow(dead_code)]
 pub fn parallel_rank(data: &[f64]) -> Vec<usize> {
     let sorted_indices = parallel_argsort(data);
     let n = data.len();
@@ -405,7 +386,6 @@ pub fn parallel_rank(data: &[f64]) -> Vec<usize> {
 /// For `Weighted` strategy, items are assigned sequentially to workers to
 /// balance the total weight per worker.
 /// For `Guided` strategy, chunks start large and shrink.
-#[allow(dead_code)]
 pub fn compute_load_balance(
     n: usize,
     num_workers: usize,
@@ -446,8 +426,8 @@ pub fn compute_load_balance(
             let mut weights = Vec::with_capacity(nw);
             let mut start = 0;
             let mut current_weight = 0.0;
-            for i in 0..n {
-                current_weight += wts[i];
+            for (i, &wi) in wts.iter().enumerate() {
+                current_weight += wi;
                 let workers_remaining = nw - ranges.len();
                 let at_last_worker = workers_remaining == 1;
                 let exceeded_target = current_weight >= target_per_worker && !at_last_worker;
@@ -491,7 +471,6 @@ pub fn compute_load_balance(
 ///
 /// Each range is processed as one Rayon task. The function receives
 /// `(worker_id, range)`.
-#[allow(dead_code)]
 pub fn execute_balanced(
     plan: &LoadBalancePlan,
     f: impl Fn(usize, std::ops::Range<usize>) + Sync + Send,
@@ -506,7 +485,6 @@ pub fn execute_balanced(
 /// Parallel map-reduce: map each element, then reduce results.
 ///
 /// Combines mapping and reduction in a single parallel pass.
-#[allow(dead_code)]
 pub fn parallel_map_reduce<T: Send + Sync>(
     data: &[T],
     map_fn: impl Fn(&T) -> f64 + Sync + Send,
@@ -519,7 +497,6 @@ pub fn parallel_map_reduce<T: Send + Sync>(
 ///
 /// Bins are `[min, min+step), [min+step, min+2*step), ...`.
 /// Returns a vector of length `num_bins`.
-#[allow(dead_code)]
 pub fn parallel_histogram(data: &[f64], min: f64, max: f64, num_bins: usize) -> Vec<usize> {
     if num_bins == 0 || max <= min {
         return vec![0; num_bins];
@@ -557,7 +534,6 @@ pub fn parallel_histogram(data: &[f64], min: f64, max: f64, num_bins: usize) -> 
 /// * `scatter_map[j]` is the original index `i` of `compacted[j]`.
 ///
 /// This mirrors a GPU stream-compaction pass (prefix-sum → scatter).
-#[allow(dead_code)]
 pub fn stream_compaction<T: Clone>(data: &[T], pred: impl Fn(&T) -> bool) -> (Vec<T>, Vec<usize>) {
     let mut compacted = Vec::new();
     let mut scatter_map = Vec::new();
@@ -573,7 +549,6 @@ pub fn stream_compaction<T: Clone>(data: &[T], pred: impl Fn(&T) -> bool) -> (Ve
 ///
 /// Each thread builds a local (value, original_index) list and then the
 /// lists are merged in order to preserve a deterministic output.
-#[allow(dead_code)]
 pub fn parallel_stream_compaction<T: Clone + Send + Sync>(
     data: &[T],
     pred: impl Fn(&T) -> bool + Sync,
@@ -605,7 +580,6 @@ pub fn parallel_stream_compaction<T: Clone + Send + Sync>(
 /// segment_ids   = [0, 0, 1, 1, 1, 2]
 /// output        = [3, 12, 6]
 /// ```
-#[allow(dead_code)]
 pub fn segmented_reduce_sum(data: &[f64], segment_ids: &[usize]) -> Vec<f64> {
     if data.is_empty() {
         return Vec::new();
@@ -618,7 +592,6 @@ pub fn segmented_reduce_sum(data: &[f64], segment_ids: &[usize]) -> Vec<f64> {
     result
 }
 /// Segmented reduction: maximum value within each segment.
-#[allow(dead_code)]
 pub fn segmented_reduce_max(data: &[f64], segment_ids: &[usize]) -> Vec<f64> {
     if data.is_empty() {
         return Vec::new();
@@ -633,7 +606,6 @@ pub fn segmented_reduce_max(data: &[f64], segment_ids: &[usize]) -> Vec<f64> {
     result
 }
 /// Segmented reduction: minimum value within each segment.
-#[allow(dead_code)]
 pub fn segmented_reduce_min(data: &[f64], segment_ids: &[usize]) -> Vec<f64> {
     if data.is_empty() {
         return Vec::new();
@@ -651,7 +623,6 @@ pub fn segmented_reduce_min(data: &[f64], segment_ids: &[usize]) -> Vec<f64> {
 ///
 /// Returns a new sorted vector leaving the input unchanged.
 /// NaN values are placed at the end (treated as greater than any finite value).
-#[allow(dead_code)]
 pub fn merge_sort_f64(data: &[f64]) -> Vec<f64> {
     let mut buf = data.to_vec();
     merge_sort_recurse(&mut buf);
@@ -696,7 +667,6 @@ pub(super) fn merge_sort_recurse(data: &mut [f64]) {
 /// Merge sort returning the sorted permutation (argsort, stable).
 ///
 /// `result[k]` is the original index of the k-th smallest element.
-#[allow(dead_code)]
 pub fn merge_sort_argsort(data: &[f64]) -> Vec<usize> {
     let mut indices: Vec<usize> = (0..data.len()).collect();
     merge_argsort_recurse(data, &mut indices);
@@ -745,7 +715,6 @@ pub(super) fn merge_argsort_recurse(data: &[f64], indices: &mut [usize]) {
 ///
 /// This CPU reference mirrors a GPU bitonic sort which operates in
 /// `O(n log² n)` compare-and-swap steps.
-#[allow(dead_code)]
 pub fn bitonic_sort(data: &[f64]) -> Vec<f64> {
     let n = data.len();
     if n == 0 {
@@ -780,7 +749,6 @@ pub fn bitonic_sort(data: &[f64]) -> Vec<f64> {
 /// Bitonic sort that returns the original indices (argsort variant).
 ///
 /// Pads with `(f64::INFINITY, usize::MAX)` pairs and trims back.
-#[allow(dead_code)]
 pub fn bitonic_argsort(data: &[f64]) -> Vec<usize> {
     let n = data.len();
     if n == 0 {
@@ -825,7 +793,6 @@ pub fn bitonic_argsort(data: &[f64]) -> Vec<usize> {
 /// steals from the most loaded remaining worker.
 /// Returns a `Vec`usize` of length `num_workers` recording the tasks each
 /// worker processed.
-#[allow(dead_code)]
 pub fn work_steal_queue<T: Send + Clone>(
     tasks: Vec<T>,
     num_workers: usize,
@@ -881,7 +848,6 @@ pub fn work_steal_queue<T: Send + Clone>(
 ///
 /// Returns a value in `\[0, 1\]`: 1.0 means perfect balance, smaller values
 /// indicate more imbalance.  Defined as `avg_load / max_load`.
-#[allow(dead_code)]
 pub fn compute_load_balance_metric(worker_loads: &[usize]) -> f64 {
     if worker_loads.is_empty() {
         return 1.0;
@@ -897,7 +863,6 @@ pub fn compute_load_balance_metric(worker_loads: &[usize]) -> f64 {
 }
 /// Suggest an optimal chunk size for `n` work items across `num_workers`
 /// workers, targeting at least `min_chunks_per_worker` chunks per worker.
-#[allow(dead_code)]
 pub fn suggest_chunk_size(n: usize, num_workers: usize, min_chunks_per_worker: usize) -> usize {
     let nw = num_workers.max(1);
     let chunks = (nw * min_chunks_per_worker).max(1);
@@ -908,7 +873,6 @@ pub fn suggest_chunk_size(n: usize, num_workers: usize, min_chunks_per_worker: u
 /// Splits the array recursively.  Below `SERIAL_THRESHOLD` elements the
 /// standard library sort is used.  Above that the two halves are sorted in
 /// parallel and then merged sequentially.
-#[allow(dead_code)]
 pub fn merge_sort_parallel(data: &[f64]) -> Vec<f64> {
     pub(super) const SERIAL_THRESHOLD: usize = 256;
     let n = data.len();
@@ -929,7 +893,6 @@ pub fn merge_sort_parallel(data: &[f64]) -> Vec<f64> {
     merge_two_sorted(&left_sorted, &right_sorted)
 }
 /// Merge two sorted `f64` slices into one sorted `Vec`f64`.
-#[allow(dead_code)]
 pub fn merge_two_sorted(a: &[f64], b: &[f64]) -> Vec<f64> {
     let mut result = Vec::with_capacity(a.len() + b.len());
     let (mut i, mut j) = (0, 0);

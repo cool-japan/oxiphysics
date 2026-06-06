@@ -14,7 +14,6 @@
 //! - **Iterative solvers** (CG, preconditioned CG)
 //! - **Static analysis** driver ([`analysis::LinearStaticAnalysis`])
 #![warn(missing_docs)]
-#![allow(ambiguous_glob_reexports)]
 
 pub mod adaptive_mesh;
 pub mod analysis;
@@ -95,7 +94,14 @@ pub use perf_bench::{
     run_full_suite, run_suite, tridiagonal_csr,
 };
 
-pub use damage::*;
+pub use damage::{
+    CoupledDamagePlasticity, CrackBandModel, DamageBandLocalization, DamageCreepCoupling,
+    DamageEvolutionLaw, DamageHomogenization, DamageLawType, DamageMechanicsElement,
+    DamagePlasticityState, DamageRateLimiter, DamageState, DamageVisualization,
+    ElementDeletionManager, FailureMode, FatigueDamageModel, GursonModel, IsotropicDamage,
+    LemaitreCDM, LemaitreChabocheDamage, LemaitreDamage, MazarsDamage, NonLocalDamage,
+    NonlocalContinuumDamage, ScalarIsotropicDamage, ThermalDamage,
+};
 pub use electromechanics::*;
 pub use error::*;
 pub use homogenization::*;

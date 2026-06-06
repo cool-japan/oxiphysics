@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -23,31 +22,28 @@ use rand::RngExt;
 // ── Scalar / vector helpers ───────────────────────────────────────────────────
 
 /// Dot product of two equal-length slices.
-#[allow(dead_code)]
+#[cfg(test)]
 fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
 /// Euclidean norm of a slice.
-#[allow(dead_code)]
+#[cfg(test)]
 fn norm(v: &[f64]) -> f64 {
     dot(v, v).sqrt()
 }
 
 /// Squared Euclidean distance between two equal-length slices.
-#[allow(dead_code)]
 fn dist_sq(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum()
 }
 
 /// Euclidean distance between two configurations.
-#[allow(dead_code)]
 pub fn config_distance(a: &[f64], b: &[f64]) -> f64 {
     dist_sq(a, b).sqrt()
 }
 
 /// Linear interpolation between two configurations at parameter t ∈ \[0, 1\].
-#[allow(dead_code)]
 pub fn config_lerp(a: &[f64], b: &[f64], t: f64) -> Vec<f64> {
     a.iter()
         .zip(b.iter())
@@ -56,7 +52,6 @@ pub fn config_lerp(a: &[f64], b: &[f64], t: f64) -> Vec<f64> {
 }
 
 /// Clamp `x` to `[lo, hi]`.
-#[allow(dead_code)]
 fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
     x.max(lo).min(hi)
 }
@@ -66,7 +61,6 @@ fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
 /// Represents the configuration space of a robot with `n` joints.
 ///
 /// Each joint has lower and upper limits and a type (revolute or prismatic).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConfigurationSpace {
     /// Number of degrees of freedom.
@@ -85,7 +79,6 @@ impl ConfigurationSpace {
     /// * `lower_limits` – per-joint lower bound.
     /// * `upper_limits` – per-joint upper bound.
     /// * `step_size`    – per-joint maximum interpolation step.
-    #[allow(dead_code)]
     pub fn new(lower_limits: Vec<f64>, upper_limits: Vec<f64>, step_size: Vec<f64>) -> Self {
         let dof = lower_limits.len();
         Self {
@@ -97,7 +90,6 @@ impl ConfigurationSpace {
     }
 
     /// Create a C-space with uniform limits `[-limit, +limit]` for all joints.
-    #[allow(dead_code)]
     pub fn uniform(dof: usize, limit: f64, step: f64) -> Self {
         Self {
             dof,
@@ -108,7 +100,6 @@ impl ConfigurationSpace {
     }
 
     /// Check whether a configuration satisfies all joint limits.
-    #[allow(dead_code)]
     pub fn in_bounds(&self, q: &[f64]) -> bool {
         q.iter()
             .zip(self.lower_limits.iter().zip(self.upper_limits.iter()))
@@ -116,7 +107,6 @@ impl ConfigurationSpace {
     }
 
     /// Clamp a configuration to the joint limits.
-    #[allow(dead_code)]
     pub fn clamp_to_bounds(&self, q: &[f64]) -> Vec<f64> {
         q.iter()
             .zip(self.lower_limits.iter().zip(self.upper_limits.iter()))
@@ -125,7 +115,6 @@ impl ConfigurationSpace {
     }
 
     /// Sample a random configuration uniformly within joint limits.
-    #[allow(dead_code)]
     pub fn sample_random(&self, rng: &mut impl Rng) -> Vec<f64> {
         self.lower_limits
             .iter()
@@ -137,7 +126,6 @@ impl ConfigurationSpace {
     /// Interpolate along the straight line from `a` to `b` with the
     /// per-joint step size.  Returns an ordered sequence of waypoints
     /// from `a` to `b` (inclusive).
-    #[allow(dead_code)]
     pub fn interpolate_path(&self, a: &[f64], b: &[f64]) -> Vec<Vec<f64>> {
         // Number of steps determined by the maximum joint travel / step_size.
         let n_steps = self
@@ -168,7 +156,6 @@ impl ConfigurationSpace {
 ///
 /// The constraint is satisfied when the FK position equals the target
 /// within tolerance.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PositionConstraint {
     /// Desired end-effector position \[x, y, z\] (m).
@@ -179,13 +166,11 @@ pub struct PositionConstraint {
 
 impl PositionConstraint {
     /// Create a position constraint.
-    #[allow(dead_code)]
     pub fn new(target: [f64; 3], tolerance: f64) -> Self {
         Self { target, tolerance }
     }
 
     /// Evaluate the constraint error vector (3D) given a FK position.
-    #[allow(dead_code)]
     pub fn error(&self, ee_position: [f64; 3]) -> [f64; 3] {
         [
             ee_position[0] - self.target[0],
@@ -195,7 +180,6 @@ impl PositionConstraint {
     }
 
     /// Check whether the constraint is satisfied.
-    #[allow(dead_code)]
     pub fn is_satisfied(&self, ee_position: [f64; 3]) -> bool {
         let e = self.error(ee_position);
         (e[0] * e[0] + e[1] * e[1] + e[2] * e[2]).sqrt() <= self.tolerance
@@ -206,7 +190,6 @@ impl PositionConstraint {
 ///
 /// Constrains the z-axis of the end-effector frame to point along a
 /// target direction, within an angular tolerance.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OrientationConstraint {
     /// Desired z-axis direction (unit vector).
@@ -217,7 +200,6 @@ pub struct OrientationConstraint {
 
 impl OrientationConstraint {
     /// Create an orientation constraint.
-    #[allow(dead_code)]
     pub fn new(target_axis: [f64; 3], tolerance: f64) -> Self {
         // Normalize target axis
         let n = (target_axis[0] * target_axis[0]
@@ -232,7 +214,6 @@ impl OrientationConstraint {
     }
 
     /// Angular error between actual z-axis `ee_axis` and the target axis (rad).
-    #[allow(dead_code)]
     pub fn angular_error(&self, ee_axis: [f64; 3]) -> f64 {
         let d = clamp(
             self.target_axis[0] * ee_axis[0]
@@ -245,7 +226,6 @@ impl OrientationConstraint {
     }
 
     /// Check whether the orientation constraint is satisfied.
-    #[allow(dead_code)]
     pub fn is_satisfied(&self, ee_axis: [f64; 3]) -> bool {
         self.angular_error(ee_axis) <= self.tolerance
     }
@@ -254,7 +234,6 @@ impl OrientationConstraint {
 // ── Forward Kinematics (Denavit-Hartenberg) ───────────────────────────────────
 
 /// A single DH joint (standard DH parameters).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct DhJoint {
     /// Link length a (m).
@@ -269,7 +248,6 @@ pub struct DhJoint {
 
 impl DhJoint {
     /// Create a DH joint.
-    #[allow(dead_code)]
     pub fn new(a: f64, alpha: f64, d: f64, theta_offset: f64) -> Self {
         Self {
             a,
@@ -283,7 +261,6 @@ impl DhJoint {
     ///
     /// Uses the standard DH convention.
     /// The matrix is stored row-major as `[[f64; 4\]; 4]`.
-    #[allow(dead_code)]
     pub fn transform(&self, theta: f64) -> [[f64; 4]; 4] {
         let th = theta + self.theta_offset;
         let ct = th.cos();
@@ -302,7 +279,6 @@ impl DhJoint {
 }
 
 /// Multiply two 4×4 homogeneous matrices.
-#[allow(dead_code)]
 fn mat4_mul(a: [[f64; 4]; 4], b: [[f64; 4]; 4]) -> [[f64; 4]; 4] {
     let mut r = [[0.0; 4]; 4];
     for i in 0..4 {
@@ -318,7 +294,6 @@ fn mat4_mul(a: [[f64; 4]; 4], b: [[f64; 4]; 4]) -> [[f64; 4]; 4] {
 /// Simple serial DH chain forward kinematics.
 ///
 /// Returns the 4×4 end-effector transform T_0e.
-#[allow(dead_code)]
 pub fn forward_kinematics(joints: &[DhJoint], q: &[f64]) -> [[f64; 4]; 4] {
     let mut t = [
         [1.0, 0.0, 0.0, 0.0],
@@ -333,13 +308,11 @@ pub fn forward_kinematics(joints: &[DhJoint], q: &[f64]) -> [[f64; 4]; 4] {
 }
 
 /// Extract the end-effector position from a 4×4 transform.
-#[allow(dead_code)]
 pub fn ee_position(t: [[f64; 4]; 4]) -> [f64; 3] {
     [t[0][3], t[1][3], t[2][3]]
 }
 
 /// Extract the z-axis (column 2) of the rotation part from a 4×4 transform.
-#[allow(dead_code)]
 pub fn ee_z_axis(t: [[f64; 4]; 4]) -> [f64; 3] {
     [t[0][2], t[1][2], t[2][2]]
 }
@@ -348,7 +321,6 @@ pub fn ee_z_axis(t: [[f64; 4]; 4]) -> [f64; 3] {
 
 /// Compute the numerical Jacobian J (3×n) of end-effector position
 /// with respect to joint angles using central differences.
-#[allow(dead_code)]
 pub fn numerical_jacobian(joints: &[DhJoint], q: &[f64], delta: f64) -> Vec<[f64; 3]> {
     let n = q.len();
     let mut jac = vec![[0.0_f64; 3]; n];
@@ -376,7 +348,6 @@ pub fn numerical_jacobian(joints: &[DhJoint], q: &[f64], delta: f64) -> Vec<[f64
 /// (Levenberg-Marquardt) Jacobian pseudoinverse.
 ///
 /// Solves for joint angles q such that FK(q) = target_position.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IkSolver {
     /// DH kinematic chain.
@@ -393,7 +364,6 @@ pub struct IkSolver {
 
 impl IkSolver {
     /// Create a new IK solver.
-    #[allow(dead_code)]
     pub fn new(
         joints: Vec<DhJoint>,
         cspace: ConfigurationSpace,
@@ -413,7 +383,6 @@ impl IkSolver {
     /// Solve IK from initial guess `q0` towards `target`.
     ///
     /// Returns `(q_solution, converged)`.
-    #[allow(dead_code)]
     pub fn solve(&self, q0: &[f64], target: [f64; 3]) -> (Vec<f64>, bool) {
         let mut q = q0.to_vec();
         let n = q.len();
@@ -443,8 +412,8 @@ impl IkSolver {
                 }
             }
             // Add damping
-            for i in 0..3 {
-                jjt[i][i] += lam2;
+            for (i, row) in jjt.iter_mut().enumerate() {
+                row[i] += lam2;
             }
 
             // Invert 3×3
@@ -508,7 +477,6 @@ impl IkSolver {
 ///
 /// The constraint is expressed as a scalar function c(q) = 0.  The
 /// projection moves q along the gradient −∇c until c ≈ 0.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ManifoldProjector {
     /// Step size for gradient descent.
@@ -521,7 +489,6 @@ pub struct ManifoldProjector {
 
 impl ManifoldProjector {
     /// Create a new manifold projector.
-    #[allow(dead_code)]
     pub fn new(step_size: f64, max_iter: usize, tolerance: f64) -> Self {
         Self {
             step_size,
@@ -536,7 +503,6 @@ impl ManifoldProjector {
     /// `Vec`f64` of the same length as `q`.
     ///
     /// Returns `(projected_q, converged)`.
-    #[allow(dead_code)]
     pub fn project<F>(&self, q: &[f64], constraint: F) -> (Vec<f64>, bool)
     where
         F: Fn(&[f64]) -> (f64, Vec<f64>),
@@ -571,7 +537,6 @@ pub trait ValidityChecker: Send + Sync {
 }
 
 /// A trivial validity checker that accepts all configurations.
-#[allow(dead_code)]
 pub struct AlwaysValidChecker;
 
 impl ValidityChecker for AlwaysValidChecker {
@@ -582,7 +547,6 @@ impl ValidityChecker for AlwaysValidChecker {
 }
 
 /// A spherical obstacle in configuration space for testing.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SphereObstacle {
     /// Center configuration.
@@ -593,7 +557,6 @@ pub struct SphereObstacle {
 
 impl SphereObstacle {
     /// Create a spherical C-space obstacle.
-    #[allow(dead_code)]
     pub fn new(center: Vec<f64>, radius: f64) -> Self {
         Self { center, radius }
     }
@@ -609,7 +572,6 @@ impl ValidityChecker for SphereObstacle {
 // ── PRM (Probabilistic Roadmap) ───────────────────────────────────────────────
 
 /// A node in the PRM graph.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PrmNode {
     /// Configuration vector.
@@ -620,7 +582,6 @@ pub struct PrmNode {
 
 impl PrmNode {
     /// Create a new PRM node.
-    #[allow(dead_code)]
     pub fn new(config: Vec<f64>) -> Self {
         Self {
             config,
@@ -630,7 +591,6 @@ impl PrmNode {
 }
 
 /// Probabilistic Roadmap planner.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct PrmPlanner {
     /// Sampled nodes in the roadmap.
@@ -645,7 +605,6 @@ pub struct PrmPlanner {
 
 impl PrmPlanner {
     /// Create a new PRM planner.
-    #[allow(dead_code)]
     pub fn new(cspace: ConfigurationSpace, connection_radius: f64, max_nodes: usize) -> Self {
         Self {
             nodes: Vec::new(),
@@ -657,7 +616,6 @@ impl PrmPlanner {
 
     /// Build the roadmap by sampling random valid configurations and
     /// connecting nearby nodes.
-    #[allow(dead_code)]
     pub fn build(&mut self, checker: &dyn ValidityChecker, rng: &mut impl Rng) {
         while self.nodes.len() < self.max_nodes {
             let q = self.cspace.sample_random(rng);
@@ -681,7 +639,6 @@ impl PrmPlanner {
     /// Add a configuration (start or goal) and connect it to the roadmap.
     ///
     /// Returns the index of the inserted node.
-    #[allow(dead_code)]
     pub fn add_and_connect(&mut self, q: Vec<f64>) -> usize {
         let new_idx = self.nodes.len();
         let mut new_node = PrmNode::new(q.clone());
@@ -700,7 +657,6 @@ impl PrmPlanner {
     ///
     /// Returns the path as a vector of configuration indices, or `None` if
     /// no path exists.
-    #[allow(dead_code)]
     pub fn query(&self, start_idx: usize, goal_idx: usize) -> Option<Vec<usize>> {
         let n = self.nodes.len();
         let mut dist = vec![f64::INFINITY; n];
@@ -759,7 +715,6 @@ impl PrmPlanner {
 // ── RRT (Rapidly-Exploring Random Tree) ───────────────────────────────────────
 
 /// A node in the RRT tree.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RrtNode {
     /// Configuration.
@@ -772,7 +727,6 @@ pub struct RrtNode {
 
 impl RrtNode {
     /// Create a new RRT node.
-    #[allow(dead_code)]
     pub fn new(config: Vec<f64>, parent: usize, cost: f64) -> Self {
         Self {
             config,
@@ -786,7 +740,6 @@ impl RrtNode {
 ///
 /// Grows a tree from `start` towards `goal` by iteratively sampling
 /// random configurations and extending the nearest tree node.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct RrtPlanner {
     /// C-space.
@@ -803,7 +756,6 @@ pub struct RrtPlanner {
 
 impl RrtPlanner {
     /// Create a new RRT planner.
-    #[allow(dead_code)]
     pub fn new(
         cspace: ConfigurationSpace,
         step: f64,
@@ -823,7 +775,6 @@ impl RrtPlanner {
     /// Plan from `start` to `goal`.
     ///
     /// Returns a path as ordered configurations, or `None` if planning failed.
-    #[allow(dead_code)]
     pub fn plan(
         &self,
         start: Vec<f64>,
@@ -868,7 +819,6 @@ impl RrtPlanner {
     }
 
     /// Extend from `from` towards `to` by at most `step` distance.
-    #[allow(dead_code)]
     fn extend(&self, from: &[f64], to: &[f64]) -> Vec<f64> {
         let d = config_distance(from, to);
         if d < 1e-15 {
@@ -879,7 +829,6 @@ impl RrtPlanner {
     }
 
     /// Reconstruct the path from root to node `idx`.
-    #[allow(dead_code)]
     fn extract_path(&self, tree: &[RrtNode], idx: usize) -> Vec<Vec<f64>> {
         let mut path = Vec::new();
         let mut cur = idx;
@@ -899,7 +848,6 @@ impl RrtPlanner {
 
 /// CBIRRT planner: grows two trees (from start and goal) simultaneously
 /// while projecting samples onto a constraint manifold.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct CbiRrtPlanner {
     /// C-space.
@@ -916,7 +864,6 @@ pub struct CbiRrtPlanner {
 
 impl CbiRrtPlanner {
     /// Create a new CBIRRT planner.
-    #[allow(dead_code)]
     pub fn new(
         cspace: ConfigurationSpace,
         step: f64,
@@ -936,7 +883,6 @@ impl CbiRrtPlanner {
     /// Plan from `start` to `goal` subject to constraint `c(q) = 0`.
     ///
     /// Returns a path (if found) or `None`.
-    #[allow(dead_code)]
     pub fn plan<F>(
         &self,
         start: Vec<f64>,
@@ -996,7 +942,6 @@ impl CbiRrtPlanner {
     }
 
     /// Find index of nearest node in `tree` to `q`.
-    #[allow(dead_code)]
     fn nearest_idx(tree: &[RrtNode], q: &[f64]) -> usize {
         tree.iter()
             .enumerate()
@@ -1010,7 +955,6 @@ impl CbiRrtPlanner {
     }
 
     /// Extend from `from` towards `to` by at most `step`.
-    #[allow(dead_code)]
     fn extend_step(from: &[f64], to: &[f64], step: f64) -> Vec<f64> {
         let d = config_distance(from, to);
         if d < 1e-15 {
@@ -1020,7 +964,6 @@ impl CbiRrtPlanner {
     }
 
     /// Backtrack from node `idx` to root, returning ordered configs.
-    #[allow(dead_code)]
     fn backtrack(tree: &[RrtNode], idx: usize) -> Vec<Vec<f64>> {
         let mut path = Vec::new();
         let mut cur = idx;
@@ -1042,7 +985,6 @@ impl CbiRrtPlanner {
 // ── Trajectory Optimization ───────────────────────────────────────────────────
 
 /// A waypoint in a trajectory.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Waypoint {
     /// Joint configuration.
@@ -1053,14 +995,12 @@ pub struct Waypoint {
 
 impl Waypoint {
     /// Create a waypoint.
-    #[allow(dead_code)]
     pub fn new(config: Vec<f64>, time: f64) -> Self {
         Self { config, time }
     }
 }
 
 /// Cost function weights for trajectory optimization.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TrajOptWeights {
     /// Weight on joint velocity smoothness.
@@ -1073,7 +1013,6 @@ pub struct TrajOptWeights {
 
 impl TrajOptWeights {
     /// Create weights.
-    #[allow(dead_code)]
     pub fn new(smoothness: f64, constraint_penalty: f64, path_length: f64) -> Self {
         Self {
             smoothness,
@@ -1088,7 +1027,6 @@ impl TrajOptWeights {
 /// Refines an initial trajectory (sequence of waypoints) by minimizing a
 /// cost that balances smoothness, path length, and constraint violations.
 /// Uses gradient-free perturbation (coordinate descent on each waypoint).
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct TrajectoryOptimizer {
     /// C-space.
@@ -1103,7 +1041,6 @@ pub struct TrajectoryOptimizer {
 
 impl TrajectoryOptimizer {
     /// Create a new trajectory optimizer.
-    #[allow(dead_code)]
     pub fn new(
         cspace: ConfigurationSpace,
         weights: TrajOptWeights,
@@ -1122,7 +1059,6 @@ impl TrajectoryOptimizer {
     ///
     /// * `wps`        – waypoints to evaluate.
     /// * `constraint` – returns the constraint violation magnitude for a config.
-    #[allow(dead_code)]
     pub fn cost<F>(&self, wps: &[Waypoint], constraint: &F) -> f64
     where
         F: Fn(&[f64]) -> f64,
@@ -1166,7 +1102,6 @@ impl TrajectoryOptimizer {
     /// Start and end waypoints are kept fixed.
     ///
     /// Returns the optimized trajectory.
-    #[allow(dead_code)]
     pub fn optimize<F>(
         &self,
         initial: Vec<Waypoint>,
@@ -1222,7 +1157,6 @@ impl TrajectoryOptimizer {
 /// Combines a kinematic chain with a position target as a C-space constraint.
 ///
 /// `c(q) = ‖FK_pos(q) − p_target‖²`
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TaskSpaceConstraint {
     /// DH chain for FK.
@@ -1233,7 +1167,6 @@ pub struct TaskSpaceConstraint {
 
 impl TaskSpaceConstraint {
     /// Create a task-space constraint.
-    #[allow(dead_code)]
     pub fn new(joints: Vec<DhJoint>, target: [f64; 3]) -> Self {
         Self { joints, target }
     }
@@ -1241,7 +1174,6 @@ impl TaskSpaceConstraint {
     /// Evaluate the constraint value and its analytical gradient.
     ///
     /// Returns `(c, ∇c)` where `c = ‖p − p_target‖²`.
-    #[allow(dead_code)]
     pub fn evaluate(&self, q: &[f64]) -> (f64, Vec<f64>) {
         let t = forward_kinematics(&self.joints, q);
         let p = ee_position(t);
@@ -1385,14 +1317,10 @@ mod tests {
         let j = DhJoint::new(0.0, 0.0, 0.0, 0.0);
         let t = j.transform(0.0);
         // Should be identity
-        for i in 0..4 {
-            for k in 0..4 {
+        for (i, row) in t.iter().enumerate() {
+            for (k, &val) in row.iter().enumerate() {
                 let exp = if i == k { 1.0 } else { 0.0 };
-                assert!(
-                    (t[i][k] - exp).abs() < 1e-6,
-                    "t[{i}][{k}]={} expected {exp}",
-                    t[i][k]
-                );
+                assert!((val - exp).abs() < 1e-6, "t[{i}][{k}]={val} expected {exp}",);
             }
         }
     }

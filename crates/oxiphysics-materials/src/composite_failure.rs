@@ -11,9 +11,6 @@
 //! - [`ProgressiveDamage`] — stiffness degradation, ply-by-ply failure, last-ply failure
 //! - [`DelamCriterion`] — quadratic delamination, ERR (G_I/G_II/G_III), mixed-mode B-K law
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

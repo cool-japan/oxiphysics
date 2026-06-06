@@ -16,8 +16,6 @@
 //! - [`hertz_rail_contact_width`] — Hertz contact half-width
 //! - [`grade_resistance`] — gravitational grade resistance
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

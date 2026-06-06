@@ -1,4 +1,3 @@
-#![allow(clippy::manual_strip)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -439,20 +438,20 @@ impl EnsightReader {
         for line in reader.lines() {
             let line = line?;
             let trimmed = line.trim();
-            if trimmed.starts_with("model:") {
-                let rest = trimmed["model:".len()..].trim();
+            if let Some(rest) = trimmed.strip_prefix("model:") {
+                let rest = rest.trim();
                 // May be "1 filename" (transient) or just "filename"
                 let parts: Vec<&str> = rest.splitn(2, ' ').collect();
                 geo_file = parts.last().unwrap_or(&"").to_string();
-            } else if trimmed.starts_with("scalar per node:") {
-                let rest = trimmed["scalar per node:".len()..].trim();
+            } else if let Some(rest) = trimmed.strip_prefix("scalar per node:") {
+                let rest = rest.trim();
                 let parts: Vec<&str> = rest.splitn(2, ' ').collect();
                 if parts.len() == 2 {
                     case.scalar_files
                         .push((parts[0].to_string(), parts[1].to_string()));
                 }
-            } else if trimmed.starts_with("vector per node:") {
-                let rest = trimmed["vector per node:".len()..].trim();
+            } else if let Some(rest) = trimmed.strip_prefix("vector per node:") {
+                let rest = rest.trim();
                 let parts: Vec<&str> = rest.splitn(2, ' ').collect();
                 if parts.len() == 2 {
                     case.vector_files

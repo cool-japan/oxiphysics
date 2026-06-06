@@ -17,9 +17,6 @@
 //! - **Aerodynamic fairing model**: drag & downforce for fairing geometries
 //! - **Lean-angle limiter**: hard and soft lean limits with warning thresholds
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -61,6 +58,7 @@ fn deg2rad(deg: f64) -> f64 {
 }
 
 /// Radians to degrees.
+#[cfg(test)]
 #[inline]
 fn rad2deg(rad: f64) -> f64 {
     rad * 180.0 / PI

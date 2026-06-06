@@ -1,5 +1,3 @@
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,9 +9,6 @@
 //! - [`SizingOptimization`]      — cross-section sizing for trusses/beams
 //! - [`MultiObjectiveFEM`]       — Pareto front stiffness vs. mass
 //! - [`ManufacturingConstraints`] — minimum length scale, symmetry, overhang
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -753,7 +748,7 @@ impl SizingOptimization {
     /// Run sizing optimization loop.
     ///
     /// `oracle` maps current areas to `(compliance, sensitivities)`.
-    pub fn run<F>(&self, sections: &mut Vec<CrossSection>, oracle: F) -> SizingResult
+    pub fn run<F>(&self, sections: &mut [CrossSection], oracle: F) -> SizingResult
     where
         F: Fn(&[f64]) -> (f64, Vec<f64>),
     {
@@ -936,7 +931,7 @@ impl ManufacturingConstraints {
     /// Enforce left-right symmetry on a 2-D density grid.
     ///
     /// Each element density is replaced by the average of itself and its mirror.
-    pub fn enforce_symmetry_lr(&self, densities: &mut Vec<Vec<f64>>) {
+    pub fn enforce_symmetry_lr(&self, densities: &mut [Vec<f64>]) {
         if !self.symmetry_lr {
             return;
         }
@@ -953,7 +948,7 @@ impl ManufacturingConstraints {
     /// Apply a minimum length scale filter by eroding tiny features.
     ///
     /// Elements below `min_length_scale * mean_density` are zeroed.
-    pub fn apply_min_length_scale(&self, densities: &mut Vec<f64>) {
+    pub fn apply_min_length_scale(&self, densities: &mut [f64]) {
         if self.min_length_scale <= 0.0 {
             return;
         }
@@ -1197,7 +1192,7 @@ mod tests {
         let adj: Vec<Vec<usize>> = vec![vec![1], vec![0, 2], vec![1, 3], vec![2]];
         let filtered = density_filter(&densities, &adj, 1.5);
         for &f in &filtered {
-            assert!(f >= 0.0 && f <= 1.0);
+            assert!((0.0..=1.0).contains(&f));
         }
     }
 
@@ -1312,7 +1307,7 @@ mod tests {
         let d: Vec<f64> = (0..11).map(|i| i as f64 / 10.0).collect();
         let proj = heaviside_projection(&d, 3.0, 0.5);
         for &p in &proj {
-            assert!(p >= 0.0 && p <= 1.0 + 1e-10, "out of range: {p}");
+            assert!((0.0..=1.0 + 1e-10).contains(&p), "out of range: {p}");
         }
     }
 
@@ -1477,7 +1472,7 @@ mod tests {
         let sens = vec![-0.5_f64; n];
         let result = topology_optimize(&params, n, &sens);
         for &r in &result {
-            assert!(r >= 1e-3 - 1e-10 && r <= 1.0 + 1e-10);
+            assert!((1e-3 - 1e-10..=1.0 + 1e-10).contains(&r));
         }
     }
 
@@ -1549,7 +1544,7 @@ mod tests {
         topo.apply_density_filter(&adj);
         // densities should still be in range
         for &d in &topo.densities {
-            assert!(d >= 0.0 && d <= 1.0 + 1e-10);
+            assert!((0.0..=1.0 + 1e-10).contains(&d));
         }
     }
 
@@ -1560,7 +1555,7 @@ mod tests {
         let mut topo = TopologyOptimization::new(n, params);
         topo.apply_heaviside(5.0, 0.5);
         for &d in &topo.densities {
-            assert!(d >= 0.0 && d <= 1.0 + 1e-10);
+            assert!((0.0..=1.0 + 1e-10).contains(&d));
         }
     }
 
@@ -1678,7 +1673,7 @@ mod tests {
             (c, s)
         });
         for p in &front {
-            assert!(p.mass >= 0.0 && p.mass <= 1.0 + 1e-10);
+            assert!((0.0..=1.0 + 1e-10).contains(&p.mass));
         }
     }
 
@@ -1785,7 +1780,10 @@ mod tests {
         let grid = mbb_beam_topology_opt(3, 6, 0.4, 3.0, 1.5, 5);
         for row in &grid {
             for &d in row {
-                assert!(d >= 0.0 && d <= 1.0 + 1e-10, "density out of range: {d}");
+                assert!(
+                    (0.0..=1.0 + 1e-10).contains(&d),
+                    "density out of range: {d}"
+                );
             }
         }
     }

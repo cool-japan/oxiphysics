@@ -2,10 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// Status of a vertex in the FMM algorithm.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum FmmStatus {

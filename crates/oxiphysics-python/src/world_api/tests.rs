@@ -1,10 +1,8 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! Tests for all world_api submodules.
 
-#![allow(missing_docs)]
 #![cfg(test)]
 
 use super::*;
@@ -899,8 +897,8 @@ fn test_quat_mul_identity() {
     let id = [0.0, 0.0, 0.0, 1.0_f64];
     let q = [0.5_f64, 0.5, 0.5, 0.5];
     let result = quat_mul(id, q);
-    for i in 0..4 {
-        assert!((result[i] - q[i]).abs() < 1e-10, "index {} differs", i);
+    for (i, (&r, &qi)) in result.iter().zip(q.iter()).enumerate() {
+        assert!((r - qi).abs() < 1e-10, "index {} differs", i);
     }
 }
 
@@ -941,8 +939,8 @@ fn test_array_vec3_roundtrip() {
     let arr = [1.0_f64, 2.0, 3.0];
     let v = array_to_vec3(arr);
     let back = vec3_to_array(v);
-    for i in 0..3 {
-        assert!((arr[i] - back[i]).abs() < 1e-15);
+    for (&a, &b) in arr.iter().zip(back.iter()) {
+        assert!((a - b).abs() < 1e-15);
     }
 }
 
@@ -1014,8 +1012,8 @@ fn test_inertia_box_diagonal_positive() {
     let rb = PyRigidBody::new(5.0, [1.0, 2.0, 3.0]);
     let inertia = rb.compute_moment_of_inertia_box();
     let diag = inertia.diagonal();
-    for i in 0..3 {
-        assert!(diag[i] > 0.0, "diagonal element {} must be positive", i);
+    for (i, &d) in diag.iter().enumerate() {
+        assert!(d > 0.0, "diagonal element {} must be positive", i);
     }
 }
 

@@ -14,8 +14,6 @@
 //! - **Boundary handling**: Penalty planes and Akinci boundary particles
 //! - **Time stepping**: CFL-based adaptive time stepping
 //! - **Simulation**: High-level simulation driver
-#![allow(missing_docs)]
-#![allow(dead_code)]
 
 pub mod adaptive;
 pub mod adaptive_h;

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -13,7 +12,6 @@ use oxifft;
 /// Coulomb constant in GROMACS-compatible units: kJ*angstrom*mol^-1*e^-2.
 ///
 /// Value: 138.935458 kJ*angstrom/(mol*e^2).
-#[allow(dead_code)]
 pub const COULOMB_K: f64 = 138.935_458;
 
 // ---------------------------------------------------------------------------
@@ -26,7 +24,6 @@ pub const COULOMB_K: f64 = 138.935_458;
 /// ```text
 /// E = K * q_i * q_j / r
 /// ```
-#[allow(dead_code)]
 pub fn coulomb_energy(q_i: f64, q_j: f64, r: f64) -> f64 {
     COULOMB_K * q_i * q_j / r
 }
@@ -39,7 +36,6 @@ pub fn coulomb_energy(q_i: f64, q_j: f64, r: f64) -> f64 {
 /// ```text
 /// F = K * q_i * q_j / r^2
 /// ```
-#[allow(dead_code)]
 pub fn coulomb_force_scalar(q_i: f64, q_j: f64, r: f64) -> f64 {
     COULOMB_K * q_i * q_j / (r * r)
 }
@@ -51,7 +47,6 @@ pub fn coulomb_force_scalar(q_i: f64, q_j: f64, r: f64) -> f64 {
 /// Complementary error function approximation (Abramowitz & Stegun 7.1.26).
 ///
 /// Maximum absolute error ~ 1.5e-7.
-#[allow(dead_code)]
 pub fn erfc_approx(x: f64) -> f64 {
     if x < 0.0 {
         return 2.0 - erfc_approx(-x);
@@ -73,7 +68,6 @@ pub fn erfc_approx(x: f64) -> f64 {
 /// ```text
 /// E = K * q_i * q_j * erfc(alpha * r) / r
 /// ```
-#[allow(dead_code)]
 pub fn ewald_direct_energy(q_i: f64, q_j: f64, r: f64, alpha: f64) -> f64 {
     COULOMB_K * q_i * q_j * erfc_approx(alpha * r) / r
 }
@@ -84,7 +78,6 @@ pub fn ewald_direct_energy(q_i: f64, q_j: f64, r: f64, alpha: f64) -> f64 {
 /// ```text
 /// E_self = -K * alpha / sqrt(pi) * sum qi^2
 /// ```
-#[allow(dead_code)]
 pub fn ewald_self_energy(charges: &[f64], alpha: f64) -> f64 {
     let sum_q2: f64 = charges.iter().map(|q| q * q).sum();
     -COULOMB_K * alpha / std::f64::consts::PI.sqrt() * sum_q2
@@ -98,7 +91,6 @@ pub fn ewald_self_energy(charges: &[f64], alpha: f64) -> f64 {
 ///
 /// Provides nearest-grid-point (NGP) charge spreading and a simplified
 /// reciprocal-space energy estimate (placeholder for a full FFT-based PME).
-#[allow(dead_code)]
 pub struct PmeLattice {
     /// Number of grid points along x.
     pub nx: usize,
@@ -114,7 +106,6 @@ pub struct PmeLattice {
 
 impl PmeLattice {
     /// Create a new zero-initialised [`PmeLattice`].
-    #[allow(dead_code)]
     pub fn new(nx: usize, ny: usize, nz: usize, box_lengths: [f64; 3]) -> Self {
         Self {
             nx,
@@ -128,7 +119,6 @@ impl PmeLattice {
     /// Map a real-space position to a grid-cell index using fractional coordinates.
     ///
     /// Coordinates are wrapped periodically into \[0, L) before mapping.
-    #[allow(dead_code)]
     pub fn cell_index(&self, pos: [f64; 3]) -> (usize, usize, usize) {
         let ix = {
             let frac = pos[0].rem_euclid(self.box_lengths[0]) / self.box_lengths[0];
@@ -148,7 +138,6 @@ impl PmeLattice {
     /// Spread charges onto the grid using nearest-grid-point (NGP) assignment.
     ///
     /// Each charge is assigned entirely to the single nearest grid cell.
-    #[allow(dead_code)]
     pub fn spread_charges(&mut self, positions: &[[f64; 3]], charges: &[f64]) {
         for (pos, &q) in positions.iter().zip(charges.iter()) {
             let (ix, iy, iz) = self.cell_index(*pos);
@@ -157,7 +146,6 @@ impl PmeLattice {
     }
 
     /// Zero all grid values.
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         for v in self.grid.iter_mut() {
             *v = 0.0;
@@ -176,7 +164,6 @@ impl PmeLattice {
     /// # Note
     /// This method replaces the former proxy stub that returned
     /// `sum(grid^2) * volume / N^2`.
-    #[allow(dead_code)]
     pub fn reciprocal_energy_approx(&self) -> f64 {
         let n_total = self.nx * self.ny * self.nz;
         let volume = self.box_lengths[0] * self.box_lengths[1] * self.box_lengths[2];
@@ -235,7 +222,6 @@ impl PmeLattice {
     }
 
     /// Total charge on the grid.
-    #[allow(dead_code)]
     pub fn total_charge(&self) -> f64 {
         self.grid.iter().sum()
     }
@@ -259,7 +245,6 @@ impl PmeLattice {
 /// - c_rf = 3*epsilon_r / (2*epsilon_r + 1) / cutoff
 ///
 /// Returns 0 if `r >= cutoff`.
-#[allow(dead_code)]
 pub fn reaction_field_correction(qi: f64, qj: f64, r: f64, cutoff: f64, epsilon_r: f64) -> f64 {
     if r >= cutoff || r <= 0.0 {
         return 0.0;
@@ -283,7 +268,6 @@ pub fn reaction_field_correction(qi: f64, qj: f64, r: f64, cutoff: f64, epsilon_
 /// # Arguments
 /// * `positions` - atom positions (angstrom).
 /// * `charges`   - atom charges (e).
-#[allow(dead_code)]
 pub fn coulomb_energy_direct(positions: &[[f64; 3]], charges: &[f64]) -> f64 {
     let n = positions.len();
     assert_eq!(charges.len(), n, "positions and charges length mismatch");
@@ -308,7 +292,6 @@ pub fn coulomb_energy_direct(positions: &[[f64; 3]], charges: &[f64]) -> f64 {
 /// Sign convention: for same-sign charges, the force on atom i points away
 /// from atom j (repulsive); for opposite-sign charges, force on atom i
 /// points toward atom j (attractive).
-#[allow(dead_code)]
 pub fn coulomb_forces_direct(positions: &[[f64; 3]], charges: &[f64]) -> Vec<[f64; 3]> {
     let n = positions.len();
     assert_eq!(charges.len(), n, "positions and charges length mismatch");
@@ -349,7 +332,6 @@ pub fn coulomb_forces_direct(positions: &[[f64; 3]], charges: &[f64]) -> Vec<[f6
 /// separated by displacement `r_vec` (Å).
 ///
 /// E = (1/r³) * \[d1·d2 - 3*(d1·r̂)*(d2·r̂)\] * COULOMB_K
-#[allow(dead_code)]
 pub fn dipole_dipole_energy(d1: [f64; 3], d2: [f64; 3], r_vec: [f64; 3]) -> f64 {
     let r2: f64 = r_vec.iter().map(|&x| x * x).sum();
     if r2 < 1e-20 {
@@ -366,7 +348,6 @@ pub fn dipole_dipole_energy(d1: [f64; 3], d2: [f64; 3], r_vec: [f64; 3]) -> f64 
 /// Compute the force on dipole 1 due to dipole 2 (kJ mol⁻¹ Å⁻¹).
 ///
 /// Returns `[f64; 3]` force vector on dipole 1.
-#[allow(dead_code)]
 pub fn dipole_dipole_force(d1: [f64; 3], d2: [f64; 3], r_vec: [f64; 3]) -> [f64; 3] {
     let r2: f64 = r_vec.iter().map(|&x| x * x).sum();
     if r2 < 1e-20 {
@@ -394,7 +375,6 @@ pub fn dipole_dipole_force(d1: [f64; 3], d2: [f64; 3], r_vec: [f64; 3]) -> [f64;
 /// due to a collection of point charges.
 ///
 /// Each field vector is `E_a = COULOMB_K * q / r³ * r_a`.
-#[allow(dead_code)]
 pub fn electric_field(
     source_positions: &[[f64; 3]],
     charges: &[f64],
@@ -426,7 +406,6 @@ pub fn electric_field(
 }
 
 /// Compute the electric potential (kJ mol⁻¹ e⁻¹) at a set of evaluation points.
-#[allow(dead_code)]
 pub fn electric_potential(
     source_positions: &[[f64; 3]],
     charges: &[f64],
@@ -460,7 +439,6 @@ pub fn electric_potential(
 ///
 /// `W[i][j] = COULOMB_K * q_i * q_j * exp(-kappa * r_ij) / r_ij`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ScreenedInteractionMatrix {
     /// Interaction energies (upper triangle stored).
     pub w: Vec<Vec<f64>>,
@@ -468,7 +446,6 @@ pub struct ScreenedInteractionMatrix {
     pub n: usize,
 }
 
-#[allow(dead_code)]
 impl ScreenedInteractionMatrix {
     /// Build the interaction matrix for `n` particles.
     ///
@@ -524,7 +501,6 @@ impl ScreenedInteractionMatrix {
 /// where S(k) = sum_i q_i * exp(i * k . r_i) is the structure factor.
 ///
 /// Since we work with real arithmetic, we compute |S(k)|^2 = Re(S)^2 + Im(S)^2.
-#[allow(dead_code)]
 pub fn ewald_reciprocal_k_energy(
     positions: &[[f64; 3]],
     charges: &[f64],
@@ -552,7 +528,6 @@ pub fn ewald_reciprocal_k_energy(
 /// Ewald reciprocal-space energy summed over a grid of k-vectors.
 ///
 /// Sums over vectors k = (nx, ny, nz) * 2*pi/L for -n_max <= n <= n_max.
-#[allow(dead_code)]
 pub fn ewald_reciprocal_energy_grid(
     positions: &[[f64; 3]],
     charges: &[f64],
@@ -586,13 +561,11 @@ pub fn ewald_reciprocal_energy_grid(
 /// Compute electric potential energy of a dipole mu in external field E.
 ///
 /// U = -mu . E
-#[allow(dead_code)]
 pub fn dipole_in_field_energy(mu: [f64; 3], e_field: [f64; 3]) -> f64 {
     -(mu[0] * e_field[0] + mu[1] * e_field[1] + mu[2] * e_field[2])
 }
 
 /// Torque on dipole mu in electric field E: tau = mu × E.
-#[allow(dead_code)]
 pub fn dipole_torque(mu: [f64; 3], e_field: [f64; 3]) -> [f64; 3] {
     [
         mu[1] * e_field[2] - mu[2] * e_field[1],
@@ -602,7 +575,6 @@ pub fn dipole_torque(mu: [f64; 3], e_field: [f64; 3]) -> [f64; 3] {
 }
 
 /// Compute the total dipole moment of a charge distribution.
-#[allow(dead_code)]
 pub fn total_dipole_moment(positions: &[[f64; 3]], charges: &[f64]) -> [f64; 3] {
     let mut mu = [0.0_f64; 3];
     for (pos, &q) in positions.iter().zip(charges.iter()) {
@@ -616,7 +588,6 @@ pub fn total_dipole_moment(positions: &[[f64; 3]], charges: &[f64]) -> [f64; 3] 
 /// Lennard-Jones + Coulomb combined pair energy.
 ///
 /// E = eps * \[(sigma/r)^12 - 2*(sigma/r)^6\] + K*qi*qj/r
-#[allow(dead_code)]
 pub fn lj_coulomb_pair_energy(qi: f64, qj: f64, r: f64, eps: f64, sigma: f64) -> f64 {
     if r < 1e-10 {
         return 0.0;
@@ -775,8 +746,8 @@ mod tests {
         let positions = [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]];
         let charges = [1.0, -1.0];
         let forces = coulomb_forces_direct(&positions, &charges);
-        for a in 0..3 {
-            let sum = forces[0][a] + forces[1][a];
+        for (a, (&f0a, &f1a)) in forces[0].iter().zip(forces[1].iter()).enumerate() {
+            let sum = f0a + f1a;
             assert!(
                 sum.abs() < 1e-10,
                 "Newton III violated on axis {a}: sum = {sum}"
@@ -881,8 +852,8 @@ mod tests {
         let positions = [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]];
         let charges = [1.0, -1.0];
         let forces = coulomb_forces_direct(&positions, &charges);
-        for a in 0..3 {
-            let sum = forces[0][a] + forces[1][a];
+        for (a, (&f0a, &f1a)) in forces[0].iter().zip(forces[1].iter()).enumerate() {
+            let sum = f0a + f1a;
             assert!(sum.abs() < 1e-10, "Newton III violated on axis {a}: {sum}");
         }
     }

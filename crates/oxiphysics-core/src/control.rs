@@ -1,12 +1,8 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! Control theory and systems: PID, state-space, transfer functions, Bode analysis,
 //! LQR, Kalman filter, MPC, adaptive control, fuzzy control, and neural controller.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -16,30 +12,27 @@ use std::f64::consts::PI;
 
 /// Matrix-vector multiply: C = A * b, where A is n×n and b is length n.
 fn mat_vec_mul(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
-    let n = a.len();
-    let mut out = vec![0.0; n];
-    for i in 0..n {
-        for j in 0..b.len() {
-            out[i] += a[i][j] * b[j];
-        }
-    }
-    out
+    a.iter()
+        .map(|row| row.iter().zip(b.iter()).map(|(aij, bj)| aij * bj).sum())
+        .collect()
 }
 
 /// Matrix-matrix multiply: C = A * B.
 fn mat_mul(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
-    let rows = a.len();
     let cols = b[0].len();
-    let inner = b.len();
-    let mut c = vec![vec![0.0; cols]; rows];
-    for i in 0..rows {
-        for j in 0..cols {
-            for k in 0..inner {
-                c[i][j] += a[i][k] * b[k][j];
-            }
-        }
-    }
-    c
+    a.iter()
+        .map(|row_a| {
+            (0..cols)
+                .map(|j| {
+                    row_a
+                        .iter()
+                        .zip(b.iter())
+                        .map(|(aik, brow)| aik * brow[j])
+                        .sum()
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// Transpose of a matrix.
@@ -50,9 +43,9 @@ fn mat_transpose(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let rows = a.len();
     let cols = a[0].len();
     let mut t = vec![vec![0.0; rows]; cols];
-    for i in 0..rows {
-        for j in 0..cols {
-            t[j][i] = a[i][j];
+    for (i, row) in a.iter().enumerate() {
+        for (j, &val) in row.iter().enumerate() {
+            t[j][i] = val;
         }
     }
     t
@@ -68,31 +61,21 @@ fn vec_scale(a: &[f64], s: f64) -> Vec<f64> {
     a.iter().map(|x| x * s).collect()
 }
 
-/// Dot product.
-fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
-}
-
 /// Identity matrix n×n.
 fn eye(n: usize) -> Vec<Vec<f64>> {
     let mut m = vec![vec![0.0; n]; n];
-    for i in 0..n {
-        m[i][i] = 1.0;
+    for (i, row) in m.iter_mut().enumerate() {
+        row[i] = 1.0;
     }
     m
 }
 
 /// Add two matrices element-wise.
 fn mat_add(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
-    let rows = a.len();
-    let cols = a[0].len();
-    let mut c = vec![vec![0.0; cols]; rows];
-    for i in 0..rows {
-        for j in 0..cols {
-            c[i][j] = a[i][j] + b[i][j];
-        }
-    }
-    c
+    a.iter()
+        .zip(b.iter())
+        .map(|(ra, rb)| ra.iter().zip(rb.iter()).map(|(x, y)| x + y).collect())
+        .collect()
 }
 
 /// Scale a matrix.
@@ -128,15 +111,15 @@ fn mat_inv(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
         if diag.abs() < 1e-14 {
             return None;
         }
-        for j in 0..(2 * n) {
-            aug[col][j] /= diag;
+        for cell in &mut aug[col] {
+            *cell /= diag;
         }
         for row in 0..n {
             if row != col {
                 let factor = aug[row][col];
-                for j in 0..(2 * n) {
-                    let val = aug[col][j] * factor;
-                    aug[row][j] -= val;
+                let col_row: Vec<f64> = aug[col].clone();
+                for (cell, &cv) in aug[row].iter_mut().zip(col_row.iter()) {
+                    *cell -= cv * factor;
                 }
             }
         }
@@ -547,11 +530,16 @@ impl BodeAnalysis {
         // Phase crossover: where phase ≈ -180°
         let mut phase_crossover_freq = 0.0;
         let mut gain_at_phase_cross = 0.0;
-        for i in 1..n {
-            if phases[i - 1] > -180.0 && phases[i] <= -180.0 {
-                let t = (-180.0 - phases[i - 1]) / (phases[i] - phases[i - 1]);
-                phase_crossover_freq = omegas[i - 1] + t * (omegas[i] - omegas[i - 1]);
-                gain_at_phase_cross = mags[i - 1] + t * (mags[i] - mags[i - 1]);
+        for (window_om, window_mag, window_ph) in omegas
+            .windows(2)
+            .zip(mags.windows(2))
+            .zip(phases.windows(2))
+            .map(|((wo, wm), wp)| (wo, wm, wp))
+        {
+            if window_ph[0] > -180.0 && window_ph[1] <= -180.0 {
+                let t = (-180.0 - window_ph[0]) / (window_ph[1] - window_ph[0]);
+                phase_crossover_freq = window_om[0] + t * (window_om[1] - window_om[0]);
+                gain_at_phase_cross = window_mag[0] + t * (window_mag[1] - window_mag[0]);
                 break;
             }
         }
@@ -560,11 +548,16 @@ impl BodeAnalysis {
         // Gain crossover: where magnitude ≈ 0 dB
         let mut gain_crossover_freq = 0.0;
         let mut phase_at_gain_cross = 0.0;
-        for i in 1..n {
-            if mags[i - 1] > 0.0 && mags[i] <= 0.0 {
-                let t = (0.0 - mags[i - 1]) / (mags[i] - mags[i - 1]);
-                gain_crossover_freq = omegas[i - 1] + t * (omegas[i] - omegas[i - 1]);
-                phase_at_gain_cross = phases[i - 1] + t * (phases[i] - phases[i - 1]);
+        for (window_om, window_mag, window_ph) in omegas
+            .windows(2)
+            .zip(mags.windows(2))
+            .zip(phases.windows(2))
+            .map(|((wo, wm), wp)| (wo, wm, wp))
+        {
+            if window_mag[0] > 0.0 && window_mag[1] <= 0.0 {
+                let t = (0.0 - window_mag[0]) / (window_mag[1] - window_mag[0]);
+                gain_crossover_freq = window_om[0] + t * (window_om[1] - window_om[0]);
+                phase_at_gain_cross = window_ph[0] + t * (window_ph[1] - window_ph[0]);
                 break;
             }
         }
@@ -762,10 +755,10 @@ impl ModelPredictiveControl {
                 grads[k] = gu_r;
             }
             // Update u_seq
-            for k in 0..self.horizon {
-                for j in 0..m {
-                    u_seq[k][j] -= alpha * grads[k][j];
-                    u_seq[k][j] = u_seq[k][j].clamp(-self.u_max, self.u_max);
+            for (uk, gk) in u_seq.iter_mut().zip(grads.iter()) {
+                for (uj, &gj) in uk.iter_mut().zip(gk.iter()) {
+                    *uj -= alpha * gj;
+                    *uj = uj.clamp(-self.u_max, self.u_max);
                 }
             }
         }
@@ -1049,11 +1042,6 @@ impl NeuralController {
         }
     }
 
-    /// ReLU activation.
-    fn relu(x: f64) -> f64 {
-        x.max(0.0)
-    }
-
     /// Tanh activation.
     fn tanh(x: f64) -> f64 {
         x.tanh()
@@ -1066,15 +1054,16 @@ impl NeuralController {
         for layer in 0..n_layers {
             let w = &self.weights[layer];
             let b = &self.biases[layer];
-            let rows = w.len();
-            let z: Vec<f64> = (0..rows)
-                .map(|i| {
-                    let s: f64 = w[i]
+            let z: Vec<f64> = w
+                .iter()
+                .zip(b.iter())
+                .map(|(wi_row, &bi)| {
+                    let s: f64 = wi_row
                         .iter()
                         .zip(activations.last().expect("activations is non-empty").iter())
                         .map(|(wi, ai)| wi * ai)
                         .sum();
-                    s + b[i]
+                    s + bi
                 })
                 .collect();
             // Use tanh on hidden, linear on output
@@ -1104,14 +1093,14 @@ impl NeuralController {
 
         for layer in (0..n_layers).rev() {
             let a_prev = &activations[layer];
-            let rows = self.weights[layer].len();
             // Weight gradient
+            let rows = self.weights[layer].len();
             let new_delta: Vec<f64> = if layer > 0 {
                 let cols = self.weights[layer][0].len();
                 let mut nd = vec![0.0; cols];
-                for i in 0..rows {
-                    for j in 0..cols {
-                        nd[j] += self.weights[layer][i][j] * delta[i];
+                for (i, &di) in delta.iter().enumerate().take(rows) {
+                    for (ndj, &wij) in nd.iter_mut().zip(self.weights[layer][i].iter()) {
+                        *ndj += wij * di;
                     }
                 }
                 // Backprop through tanh: (1 - a²)
@@ -1123,11 +1112,11 @@ impl NeuralController {
                 vec![0.0; a_prev.len()]
             };
             // Update weights and biases
-            for i in 0..rows {
-                for j in 0..a_prev.len() {
-                    self.weights[layer][i][j] -= self.lr * delta[i] * a_prev[j];
+            for (i, (&di, bi)) in delta.iter().zip(self.biases[layer].iter_mut()).enumerate() {
+                for (wij, &apj) in self.weights[layer][i].iter_mut().zip(a_prev.iter()) {
+                    *wij -= self.lr * di * apj;
                 }
-                self.biases[layer][i] -= self.lr * delta[i];
+                *bi -= self.lr * di;
             }
             delta = new_delta;
         }
@@ -1178,7 +1167,7 @@ pub fn riccati_solve_dare(
     max_iter: usize,
     tol: f64,
 ) -> Option<Vec<Vec<f64>>> {
-    let n = a.len();
+    let _n = a.len();
     let m = if b.is_empty() {
         return None;
     } else {
@@ -1206,12 +1195,12 @@ pub fn riccati_solve_dare(
         let p_new = mat_add(q, &mat_add(&atpa, &mat_scale(&atpbk, -1.0)));
 
         // Check convergence
-        let mut max_diff = 0.0_f64;
-        for i in 0..n {
-            for j in 0..n {
-                max_diff = max_diff.max((p_new[i][j] - p[i][j]).abs());
-            }
-        }
+        let max_diff = p_new
+            .iter()
+            .zip(p.iter())
+            .flat_map(|(row_new, row_old)| row_new.iter().zip(row_old.iter()))
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f64, f64::max);
         p = p_new;
         if max_diff < tol {
             // Compute final K
@@ -1241,9 +1230,9 @@ pub fn controllability_matrix(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
 
     let mut ak_b = b.to_vec();
     for k in 0..n {
-        for i in 0..n {
-            for j in 0..m {
-                c_mat[i][k * m + j] = ak_b[i][j];
+        for (i, row) in ak_b.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                c_mat[i][k * m + j] = val;
             }
         }
         if k < n - 1 {
@@ -1681,10 +1670,10 @@ mod tests {
     fn mat_inv_identity() {
         let i = eye(3);
         let inv = mat_inv(&i).unwrap();
-        for r in 0..3 {
-            for c in 0..3 {
+        for (r, row) in inv.iter().enumerate() {
+            for (c, &val) in row.iter().enumerate() {
                 let expected = if r == c { 1.0 } else { 0.0 };
-                assert!((inv[r][c] - expected).abs() < 1e-10);
+                assert!((val - expected).abs() < 1e-10);
             }
         }
     }

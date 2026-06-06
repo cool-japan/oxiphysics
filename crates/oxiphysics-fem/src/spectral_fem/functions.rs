@@ -2,19 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
 use super::types::{GlobalLocalMapping, HpMesh1D, SemEllipticSolver, SpectralElement1D};
 
-#[allow(dead_code)]
-pub(super) fn dot_vec(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
-}
-#[allow(dead_code)]
-pub(super) fn norm_vec(a: &[f64]) -> f64 {
-    dot_vec(a, a).sqrt()
-}
 /// Evaluates the Legendre polynomial P_n(x) and its derivative P'_n(x).
 ///
 /// Uses the three-term recurrence relation.
@@ -183,9 +174,14 @@ pub fn spectral_derivative_matrix(nodes: &[f64]) -> Vec<Vec<f64>> {
             d[i][j] = (p_nodes[i] / p_nodes[j]) / diff;
         }
     }
-    for i in 0..n {
-        let sum: f64 = (0..n).filter(|&j| j != i).map(|j| d[i][j]).sum();
-        d[i][i] = -sum;
+    for (i, row) in d.iter_mut().enumerate() {
+        let sum: f64 = row
+            .iter()
+            .enumerate()
+            .filter(|&(j, _)| j != i)
+            .map(|(_, &v)| v)
+            .sum();
+        row[i] = -sum;
     }
     d
 }
@@ -585,8 +581,8 @@ mod tests_part2 {
         let vals: Vec<f64> = cs.nodes.iter().map(|&x| x.sin()).collect();
         let mut coeffs = cs.to_coefficients(&vals);
         cs.dealias_filter(&mut coeffs, 2.0 / 3.0);
-        for k in 6..=8 {
-            assert!(coeffs[k].abs() < 1e-14, "coeff[{}]={}", k, coeffs[k]);
+        for (k, &c) in coeffs.iter().enumerate().skip(6) {
+            assert!(c.abs() < 1e-14, "coeff[{}]={}", k, c);
         }
     }
     #[test]
@@ -605,8 +601,8 @@ mod tests_part2 {
         let u_nodal = vec![1.0; mnt.nodes.len()];
         let modal = mnt.nodal_to_modal(&u_nodal);
         assert!((modal[0] - 1.0).abs() < 1e-8, "modal[0]={}", modal[0]);
-        for k in 1..modal.len() {
-            assert!(modal[k].abs() < 1e-8, "modal[{}]={}", k, modal[k]);
+        for (k, &m) in modal.iter().enumerate().skip(1) {
+            assert!(m.abs() < 1e-8, "modal[{}]={}", k, m);
         }
     }
     #[test]
@@ -703,8 +699,9 @@ mod tests_part2 {
         let cs = ChebyshevSpectral::new(4);
         let u: Vec<f64> = cs.nodes.clone();
         let du = cs.differentiate(&u);
-        for i in 1..du.len() - 1 {
-            assert!((du[i] - 1.0).abs() < 1e-6, "du[{}]={}", i, du[i]);
+        let du_len = du.len();
+        for (i, &dv) in du.iter().enumerate().skip(1).take(du_len.saturating_sub(2)) {
+            assert!((dv - 1.0).abs() < 1e-6, "du[{}]={}", i, dv);
         }
     }
     #[test]

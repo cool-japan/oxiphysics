@@ -7,8 +7,6 @@
 //! BoundaryConditions, CorotFemElement4, FemSoftBodyVerlet, and
 //! assemble_internal_forces.
 
-#![allow(clippy::needless_range_loop)]
-
 use super::corot_sim::{CorotFemNode, CorotFemTet};
 use super::math_helpers::{det3x3, edge_matrix_raw, inv3x3, mul3x3, transpose3x3};
 
@@ -22,13 +20,11 @@ use super::math_helpers::{det3x3, edge_matrix_raw, inv3x3, mul3x3, transpose3x3}
 /// This avoids inverting a consistent mass matrix and is widely used in
 /// explicit FEM.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct LumpedMassMatrix {
     /// Per-node lumped mass (kg).  Index matches the node array.
     pub masses: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl LumpedMassMatrix {
     /// Build a lumped mass matrix from element rest volumes and material density.
     ///
@@ -84,7 +80,6 @@ impl LumpedMassMatrix {
 /// The stiffness-proportional term `beta * K * v` is approximated by
 /// scaling the elastic forces: `f_stiff_damp = -beta_K * f_elastic`.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct RayleighDamping {
     /// Mass-proportional coefficient alpha (1/s).
     pub alpha: f64,
@@ -92,7 +87,6 @@ pub struct RayleighDamping {
     pub beta_k: f64,
 }
 
-#[allow(dead_code)]
 impl RayleighDamping {
     /// Create new Rayleigh damping coefficients.
     pub fn new(alpha: f64, beta_k: f64) -> Self {
@@ -180,7 +174,6 @@ impl RayleighDamping {
 /// ```
 /// This is a second-order, time-reversible, symplectic integrator.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct VelocityVerletIntegrator {
     /// Acceleration from the previous step.
     pub prev_accel: Vec<[f64; 3]>,
@@ -188,7 +181,6 @@ pub struct VelocityVerletIntegrator {
     pub dt: f64,
 }
 
-#[allow(dead_code)]
 impl VelocityVerletIntegrator {
     /// Create a new integrator for `n_nodes` nodes with time step `dt`.
     pub fn new(n_nodes: usize, dt: f64) -> Self {
@@ -247,7 +239,6 @@ impl VelocityVerletIntegrator {
     ///
     /// Applies elastic forces computed from the tet elements and optional
     /// Rayleigh damping.
-    #[allow(clippy::too_many_arguments)]
     pub fn step_sim(
         &mut self,
         positions: &mut [[f64; 3]],
@@ -301,10 +292,10 @@ impl VelocityVerletIntegrator {
 
         for tet in tets {
             let fs = tet.compute_elastic_forces(&temp_nodes, mu, lambda);
-            for k in 0..4 {
+            for (k, fs_k) in fs.iter().enumerate() {
                 let idx = tet.node_indices[k];
-                for d in 0..3 {
-                    forces[idx][d] += fs[k][d];
+                for (force_d, fs_d) in forces[idx].iter_mut().zip(fs_k.iter()) {
+                    *force_d += fs_d;
                 }
             }
         }
@@ -356,13 +347,11 @@ impl VelocityVerletIntegrator {
 /// During each time step, these nodes are reset to their prescribed positions
 /// and their velocities are zeroed.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct BoundaryConditions {
     /// Fixed nodes: (node_index, fixed_position).
     fixed: Vec<(usize, [f64; 3])>,
 }
 
-#[allow(dead_code)]
 impl BoundaryConditions {
     /// Create a new (empty) boundary condition set.
     pub fn new() -> Self {
@@ -435,7 +424,6 @@ impl Default for BoundaryConditions {
 /// A 4-node tetrahedral corotational FEM element storing Young's modulus and
 /// Poisson's ratio directly (so callers don't need to pre-compute Lame params).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CorotFemElement4 {
     /// Vertex indices (into a flat node array).
     pub indices: [usize; 4],
@@ -453,7 +441,6 @@ pub struct CorotFemElement4 {
     lambda: f64,
 }
 
-#[allow(dead_code)]
 impl CorotFemElement4 {
     /// Create a new element from node positions, Young's modulus, and Poisson's ratio.
     pub fn new(indices: [usize; 4], positions: &[[f64; 3]], young: f64, poisson: f64) -> Self {
@@ -578,7 +565,6 @@ impl CorotFemElement4 {
 /// - Rayleigh damping
 /// - Fixed boundary conditions
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FemSoftBodyVerlet {
     /// Node positions.
     pub positions: Vec<[f64; 3]>,
@@ -598,7 +584,6 @@ pub struct FemSoftBodyVerlet {
     pub gravity: [f64; 3],
 }
 
-#[allow(dead_code)]
 impl FemSoftBodyVerlet {
     /// Create a new FEM soft body.
     pub fn new(
@@ -630,13 +615,22 @@ impl FemSoftBodyVerlet {
         let dt = self.integrator.dt;
 
         // 1. Predict positions: x_{n+1} = x_n + dt*v + 0.5*dt^2*a_prev
-        for i in 0..n {
-            if pinned[i] {
+        for (i, (pos, (vel, (pinned_i, a)))) in self
+            .positions
+            .iter_mut()
+            .zip(
+                self.velocities
+                    .iter()
+                    .zip(pinned.iter().zip(self.integrator.prev_accel.iter())),
+            )
+            .enumerate()
+        {
+            let _ = i;
+            if *pinned_i {
                 continue;
             }
-            let a = self.integrator.prev_accel[i];
-            for d in 0..3 {
-                self.positions[i][d] += dt * self.velocities[i][d] + 0.5 * dt * dt * a[d];
+            for (p_d, (v_d, a_d)) in pos.iter_mut().zip(vel.iter().zip(a.iter())) {
+                *p_d += dt * v_d + 0.5 * dt * dt * a_d;
             }
         }
 
@@ -647,22 +641,28 @@ impl FemSoftBodyVerlet {
         let mut forces = vec![[0.0_f64; 3]; n];
 
         // Gravity
-        for i in 0..n {
-            if pinned[i] {
+        let gravity = self.gravity;
+        for (i, (force, (pinned_i, mass))) in forces
+            .iter_mut()
+            .zip(pinned.iter().zip(self.masses.iter()))
+            .enumerate()
+        {
+            let _ = i;
+            if *pinned_i {
                 continue;
             }
-            for d in 0..3 {
-                forces[i][d] += self.masses[i] * self.gravity[d];
+            for (f_d, g_d) in force.iter_mut().zip(gravity.iter()) {
+                *f_d += mass * g_d;
             }
         }
 
         // Elastic forces
         for elem in &self.elements {
             let fs = elem.elastic_forces(&self.positions);
-            for k in 0..4 {
+            for (k, fs_k) in fs.iter().enumerate() {
                 let idx = elem.indices[k];
-                for d in 0..3 {
-                    forces[idx][d] += fs[k][d];
+                for (force_d, fs_d) in forces[idx].iter_mut().zip(fs_k.iter()) {
+                    *force_d += fs_d;
                 }
             }
         }
@@ -749,7 +749,6 @@ impl FemSoftBodyVerlet {
 /// Assemble the global internal force vector from all tetrahedral elements.
 ///
 /// Returns a `Vec<[f64; 3]>` of length `n_nodes`.
-#[allow(dead_code)]
 pub fn assemble_internal_forces(
     positions: &[[f64; 3]],
     elements: &[CorotFemElement4],
@@ -758,10 +757,10 @@ pub fn assemble_internal_forces(
     let mut forces = vec![[0.0_f64; 3]; n];
     for elem in elements {
         let fs = elem.elastic_forces(positions);
-        for k in 0..4 {
+        for (k, fs_k) in fs.iter().enumerate() {
             let idx = elem.indices[k];
-            for d in 0..3 {
-                forces[idx][d] += fs[k][d];
+            for (force_d, fs_d) in forces[idx].iter_mut().zip(fs_k.iter()) {
+                *force_d += fs_d;
             }
         }
     }

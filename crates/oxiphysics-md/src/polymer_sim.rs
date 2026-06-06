@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,9 +13,6 @@
 //! - [`flory_exponent_good_solvent`]: ν ≈ 0.588 (Flory exponent, good solvent).
 //! - [`end_to_end_ideal`]: ⟨R²⟩^½ for an ideal chain.
 //! - [`rg_ideal`]: Radius of gyration for an ideal (Gaussian) chain.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ---------------------------------------------------------------------------
 // Helper: 3-D vector arithmetic
@@ -235,19 +231,23 @@ impl KremerGrestChain {
     pub fn step(&mut self, dt: f64) {
         let forces = self.compute_forces();
         // Update positions and half-step velocities
-        for (i, bead) in self.beads.iter_mut().enumerate() {
+        for (bead, f) in self.beads.iter_mut().zip(forces.iter()) {
             let inv_m = 1.0 / bead.mass;
-            for k in 0..3 {
-                bead.velocity[k] += 0.5 * forces[i][k] * inv_m * dt;
-                bead.position[k] += bead.velocity[k] * dt;
+            for (v, (p, &fk)) in bead
+                .velocity
+                .iter_mut()
+                .zip(bead.position.iter_mut().zip(f.iter()))
+            {
+                *v += 0.5 * fk * inv_m * dt;
+                *p += *v * dt;
             }
         }
         // Second force evaluation
         let forces2 = self.compute_forces();
-        for (i, bead) in self.beads.iter_mut().enumerate() {
+        for (bead, f2) in self.beads.iter_mut().zip(forces2.iter()) {
             let inv_m = 1.0 / bead.mass;
-            for k in 0..3 {
-                bead.velocity[k] += 0.5 * forces2[i][k] * inv_m * dt;
+            for (v, &fk) in bead.velocity.iter_mut().zip(f2.iter()) {
+                *v += 0.5 * fk * inv_m * dt;
             }
         }
     }

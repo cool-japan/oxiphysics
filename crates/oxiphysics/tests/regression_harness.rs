@@ -6,8 +6,6 @@
 // validation_fem.rs, validation_md_lj.rs, validation_ewald_madelung.rs
 // via `#[path = "regression_harness.rs"] mod harness;`.
 
-#![allow(missing_docs)]
-
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;

@@ -9,8 +9,6 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::IntervalConstraint;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::{Interval, LinearConstraint};
 
 impl IntervalConstraint for LinearConstraint {

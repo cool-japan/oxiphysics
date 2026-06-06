@@ -306,7 +306,6 @@ mod tests {
         );
     }
 }
-#[allow(dead_code)]
 /// Extract droplet descriptors from the current particle state.
 ///
 /// Returns one [`DropletInfo`] per connected component of `phase_id` particles.
@@ -536,7 +535,6 @@ mod tests_ext {
     }
 }
 /// Laplacian of the cubic spline kernel W(r, h) in 3D.
-#[allow(dead_code)]
 pub(super) fn cubic_spline_laplacian(r: f64, h: f64) -> f64 {
     let q = r / h;
     let sigma = 3.0 / (2.0 * std::f64::consts::PI * h * h * h);
@@ -555,7 +553,6 @@ pub(super) fn cubic_spline_laplacian(r: f64, h: f64) -> f64 {
 /// `nx × ny × nz` cells and counts how many particles of each phase fall into
 /// each cell.  The returned array has shape `[n_cells][n_phases]` where
 /// `n_cells = nx * ny * nz`.
-#[allow(dead_code)]
 pub fn volume_fraction_in_cells(
     positions: &[[f64; 3]],
     phase_ids: &[usize],

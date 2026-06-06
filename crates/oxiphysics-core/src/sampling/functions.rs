@@ -64,7 +64,6 @@ pub fn stratified_sample_1d(n: usize, rng: &mut Lcg) -> Vec<f64> {
         .collect()
 }
 /// Trait for quasi-random sequences.
-#[allow(dead_code)]
 pub trait QuasiRandomSequence {
     /// Return the next point in the sequence.
     fn next(&mut self) -> Vec<f64>;
@@ -134,9 +133,9 @@ pub fn stratified_sample_nd(n_samples: usize, n_dims: usize, rng: &mut Lcg) -> V
             let j = (rng.next_u64() as usize) % (i + 1);
             strata.swap(i, j);
         }
-        for i in 0..n_samples {
-            let val = (strata[i] as f64 + rng.next_f64()) * inv_n;
-            result[i].push(val);
+        for (res, &s) in result.iter_mut().zip(strata.iter()) {
+            let val = (s as f64 + rng.next_f64()) * inv_n;
+            res.push(val);
         }
     }
     result
@@ -193,7 +192,6 @@ pub fn halton_multivariate(n: usize, n_dims: usize) -> Vec<Vec<f64>> {
 /// Latin Hypercube Sample: `n` points in `d` dimensions, each in `[0,1)`.
 ///
 /// Uses `rand::Rng` for shuffling and jittering.
-#[allow(dead_code)]
 pub fn latin_hypercube_sample(n: usize, d: usize, rng: &mut impl rand::Rng) -> Vec<Vec<f64>> {
     let inv_n = 1.0 / n as f64;
     let mut result: Vec<Vec<f64>> = (0..n).map(|_| Vec::with_capacity(d)).collect();
@@ -214,14 +212,12 @@ pub fn latin_hypercube_sample(n: usize, d: usize, rng: &mut impl rand::Rng) -> V
 /// Sobol' quasi-random sequence: `n` points in `d` dimensions (up to 3 dims).
 ///
 /// Uses the same direction numbers as [`SobolSequence`].
-#[allow(dead_code)]
 pub fn sobol_sequence(n: usize, d: usize) -> Vec<Vec<f64>> {
     SobolSequence::new(d).sample(n)
 }
 /// Stratified (jittered) 1-D samples using `rand::Rng`.
 ///
 /// Divides `[0,1)` into `n` strata; one jittered sample per stratum.
-#[allow(dead_code)]
 pub fn stratified_sample_1d_rng(n: usize, rng: &mut impl rand::Rng) -> Vec<f64> {
     let inv_n = 1.0 / n as f64;
     (0..n)
@@ -238,7 +234,6 @@ pub fn stratified_sample_1d_rng(n: usize, rng: &mut impl rand::Rng) -> Vec<f64> 
 ///
 /// # Panics
 /// Panics if `pdf` is empty or all weights are zero.
-#[allow(dead_code)]
 pub fn importance_sample(pdf: &[f64], n: usize, rng: &mut impl rand::Rng) -> Vec<usize> {
     assert!(!pdf.is_empty(), "pdf must not be empty");
     let total: f64 = pdf.iter().sum();
@@ -267,7 +262,6 @@ pub fn importance_sample(pdf: &[f64], n: usize, rng: &mut impl rand::Rng) -> Vec
 ///
 /// `f` must be non-negative; the function evaluates an internal upper bound
 /// by sampling a small grid.
-#[allow(dead_code)]
 pub fn rejection_sample_2d<F>(
     f: F,
     x_range: (f64, f64),
@@ -301,7 +295,6 @@ where
     samples
 }
 /// Van der Corput / Halton sequence in a given `base`.  Returns `n` values in `[0,1)`.
-#[allow(dead_code)]
 pub fn halton_sequence(n: usize, base: u32) -> Vec<f64> {
     HaltonSequence::sample(n, base)
 }
@@ -438,7 +431,6 @@ pub(super) fn sobol10_direction_numbers(dim: usize) -> Vec<u32> {
 /// Generate `n` Sobol points in 10 dimensions.
 ///
 /// Each point is a `Vec`f64` of length 10 with values in `\[0, 1)`.
-#[allow(dead_code)]
 pub fn sobol_sequence_10d(n: usize) -> Vec<Vec<f64>> {
     pub(super) const BITS: usize = 32;
     pub(super) const N_DIMS: usize = 10;
@@ -462,7 +454,6 @@ pub fn sobol_sequence_10d(n: usize) -> Vec<Vec<f64>> {
 /// Returns `(estimate, standard_error)`.
 ///
 /// The estimate converges as O(1/√n) to ∫_a^b f(x) dx.
-#[allow(dead_code)]
 pub fn monte_carlo_integrate(
     f: impl Fn(f64) -> f64,
     a: f64,
@@ -488,7 +479,6 @@ pub fn monte_carlo_integrate(
 /// Monte Carlo integration of `f` over the unit hypercube `\[0,1)^d` in `d` dimensions.
 ///
 /// Returns `(estimate, standard_error)`.
-#[allow(dead_code)]
 pub fn monte_carlo_integrate_nd(
     f: impl Fn(&[f64]) -> f64,
     d: usize,
@@ -515,7 +505,6 @@ pub fn monte_carlo_integrate_nd(
 ///
 /// Integrates `f` over `\[a, b\]` using `n` Halton (van der Corput base-2) points.
 /// Typically O(log(n)/n) convergence for smooth integrands.
-#[allow(dead_code)]
 pub fn qmc_integrate_halton(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
     let width = b - a;
     let sum: f64 = (1..=n)
@@ -529,7 +518,6 @@ pub fn qmc_integrate_halton(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize) ->
 /// Quasi-Monte Carlo integration using the 1-D Sobol sequence.
 ///
 /// Integrates `f` over `\[a, b\]` using `n` Sobol points.
-#[allow(dead_code)]
 pub fn qmc_integrate_sobol(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
     let width = b - a;
     let mut sobol = Sobol::new_1d();
@@ -542,7 +530,6 @@ pub fn qmc_integrate_sobol(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize) -> 
 /// Estimates `E\[f(X)\]` using control variate `g` whose mean `E\[g(X)\]` is known.
 ///
 /// Returns the reduced-variance estimate.
-#[allow(dead_code)]
 pub fn mc_control_variate(
     f: impl Fn(f64) -> f64,
     g: impl Fn(f64) -> f64,
@@ -576,7 +563,6 @@ pub fn mc_control_variate(
 ///
 /// For each sample `u`, also evaluates at `1-u`, halving the number of
 /// independent evaluations needed for the same variance reduction.
-#[allow(dead_code)]
 pub fn mc_antithetic(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize, rng: &mut Lcg) -> f64 {
     let width = b - a;
     let m = n.div_ceil(2);
@@ -594,7 +580,6 @@ pub fn mc_antithetic(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize, rng: &mut
 ///
 /// Given samples drawn from `proposal(x)`, returns the importance weight
 /// `target(x) / proposal(x)` for each sample.
-#[allow(dead_code)]
 pub fn importance_weights(
     samples: &[f64],
     target: impl Fn(f64) -> f64,
@@ -611,7 +596,6 @@ pub fn importance_weights(
 /// Self-normalized importance sampling estimator for `E_target\[h(X)\]`.
 ///
 /// Samples are drawn from `proposal`; returns the weighted mean of `h`.
-#[allow(dead_code)]
 pub fn self_normalized_is(
     samples: &[f64],
     h: impl Fn(f64) -> f64,
@@ -634,7 +618,6 @@ pub fn self_normalized_is(
 /// Effective sample size (ESS) from normalized importance weights.
 ///
 /// ESS = (Σ wᵢ)² / Σ wᵢ²
-#[allow(dead_code)]
 pub fn effective_sample_size(weights: &[f64]) -> f64 {
     let sum_w: f64 = weights.iter().sum();
     if sum_w < 1e-300 {
@@ -653,7 +636,6 @@ pub fn effective_sample_size(weights: &[f64]) -> f64 {
 /// strata are shuffled independently so that every stratum is visited exactly
 /// once per dimension.  Identical to [`LatinHypercube::sample`] but as a
 /// free function.
-#[allow(dead_code)]
 pub fn stratified_unit_hypercube(n_samples: usize, d: usize, rng: &mut Lcg) -> Vec<Vec<f64>> {
     LatinHypercube::new(n_samples, d).sample(rng)
 }
@@ -667,7 +649,6 @@ pub fn stratified_unit_hypercube(n_samples: usize, d: usize, rng: &mut Lcg) -> V
 /// * `n_dims`       – number of dimensions
 /// * `n_candidates` – how many candidate designs to evaluate
 /// * `rng`          – random number generator
-#[allow(dead_code)]
 pub fn lhs_maximin(
     n_samples: usize,
     n_dims: usize,
@@ -712,7 +693,6 @@ pub(super) fn min_pairwise_dist(pts: &[Vec<f64>]) -> f64 {
 ///
 /// Each dataset is a vector of length `data.len()` drawn uniformly with
 /// replacement from `data`.
-#[allow(dead_code)]
 pub fn bootstrap_resample(data: &[f64], n_resamples: usize, rng: &mut Lcg) -> Vec<Vec<f64>> {
     let m = data.len();
     (0..n_resamples)
@@ -729,7 +709,6 @@ pub fn bootstrap_resample(data: &[f64], n_resamples: usize, rng: &mut Lcg) -> Ve
 /// Bootstrap estimate of the mean and its 95% confidence interval.
 ///
 /// Returns `(mean, ci_low, ci_high)`.
-#[allow(dead_code)]
 pub fn bootstrap_mean_ci(data: &[f64], n_resamples: usize, rng: &mut Lcg) -> (f64, f64, f64) {
     let resamples = bootstrap_resample(data, n_resamples, rng);
     let mut means: Vec<f64> = resamples
@@ -753,7 +732,6 @@ pub fn bootstrap_mean_ci(data: &[f64], n_resamples: usize, rng: &mut Lcg) -> (f6
 /// * `envelope` – upper bound of `pdf` over the support
 /// * `n`        – number of samples to draw
 /// * `rng`      – LCG random source
-#[allow(dead_code)]
 pub fn rejection_sample_1d(
     pdf: impl Fn(f64) -> f64,
     lo: f64,
@@ -778,7 +756,6 @@ pub fn rejection_sample_1d(
 /// Returns `(estimate, effective_sample_size)`.
 ///
 /// `weights\[i\] = target(x_i) / proposal(x_i)`.
-#[allow(dead_code)]
 pub fn importance_sampling_estimate(
     samples: &[f64],
     h: impl Fn(f64) -> f64,

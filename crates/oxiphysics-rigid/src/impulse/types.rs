@@ -1,11 +1,7 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// Restitution model for collision response.
 #[derive(Debug, Clone, Copy)]
 pub enum RestitutionModel {
@@ -501,7 +497,6 @@ pub struct ContactConstraint {
 }
 impl ContactConstraint {
     /// Create a new contact constraint.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         body_a: usize,
         body_b: usize,

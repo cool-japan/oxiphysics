@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -36,9 +35,6 @@
 //!   *Commun. Math. Sci.*, 1(1), 87–132.
 //! - Chapman, S. & Cowling, T. G. (1970). *The Mathematical Theory of Non-Uniform
 //!   Gases* (3rd ed.). Cambridge University Press.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -134,20 +130,20 @@ impl HybridLbmNavier {
         let n = self.n_cells();
         // LBM sub-domain: simple diffusion (finite-difference Laplacian)
         let mut lbm_new = self.lbm_velocity.clone();
-        for i in 1..n - 1 {
+        for (lbm_out, i) in lbm_new[1..n - 1].iter_mut().zip(1..n - 1) {
             if self.lbm_region[i] {
                 let lap = self.lbm_velocity[i + 1] - 2.0 * self.lbm_velocity[i]
                     + self.lbm_velocity[i - 1];
-                lbm_new[i] += self.lbm_viscosity * dt * lap;
+                *lbm_out += self.lbm_viscosity * dt * lap;
             }
         }
         // NS sub-domain: same stencil
         let mut ns_new = self.ns_velocity.clone();
-        for i in 1..n - 1 {
+        for (ns_out, i) in ns_new[1..n - 1].iter_mut().zip(1..n - 1) {
             if self.ns_region[i] {
                 let lap =
                     self.ns_velocity[i + 1] - 2.0 * self.ns_velocity[i] + self.ns_velocity[i - 1];
-                ns_new[i] += self.ns_viscosity * dt * lap;
+                *ns_out += self.ns_viscosity * dt * lap;
             }
         }
         self.lbm_velocity = lbm_new;
@@ -488,10 +484,10 @@ impl LbmMolecularDynamicsCoupling {
         for (idx, pos) in self.md_positions.iter().enumerate() {
             let mass = self.md_masses[idx];
             let vx = self.md_velocities[idx][0];
-            for gi in 0..n {
+            for (gi, f) in flux.iter_mut().enumerate() {
                 let x_grid = gi as f64 * self.dx;
                 let r = (pos[0] - x_grid).abs();
-                flux[gi] += mass * vx * self.gaussian_kernel(r);
+                *f += mass * vx * self.gaussian_kernel(r);
             }
         }
         flux
@@ -503,10 +499,10 @@ impl LbmMolecularDynamicsCoupling {
         let mut rho = vec![0.0; n];
         for (idx, pos) in self.md_positions.iter().enumerate() {
             let mass = self.md_masses[idx];
-            for gi in 0..n {
+            for (gi, r_out) in rho.iter_mut().enumerate() {
                 let x_grid = gi as f64 * self.dx;
                 let r = (pos[0] - x_grid).abs();
-                rho[gi] += mass * self.gaussian_kernel(r);
+                *r_out += mass * self.gaussian_kernel(r);
             }
         }
         rho

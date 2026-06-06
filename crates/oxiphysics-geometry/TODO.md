@@ -1,12 +1,12 @@
 # oxiphysics-geometry TODO
 
-**Version:** 0.1.1 | **Updated:** 2026-05-17 | **Status:** ✅ COMPLETE
+**Version:** 0.1.2 | **Updated:** 2026-06-06 | **Status:** ✅ COMPLETE
 
 ## Milestone 1: Primitive Shapes — ✅ COMPLETE
 - [x] Define shape trait hierarchy (`shape`)
 - [x] Implement `Sphere`, `BoxShape`, `Capsule`, `Cylinder`, `Cone`, `Torus`
 - [x] `Compound` shape aggregation
-- [x] Unit tests (3,089 tests passing)
+- [x] Unit tests (3,120 tests passing)
 
 ## Milestone 2: Meshes & Computational Geometry — ✅ COMPLETE
 - [x] Triangle mesh (`triangle_mesh`)

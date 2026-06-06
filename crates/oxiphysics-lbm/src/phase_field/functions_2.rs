@@ -2,13 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_range_contains, clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::*;
     use crate::phase_field::types::*;
     fn make_params(mobility: f64, interface_width: f64, surface_tension: f64) -> PhaseFieldParams {
         PhaseFieldParams {
@@ -100,7 +96,7 @@ mod tests {
         }
         for (k, &phi) in ac.phi.iter().enumerate() {
             assert!(
-                phi >= -0.1 && phi <= 1.1,
+                (-0.1..=1.1).contains(&phi),
                 "phi[{k}] = {phi} out of bounds [-0.1, 1.1]"
             );
         }
@@ -138,9 +134,9 @@ mod tests {
             *p = 0.5;
         }
         let grad = pf.compute_gradient();
-        for k in 0..grad.len() {
+        for (k, &gk) in grad.iter().enumerate() {
             assert!(
-                grad[k][0].abs() < 1e-14 && grad[k][1].abs() < 1e-14,
+                gk[0].abs() < 1e-14 && gk[1].abs() < 1e-14,
                 "Uniform field should have zero gradient at k={k}"
             );
         }
@@ -290,7 +286,7 @@ mod tests {
         }
         for (k, &phi) in ac.phi.iter().enumerate() {
             assert!(
-                phi >= -0.2 && phi <= 1.2,
+                (-0.2..=1.2).contains(&phi),
                 "phi[{k}] = {phi} out of reasonable bounds"
             );
         }
@@ -497,8 +493,8 @@ mod tests {
         let mut phi_b = vec![0.4_f64; n];
         let mut fields = vec![phi_a.clone(), phi_b.clone()];
         enforce_partition_of_unity(&mut fields, n);
-        for k in 0..n {
-            let s = fields[0][k] + fields[1][k];
+        for (k, (&f0, &f1)) in fields[0].iter().zip(fields[1].iter()).enumerate() {
+            let s = f0 + f1;
             assert!(
                 (s - 1.0).abs() < 1e-12,
                 "Partition of unity at k={k}: sum = {s}"
@@ -571,8 +567,8 @@ mod tests {
         let pf = PhaseFieldLbm::new(nx, ny, epsilon, 0.01);
         let mut phi = vec![0.0_f64; nx * ny];
         let y_c = 32.0;
-        for y in 0..ny {
-            phi[y] = 0.5 * (1.0 + ((y as f64 - y_c) / (2.0 * epsilon)).tanh());
+        for (y, o) in phi.iter_mut().enumerate() {
+            *o = 0.5 * (1.0 + ((y as f64 - y_c) / (2.0 * epsilon)).tanh());
         }
         let w = pf.compute_interface_width(&phi, 0, 0.1, 0.9);
         assert!(w > 4.0, "Interface width should be > 4 lattice units: {w}");
@@ -621,9 +617,11 @@ mod tests {
         let pf = PhaseFieldLbm::new(nx, ny, 2.0, 0.01);
         let mut phi = vec![0.5_f64; nx * ny];
         pf.apply_contact_angle(&mut phi, 0.0, 0);
-        for x in 0..nx {
-            let p = phi[x];
-            assert!(p >= 0.0 && p <= 1.0, "phi at wall must be in [0,1]: {p}");
+        for &p in &phi[..nx] {
+            assert!(
+                (0.0..=1.0).contains(&p),
+                "phi at wall must be in [0,1]: {p}"
+            );
         }
     }
     #[test]

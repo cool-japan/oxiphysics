@@ -6,8 +6,6 @@
 //! Provides 3D bar charts, surface plots, 3D scatter plots, vector field
 //! plots, colormap utilities, and axis line-segment generation.
 
-#![allow(dead_code)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // BarChart3D
 // ─────────────────────────────────────────────────────────────────────────────

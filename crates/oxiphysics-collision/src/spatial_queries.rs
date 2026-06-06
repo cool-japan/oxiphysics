@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,9 +7,6 @@
 //! sweep-and-prune, AABB tree), frustum culling, sphere/capsule/point/convex
 //! sweep queries, contact pair filtering by layer mask, and a batched query
 //! pipeline.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ---------------------------------------------------------------------------
 // AABB type
@@ -102,18 +98,19 @@ impl QueryAabb {
 
     /// Squared distance from a point to the AABB (0 if inside).
     pub fn point_dist_sq(&self, p: [f64; 3]) -> f64 {
-        let mut d_sq = 0.0;
-        for i in 0..3 {
-            let pi = [p[0], p[1], p[2]][i];
-            let mini = [self.min[0], self.min[1], self.min[2]][i];
-            let maxi = [self.max[0], self.max[1], self.max[2]][i];
-            if pi < mini {
-                d_sq += (mini - pi) * (mini - pi);
-            } else if pi > maxi {
-                d_sq += (pi - maxi) * (pi - maxi);
-            }
-        }
-        d_sq
+        p.iter()
+            .zip(self.min.iter())
+            .zip(self.max.iter())
+            .map(|((&pi, &mini), &maxi)| {
+                if pi < mini {
+                    (mini - pi) * (mini - pi)
+                } else if pi > maxi {
+                    (pi - maxi) * (pi - maxi)
+                } else {
+                    0.0
+                }
+            })
+            .sum()
     }
 }
 
@@ -148,12 +145,11 @@ pub fn frustum_aabb_test(aabb: &QueryAabb, planes: &[([f64; 3], f64)]) -> bool {
 pub fn sweep_aabb_motion(aabb: &QueryAabb, motion: [f64; 3]) -> QueryAabb {
     let mut min = aabb.min;
     let mut max = aabb.max;
-    for i in 0..3 {
-        let m = [motion[0], motion[1], motion[2]][i];
+    for ((mn, mx), &m) in min.iter_mut().zip(max.iter_mut()).zip(motion.iter()) {
         if m < 0.0 {
-            min[i] += m;
+            *mn += m;
         } else {
-            max[i] += m;
+            *mx += m;
         }
     }
     QueryAabb { min, max }
@@ -420,11 +416,11 @@ impl AabbTree {
 fn ray_aabb_hit(aabb: &QueryAabb, origin: [f64; 3], dir: [f64; 3], max_t: f64) -> bool {
     let mut t_min = 0.0_f64;
     let mut t_max = max_t;
-    for i in 0..3 {
-        let o = [origin[0], origin[1], origin[2]][i];
-        let d = [dir[0], dir[1], dir[2]][i];
-        let mn = [aabb.min[0], aabb.min[1], aabb.min[2]][i];
-        let mx = [aabb.max[0], aabb.max[1], aabb.max[2]][i];
+    for ((&o, &d), (&mn, &mx)) in origin
+        .iter()
+        .zip(dir.iter())
+        .zip(aabb.min.iter().zip(aabb.max.iter()))
+    {
         if d.abs() < 1e-14 {
             if o < mn || o > mx {
                 return false;
@@ -475,12 +471,11 @@ pub struct PairQuery;
 impl PairQuery {
     /// Brute-force O(n²) pair detection.
     pub fn brute_force(aabbs: &[QueryAabb]) -> Vec<ShapePair> {
-        let n = aabbs.len();
         let mut pairs = Vec::new();
-        for i in 0..n {
-            for j in i + 1..n {
-                if aabbs[i].overlaps(&aabbs[j]) {
-                    pairs.push(ShapePair::new(i, j));
+        for (i, a) in aabbs.iter().enumerate() {
+            for (j, b) in aabbs[i + 1..].iter().enumerate() {
+                if a.overlaps(b) {
+                    pairs.push(ShapePair::new(i, i + 1 + j));
                 }
             }
         }
@@ -496,10 +491,8 @@ impl PairQuery {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         let mut pairs = Vec::new();
-        for i in 0..sorted.len() {
-            let a = sorted[i];
-            for j in i + 1..sorted.len() {
-                let b = sorted[j];
+        for (i, &a) in sorted.iter().enumerate() {
+            for &b in &sorted[i + 1..] {
                 if aabbs[b].min[0] > aabbs[a].max[0] {
                     break;
                 }

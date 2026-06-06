@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
 use super::types::{
@@ -15,7 +14,6 @@ use super::types::{
 ///
 /// where W = strain energy density, t_i = sigma_ij n_j (traction),
 /// and du_i/dx = displacement gradient in the crack-growth direction.
-#[allow(dead_code)]
 pub fn j_integral_contour(points: &[JIntegralPoint], youngs_modulus: f64, poisson: f64) -> f64 {
     let mut j = 0.0;
     let inv_e = 1.0 / youngs_modulus;
@@ -49,7 +47,6 @@ pub fn j_integral_contour(points: &[JIntegralPoint], youngs_modulus: f64, poisso
 ///
 /// In practice, T is extracted by evaluating stresses at several radii and
 /// extrapolating.
-#[allow(dead_code)]
 pub fn t_stress_estimate(sigma_xx_at_theta0: f64, sigma_yy_at_theta0: f64) -> f64 {
     sigma_xx_at_theta0 - sigma_yy_at_theta0
 }
@@ -57,7 +54,6 @@ pub fn t_stress_estimate(sigma_xx_at_theta0: f64, sigma_yy_at_theta0: f64) -> f6
 ///
 /// Given stress values at multiple radii along theta = 0, extrapolate to r = 0.
 /// Uses linear least-squares fit of T(r) = sigma_xx(r) - sigma_yy(r) vs sqrt(r).
-#[allow(dead_code)]
 pub fn t_stress_extrapolation(radii: &[f64], sigma_xx: &[f64], sigma_yy: &[f64]) -> f64 {
     assert_eq!(radii.len(), sigma_xx.len());
     assert_eq!(radii.len(), sigma_yy.len());
@@ -73,9 +69,9 @@ pub fn t_stress_extrapolation(radii: &[f64], sigma_xx: &[f64], sigma_yy: &[f64])
     let mut sum_sr2 = 0.0;
     let mut sum_t = 0.0;
     let mut sum_t_sr = 0.0;
-    for i in 0..n {
-        let sr = radii[i].sqrt();
-        let t_val = sigma_xx[i] - sigma_yy[i];
+    for ((&r_i, &sxx_i), &syy_i) in radii.iter().zip(sigma_xx.iter()).zip(sigma_yy.iter()) {
+        let sr = r_i.sqrt();
+        let t_val = sxx_i - syy_i;
         sum_1 += 1.0;
         sum_sr += sr;
         sum_sr2 += sr * sr;
@@ -97,7 +93,6 @@ pub fn t_stress_extrapolation(radii: &[f64], sigma_xx: &[f64], sigma_yy: &[f64])
 /// K_I sin(theta_c) + K_II (3 cos(theta_c) - 1) = 0
 ///
 /// Returns the angle in radians (measured from the crack-line direction).
-#[allow(dead_code)]
 pub fn mts_propagation_angle(ki: f64, kii: f64) -> f64 {
     if kii.abs() < 1e-30 {
         return 0.0;
@@ -110,7 +105,6 @@ pub fn mts_propagation_angle(ki: f64, kii: f64) -> f64 {
 /// K_eq = K_I cos^3(theta/2) - 3 K_II cos^2(theta/2) sin(theta/2)
 ///
 /// Fracture occurs when K_eq >= K_Ic.
-#[allow(dead_code)]
 pub fn equivalent_sif_mts(ki: f64, kii: f64) -> f64 {
     let theta = mts_propagation_angle(ki, kii);
     let ht = theta / 2.0;
@@ -121,7 +115,6 @@ pub fn equivalent_sif_mts(ki: f64, kii: f64) -> f64 {
 /// Check whether mixed-mode fracture occurs using the specified criterion.
 ///
 /// Returns `true` if the equivalent condition K_eq >= K_Ic is met.
-#[allow(dead_code)]
 pub fn mixed_mode_fracture_check(
     ki: f64,
     kii: f64,
@@ -140,7 +133,6 @@ pub fn mixed_mode_fracture_check(
 ///
 /// This extends the Paris law by accounting for the mean stress effect
 /// and the approach to fracture toughness.
-#[allow(dead_code)]
 pub fn forman_da_dn(delta_k: f64, c: f64, m: f64, r_ratio: f64, k_ic: f64) -> f64 {
     let denom = (1.0 - r_ratio) * k_ic - delta_k;
     if denom <= 0.0 {
@@ -153,7 +145,6 @@ pub fn forman_da_dn(delta_k: f64, c: f64, m: f64, r_ratio: f64, k_ic: f64) -> f6
 /// da/dN = C * (delta_K / (1-R)^(1-gamma))^m
 ///
 /// The Walker exponent gamma is a material parameter (gamma = 0.5 for many metals).
-#[allow(dead_code)]
 pub fn walker_da_dn(delta_k: f64, c: f64, m: f64, r_ratio: f64, gamma: f64) -> f64 {
     let effective_dk = delta_k / (1.0 - r_ratio).powf(1.0 - gamma);
     c * effective_dk.powf(m)
@@ -164,8 +155,6 @@ pub fn walker_da_dn(delta_k: f64, c: f64, m: f64, r_ratio: f64, gamma: f64) -> f
 ///        / (1 - K_max/K_Ic)^q
 ///
 /// where f is the crack opening function.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn nasgro_da_dn(
     delta_k: f64,
     c: f64,
@@ -193,7 +182,6 @@ pub fn nasgro_da_dn(
 ///
 /// Returns the unit direction vector \[dx, dy\] for 2D crack propagation
 /// relative to the current crack direction.
-#[allow(dead_code)]
 pub fn predict_crack_direction(
     ki: f64,
     kii: f64,
@@ -214,8 +202,6 @@ pub fn predict_crack_direction(
 /// Integrate fatigue crack growth along a predicted path using adaptive stepping.
 ///
 /// Returns a vector of (crack_length, cycles) pairs.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn fatigue_crack_path(
     a_initial: f64,
     a_final: f64,
@@ -484,7 +470,6 @@ mod tests {
 /// Compute the Mode-III stress intensity factor K_III.
 ///
 /// K_III = tau_III * sqrt(pi * a) * F
-#[allow(dead_code)]
 pub fn stress_intensity_kiii(tau_iii: f64, a: f64, geometry_factor: f64) -> f64 {
     tau_iii * (PI * a).sqrt() * geometry_factor
 }
@@ -493,7 +478,6 @@ pub fn stress_intensity_kiii(tau_iii: f64, a: f64, geometry_factor: f64) -> f64 
 /// K_eff = sqrt(K_I^2 + K_II^2 + K_III^2 / (1 - nu))
 ///
 /// where nu is the Poisson's ratio (plane strain).
-#[allow(dead_code)]
 pub fn effective_sif_combined(ki: f64, kii: f64, kiii: f64, poisson: f64) -> f64 {
     let denom = (1.0 - poisson).max(f64::EPSILON);
     (ki * ki + kii * kii + kiii * kiii / denom).max(0.0).sqrt()
@@ -503,7 +487,6 @@ pub fn effective_sif_combined(ki: f64, kii: f64, kiii: f64, poisson: f64) -> f64
 /// J = (K_I^2 + K_II^2) / E + K_III^2 / (2 * mu)
 ///
 /// where mu = E / (2 * (1 + nu))
-#[allow(dead_code)]
 pub fn j_integral_three_mode(ki: f64, kii: f64, kiii: f64, youngs: f64, poisson: f64) -> f64 {
     let mu = youngs / (2.0 * (1.0 + poisson));
     let j12 = (ki * ki + kii * kii) / youngs;
@@ -511,7 +494,6 @@ pub fn j_integral_three_mode(ki: f64, kii: f64, kiii: f64, youngs: f64, poisson:
     j12 + j3
 }
 /// Check fracture by comparing effective SIF with K_Ic using combined criterion.
-#[allow(dead_code)]
 pub fn fracture_check_combined(ki: f64, kii: f64, kiii: f64, k_ic: f64, poisson: f64) -> bool {
     effective_sif_combined(ki, kii, kiii, poisson) >= k_ic
 }
@@ -521,7 +503,6 @@ pub fn fracture_check_combined(ki: f64, kii: f64, kiii: f64, k_ic: f64, poisson:
 /// the interaction amplification factor on K_I is approximated by:
 ///
 /// F_interaction ≈ 1 + 0.5 * (2a / d)^2   (Erdogan and Sih approximation)
-#[allow(dead_code)]
 pub fn crack_interaction_factor(a: f64, d: f64) -> f64 {
     if d < 2.0 * a {
         return 2.5;
@@ -529,7 +510,6 @@ pub fn crack_interaction_factor(a: f64, d: f64) -> f64 {
     1.0 + 0.5 * (2.0 * a / d).powi(2)
 }
 /// Interaction-corrected K_I for two co-planar cracks.
-#[allow(dead_code)]
 pub fn ki_two_cracks(sigma_far: f64, a: f64, d: f64, geometry_factor: f64) -> f64 {
     let f_int = crack_interaction_factor(a, d);
     LinearFracture::stress_intensity_ki(sigma_far, a, geometry_factor) * f_int
@@ -538,7 +518,6 @@ pub fn ki_two_cracks(sigma_far: f64, a: f64, d: f64, geometry_factor: f64) -> f6
 /// and the applied stress.
 ///
 /// Coalescence criterion: K_I_effective >= K_Ic at the inner crack tips.
-#[allow(dead_code)]
 pub fn will_cracks_link(sigma_far: f64, a: f64, d: f64, geo: f64, k_ic: f64) -> bool {
     let ki = ki_two_cracks(sigma_far, a, d, geo);
     ki >= k_ic
@@ -549,7 +528,6 @@ pub fn will_cracks_link(sigma_far: f64, a: f64, d: f64, geo: f64, k_ic: f64) -> 
 ///   = Σ_k \[ -W_k * dq/dx_k + T_k * dq_k \] * A_k
 ///
 /// where W is the strain energy density and T are traction-like terms.
-#[allow(dead_code)]
 pub fn j_integral_domain(points: &[DomainPoint]) -> f64 {
     let mut j = 0.0;
     for p in points {
@@ -571,21 +549,18 @@ pub fn j_integral_domain(points: &[DomainPoint]) -> f64 {
 /// Irwin plastic zone radius for plane stress.
 ///
 /// r_p = (1 / (2π)) * (K_I / σ_y)^2
-#[allow(dead_code)]
 pub fn plastic_zone_radius_plane_stress(ki: f64, yield_stress: f64) -> f64 {
     1.0 / (2.0 * PI) * (ki / yield_stress).powi(2)
 }
 /// Irwin plastic zone radius for plane strain.
 ///
 /// r_p = (1 / (6π)) * (K_I / σ_y)^2
-#[allow(dead_code)]
 pub fn plastic_zone_radius_plane_strain(ki: f64, yield_stress: f64) -> f64 {
     1.0 / (6.0 * PI) * (ki / yield_stress).powi(2)
 }
 /// Effective crack length with plastic zone correction (Irwin correction).
 ///
 /// a_eff = a + r_p (plane stress)
-#[allow(dead_code)]
 pub fn effective_crack_length(a: f64, ki: f64, yield_stress: f64) -> f64 {
     let r_p = plastic_zone_radius_plane_stress(ki, yield_stress);
     a + r_p
@@ -597,7 +572,6 @@ pub fn effective_crack_length(a: f64, ki: f64, yield_stress: f64) -> f64 {
 ///   where a_0 = (ΔK_th / (ΔΣ_e * sqrt(π)))^2
 ///
 /// Returns the effective threshold for a given crack size `a`.
-#[allow(dead_code)]
 pub fn kitagawa_threshold(a: f64, delta_k_th: f64, delta_sigma_e: f64) -> f64 {
     let dk_stress_limit = delta_sigma_e * (PI * a).sqrt();
     let inv_sq = 1.0 / (delta_k_th * delta_k_th) + 1.0 / (dk_stress_limit * dk_stress_limit);
@@ -608,12 +582,10 @@ pub fn kitagawa_threshold(a: f64, delta_k_th: f64, delta_sigma_e: f64) -> f64 {
 /// K_R(Δa) = K_Ic0 + slope * Δa
 ///
 /// where Δa = a - a_0 is the crack extension from initial length a_0.
-#[allow(dead_code)]
 pub fn k_r_curve_linear(delta_a: f64, k_ic0: f64, slope: f64) -> f64 {
     k_ic0 + slope * delta_a.max(0.0)
 }
 /// Check if the crack is growing using the R-curve: K_I >= K_R(Δa)
-#[allow(dead_code)]
 pub fn r_curve_fracture_check(ki: f64, delta_a: f64, k_ic0: f64, slope: f64) -> bool {
     ki >= k_r_curve_linear(delta_a, k_ic0, slope)
 }
@@ -623,7 +595,6 @@ pub fn r_curve_fracture_check(ki: f64, delta_a: f64, k_ic0: f64, slope: f64) -> 
 /// da/dt = C_scc * (K_I)^n_scc  for K_Ith <= K_I < K_Ic
 /// da/dt = 0                     for K_I < K_Ith
 /// da/dt = inf                   for K_I >= K_Ic (fast fracture)
-#[allow(dead_code)]
 pub fn scc_crack_growth_rate(ki: f64, c_scc: f64, n_scc: f64, k_ith: f64, k_ic: f64) -> f64 {
     if ki < k_ith {
         return 0.0;
@@ -1014,7 +985,6 @@ mod tests_higher_order {
 /// Heaviside enrichment for XFEM (step function across crack).
 ///
 /// Returns +1 if `signed_distance > 0`, -1 otherwise.
-#[allow(dead_code)]
 pub fn xfem_heaviside(signed_distance: f64) -> f64 {
     if signed_distance > 0.0 { 1.0 } else { -1.0 }
 }
@@ -1026,7 +996,6 @@ pub fn xfem_heaviside(signed_distance: f64) -> f64 {
 /// - `F2 = sqrt(r) * cos(theta/2)`
 /// - `F3 = sqrt(r) * sin(theta/2) * sin(theta)`
 /// - `F4 = sqrt(r) * cos(theta/2) * sin(theta)`
-#[allow(dead_code)]
 pub fn xfem_branch_functions(r: f64, theta: f64) -> [f64; 4] {
     let sqrt_r = r.sqrt();
     let half_theta = theta / 2.0;
@@ -1040,7 +1009,6 @@ pub fn xfem_branch_functions(r: f64, theta: f64) -> [f64; 4] {
 /// Gradients of XFEM branch functions w.r.t. polar coordinates (r, theta).
 ///
 /// Returns `[[dF1/dr, dF1/dtheta\], ..., [dF4/dr, dF4/dtheta]]`.
-#[allow(dead_code)]
 pub fn xfem_branch_gradients(r: f64, theta: f64) -> [[f64; 2]; 4] {
     let half_theta = theta / 2.0;
     let sin_h = half_theta.sin();
@@ -1066,7 +1034,6 @@ pub fn xfem_branch_gradients(r: f64, theta: f64) -> [[f64; 2]; 4] {
 ///
 /// The crack is the segment `(x0, y0)` → `(x1, y1)`.
 /// Returns the signed perpendicular distance from point `(px, py)`.
-#[allow(dead_code)]
 pub fn crack_level_set(x0: f64, y0: f64, x1: f64, y1: f64, px: f64, py: f64) -> f64 {
     let dx = x1 - x0;
     let dy = y1 - y0;
@@ -1079,7 +1046,6 @@ pub fn crack_level_set(x0: f64, y0: f64, x1: f64, y1: f64, px: f64, py: f64) -> 
 /// Nodal enrichment flag: does node at `(nx, ny)` need Heaviside enrichment?
 ///
 /// Returns true if the crack level-set changes sign across the element containing the node.
-#[allow(dead_code)]
 pub fn node_needs_heaviside_enrichment(level_set_values: &[f64]) -> bool {
     let has_positive = level_set_values.iter().any(|&v| v > 0.0);
     let has_negative = level_set_values.iter().any(|&v| v < 0.0);
@@ -1091,8 +1057,6 @@ pub fn node_needs_heaviside_enrichment(level_set_values: &[f64]) -> bool {
 /// `sigma_xx`, `sigma_yy`, `sigma_xy` are stresses at integration points,
 /// `u_x`, `u_y` are displacements, `w_x`, `w_y` are q-function gradients,
 /// `weights` are integration weights.
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
 pub fn xfem_domain_integral(
     sigma_xx: &[f64],
     sigma_yy: &[f64],
@@ -1108,11 +1072,11 @@ pub fn xfem_domain_integral(
     assert!(n == u_x.len() && n == u_y.len());
     assert!(n == w_x.len() && n == w_y.len() && n == weights.len());
     let mut j = 0.0;
-    for i in 0..n {
+    for (i, &wt) in weights.iter().enumerate() {
         let w_energy = 0.5 * (sigma_xx[i] * u_x[i] + sigma_yy[i] * u_y[i]);
         let flux_x = sigma_xx[i] * u_x[i] + sigma_xy[i] * u_y[i];
         let flux_y = sigma_xy[i] * u_x[i] + sigma_yy[i] * u_y[i];
-        j += (flux_x * w_x[i] + flux_y * w_y[i] - w_energy * w_x[i]) * weights[i];
+        j += (flux_x * w_x[i] + flux_y * w_y[i] - w_energy * w_x[i]) * wt;
     }
     j
 }
@@ -1121,7 +1085,6 @@ pub fn xfem_domain_integral(
 /// Effective stress-intensity range accounting for crack closure:
 /// `delta_K_eff = U * delta_K`
 /// where `U = 0.5 + 0.4 * R` (Elber's empirical relation, valid for -0.1 <= R <= 0.7).
-#[allow(dead_code)]
 pub fn elber_effective_delta_k(delta_k: f64, r_ratio: f64) -> f64 {
     let u = (0.5 + 0.4 * r_ratio).clamp(0.0, 1.0);
     u * delta_k
@@ -1129,7 +1092,6 @@ pub fn elber_effective_delta_k(delta_k: f64, r_ratio: f64) -> f64 {
 /// Schijve modification of Elber closure.
 ///
 /// `U = 0.55 + 0.33 * R + 0.12 * R^2`
-#[allow(dead_code)]
 pub fn schijve_effective_delta_k(delta_k: f64, r_ratio: f64) -> f64 {
     let u = (0.55 + 0.33 * r_ratio + 0.12 * r_ratio * r_ratio).clamp(0.0, 1.0);
     u * delta_k
@@ -1137,14 +1099,12 @@ pub fn schijve_effective_delta_k(delta_k: f64, r_ratio: f64) -> f64 {
 /// Striations per cycle from crack growth rate.
 ///
 /// Each striation corresponds to one load cycle, spacing = `da/dN`.
-#[allow(dead_code)]
 pub fn striations_spacing(da_dn: f64) -> f64 {
     da_dn
 }
 /// Effective Paris law using Elber closure.
 ///
 /// `da/dN = C * (U * delta_K)^m`
-#[allow(dead_code)]
 pub fn paris_elber(delta_k: f64, c: f64, m: f64, r_ratio: f64) -> f64 {
     let delta_k_eff = elber_effective_delta_k(delta_k, r_ratio);
     c * delta_k_eff.powf(m)
@@ -1153,8 +1113,6 @@ pub fn paris_elber(delta_k: f64, c: f64, m: f64, r_ratio: f64) -> f64 {
 ///
 /// `N = integral from a0 to af of da / (C * (U * delta_K(a))^m)`
 /// Numerically integrated with `n_steps` trapezoid steps.
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
 pub fn fatigue_life_elber(
     a0: f64,
     af: f64,
@@ -1184,8 +1142,6 @@ pub fn fatigue_life_elber(
 /// `phi = (r_p / (a_ol + r_p_ol - a))^m_w`
 /// where `a_ol` is crack length at overload, `r_p_ol` plastic zone at overload,
 /// `r_p` current plastic zone, `a` current crack length, `m_w` Wheeler exponent.
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
 pub fn wheeler_retardation(a_ol: f64, r_p_ol: f64, a: f64, r_p: f64, m_w: f64) -> f64 {
     let boundary = a_ol + r_p_ol;
     if a + r_p >= boundary {
@@ -1196,8 +1152,6 @@ pub fn wheeler_retardation(a_ol: f64, r_p_ol: f64, a: f64, r_p: f64, m_w: f64) -
 /// Retarded Paris law (Wheeler model).
 ///
 /// `da/dN = phi * C * delta_K^m`
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
 pub fn paris_wheeler(
     delta_k: f64,
     c: f64,
@@ -1215,7 +1169,6 @@ pub fn paris_wheeler(
 ///
 /// Given current crack length `a`, stress range `delta_sigma`, geometry factor `geo`,
 /// Paris constants `c` and `m`, returns the new crack length after one block of `cycles`.
-#[allow(dead_code)]
 pub fn paris_step(a: f64, delta_sigma: f64, geo: f64, c: f64, m: f64, cycles: f64) -> f64 {
     let delta_k = delta_sigma * (PI * a).sqrt() * geo;
     let da_dn = c * delta_k.powf(m);
@@ -1224,8 +1177,6 @@ pub fn paris_step(a: f64, delta_sigma: f64, geo: f64, c: f64, m: f64, cycles: f6
 /// Simulate crack propagation until failure (K_I >= K_Ic).
 ///
 /// Returns the crack length history as `(crack_lengths, cumulative_cycles)`.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn simulate_crack_growth(
     a0: f64,
     k_ic: f64,
@@ -1256,7 +1207,6 @@ pub fn simulate_crack_growth(
 ///
 /// Node layout: `[u_n1, u_t1, u_n2, u_t2]`.
 /// Penalty stiffness in normal direction `k_n`, tangential `k_t`.
-#[allow(dead_code)]
 pub fn cohesive_stiffness_2d(k_n: f64, k_t: f64, length: f64) -> [[f64; 4]; 4] {
     let gauss_pts = [-1.0_f64 / 3.0_f64.sqrt(), 1.0_f64 / 3.0_f64.sqrt()];
     let gauss_w = [1.0_f64, 1.0_f64];
@@ -1279,7 +1229,6 @@ pub fn cohesive_stiffness_2d(k_n: f64, k_t: f64, length: f64) -> [[f64; 4]; 4] {
 ///
 /// Given nodal displacements `dof = [u_n1, u_t1, u_n2, u_t2]` and
 /// bilinear cohesive parameters, returns tractions at midpoint.
-#[allow(dead_code)]
 pub fn cohesive_element_traction(dof: [f64; 4], p: &CzmBilinearParams) -> (f64, f64) {
     let delta_n = 0.5 * (dof[0] + dof[2]);
     let delta_s = 0.5 * (dof[1] + dof[3]);
@@ -1489,10 +1438,10 @@ mod fracture_extended_tests {
     #[test]
     fn test_cohesive_stiffness_2d_symmetric() {
         let k = cohesive_stiffness_2d(1e9, 0.5e9, 0.01);
-        for i in 0..4 {
-            for j in 0..4 {
+        for (i, row) in k.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (k[i][j] - k[j][i]).abs() < 1e-6,
+                    (val - k[j][i]).abs() < 1e-6,
                     "K should be symmetric at [{},{}]",
                     i,
                     j
@@ -1503,9 +1452,9 @@ mod fracture_extended_tests {
     #[test]
     fn test_cohesive_stiffness_2d_positive_diagonal() {
         let k = cohesive_stiffness_2d(1e9, 0.5e9, 0.01);
-        for i in 0..4 {
+        for (i, row) in k.iter().enumerate() {
             assert!(
-                k[i][i] > 0.0,
+                row[i] > 0.0,
                 "Diagonal entry [{},{}] should be positive",
                 i,
                 i

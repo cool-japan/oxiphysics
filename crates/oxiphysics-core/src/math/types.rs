@@ -92,7 +92,6 @@ impl Frustum {
     /// Test whether a sphere is fully contained inside the frustum.
     ///
     /// Returns `true` if every plane's signed distance to `center` is ≥ `radius`.
-    #[allow(dead_code)]
     pub fn contains_sphere(&self, center: &Vec3, radius: Real) -> bool {
         self.planes
             .iter()
@@ -103,7 +102,6 @@ impl Frustum {
     /// Uses the separating-axis theorem: for each frustum plane, if all 8
     /// corners of the AABB are on the outside half-space, the AABB is
     /// rejected.
-    #[allow(dead_code)]
     pub fn intersects_aabb(&self, aabb: &Aabb) -> bool {
         for plane in &self.planes {
             let p = Vec3::new(
@@ -132,7 +130,6 @@ impl Frustum {
     /// Build a frustum directly from a combined view-projection matrix.
     ///
     /// Alias for [`Frustum::from_view_projection`] with a more explicit name.
-    #[allow(dead_code)]
     pub fn extract_from_view_proj(vp: &Mat4) -> Self {
         Self::from_view_projection(vp)
     }
@@ -199,13 +196,11 @@ impl Plane {
     /// Ray–plane intersection returning the hit `t` parameter.
     ///
     /// Identical to [`Ray::intersect_plane`] but callable directly on a `Plane`.
-    #[allow(dead_code)]
     pub fn intersect_ray(&self, ray: &Ray) -> Option<Real> {
         ray.intersect_plane(self)
     }
 }
 /// Axis-aligned bounding box in 3-D.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Aabb {
     /// Minimum corner.
@@ -213,7 +208,6 @@ pub struct Aabb {
     /// Maximum corner.
     pub max: [f64; 3],
 }
-#[allow(dead_code)]
 impl Aabb {
     /// Create an AABB from its min and max corners.
     pub fn new(min: [f64; 3], max: [f64; 3]) -> Self {
@@ -350,19 +344,16 @@ impl Aabb {
     /// Merge two AABBs into the smallest AABB containing both.
     ///
     /// Alias for [`Aabb::union`].
-    #[allow(dead_code)]
     pub fn merge(&self, other: &Aabb) -> Aabb {
         self.union(other)
     }
     /// Expand this AABB by `amount` in every direction.
     ///
     /// Alias for [`Aabb::expand`] following the task spec naming.
-    #[allow(dead_code)]
     pub fn expand_by(&self, amount: f64) -> Aabb {
         self.expand(amount)
     }
     /// Return the closest point on (or inside) this AABB to `p`.
-    #[allow(dead_code)]
     pub fn closest_point(&self, p: [f64; 3]) -> [f64; 3] {
         [
             p[0].clamp(self.min[0], self.max[0]),
@@ -371,7 +362,6 @@ impl Aabb {
         ]
     }
     /// Test whether `p` is strictly inside (not on the boundary) of this AABB.
-    #[allow(dead_code)]
     pub fn contains_point_strict(&self, p: [f64; 3]) -> bool {
         (0..3).all(|i| p[i] > self.min[i] && p[i] < self.max[i])
     }
@@ -389,22 +379,18 @@ pub struct Dual {
 }
 impl Dual {
     /// Construct a dual number.
-    #[allow(dead_code)]
     pub fn new(re: Real, du: Real) -> Self {
         Self { re, du }
     }
     /// Constant (derivative = 0).
-    #[allow(dead_code)]
     pub fn constant(re: Real) -> Self {
         Self { re, du: 0.0 }
     }
     /// Variable (derivative = 1).
-    #[allow(dead_code)]
     pub fn variable(re: Real) -> Self {
         Self { re, du: 1.0 }
     }
     /// Square root: √(a + b*ε) = √a + b/(2√a) * ε.
-    #[allow(dead_code)]
     pub fn sqrt(self) -> Self {
         let r = self.re.sqrt();
         Self {
@@ -413,7 +399,6 @@ impl Dual {
         }
     }
     /// Sine: sin(a + b*ε) = sin(a) + b*cos(a)*ε.
-    #[allow(dead_code)]
     pub fn sin(self) -> Self {
         Self {
             re: self.re.sin(),
@@ -421,7 +406,6 @@ impl Dual {
         }
     }
     /// Cosine: cos(a + b*ε) = cos(a) - b*sin(a)*ε.
-    #[allow(dead_code)]
     pub fn cos(self) -> Self {
         Self {
             re: self.re.cos(),
@@ -429,7 +413,6 @@ impl Dual {
         }
     }
     /// Exponential: exp(a + b*ε) = exp(a) + b*exp(a)*ε.
-    #[allow(dead_code)]
     pub fn exp(self) -> Self {
         let e = self.re.exp();
         Self {
@@ -438,7 +421,6 @@ impl Dual {
         }
     }
     /// Natural log: ln(a + b*ε) = ln(a) + b/a * ε.
-    #[allow(dead_code)]
     pub fn ln(self) -> Self {
         Self {
             re: self.re.ln(),
@@ -446,7 +428,6 @@ impl Dual {
         }
     }
     /// Raise to integer power: (a+b*ε)^n = a^n + n*b*a^{n-1}*ε.
-    #[allow(dead_code)]
     pub fn powi(self, n: i32) -> Self {
         let re = self.re.powi(n);
         let du = n as Real * self.re.powi(n - 1) * self.du;

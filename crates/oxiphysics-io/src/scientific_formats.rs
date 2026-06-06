@@ -369,10 +369,10 @@ mod tests {
 
     #[test]
     fn test_write_read_cube_roundtrip() {
-        let path = "/tmp/test_oxiphysics_cube.cube";
+        let path = std::env::temp_dir().join("test_oxiphysics_cube.cube");
         let cf = sample_cube();
-        write_cube(path, &cf).unwrap();
-        let cf2 = read_cube(path).unwrap();
+        write_cube(path.to_str().unwrap_or(""), &cf).unwrap();
+        let cf2 = read_cube(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(cf2.n_atoms, 2);
         assert_eq!(cf2.nx, 2);
         assert_eq!(cf2.ny, 2);
@@ -382,45 +382,45 @@ mod tests {
 
     #[test]
     fn test_cube_data_values() {
-        let path = "/tmp/test_oxiphysics_cube_data.cube";
+        let path = std::env::temp_dir().join("test_oxiphysics_cube_data.cube");
         let cf = sample_cube();
-        write_cube(path, &cf).unwrap();
-        let cf2 = read_cube(path).unwrap();
+        write_cube(path.to_str().unwrap_or(""), &cf).unwrap();
+        let cf2 = read_cube(path.to_str().unwrap_or("")).unwrap();
         assert!((cf2.data[0] - 1.0).abs() < 1e-4);
         assert!((cf2.data[7] - 8.0).abs() < 1e-4);
     }
 
     #[test]
     fn test_cube_atom_numbers() {
-        let path = "/tmp/test_oxiphysics_cube_atoms.cube";
+        let path = std::env::temp_dir().join("test_oxiphysics_cube_atoms.cube");
         let cf = sample_cube();
-        write_cube(path, &cf).unwrap();
-        let cf2 = read_cube(path).unwrap();
+        write_cube(path.to_str().unwrap_or(""), &cf).unwrap();
+        let cf2 = read_cube(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(cf2.atom_numbers[0], 6);
         assert_eq!(cf2.atom_numbers[1], 1);
     }
 
     #[test]
     fn test_cube_atom_positions() {
-        let path = "/tmp/test_oxiphysics_cube_pos.cube";
+        let path = std::env::temp_dir().join("test_oxiphysics_cube_pos.cube");
         let cf = sample_cube();
-        write_cube(path, &cf).unwrap();
-        let cf2 = read_cube(path).unwrap();
+        write_cube(path.to_str().unwrap_or(""), &cf).unwrap();
+        let cf2 = read_cube(path.to_str().unwrap_or("")).unwrap();
         assert!((cf2.atom_positions[1][0] - 1.0).abs() < 1e-4);
     }
 
     #[test]
     fn test_cube_origin() {
-        let path = "/tmp/test_oxiphysics_cube_origin.cube";
+        let path = std::env::temp_dir().join("test_oxiphysics_cube_origin.cube");
         let cf = sample_cube();
-        write_cube(path, &cf).unwrap();
-        let cf2 = read_cube(path).unwrap();
+        write_cube(path.to_str().unwrap_or(""), &cf).unwrap();
+        let cf2 = read_cube(path.to_str().unwrap_or("")).unwrap();
         assert!((cf2.origin[0]).abs() < 1e-6);
     }
 
     #[test]
     fn test_write_molden_creates_file() {
-        let path = "/tmp/test_oxiphysics_molden.mld";
+        let path = std::env::temp_dir().join("test_oxiphysics_molden.mld");
         let mf = MoldenFile {
             atoms: vec![
                 ("C".to_string(), [0.0, 0.0, 0.0]),
@@ -429,8 +429,8 @@ mod tests {
             frequencies: vec![1000.0, 2000.0],
             intensities: vec![50.0, 100.0],
         };
-        write_molden_geometry(path, &mf).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        write_molden_geometry(path.to_str().unwrap_or(""), &mf).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("[Molden Format]"));
         assert!(content.contains("[Atoms]"));
         assert!(content.contains("[FREQ]"));
@@ -438,14 +438,14 @@ mod tests {
 
     #[test]
     fn test_molden_no_freq() {
-        let path = "/tmp/test_oxiphysics_molden_nofreq.mld";
+        let path = std::env::temp_dir().join("test_oxiphysics_molden_nofreq.mld");
         let mf = MoldenFile {
             atoms: vec![("O".to_string(), [0.0, 0.0, 0.0])],
             frequencies: vec![],
             intensities: vec![],
         };
-        write_molden_geometry(path, &mf).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        write_molden_geometry(path.to_str().unwrap_or(""), &mf).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(!content.contains("[FREQ]"));
     }
 
@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     fn test_write_extxyz_frame() {
-        let path = "/tmp/test_oxiphysics_extxyz.xyz";
+        let path = std::env::temp_dir().join("test_oxiphysics_extxyz.xyz");
         let frame = XyzFrame {
             step: 10,
             time: 0.1,
@@ -485,8 +485,8 @@ mod tests {
         };
         let mut props = HashMap::new();
         props.insert("energy".to_string(), "-100.5".to_string());
-        write_extxyz_frame(path, &frame, &props).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        write_extxyz_frame(path.to_str().unwrap_or(""), &frame, &props).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.starts_with("2\n"));
         assert!(content.contains("step=10"));
         assert!(content.contains("energy=-100.5"));
@@ -494,14 +494,14 @@ mod tests {
 
     #[test]
     fn test_write_extxyz_atom_count() {
-        let path = "/tmp/test_oxiphysics_extxyz_count.xyz";
+        let path = std::env::temp_dir().join("test_oxiphysics_extxyz_count.xyz");
         let frame = XyzFrame {
             step: 0,
             time: 0.0,
             atoms: vec![("N".to_string(), [0.0, 0.0, 0.0])],
         };
-        write_extxyz_frame(path, &frame, &HashMap::new()).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        write_extxyz_frame(path.to_str().unwrap_or(""), &frame, &HashMap::new()).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.starts_with("1\n"));
     }
 
@@ -523,18 +523,18 @@ mod tests {
 
     #[test]
     fn test_fchk_read_array_not_found() {
-        let path = "/tmp/test_fchk_empty.fchk";
-        std::fs::write(path, "Some data\n").unwrap();
-        let arr = fchk_read_array(path, "NonExistentKeyword").unwrap();
+        let path = std::env::temp_dir().join("test_fchk_empty.fchk");
+        std::fs::write(&path, "Some data\n").unwrap();
+        let arr = fchk_read_array(path.to_str().unwrap_or(""), "NonExistentKeyword").unwrap();
         assert!(arr.is_empty());
     }
 
     #[test]
     fn test_fchk_read_array_found() {
-        let path = "/tmp/test_fchk_data.fchk";
+        let path = std::env::temp_dir().join("test_fchk_data.fchk");
         let content = "Total Energy                       R   N=           3\n   1.0000000E+00   2.0000000E+00   3.0000000E+00\n";
-        std::fs::write(path, content).unwrap();
-        let arr = fchk_read_array(path, "Total Energy").unwrap();
+        std::fs::write(&path, content).unwrap();
+        let arr = fchk_read_array(path.to_str().unwrap_or(""), "Total Energy").unwrap();
         assert_eq!(arr.len(), 3);
         assert!((arr[0] - 1.0).abs() < 1e-6);
         assert!((arr[2] - 3.0).abs() < 1e-6);
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn test_cube_file_no_atoms() {
-        let path = "/tmp/test_oxiphysics_cube_zero.cube";
+        let path = std::env::temp_dir().join("test_oxiphysics_cube_zero.cube");
         let cf = CubeFile {
             n_atoms: 0,
             origin: [0.0; 3],
@@ -554,21 +554,21 @@ mod tests {
             atom_positions: vec![],
             atom_numbers: vec![],
         };
-        write_cube(path, &cf).unwrap();
-        let cf2 = read_cube(path).unwrap();
+        write_cube(path.to_str().unwrap_or(""), &cf).unwrap();
+        let cf2 = read_cube(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(cf2.n_atoms, 0);
     }
 
     #[test]
     fn test_molden_atom_symbols() {
-        let path = "/tmp/test_oxiphysics_molden_sym.mld";
+        let path = std::env::temp_dir().join("test_oxiphysics_molden_sym.mld");
         let mf = MoldenFile {
             atoms: vec![("Fe".to_string(), [0.5, 0.5, 0.5])],
             frequencies: vec![],
             intensities: vec![],
         };
-        write_molden_geometry(path, &mf).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        write_molden_geometry(path.to_str().unwrap_or(""), &mf).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("Fe"));
     }
 
@@ -582,14 +582,14 @@ mod tests {
 
     #[test]
     fn test_write_extxyz_time() {
-        let path = "/tmp/test_oxiphysics_extxyz_time.xyz";
+        let path = std::env::temp_dir().join("test_oxiphysics_extxyz_time.xyz");
         let frame = XyzFrame {
             step: 5,
             time: 1.23456,
             atoms: vec![("H".to_string(), [0.0, 0.0, 0.0])],
         };
-        write_extxyz_frame(path, &frame, &HashMap::new()).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        write_extxyz_frame(path.to_str().unwrap_or(""), &frame, &HashMap::new()).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("time=1.234560"));
     }
 

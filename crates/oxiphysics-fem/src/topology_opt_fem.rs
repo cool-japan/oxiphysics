@@ -1,5 +1,3 @@
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,8 +7,6 @@
 //! structural topology optimization on 2-D structured meshes, combined with
 //! sensitivity filtering, OC (Optimality Criteria) density updates, and
 //! auxiliary tools for thermal topology optimization and manufacturability.
-
-#![allow(dead_code)]
 
 // ============================================================================
 // TopOptProblem
@@ -219,11 +215,11 @@ impl TopOptProblem {
 
         while (l2 - l1) / (l1 + l2 + 1e-30) > 1e-3 {
             let lmid = 0.5 * (l1 + l2);
-            for e in 0..n {
+            for (e, xnew_e) in xnew.iter_mut().enumerate() {
                 let be = (-state.dc[e] / lmid).max(0.0).sqrt();
                 let lower = (state.x[e] - move_limit).max(0.001);
                 let upper = (state.x[e] + move_limit).min(1.0);
-                xnew[e] = (state.x[e] * be).clamp(lower, upper);
+                *xnew_e = (state.x[e] * be).clamp(lower, upper);
             }
             let vol: f64 = xnew.iter().sum::<f64>() / n as f64;
             if vol > self.volfrac {
@@ -542,16 +538,16 @@ impl ManufacturabilityFilter {
         let n = x.len();
         let r = (self.min_length / 2.0).ceil() as usize;
         let mut dilated = vec![0.0_f64; n];
-        for i in 0..n {
+        for (i, dil_i) in dilated.iter_mut().enumerate() {
             let lo = i.saturating_sub(r);
             let hi = (i + r + 1).min(n);
-            dilated[i] = x[lo..hi].iter().cloned().fold(0.0_f64, f64::max);
+            *dil_i = x[lo..hi].iter().cloned().fold(0.0_f64, f64::max);
         }
         let mut eroded = vec![0.0_f64; n];
-        for i in 0..n {
+        for (i, er_i) in eroded.iter_mut().enumerate() {
             let lo = i.saturating_sub(r);
             let hi = (i + r + 1).min(n);
-            eroded[i] = dilated[lo..hi].iter().cloned().fold(1.0_f64, f64::min);
+            *er_i = dilated[lo..hi].iter().cloned().fold(1.0_f64, f64::min);
         }
         eroded
     }
@@ -746,7 +742,7 @@ mod tests {
         let state = p.initialize();
         let xnew = p.oc_update(&state);
         for &v in xnew.iter() {
-            assert!(v >= 0.001 && v <= 1.0, "density out of bounds: {v}");
+            assert!((0.001..=1.0).contains(&v), "density out of bounds: {v}");
         }
     }
 
@@ -786,13 +782,13 @@ mod tests {
     fn test_fem_mesh_element_stiffness_symmetric() {
         let mesh = FiniteElementMesh2D::new(2, 2);
         let ke = mesh.element_stiffness();
-        for i in 0..8 {
-            for j in 0..8 {
-                let diff = (ke[i][j] - ke[j][i]).abs();
+        for (i, row) in ke.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                let diff = (val - ke[j][i]).abs();
                 assert!(
                     diff < 1e-10,
                     "ke not symmetric at ({i},{j}): {} vs {}",
-                    ke[i][j],
+                    val,
                     ke[j][i]
                 );
             }

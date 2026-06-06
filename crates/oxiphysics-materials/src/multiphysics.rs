@@ -7,8 +7,6 @@
 //! magnetic, electrochemical, and radiation physics including operator
 //! splitting and staggered Newton solvers.
 
-#![allow(dead_code)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // ThermoMechanical — thermal stress coupling
 // ─────────────────────────────────────────────────────────────────────────────
@@ -49,7 +47,6 @@ impl ThermoMechanical {
     }
 
     /// Creates a custom thermo-mechanical material.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         youngs_modulus: f64,
         poisson_ratio: f64,

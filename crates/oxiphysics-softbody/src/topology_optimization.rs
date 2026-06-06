@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -21,9 +20,6 @@
 //! - Compliance minimisation loop
 //!
 //! No nalgebra dependency — all arrays are plain `f64` / `Vec`f64`.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ---------------------------------------------------------------------------
 // TopOptProblem
@@ -471,10 +467,14 @@ impl TopOptProblem {
     /// Fills `self.sensitivity` and returns a reference slice.
     pub fn adjoint_sensitivity(&mut self, element_strain_energies: &[f64], e0: f64) {
         assert_eq!(element_strain_energies.len(), self.n_elements());
-        for e in 0..self.n_elements() {
+        for (e, &ese) in element_strain_energies
+            .iter()
+            .enumerate()
+            .take(self.n_elements())
+        {
             let rho = self.density[e];
             let dsimp = self.simp_derivative(rho, e0);
-            self.sensitivity[e] = -dsimp * element_strain_energies[e];
+            self.sensitivity[e] = -dsimp * ese;
         }
         self.objective = element_strain_energies
             .iter()
@@ -525,11 +525,11 @@ pub fn multi_load_sensitivity(
 
     for (se_load, &w) in strain_energies.iter().zip(weights.iter()) {
         assert_eq!(se_load.len(), n);
-        for e in 0..n {
+        for (e, &se) in se_load.iter().enumerate() {
             let rho = problem.density[e];
             let dsimp = problem.simp_derivative(rho, e0);
-            problem.sensitivity[e] -= w * dsimp * se_load[e];
-            problem.objective += w * problem.simp_penalization(rho, e0) * se_load[e];
+            problem.sensitivity[e] -= w * dsimp * se;
+            problem.objective += w * problem.simp_penalization(rho, e0) * se;
         }
     }
 }

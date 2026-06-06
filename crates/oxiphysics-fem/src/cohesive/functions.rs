@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::BilinearCzmParams;
 
 /// Compute the 12×12 cohesive element stiffness matrix for a 2D (4-node)
@@ -20,7 +19,6 @@ use super::types::BilinearCzmParams;
 /// * `area` – interface element area (m²)
 ///
 /// Returns a 12×12 symmetric matrix.
-#[allow(clippy::too_many_arguments)]
 pub fn cohesive_element_stiffness(k_n: f64, k_t: f64, area: f64) -> [[f64; 12]; 12] {
     let factor = area / 4.0;
     let kn = k_n * factor;
@@ -29,10 +27,9 @@ pub fn cohesive_element_stiffness(k_n: f64, k_t: f64, area: f64) -> [[f64; 12]; 
     let mut ke = [[0.0f64; 12]; 12];
     let pairs = [(0usize, 2usize), (1usize, 3usize)];
     for &(nu, nl) in &pairs {
-        for dof in 0..3 {
+        for (dof, &k) in d.iter().enumerate() {
             let row_u = nu * 3 + dof;
             let row_l = nl * 3 + dof;
-            let k = d[dof];
             ke[row_u][row_u] += k;
             ke[row_l][row_l] += k;
             ke[row_u][row_l] -= k;
@@ -435,12 +432,11 @@ mod tests {
     #[test]
     fn test_cohesive_stiffness_symmetry() {
         let ke = cohesive_element_stiffness(1e9, 5e8, 0.01);
-        for i in 0..12 {
-            for j in 0..12 {
+        for (i, row) in ke.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
                 assert!(
-                    (ke[i][j] - ke[j][i]).abs() < 1e-8,
-                    "not symmetric at ({i},{j}): {} vs {}",
-                    ke[i][j],
+                    (v - ke[j][i]).abs() < 1e-8,
+                    "not symmetric at ({i},{j}): {v} vs {}",
                     ke[j][i]
                 );
             }
@@ -449,8 +445,8 @@ mod tests {
     #[test]
     fn test_cohesive_stiffness_positive_diagonal() {
         let ke = cohesive_element_stiffness(1e9, 5e8, 0.01);
-        for i in 0..12 {
-            assert!(ke[i][i] > 0.0, "diagonal [{i}] = {}", ke[i][i]);
+        for (i, row) in ke.iter().enumerate() {
+            assert!(row[i] > 0.0, "diagonal [{i}] = {}", row[i]);
         }
     }
     #[test]

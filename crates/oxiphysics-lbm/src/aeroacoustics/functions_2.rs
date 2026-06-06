@@ -2,15 +2,14 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use std::f64::consts::PI;
 
 use super::types::{AcousticSourceType, FwhObserver};
 
 #[cfg(test)]
 mod tests_extended_acoustics {
-    use super::*;
+    use super::super::functions::*;
+    use std::f64::consts::PI;
 
     #[test]
     fn test_greens_3d_amplitude_zero_distance() {
@@ -158,21 +157,18 @@ mod tests_extended_acoustics {
 ///
 /// This is the LBM acoustic analogy formula relating density fluctuations to
 /// pressure fluctuations through the isothermal speed of sound.
-#[allow(dead_code)]
 pub fn acoustic_pressure_fluctuation(rho: f64, rho0: f64, cs2: f64) -> f64 {
     cs2 * (rho - rho0)
 }
 /// Compute acoustic pressure fluctuation field over the entire lattice.
 ///
 /// Returns a vector of p' values for each lattice node.
-#[allow(dead_code)]
 pub fn acoustic_pressure_field(rho: &[f64], rho0: f64, cs2: f64) -> Vec<f64> {
     rho.iter()
         .map(|&r| acoustic_pressure_fluctuation(r, rho0, cs2))
         .collect()
 }
 /// Compute RMS acoustic pressure from a time series of pressure fluctuations.
-#[allow(dead_code)]
 pub fn pressure_fluctuation_rms(p_prime: &[f64]) -> f64 {
     if p_prime.is_empty() {
         return 0.0;
@@ -183,14 +179,12 @@ pub fn pressure_fluctuation_rms(p_prime: &[f64]) -> f64 {
 /// Compute the trace (isotropic part) of the 2D Lighthill stress tensor.
 ///
 /// tr(T) = T_xx + T_yy
-#[allow(dead_code)]
 pub fn lighthill_tensor_trace(t: [[f64; 2]; 2]) -> f64 {
     t[0][0] + t[1][1]
 }
 /// Compute the deviatoric (traceless) part of the 2D Lighthill stress tensor.
 ///
 /// T_dev = T - (tr(T)/2) * I
-#[allow(dead_code)]
 pub fn lighthill_tensor_deviatoric(t: [[f64; 2]; 2]) -> [[f64; 2]; 2] {
     let half_trace = (t[0][0] + t[1][1]) / 2.0;
     [
@@ -199,14 +193,12 @@ pub fn lighthill_tensor_deviatoric(t: [[f64; 2]; 2]) -> [[f64; 2]; 2] {
     ]
 }
 /// Check whether Lighthill tensor is symmetric (T_ij = T_ji).
-#[allow(dead_code)]
 pub fn lighthill_tensor_is_symmetric(t: [[f64; 2]; 2], tol: f64) -> bool {
     (t[0][1] - t[1][0]).abs() < tol
 }
 /// Estimate the acoustic far-field power from a quadrupole source region.
 ///
 /// W_quad ≈ ρ₀ * ∫ T_ij T_ij dV / (c₀^5) (Lighthill 8th-power-like scaling)
-#[allow(dead_code)]
 pub fn quadrupole_far_field_power(t_frobenius_sq: f64, volume: f64, rho0: f64, c0: f64) -> f64 {
     rho0 * t_frobenius_sq * volume / c0.powi(5)
 }
@@ -214,7 +206,6 @@ pub fn quadrupole_far_field_power(t_frobenius_sq: f64, volume: f64, rho0: f64, c
 ///
 /// p'_T = ρ₀ * Σ_i \[ u_n * dA_i / (4π r_i²) \]
 /// where u_n is normal surface velocity.
-#[allow(dead_code)]
 pub fn fwh_monopole_term(
     surface_velocities: &[[f64; 3]],
     surface_normals: &[[f64; 3]],
@@ -242,7 +233,6 @@ pub fn fwh_monopole_term(
 /// Compute dipole term of the FWH equation at an observer.
 ///
 /// p'_L = Σ_i \[ Δp_i * (n̂ · r̂) * dA_i / (4π r_i²) \]
-#[allow(dead_code)]
 pub fn fwh_dipole_term(
     surface_pressures: &[f64],
     surface_normals: &[[f64; 3]],
@@ -271,7 +261,6 @@ pub fn fwh_dipole_term(
 /// Compute SPL in dB: SPL = 20 * log10(p' / p_ref) where p_ref = 20 µPa.
 ///
 /// Returns NEG_INFINITY if p_prime <= 0.
-#[allow(dead_code)]
 pub fn spl_from_pressure_fluctuation(p_prime: f64) -> f64 {
     pub(super) const P_REF: f64 = 20e-6;
     if p_prime <= 0.0 {
@@ -280,13 +269,11 @@ pub fn spl_from_pressure_fluctuation(p_prime: f64) -> f64 {
     20.0 * (p_prime / P_REF).log10()
 }
 /// Convert SPL in dB back to pressure amplitude (Pa).
-#[allow(dead_code)]
 pub fn pressure_from_spl(spl_db: f64) -> f64 {
     pub(super) const P_REF: f64 = 20e-6;
     P_REF * 10.0_f64.powf(spl_db / 20.0)
 }
 /// Compute peak SPL from a time series of pressure fluctuations.
-#[allow(dead_code)]
 pub fn peak_spl(p_prime: &[f64]) -> f64 {
     let p_max = p_prime.iter().cloned().fold(0.0_f64, |a, b| a.max(b.abs()));
     spl_from_pressure_fluctuation(p_max)
@@ -294,7 +281,6 @@ pub fn peak_spl(p_prime: &[f64]) -> f64 {
 /// Compute 1/3 octave band center frequencies from 20 Hz to 20 kHz.
 ///
 /// Returns center frequencies of ISO 1/3-octave bands.
-#[allow(dead_code)]
 pub fn third_octave_center_frequencies() -> Vec<f64> {
     vec![
         20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0, 125.0, 160.0, 200.0, 250.0, 315.0, 400.0,
@@ -305,7 +291,6 @@ pub fn third_octave_center_frequencies() -> Vec<f64> {
 /// Compute the vorticity ω_z = ∂v/∂x - ∂u/∂y from velocity field differences.
 ///
 /// Uses central differences: ω_z ≈ (v_{i+1,j} - v_{i-1,j})/(2Δx) - (u_{i,j+1} - u_{i,j-1})/(2Δy)
-#[allow(dead_code)]
 pub fn compute_vorticity_z(
     u_xplus: f64,
     u_xminus: f64,
@@ -319,19 +304,16 @@ pub fn compute_vorticity_z(
 /// Compute circulation around a closed contour from vorticity field.
 ///
 /// Γ = ∫∫ ω_z dA ≈ Σ ω_z * dA
-#[allow(dead_code)]
 pub fn circulation_from_vorticity(vorticity: &[f64], cell_area: f64) -> f64 {
     vorticity.iter().sum::<f64>() * cell_area
 }
 /// Enstrophy: Z = 0.5 * ∫ ω² dV (measure of vortex intensity).
-#[allow(dead_code)]
 pub fn enstrophy(vorticity: &[f64], cell_volume: f64) -> f64 {
     0.5 * vorticity.iter().map(|&w| w * w).sum::<f64>() * cell_volume
 }
 /// Acoustic power from vortex dynamics (Powell's analogy, 2D).
 ///
 /// W_ac = ρ₀/(4π c₀³) * (dΓ/dt)²
-#[allow(dead_code)]
 pub fn vortex_acoustic_power_2d(d_gamma_dt: f64, rho0: f64, c0: f64) -> f64 {
     rho0 * d_gamma_dt * d_gamma_dt / (4.0 * PI * c0.powi(3))
 }
@@ -339,7 +321,6 @@ pub fn vortex_acoustic_power_2d(d_gamma_dt: f64, rho0: f64, c0: f64) -> f64 {
 ///
 /// Two counter-rotating vortices of strength ±Γ separated by distance d
 /// emit dipole sound. p_rms ~ ρ₀ Γ² / (2π c₀ r d)
-#[allow(dead_code)]
 pub fn vortex_pair_acoustic_pressure(gamma: f64, d: f64, r: f64, rho0: f64, c0: f64) -> f64 {
     if r < 1e-15 || c0 < 1e-15 {
         return 0.0;
@@ -349,7 +330,6 @@ pub fn vortex_pair_acoustic_pressure(gamma: f64, d: f64, r: f64, rho0: f64, c0: 
 /// Identify dominant source type from Mach number and measured power law exponent.
 ///
 /// `power_exponent` is the measured exponent n in W ∝ Uⁿ.
-#[allow(dead_code)]
 pub fn identify_source_type(power_exponent: f64) -> AcousticSourceType {
     if (power_exponent - 2.0).abs() <= 1.0 {
         AcousticSourceType::Monopole
@@ -362,7 +342,6 @@ pub fn identify_source_type(power_exponent: f64) -> AcousticSourceType {
 /// Source strength ratio: compare monopole, dipole, quadrupole amplitudes.
 ///
 /// Returns (Q_monopole, Q_dipole, Q_quadrupole) normalized to monopole = 1.
-#[allow(dead_code)]
 pub fn source_strength_ratio(ma: f64) -> (f64, f64, f64) {
     let q_mono = 1.0;
     let q_dip = ma * ma;
@@ -372,14 +351,12 @@ pub fn source_strength_ratio(ma: f64) -> (f64, f64, f64) {
 /// Check if source is in compact limit: k*L << 1.
 ///
 /// Returns true if the Helmholtz number He = k*L < 0.1 (compact limit).
-#[allow(dead_code)]
 pub fn is_compact_source(k: f64, length: f64) -> bool {
     k * length < 0.1
 }
 /// Multipole expansion: compute acoustic pressure from monopole + dipole terms.
 ///
 /// p = Q_mono/(4π r) + F⃗ · r̂ / (4π r²)
-#[allow(dead_code)]
 pub fn multipole_acoustic_pressure(q_mono: f64, dipole: [f64; 3], r: f64, r_hat: [f64; 3]) -> f64 {
     if r < 1e-15 {
         return 0.0;
@@ -392,14 +369,12 @@ pub fn multipole_acoustic_pressure(q_mono: f64, dipole: [f64; 3], r: f64, r_hat:
 /// Compute the acoustic intensity vector I = p * u_ac at a grid point.
 ///
 /// I⃗ = p' * u⃗_ac
-#[allow(dead_code)]
 pub fn acoustic_intensity_vector(p_prime: f64, u_ac: [f64; 3]) -> [f64; 3] {
     [p_prime * u_ac[0], p_prime * u_ac[1], p_prime * u_ac[2]]
 }
 /// Time-averaged acoustic intensity vector: <I⃗> = <p' u⃗_ac>.
 ///
 /// Computed from arrays of time samples.
-#[allow(dead_code)]
 pub fn time_averaged_intensity_vector(
     p_prime: &[f64],
     u_ac_x: &[f64],
@@ -435,12 +410,10 @@ pub fn time_averaged_intensity_vector(
     [ix, iy, iz]
 }
 /// Magnitude of acoustic intensity vector.
-#[allow(dead_code)]
 pub fn intensity_vector_magnitude(i_vec: [f64; 3]) -> f64 {
     (i_vec[0] * i_vec[0] + i_vec[1] * i_vec[1] + i_vec[2] * i_vec[2]).sqrt()
 }
 /// Acoustic intensity direction (unit vector).
-#[allow(dead_code)]
 pub fn intensity_direction(i_vec: [f64; 3]) -> [f64; 3] {
     let mag = intensity_vector_magnitude(i_vec);
     if mag < 1e-30 {
@@ -449,7 +422,6 @@ pub fn intensity_direction(i_vec: [f64; 3]) -> [f64; 3] {
     [i_vec[0] / mag, i_vec[1] / mag, i_vec[2] / mag]
 }
 /// Free-space acoustic wavenumber: k = ω / c₀ = 2π f / c₀.
-#[allow(dead_code)]
 pub fn acoustic_wavenumber(freq: f64, c0: f64) -> f64 {
     2.0 * PI * freq / c0
 }
@@ -458,7 +430,6 @@ pub fn acoustic_wavenumber(freq: f64, c0: f64) -> f64 {
 /// k± = (-Mc ± 1) / ((1 - Mc²) * λ)   where Mc = M * cos(θ)
 ///
 /// Returns the downstream (+) wavenumber.
-#[allow(dead_code)]
 pub fn convected_wavenumber(freq: f64, c0: f64, mach: f64, theta: f64) -> f64 {
     let mc = mach * theta.cos();
     let lambda = c0 / freq;
@@ -471,7 +442,6 @@ pub fn convected_wavenumber(freq: f64, c0: f64, mach: f64, theta: f64) -> f64 {
 /// Dispersion relation check: verify acoustic CFL condition.
 ///
 /// Returns true if the simulation is stable: c₀ * Δt / Δx ≤ CFL_max.
-#[allow(dead_code)]
 pub fn check_acoustic_cfl(c0: f64, dt: f64, dx: f64, cfl_max: f64) -> bool {
     c0 * dt / dx <= cfl_max
 }
@@ -479,14 +449,14 @@ pub fn check_acoustic_cfl(c0: f64, dt: f64, dx: f64, cfl_max: f64) -> bool {
 ///
 /// cg = dω/dk = c₀ / (1 + dispersion_correction * k²)
 /// (first-order approximation for weakly dispersive media)
-#[allow(dead_code)]
 pub fn group_velocity(c0: f64, k: f64, dispersion: f64) -> f64 {
     c0 / (1.0 + dispersion * k * k)
 }
 #[cfg(test)]
 mod tests_new_aeroacoustics {
-    use super::*;
+    use super::super::*;
     use crate::aeroacoustics::types::*;
+    use std::f64::consts::PI;
     #[test]
     fn test_acoustic_pressure_fluctuation_zero() {
         let p = acoustic_pressure_fluctuation(1.0, 1.0, 1.0 / 3.0);
@@ -926,8 +896,7 @@ mod tests_new_aeroacoustics {
         );
     }
     #[test]
-    #[allow(non_snake_case)]
-    fn test_spherical_spreading_loss_6dB_per_doubling() {
+    fn test_spherical_spreading_loss_6db_per_doubling() {
         let loss1 = spherical_spreading_loss(1.0, 2.0);
         let loss2 = spherical_spreading_loss(1.0, 4.0);
         assert!(
@@ -944,8 +913,7 @@ mod tests_new_aeroacoustics {
         );
     }
     #[test]
-    #[allow(non_snake_case)]
-    fn test_cylindrical_spreading_loss_3dB_per_doubling() {
+    fn test_cylindrical_spreading_loss_3db_per_doubling() {
         let loss1 = cylindrical_spreading_loss(1.0, 2.0);
         let loss2 = cylindrical_spreading_loss(1.0, 4.0);
         assert!(

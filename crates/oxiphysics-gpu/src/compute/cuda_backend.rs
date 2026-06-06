@@ -61,8 +61,6 @@
 //! let result = backend.read_buffer(buf);
 //! ```
 
-#![allow(dead_code)]
-
 // ── CudaBufferHandle ──────────────────────────────────────────────────────────
 
 /// Opaque handle to a CUDA device buffer allocated by [`CudaBackend`].
@@ -339,7 +337,7 @@ struct CudaBufferEntry {
     /// CPU shadow data (mirrors device memory in stub implementation).
     shadow: Vec<f64>,
     /// Whether this buffer uses unified memory (UM).
-    unified: bool,
+    _unified: bool,
 }
 
 // ── Real CUDA context (feature-gated) ─────────────────────────────────────────
@@ -588,7 +586,7 @@ impl CudaBackend {
                 self.buffers.push(CudaBufferEntry {
                     len,
                     shadow: Vec::new(), // no CPU shadow in real path
-                    unified: false,
+                    _unified: false,
                 });
                 return handle;
             }
@@ -597,7 +595,7 @@ impl CudaBackend {
         self.buffers.push(CudaBufferEntry {
             len,
             shadow: vec![0.0; len],
-            unified: false,
+            _unified: false,
         });
         handle
     }
@@ -618,7 +616,7 @@ impl CudaBackend {
                 self.buffers.push(CudaBufferEntry {
                     len,
                     shadow: Vec::new(),
-                    unified: true,
+                    _unified: true,
                 });
                 return handle;
             }
@@ -627,7 +625,7 @@ impl CudaBackend {
         self.buffers.push(CudaBufferEntry {
             len,
             shadow: vec![0.0; len],
-            unified: true,
+            _unified: true,
         });
         handle
     }
@@ -1016,7 +1014,7 @@ mod tests {
         let out = b.read_buffer(h);
         assert!((out[0] - std::f64::consts::PI).abs() < 1e-10);
         // Verify the entry is marked as unified
-        assert!(b.buffers[h.0].unified);
+        assert!(b.buffers[h.0]._unified);
     }
 
     #[test]

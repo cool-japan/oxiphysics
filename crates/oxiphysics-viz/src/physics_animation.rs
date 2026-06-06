@@ -6,8 +6,6 @@
 //! Provides keyframe animation clips, blending, physics trajectory simulation,
 //! morph targets, and FABRIK-based inverse kinematics.
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // AnimTransform
 // ---------------------------------------------------------------------------
@@ -549,7 +547,6 @@ impl InverseKinematics {
     /// Run FABRIK (Forward And Backward Reaching IK) for `iterations` passes.
     ///
     /// Returns the updated joint positions.
-    #[allow(clippy::too_many_arguments)]
     pub fn fabrik_solve(&self, iterations: usize) -> Vec<[f64; 3]> {
         let n = self.chain.len();
         if n < 2 {

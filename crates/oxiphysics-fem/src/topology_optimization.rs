@@ -1,4 +1,3 @@
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,8 +5,6 @@
 //! sensitivity filtering, Heaviside projection, volume constraint enforcement,
 //! checkerboard suppression, continuation, compliance gradient, and
 //! multi-load-case optimization.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // 1. SIMP design-variable update
@@ -530,7 +527,6 @@ pub fn multi_load_compliance(compliances: &[f64], weights: &[f64]) -> f64 {
 }
 
 /// Multi-load OC update: accumulate sensitivities, then apply OC.
-#[allow(clippy::too_many_arguments)]
 pub fn multi_load_oc_update(
     densities: &[f64],
     load_sensitivities: &[Vec<f64>],
@@ -572,7 +568,6 @@ pub struct TopOptIterResult {
 ///
 /// This function does NOT perform FEA; `sensitivity_fn` is called each
 /// iteration to compute element sensitivities from the current densities.
-#[allow(clippy::too_many_arguments)]
 pub fn run_oc_iterations(
     initial_densities: &[f64],
     sensitivity_fn: &dyn Fn(&[f64]) -> Vec<f64>,
@@ -1157,7 +1152,7 @@ mod tests {
         let sensitivities: Vec<f64> = (0..20).map(|i| -(i as f64 + 1.0)).collect();
         let new_dens = oc_update(&densities, &sensitivities, 0.5, 0.2, 1e-3);
         for &rho in &new_dens {
-            assert!(rho >= 1e-3 && rho <= 1.0, "Out of range: {rho}");
+            assert!((1e-3..=1.0).contains(&rho), "Out of range: {rho}");
         }
     }
 
@@ -1767,7 +1762,10 @@ mod tests {
             (0..16).map(|i| ((i % 4) as f64, (i / 4) as f64)).collect();
         let out = minimum_length_scale_filter(&dens, &centroids, 1.5);
         for &v in &out {
-            assert!(v >= 0.0 && v <= 1.0, "Filtered density out of range: {v}");
+            assert!(
+                (0.0..=1.0).contains(&v),
+                "Filtered density out of range: {v}"
+            );
         }
     }
 

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -18,7 +17,6 @@ const TAIT_GAMMA: f64 = 7.0;
 /// A grid of SPH particles with associated physical quantities.
 ///
 /// Positions are stored as flat arrays of (x, y, z) triplets.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GpuSphGrid {
     /// Particle positions: `[x0, y0, z0, x1, y1, z1, …]`.
@@ -71,7 +69,6 @@ impl GpuSphGrid {
 /// Cubic-spline SPH kernel W(r, h).
 ///
 /// Returns the kernel value at distance `r` with smoothing length `h`.
-#[allow(dead_code)]
 pub fn cubic_spline_kernel(r: f64, h: f64) -> f64 {
     if h <= 0.0 {
         return 0.0;
@@ -91,7 +88,6 @@ pub fn cubic_spline_kernel(r: f64, h: f64) -> f64 {
 /// Gradient of the cubic-spline kernel ∇W(r, h) along the displacement vector.
 ///
 /// Returns `[dW/dx, dW/dy, dW/dz]`.
-#[allow(dead_code)]
 pub fn cubic_spline_kernel_grad(dx: f64, dy: f64, dz: f64, h: f64) -> [f64; 3] {
     let r = (dx * dx + dy * dy + dz * dz).sqrt();
     if h <= 0.0 || r < 1e-15 {
@@ -221,7 +217,7 @@ pub fn gpu_neighbor_list(grid: &GpuSphGrid, cell_size: f64) -> Vec<Vec<usize>> {
     let n = grid.particle_count();
     let mut neighbors: Vec<Vec<usize>> = vec![Vec::new(); n];
     let cutoff2 = (2.0 * cell_size) * (2.0 * cell_size);
-    for i in 0..n {
+    for (i, nb) in neighbors.iter_mut().enumerate() {
         let xi = grid.positions[i * 3];
         let yi = grid.positions[i * 3 + 1];
         let zi = grid.positions[i * 3 + 2];
@@ -233,7 +229,7 @@ pub fn gpu_neighbor_list(grid: &GpuSphGrid, cell_size: f64) -> Vec<Vec<usize>> {
             let dy = yi - grid.positions[j * 3 + 1];
             let dz = zi - grid.positions[j * 3 + 2];
             if dx * dx + dy * dy + dz * dz <= cutoff2 {
-                neighbors[i].push(j);
+                nb.push(j);
             }
         }
     }

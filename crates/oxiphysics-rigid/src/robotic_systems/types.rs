@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::functions::*;
 use rand::RngExt;
 use std::f64::consts::PI;
@@ -789,11 +788,10 @@ impl RobotDynamics {
                 let t = transforms[i - 1];
                 [t[0][3], t[1][3], t[2][3]]
             };
-            for j in i..n {
+            for (j, t_j) in transforms.iter().enumerate().take(n).skip(i) {
                 if j >= self.inertia.len() {
                     break;
                 }
-                let t_j = transforms[j];
                 let com_j = self.inertia[j].com;
                 let p_com = [
                     t_j[0][3] + t_j[0][0] * com_j[0] + t_j[0][1] * com_j[1] + t_j[0][2] * com_j[2],
@@ -1074,14 +1072,14 @@ impl InverseKinematics {
             mat_add_lambda_eye(&mut a, lam2);
             if let Some(alpha) = solve_linear(&a, &err_vec) {
                 let dq = mat_vec_mul(&jt, &alpha);
-                for i in 0..n.min(dq.len()) {
-                    chain.q[i] += self.step * dq[i];
+                for (q_i, dq_i) in chain.q.iter_mut().zip(dq.iter()).take(n) {
+                    *q_i += self.step * dq_i;
                 }
                 chain.clamp_joints();
             } else {
                 let dq = mat_vec_mul(&jt, &err_vec);
-                for i in 0..n.min(dq.len()) {
-                    chain.q[i] += self.step * 0.01 * dq[i];
+                for (q_i, dq_i) in chain.q.iter_mut().zip(dq.iter()).take(n) {
+                    *q_i += self.step * 0.01 * dq_i;
                 }
                 chain.clamp_joints();
             }
@@ -1117,14 +1115,14 @@ impl InverseKinematics {
             mat_add_lambda_eye(&mut a, lam2);
             if let Some(alpha) = solve_linear(&a, &err_vec) {
                 let dq = mat_vec_mul(&jt, &alpha);
-                for i in 0..n.min(dq.len()) {
-                    chain.q[i] += self.step * dq[i];
+                for (q_i, dq_i) in chain.q.iter_mut().zip(dq.iter()).take(n) {
+                    *q_i += self.step * dq_i;
                 }
                 chain.clamp_joints();
             } else {
                 let dq = mat_vec_mul(&jt, &err_vec);
-                for i in 0..n.min(dq.len()) {
-                    chain.q[i] += self.step * 0.01 * dq[i];
+                for (q_i, dq_i) in chain.q.iter_mut().zip(dq.iter()).take(n) {
+                    *q_i += self.step * 0.01 * dq_i;
                 }
                 chain.clamp_joints();
             }
@@ -1199,15 +1197,15 @@ impl InverseKinematics {
             if diag.abs() < 1e-14 {
                 return None;
             }
-            for k in 0..2 * n {
-                aug[col][k] /= diag;
+            for a in aug[col].iter_mut() {
+                *a /= diag;
             }
             for r in 0..n {
                 if r != col {
                     let factor = aug[r][col];
-                    for k in 0..2 * n {
-                        let val = aug[col][k];
-                        aug[r][k] -= factor * val;
+                    let aug_col_copy: Vec<f64> = aug[col].clone();
+                    for (aug_r_k, aug_col_k) in aug[r].iter_mut().zip(aug_col_copy.iter()) {
+                        *aug_r_k -= factor * aug_col_k;
                     }
                 }
             }

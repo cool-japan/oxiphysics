@@ -141,7 +141,6 @@ pub use lbm_integration::{
 ///
 /// Enables selecting a fluid model at runtime without dynamic dispatch,
 /// covering all models provided in this module.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub enum RheologyModel {
     /// Power-law (Ostwald-de Waele) fluid.
@@ -167,7 +166,6 @@ pub enum RheologyModel {
 /// This is the single-entry-point function for non-Newtonian viscosity in the
 /// LBM collision kernel; it avoids requiring dynamic dispatch via trait objects
 /// in hot inner loops.
-#[allow(dead_code)]
 pub fn effective_viscosity(model: RheologyModel, shear_rate: f64) -> f64 {
     match model {
         RheologyModel::PowerLaw(m) => m.effective_viscosity(shear_rate),
@@ -182,13 +180,11 @@ pub fn effective_viscosity(model: RheologyModel, shear_rate: f64) -> f64 {
 }
 
 /// Compute the LBM relaxation time `tau = 0.5 + nu_eff / cs^2` for any rheology model.
-#[allow(dead_code)]
 pub fn relaxation_time(model: RheologyModel, shear_rate: f64) -> f64 {
     0.5 + effective_viscosity(model, shear_rate) / CS2
 }
 
 /// Compute the LBM relaxation frequency `omega = 1/tau` for any rheology model.
-#[allow(dead_code)]
 pub fn relaxation_frequency(model: RheologyModel, shear_rate: f64) -> f64 {
     1.0 / relaxation_time(model, shear_rate)
 }

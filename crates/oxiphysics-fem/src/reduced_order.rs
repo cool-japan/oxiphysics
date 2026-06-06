@@ -1,5 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::type_complexity)]
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,9 +12,13 @@
 //! - Amsallem & Farhat (2008) "Interpolation method for adapting reduced-order models"
 //! - Chaturantabut & Sorensen (2010) "Nonlinear model reduction via DEIM"
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
+
+/// Dense matrix type used for ROM system matrices (A, B, C in state-space form).
+pub type DenseMat = Vec<Vec<f64>>;
+
+/// Triple of dense matrices `(A_r, B_r, C_r)` returned by balanced truncation.
+pub type BalancedSystem = (DenseMat, DenseMat, DenseMat);
 
 // ---------------------------------------------------------------------------
 // Math helpers (plain f64 / Vec<f64>)
@@ -35,11 +37,6 @@ fn norm(a: &[f64]) -> f64 {
 /// Subtract two vectors element-wise.
 fn vec_sub(a: &[f64], b: &[f64]) -> Vec<f64> {
     a.iter().zip(b.iter()).map(|(x, y)| x - y).collect()
-}
-
-/// Add two vectors element-wise.
-fn vec_add(a: &[f64], b: &[f64]) -> Vec<f64> {
-    a.iter().zip(b.iter()).map(|(x, y)| x + y).collect()
 }
 
 /// Scale a vector by a scalar.
@@ -130,9 +127,12 @@ fn cholesky(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
     for i in 0..n {
         for j in 0..=i {
             let mut s: f64 = a[i][j];
-            for k in 0..j {
-                s -= l[i][k] * l[j][k];
-            }
+            s -= l[i]
+                .iter()
+                .take(j)
+                .zip(l[j].iter().take(j))
+                .map(|(lik, ljk)| lik * ljk)
+                .sum::<f64>();
             if i == j {
                 l[i][j] = if s > 0.0 { s.sqrt() } else { 1e-14 };
             } else {
@@ -187,10 +187,11 @@ fn deflate(a: &[Vec<f64>], lambda: f64, v: &[f64]) -> Vec<Vec<f64>> {
 }
 
 /// Identity matrix of size n.
+#[cfg(test)]
 fn identity(n: usize) -> Vec<Vec<f64>> {
     let mut id = vec![vec![0.0; n]; n];
-    for i in 0..n {
-        id[i][i] = 1.0;
+    for (i, row) in id.iter_mut().enumerate().take(n) {
+        row[i] = 1.0;
     }
     id
 }
@@ -325,9 +326,9 @@ impl PodBasis {
 
         // Build n×n correlation matrix C_kl = <u^k, u^l>
         let mut corr = vec![vec![0.0; n]; n];
-        for k in 0..n {
-            for l in k..n {
-                let c = dot(&centered.data[k], &centered.data[l]);
+        for (k, dk) in centered.data.iter().enumerate().take(n) {
+            for (l, dl) in centered.data.iter().enumerate().take(n).skip(k) {
+                let c = dot(dk, dl);
                 corr[k][l] = c;
                 corr[l][k] = c;
             }
@@ -373,8 +374,8 @@ impl PodBasis {
             }
             // φ_k = (1/σ_k) Σ_l v_k[l] * snap_l
             let mut mode = vec![0.0; snapshots.n_dof];
-            for l in 0..n {
-                let coeff = eigenvectors[k][l] / sigma;
+            for (l, &ev_kl) in eigenvectors[k].iter().enumerate().take(n) {
+                let coeff = ev_kl / sigma;
                 for (mi, &si) in mode.iter_mut().zip(centered.data[l].iter()) {
                     *mi += coeff * si;
                 }
@@ -555,9 +556,9 @@ impl RomSystem {
         let c1 = 1.0 / (beta * dt * dt);
         let c2 = gamma / (beta * dt);
         let mut k_eff = vec![vec![0.0; r]; r];
-        for i in 0..r {
-            for j in 0..r {
-                k_eff[i][j] = c1 * self.reduced_mass[i][j]
+        for (i, keff_row) in k_eff.iter_mut().enumerate().take(r) {
+            for (j, cell) in keff_row.iter_mut().enumerate().take(r) {
+                *cell = c1 * self.reduced_mass[i][j]
                     + c2 * self.reduced_damping[i][j]
                     + self.reduced_stiffness[i][j];
             }
@@ -758,13 +759,13 @@ impl EmpiricalInterpolation {
         nodes.push(first_node);
         selected_basis.push(modes[0].clone());
 
-        for k in 1..m {
+        for (_k, mode_k) in modes.iter().enumerate().take(m).skip(1) {
             // Solve U_k-1 c = u_k[nodes_{k-1}]
             let sub_rows: Vec<Vec<f64>> = nodes
                 .iter()
                 .map(|&i| selected_basis.iter().map(|b| b[i]).collect())
                 .collect();
-            let rhs: Vec<f64> = nodes.iter().map(|&i| modes[k][i]).collect();
+            let rhs: Vec<f64> = nodes.iter().map(|&i| mode_k[i]).collect();
             let c = if sub_rows.is_empty() {
                 vec![]
             } else {
@@ -777,7 +778,7 @@ impl EmpiricalInterpolation {
             };
 
             // Residual r = u_k - Σ c_i φ_i
-            let mut residual = modes[k].clone();
+            let mut residual = mode_k.clone();
             for (i, phi) in selected_basis.iter().enumerate() {
                 for (ri, &pi) in residual.iter_mut().zip(phi.iter()) {
                     *ri -= c[i] * pi;
@@ -813,7 +814,7 @@ impl EmpiricalInterpolation {
             } else {
                 nodes.push(next_node);
             }
-            selected_basis.push(modes[k].clone());
+            selected_basis.push(mode_k.clone());
         }
 
         Self {
@@ -880,13 +881,12 @@ impl EmpiricalInterpolation {
 /// 2. Compute approximate observability Gramian W_o.
 /// 3. Find balancing transformation via Cholesky + SVD-like power iteration.
 /// 4. Truncate.
-#[allow(clippy::too_many_arguments)]
 pub fn balanced_truncation(
     a: &[Vec<f64>],
     b: &[Vec<f64>],
     c: &[Vec<f64>],
     n_reduced: usize,
-) -> (Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>) {
+) -> BalancedSystem {
     let n = a.len();
     if n == 0 || n_reduced == 0 {
         return (vec![], vec![], vec![]);
@@ -960,8 +960,8 @@ pub fn balanced_truncation(
 fn add_regularization(a: &[Vec<f64>], eps: f64) -> Vec<Vec<f64>> {
     let n = a.len();
     let mut b = a.to_vec();
-    for i in 0..n {
-        b[i][i] += eps;
+    for (i, row) in b.iter_mut().enumerate().take(n) {
+        row[i] += eps;
     }
     b
 }
@@ -981,10 +981,12 @@ fn approximate_gramian(a: &[Vec<f64>], b: &[Vec<f64>], n_terms: usize) -> Vec<Ve
         // W += factor * (A^k B)(A^k B)^T
         for i in 0..n {
             for j in 0..n {
-                let mut s = 0.0;
-                for l in 0..m {
-                    s += ak_b[i][l] * ak_b[j][l];
-                }
+                let s: f64 = ak_b[i]
+                    .iter()
+                    .take(m)
+                    .zip(ak_b[j].iter().take(m))
+                    .map(|(a, b)| a * b)
+                    .sum();
                 w[i][j] += factor * s;
             }
         }
@@ -1041,7 +1043,6 @@ pub fn hankel_singular_values(a: &[Vec<f64>], b: &[Vec<f64>], c: &[Vec<f64>]) ->
 ///
 /// Returns a state vector representing a sinusoidal mode scaled by `mu`.
 /// Used internally by tests and the greedy basis selection example.
-#[allow(dead_code)]
 pub fn parametric_sine_solution(mu: f64, n_dof: usize) -> Vec<f64> {
     (0..n_dof)
         .map(|i| (mu * PI * i as f64 / n_dof as f64).sin())
@@ -1200,8 +1201,8 @@ mod tests {
 
     fn make_diagonal_matrix(n: usize, diag_val: f64) -> Vec<Vec<f64>> {
         let mut m = vec![vec![0.0; n]; n];
-        for i in 0..n {
-            m[i][i] = diag_val;
+        for (i, row) in m.iter_mut().enumerate() {
+            row[i] = diag_val;
         }
         m
     }
@@ -1432,7 +1433,7 @@ mod tests {
     fn parametric_sine_solution_range() {
         let u = parametric_sine_solution(1.0, 100);
         for &ui in &u {
-            assert!(ui >= -1.0 && ui <= 1.0, "out of range: {ui}");
+            assert!((-1.0..=1.0).contains(&ui), "out of range: {ui}");
         }
     }
 
@@ -1533,12 +1534,8 @@ mod tests {
         let a = make_diagonal_matrix(n, -0.5);
         let b: Vec<Vec<f64>> = (0..n).map(|i| vec![(i + 1) as f64]).collect();
         let w = approximate_gramian(&a, &b, 10);
-        for i in 0..n {
-            assert!(
-                w[i][i] >= 0.0,
-                "diagonal should be non-negative: {}",
-                w[i][i]
-            );
+        for (i, row) in w.iter().enumerate() {
+            assert!(row[i] >= 0.0, "diagonal should be non-negative: {}", row[i]);
         }
     }
 

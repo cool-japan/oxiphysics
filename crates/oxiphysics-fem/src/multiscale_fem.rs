@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -19,40 +18,24 @@
 //! - [`MultiresolutionFem`] — wavelet-based multiresolution analysis
 //! - [`SubstructureMethod`] — Craig-Bampton substructuring
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
 // Math helpers (private)
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
-fn norm_vec(v: &[f64]) -> f64 {
-    dot(v, v).sqrt()
-}
-
-fn vec_sub(a: &[f64], b: &[f64]) -> Vec<f64> {
-    a.iter().zip(b.iter()).map(|(x, y)| x - y).collect()
-}
-
-fn vec_add(a: &[f64], b: &[f64]) -> Vec<f64> {
-    a.iter().zip(b.iter()).map(|(x, y)| x + y).collect()
-}
-
-fn vec_scale(v: &[f64], s: f64) -> Vec<f64> {
-    v.iter().map(|x| x * s).collect()
-}
-
+#[cfg(test)]
 fn mat_vec_mul(a: &[Vec<f64>], x: &[f64]) -> Vec<f64> {
     a.iter().map(|row| dot(row, x)).collect()
 }
 
 /// Dense conjugate-gradient solver (symmetric positive-definite system).
+#[cfg(test)]
 fn dense_cg(a: &[Vec<f64>], b: &[f64], tol: f64, max_iter: usize) -> Vec<f64> {
     let n = b.len();
     let mut x = vec![0.0_f64; n];
@@ -231,9 +214,9 @@ impl FeSquared {
     /// Σ = C_eff : E  (Voigt notation, 6-vector).
     pub fn macro_stress(&self, strain: &[f64; 6]) -> [f64; 6] {
         let mut stress = [0.0f64; 6];
-        for i in 0..6 {
-            for j in 0..6 {
-                stress[i] += self.effective_stiffness[i][j] * strain[j];
+        for (i, st_i) in stress.iter_mut().enumerate() {
+            for (j, &sj) in strain.iter().enumerate() {
+                *st_i += self.effective_stiffness[i][j] * sj;
             }
         }
         stress
@@ -320,10 +303,10 @@ impl MicroSolver {
     pub fn solve(&mut self, macro_strain: [f64; 6]) {
         self.macro_strain = macro_strain;
         let c = self.rve.voigt_effective_stiffness();
-        for i in 0..6 {
-            self.avg_stress[i] = 0.0;
-            for j in 0..6 {
-                self.avg_stress[i] += c[i][j] * macro_strain[j];
+        for (i, avg_si) in self.avg_stress.iter_mut().enumerate() {
+            *avg_si = 0.0;
+            for (j, &msj) in macro_strain.iter().enumerate() {
+                *avg_si += c[i][j] * msj;
             }
         }
     }
@@ -342,9 +325,9 @@ fn initial_isotropic_stiffness(e: f64, nu: f64) -> Vec<Vec<f64>> {
     let c44 = e / (2.0 * (1.0 + nu));
     let mut c = vec![vec![0.0f64; 6]; 6];
     // Normal components
-    for i in 0..3 {
-        for j in 0..3 {
-            c[i][j] = if i == j { c11 } else { c12 };
+    for (i, row) in c.iter_mut().enumerate().take(3) {
+        for (j, cell) in row.iter_mut().enumerate().take(3) {
+            *cell = if i == j { c11 } else { c12 };
         }
     }
     // Shear components
@@ -767,8 +750,8 @@ impl HierarchicalBasis {
             phi[1] = 0.5 * (1.0 + xi);
         }
         // Hierarchical bubble functions: integrated Legendre
-        for n in 2..self.n_basis {
-            phi[n] = self.integrated_legendre(n, xi);
+        for (n, phi_n) in phi.iter_mut().enumerate().skip(2) {
+            *phi_n = self.integrated_legendre(n, xi);
         }
         phi
     }
@@ -780,8 +763,8 @@ impl HierarchicalBasis {
         if self.n_basis > 1 {
             dphi[1] = 0.5;
         }
-        for n in 2..self.n_basis {
-            dphi[n] = self.legendre_poly(n - 1, xi);
+        for (n, dphi_n) in dphi.iter_mut().enumerate().skip(2) {
+            *dphi_n = self.legendre_poly(n - 1, xi);
         }
         dphi
     }
@@ -1021,8 +1004,8 @@ pub fn volume_average_stress(stresses: &[[f64; 6]], weights: &[f64]) -> [f64; 6]
             avg[i] += w * s[i];
         }
     }
-    for i in 0..6 {
-        avg[i] /= total_w;
+    for avg_i in &mut avg {
+        *avg_i /= total_w;
     }
     avg
 }
@@ -1094,8 +1077,8 @@ mod tests {
     fn test_rve_voigt_stiffness_positive_diagonal() {
         let rve = RveGeometry::new(1.0, 4, 0.3, 200.0, 70.0, 0.3, 0.33);
         let c = rve.voigt_effective_stiffness();
-        for i in 0..6 {
-            assert!(c[i][i] > 0.0, "diagonal entry C[{i}][{i}] must be positive");
+        for (i, row) in c.iter().enumerate() {
+            assert!(row[i] > 0.0, "diagonal entry C[{i}][{i}] must be positive");
         }
     }
 
@@ -1103,9 +1086,9 @@ mod tests {
     fn test_rve_voigt_stiffness_symmetry() {
         let rve = RveGeometry::new(1.0, 4, 0.3, 200.0, 70.0, 0.3, 0.33);
         let c = rve.voigt_effective_stiffness();
-        for i in 0..6 {
-            for j in 0..6 {
-                assert!((c[i][j] - c[j][i]).abs() < 1e-10);
+        for (i, row) in c.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - c[j][i]).abs() < 1e-10);
             }
         }
     }
@@ -1484,8 +1467,8 @@ mod tests {
             .collect();
         let b = vec![1.0, 2.0, 3.0, 4.0];
         let x = dense_cg(&a, &b, 1e-12, 100);
-        for i in 0..4 {
-            assert!((x[i] - 1.0).abs() < 1e-8, "x[{i}] = {:.6}", x[i]);
+        for (i, &xi) in x.iter().enumerate() {
+            assert!((xi - 1.0).abs() < 1e-8, "x[{i}] = {:.6}", xi);
         }
     }
 }

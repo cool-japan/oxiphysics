@@ -2,10 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::functions::escape_json;
-#[allow(unused_imports)]
-use super::functions::*;
 
 /// Light type for the `KHR_lights_punctual` extension.
 #[derive(Debug, Clone, PartialEq)]
@@ -235,7 +232,6 @@ impl GltfMesh {
     }
 }
 /// Element type (SCALAR, VEC2, VEC3, VEC4, MAT4, …).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessorType {
     /// Single scalar value.
@@ -316,7 +312,6 @@ pub struct GltfBufferView {
 ///
 /// Mirrors the glTF `accessor` concept — a window into a `bufferView` with
 /// a specific element type and component type.
-#[allow(dead_code)]
 pub struct TypedAccessor {
     /// Human-readable label.
     pub name: String,
@@ -337,7 +332,6 @@ pub struct TypedAccessor {
 }
 impl TypedAccessor {
     /// Create a new accessor.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: impl Into<String>,
         buffer_view_index: usize,
@@ -435,7 +429,6 @@ pub struct GltfNode {
     pub children: Vec<usize>,
 }
 /// Interpolation mode for animation channels.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Interpolation {
     /// Linear interpolation between keyframes.
@@ -521,7 +514,6 @@ pub struct SceneCamera {
     pub camera_type: CameraType,
 }
 /// Component type codes used in glTF accessors.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComponentType {
     /// Unsigned byte (1 byte).
@@ -651,7 +643,6 @@ impl PbrMaterialBuilder {
     }
 }
 /// Builder for a single animation channel (translation / rotation / scale).
-#[allow(dead_code)]
 pub struct AnimationChannelBuilder {
     /// Target node index.
     pub node_index: usize,
@@ -744,7 +735,6 @@ impl GltfAnimation {
     }
 }
 /// A single keyframe with a time stamp and a value payload.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Keyframe {
     /// Time in seconds.
@@ -818,10 +808,10 @@ impl MorphTarget {
     pub fn apply(&self, base_positions: &[[f32; 3]], weight: f32) -> Vec<[f32; 3]> {
         let n = base_positions.len().min(self.position_deltas.len());
         let mut out = base_positions.to_vec();
-        for i in 0..n {
-            out[i][0] += self.position_deltas[i][0] * weight;
-            out[i][1] += self.position_deltas[i][1] * weight;
-            out[i][2] += self.position_deltas[i][2] * weight;
+        for (dst, delta) in out[..n].iter_mut().zip(self.position_deltas[..n].iter()) {
+            dst[0] += delta[0] * weight;
+            dst[1] += delta[1] * weight;
+            dst[2] += delta[2] * weight;
         }
         out
     }
@@ -1232,10 +1222,13 @@ impl MorphPrimitive {
         let mut result = self.base.positions.clone();
         for (target, &w) in self.targets.iter().zip(self.weights.iter()) {
             let n = result.len().min(target.position_deltas.len());
-            for i in 0..n {
-                result[i][0] += target.position_deltas[i][0] * w;
-                result[i][1] += target.position_deltas[i][1] * w;
-                result[i][2] += target.position_deltas[i][2] * w;
+            for (dst, delta) in result[..n]
+                .iter_mut()
+                .zip(target.position_deltas[..n].iter())
+            {
+                dst[0] += delta[0] * w;
+                dst[1] += delta[1] * w;
+                dst[2] += delta[2] * w;
             }
         }
         result
@@ -1285,10 +1278,7 @@ impl GlbWriter {
         out.extend_from_slice(&(json_padded_len as u32).to_le_bytes());
         out.extend_from_slice(&0x4E4F534Au32.to_le_bytes());
         out.extend_from_slice(json_bytes);
-        #[allow(clippy::same_item_push)]
-        for _ in 0..json_padding {
-            out.push(0x20);
-        }
+        out.extend(std::iter::repeat_n(0x20u8, json_padding));
         if self.include_empty_bin {
             out.extend_from_slice(&0u32.to_le_bytes());
             out.extend_from_slice(&0x004E4942u32.to_le_bytes());

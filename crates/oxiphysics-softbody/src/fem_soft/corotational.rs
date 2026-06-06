@@ -3,8 +3,6 @@
 
 //! Corotational FEM element and soft body using nalgebra types.
 
-#![allow(clippy::needless_range_loop)]
-
 use oxiphysics_core::math::{Mat3, Real, Vec3};
 
 use crate::particle::SoftParticle;
@@ -30,7 +28,6 @@ pub struct CorotationalElement {
 
 impl CorotationalElement {
     /// Create a new corotational element from the current particle positions.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         indices: [usize; 4],
         particles: &[SoftParticle],
@@ -163,7 +160,6 @@ impl FemSoftBody {
     }
 
     /// Compute the total kinetic energy: sum of 0.5 * m * |v|^2.
-    #[allow(dead_code)]
     pub fn kinetic_energy(&self) -> Real {
         let mut ke = 0.0;
         for p in &self.particles {
@@ -179,7 +175,6 @@ impl FemSoftBody {
     ///
     /// Uses the Y component of `gravity` as the gravitational acceleration
     /// magnitude (assumes gravity points in -Y).
-    #[allow(dead_code)]
     pub fn potential_energy(&self, gravity: &Vec3) -> Real {
         let g_mag = gravity.norm();
         if g_mag < 1e-30 {
@@ -203,29 +198,30 @@ impl FemSoftBody {
 
         // Accumulate forces.
         let mut forces = vec![Vec3::zeros(); n];
-        for p_idx in 0..n {
-            if !self.particles[p_idx].is_static() {
-                let mass = 1.0 / self.particles[p_idx].inverse_mass;
-                forces[p_idx] += gravity * mass;
-                forces[p_idx] += self.particles[p_idx].external_force;
+        for (p_idx, (force, particle)) in forces.iter_mut().zip(self.particles.iter()).enumerate() {
+            let _ = p_idx;
+            if !particle.is_static() {
+                let mass = 1.0 / particle.inverse_mass;
+                *force += gravity * mass;
+                *force += particle.external_force;
             }
         }
 
         // Element forces.
         for elem in &self.elements {
             let f = elem.compute_forces(&self.particles);
-            for k in 0..4 {
-                forces[elem.indices[k]] += f[k];
+            for (k, f_k) in f.iter().enumerate() {
+                forces[elem.indices[k]] += f_k;
             }
         }
 
         // Integrate (symplectic Euler).
-        for i in 0..n {
-            let p = &mut self.particles[i];
+        for (i, (force, p)) in forces.iter().zip(self.particles.iter_mut()).enumerate() {
+            let _ = i;
             if p.is_static() {
                 continue;
             }
-            let accel = forces[i] * p.inverse_mass;
+            let accel = *force * p.inverse_mass;
             p.velocity += accel * dt;
             p.velocity *= 1.0 - self.damping;
             p.position += p.velocity * dt;

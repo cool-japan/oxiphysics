@@ -16,7 +16,6 @@
 pub type Vec3 = [f64; 3];
 
 /// Surgical tool type classification.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolType {
     /// Scalpel for incision
@@ -32,7 +31,6 @@ pub enum ToolType {
 }
 
 /// Surgical tool with tip position and velocity.
-#[allow(dead_code)]
 pub struct SurgicalTool {
     /// Tool type
     pub tool_type: ToolType,
@@ -97,7 +95,6 @@ impl SurgicalTool {
 /// Tissue cutting model for soft tissue meshes.
 ///
 /// Models edge-tool intersection, remeshing, and cutting force.
-#[allow(dead_code)]
 pub struct TissueCutting {
     /// Tensile strength of tissue σ_c \[Pa\]
     pub tensile_strength: f64,
@@ -141,7 +138,6 @@ impl TissueCutting {
     /// * `edge_a` - First edge vertex
     /// * `edge_b` - Second edge vertex
     /// * `tolerance` - Distance tolerance for intersection \[m\]
-    #[allow(clippy::too_many_arguments)]
     pub fn ray_edge_intersection(
         tool_pos: Vec3,
         tool_dir: Vec3,
@@ -195,7 +191,6 @@ impl TissueCutting {
 /// Needle insertion model for layered tissue.
 ///
 /// Models puncture force, stiffness along path, and tissue displacement.
-#[allow(dead_code)]
 pub struct NeedleInsertion {
     /// Needle tip diameter \[m\]
     pub tip_diameter: f64,
@@ -284,7 +279,6 @@ impl NeedleInsertion {
 /// Grasper jaw model for tissue holding.
 ///
 /// Models grip force vs. jaw angle/displacement.
-#[allow(dead_code)]
 pub struct GrasperModel {
     /// Jaw spring stiffness k \[N/m\]
     pub jaw_stiffness: f64,
@@ -347,7 +341,6 @@ impl GrasperModel {
 /// Soft tissue deformation under surgical loads.
 ///
 /// Linear viscoelastic: σ = E*ε + η*ε̇
-#[allow(dead_code)]
 pub struct TissueDeformation {
     /// Young's modulus E \[Pa\]
     pub elastic_modulus: f64,
@@ -404,7 +397,6 @@ impl TissueDeformation {
 /// Vessel damage and bleeding model.
 ///
 /// Pressure-threshold model for vessel rupture and bleeding rate.
-#[allow(dead_code)]
 pub struct BleedingModel {
     /// Vessel rupture pressure threshold \[Pa\]
     pub rupture_threshold: f64,
@@ -476,7 +468,6 @@ impl BleedingModel {
 ///
 /// Implements the remote center of motion (RCM) constraint at the trocar point.
 /// The tool rotates about the fulcrum (trocar insertion point).
-#[allow(dead_code)]
 pub struct LaparoscopicTool {
     /// Trocar insertion point (fulcrum) position \[m\]
     pub trocar_point: Vec3,
@@ -554,7 +545,6 @@ impl LaparoscopicTool {
 /// Robotic surgery (da Vinci inspired) wrist kinematic model.
 ///
 /// Models a 2-DOF wrist at the end of the instrument shaft.
-#[allow(dead_code)]
 pub struct RoboticSurgery {
     /// Instrument shaft tip position \[m\]
     pub shaft_tip: Vec3,
@@ -681,16 +671,6 @@ fn vec3_dot(a: Vec3, b: Vec3) -> f64 {
 /// Euclidean norm.
 fn vec3_norm(a: Vec3) -> f64 {
     vec3_dot(a, a).sqrt()
-}
-
-/// Cross product.
-#[allow(dead_code)]
-fn vec3_cross(a: Vec3, b: Vec3) -> Vec3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 #[cfg(test)]

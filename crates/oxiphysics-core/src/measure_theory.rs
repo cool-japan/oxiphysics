@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //!
 //! This module provides both abstract measure-theoretic structures and concrete
 //! numerical implementations suitable for scientific computing.
-
-#![allow(dead_code)]
 
 use rand::RngExt as RandRng;
 use std::f64::consts::TAU;
@@ -236,6 +233,9 @@ impl LebesgueMeasure {
 // Probability measure
 // ---------------------------------------------------------------------------
 
+/// Boxed density function type: a closure mapping `&[f64]` to `f64`.
+pub type DensityFn = Box<dyn Fn(&[f64]) -> f64>;
+
 /// A probability measure on ℝⁿ with density function.
 ///
 /// `P(A) = ∫_A f(x) dx`  where `∫ f dx = 1` (normalization).
@@ -243,7 +243,7 @@ impl LebesgueMeasure {
 /// Supports numerical expectation and variance via Monte Carlo estimation.
 pub struct ProbabilityMeasure {
     /// Probability density function `f(x) ≥ 0`.
-    pub density: Box<dyn Fn(&[f64]) -> f64>,
+    pub density: DensityFn,
     /// Domain of the density (support box).
     pub domain: MeasurableSet,
     /// Number of Monte Carlo samples for numerical computations.
@@ -374,9 +374,9 @@ impl ProbabilityMeasure {
 /// Here we work numerically with density functions.
 pub struct SignedMeasure {
     /// The positive part density `f⁺(x) ≥ 0`.
-    pub positive_density: Box<dyn Fn(&[f64]) -> f64>,
+    pub positive_density: DensityFn,
     /// The negative part density `f⁻(x) ≥ 0`.
-    pub negative_density: Box<dyn Fn(&[f64]) -> f64>,
+    pub negative_density: DensityFn,
     /// Domain of integration.
     pub domain: MeasurableSet,
     /// Number of Monte Carlo samples.
@@ -665,10 +665,10 @@ impl MeasureIntegral {
             .map(|idx| {
                 let mut point = vec![0.0f64; dim];
                 let mut rem = idx;
-                for d in 0..dim {
+                for (pt, (lo, st)) in point.iter_mut().zip(lower.iter().zip(steps.iter())) {
                     let coord = rem % n_pts;
                     rem /= n_pts;
-                    point[d] = lower[d] + (coord as f64 + 0.5) * steps[d];
+                    *pt = lo + (coord as f64 + 0.5) * st;
                 }
                 f(&point) * vol_cell
             })

@@ -28,7 +28,6 @@ impl Cone {
     }
 
     /// Volume: πr²h/3 (h = full height = 2*half_height).
-    #[allow(dead_code)]
     pub fn volume_explicit(&self) -> Real {
         let h = 2.0 * self.half_height;
         PI * self.radius * self.radius * h / 3.0
@@ -36,7 +35,6 @@ impl Cone {
 
     /// Surface area: base disk + lateral surface = πr² + πr*slant.
     /// slant = sqrt(r² + h²) where h = full height.
-    #[allow(dead_code)]
     pub fn surface_area(&self) -> Real {
         let r = self.radius;
         let h = 2.0 * self.half_height;
@@ -45,7 +43,6 @@ impl Cone {
     }
 
     /// Inertia tensor as \[\[f64;3\\];3] row-major.
-    #[allow(dead_code)]
     pub fn inertia_tensor_array(&self, mass: f64) -> [[f64; 3]; 3] {
         let r2 = self.radius * self.radius;
         let h2 = (2.0 * self.half_height).powi(2);
@@ -55,7 +52,6 @@ impl Cone {
     }
 
     /// Ray cast returning (t, normal) as plain arrays.
-    #[allow(dead_code)]
     pub fn ray_cast_array(
         &self,
         origin: [f64; 3],
@@ -69,7 +65,6 @@ impl Cone {
     }
 
     /// Closest point on (or inside) the cone to point `p`.
-    #[allow(dead_code)]
     pub fn closest_point(&self, p: [f64; 3]) -> [f64; 3] {
         let px = p[0];
         let py = p[1];
@@ -117,7 +112,6 @@ impl Cone {
 
     /// GJK support function using plain arrays.
     /// Returns the farthest point on the cone in the given direction.
-    #[allow(dead_code)]
     pub fn support(&self, direction: [f64; 3]) -> [f64; 3] {
         let h = 2.0 * self.half_height;
         let xz_len = (direction[0] * direction[0] + direction[2] * direction[2]).sqrt();
@@ -141,33 +135,28 @@ impl Cone {
     }
 
     /// Slant height of the cone: sqrt(r² + h²).
-    #[allow(dead_code)]
     pub fn slant_height(&self) -> f64 {
         let h = 2.0 * self.half_height;
         (self.radius * self.radius + h * h).sqrt()
     }
 
     /// Half angle of the cone in radians: atan(r / h).
-    #[allow(dead_code)]
     pub fn half_angle(&self) -> f64 {
         let h = 2.0 * self.half_height;
         (self.radius / h).atan()
     }
 
     /// Lateral (side) surface area only: πr * slant.
-    #[allow(dead_code)]
     pub fn lateral_surface_area(&self) -> f64 {
         PI * self.radius * self.slant_height()
     }
 
     /// Base area: πr².
-    #[allow(dead_code)]
     pub fn base_area(&self) -> f64 {
         PI * self.radius * self.radius
     }
 
     /// Returns true if `p` is inside the cone.
-    #[allow(dead_code)]
     pub fn contains_point(&self, p: [f64; 3]) -> bool {
         if p[1] < -self.half_height || p[1] > self.half_height {
             return false;
@@ -180,7 +169,6 @@ impl Cone {
 
     /// Signed distance from a point to the cone surface.
     /// Negative inside, positive outside.
-    #[allow(dead_code)]
     pub fn signed_distance(&self, p: [f64; 3]) -> f64 {
         let cp = self.closest_point(p);
         let dx = p[0] - cp[0];
@@ -191,7 +179,6 @@ impl Cone {
     }
 
     /// Radius at a given y coordinate (clamped to cone range).
-    #[allow(dead_code)]
     pub fn radius_at_y(&self, y: f64) -> f64 {
         let clamped = y.clamp(-self.half_height, self.half_height);
         let h = 2.0 * self.half_height;
@@ -201,7 +188,6 @@ impl Cone {
     /// Create a truncated cone (frustum) by cutting at a given height ratio.
     /// `cut_ratio` is in \[0, 1\] where 0 = base, 1 = apex.
     /// Returns `(top_radius, bottom_radius, half_height)`.
-    #[allow(dead_code)]
     pub fn truncated_cone(&self, cut_ratio: f64) -> (f64, f64, f64) {
         let ratio = cut_ratio.clamp(0.0, 1.0);
         let top_r = self.radius * (1.0 - ratio);
@@ -212,7 +198,6 @@ impl Cone {
 
     /// Volume of a truncated cone (frustum).
     /// `cut_ratio` is in \[0, 1\].
-    #[allow(dead_code)]
     pub fn truncated_cone_volume(&self, cut_ratio: f64) -> f64 {
         let (r1, r2, _) = self.truncated_cone(cut_ratio);
         let h = 2.0 * self.half_height * cut_ratio.clamp(0.0, 1.0);
@@ -220,7 +205,6 @@ impl Cone {
     }
 
     /// Ray cast against only the base cap at y = -half_height.
-    #[allow(dead_code)]
     pub fn ray_cast_base_cap(
         &self,
         origin: [f64; 3],
@@ -245,7 +229,6 @@ impl Cone {
 
     /// Closest point on the cone's lateral surface to a point.
     /// This projects onto the side surface only (ignoring base cap).
-    #[allow(dead_code)]
     pub fn closest_point_on_lateral(&self, p: [f64; 3]) -> [f64; 3] {
         let xz_len = (p[0] * p[0] + p[2] * p[2]).sqrt();
         let h = 2.0 * self.half_height;
@@ -274,7 +257,6 @@ impl Cone {
     /// Analytic ray-cone intersection (same as `ray_cast` but returns plain arrays).
     /// Identical to `ray_cast_array` but additionally returns a boolean indicating
     /// whether the hit is on the lateral surface (`true`) or base cap (`false`).
-    #[allow(dead_code)]
     pub fn ray_cone_analytic(
         &self,
         origin: [f64; 3],
@@ -358,7 +340,6 @@ impl Cone {
     ///
     /// Returns `true` if any part of the cone (including base disk) is on or
     /// crosses the plane.
-    #[allow(dead_code)]
     pub fn intersects_plane(&self, plane_normal: [f64; 3], plane_d: f64) -> bool {
         // Evaluate the signed distance of the apex and the base rim extremes.
         let apex = [0.0_f64, self.half_height, 0.0];
@@ -388,7 +369,6 @@ impl Cone {
     /// where -half_height ≤ y_bottom < y_top ≤ half_height).
     ///
     /// Returns `(bottom_radius, top_radius, frustum_half_height)`.
-    #[allow(dead_code)]
     pub fn frustum_from_cone(&self, y_bottom: f64, y_top: f64) -> (f64, f64, f64) {
         let yb = y_bottom.clamp(-self.half_height, self.half_height);
         let yt = y_top.clamp(yb, self.half_height);
@@ -402,7 +382,6 @@ impl Cone {
     ///
     /// Returns negative inside the cone, positive outside.
     /// Same as `signed_distance` but exposed under the SDF naming convention.
-    #[allow(dead_code)]
     pub fn sdf(&self, p: [f64; 3]) -> f64 {
         self.signed_distance(p)
     }
@@ -412,7 +391,6 @@ impl Cone {
     /// Returns `true` if the sphere (center + radius) overlaps the cone.
     /// Uses the closest-point approach: if the closest point on the cone to
     /// the sphere center is within `sphere_radius`, they intersect.
-    #[allow(dead_code)]
     pub fn intersects_sphere(&self, sphere_center: [f64; 3], sphere_radius: f64) -> bool {
         let cp = self.closest_point(sphere_center);
         let dx = sphere_center[0] - cp[0];
@@ -426,7 +404,6 @@ impl Cone {
     ///
     /// `y_bottom` and `y_top` are in cone-local Y coordinates.
     /// Lateral area = π * (r_bottom + r_top) * slant_height_frustum.
-    #[allow(dead_code)]
     pub fn frustum_lateral_area(&self, y_bottom: f64, y_top: f64) -> f64 {
         let (r_bottom, r_top, _hh) = self.frustum_from_cone(y_bottom, y_top);
         let dy = (y_top - y_bottom).abs();
@@ -440,7 +417,6 @@ impl Cone {
     /// Apex angle of the cone (full angle at the apex), in radians.
     ///
     /// The full apex angle is `2 * atan(r / h)` where h is the full height.
-    #[allow(dead_code)]
     pub fn apex_angle(&self) -> f64 {
         2.0 * self.half_angle()
     }
@@ -449,7 +425,6 @@ impl Cone {
     ///
     /// Returns the parameters of the upper half (this cone) and the lower half
     /// (same dimensions, mirrored).  Both have apex at `±half_height`.
-    #[allow(dead_code)]
     pub fn double_cone_params(&self) -> (f64, f64) {
         (self.radius, self.half_height)
     }
@@ -458,7 +433,6 @@ impl Cone {
     ///
     /// The double cone is symmetric about y=0.  Upper half: apex at
     /// `+half_height`, lower half: apex at `-half_height`.
-    #[allow(dead_code)]
     pub fn contains_point_double_cone(&self, p: [f64; 3]) -> bool {
         let h = 2.0 * self.half_height;
         let xz2 = p[0] * p[0] + p[2] * p[2];
@@ -476,7 +450,6 @@ impl Cone {
     ///
     /// In the unrolled sector the slant height becomes the radial distance and
     /// the azimuth `u` is scaled by `sin(half_angle)`.  Returns `(x_unrolled, y_unrolled)`.
-    #[allow(dead_code)]
     pub fn unfold_lateral(&self, u: f64, t_slant: f64) -> [f64; 2] {
         // When unrolled, the cone becomes a sector with radius = slant_height
         // and arc angle = 2π * sin(half_angle).
@@ -490,7 +463,6 @@ impl Cone {
     ///
     /// Returns `(axis_half_angle_radians, axis_elevation)` where the axis is
     /// fixed to +Y.
-    #[allow(dead_code)]
     pub fn bounding_cone_of_points(points: &[[f64; 3]]) -> (f64, f64) {
         if points.is_empty() {
             return (0.0, 0.0);
@@ -517,7 +489,6 @@ impl Cone {
     /// Volume swept when the cone translates by vector `delta`.
     ///
     /// Approximate: V_cone + base_area * |delta|.
-    #[allow(dead_code)]
     pub fn volume_swept(&self, delta: [f64; 3]) -> f64 {
         let dist = (delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]).sqrt();
         self.volume() + self.base_area() * dist
@@ -526,7 +497,6 @@ impl Cone {
     /// Cone SDF gradient (approximate unit normal direction).
     ///
     /// Returns the gradient of the SDF at `p`, suitable as the collision normal.
-    #[allow(dead_code)]
     pub fn sdf_gradient(&self, p: [f64; 3]) -> [f64; 3] {
         let eps = 1e-5;
         let s0 = self.sdf(p);
@@ -540,7 +510,6 @@ impl Cone {
     /// Ray-cone intersection count (lateral + base cap).
     ///
     /// Returns the number of valid positive-t intersections within `[0, max_toi]`.
-    #[allow(dead_code)]
     pub fn ray_intersection_count(
         &self,
         origin: [f64; 3],
@@ -589,7 +558,6 @@ impl Cone {
     /// Compute the solid angle subtended by the cone at the apex.
     ///
     /// For a cone with half-angle `α`, the solid angle is `2π(1 - cos α)`.
-    #[allow(dead_code)]
     pub fn solid_angle(&self) -> f64 {
         let alpha = self.half_angle();
         2.0 * PI * (1.0 - alpha.cos())
@@ -598,7 +566,6 @@ impl Cone {
     /// Generate points on the base circle of the cone.
     ///
     /// Returns `n` equally-spaced points on the base rim at `y = -half_height`.
-    #[allow(dead_code)]
     pub fn base_rim_points(&self, n: usize) -> Vec<[f64; 3]> {
         let n = n.max(3);
         (0..n)
@@ -615,7 +582,6 @@ impl Cone {
 
     /// Test whether a sphere at `center` with `sphere_radius` is entirely
     /// inside the cone (a stricter test than `intersects_sphere`).
-    #[allow(dead_code)]
     pub fn sphere_inside_cone(&self, center: [f64; 3], sphere_radius: f64) -> bool {
         // The sphere is inside if all points on the sphere are inside the cone.
         // Approximate: check the sphere center is inside and the distance to
@@ -625,7 +591,6 @@ impl Cone {
     }
 
     /// Sample a random point on the cone's lateral surface using a deterministic PRNG.
-    #[allow(dead_code)]
     pub fn random_lateral_surface_point(&self, seed: u64) -> [f64; 3] {
         // Use a simple xorshift64 to get reproducible results
         let mut state = seed;

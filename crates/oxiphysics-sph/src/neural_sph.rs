@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -10,8 +9,6 @@
 //! - Physics-informed SPH with PDE-based loss terms
 //! - Graph neural networks for particle interaction learning
 //! - Surrogate viscosity models
-
-#![allow(dead_code)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Neural Kernel
@@ -108,12 +105,12 @@ impl NeuralKernel {
                     .sum::<f64>()
                     / (h * h * h);
                 let err = w_pred - w_target;
-                for k in 0..n {
-                    grad[k] += err * base.powi(k as i32 + 1) / (h * h * h);
+                for (k, gk) in grad.iter_mut().enumerate().take(n) {
+                    *gk += err * base.powi(k as i32 + 1) / (h * h * h);
                 }
             }
-            for k in 0..n {
-                self.weights[k] -= lr * grad[k] / pairs.len().max(1) as f64;
+            for (wk, gk) in self.weights.iter_mut().zip(grad.iter()).take(n) {
+                *wk -= lr * gk / pairs.len().max(1) as f64;
             }
         }
     }
@@ -292,7 +289,7 @@ impl NeuralPressureSolver {
             [dw_dr * rx / r, dw_dr * ry / r, dw_dr * rz / r]
         };
 
-        let compute_div = |density_div: &mut Vec<f64>| -> f64 {
+        let compute_div = |density_div: &mut [f64]| -> f64 {
             let mut max_div = 0.0_f64;
             for i in 0..n {
                 let mut div_v = 0.0_f64;
@@ -497,11 +494,11 @@ impl GraphNeuralSph {
             let src_feat = &self.node_features[src];
             let edge_feat = self.edge_features.get(k);
 
-            for d in 0..feat_dim {
+            for (d, agg) in aggregated[tgt].iter_mut().enumerate().take(feat_dim) {
                 let sf = src_feat.get(d).copied().unwrap_or(0.0);
                 let ef = edge_feat.and_then(|e| e.get(d)).copied().unwrap_or(0.0);
                 let msg = self.message_weights.get(d).copied().unwrap_or(1.0) * (sf + ef);
-                aggregated[tgt][d] += msg;
+                *agg += msg;
             }
         }
         aggregated
@@ -681,7 +678,7 @@ pub fn find_neighbors(particles: &[[f64; 6]], idx: usize, h: f64) -> Vec<usize> 
 }
 
 /// Normalise a vector in place.  Returns `false` if the norm is zero.
-pub fn normalise(v: &mut Vec<f64>) -> bool {
+pub fn normalise(v: &mut [f64]) -> bool {
     let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
     if norm < 1e-30 {
         return false;

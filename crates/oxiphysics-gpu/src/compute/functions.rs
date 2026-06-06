@@ -31,12 +31,10 @@ pub trait ComputeKernel {
     fn execute(&self, inputs: &[&[f64]], outputs: &mut [Vec<f64>], work_size: usize);
 }
 /// Compute the number of workgroups needed for a 1D dispatch.
-#[allow(dead_code)]
 pub fn compute_num_workgroups(total_items: u32, workgroup_size: u32) -> u32 {
     total_items.div_ceil(workgroup_size)
 }
 /// Compute workgroup counts for a 3D dispatch.
-#[allow(dead_code)]
 pub fn compute_num_workgroups_3d(total: [u32; 3], workgroup_size: [u32; 3]) -> [u32; 3] {
     [
         total[0].div_ceil(workgroup_size[0]),
@@ -48,7 +46,6 @@ pub fn compute_num_workgroups_3d(total: [u32; 3], workgroup_size: [u32; 3]) -> [
 ///
 /// If the output buffers of pass A overlap with the input buffers of pass B,
 /// a read-after-write barrier is needed.
-#[allow(dead_code)]
 pub fn required_barrier(
     pass_a_outputs: &[BufferId],
     pass_b_inputs: &[BufferId],
@@ -64,7 +61,6 @@ pub fn required_barrier(
 ///
 /// Two bindings alias if they reference the same `BufferId` with incompatible
 /// usages (e.g., one is write and the other is read in the same pass).
-#[allow(dead_code)]
 pub fn detect_aliasing(bindings: &[BufferBinding]) -> Vec<(u32, u32)> {
     let mut conflicts = Vec::new();
     for i in 0..bindings.len() {
@@ -98,7 +94,6 @@ pub fn detect_aliasing(bindings: &[BufferBinding]) -> Vec<(u32, u32)> {
 ///
 /// Groups work items into warps and checks if all threads take the same branch.
 /// Returns a [`WarpDivergenceRecord`].
-#[allow(dead_code)]
 pub fn analyse_warp_divergence(predicates: &[bool], warp_size: usize) -> WarpDivergenceRecord {
     if predicates.is_empty() || warp_size == 0 {
         return WarpDivergenceRecord::default();

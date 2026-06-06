@@ -11,15 +11,12 @@
 use crate::compute::ComputeKernel;
 
 use super::functions::erfc_approx;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::EwaldRealSpaceKernel;
 
 impl ComputeKernel for EwaldRealSpaceKernel {
     fn name(&self) -> &str {
         "EwaldRealSpaceKernel"
     }
-    #[allow(clippy::needless_range_loop)]
     fn execute(&self, inputs: &[&[f64]], outputs: &mut [Vec<f64>], work_size: usize) {
         if inputs.len() < 3 || outputs.len() < 2 {
             return;

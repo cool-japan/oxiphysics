@@ -1,9 +1,6 @@
 //! Extended drivetrain types - Gearbox, Torsen, and LSD types.
 //!
 //! Split from types.rs to keep modules under 2000 lines.
-
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::Gear;
 use oxiphysics_core::math::Real;
 

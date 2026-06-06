@@ -3,8 +3,6 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::R_UNIVERSAL;
-#[allow(unused_imports)]
-use super::functions::*;
 
 /// Rankine-Hugoniot shock jump conditions.
 ///
@@ -125,7 +123,6 @@ impl VinetEos {
 ///
 /// where v = ρ₀/ρ (relative specific volume = 1/η).
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct JwlEos {
     /// JWL coefficient A (Pa).
     pub big_a: f64,
@@ -142,10 +139,8 @@ pub struct JwlEos {
     /// Reference density ρ₀ (kg/m³).
     pub rho0: f64,
 }
-#[allow(dead_code)]
 impl JwlEos {
     /// Create a JWL EOS.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(big_a: f64, big_b: f64, r1: f64, r2: f64, omega: f64, e0: f64, rho0: f64) -> Self {
         Self {
             big_a,
@@ -241,7 +236,6 @@ impl GruneisenParameter {
 ///
 /// P = R*T/(V_m - b) - a(T) / \[V_m*(V_m + b) + b*(V_m - b)\]
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct PengRobinson {
     /// Critical temperature Tc (K).
     pub tc: f64,
@@ -250,7 +244,6 @@ pub struct PengRobinson {
     /// Acentric factor ω.
     pub omega: f64,
 }
-#[allow(dead_code)]
 impl PengRobinson {
     /// Create a Peng-Robinson EOS.
     pub fn new(tc: f64, pc: f64, omega: f64) -> Self {
@@ -293,7 +286,6 @@ impl PengRobinson {
 ///
 /// This is the original Murnaghan 1944 form, simpler than Birch-Murnaghan.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct MurnaghanEos {
     /// Reference specific volume V₀ (m³/kg).
     pub v0: f64,
@@ -302,7 +294,6 @@ pub struct MurnaghanEos {
     /// Pressure derivative n = K₀' (dimensionless, typically 3–5).
     pub n: f64,
 }
-#[allow(dead_code)]
 impl MurnaghanEos {
     /// Create a Murnaghan EOS.
     pub fn new(v0: f64, k0: f64, n: f64) -> Self {
@@ -347,7 +338,6 @@ impl MurnaghanEos {
 ///
 /// Different from `TaitEos` which uses the c₀-based SPH form.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct TaitBulkEos {
     /// Reference bulk modulus K₀ (Pa).
     pub k0: f64,
@@ -356,7 +346,6 @@ pub struct TaitBulkEos {
     /// Reference density ρ₀ (kg/m³).
     pub rho0: f64,
 }
-#[allow(dead_code)]
 impl TaitBulkEos {
     /// Create a Tait bulk-modulus EOS.
     pub fn new(k0: f64, k0_prime: f64, rho0: f64) -> Self {
@@ -376,7 +365,6 @@ impl TaitBulkEos {
         self.k0 / self.k0_prime * (ratio.powf(self.k0_prime) - 1.0)
     }
     /// Sound speed: c = sqrt(K₀ * (ρ/ρ₀)^(K₀'-1) / ρ₀) \[approx\].
-    #[allow(dead_code)]
     pub fn sound_speed(&self, rho: f64) -> f64 {
         let ratio = rho / self.rho0;
         (self.k0 * ratio.powf(self.k0_prime - 1.0) / self.rho0).sqrt()
@@ -481,7 +469,6 @@ impl BirchMurnaghan3Eos {
 ///
 /// Different from `VanDerWaalsEos` (which works with mass density).
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct VanDerWaals {
     /// Attractive interaction constant a (Pa·m⁶/mol²).
     pub a: f64,
@@ -490,7 +477,6 @@ pub struct VanDerWaals {
     /// Universal gas constant R (J/(mol·K)).
     pub r_gas: f64,
 }
-#[allow(dead_code)]
 impl VanDerWaals {
     /// Create a new VdW EOS.  `R` is the universal gas constant (8.314 J/mol/K).
     pub fn new(a: f64, b: f64, r_gas: f64) -> Self {
@@ -647,14 +633,12 @@ impl TaitEos {
 ///
 /// Uses R = 8.314 J/(mol·K).
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct RedlichKwong {
     /// RK attraction parameter a (Pa·m⁶·K^0.5/mol²).
     pub a: f64,
     /// RK co-volume parameter b (m³/mol).
     pub b: f64,
 }
-#[allow(dead_code)]
 impl RedlichKwong {
     /// Create a Redlich-Kwong EOS.
     pub fn new(a: f64, b: f64) -> Self {
@@ -752,7 +736,6 @@ pub struct TillotsonEos {
 }
 impl TillotsonEos {
     /// Create a Tillotson EOS.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         rho0: f64,
         e0: f64,
@@ -833,7 +816,6 @@ impl TillotsonEos {
 /// α(T) = \[1 + m*(1 - sqrt(T/Tc))\]²
 /// m = 0.480 + 1.574*ω - 0.176*ω²
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct SoaveRedlichKwong {
     /// SRK attraction parameter a (Pa·m⁶/mol²).
     pub a: f64,
@@ -844,7 +826,6 @@ pub struct SoaveRedlichKwong {
     /// Critical temperature Tc (K).
     pub tc: f64,
 }
-#[allow(dead_code)]
 impl SoaveRedlichKwong {
     /// Create a Soave-Redlich-Kwong EOS.
     pub fn new(a: f64, b: f64, omega: f64, tc: f64) -> Self {
@@ -917,14 +898,12 @@ impl StiffenedGasEos {
 ///
 /// Accounts for co-volume b (repulsive hard-core interactions).
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct NobleAbelEos {
     /// Specific gas constant R (J/(kg·K)).
     pub r_specific: f64,
     /// Co-volume b (m³/kg).
     pub b_covolume: f64,
 }
-#[allow(dead_code)]
 impl NobleAbelEos {
     /// Create a Noble-Abel EOS.
     pub fn new(r_specific: f64, b_covolume: f64) -> Self {

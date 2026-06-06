@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! This module provides solid-topology optimization solvers for structural
 //! compliance minimization under volume constraints, with density filtering,
 //! sensitivity filtering, and Heaviside projection.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -214,14 +211,14 @@ impl FilteringMethods {
     fn compute_neighbors(radius: f64, grid: GridSize) -> Vec<Vec<(usize, f64)>> {
         let n = grid.n_elem();
         let mut result = vec![Vec::new(); n];
-        for i in 0..n {
+        for (i, res_i) in result.iter_mut().enumerate() {
             let (ri, ci) = grid.row_col(i);
             for j in 0..n {
                 let (rj, cj) = grid.row_col(j);
                 let dist =
                     ((ri as f64 - rj as f64).powi(2) + (ci as f64 - cj as f64).powi(2)).sqrt();
                 if dist < radius {
-                    result[i].push((j, radius - dist));
+                    res_i.push((j, radius - dist));
                 }
             }
         }
@@ -291,13 +288,9 @@ impl FilteringMethods {
         // Adjoint of density filter
         let n = self.grid.n_elem();
         let mut out = vec![0.0; n];
-        for e in 0..n {
-            let denom: f64 = self.neighbor_weights[e]
-                .iter()
-                .map(|&(_, h)| h)
-                .sum::<f64>()
-                .max(1e-12);
-            for &(f, h) in &self.neighbor_weights[e] {
+        for (e, nw) in self.neighbor_weights.iter().enumerate() {
+            let denom: f64 = nw.iter().map(|&(_, h)| h).sum::<f64>().max(1e-12);
+            for &(f, h) in nw {
                 out[f] += sensitivity[e] * h / denom;
             }
         }
@@ -1079,7 +1072,7 @@ pub fn volume_fraction(density: &[f64]) -> f64 {
 }
 
 /// Normalizes sensitivities to \[-1, 0\] range for stability.
-pub fn normalize_sensitivity(sensitivity: &mut Vec<f64>) {
+pub fn normalize_sensitivity(sensitivity: &mut [f64]) {
     let min_s = sensitivity.iter().copied().fold(f64::INFINITY, f64::min);
     let max_s = sensitivity
         .iter()
@@ -1500,8 +1493,8 @@ mod tests {
         let mf = ManufacturingFilters::new(grid, 2.0, PI / 3.0);
         let mut density = vec![0.0; 16];
         // Set bottom row solid
-        for col in 0..4 {
-            density[col] = 1.0;
+        for d in density[..4].iter_mut() {
+            *d = 1.0;
         }
         let out = mf.overhang_filter(&density);
         // Bottom row (build direction 0) should be unchanged
@@ -1538,8 +1531,8 @@ mod tests {
         density[0] = 1.0; // only top-left corner
         let out = mf.extrusion_filter(&density, 1); // extrude in y
         // row 0 should all be 1.0
-        for col in 0..4 {
-            assert!((out[col] - 1.0).abs() < 1e-10);
+        for &o in out[..4].iter() {
+            assert!((o - 1.0).abs() < 1e-10);
         }
     }
 

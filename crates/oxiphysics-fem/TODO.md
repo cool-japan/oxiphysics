@@ -1,6 +1,6 @@
 # oxiphysics-fem TODO
 
-Last updated: 2026-05-17 / v0.1.1
+Last updated: 2026-06-06 / v0.1.2
 
 ## Phase 1: Foundation
 - [x] Define core types and traits (CsrMatrix, TetrahedralMesh, etc.)
@@ -24,7 +24,7 @@ Last updated: 2026-05-17 / v0.1.1
 - [x] Topology optimization FEM
 - [x] Crystal plasticity FEM
 - [x] Sparse linear algebra: CsrMatrix (CSR), PcgSolver (PCG)
-- [x] Integration tests (4,561 tests, 0 stubs, 124 source files)
+- [x] Integration tests (4,620 tests, 0 stubs, 124 source files)
 - [x] Performance benchmarks (basic)
 
 ## Phase 3: Polish

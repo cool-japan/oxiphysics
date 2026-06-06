@@ -13,9 +13,6 @@
 //! - []: 1-D linearized implicit NS FEM driver
 //! - []: RHS for projection method pressure Poisson
 
-#![allow(dead_code)]
-#![allow(clippy::needless_range_loop)]
-
 use crate::parallel_solver::{CsrMatrix, ParallelPcgSolver};
 
 // ============================================================================
@@ -110,7 +107,7 @@ pub fn stokes_pressure_gradient(coords: &[[f64; 2]; 3]) -> [[f64; 3]; 6] {
     // Row 2a   (u-component): -dNa/dx * Nb_area
     // Row 2a+1 (v-component): -dNa/dy * Nb_area
     for a in 0..3 {
-        for b in 0..3 {
+        for (b, _) in (0..3usize).enumerate() {
             // Integrate N_b over triangle: area/3 for linear elements
             let nb_int = area / 3.0;
             bp[2 * a][b] = -dndx[a] * nb_int;
@@ -203,7 +200,7 @@ pub fn lid_driven_cavity_setup(n: usize, viscosity: f64) -> (Vec<Vec<f64>>, Vec<
             rhs[j] -= mat[j][dof] * val;
         }
         // Zero row and column, set diagonal to 1, rhs to val
-        for j in 0..n_dofs {
+        for (j, _) in (0..n_dofs).enumerate() {
             mat[dof][j] = 0.0;
             mat[j][dof] = 0.0;
         }
@@ -409,17 +406,18 @@ impl NavierStokesFEM {
         let mut rhs = vec![0.0f64; n];
 
         // RHS contribution from M/dt * u^n
-        for i in 0..n {
+        for (i, rhs_i) in rhs.iter_mut().enumerate().take(n) {
             let m_i = if i == 0 || i == n - 1 {
                 0.5 * rho * dx
             } else {
                 rho * dx
             };
-            rhs[i] = m_i * inv_dt * self.velocity[i];
+            *rhs_i = m_i * inv_dt * self.velocity[i];
         }
 
         // Add convection + pressure gradient + body force (explicit)
-        for i in 1..n - 1 {
+        for (idx, i) in (1..n - 1).enumerate() {
+            let _ = idx;
             let u_i = self.velocity[i];
             // First-order upwind for convection: ρ u⁰ ∂u/∂x
             let conv = if u_i >= 0.0 {
@@ -532,10 +530,10 @@ mod stokes_tests {
     fn test_stokes_element_matrix_symmetry() {
         let coords = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
         let ke = stokes_element_matrix(&coords, 1.0);
-        for i in 0..6 {
-            for j in 0..6 {
+        for (i, row) in ke.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (ke[i][j] - ke[j][i]).abs() < 1e-12,
+                    (val - ke[j][i]).abs() < 1e-12,
                     "not symmetric at ({},{})",
                     i,
                     j

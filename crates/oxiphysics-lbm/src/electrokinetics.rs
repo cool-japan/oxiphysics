@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,8 +15,6 @@
 //! - [`ElectroosmoticPump`] — EOF pump flow rate and back-pressure
 //! - [`DebyeLength`] — κ⁻¹ = √(εkT / 2n₀z²e²)
 //! - [`IonTransportLBM`] — D2Q5 LBM step for ion-concentration transport
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -168,7 +165,7 @@ impl ElectricField {
     /// This iterates div(E) and adjusts by a fractional `alpha` step.
     pub fn gauss_law_iteration(
         &mut self,
-        phi: &mut Vec<f64>,
+        phi: &mut [f64],
         rho: &[f64],
         dx: f64,
         epsilon: f64,
@@ -227,10 +224,9 @@ impl PoissonSolver {
     /// - `epsilon_r`: relative permittivity.
     /// - `max_iter` : iteration cap.
     /// - `tol`      : convergence tolerance (V).
-    #[allow(clippy::too_many_arguments)]
     pub fn solve(
         &self,
-        phi: &mut Vec<f64>,
+        phi: &mut [f64],
         rho: &[f64],
         nx: usize,
         ny: usize,
@@ -310,7 +306,6 @@ impl NernstPlanckDistribution {
     /// `ux/uy` — fluid velocity (m s⁻¹).
     /// `dt`    — time step (s).
     /// `dx`    — cell spacing (m).
-    #[allow(clippy::too_many_arguments)]
     pub fn step(&mut self, phi: &[f64], ux: &[f64], uy: &[f64], dt: f64, dx: f64) {
         let nx = self.nx;
         let ny = self.ny;
@@ -702,9 +697,9 @@ impl IonTransportLBM {
     pub fn concentration(&self) -> Vec<f64> {
         let n = self.nx * self.ny;
         let mut c = vec![0.0; n];
-        for i in 0..5 {
-            for j in 0..n {
-                c[j] += self.f[i][j];
+        for f_row in &self.f {
+            for (c_j, f_j) in c.iter_mut().zip(f_row.iter()) {
+                *c_j += f_j;
             }
         }
         c

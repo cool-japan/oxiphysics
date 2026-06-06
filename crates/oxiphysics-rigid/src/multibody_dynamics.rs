@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,9 +15,6 @@
 //! - Articulated body inertia (ABI) representation
 //!
 //! All quantities use SI units. Rotation matrices are row-major `[[f64;3\];3]`.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -54,17 +50,6 @@ pub fn mat3_add(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     for i in 0..3 {
         for j in 0..3 {
             c[i][j] = a[i][j] + b[i][j];
-        }
-    }
-    c
-}
-
-/// Scale a 3×3 matrix by a scalar.
-fn mat3_scale(m: [[f64; 3]; 3], s: f64) -> [[f64; 3]; 3] {
-    let mut c = [[0.0_f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            c[i][j] = m[i][j] * s;
         }
     }
     c
@@ -606,9 +591,10 @@ fn solve_linear(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Vec<f64> {
         // Find pivot
         let mut max_row = col;
         let mut max_val = a[col][col].abs();
-        for row in col + 1..n {
-            if a[row][col].abs() > max_val {
-                max_val = a[row][col].abs();
+        for (offset, a_row) in a[col + 1..n].iter().enumerate() {
+            let row = col + 1 + offset;
+            if a_row[col].abs() > max_val {
+                max_val = a_row[col].abs();
                 max_row = row;
             }
         }
@@ -622,9 +608,9 @@ fn solve_linear(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Vec<f64> {
         }
         for row in col + 1..n {
             let factor = a[row][col] / pivot;
-            for k in col..n {
-                let val = a[col][k] * factor;
-                a[row][k] -= val;
+            let a_col_copy: Vec<f64> = a[col][col..n].to_vec();
+            for (a_rk, &a_ck) in a[row][col..n].iter_mut().zip(a_col_copy.iter()) {
+                *a_rk -= a_ck * factor;
             }
             b[row] -= b[col] * factor;
         }
@@ -824,12 +810,12 @@ mod tests {
     fn cross_product_matrix_is_antisymmetric() {
         let v = [1.0, -2.0, 3.0];
         let m = cross_product_matrix(v);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in m.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (m[i][j] + m[j][i]).abs() < 1e-12,
+                    (val + m[j][i]).abs() < 1e-12,
                     "m[{i}][{j}]={} m[{j}][{i}]={}",
-                    m[i][j],
+                    val,
                     m[j][i]
                 );
             }
@@ -858,8 +844,8 @@ mod tests {
         let poses = chain.forward_kinematics();
         // Root joint should be at origin
         let (pos0, _rot0) = poses[0];
-        for k in 0..3 {
-            assert!(pos0[k].abs() < 1e-10, "root pos[{k}]={}", pos0[k]);
+        for (k, &coord) in pos0.iter().enumerate() {
+            assert!(coord.abs() < 1e-10, "root pos[{k}]={}", coord);
         }
     }
 
@@ -903,12 +889,8 @@ mod tests {
         let jac = chain.jacobian(1);
         // col 2 (link 2) is NOT ancestor of link 1, so should be zero
         let col2 = jac[2];
-        for k in 0..6 {
-            assert!(
-                col2[k].abs() < 1e-12,
-                "jac[2][{k}]={} (should be zero)",
-                col2[k]
-            );
+        for (k, &val) in col2.iter().enumerate() {
+            assert!(val.abs() < 1e-12, "jac[2][{k}]={} (should be zero)", val);
         }
     }
 
@@ -939,11 +921,11 @@ mod tests {
     fn mass_matrix_diagonal_positive() {
         let chain = simple_chain(3);
         let m = chain.mass_matrix();
-        for i in 0..3 {
+        for (i, row) in m.iter().enumerate() {
             assert!(
-                m[i][i] >= 0.0,
+                row[i] >= 0.0,
                 "M[{i}][{i}]={} should be non-negative",
-                m[i][i]
+                row[i]
             );
         }
     }
@@ -1301,7 +1283,7 @@ impl GearConstraint {
     /// Apply the velocity constraint: force q̇_b = ρ · q̇_a.
     ///
     /// Modifies `velocities` in place.
-    pub fn enforce_velocity(&self, velocities: &mut Vec<f64>) {
+    pub fn enforce_velocity(&self, velocities: &mut [f64]) {
         velocities[self.joint_b] = self.ratio * velocities[self.joint_a];
     }
 
@@ -1600,13 +1582,13 @@ mod tests_extra {
         let poses = chain.forward_kinematics();
         let rot = poses[0].1;
         // At zero angle, rotation should be identity
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in rot.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (rot[i][j] - expected).abs() < 1e-10,
+                    (val - expected).abs() < 1e-10,
                     "rot[{i}][{j}]={} expected {expected}",
-                    rot[i][j]
+                    val
                 );
             }
         }

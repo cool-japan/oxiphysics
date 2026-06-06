@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,7 +16,6 @@
 ///
 /// Distinguishes the four principal elastic wave types encountered in
 /// soft-body and geomechanical simulations.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaveMode {
     /// Compressional (P) wave — particle motion parallel to propagation.
@@ -38,7 +36,6 @@ pub enum WaveMode {
 ///
 /// Encapsulates the Lamé constants and density required to compute
 /// wave speeds and acoustic impedances.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ElasticWaveParams {
     /// Material density (kg/m³).
@@ -136,7 +133,6 @@ impl ElasticWaveParams {
 ///
 /// Models a Gaussian-modulated sinusoidal wave packet for wave propagation
 /// studies.
-#[allow(dead_code)]
 pub struct WavePacket {
     /// Wave amplitude (metres or Pa depending on context).
     pub amplitude: f64,
@@ -233,7 +229,6 @@ impl WavePacket {
 ///
 /// Provides functions to compute wavenumber k for a given angular frequency ω
 /// for bulk, plate, and Love waves.
-#[allow(dead_code)]
 pub struct DispersionRelation;
 
 impl DispersionRelation {
@@ -347,7 +342,6 @@ impl DispersionRelation {
 ///
 /// Computes P-P, P-S, S-P, and S-S coefficients at a planar interface between
 /// two elastic half-spaces.
-#[allow(dead_code)]
 pub struct WaveReflection;
 
 impl WaveReflection {
@@ -478,7 +472,6 @@ impl WaveReflection {
 ///
 /// Computes mode shapes and natural frequencies for pinned-pinned,
 /// clamped-free, and clamped-clamped boundary conditions.
-#[allow(dead_code)]
 pub struct StandingWave;
 
 impl StandingWave {
@@ -555,7 +548,6 @@ impl StandingWave {
 ///
 /// Solves the equation of motion: M ü + K u = f using the central difference
 /// explicit time integration scheme.
-#[allow(dead_code)]
 pub struct FiniteElementWave1D {
     /// Number of elements.
     pub n_elements: usize,
@@ -708,7 +700,6 @@ impl FiniteElementWave1D {
 ///
 /// Models visco-elastic energy dissipation in soft biological tissues
 /// and geological media.
-#[allow(dead_code)]
 pub struct AttenuationModel {
     /// Quality factor Q (dimensionless). Higher Q → less attenuation.
     pub quality_factor: f64,
@@ -797,7 +788,6 @@ impl AttenuationModel {
 ///
 /// Provides band-gap prediction and effective medium parameter estimation
 /// for 1D phononic crystals (alternating material layers).
-#[allow(dead_code)]
 pub struct PhononicCrystal;
 
 impl PhononicCrystal {
@@ -1282,11 +1272,11 @@ mod tests {
     fn test_fem_wave_mass_matrix_positive_diagonal() {
         let fem = FiniteElementWave1D::new(4, 1.0, steel());
         let m = fem.mass_matrix();
-        for i in 0..fem.n_dof() {
+        for (i, row) in m.iter().enumerate() {
             assert!(
-                m[i][i] > 0.0,
+                row[i] > 0.0,
                 "Diagonal of mass matrix should be positive: m[{i}][{i}]={}",
-                m[i][i]
+                row[i]
             );
         }
     }
@@ -1295,11 +1285,11 @@ mod tests {
     fn test_fem_wave_stiffness_matrix_symmetric() {
         let fem = FiniteElementWave1D::new(4, 1.0, steel());
         let k = fem.stiffness_matrix();
-        let n = fem.n_dof();
-        for i in 0..n {
-            for j in 0..n {
+        let _n = fem.n_dof();
+        for (i, row) in k.iter().enumerate() {
+            for (j, &kij) in row.iter().enumerate() {
                 assert!(
-                    (k[i][j] - k[j][i]).abs() < 1e-10,
+                    (kij - k[j][i]).abs() < 1e-10,
                     "K should be symmetric at [{i}][{j}]"
                 );
             }

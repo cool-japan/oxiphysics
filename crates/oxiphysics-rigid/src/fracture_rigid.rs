@@ -15,8 +15,6 @@
 //! - [`DebrisSimulation`] — fragment tracking with secondary impacts
 //! - [`ExplosionModel`] — pressure wave, Gurney equation, fragment distribution
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

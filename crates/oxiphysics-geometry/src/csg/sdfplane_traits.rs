@@ -10,8 +10,6 @@
 
 use super::functions::ImplicitSurface;
 use super::functions::dot;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::SdfPlane;
 
 impl ImplicitSurface for SdfPlane {

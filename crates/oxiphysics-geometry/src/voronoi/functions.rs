@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use super::types::{
     DelaunayTriangle, LegacyVoronoiCell, Point2D, VoronoiCell, VoronoiDiagram, VoronoiSite,
     WeightedSite,
@@ -390,7 +389,6 @@ pub fn in_circumsphere_3d(p: [f64; 3], tet_pts: [[f64; 3]; 4]) -> bool {
 /// Compute the volume of a convex polyhedron given as a list of triangular faces.
 ///
 /// Uses the divergence theorem: V = (1/6) Σ |n⃗ · r⃗| where r⃗ is a face vertex.
-#[allow(dead_code)]
 pub fn polyhedron_volume(faces: &[[usize; 3]], vertices: &[[f64; 3]]) -> f64 {
     let mut vol = 0.0_f64;
     for face in faces {
@@ -407,7 +405,6 @@ pub fn polyhedron_volume(faces: &[[usize; 3]], vertices: &[[f64; 3]]) -> f64 {
 /// using the circumcenters of adjacent tetrahedra as face vertices.
 ///
 /// This is approximate for non-convex or incomplete cells.
-#[allow(dead_code)]
 pub fn voronoi_cell_volume_3d(site: [f64; 3], circumcenters: &[[f64; 3]]) -> f64 {
     if circumcenters.len() < 4 {
         return 0.0;
@@ -424,7 +421,6 @@ pub fn voronoi_cell_volume_3d(site: [f64; 3], circumcenters: &[[f64; 3]]) -> f64
 ///
 /// Two sites are Voronoi neighbors if they share a Delaunay edge.
 /// Returns a `Vec<Vec`usize`>` where `adj[i]` contains the neighbors of site `i`.
-#[allow(dead_code)]
 pub fn voronoi_neighbors(n_points: usize, triangles: &[DelaunayTriangle]) -> Vec<Vec<usize>> {
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n_points];
     for tri in triangles {
@@ -447,12 +443,10 @@ pub fn voronoi_neighbors(n_points: usize, triangles: &[DelaunayTriangle]) -> Vec
     adj
 }
 /// Compute the degree (number of Voronoi neighbors) for each site.
-#[allow(dead_code)]
 pub fn voronoi_degree(adj: &[Vec<usize>]) -> Vec<usize> {
     adj.iter().map(|nbrs| nbrs.len()).collect()
 }
 /// Return `true` if the Voronoi diagram is connected (all sites reachable from site 0).
-#[allow(dead_code)]
 pub fn voronoi_is_connected(adj: &[Vec<usize>]) -> bool {
     let n = adj.len();
     if n == 0 {
@@ -472,7 +466,6 @@ pub fn voronoi_is_connected(adj: &[Vec<usize>]) -> bool {
     visited.iter().all(|&v| v)
 }
 /// Compute the circumcenters of all Delaunay triangles (Voronoi vertices).
-#[allow(dead_code)]
 pub fn delaunay_circumcenters(
     points: &[[f64; 2]],
     triangles: &[DelaunayTriangle],
@@ -488,7 +481,6 @@ pub fn delaunay_circumcenters(
 /// triangles sharing a Delaunay edge).
 ///
 /// Returns `Vec<([f64;2], [f64;2])>` – one pair per shared edge.
-#[allow(dead_code)]
 pub fn voronoi_edges(
     points: &[[f64; 2]],
     triangles: &[DelaunayTriangle],
@@ -501,8 +493,7 @@ pub fn voronoi_edges(
             Some((c, _)) => c,
             None => continue,
         };
-        for j in (i + 1)..n {
-            let tj = &triangles[j];
+        for tj in triangles.iter().skip(i + 1) {
             let vi = [ti.a, ti.b, ti.c];
             let vj = [tj.a, tj.b, tj.c];
             let common: Vec<usize> = vi.iter().filter(|&&v| vj.contains(&v)).copied().collect();
@@ -516,7 +507,6 @@ pub fn voronoi_edges(
     edges
 }
 /// Find the site with the smallest power distance (owner of `q` in the power diagram).
-#[allow(dead_code)]
 pub fn power_diagram_owner(q: [f64; 2], sites: &[WeightedSite]) -> Option<usize> {
     if sites.is_empty() {
         return None;
@@ -532,7 +522,6 @@ pub fn power_diagram_owner(q: [f64; 2], sites: &[WeightedSite]) -> Option<usize>
         .map(|(i, _)| i)
 }
 /// Compute the power distance of every site to `q`.
-#[allow(dead_code)]
 pub fn power_distances(q: [f64; 2], sites: &[WeightedSite]) -> Vec<f64> {
     sites.iter().map(|s| s.power_distance(q)).collect()
 }
@@ -541,7 +530,6 @@ pub fn power_distances(q: [f64; 2], sites: &[WeightedSite]) -> Vec<f64> {
 ///
 /// Returns `true` if there exists a point on the segment between `a` and `b`
 /// that has equal power distance to both sites.
-#[allow(dead_code)]
 pub fn power_adjacent(a: &WeightedSite, b: &WeightedSite, sites: &[WeightedSite]) -> bool {
     let mid = [
         (a.position[0] + b.position[0]) * 0.5,
@@ -678,7 +666,7 @@ pub fn voronoi_area_fractions(sites: &[[f64; 2]], bounds: [f64; 4], grid: usize)
 ///
 /// Returns `true` if a flip was performed.
 pub fn flip_edge_if_needed(
-    triangles: &mut Vec<DelaunayTriangle>,
+    triangles: &mut [DelaunayTriangle],
     points: &[[f64; 2]],
     ti: usize,
     tj: usize,
@@ -1173,10 +1161,10 @@ mod tests {
         let points = [[0.0_f64, 0.0], [1.0, 0.0], [0.5, 1.0]];
         let triangles = bowyer_watson(&points);
         let adj = voronoi_neighbors(3, &triangles);
-        for i in 0..3 {
+        for (i, nbrs) in adj.iter().enumerate() {
             assert!(
-                adj[i].len() >= 2,
-                "Each vertex in triangle should have ≥ 2 neighbors"
+                nbrs.len() >= 2,
+                "Each vertex {i} in triangle should have ≥ 2 neighbors"
             );
         }
     }

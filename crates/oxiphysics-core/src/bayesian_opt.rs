@@ -7,9 +7,6 @@
 //! an acquisition function to pick the next candidate, observe the objective,
 //! and iterate.  Supports RBF, Matérn-5/2, and Periodic kernels.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::{PI, SQRT_2};
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -13,8 +12,6 @@
 //!
 //! [`ParticleTrajectory`] supports frame indexing, slicing, sub-sampling,
 //! and analysis (MSD, RMSF, centre-of-mass drift).
-
-#![allow(dead_code)]
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -589,23 +586,21 @@ fn compute_msd(traj: &ParticleTrajectory) -> Vec<f64> {
         return vec![];
     }
     let mut result = vec![0.0f64; nf];
-    for lag in 0..nf {
+    for (lag, res) in result.iter_mut().enumerate() {
         let mut sum = 0.0f64;
         let mut count = 0usize;
         for t in 0..(nf - lag) {
             let f0 = &traj.frames[t];
             let f1 = &traj.frames[t + lag];
             let n = f0.positions.len().min(f1.positions.len());
-            for i in 0..n {
-                let r0 = f0.positions[i];
-                let r1 = f1.positions[i];
+            for (r0, r1) in f0.positions[..n].iter().zip(f1.positions[..n].iter()) {
                 let dr2 =
                     (r1[0] - r0[0]).powi(2) + (r1[1] - r0[1]).powi(2) + (r1[2] - r0[2]).powi(2);
                 sum += dr2 as f64;
                 count += 1;
             }
         }
-        result[lag] = if count > 0 { sum / count as f64 } else { 0.0 };
+        *res = if count > 0 { sum / count as f64 } else { 0.0 };
     }
     result
 }

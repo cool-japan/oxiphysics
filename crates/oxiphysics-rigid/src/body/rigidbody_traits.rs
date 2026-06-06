@@ -7,9 +7,6 @@
 //! - `Steppable`
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use oxiphysics_core::math::Vec3;
 use oxiphysics_core::{Steppable, TimeStep};
 

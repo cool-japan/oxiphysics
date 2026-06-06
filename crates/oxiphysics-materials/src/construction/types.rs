@@ -3,8 +3,6 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::terzaghi_bearing_factors;
-#[allow(unused_imports)]
-use super::functions::*;
 use std::f64::consts::PI;
 
 /// Concrete cover to reinforcement per ACI 318.
@@ -1001,7 +999,6 @@ pub struct ReinforcedConcrete {
 }
 impl ReinforcedConcrete {
     /// Create a new reinforced concrete section.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         concrete: ConcreteMaterial,
         b: f64,
@@ -1723,7 +1720,6 @@ pub struct PrestressedConcrete {
 }
 impl PrestressedConcrete {
     /// Create a new pre-stressed concrete section.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ag: f64,
         ig: f64,

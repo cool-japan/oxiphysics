@@ -14,7 +14,6 @@ use super::types::{BasquinCurve, DamageToleranceResult, ParisLaw, RainflowCycle}
 ///
 /// # Returns
 /// A `Vec<(f64, f64)>` of `(range, mean)` tuples for each full cycle.
-#[allow(dead_code)]
 pub fn rain_flow_count(signal: &[f64]) -> Vec<(f64, f64)> {
     if signal.len() < 3 {
         return Vec::new();
@@ -63,7 +62,6 @@ pub fn rain_flow_count(signal: &[f64]) -> Vec<(f64, f64)> {
 ///
 /// Returns `Vec<(range, mean, count)>` where `count` is 1.0 for full cycles
 /// and 0.5 for half cycles.
-#[allow(dead_code)]
 pub fn rain_flow_count_with_half_cycles(signal: &[f64]) -> Vec<(f64, f64, f64)> {
     if signal.len() < 3 {
         return Vec::new();
@@ -112,7 +110,6 @@ pub fn rain_flow_count_with_half_cycles(signal: &[f64]) -> Vec<(f64, f64, f64)> 
 ///
 /// For each cycle (range, mean), the stress amplitude = range/2 is used to
 /// compute cycles to failure N_f from the S-N curve, and damage D += 1/N_f.
-#[allow(dead_code)]
 pub fn miner_damage_from_rainflow(cycles: &[(f64, f64)], sn: &BasquinCurve) -> f64 {
     let mut damage = 0.0;
     for &(range, _mean) in cycles {
@@ -153,7 +150,6 @@ pub(super) fn extract_turning_points(signal: &[f64]) -> Vec<f64> {
 /// Kt is the theoretical stress concentration factor.
 /// Kf is the fatigue notch factor: Kf = 1 + q*(Kt - 1)
 /// where q is the notch sensitivity (0 ≤ q ≤ 1).
-#[allow(dead_code)]
 pub fn fatigue_notch_factor(kt: f64, notch_sensitivity: f64) -> f64 {
     1.0 + notch_sensitivity * (kt - 1.0)
 }
@@ -163,14 +159,12 @@ pub fn fatigue_notch_factor(kt: f64, notch_sensitivity: f64) -> f64 {
 ///
 /// where `a` is the material constant (mm) and `r` is the notch radius (mm).
 /// For steel, a ≈ 0.0254 * (2070 / σ_u)^1.8 \[MPa, mm\].
-#[allow(dead_code)]
 pub fn peterson_notch_sensitivity(notch_radius_mm: f64, material_constant_mm: f64) -> f64 {
     1.0 / (1.0 + material_constant_mm / notch_radius_mm)
 }
 /// Estimate Peterson's material constant `a` for steel.
 ///
 /// a (mm) ≈ 0.0254 * (2070 / σ_u_mpa)^1.8
-#[allow(dead_code)]
 pub fn peterson_material_constant_steel(ultimate_strength_mpa: f64) -> f64 {
     0.0254 * (2070.0 / ultimate_strength_mpa).powf(1.8)
 }
@@ -181,7 +175,6 @@ pub fn peterson_material_constant_steel(ultimate_strength_mpa: f64) -> f64 {
 /// i.e., σ = A * N^B
 ///
 /// Returns (A, B) on success, None if fewer than 2 data points.
-#[allow(dead_code)]
 pub fn fit_sn_curve_least_squares(data: &[(f64, f64)]) -> Option<(f64, f64)> {
     let n = data.len();
     if n < 2 {
@@ -212,14 +205,12 @@ pub fn fit_sn_curve_least_squares(data: &[(f64, f64)]) -> Option<(f64, f64)> {
     Some((a, b_exp))
 }
 /// Fit S-N curve and return a `BasquinCurve` (with endurance limit estimated at N=1e7).
-#[allow(dead_code)]
 pub fn fit_basquin_from_data(data: &[(f64, f64)], endurance_fraction: f64) -> Option<BasquinCurve> {
     let (a, b_exp) = fit_sn_curve_least_squares(data)?;
     let endurance = a * (1e7_f64).powf(b_exp) * endurance_fraction;
     Some(BasquinCurve::new(a, b_exp, endurance.max(0.0)))
 }
 /// R² coefficient of determination for a fitted S-N curve.
-#[allow(dead_code)]
 pub fn sn_r_squared(data: &[(f64, f64)], a: f64, b_exp: f64) -> f64 {
     let valid: Vec<(f64, f64)> = data
         .iter()
@@ -245,7 +236,6 @@ pub fn sn_r_squared(data: &[(f64, f64)], a: f64, b_exp: f64) -> f64 {
 /// σ_ar = σ_a / (1 - (σ_m / σ_u)²)
 ///
 /// Gerber is less conservative than Goodman for compressive mean stress.
-#[allow(dead_code)]
 pub fn gerber_equivalent_amplitude(
     stress_amplitude: f64,
     mean_stress: f64,
@@ -261,7 +251,6 @@ pub fn gerber_equivalent_amplitude(
 /// Soderberg mean stress correction.
 ///
 /// σ_ar = σ_a / (1 - σ_m / σ_ys)
-#[allow(dead_code)]
 pub fn soderberg_equivalent_amplitude(
     stress_amplitude: f64,
     mean_stress: f64,
@@ -276,7 +265,6 @@ pub fn soderberg_equivalent_amplitude(
 /// Goodman mean stress correction (see also `GoodmanDiagram::equivalent_amplitude`).
 ///
 /// σ_ar = σ_a / (1 - σ_m / σ_u)
-#[allow(dead_code)]
 pub fn goodman_equivalent_amplitude(
     stress_amplitude: f64,
     mean_stress: f64,
@@ -292,7 +280,6 @@ pub fn goodman_equivalent_amplitude(
 ///
 /// σ_ar = σ_max^(1-γ) * σ_a^γ
 /// where γ is the Walker exponent (typically 0.3..0.7 for metals).
-#[allow(dead_code)]
 pub fn walker_equivalent_amplitude(
     stress_max: f64,
     stress_amplitude: f64,
@@ -310,7 +297,6 @@ pub fn walker_equivalent_amplitude(
 /// \[σ_x_amp, σ_y_amp, σ_z_amp, τ_xy_amp, τ_yz_amp, τ_xz_amp\]
 ///
 /// σ_vm_amp = sqrt(((σx-σy)² + (σy-σz)² + (σz-σx)²)/2 + 3*(τxy²+τyz²+τxz²))
-#[allow(dead_code)]
 pub fn von_mises_amplitude(sigma_amp: [f64; 6]) -> f64 {
     let sx = sigma_amp[0];
     let sy = sigma_amp[1];
@@ -328,7 +314,6 @@ pub fn von_mises_amplitude(sigma_amp: [f64; 6]) -> f64 {
 /// where J2_a = sqrt(J2_amplitude) and I1_mean = hydrostatic mean stress.
 ///
 /// Returns the Sines criterion value (failure if >= beta).
-#[allow(dead_code)]
 pub fn sines_criterion(stress_amp: [f64; 6], mean_stress: [f64; 6], alpha: f64) -> f64 {
     let vm_amp = von_mises_amplitude(stress_amp) / 3.0_f64.sqrt();
     let i1_mean = mean_stress[0] + mean_stress[1] + mean_stress[2];
@@ -338,7 +323,6 @@ pub fn sines_criterion(stress_amp: [f64; 6], mean_stress: [f64; 6], alpha: f64) 
 ///
 /// Scans through `n_planes` candidate planes and returns the maximum
 /// shear amplitude on any plane.
-#[allow(dead_code)]
 pub fn critical_plane_max_shear(sigma_amp: [f64; 6], n_planes: usize) -> f64 {
     let mut max_shear = 0.0_f64;
     let n = n_planes.max(1);
@@ -355,7 +339,6 @@ pub fn critical_plane_max_shear(sigma_amp: [f64; 6], n_planes: usize) -> f64 {
     max_shear
 }
 /// Perform a damage tolerance analysis using Paris law.
-#[allow(dead_code)]
 pub fn damage_tolerance_analysis(
     paris: &ParisLaw,
     a_initial: f64,
@@ -378,7 +361,6 @@ pub fn damage_tolerance_analysis(
 ///
 /// D_total = Σ (n_i/N_i)^α
 /// where α is typically > 1 for load-order effects.
-#[allow(dead_code)]
 pub fn marco_starkey_damage(blocks: &[(f64, f64)], exponent: f64) -> f64 {
     blocks.iter().map(|&(n, nf)| (n / nf).powf(exponent)).sum()
 }
@@ -386,7 +368,6 @@ pub fn marco_starkey_damage(blocks: &[(f64, f64)], exponent: f64) -> f64 {
 ///
 /// D = Σ n_i * σ_i^d / (N_1 * σ_1^d)
 /// where σ_1 is the reference stress, N_1 is cycles at reference, d is the exponent.
-#[allow(dead_code)]
 pub fn corten_dolan_damage(
     blocks: &[(f64, f64, f64)],
     sigma_ref: f64,
@@ -409,7 +390,6 @@ pub fn corten_dolan_damage(
 /// # Arguments
 /// * `notch_radius` - Notch tip radius ρ (m).
 /// * `half_width`   - Half the notch depth (or semi-axis) a (m).
-#[allow(dead_code)]
 pub fn stress_concentration_kt(notch_radius: f64, half_width: f64) -> f64 {
     if notch_radius <= 0.0 {
         return f64::INFINITY;
@@ -425,20 +405,17 @@ pub fn stress_concentration_kt(notch_radius: f64, half_width: f64) -> f64 {
 /// * `sigma_max` - Maximum stress in cycle (Pa).
 /// * `sigma_min` - Minimum stress in cycle (Pa).
 /// * `r_ratio`   - Stress ratio R = σ_min / σ_max (used for cross-check only).
-#[allow(dead_code)]
 pub fn effective_stress_range(sigma_max: f64, sigma_min: f64, _r_ratio: f64) -> f64 {
     (sigma_max - sigma_min).abs()
 }
 /// Paris law crack growth rate: da/dN = C * ΔK^m.
 ///
 /// # Arguments
-/// * `c_coeff`  - Paris coefficient C.
-/// * `m_exp`    - Paris exponent m.
+/// * `c`        - Paris coefficient C.
+/// * `m`        - Paris exponent m.
 /// * `delta_k`  - Stress-intensity factor range ΔK (Pa·√m).
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn paris_law_crack_growth(C: f64, m: f64, delta_K: f64) -> f64 {
-    C * delta_K.powf(m)
+pub fn paris_law_crack_growth(c: f64, m: f64, delta_k: f64) -> f64 {
+    c * delta_k.powf(m)
 }
 /// Threshold stress-intensity factor range at a given R-ratio.
 ///
@@ -451,14 +428,12 @@ pub fn paris_law_crack_growth(C: f64, m: f64, delta_K: f64) -> f64 {
 /// # Arguments
 /// * `delta_k_th0` - Threshold at R=0 (Pa·√m).
 /// * `r_ratio`     - Stress ratio R.
-#[allow(dead_code)]
 pub fn threshold_sif_range(delta_k_th0: f64, r_ratio: f64) -> f64 {
     delta_k_th0 * (1.0 - r_ratio).clamp(0.0, 1.0)
 }
 /// Sequenced Miner's rule: applies damage blocks in order, tracking residual life.
 ///
 /// Returns the damage history at each step.
-#[allow(dead_code)]
 pub fn sequenced_miner_damage(blocks: &[(f64, f64)]) -> Vec<f64> {
     let mut d = 0.0;
     let mut history = Vec::with_capacity(blocks.len());
@@ -474,7 +449,6 @@ pub fn sequenced_miner_damage(blocks: &[(f64, f64)]) -> Vec<f64> {
 ///
 /// Groups cycles from rainflow counting into `n_bins` linearly-spaced
 /// stress-range bins and returns `(bin_midpoints, cycle_counts)`.
-#[allow(dead_code)]
 pub fn rainflow_histogram(cycles: &[(f64, f64)], n_bins: usize) -> (Vec<f64>, Vec<f64>) {
     if cycles.is_empty() || n_bins == 0 {
         return (vec![], vec![]);
@@ -501,7 +475,6 @@ pub fn rainflow_histogram(cycles: &[(f64, f64)], n_bins: usize) -> (Vec<f64>, Ve
 ///
 /// where n_i is the number of cycles at range Δσ_i and m is the Paris/S-N
 /// exponent. Represents the constant-amplitude range giving the same damage.
-#[allow(dead_code)]
 pub fn damage_equivalent_stress_range(cycles: &[(f64, f64)], m_exp: f64) -> f64 {
     if cycles.is_empty() {
         return 0.0;
@@ -511,7 +484,6 @@ pub fn damage_equivalent_stress_range(cycles: &[(f64, f64)], m_exp: f64) -> f64 
     (sum / n_total).powf(1.0 / m_exp)
 }
 /// Compute root-mean-square (RMS) stress range from rainflow cycles.
-#[allow(dead_code)]
 pub fn rms_stress_range(cycles: &[(f64, f64)]) -> f64 {
     if cycles.is_empty() {
         return 0.0;
@@ -523,7 +495,6 @@ pub fn rms_stress_range(cycles: &[(f64, f64)]) -> f64 {
 ///
 /// I = 1 for narrow-band loading, 0 < I < 1 for broad-band.
 /// Computed from a time-domain signal.
-#[allow(dead_code)]
 pub fn irregularity_factor(signal: &[f64]) -> f64 {
     if signal.len() < 3 {
         return 0.0;
@@ -559,23 +530,20 @@ pub fn irregularity_factor(signal: &[f64]) -> f64 {
 /// - sigma_f, b_exp: Basquin curve parameters (σ_a = σ_f * N^b_exp).
 ///
 /// Returns the expected fatigue damage rate (D per unit time).
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
-#[allow(non_snake_case)]
 pub fn dirlik_damage_rate(m0: f64, m1: f64, m2: f64, m4: f64, c_coeff: f64, m_exp: f64) -> f64 {
     if m0 <= 0.0 || m2 <= 0.0 || m4 <= 0.0 {
         return 0.0;
     }
     let sigma_rms = m0.sqrt();
-    let E_P = (m4 / m2).sqrt();
-    let _E_0 = (m2 / m0).sqrt();
+    let e_p = (m4 / m2).sqrt();
+    let _e_0 = (m2 / m0).sqrt();
     let xm = m1 / m0 * (m2 / m4).sqrt();
     let gamma = m2 / (m0 * m4).sqrt();
-    let D1 = 2.0 * (xm - gamma * gamma) / (1.0 + gamma * gamma);
-    let R = (gamma - xm - D1 * D1) / (1.0 - gamma - D1 + D1 * D1);
-    let D2 = (1.0 - gamma - D1 + D1 * D1) / (1.0 - R);
-    let D3 = 1.0 - D1 - D2;
-    let Q = 1.25 * (gamma - D3 - D2 * R) / D1;
+    let d1 = 2.0 * (xm - gamma * gamma) / (1.0 + gamma * gamma);
+    let r = (gamma - xm - d1 * d1) / (1.0 - gamma - d1 + d1 * d1);
+    let d2 = (1.0 - gamma - d1 + d1 * d1) / (1.0 - r);
+    let d3 = 1.0 - d1 - d2;
+    let q = 1.25 * (gamma - d3 - d2 * r) / d1;
     let n_bins = 200_usize;
     let s_max = 6.0 * sigma_rms;
     let ds = s_max / n_bins as f64;
@@ -583,16 +551,15 @@ pub fn dirlik_damage_rate(m0: f64, m1: f64, m2: f64, m4: f64, c_coeff: f64, m_ex
     for i in 0..n_bins {
         let s = (i as f64 + 0.5) * ds;
         let z = s / sigma_rms;
-        let pdf = (D1 / Q * (-z / Q).exp()
-            + D2 * z / (R * R) * (-z * z / (2.0 * R * R)).exp()
-            + D3 * z * (-z * z / 2.0).exp())
+        let pdf = (d1 / q * (-z / q).exp()
+            + d2 * z / (r * r) * (-z * z / (2.0 * r * r)).exp()
+            + d3 * z * (-z * z / 2.0).exp())
             / sigma_rms;
         integral += s.powf(m_exp) * pdf * ds;
     }
-    c_coeff * E_P * integral
+    c_coeff * e_p * integral
 }
 /// Standard normal CDF Φ(z) using the rational approximation (Abramowitz & Stegun 26.2.17).
-#[allow(dead_code)]
 pub(super) fn standard_normal_cdf(z: f64) -> f64 {
     let t = 1.0 / (1.0 + 0.2316419 * z.abs());
     let poly = t
@@ -605,7 +572,6 @@ pub(super) fn standard_normal_cdf(z: f64) -> f64 {
 /// Normal quantile function (inverse CDF) z = Φ⁻¹(p).
 ///
 /// Uses Beasley-Springer-Moro approximation for p ∈ (0, 1).
-#[allow(dead_code)]
 pub(super) fn normal_quantile(p: f64) -> f64 {
     let p_clamped = p.clamp(1e-12, 1.0 - 1e-12);
     let t = if p_clamped < 0.5 {
@@ -1622,7 +1588,6 @@ mod tests {
 /// Implements the ASTM E1049 four-point algorithm.  Returns a list of
 /// [`RainflowCycle`] structs with `count = 1.0` for full cycles and
 /// `count = 0.5` for residual half-cycles at the end.
-#[allow(dead_code)]
 pub fn rainflow_count(signal: &[f64]) -> Vec<RainflowCycle> {
     if signal.len() < 2 {
         return Vec::new();
@@ -1679,7 +1644,6 @@ pub fn rainflow_count(signal: &[f64]) -> Vec<RainflowCycle> {
 /// Compute Miner cumulative damage from a slice of (n_applied, N_failure) pairs.
 ///
 /// D = Σ n_i / N_fi
-#[allow(dead_code)]
 pub fn miners_rule_damage(blocks: &[(f64, f64)]) -> f64 {
     blocks
         .iter()
@@ -1687,14 +1651,12 @@ pub fn miners_rule_damage(blocks: &[(f64, f64)]) -> f64 {
         .sum()
 }
 /// True when Miner damage from given blocks reaches `d_crit`.
-#[allow(dead_code)]
 pub fn miners_rule_failed(blocks: &[(f64, f64)], d_crit: f64) -> bool {
     miners_rule_damage(blocks) >= d_crit
 }
 /// Remaining allowable cycles for a constant-amplitude block given existing damage.
 ///
 /// Returns `f64::INFINITY` when no additional damage can accumulate.
-#[allow(dead_code)]
 pub fn miners_rule_remaining(existing_damage: f64, n_f: f64, d_crit: f64) -> f64 {
     let remaining = (d_crit - existing_damage).max(0.0);
     remaining * n_f

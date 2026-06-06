@@ -8,8 +8,6 @@
 //! - VASP POSCAR/CONTCAR (stub)
 //! - XRD pattern simulation and analysis
 
-#![allow(dead_code)]
-
 use crate::{Error, Result};
 use std::collections::HashMap;
 

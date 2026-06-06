@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,9 +5,6 @@
 //!
 //! Provides vertex normal computation, Laplacian smoothing, edge collapse,
 //! Loop subdivision, decimation, AABB, surface area, volume, and vertex welding.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ── Mesh data structure ──────────────────────────────────────────────────────
 
@@ -433,12 +429,12 @@ pub fn gpu_weld_vertices(mesh: &mut GpuMesh, tol: f32) -> usize {
         if remap[i] != i {
             continue;
         }
-        for j in (i + 1)..nv {
-            if remap[j] != j {
+        for (j, remap_j) in remap.iter_mut().enumerate().skip(i + 1) {
+            if *remap_j != j {
                 continue;
             }
             if dist2_3f(mesh.vertices[i], mesh.vertices[j]).sqrt() < tol {
-                remap[j] = i;
+                *remap_j = i;
                 merged += 1;
             }
         }

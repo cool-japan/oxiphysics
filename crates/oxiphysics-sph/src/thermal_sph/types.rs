@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
 use crate::thermal_sph::types_ext::*;
 
 /// Adiabatic compression heating model.
@@ -255,7 +252,7 @@ impl ThermalSphSimulation {
             return;
         }
         let mut d_temps = vec![0.0f64; n];
-        for i in 0..n {
+        for (i, dt_i) in d_temps.iter_mut().enumerate().take(n) {
             let mut neighbors = Vec::new();
             let pos_i = self.particles[i].pos;
             let t_i = self.particles[i].temperature;
@@ -277,7 +274,7 @@ impl ThermalSphSimulation {
             }
             let alpha = self.particles[i].thermal_diffusivity();
             let hc = SphHeatConduction::new(alpha, h);
-            d_temps[i] = hc.dtemp_dt(t_i, &neighbors);
+            *dt_i = hc.dtemp_dt(t_i, &neighbors);
         }
         for (p, &dt_rate) in self.particles.iter_mut().zip(d_temps.iter()) {
             p.temperature += self.dt * dt_rate;
@@ -355,7 +352,6 @@ pub struct StefanProblemAnalytic {
 }
 impl StefanProblemAnalytic {
     /// Create a new Stefan problem analytic solver.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         t_wall: f64,
         t_melt: f64,
@@ -635,7 +631,6 @@ impl AnisotropicHeatConduction {
     /// Compute anisotropic heat conduction rate dT/dt at particle i.
     ///
     /// Uses: dT/dt = Σ_j (m_j/ρ_j) * (λ_ij · r_ij)/|r_ij|² * (T_i - T_j) * (∇W · r_ij)
-    #[allow(clippy::too_many_arguments)]
     pub fn dtemp_dt(&self, t_i: f64, rho_i: f64, neighbors: &[([f64; 3], f64, f64, f64)]) -> f64 {
         if rho_i < 1e-300 {
             return 0.0;
@@ -839,7 +834,6 @@ pub struct CastingSolidification {
 }
 impl CastingSolidification {
     /// Construct a casting solidification model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         t_melt: f64,
         t_liquidus: f64,

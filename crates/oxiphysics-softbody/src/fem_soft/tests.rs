@@ -3,8 +3,6 @@
 
 //! Tests for FEM soft body modules.
 
-#![allow(clippy::needless_range_loop)]
-
 use super::math_helpers::*;
 use super::*;
 
@@ -38,11 +36,8 @@ fn test_raw_element_zero_force_at_rest() {
     let pos = tet_positions();
     let elem = CorotationalElementRaw::new([0, 1, 2, 3], &pos, make_material());
     let forces = elem.compute_forces(&pos);
-    for k in 0..4 {
-        let mag = (forces[k][0] * forces[k][0]
-            + forces[k][1] * forces[k][1]
-            + forces[k][2] * forces[k][2])
-            .sqrt();
+    for (k, force) in forces.iter().enumerate() {
+        let mag = (force[0] * force[0] + force[1] * force[1] + force[2] * force[2]).sqrt();
         assert!(
             mag < 1e-8,
             "force on node {k} should be zero at rest, got {mag}"
@@ -108,13 +103,13 @@ fn test_compute_rotation_identity() {
     let pos = tet_positions();
     let r = CorotationalElementRaw::compute_rotation(&pos, &[0, 1, 2, 3]);
     // For the identity tet, rotation should be close to identity
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, row) in r.iter().enumerate() {
+        for (j, &val) in row.iter().enumerate() {
             let expected = if i == j { 1.0 } else { 0.0 };
             assert!(
-                (r[i][j] - expected).abs() < 0.1,
+                (val - expected).abs() < 0.1,
                 "R[{i}][{j}] = {} expected {expected}",
-                r[i][j]
+                val
             );
         }
     }
@@ -148,12 +143,12 @@ fn test_neohookean_identity_deformation() {
     let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     let p = mat.piola_kirchhoff(identity);
     // At identity deformation, stress should be zero
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, row) in p.iter().enumerate() {
+        for (j, &val) in row.iter().enumerate() {
             assert!(
-                p[i][j].abs() < 1e-10,
+                val.abs() < 1e-10,
                 "P[{i}][{j}] should be 0 at identity, got {}",
-                p[i][j]
+                val
             );
         }
     }
@@ -187,11 +182,8 @@ fn test_neohookean_element_rest_forces_zero() {
     let mat = NeoHookeanMaterial::from_young_poisson(1000.0, 0.3);
     let elem = NeoHookeanElement::new([0, 1, 2, 3], &pos, mat);
     let forces = elem.compute_forces(&pos);
-    for k in 0..4 {
-        let mag = (forces[k][0] * forces[k][0]
-            + forces[k][1] * forces[k][1]
-            + forces[k][2] * forces[k][2])
-            .sqrt();
+    for (k, force) in forces.iter().enumerate() {
+        let mag = (force[0] * force[0] + force[1] * force[1] + force[2] * force[2]).sqrt();
         assert!(
             mag < 1e-8,
             "Force on node {k} at rest should be zero, got {mag}"
@@ -309,9 +301,9 @@ fn test_von_mises_hydrostatic() {
 fn test_green_lagrange_identity() {
     let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     let e = green_lagrange_strain(identity);
-    for i in 0..3 {
-        for j in 0..3 {
-            assert!(e[i][j].abs() < 1e-14, "E[{i}][{j}] should be 0 at identity");
+    for (i, row) in e.iter().enumerate() {
+        for (j, &val) in row.iter().enumerate() {
+            assert!(val.abs() < 1e-14, "E[{i}][{j}] should be 0 at identity");
         }
     }
 }
@@ -331,9 +323,9 @@ fn test_cauchy_stress_at_identity() {
     let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     let p_zero = [[0.0; 3]; 3];
     let sigma = cauchy_stress(p_zero, identity);
-    for i in 0..3 {
-        for j in 0..3 {
-            assert!(sigma[i][j].abs() < 1e-14);
+    for row in &sigma {
+        for &val in row {
+            assert!(val.abs() < 1e-14);
         }
     }
 }
@@ -372,10 +364,10 @@ fn test_det3x3_identity() {
 fn test_inv3x3_identity() {
     let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     let inv = inv3x3(identity);
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, row) in inv.iter().enumerate() {
+        for (j, &val) in row.iter().enumerate() {
             let expected = if i == j { 1.0 } else { 0.0 };
-            assert!((inv[i][j] - expected).abs() < 1e-14);
+            assert!((val - expected).abs() < 1e-14);
         }
     }
 }
@@ -394,9 +386,9 @@ fn test_mul3x3_identity() {
     let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     let m = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
     let result = mul3x3(identity, m);
-    for i in 0..3 {
-        for j in 0..3 {
-            assert!((result[i][j] - m[i][j]).abs() < 1e-14);
+    for (i, row) in result.iter().enumerate() {
+        for (j, &val) in row.iter().enumerate() {
+            assert!((val - m[i][j]).abs() < 1e-14);
         }
     }
 }
@@ -438,12 +430,12 @@ fn test_corot_polar_decomp_of_rotation() {
     let rot = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
     let r = CorotFemTet::polar_decompose_rotation(rot);
     // Should recover the same rotation
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, row) in r.iter().enumerate() {
+        for (j, &val) in row.iter().enumerate() {
             assert!(
-                (r[i][j] - rot[i][j]).abs() < 1e-6,
+                (val - rot[i][j]).abs() < 1e-6,
                 "R[{i}][{j}]={} expected {}",
-                r[i][j],
+                val,
                 rot[i][j]
             );
         }
@@ -456,13 +448,13 @@ fn test_corot_deformation_gradient_identity_at_rest() {
     let tet = CorotFemTet::new([0, 1, 2, 3], &nodes);
     let f = tet.compute_deformation_gradient(&nodes);
     // At rest, F = I
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, row) in f.iter().enumerate() {
+        for (j, &val) in row.iter().enumerate() {
             let expected = if i == j { 1.0 } else { 0.0 };
             assert!(
-                (f[i][j] - expected).abs() < 1e-10,
+                (val - expected).abs() < 1e-10,
                 "F[{i}][{j}]={} expected {expected}",
-                f[i][j]
+                val
             );
         }
     }
@@ -473,11 +465,8 @@ fn test_corot_elastic_force_zero_at_rest() {
     let nodes = make_corot_nodes();
     let tet = CorotFemTet::new([0, 1, 2, 3], &nodes);
     let forces = tet.compute_elastic_forces(&nodes, 500.0, 300.0);
-    for k in 0..4 {
-        let mag = (forces[k][0] * forces[k][0]
-            + forces[k][1] * forces[k][1]
-            + forces[k][2] * forces[k][2])
-            .sqrt();
+    for (k, force) in forces.iter().enumerate() {
+        let mag = (force[0] * force[0] + force[1] * force[1] + force[2] * force[2]).sqrt();
         assert!(
             mag < 1e-8,
             "force at rest should be ~0 for node {k}, got {mag}"
@@ -495,16 +484,16 @@ fn test_corot_elastic_force_newton_third_law() {
     deformed[1].position = [2.0, 0.0, 0.0];
     let forces = tet.compute_elastic_forces(&deformed, 500.0, 300.0);
     let mut sum = [0.0f64; 3];
-    for k in 0..4 {
-        for d in 0..3 {
-            sum[d] += forces[k][d];
+    for force in &forces {
+        for (d, &fval) in force.iter().enumerate() {
+            sum[d] += fval;
         }
     }
-    for d in 0..3 {
+    for (d, &s) in sum.iter().enumerate() {
         assert!(
-            sum[d].abs() < 1e-8,
+            s.abs() < 1e-8,
             "force sum[{d}]={} should be 0 (Newton 3rd law)",
-            sum[d]
+            s
         );
     }
 }
@@ -560,10 +549,10 @@ fn test_corot_tet_alias_matches_corot_fem_tet() {
     let tet = CorotTet::new([0, 1, 2, 3], &nodes);
     let f = tet.compute_deformation_gradient(&nodes);
     // At rest, F should be identity
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, row) in f.iter().enumerate() {
+        for (j, &val) in row.iter().enumerate() {
             let expected = if i == j { 1.0 } else { 0.0 };
-            assert!((f[i][j] - expected).abs() < 1e-10);
+            assert!((val - expected).abs() < 1e-10);
         }
     }
 }
@@ -577,11 +566,11 @@ fn test_newmark_beta_rest_no_motion() {
     let initial_positions: Vec<[f64; 3]> = sim.nodes.iter().map(|n| n.position).collect();
     sim.step();
     for (i, n) in sim.nodes.iter().enumerate() {
-        for d in 0..3 {
+        for (d, &pos_d) in n.position.iter().enumerate() {
             assert!(
-                (n.position[d] - initial_positions[i][d]).abs() < 1e-10,
+                (pos_d - initial_positions[i][d]).abs() < 1e-10,
                 "node {i} dim {d} should not move: {} vs {}",
-                n.position[d],
+                pos_d,
                 initial_positions[i][d]
             );
         }
@@ -637,9 +626,9 @@ fn test_newmark_beta_boundary_pinned_nodes_no_move() {
     sim.pinned[0] = true;
     let pos0 = sim.nodes[0].position;
     sim.step();
-    for d in 0..3 {
+    for (d, &p0) in pos0.iter().enumerate() {
         assert!(
-            (sim.nodes[0].position[d] - pos0[d]).abs() < 1e-14,
+            (sim.nodes[0].position[d] - p0).abs() < 1e-14,
             "pinned node 0 should not move in dim {d}"
         );
     }
@@ -677,12 +666,12 @@ fn test_corot_tet_polar_decomp_pure_rotation_z90() {
     // 90° rotation about Z: [[0,-1,0],[1,0,0],[0,0,1]]
     let rot = [[0.0_f64, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
     let r = CorotFemTet::polar_decompose_rotation(rot);
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, row) in r.iter().enumerate() {
+        for (j, &val) in row.iter().enumerate() {
             assert!(
-                (r[i][j] - rot[i][j]).abs() < 1e-6,
+                (val - rot[i][j]).abs() < 1e-6,
                 "R[{i}][{j}] = {} expected {}",
-                r[i][j],
+                val,
                 rot[i][j]
             );
         }
@@ -712,19 +701,18 @@ fn unit_tet_positions() -> Vec<[f64; 3]> {
 }
 
 #[test]
-#[allow(non_snake_case)]
 fn test_corot_tet_new_fields() {
     let pos = unit_tet_positions();
     let tet = CorotationalTet::new([0, 1, 2, 3], &pos);
     assert!(
-        (tet.V0 - 1.0 / 6.0).abs() < 1e-12,
+        (tet.v0 - 1.0 / 6.0).abs() < 1e-12,
         "rest volume should be 1/6, got {}",
-        tet.V0
+        tet.v0
     );
-    // Dm columns should be the edge vectors
+    // dm columns should be the edge vectors
     let e1 = [1.0, 0.0, 0.0];
-    for d in 0..3 {
-        assert!((tet.Dm[d][0] - e1[d]).abs() < 1e-12, "Dm[:,0] should be e1");
+    for (d, &e1d) in e1.iter().enumerate() {
+        assert!((tet.dm[d][0] - e1d).abs() < 1e-12, "dm[:,0] should be e1");
     }
 }
 
@@ -733,13 +721,13 @@ fn test_corot_tet_deformation_gradient_identity() {
     let pos = unit_tet_positions();
     let tet = CorotationalTet::new([0, 1, 2, 3], &pos);
     let f = tet.compute_deformation_gradient(&pos);
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, row) in f.iter().enumerate() {
+        for (j, &val) in row.iter().enumerate() {
             let expected = if i == j { 1.0 } else { 0.0 };
             assert!(
-                (f[i][j] - expected).abs() < 1e-10,
+                (val - expected).abs() < 1e-10,
                 "F[{i}][{j}] should be I at rest, got {}",
-                f[i][j]
+                val
             );
         }
     }
@@ -750,11 +738,11 @@ fn test_corot_tet_polar_decompose_identity() {
     let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     let (r, s) = CorotationalTet::polar_decompose(&identity);
     // R should be identity, S should be identity
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, (rrow, srow)) in r.iter().zip(s.iter()).enumerate() {
+        for (j, (&rv, &sv)) in rrow.iter().zip(srow.iter()).enumerate() {
             let expected = if i == j { 1.0 } else { 0.0 };
-            assert!((r[i][j] - expected).abs() < 1e-6, "R[{i}][{j}] should be I");
-            assert!((s[i][j] - expected).abs() < 1e-6, "S[{i}][{j}] should be I");
+            assert!((rv - expected).abs() < 1e-6, "R[{i}][{j}] should be I");
+            assert!((sv - expected).abs() < 1e-6, "S[{i}][{j}] should be I");
         }
     }
 }
@@ -764,11 +752,8 @@ fn test_corot_tet_elastic_forces_zero_at_rest() {
     let pos = unit_tet_positions();
     let tet = CorotationalTet::new([0, 1, 2, 3], &pos);
     let forces = tet.elastic_forces(&pos, 384.6, 576.9);
-    for k in 0..4 {
-        let mag = (forces[k][0] * forces[k][0]
-            + forces[k][1] * forces[k][1]
-            + forces[k][2] * forces[k][2])
-            .sqrt();
+    for (k, force) in forces.iter().enumerate() {
+        let mag = (force[0] * force[0] + force[1] * force[1] + force[2] * force[2]).sqrt();
         assert!(
             mag < 1e-8,
             "elastic force at rest should be ~0 for node {k}, got {mag}"
@@ -800,16 +785,16 @@ fn test_corot_tet_elastic_forces_newton_third_law() {
     stretched[1] = [1.5, 0.0, 0.0];
     let forces = tet.elastic_forces(&stretched, 384.6, 576.9);
     let mut sum = [0.0f64; 3];
-    for k in 0..4 {
-        for d in 0..3 {
-            sum[d] += forces[k][d];
+    for force in &forces {
+        for (d, &fval) in force.iter().enumerate() {
+            sum[d] += fval;
         }
     }
-    for d in 0..3 {
+    for (d, &s) in sum.iter().enumerate() {
         assert!(
-            sum[d].abs() < 1e-8,
+            s.abs() < 1e-8,
             "force sum[{d}]={} should be 0 (Newton 3rd law)",
-            sum[d]
+            s
         );
     }
 }
@@ -971,12 +956,9 @@ mod fem_verlet_tests {
         let forces = vec![[1.0, 0.0, 0.0]; 4];
         let accels = lm.apply_inv(&forces);
         // All accelerations should be inv_mass * 1.0
-        for i in 0..4 {
+        for (i, accel) in accels.iter().enumerate() {
             let expected = lm.inv_mass(i);
-            assert!(
-                (accels[i][0] - expected).abs() < 1e-10,
-                "accel[{i}] mismatch"
-            );
+            assert!((accel[0] - expected).abs() < 1e-10, "accel[{i}] mismatch");
         }
     }
 
@@ -1013,10 +995,10 @@ mod fem_verlet_tests {
         let masses = vec![1.0_f64; 4];
         let orig = forces.clone();
         rd.apply(&mut forces, &velocities, &masses);
-        for i in 0..4 {
-            for d in 0..3 {
+        for (force, orig_force) in forces.iter().zip(orig.iter()) {
+            for (&fval, &oval) in force.iter().zip(orig_force.iter()) {
                 assert!(
-                    (forces[i][d] - orig[i][d]).abs() < 1e-15,
+                    (fval - oval).abs() < 1e-15,
                     "zero damping should not change forces"
                 );
             }
@@ -1140,11 +1122,8 @@ mod fem_verlet_tests {
             &pinned,
         );
         // Pinned node 0 should not move
-        for d in 0..3 {
-            assert!(
-                positions[0][d].abs() < 1e-15,
-                "pinned node should not move in dim {d}"
-            );
+        for (d, &p) in positions[0].iter().enumerate() {
+            assert!(p.abs() < 1e-15, "pinned node should not move in dim {d}");
         }
     }
 
@@ -1166,11 +1145,8 @@ mod fem_verlet_tests {
 
         // Other nodes untouched
         for i in [0usize, 1, 3] {
-            for d in 0..3 {
-                assert!(
-                    (velocities[i][d] - 1.0).abs() < 1e-15,
-                    "node {i} vel should be 1"
-                );
+            for &v in &velocities[i] {
+                assert!((v - 1.0).abs() < 1e-15, "node {i} vel should be 1");
             }
         }
     }
@@ -1224,11 +1200,8 @@ mod fem_verlet_tests {
         let pos = unit_tet_pos();
         let elem = CorotFemElement4::new([0, 1, 2, 3], &pos, 1000.0, 0.3);
         let forces = elem.elastic_forces(&pos);
-        for k in 0..4 {
-            let mag = (forces[k][0] * forces[k][0]
-                + forces[k][1] * forces[k][1]
-                + forces[k][2] * forces[k][2])
-                .sqrt();
+        for (k, force) in forces.iter().enumerate() {
+            let mag = (force[0] * force[0] + force[1] * force[1] + force[2] * force[2]).sqrt();
             assert!(
                 mag < 1e-8,
                 "elastic force at rest should be ~0 for node {k}, got {mag}"
@@ -1261,16 +1234,16 @@ mod fem_verlet_tests {
         stretched[1] = [1.5, 0.0, 0.0];
         let forces = elem.elastic_forces(&stretched);
         let mut sum = [0.0_f64; 3];
-        for k in 0..4 {
-            for d in 0..3 {
-                sum[d] += forces[k][d];
+        for force in &forces {
+            for (d, &fval) in force.iter().enumerate() {
+                sum[d] += fval;
             }
         }
-        for d in 0..3 {
+        for (d, &s) in sum.iter().enumerate() {
             assert!(
-                sum[d].abs() < 1e-8,
+                s.abs() < 1e-8,
                 "Newton 3rd law: force sum[{d}] = {} should be 0",
-                sum[d]
+                s
             );
         }
     }
@@ -1352,9 +1325,9 @@ mod fem_verlet_tests {
         for _ in 0..10 {
             body.step();
         }
-        for d in 0..3 {
+        for (d, &p0) in pos0_before.iter().enumerate() {
             assert!(
-                (body.positions[0][d] - pos0_before[d]).abs() < 1e-14,
+                (body.positions[0][d] - p0).abs() < 1e-14,
                 "pinned node 0 should not move in dim {d}"
             );
         }
@@ -1400,11 +1373,8 @@ mod fem_verlet_tests {
         let pos = unit_tet_pos();
         let elem = CorotFemElement4::new([0, 1, 2, 3], &pos, 1000.0, 0.3);
         let forces = assemble_internal_forces(&pos, &[elem]);
-        for i in 0..4 {
-            let mag = (forces[i][0] * forces[i][0]
-                + forces[i][1] * forces[i][1]
-                + forces[i][2] * forces[i][2])
-                .sqrt();
+        for (i, force) in forces.iter().enumerate() {
+            let mag = (force[0] * force[0] + force[1] * force[1] + force[2] * force[2]).sqrt();
             assert!(
                 mag < 1e-8,
                 "internal force at rest should be ~0 for node {i}, got {mag}"
@@ -1421,15 +1391,15 @@ mod fem_verlet_tests {
         let forces = assemble_internal_forces(&stretched, &[elem]);
         let mut sum = [0.0_f64; 3];
         for f in &forces {
-            for d in 0..3 {
-                sum[d] += f[d];
+            for (d, &fval) in f.iter().enumerate() {
+                sum[d] += fval;
             }
         }
-        for d in 0..3 {
+        for (d, &s) in sum.iter().enumerate() {
             assert!(
-                sum[d].abs() < 1e-8,
+                s.abs() < 1e-8,
                 "internal force sum[{d}] = {} should be 0",
-                sum[d]
+                s
             );
         }
     }

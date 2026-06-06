@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 #[cfg(test)]
 use super::types::*;
 
@@ -169,8 +168,8 @@ mod tests {
         let kernel = SkinningKernel::new(SkinningMode::LinearBlend, 1);
         let v = DeformableVertex::new([1.0, 2.0, 3.0]);
         let result = kernel.apply_lbs(&v);
-        for k in 0..3 {
-            assert!((result[k] - v.rest_position[k]).abs() < 1e-10);
+        for (result_val, rest_val) in result.iter().zip(v.rest_position.iter()) {
+            assert!((result_val - rest_val).abs() < 1e-10);
         }
     }
     #[test]
@@ -178,8 +177,8 @@ mod tests {
         let kernel = SkinningKernel::new(SkinningMode::DualQuaternion, 1);
         let v = DeformableVertex::new([1.0, 2.0, 3.0]);
         let result = kernel.apply_dqs(&v);
-        for k in 0..3 {
-            assert!((result[k] - v.rest_position[k]).abs() < 1e-9, "k={k}");
+        for (k, (result_val, rest_val)) in result.iter().zip(v.rest_position.iter()).enumerate() {
+            assert!((result_val - rest_val).abs() < 1e-9, "k={k}");
         }
     }
     #[test]

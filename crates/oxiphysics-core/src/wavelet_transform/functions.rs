@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
 use super::types::{
@@ -411,8 +410,8 @@ pub fn icwt(cwt_result: &CwtResult, dt: f64) -> Vec<f64> {
     let c_psi = 1.0;
     for (si, &scale) in cwt_result.scales.iter().enumerate() {
         let norm = 1.0 / (scale * scale);
-        for b in 0..n {
-            signal[b] += cwt_result.coefficients[si][b] * norm * dt;
+        for (sv, &coeff) in signal.iter_mut().zip(cwt_result.coefficients[si].iter()) {
+            *sv += coeff * norm * dt;
         }
     }
     let dj = if cwt_result.scales.len() > 1 {
@@ -505,7 +504,6 @@ pub fn estimate_noise_sigma(detail_coeffs: &[f64]) -> f64 {
 /// * `levels` - Number of decomposition levels.
 /// * `mode` - Thresholding mode (hard or soft).
 /// * `threshold` - Optional threshold value. If `None`, uses universal threshold.
-#[allow(clippy::too_many_arguments)]
 pub fn wavelet_denoise(
     signal: &[f64],
     wavelet: WaveletFamily,
@@ -609,10 +607,18 @@ pub fn swt(signal: &[f64], wavelet: WaveletFamily, levels: usize) -> SwtDecompos
 pub fn wavelet_cross_spectrum(cwt_x: &CwtResult, cwt_y: &CwtResult) -> Vec<Vec<f64>> {
     let n_scales = cwt_x.scales.len().min(cwt_y.scales.len());
     let mut cross = Vec::with_capacity(n_scales);
-    for s in 0..n_scales {
-        let n_time = cwt_x.coefficients[s].len().min(cwt_y.coefficients[s].len());
-        let row: Vec<f64> = (0..n_time)
-            .map(|t| cwt_x.coefficients[s][t] * cwt_y.coefficients[s][t])
+    for (cx_row, cy_row) in cwt_x
+        .coefficients
+        .iter()
+        .zip(cwt_y.coefficients.iter())
+        .take(n_scales)
+    {
+        let n_time = cx_row.len().min(cy_row.len());
+        let row: Vec<f64> = cx_row
+            .iter()
+            .zip(cy_row.iter())
+            .take(n_time)
+            .map(|(cx, cy)| cx * cy)
             .collect();
         cross.push(row);
     }
@@ -627,8 +633,12 @@ pub fn wavelet_coherence(cwt_x: &CwtResult, cwt_y: &CwtResult, smoothing: usize)
     let scalo_y = scalogram(cwt_y);
     let n_scales = cross.len();
     let mut coherence = Vec::with_capacity(n_scales);
-    for s in 0..n_scales {
-        let n_time = cross[s].len();
+    for ((cross_row, energy_x), energy_y) in cross
+        .iter()
+        .zip(scalo_x.energy.iter())
+        .zip(scalo_y.energy.iter())
+    {
+        let n_time = cross_row.len();
         let mut coh_row = Vec::with_capacity(n_time);
         for t in 0..n_time {
             let lo = t.saturating_sub(smoothing);
@@ -637,9 +647,9 @@ pub fn wavelet_coherence(cwt_x: &CwtResult, cwt_y: &CwtResult, smoothing: usize)
             let mut sum_xx = 0.0;
             let mut sum_yy = 0.0;
             for k in lo..hi_t {
-                sum_cross += cross[s][k];
-                sum_xx += scalo_x.energy[s][k];
-                sum_yy += scalo_y.energy[s][k];
+                sum_cross += cross_row[k];
+                sum_xx += energy_x[k];
+                sum_yy += energy_y[k];
             }
             let denom = (sum_xx * sum_yy).sqrt();
             let c = if denom > 1e-30 {

@@ -2,10 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::too_many_arguments)]
 use std::f64::consts::PI;
 
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// A sphere primitive representing one atom in ball-and-stick mode.

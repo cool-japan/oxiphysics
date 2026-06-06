@@ -6,9 +6,6 @@
 //! Exposes a JSON-oriented surface around `NavMesh`, `Path`, and obstacle
 //! types suitable for use across the WASM boundary.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -19,11 +16,6 @@ use crate::wasm_helpers::{err_to_jsvalue, flatten_vec3s, to_js_value};
 // ---------------------------------------------------------------------------
 // Math helpers
 // ---------------------------------------------------------------------------
-
-#[inline]
-fn dot2(a: [f64; 2], b: [f64; 2]) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
-}
 
 #[inline]
 fn sub2(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {

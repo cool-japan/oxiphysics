@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,8 +5,6 @@
 //!
 //! Provides simplicial complexes, filtered complexes, persistence diagrams,
 //! Vietoris-Rips filtration, persistence images, and barcode statistics.
-
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 
@@ -561,17 +558,17 @@ impl PersistenceImage {
         for (bx, py) in &pts {
             // Ramp weight: persistence / max_persistence
             let weight = py / pers_range;
-            for row in 0..n_rows {
+            for (row, pixel_row) in pixels.iter_mut().enumerate() {
                 // row 0 = high persistence
                 let p_grid =
                     pers_range * (n_rows - 1 - row) as f64 / (n_rows as f64 - 1.0).max(1.0);
-                for col in 0..n_cols {
+                for (col, pixel) in pixel_row.iter_mut().enumerate() {
                     let b_grid =
                         birth_min + birth_range * col as f64 / (n_cols as f64 - 1.0).max(1.0);
                     let db = bx - b_grid;
                     let dp = py - p_grid;
                     let gauss = (-(db * db + dp * dp) / two_sigma_sq).exp();
-                    pixels[row][col] += weight * gauss;
+                    *pixel += weight * gauss;
                 }
             }
         }

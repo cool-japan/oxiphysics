@@ -4,8 +4,6 @@
 
 use std::collections::{HashMap, VecDeque};
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{chunk_from_bytes, chunk_to_bytes, delta_decode, delta_encode, fnv1a_hash};
 
 /// Run-length encoder/decoder for byte streams (trajectory data).

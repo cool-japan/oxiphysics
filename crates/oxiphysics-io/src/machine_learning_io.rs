@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -23,7 +22,6 @@ use std::collections::HashMap;
 // ---------------------------------------------------------------------------
 
 /// A multi-dimensional tensor stored as a flat `Vec`f64`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tensor {
     /// Shape of the tensor (row-major).
@@ -154,7 +152,6 @@ impl Tensor {
 // ---------------------------------------------------------------------------
 
 /// A single dense (fully connected) layer with weights and biases.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DenseLayer {
     /// Layer name.
@@ -188,12 +185,16 @@ impl DenseLayer {
         let in_feat = input.len();
         let out_feat = self.bias.data.len();
         let mut out = vec![0.0f64; out_feat];
-        for i in 0..out_feat {
-            let mut acc = self.bias.data[i];
-            for j in 0..in_feat.min(self.weights.data.len() / out_feat) {
-                acc += self.weights.data[i * in_feat + j] * input[j];
+        for (i, (o, &b)) in out.iter_mut().zip(self.bias.data.iter()).enumerate() {
+            let mut acc = b;
+            let cols = in_feat.min(self.weights.data.len() / out_feat);
+            for (w, &x) in self.weights.data[i * in_feat..i * in_feat + cols]
+                .iter()
+                .zip(input[..cols].iter())
+            {
+                acc += w * x;
             }
-            out[i] = apply_activation(acc, &self.activation);
+            *o = apply_activation(acc, &self.activation);
         }
         out
     }
@@ -223,7 +224,6 @@ impl DenseLayer {
 }
 
 /// Apply a named activation function to a scalar.
-#[allow(dead_code)]
 pub fn apply_activation(x: f64, activation: &str) -> f64 {
     match activation {
         "relu" => x.max(0.0),
@@ -253,7 +253,6 @@ pub fn apply_activation(x: f64, activation: &str) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// A collection of named dense layers (binary-serialisable model weights).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ModelWeights {
     /// Layers in order.
@@ -301,7 +300,6 @@ impl ModelWeights {
 // ---------------------------------------------------------------------------
 
 /// PyTorch-like state dict: a `HashMap<String, Tensor>`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct StateDict {
     /// The underlying key-value store.
@@ -399,7 +397,6 @@ fn read_u64(bytes: &[u8], pos: &mut usize) -> Option<u64> {
 // ---------------------------------------------------------------------------
 
 /// A single operation node in an ONNX-like compute graph.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OnnxNode {
     /// Unique node name.
@@ -439,7 +436,6 @@ impl OnnxNode {
 }
 
 /// A simplified ONNX-like computation graph.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct OnnxLikeGraph {
     /// Ordered list of operation nodes.
@@ -514,7 +510,6 @@ impl OnnxLikeGraph {
 // ---------------------------------------------------------------------------
 
 /// A dataset row: a feature vector and an optional label index.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DataRow {
     /// Feature values.
@@ -542,7 +537,6 @@ impl DataRow {
 }
 
 /// A dataset with optional train/validation split.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct Dataset {
     /// All rows.
@@ -655,7 +649,6 @@ impl Dataset {
 // ---------------------------------------------------------------------------
 
 /// A minimal linear congruential generator used for dataset shuffling.
-#[allow(dead_code)]
 struct LcgRng {
     state: u64,
 }
@@ -689,7 +682,6 @@ impl LcgRng {
 // ---------------------------------------------------------------------------
 
 /// Stored feature normalization parameters (mean and std for z-score normalization).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NormalizationParams {
     /// Per-feature mean.
@@ -796,7 +788,6 @@ impl NormalizationParams {
 // ---------------------------------------------------------------------------
 
 /// Encodes class labels as integers and decodes them back.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct LabelEncoder {
     /// Class names in order (index 0 = first class).
@@ -859,7 +850,6 @@ impl LabelEncoder {
 // ---------------------------------------------------------------------------
 
 /// Confusion matrix for multi-class classification.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConfusionMatrix {
     /// Number of classes.
@@ -962,7 +952,6 @@ impl ConfusionMatrix {
 // ---------------------------------------------------------------------------
 
 /// Per-epoch metrics.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EpochRecord {
     /// Epoch number (0-indexed).
@@ -980,7 +969,6 @@ pub struct EpochRecord {
 }
 
 /// Full training history for a model.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct TrainingHistory {
     /// Records, one per epoch.
@@ -1049,7 +1037,6 @@ impl TrainingHistory {
 // ---------------------------------------------------------------------------
 
 /// Typed hyperparameter value.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum HpValue {
     /// Floating point (also covers int values stored as f64).
@@ -1090,7 +1077,6 @@ impl HpValue {
 }
 
 /// Hyperparameter configuration container.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct HyperparamConfig {
     /// Key-value map.
@@ -1157,7 +1143,6 @@ impl HyperparamConfig {
 // ---------------------------------------------------------------------------
 
 /// Metadata stored alongside a model checkpoint.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CheckpointMeta {
     /// Epoch at which the checkpoint was saved.
@@ -1190,7 +1175,6 @@ impl CheckpointMeta {
 }
 
 /// A model checkpoint: state dict + metadata + hyperparameters.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ModelCheckpoint {
     /// Model weights.
@@ -1241,7 +1225,6 @@ impl ModelCheckpoint {
 // ---------------------------------------------------------------------------
 
 /// Compute softmax of a slice.
-#[allow(dead_code)]
 pub fn softmax(logits: &[f64]) -> Vec<f64> {
     if logits.is_empty() {
         return vec![];
@@ -1257,7 +1240,6 @@ pub fn softmax(logits: &[f64]) -> Vec<f64> {
 }
 
 /// Compute cross-entropy loss between `probs` and one-hot `targets`.
-#[allow(dead_code)]
 pub fn cross_entropy_loss(probs: &[f64], targets: &[f64]) -> f64 {
     probs
         .iter()
@@ -1267,7 +1249,6 @@ pub fn cross_entropy_loss(probs: &[f64], targets: &[f64]) -> f64 {
 }
 
 /// Argmax: index of the maximum value.
-#[allow(dead_code)]
 pub fn argmax(values: &[f64]) -> usize {
     values
         .iter()
@@ -1278,7 +1259,6 @@ pub fn argmax(values: &[f64]) -> usize {
 }
 
 /// Compute mean squared error.
-#[allow(dead_code)]
 pub fn mse(predictions: &[f64], targets: &[f64]) -> f64 {
     if predictions.is_empty() {
         return 0.0;
@@ -1296,7 +1276,6 @@ pub fn mse(predictions: &[f64], targets: &[f64]) -> f64 {
 }
 
 /// Compute mean absolute error.
-#[allow(dead_code)]
 pub fn mae(predictions: &[f64], targets: &[f64]) -> f64 {
     if predictions.is_empty() {
         return 0.0;

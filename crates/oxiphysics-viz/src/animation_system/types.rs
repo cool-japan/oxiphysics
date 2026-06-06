@@ -2,15 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::collections::HashMap;
 
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{Mat4, Quat, Vec3};
 
 /// LOD (level-of-detail) level for animation.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AnimLod {
     /// Full quality: all bones, full keyframes.
@@ -23,7 +20,6 @@ pub enum AnimLod {
     Disabled,
 }
 /// Interpolation mode for a keyframe segment.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InterpMode {
     /// Step (hold previous value until next key).
@@ -36,7 +32,6 @@ pub enum InterpMode {
     Bezier,
 }
 /// High-level animator combining a clip library, state machine, skeleton, and LOD.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Animator {
     /// Registered clips by name.
@@ -54,7 +49,6 @@ pub struct Animator {
 }
 impl Animator {
     /// Create an animator from a skeleton.
-    #[allow(dead_code)]
     pub fn new(skeleton: Skeleton) -> Self {
         let n = skeleton.bones.len();
         let ident = identity_mat4();
@@ -68,12 +62,10 @@ impl Animator {
         }
     }
     /// Register a clip.
-    #[allow(dead_code)]
     pub fn add_clip(&mut self, clip: AnimationClip) {
         self.clips.insert(clip.name.clone(), clip);
     }
     /// Advance the animation by `dt` seconds and recompute bone matrices.
-    #[allow(dead_code)]
     pub fn update(&mut self, dt: f64) {
         let clips_snapshot = self.clips.clone();
         self.state_machine.update(dt, &clips_snapshot);
@@ -89,13 +81,11 @@ impl Animator {
             .compute_skinning_matrices(&self.local_matrices);
     }
     /// Fire a state-machine trigger.
-    #[allow(dead_code)]
     pub fn fire_trigger(&mut self, trigger: &str) {
         self.state_machine.fire_trigger(trigger);
     }
 }
 /// A single Vec3 keyframe.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Vec3Key {
     /// Time of the key (seconds).
@@ -111,7 +101,6 @@ pub struct Vec3Key {
 }
 impl Vec3Key {
     /// Construct a linear Vec3 keyframe.
-    #[allow(dead_code)]
     pub fn linear(time: f64, value: Vec3) -> Self {
         Self {
             time,
@@ -123,7 +112,6 @@ impl Vec3Key {
     }
 }
 /// A node in a blend tree.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum BlendNode {
     /// Leaf: play a single clip.
@@ -151,7 +139,6 @@ pub enum BlendNode {
 impl BlendNode {
     /// Evaluate this blend node against a clip library.
     /// Returns a map of node_id → Mat4.
-    #[allow(dead_code)]
     pub fn evaluate(&self, clips: &HashMap<String, AnimationClip>) -> HashMap<u32, Mat4> {
         match self {
             Self::Clip { clip_name, time } => {
@@ -190,7 +177,6 @@ impl BlendNode {
     }
 }
 /// A single motion-capture frame: per-bone rotation quaternions.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MocapFrame {
     /// Frame timestamp in seconds.
@@ -202,7 +188,6 @@ pub struct MocapFrame {
 }
 impl MocapFrame {
     /// Create a new empty frame.
-    #[allow(dead_code)]
     pub fn new(time: f64, root_position: Vec3) -> Self {
         Self {
             time,
@@ -211,13 +196,11 @@ impl MocapFrame {
         }
     }
     /// Set bone rotation.
-    #[allow(dead_code)]
     pub fn set_bone(&mut self, bone_id: u32, rotation: Quat) {
         self.bone_rotations.insert(bone_id, rotation);
     }
 }
 /// Animation LOD manager: tracks per-entity LOD.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct AnimLodManager {
     /// Entity ID → current LOD level.
@@ -225,22 +208,18 @@ pub struct AnimLodManager {
 }
 impl AnimLodManager {
     /// Create a new manager.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
     /// Update the LOD for an entity given its camera distance.
-    #[allow(dead_code)]
     pub fn update_entity(&mut self, entity_id: u32, distance: f64) {
         self.lods.insert(entity_id, lod_for_distance(distance));
     }
     /// Get the LOD for an entity (default: Full).
-    #[allow(dead_code)]
     pub fn get_lod(&self, entity_id: u32) -> AnimLod {
         self.lods.get(&entity_id).copied().unwrap_or(AnimLod::Full)
     }
     /// Return the update rate multiplier (how often to update) for a given LOD.
-    #[allow(dead_code)]
     pub fn update_rate(lod: AnimLod) -> f64 {
         match lod {
             AnimLod::Full => 1.0,
@@ -251,7 +230,6 @@ impl AnimLodManager {
     }
 }
 /// A sorted sequence of Vec3 keyframes forming an animation curve.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct Vec3Curve {
     /// Keyframes sorted by time.
@@ -259,12 +237,10 @@ pub struct Vec3Curve {
 }
 impl Vec3Curve {
     /// Create an empty curve.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
     /// Append a keyframe.
-    #[allow(dead_code)]
     pub fn push_key(&mut self, key: Vec3Key) {
         self.keys.push(key);
         self.keys.sort_by(|a, b| {
@@ -274,7 +250,6 @@ impl Vec3Curve {
         });
     }
     /// Evaluate the curve at time `t`.
-    #[allow(dead_code)]
     pub fn sample(&self, t: f64) -> Vec3 {
         let n = self.keys.len();
         if n == 0 {
@@ -302,8 +277,8 @@ impl Vec3Curve {
             InterpMode::Linear => vec3_lerp(ki.value, kj.value, raw_t),
             InterpMode::Hermite => {
                 let mut out = [0.0; 3];
-                for d in 0..3 {
-                    out[d] = cubic_hermite(
+                for (d, o) in out.iter_mut().enumerate() {
+                    *o = cubic_hermite(
                         ki.value[d],
                         ki.out_tangent[d] * dt,
                         kj.value[d],
@@ -318,7 +293,6 @@ impl Vec3Curve {
     }
 }
 /// A motion-capture sequence consisting of ordered frames.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct MocapSequence {
     /// Ordered frames.
@@ -330,7 +304,6 @@ pub struct MocapSequence {
 }
 impl MocapSequence {
     /// Create a new empty sequence.
-    #[allow(dead_code)]
     pub fn new(fps: f64, looping: bool) -> Self {
         Self {
             frames: Vec::new(),
@@ -339,17 +312,14 @@ impl MocapSequence {
         }
     }
     /// Append a frame.
-    #[allow(dead_code)]
     pub fn push_frame(&mut self, frame: MocapFrame) {
         self.frames.push(frame);
     }
     /// Duration in seconds.
-    #[allow(dead_code)]
     pub fn duration(&self) -> f64 {
         self.frames.last().map(|f| f.time).unwrap_or(0.0)
     }
     /// Sample the sequence at time `t` with SLERP between adjacent frames.
-    #[allow(dead_code)]
     pub fn sample(&self, t: f64) -> Option<MocapFrame> {
         let n = self.frames.len();
         if n == 0 {
@@ -403,7 +373,6 @@ impl MocapSequence {
     }
 }
 /// Easing function type.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Easing {
     /// Linear (no easing).
@@ -436,7 +405,6 @@ pub enum Easing {
     EaseOutBounce,
 }
 /// A single bone in a skeletal hierarchy.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Bone {
     /// Unique bone identifier.
@@ -452,7 +420,6 @@ pub struct Bone {
 }
 impl Bone {
     /// Create a root bone with identity matrices.
-    #[allow(dead_code)]
     pub fn root(id: u32, name: impl Into<String>) -> Self {
         let identity = [
             1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
@@ -467,7 +434,6 @@ impl Bone {
     }
 }
 /// A skeleton: an ordered list of bones forming a hierarchy.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct Skeleton {
     /// All bones (index = position in array; id may differ).
@@ -475,25 +441,21 @@ pub struct Skeleton {
 }
 impl Skeleton {
     /// Create an empty skeleton.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
     /// Add a bone.
-    #[allow(dead_code)]
     pub fn add_bone(&mut self, bone: Bone) -> usize {
         let idx = self.bones.len();
         self.bones.push(bone);
         idx
     }
     /// Find a bone by name.
-    #[allow(dead_code)]
     pub fn find_bone(&self, name: &str) -> Option<&Bone> {
         self.bones.iter().find(|b| b.name == name)
     }
     /// Compute world-space matrices from an array of local-space matrices.
     /// `local_mats` must be indexed by bone position (same ordering as `self.bones`).
-    #[allow(dead_code)]
     pub fn compute_world_matrices(&self, local_mats: &[Mat4]) -> Vec<Mat4> {
         let n = self.bones.len();
         let mut world = vec![[0.0_f64; 16]; n];
@@ -520,7 +482,6 @@ impl Skeleton {
         world
     }
     /// Compute final skinning matrices: world * inverse_bind_pose.
-    #[allow(dead_code)]
     pub fn compute_skinning_matrices(&self, local_mats: &[Mat4]) -> Vec<Mat4> {
         let world = self.compute_world_matrices(local_mats);
         world
@@ -531,7 +492,6 @@ impl Skeleton {
     }
 }
 /// A joint in an IK chain.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct IkJoint {
     /// Current position in world space.
@@ -543,7 +503,6 @@ pub struct IkJoint {
 }
 impl IkJoint {
     /// Create a new IK joint.
-    #[allow(dead_code)]
     pub fn new(position: Vec3) -> Self {
         Self {
             position,
@@ -553,7 +512,6 @@ impl IkJoint {
     }
 }
 /// A sorted sequence of scalar keyframes forming an animation curve.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ScalarCurve {
     /// Keyframes sorted by time.
@@ -563,12 +521,10 @@ pub struct ScalarCurve {
 }
 impl ScalarCurve {
     /// Create an empty curve.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
     /// Append a keyframe and keep the list sorted.
-    #[allow(dead_code)]
     pub fn push_key(&mut self, key: ScalarKey) {
         self.keys.push(key);
         self.keys.sort_by(|a, b| {
@@ -578,7 +534,6 @@ impl ScalarCurve {
         });
     }
     /// Evaluate the curve at time `t`.
-    #[allow(dead_code)]
     pub fn sample(&self, t: f64) -> f64 {
         let n = self.keys.len();
         if n == 0 {
@@ -624,7 +579,6 @@ impl ScalarCurve {
     }
 }
 /// A sorted sequence of quaternion keyframes.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct QuatCurve {
     /// Keyframes sorted by time.
@@ -632,12 +586,10 @@ pub struct QuatCurve {
 }
 impl QuatCurve {
     /// Create an empty curve.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
     /// Append a keyframe.
-    #[allow(dead_code)]
     pub fn push_key(&mut self, key: QuatKey) {
         self.keys.push(key);
         self.keys.sort_by(|a, b| {
@@ -647,7 +599,6 @@ impl QuatCurve {
         });
     }
     /// Evaluate the curve at time `t` (SLERP or Step).
-    #[allow(dead_code)]
     pub fn sample(&self, t: f64) -> Quat {
         let n = self.keys.len();
         if n == 0 {
@@ -677,7 +628,6 @@ impl QuatCurve {
     }
 }
 /// Per-node animation data (position + rotation + scale curves).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct NodeAnimation {
     /// Node/bone identifier.
@@ -691,7 +641,6 @@ pub struct NodeAnimation {
 }
 impl NodeAnimation {
     /// Create node animation for the given node ID.
-    #[allow(dead_code)]
     pub fn new(node_id: u32) -> Self {
         Self {
             node_id,
@@ -699,7 +648,6 @@ impl NodeAnimation {
         }
     }
     /// Sample a TRS matrix at time `t`.
-    #[allow(dead_code)]
     pub fn sample_trs(&self, t: f64) -> Mat4 {
         let pos = self.position.sample(t);
         let rot = self.rotation.sample(t);
@@ -713,7 +661,6 @@ impl NodeAnimation {
     }
 }
 /// A single scalar keyframe.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ScalarKey {
     /// Time of the key (seconds).
@@ -729,7 +676,6 @@ pub struct ScalarKey {
 }
 impl ScalarKey {
     /// Construct a linear scalar keyframe.
-    #[allow(dead_code)]
     pub fn linear(time: f64, value: f64) -> Self {
         Self {
             time,
@@ -740,7 +686,6 @@ impl ScalarKey {
         }
     }
     /// Construct a Hermite scalar keyframe.
-    #[allow(dead_code)]
     pub fn hermite(time: f64, value: f64, in_t: f64, out_t: f64) -> Self {
         Self {
             time,
@@ -752,7 +697,6 @@ impl ScalarKey {
     }
 }
 /// Skinning weight entry: bone index + influence weight.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct SkinWeight {
     /// Bone index in the skeleton.
@@ -762,13 +706,11 @@ pub struct SkinWeight {
 }
 impl SkinWeight {
     /// Create a new skin weight.
-    #[allow(dead_code)]
     pub fn new(bone_index: usize, weight: f64) -> Self {
         Self { bone_index, weight }
     }
 }
 /// An animation clip containing channel data for multiple nodes.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AnimationClip {
     /// Clip name.
@@ -784,7 +726,6 @@ pub struct AnimationClip {
 }
 impl AnimationClip {
     /// Create a new clip.
-    #[allow(dead_code)]
     pub fn new(name: impl Into<String>, duration: f64, fps: f64, looping: bool) -> Self {
         Self {
             name: name.into(),
@@ -795,12 +736,10 @@ impl AnimationClip {
         }
     }
     /// Add a node animation channel.
-    #[allow(dead_code)]
     pub fn add_node(&mut self, node_anim: NodeAnimation) {
         self.nodes.push(node_anim);
     }
     /// Wrap or clamp `t` according to the loop flag.
-    #[allow(dead_code)]
     pub fn normalise_time(&self, t: f64) -> f64 {
         if self.duration <= 0.0 {
             return 0.0;
@@ -813,7 +752,6 @@ impl AnimationClip {
     }
     /// Sample all node TRS matrices at time `t`.
     /// Returns a map from node_id → Mat4.
-    #[allow(dead_code)]
     pub fn sample(&self, t: f64) -> HashMap<u32, Mat4> {
         let nt = self.normalise_time(t);
         self.nodes
@@ -823,7 +761,6 @@ impl AnimationClip {
     }
 }
 /// A transition between two states.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Transition {
     /// Source state name.
@@ -837,7 +774,6 @@ pub struct Transition {
 }
 impl Transition {
     /// Create a triggered transition.
-    #[allow(dead_code)]
     pub fn triggered(
         from: impl Into<String>,
         to: impl Into<String>,
@@ -852,7 +788,6 @@ impl Transition {
         }
     }
     /// Create an automatic (no trigger) transition.
-    #[allow(dead_code)]
     pub fn automatic(from: impl Into<String>, to: impl Into<String>, blend_duration: f64) -> Self {
         Self {
             from: from.into(),
@@ -863,7 +798,6 @@ impl Transition {
     }
 }
 /// Animation state machine.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct AnimStateMachine {
     /// All registered states.
@@ -885,33 +819,27 @@ pub struct AnimStateMachine {
 }
 impl AnimStateMachine {
     /// Create an empty state machine.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
     /// Register a state.
-    #[allow(dead_code)]
     pub fn add_state(&mut self, state: AnimState) {
         self.states.insert(state.name.clone(), state);
     }
     /// Register a transition.
-    #[allow(dead_code)]
     pub fn add_transition(&mut self, t: Transition) {
         self.transitions.push(t);
     }
     /// Set the initial (entry) state.
-    #[allow(dead_code)]
     pub fn set_entry(&mut self, name: &str) {
         self.current = Some(name.to_string());
         self.time = 0.0;
     }
     /// Fire a named trigger.
-    #[allow(dead_code)]
     pub fn fire_trigger(&mut self, trigger: &str) {
         self.triggers.push(trigger.to_string());
     }
     /// Advance time by `dt` seconds and process trigger-based transitions.
-    #[allow(dead_code)]
     pub fn update(&mut self, dt: f64, clips: &HashMap<String, AnimationClip>) {
         if let Some(ref cur) = self.current.clone() {
             let speed = self.states.get(cur).map(|s| s.speed).unwrap_or(1.0);
@@ -947,7 +875,6 @@ impl AnimStateMachine {
         self.triggers.clear();
     }
     /// Evaluate the current (blended) pose.
-    #[allow(dead_code)]
     pub fn evaluate(&self, clips: &HashMap<String, AnimationClip>) -> HashMap<u32, Mat4> {
         let cur_pose = self
             .current
@@ -977,7 +904,6 @@ impl AnimStateMachine {
     }
 }
 /// A single state in the animation state machine.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AnimState {
     /// State name.
@@ -989,7 +915,6 @@ pub struct AnimState {
 }
 impl AnimState {
     /// Create a new animation state.
-    #[allow(dead_code)]
     pub fn new(name: impl Into<String>, clip_name: impl Into<String>, speed: f64) -> Self {
         Self {
             name: name.into(),
@@ -999,7 +924,6 @@ impl AnimState {
     }
 }
 /// A single quaternion keyframe.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct QuatKey {
     /// Time of the key (seconds).
@@ -1011,7 +935,6 @@ pub struct QuatKey {
 }
 impl QuatKey {
     /// Construct a linear (SLERP) quaternion keyframe.
-    #[allow(dead_code)]
     pub fn linear(time: f64, value: Quat) -> Self {
         Self {
             time,

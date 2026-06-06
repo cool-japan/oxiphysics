@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! Provides structures and algorithms for partitioning a molecular system into
 //! a quantum-mechanically treated core region and a classically treated MM region,
 //! connected via link atoms at the boundary.
-
-#![allow(dead_code)]
 
 /// Classification of atoms in a QM/MM calculation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,15 +136,22 @@ impl TightBindingHamiltonian {
     /// Slater-Koster integrals.
     pub fn build_hamiltonian(&self) -> Vec<Vec<f64>> {
         let n = self.atomic_numbers.len();
+        // Precompute all off-diagonal values to avoid simultaneous mutable borrows.
         let mut h = vec![vec![0.0_f64; n]; n];
+        for (i, row) in h.iter_mut().enumerate() {
+            row[i] = Self::on_site_energy(self.atomic_numbers[i]);
+        }
+        // Compute off-diagonal SK integrals row by row using split_at_mut.
         for i in 0..n {
-            h[i][i] = Self::on_site_energy(self.atomic_numbers[i]);
-            for j in (i + 1)..n {
+            let (top, bot) = h.split_at_mut(i + 1);
+            let row_i = &mut top[i];
+            for (jj, row_j) in bot.iter_mut().enumerate() {
+                let j = i + 1 + jj;
                 let r = Self::dist(self.positions[i], self.positions[j]);
                 let val =
                     Self::slater_koster_integral(self.atomic_numbers[i], self.atomic_numbers[j], r);
-                h[i][j] = val;
-                h[j][i] = val;
+                row_i[j] = val;
+                row_j[i] = val;
             }
         }
         h
@@ -157,19 +161,23 @@ impl TightBindingHamiltonian {
     pub fn overlap_matrix(&self) -> Vec<Vec<f64>> {
         let n = self.atomic_numbers.len();
         let mut s = vec![vec![0.0_f64; n]; n];
+        for (i, row) in s.iter_mut().enumerate() {
+            row[i] = 1.0;
+        }
         for i in 0..n {
-            s[i][i] = 1.0;
-            for j in (i + 1)..n {
+            let (top, bot) = s.split_at_mut(i + 1);
+            let row_i = &mut top[i];
+            for (jj, row_j) in bot.iter_mut().enumerate() {
+                let j = i + 1 + jj;
                 let r = Self::dist(self.positions[i], self.positions[j]);
-                // Overlap decays faster than the resonance integral
                 let val = 0.5
                     * Self::slater_koster_integral(
                         self.atomic_numbers[i],
                         self.atomic_numbers[j],
                         r,
                     );
-                s[i][j] = val;
-                s[j][i] = val;
+                row_i[j] = val;
+                row_j[i] = val;
             }
         }
         s
@@ -180,16 +188,15 @@ impl TightBindingHamiltonian {
     /// For each row i the bound is `[h_ii - R_i, h_ii + R_i]` where
     /// `R_i = sum_{j≠i} |h_ij|`.  Returns the lower bound for each row.
     pub fn eigenvalues_gershgorin(&self, h: &[Vec<f64>]) -> Vec<f64> {
-        let n = h.len();
-        let mut bounds = Vec::with_capacity(n);
-        for i in 0..n {
-            let radius: f64 = h[i]
+        let mut bounds = Vec::with_capacity(h.len());
+        for (i, row) in h.iter().enumerate() {
+            let radius: f64 = row
                 .iter()
                 .enumerate()
                 .filter(|&(j, _)| j != i)
                 .map(|(_, v)| v.abs())
                 .sum();
-            bounds.push(h[i][i] - radius);
+            bounds.push(row[i] - radius);
         }
         bounds
     }
@@ -515,8 +522,8 @@ impl ChargeEquilibration {
         // mat[n][n] = 0 (already)
 
         // RHS: [-χ_i, …, Q_total]
-        for i in 0..n {
-            mat[i][size] = -self.electronegativity[i];
+        for (row, &en) in mat.iter_mut().zip(self.electronegativity.iter()).take(n) {
+            row[size] = -en;
         }
         mat[n][size] = total_charge;
 
@@ -548,9 +555,10 @@ impl ChargeEquilibration {
                     continue;
                 }
                 let factor = mat[r][col];
-                for c in 0..=size {
-                    let sub = factor * mat[pr][c];
-                    mat[r][c] -= sub;
+                // Copy pivot row values before modifying mat[r] to avoid borrow issues.
+                let pr_row: Vec<f64> = mat[pr].clone();
+                for (mat_rc, &prc) in mat[r].iter_mut().zip(pr_row.iter()) {
+                    *mat_rc -= factor * prc;
                 }
             }
         }
@@ -790,7 +798,6 @@ pub fn redistribute_link_force(
 /// * `e_qm_model`  – QM energy of the model (inner) region.
 /// * `e_mm_real`   – MM energy of the entire (real) system.
 /// * `e_mm_model`  – MM energy of the model region with MM parameters.
-#[allow(dead_code)]
 pub fn oniom_energy(e_qm_model: f64, e_mm_real: f64, e_mm_model: f64) -> f64 {
     e_qm_model + e_mm_real - e_mm_model
 }
@@ -801,7 +808,6 @@ pub fn oniom_energy(e_qm_model: f64, e_mm_real: f64, e_mm_model: f64) -> f64 {
 /// E = E_high(inner) + E_mid(middle) - E_mid(inner)
 ///   + E_low(outer) - E_low(middle)
 /// ```
-#[allow(dead_code)]
 pub fn oniom3_energy(
     e_high_inner: f64,
     e_mid_middle: f64,
@@ -825,7 +831,6 @@ pub fn oniom3_energy(
 /// t = (r - r_inner) / (r_outer - r_inner)
 /// S(t) = 1 - 6t^5 + 15t^4 - 10t^3     (0 ≤ t ≤ 1)
 /// ```
-#[allow(dead_code)]
 pub fn buffer_weight(r: f64, r_inner: f64, r_outer: f64) -> f64 {
     if r <= r_inner {
         return 1.0;
@@ -838,7 +843,6 @@ pub fn buffer_weight(r: f64, r_inner: f64, r_outer: f64) -> f64 {
 }
 
 /// Derivative of the buffer weight with respect to r.
-#[allow(dead_code)]
 pub fn buffer_weight_derivative(r: f64, r_inner: f64, r_outer: f64) -> f64 {
     if r <= r_inner || r >= r_outer {
         return 0.0;
@@ -862,7 +866,6 @@ pub fn buffer_weight_derivative(r: f64, r_inner: f64, r_outer: f64) -> f64 {
 /// either `max_radius` is reached or the criterion is satisfied.
 ///
 /// Returns the chosen QM radius.
-#[allow(dead_code)]
 pub fn adaptive_qm_radius(
     core_pos: [f64; 3],
     positions: &[[f64; 3]],
@@ -903,7 +906,6 @@ pub fn adaptive_qm_radius(
 ///
 /// Returns the penalty energy for deviating from the target link bond length:
 /// `E_constraint = k/2 * (|r_link - r_qm| - d_target)^2`
-#[allow(dead_code)]
 pub fn link_bond_constraint_energy(
     link_pos: [f64; 3],
     qm_pos: [f64; 3],
@@ -916,7 +918,6 @@ pub fn link_bond_constraint_energy(
 }
 
 /// Gradient of the link bond constraint with respect to the link atom position.
-#[allow(dead_code)]
 pub fn link_bond_constraint_gradient(
     link_pos: [f64; 3],
     qm_pos: [f64; 3],
@@ -944,7 +945,6 @@ pub fn link_bond_constraint_gradient(
 ///
 /// # Returns
 /// Cartesian position of the capping hydrogen.
-#[allow(dead_code)]
 pub fn capping_hydrogen_position(qm_pos: [f64; 3], mm_pos: [f64; 3], r_ch: f64) -> [f64; 3] {
     let dr = sub3(mm_pos, qm_pos);
     let r = (dr[0] * dr[0] + dr[1] * dr[1] + dr[2] * dr[2]).sqrt();
@@ -971,7 +971,6 @@ pub fn capping_hydrogen_position(qm_pos: [f64; 3], mm_pos: [f64; 3], r_ch: f64) 
 /// `q_i = Σ_j P_ij * S_ji`  (diagonal of PS).
 ///
 /// Returns the Mulliken population vector of length n.
-#[allow(dead_code)]
 pub fn mulliken_populations(density_matrix: &[Vec<f64>], overlap_matrix: &[Vec<f64>]) -> Vec<f64> {
     let n = density_matrix.len();
     (0..n)
@@ -994,7 +993,6 @@ pub fn mulliken_populations(density_matrix: &[Vec<f64>], overlap_matrix: &[Vec<f
 /// Mulliken gross charges given populations, core charges, and number of electrons.
 ///
 /// `q_i = Z_i - N_i`  where Z_i is the nuclear charge and N_i the Mulliken population.
-#[allow(dead_code)]
 pub fn mulliken_charges(populations: &[f64], nuclear_charges: &[f64]) -> Vec<f64> {
     populations
         .iter()
@@ -1014,7 +1012,6 @@ pub fn mulliken_charges(populations: &[f64], nuclear_charges: &[f64]) -> Vec<f64
 /// `E_corr = -Σ_i q_i^QM * V_Ewald_self(q_i^QM, α)`
 ///
 /// Self-energy: `E_self = -α/√π * Σ_i (q_i)^2`
-#[allow(dead_code)]
 pub fn ewald_self_correction(charges: &[f64], alpha: f64) -> f64 {
     let prefactor = alpha / std::f64::consts::PI.sqrt();
     -prefactor * charges.iter().map(|&q| q * q).sum::<f64>()
@@ -1026,7 +1023,6 @@ pub fn ewald_self_correction(charges: &[f64], alpha: f64) -> f64 {
 /// `E_G0 = -π / (2 α² V) * |Σ_i q_i r_i|² = 0` for neutral systems.
 ///
 /// For a non-neutral system, returns a rough estimate of the G=0 divergence.
-#[allow(dead_code)]
 pub fn ewald_g0_correction(
     charges: &[f64],
     positions: &[[f64; 3]],
@@ -1101,13 +1097,13 @@ mod tests {
             n_electrons: 7,
         };
         let h = tb.build_hamiltonian();
-        let n = h.len();
-        for i in 0..n {
-            for j in 0..n {
+        let _n = h.len();
+        for (i, hi) in h.iter().enumerate() {
+            for (j, &val) in hi.iter().enumerate() {
                 assert!(
-                    (h[i][j] - h[j][i]).abs() < 1e-12,
+                    (val - h[j][i]).abs() < 1e-12,
                     "H[{i}][{j}] != H[{j}][{i}]: {} vs {}",
-                    h[i][j],
+                    val,
                     h[j][i]
                 );
             }

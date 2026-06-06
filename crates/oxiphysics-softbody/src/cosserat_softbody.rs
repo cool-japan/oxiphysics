@@ -19,9 +19,6 @@
 //! - Cosserat plate: two-dimensional generalisation
 //! - Wrinkle simulation via wrinkling criterion
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -31,15 +28,6 @@ use std::f64::consts::PI;
 /// Compute the dot product of two 3-vectors.
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-/// Compute the cross product a × b.
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 /// Euclidean norm of a 3-vector.

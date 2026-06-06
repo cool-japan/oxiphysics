@@ -33,7 +33,6 @@ pub(super) fn piecewise_lerp(stops: &[[f32; 4]], t: f32) -> [f32; 4] {
 /// Compute a level-of-detail radius for a particle given the camera distance.
 ///
 /// `radius = base_radius * lod_factor / camera_distance`
-#[allow(dead_code)]
 pub fn particle_lod_radius(camera_distance: f32, base_radius: f32, lod_factor: f32) -> f32 {
     base_radius * lod_factor / camera_distance.max(f32::EPSILON)
 }
@@ -44,7 +43,6 @@ pub fn particle_lod_radius(camera_distance: f32, base_radius: f32, lod_factor: f
 /// orientation.
 ///
 /// Returns interleaved data: `[px, py, pz, u, v, cr, cg, cb, ca]` per vertex.
-#[allow(dead_code)]
 pub fn generate_billboard_vertices(
     particles: &[BillboardParticle],
     camera_right: [f32; 3],
@@ -77,7 +75,6 @@ pub fn generate_billboard_vertices(
 /// Sort particles by distance from the camera (back-to-front for alpha blending).
 ///
 /// Modifies `particles` in place, sorting by decreasing distance from `camera_pos`.
-#[allow(dead_code)]
 pub fn sort_particles_back_to_front(particles: &mut [ParticleInstance], camera_pos: [f32; 3]) {
     particles.sort_by(|a, b| {
         let da = dist_sq(a.position, camera_pos);
@@ -86,7 +83,6 @@ pub fn sort_particles_back_to_front(particles: &mut [ParticleInstance], camera_p
     });
 }
 /// Sort particles front-to-back (useful for early-Z rejection in opaque passes).
-#[allow(dead_code)]
 pub fn sort_particles_front_to_back(particles: &mut [ParticleInstance], camera_pos: [f32; 3]) {
     particles.sort_by(|a, b| {
         let da = dist_sq(a.position, camera_pos);
@@ -104,7 +100,6 @@ pub(super) fn dist_sq(a: [f32; 3], b: [f32; 3]) -> f32 {
 ///
 /// Uses the model: `apparent_size = base_size * reference_dist / distance`.
 /// Clamped to `[min_size, max_size]`.
-#[allow(dead_code)]
 pub fn attenuated_size(
     base_size: f32,
     distance: f32,
@@ -116,7 +111,6 @@ pub fn attenuated_size(
     size.clamp(min_size, max_size)
 }
 /// Apply size attenuation to all particles in a buffer based on camera position.
-#[allow(dead_code)]
 pub fn attenuate_particle_sizes(
     buffer: &mut ParticleBuffer,
     camera_pos: [f32; 3],
@@ -130,7 +124,6 @@ pub fn attenuate_particle_sizes(
     }
 }
 /// Color particles based on their velocity magnitude using a colorizer.
-#[allow(dead_code)]
 pub fn color_by_velocity(buffer: &mut ParticleBuffer, colorizer: &ScalarColorizer) {
     for p in &mut buffer.instances {
         let speed = (p.velocity[0] * p.velocity[0]
@@ -141,7 +134,6 @@ pub fn color_by_velocity(buffer: &mut ParticleBuffer, colorizer: &ScalarColorize
     }
 }
 /// Set velocities for particles in a buffer.
-#[allow(dead_code)]
 pub fn set_particle_velocities(buffer: &mut ParticleBuffer, velocities: &[[f32; 3]]) {
     for (p, v) in buffer.instances.iter_mut().zip(velocities.iter()) {
         p.velocity = *v;
@@ -151,7 +143,6 @@ pub fn set_particle_velocities(buffer: &mut ParticleBuffer, velocities: &[[f32; 
 ///
 /// `props[i]` is the scalar property of particle `i`.
 /// Values are clamped to `[vmin, vmax]` before colormap lookup.
-#[allow(dead_code)]
 pub fn color_by_property(
     buffer: &mut ParticleBuffer,
     props: &[f32],
@@ -172,7 +163,6 @@ pub fn color_by_property(
 /// Build velocity glyph arrows for a set of particles.
 ///
 /// `scale` is the length multiplier applied to the velocity vector.
-#[allow(dead_code)]
 pub fn build_velocity_glyphs(
     positions: &[[f32; 3]],
     velocities: &[[f32; 3]],
@@ -209,7 +199,6 @@ pub fn build_velocity_glyphs(
 }
 /// Produce line vertex data from velocity glyphs:
 /// `[bx, by, bz, tx, ty, tz, cr, cg, cb, ca]` per glyph (10 floats).
-#[allow(dead_code)]
 pub fn velocity_glyphs_to_line_data(glyphs: &[VelocityGlyph]) -> Vec<f32> {
     let mut out = Vec::with_capacity(glyphs.len() * 10);
     for g in glyphs {
@@ -224,7 +213,6 @@ pub fn velocity_glyphs_to_line_data(glyphs: &[VelocityGlyph]) -> Vec<f32> {
 /// `frustum_planes` is an array of 6 planes, each represented as `[a, b, c, d]`
 /// where `ax + by + cz + d >= 0` defines the inside half-space.
 /// Returns a `Vec`bool` where `true` means the sphere is *visible* (not culled).
-#[allow(dead_code)]
 pub fn frustum_cull_particles(
     positions: &[[f64; 3]],
     radii: &[f64],
@@ -249,7 +237,6 @@ pub fn frustum_cull_particles(
 /// `lod_distances` is a sorted ascending slice of camera distances.
 /// Level 0 = highest detail (closest).
 /// If `distance` is beyond all entries the last level index is returned.
-#[allow(dead_code)]
 pub fn particle_lod(distance: f64, lod_distances: &[f64]) -> usize {
     for (i, &d) in lod_distances.iter().enumerate() {
         if distance < d {
@@ -262,7 +249,6 @@ pub fn particle_lod(distance: f64, lod_distances: &[f64]) -> usize {
 ///
 /// Returns `n_segments` vertices arranged in a regular polygon around the
 /// origin (in the XY plane).  Each vertex is `\[x, y, 0.0\]` scaled by `radius`.
-#[allow(dead_code)]
 pub fn generate_sphere_impostor(radius: f64, n_segments: usize) -> Vec<[f32; 3]> {
     let n = n_segments.max(3);
     let mut verts = Vec::with_capacity(n);

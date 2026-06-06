@@ -40,7 +40,6 @@ impl Island {
 
 /// Statistics for a single island.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct IslandStats {
     /// Number of bodies in the island.
     pub body_count: usize,
@@ -60,7 +59,6 @@ pub struct IslandStats {
 
 /// Aggregate statistics across all islands.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct IslandManagerStats {
     /// Total number of islands.
     pub island_count: usize,
@@ -118,13 +116,13 @@ impl Dsu {
     }
 
     /// Check whether two elements are in the same set.
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn connected(&mut self, a: usize, b: usize) -> bool {
         self.find(a) == self.find(b)
     }
 
     /// Count the number of distinct sets.
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn set_count(&mut self) -> usize {
         let n = self.parent.len();
         let mut roots = std::collections::HashSet::new();
@@ -313,7 +311,6 @@ impl IslandManager {
     /// Compares the current island state against a new set of contact pairs
     /// and returns the indices of islands that need to be rebuilt (i.e., they
     /// have bodies that are no longer connected by the new contact set).
-    #[allow(dead_code)]
     pub fn detect_splits(&self, new_contact_pairs: &[(BodyHandle, BodyHandle)]) -> Vec<usize> {
         // Build adjacency from new contacts
         let mut adjacency: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -364,7 +361,6 @@ impl IslandManager {
     /// connects bodies from different islands.
     ///
     /// Returns pairs `(island_a, island_b)` where `island_a < island_b`.
-    #[allow(dead_code)]
     pub fn detect_merges(
         &self,
         new_contact_pairs: &[(BodyHandle, BodyHandle)],
@@ -394,7 +390,6 @@ impl IslandManager {
     ///
     /// Returns `true` if all bodies have both linear and angular speeds below
     /// the given thresholds.
-    #[allow(dead_code)]
     pub fn is_island_sleep_candidate<F, G>(
         &self,
         island_idx: usize,
@@ -417,7 +412,6 @@ impl IslandManager {
     }
 
     /// Force all islands to wake up. Useful after a global event (e.g. explosion).
-    #[allow(dead_code)]
     pub fn wake_all(&mut self) {
         for island in &mut self.islands {
             island.is_sleeping = false;
@@ -426,7 +420,6 @@ impl IslandManager {
     }
 
     /// Force a specific island to sleep immediately.
-    #[allow(dead_code)]
     pub fn force_sleep(&mut self, island_idx: usize) {
         if let Some(island) = self.islands.get_mut(island_idx) {
             island.is_sleeping = true;
@@ -436,7 +429,6 @@ impl IslandManager {
     // ── Island iteration utilities ────────────────────────────────────────
 
     /// Return handles of all bodies in the island at the given index.
-    #[allow(dead_code)]
     pub fn bodies_in_island(&self, island_idx: usize) -> &[BodyHandle] {
         self.islands
             .get(island_idx)
@@ -445,7 +437,6 @@ impl IslandManager {
     }
 
     /// Return indices of all awake islands.
-    #[allow(dead_code)]
     pub fn awake_island_indices(&self) -> Vec<usize> {
         self.islands
             .iter()
@@ -456,7 +447,6 @@ impl IslandManager {
     }
 
     /// Return indices of all sleeping islands.
-    #[allow(dead_code)]
     pub fn sleeping_island_indices(&self) -> Vec<usize> {
         self.islands
             .iter()
@@ -467,7 +457,6 @@ impl IslandManager {
     }
 
     /// Count the number of contact pairs internal to a given island.
-    #[allow(dead_code)]
     pub fn count_constraints_in_island(
         &self,
         island_idx: usize,
@@ -485,7 +474,6 @@ impl IslandManager {
     }
 
     /// Find the island with the most bodies.
-    #[allow(dead_code)]
     pub fn largest_island_index(&self) -> Option<usize> {
         self.islands
             .iter()
@@ -495,13 +483,11 @@ impl IslandManager {
     }
 
     /// Total number of bodies across all islands.
-    #[allow(dead_code)]
     pub fn total_body_count(&self) -> usize {
         self.islands.iter().map(|i| i.body_handles.len()).sum()
     }
 
     /// Number of islands.
-    #[allow(dead_code)]
     pub fn island_count(&self) -> usize {
         self.islands.len()
     }
@@ -509,7 +495,6 @@ impl IslandManager {
     // ── Island statistics ─────────────────────────────────────────────────
 
     /// Compute statistics for a single island.
-    #[allow(dead_code)]
     pub fn island_stats<F, G, H>(
         &self,
         island_idx: usize,
@@ -556,7 +541,6 @@ impl IslandManager {
     }
 
     /// Compute aggregate statistics across all islands.
-    #[allow(dead_code)]
     pub fn manager_stats(&self) -> IslandManagerStats {
         let island_count = self.islands.len();
         if island_count == 0 {
@@ -592,7 +576,6 @@ impl IslandManager {
     }
 
     /// Collect the handles of all bodies that are currently in sleeping islands.
-    #[allow(dead_code)]
     pub fn sleeping_bodies(&self) -> Vec<BodyHandle> {
         self.islands
             .iter()
@@ -602,7 +585,6 @@ impl IslandManager {
     }
 
     /// Collect the handles of all bodies that are currently in awake islands.
-    #[allow(dead_code)]
     pub fn awake_bodies(&self) -> Vec<BodyHandle> {
         self.islands
             .iter()
@@ -614,7 +596,6 @@ impl IslandManager {
     /// Wake up all islands that contain any body from the given list.
     ///
     /// Useful when an external force or collision affects specific bodies.
-    #[allow(dead_code)]
     pub fn wake_bodies(&mut self, handles: &[BodyHandle]) {
         for h in handles {
             self.wake_island(*h);
@@ -622,7 +603,6 @@ impl IslandManager {
     }
 
     /// Check whether a body is in a sleeping island.
-    #[allow(dead_code)]
     pub fn is_body_sleeping(&self, handle: BodyHandle) -> bool {
         self.body_to_island
             .get(&handle.index)
@@ -640,7 +620,6 @@ impl IslandManager {
     /// `wake_threshold` (which should be ≥ `sleep_threshold`).
     ///
     /// Returns the number of islands whose sleep state changed.
-    #[allow(dead_code)]
     pub fn update_sleep_hysteresis<F>(
         &mut self,
         island_ke: F,
@@ -691,7 +670,6 @@ impl IslandManager {
     ///
     /// Useful for adaptive sub-stepping where the most active islands
     /// should be processed first.
-    #[allow(dead_code)]
     pub fn sorted_island_indices_by_energy<F>(&self, island_ke: F) -> Vec<usize>
     where
         F: Fn(usize) -> f64,
@@ -714,7 +692,6 @@ impl IslandManager {
     /// Returns a `Vec` where index `i` holds the number of islands with
     /// exactly `i + 1` bodies.  Islands larger than `max_size` are bucketed
     /// into the last slot.
-    #[allow(dead_code)]
     pub fn island_size_histogram(&self, max_size: usize) -> Vec<usize> {
         let max_size = max_size.max(1);
         let mut hist = vec![0usize; max_size];
@@ -732,7 +709,6 @@ impl IslandManager {
     ///
     /// Such cross-island contacts indicate that a new constraint has been
     /// created that will merge the two islands on the next `build_islands`.
-    #[allow(dead_code)]
     pub fn cross_island_contacts<'a>(
         &self,
         contact_pairs: &'a [(BodyHandle, BodyHandle)],
@@ -759,7 +735,6 @@ impl IslandManager {
     /// * Cold: ke < `cold_threshold`
     ///
     /// Returns `(hot, warm, cold)` index lists.
-    #[allow(dead_code)]
     pub fn classify_islands_by_energy<F>(
         &self,
         island_ke: F,

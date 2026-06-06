@@ -5,19 +5,16 @@
 use super::types::WorldState;
 
 /// Mock broad-phase: returns number of potential collision pairs.
-#[allow(dead_code)]
 pub(super) fn run_broadphase(world: &WorldState) -> usize {
     let n = world.body_count();
     n.saturating_sub(1) * n / 2
 }
 /// Mock constraint solve: returns number of solved constraints (= collision pairs).
-#[allow(dead_code)]
 pub(super) fn run_constraint_solve(world: &WorldState) -> usize {
     let n = world.body_count();
     n.saturating_sub(1) * n / 2
 }
 /// Mock integration: semi-implicit Euler with gravity `[0, -9.81, 0]`.
-#[allow(dead_code)]
 pub(super) fn run_integration(world: &mut WorldState, dt: f64) {
     let n = world.body_count();
     for i in 0..n {
@@ -36,7 +33,6 @@ pub(super) fn run_integration(world: &mut WorldState, dt: f64) {
     }
 }
 /// Mock post-process: no-op for an empty world; just validates invariants.
-#[allow(dead_code)]
 pub(super) fn run_postprocess(_world: &mut WorldState) {}
 #[cfg(test)]
 mod tests {

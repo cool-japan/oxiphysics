@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,7 +14,6 @@ use super::coulomb::COULOMB_K;
 /// Stores the monopole (total charge), dipole moment, and quadrupole tensor
 /// relative to a given centre.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct MultipoleExpansion {
     /// Expansion centre (angstrom).
     pub center: [f64; 3],
@@ -31,7 +29,6 @@ impl MultipoleExpansion {
     /// Build a multipole expansion from a set of point charges.
     ///
     /// Positions and charges must have the same length.
-    #[allow(dead_code)]
     pub fn from_charges(positions: &[[f64; 3]], charges: &[f64], center: [f64; 3]) -> Self {
         let n = positions.len();
         assert_eq!(charges.len(), n, "positions and charges length mismatch");
@@ -75,7 +72,6 @@ impl MultipoleExpansion {
     /// ```text
     /// V(r) ~ K * [q/r + (d*r_hat)/r^2 + ...]
     /// ```
-    #[allow(dead_code)]
     pub fn potential_at(&self, point: [f64; 3]) -> f64 {
         let dr = [
             point[0] - self.center[0],
@@ -101,7 +97,6 @@ impl MultipoleExpansion {
     }
 
     /// Dipole moment magnitude (e*angstrom).
-    #[allow(dead_code)]
     pub fn dipole_magnitude(&self) -> f64 {
         (self.dipole[0] * self.dipole[0]
             + self.dipole[1] * self.dipole[1]
@@ -110,7 +105,6 @@ impl MultipoleExpansion {
     }
 
     /// Trace of the quadrupole tensor (should be zero for traceless form).
-    #[allow(dead_code)]
     pub fn quadrupole_trace(&self) -> f64 {
         self.quadrupole[0] + self.quadrupole[3] + self.quadrupole[5]
     }
@@ -125,7 +119,6 @@ impl MultipoleExpansion {
 /// Each node stores the axis-aligned bounding box of the charges it contains
 /// and the multipole expansion of those charges about the node centre.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct BarnesHutNode {
     /// Minimum corner of the bounding box (angstrom).
     pub aabb_min: [f64; 3],
@@ -137,7 +130,6 @@ pub struct BarnesHutNode {
     pub children: Vec<BarnesHutNode>,
 }
 
-#[allow(dead_code)]
 impl BarnesHutNode {
     /// Create a new leaf node.
     pub fn new_leaf(aabb_min: [f64; 3], aabb_max: [f64; 3], multipole: MultipoleExpansion) -> Self {
@@ -181,7 +173,6 @@ impl BarnesHutNode {
 /// opened (recursed into its children).
 ///
 /// Leaf nodes with zero monopole are skipped.
-#[allow(dead_code)]
 pub fn barnes_hut_energy(
     nodes: &[BarnesHutNode],
     positions: &[[f64; 3]],
@@ -248,7 +239,6 @@ fn bh_node_energy(node: &BarnesHutNode, point: [f64; 3], charge: f64, theta: f64
 /// threshold `theta`.  Smaller `theta` → higher accuracy; `theta = 0` reduces
 /// to exact O(N²) evaluation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct BarnesHut {
     /// Opening-angle threshold (dimensionless).
     ///
@@ -259,7 +249,6 @@ pub struct BarnesHut {
     pub nodes: Vec<BarnesHutNode>,
 }
 
-#[allow(dead_code)]
 impl BarnesHut {
     /// Create a new Barnes-Hut evaluator.
     pub fn new(theta: f64, nodes: Vec<BarnesHutNode>) -> Self {
@@ -302,7 +291,6 @@ impl BarnesHut {
 ///
 /// # Returns
 /// Force vector `[Fx, Fy, Fz]` on each atom (kJ mol^-1 Å^-1).
-#[allow(dead_code)]
 pub fn barnes_hut_force(positions: &[[f64; 3]], charges: &[f64], _theta: f64) -> Vec<[f64; 3]> {
     let n = positions.len();
     assert_eq!(charges.len(), n, "positions and charges length mismatch");
@@ -340,7 +328,6 @@ pub fn barnes_hut_force(positions: &[[f64; 3]], charges: &[f64], _theta: f64) ->
 /// Provides `O(N log N)` approximate electrostatic force evaluation
 /// via a hierarchical multipole approach.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct BarnesHutTree {
     /// Root nodes of the octree (one per subdivision of the bounding box).
     pub nodes: Vec<BarnesHutNode>,
@@ -352,7 +339,6 @@ pub struct BarnesHutTree {
     pub charges: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl BarnesHutTree {
     /// Build a flat octree from point charges.
     ///
@@ -481,7 +467,6 @@ impl BarnesHutTree {
 // MultipoleExpansion extended: translate_expansion
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 impl MultipoleExpansion {
     /// Translate the multipole expansion to a new centre `new_center` (Å).
     ///
@@ -557,7 +542,6 @@ impl MultipoleExpansion {
 /// The octupole is stored in lexicographic order:
 /// `[xxx, xxy, xxz, xyy, xyz, xzz, yyy, yyz, yzz, zzz]`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct HigherOrderMultipole {
     /// Expansion centre (Å).
     pub center: [f64; 3],
@@ -571,7 +555,6 @@ pub struct HigherOrderMultipole {
     pub octupole: [f64; 10],
 }
 
-#[allow(dead_code)]
 impl HigherOrderMultipole {
     /// Compute moments from a set of point charges.
     pub fn from_charges(positions: &[[f64; 3]], charges: &[f64], center: [f64; 3]) -> Self {
@@ -1057,12 +1040,12 @@ mod tests {
         let mp = MultipoleExpansion::from_charges(&positions, &charges, [0.0, 0.0, 0.0]);
         let new_center = [3.0, 2.0, 1.0];
         let mp2 = mp.translate_expansion(new_center);
-        for a in 0..3 {
+        for (a, (&c2a, &nca)) in mp2.center.iter().zip(new_center.iter()).enumerate() {
             assert!(
-                (mp2.center[a] - new_center[a]).abs() < 1e-15,
+                (c2a - nca).abs() < 1e-15,
                 "center[{a}] should be updated: {} vs {}",
-                mp2.center[a],
-                new_center[a]
+                c2a,
+                nca
             );
         }
     }

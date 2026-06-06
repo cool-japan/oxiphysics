@@ -1,6 +1,6 @@
 # oxiphysics-md
 
-**Status: Alpha** | Version 0.1.1 | 2026-05-17
+**Status: Alpha** | Version 0.1.2 | 2026-06-06
 
 Molecular dynamics simulation for the OxiPhysics engine. Pure Rust.
 
@@ -58,6 +58,6 @@ let qmmm = QmMmSystem::new(qm_region, mm_region)?;
 ## Statistics
 
 - **6,343** public items — highest in the workspace
-- **5,139** tests
+- **5,171** tests
 - **0** stubs — fully implemented
 

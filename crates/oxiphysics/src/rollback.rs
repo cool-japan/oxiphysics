@@ -51,9 +51,6 @@
 //! assert_eq!(rw.world.state, 5);
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::*;
 
 /// Einstein summation helper for common rank-2 tensor operations.
@@ -12,7 +11,6 @@ use super::types::*;
 /// - `"ij,ij->"` : Frobenius inner product (returns scalar in a 1-element vec)
 /// - `"ij->ji"` : transpose
 /// - `"ii->"` : trace (returns scalar in a 1-element vec)
-#[allow(dead_code)]
 pub fn einsum_2d(notation: &str, a: &[Vec<f64>], b: Option<&[Vec<f64>]>) -> Vec<Vec<f64>> {
     let notation = notation.trim();
     match notation {
@@ -59,7 +57,6 @@ pub fn einsum_2d(notation: &str, a: &[Vec<f64>], b: Option<&[Vec<f64>]>) -> Vec<
     }
 }
 /// Helper: multiply m×k matrix by k×n matrix.
-#[allow(dead_code)]
 pub(super) fn matmul(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let m = a.len();
     let k = a[0].len();
@@ -75,7 +72,6 @@ pub(super) fn matmul(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
     c
 }
 /// Helper: element-wise (Hadamard) product of two matrices of the same shape.
-#[allow(dead_code)]
 fn hadamard(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
     a.iter()
         .zip(b.iter())
@@ -83,7 +79,6 @@ fn hadamard(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
         .collect()
 }
 /// Helper: transpose a matrix.
-#[allow(dead_code)]
 pub(super) fn transpose(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
     if a.is_empty() {
         return vec![];
@@ -99,7 +94,6 @@ pub(super) fn transpose(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
     t
 }
 /// Helper: solve a small linear system A x = b via Gaussian elimination (dense).
-#[allow(dead_code)]
 fn solve_ls(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let r = a.len();
     let m = b[0].len();
@@ -124,16 +118,17 @@ fn solve_ls(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
         if d.abs() < 1e-14 {
             continue;
         }
-        for j in col..r + m {
-            aug[col][j] /= d;
+        for v in aug[col][col..r + m].iter_mut() {
+            *v /= d;
         }
         for row in 0..r {
             if row == col {
                 continue;
             }
             let factor = aug[row][col];
-            for j in col..r + m {
-                aug[row][j] -= factor * aug[col][j];
+            let col_vals: Vec<f64> = aug[col][col..r + m].to_vec();
+            for (av, &cv) in aug[row][col..r + m].iter_mut().zip(col_vals.iter()) {
+                *av -= factor * cv;
             }
         }
     }
@@ -156,7 +151,6 @@ fn solve_ls(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
 /// * `rank`     – number of CP components
 /// * `max_iter` – maximum ALS iterations
 /// * `tol`      – relative reconstruction error tolerance for convergence
-#[allow(dead_code)]
 pub fn cp_als(tensor: &DenseTensor, rank: usize, max_iter: usize, tol: f64) -> CpDecomposition {
     assert_eq!(tensor.shape.len(), 3, "cp_als requires a rank-3 tensor");
     let n0 = tensor.shape[0];
@@ -237,7 +231,6 @@ pub fn cp_als(tensor: &DenseTensor, rank: usize, max_iter: usize, tol: f64) -> C
     CpDecomposition { a, b, c, lambdas }
 }
 /// Compute Gram matrix A^T A of a factor matrix A (n×r) → (r×r).
-#[allow(dead_code)]
 fn gram(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let r = a[0].len();
     let mut g = vec![vec![0.0; r]; r];
@@ -252,7 +245,6 @@ fn gram(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
 }
 /// Khatri-Rao product (column-wise Kronecker product) of A (m×r) and B (n×r)
 /// → (m*n)×r.
-#[allow(dead_code)]
 fn khatri_rao(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let m = a.len();
     let n = b.len();
@@ -268,7 +260,6 @@ fn khatri_rao(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
     out
 }
 /// Frobenius norm of the reconstruction error for a CP decomposition.
-#[allow(dead_code)]
 fn cp_reconstruction_error(
     tensor: &DenseTensor,
     a: &[Vec<f64>],
@@ -281,9 +272,9 @@ fn cp_reconstruction_error(
     let n2 = tensor.shape[2];
     let rank = lambdas.len();
     let mut err = 0.0;
-    for i in 0..n0 {
-        for j in 0..n1 {
-            for k in 0..n2 {
+    for (i, _) in a.iter().enumerate().take(n0) {
+        for (j, _) in b.iter().enumerate().take(n1) {
+            for (k, _) in c.iter().enumerate().take(n2) {
                 let approx: f64 = (0..rank)
                     .map(|r| lambdas[r] * a[i][r] * b[j][r] * c[k][r])
                     .sum();
@@ -296,27 +287,22 @@ fn cp_reconstruction_error(
 }
 /// Helper: extract leading `k` left singular vectors of a matrix via power
 /// iteration on A A^T with Gram-Schmidt orthogonalisation.  Returns an n×k matrix.
-#[allow(dead_code)]
 pub(super) fn truncated_svd_left(a: &[Vec<f64>], k: usize) -> Vec<Vec<f64>> {
     let n = a.len();
-    let m = a[0].len();
     let mut aat = vec![vec![0.0; n]; n];
     for i in 0..n {
         for j in 0..n {
-            for p in 0..m {
-                aat[i][j] += a[i][p] * a[j][p];
-            }
+            aat[i][j] = a[i].iter().zip(a[j].iter()).map(|(&x, &y)| x * y).sum();
         }
     }
     let k = k.min(n);
-    let mut result = vec![vec![0.0f64; k]; n];
     let mut found: Vec<Vec<f64>> = Vec::new();
     for r in 0..k {
         let mut v: Vec<f64> = (0..n).map(|i| if i == r { 1.0 } else { 0.0 }).collect();
         for fv in &found {
             let dot: f64 = v.iter().zip(fv.iter()).map(|(a, b)| a * b).sum();
-            for i in 0..n {
-                v[i] -= dot * fv[i];
+            for (vi, &fvi) in v.iter_mut().zip(fv.iter()) {
+                *vi -= dot * fvi;
             }
         }
         let norm = v.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -332,14 +318,12 @@ pub(super) fn truncated_svd_left(a: &[Vec<f64>], k: usize) -> Vec<Vec<f64>> {
         for _ in 0..300 {
             let mut w = vec![0.0; n];
             for i in 0..n {
-                for j in 0..n {
-                    w[i] += aat[i][j] * v[j];
-                }
+                w[i] = aat[i].iter().zip(v.iter()).map(|(&a, &b)| a * b).sum();
             }
             for fv in &found {
                 let dot: f64 = w.iter().zip(fv.iter()).map(|(a, b)| a * b).sum();
-                for i in 0..n {
-                    w[i] -= dot * fv[i];
+                for (wi, &fvi) in w.iter_mut().zip(fv.iter()) {
+                    *wi -= dot * fvi;
                 }
             }
             let norm = w.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -358,10 +342,14 @@ pub(super) fn truncated_svd_left(a: &[Vec<f64>], k: usize) -> Vec<Vec<f64>> {
                 break;
             }
         }
-        for i in 0..n {
-            result[i][r] = v[i];
-        }
         found.push(v);
+    }
+    // Build result[row][col] from found[col][row]
+    let mut result = vec![vec![0.0f64; k]; n];
+    for (r, fv) in found.iter().enumerate() {
+        for (i, ri) in result.iter_mut().enumerate() {
+            ri[r] = fv[i];
+        }
     }
     result
 }
@@ -373,7 +361,6 @@ pub(super) fn truncated_svd_left(a: &[Vec<f64>], k: usize) -> Vec<Vec<f64>> {
 /// # Arguments
 /// * `tensor` – 3-way `DenseTensor`
 /// * `ranks`  – target rank for each mode (r0, r1, r2)
-#[allow(dead_code)]
 pub fn tucker_hosvd(tensor: &DenseTensor, ranks: [usize; 3]) -> TuckerDecomposition {
     assert_eq!(
         tensor.shape.len(),
@@ -391,14 +378,14 @@ pub fn tucker_hosvd(tensor: &DenseTensor, ranks: [usize; 3]) -> TuckerDecomposit
     let n1 = tensor.shape[1];
     let n2 = tensor.shape[2];
     let mut core = DenseTensor::zeros(&[r0, r1, r2]);
-    for i in 0..r0 {
-        for j in 0..r1 {
-            for k in 0..r2 {
+    for (i, _) in u0[0].iter().enumerate().take(r0) {
+        for (j, _) in u1[0].iter().enumerate().take(r1) {
+            for (k, _) in u2[0].iter().enumerate().take(r2) {
                 let mut val = 0.0;
-                for ii in 0..n0 {
-                    for jj in 0..n1 {
-                        for kk in 0..n2 {
-                            val += u0[ii][i] * u1[jj][j] * u2[kk][k] * tensor.get(&[ii, jj, kk]);
+                for (ii, u0row) in u0.iter().enumerate().take(n0) {
+                    for (jj, u1row) in u1.iter().enumerate().take(n1) {
+                        for (kk, u2row) in u2.iter().enumerate().take(n2) {
+                            val += u0row[i] * u1row[j] * u2row[k] * tensor.get(&[ii, jj, kk]);
                         }
                     }
                 }
@@ -409,7 +396,6 @@ pub fn tucker_hosvd(tensor: &DenseTensor, ranks: [usize; 3]) -> TuckerDecomposit
     TuckerDecomposition { core, u0, u1, u2 }
 }
 /// Reconstruct a 3-way tensor from a Tucker decomposition.
-#[allow(dead_code)]
 pub fn tucker_reconstruct(td: &TuckerDecomposition) -> DenseTensor {
     let r0 = td.core.shape[0];
     let r1 = td.core.shape[1];
@@ -441,28 +427,27 @@ pub fn tucker_reconstruct(td: &TuckerDecomposition) -> DenseTensor {
 /// Compute the bilinear form v^T A w for a Tensor2.
 ///
 /// Returns the scalar `Σ_ij v_i A_ij w_j`.
-#[allow(dead_code)]
 pub fn bilinear_form(a: &Tensor2, v: &[f64; 3], w: &[f64; 3]) -> f64 {
-    let mut acc = 0.0f64;
-    for i in 0..3 {
-        for j in 0..3 {
-            acc += v[i] * a.data[i][j] * w[j];
-        }
-    }
-    acc
+    v.iter()
+        .zip(a.data.iter())
+        .map(|(vi, ai)| {
+            ai.iter()
+                .zip(w.iter())
+                .map(|(aij, wj)| *vi * *aij * *wj)
+                .sum::<f64>()
+        })
+        .sum()
 }
 /// Compute the quadratic form v^T A v for a Tensor2.
-#[allow(dead_code)]
 pub fn quadratic_form(a: &Tensor2, v: &[f64; 3]) -> f64 {
     bilinear_form(a, v, v)
 }
 /// Outer product of two 3-vectors: result_ij = a_i b_j (returns Tensor2).
-#[allow(dead_code)]
 pub fn vec_outer(a: &[f64; 3], b: &[f64; 3]) -> Tensor2 {
     let mut d = [[0.0f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            d[i][j] = a[i] * b[j];
+    for (di, ai) in d.iter_mut().zip(a.iter()) {
+        for (dij, bj) in di.iter_mut().zip(b.iter()) {
+            *dij = *ai * *bj;
         }
     }
     Tensor2 { data: d }
@@ -472,7 +457,6 @@ pub fn vec_outer(a: &[f64; 3], b: &[f64; 3]) -> Tensor2 {
 ///
 /// For rank-2 tensors this reduces to matrix–matrix multiplication when
 /// `mode_a == 1` (col) and `mode_b == 0` (row).
-#[allow(dead_code)]
 pub fn tensor_contraction(
     a: &DenseTensor,
     mode_a: usize,
@@ -527,15 +511,15 @@ pub fn tensor_contraction(
             }
             let mut oidx = vec![0usize; out_rank];
             let mut oi = 0;
-            for k in 0..a.shape.len() {
+            for (k, &ma) in midx_a.iter().enumerate() {
                 if k != mode_a {
-                    oidx[oi] = midx_a[k];
+                    oidx[oi] = ma;
                     oi += 1;
                 }
             }
-            for k in 0..b.shape.len() {
+            for (k, &mb) in midx_b.iter().enumerate() {
                 if k != mode_b {
-                    oidx[oi] = midx_b[k];
+                    oidx[oi] = mb;
                     oi += 1;
                 }
             }
@@ -553,7 +537,6 @@ pub fn tensor_contraction(
     }
 }
 /// Compute the general outer product of two DenseTensors: result has rank = rank(a) + rank(b).
-#[allow(dead_code)]
 pub fn tensor_outer(a: &DenseTensor, b: &DenseTensor) -> DenseTensor {
     let mut shape = a.shape.clone();
     shape.extend_from_slice(&b.shape);
@@ -568,7 +551,6 @@ pub fn tensor_outer(a: &DenseTensor, b: &DenseTensor) -> DenseTensor {
     DenseTensor { shape, data }
 }
 /// Check whether a DenseTensor is symmetric under swap of two given modes.
-#[allow(dead_code)]
 pub fn is_symmetric_modes(t: &DenseTensor, mode1: usize, mode2: usize, tol: f64) -> bool {
     assert_eq!(
         t.shape[mode1], t.shape[mode2],
@@ -600,7 +582,6 @@ pub fn is_symmetric_modes(t: &DenseTensor, mode1: usize, mode2: usize, tol: f64)
 }
 /// Build a fully symmetric DenseTensor by averaging over all permutations of indices
 /// (only for rank-2 and rank-3 tensors for now; rank-2 reduces to symmetrising a matrix).
-#[allow(dead_code)]
 pub fn symmetrize_tensor(t: &DenseTensor) -> DenseTensor {
     let rank = t.shape.len();
     match rank {
@@ -656,17 +637,15 @@ pub fn symmetrize_tensor(t: &DenseTensor) -> DenseTensor {
 ///
 /// This is the projector onto symmetric second-order tensors:
 /// I^S : A = sym(A) = (A + A^T)/2.
-#[allow(dead_code)]
 pub fn fourth_order_symmetric_identity() -> Tensor4 {
     let mut t = Tensor4::zero();
-    for i in 0..3 {
-        for j in 0..3 {
-            for k in 0..3 {
-                for l in 0..3 {
-                    let v = 0.5
+    for (i, ti) in t.data.iter_mut().enumerate() {
+        for (j, tij) in ti.iter_mut().enumerate() {
+            for (k, tijk) in tij.iter_mut().enumerate() {
+                for (l, tijkl) in tijk.iter_mut().enumerate() {
+                    *tijkl = 0.5
                         * (if i == k && j == l { 1.0 } else { 0.0 }
                             + if i == l && j == k { 1.0 } else { 0.0 });
-                    t.data[i][j][k][l] = v;
                 }
             }
         }
@@ -675,17 +654,15 @@ pub fn fourth_order_symmetric_identity() -> Tensor4 {
 }
 /// The 4th-order skew (antisymmetric) identity tensor:
 /// I^A_ijkl = (delta_ik delta_jl - delta_il delta_jk)/2.
-#[allow(dead_code)]
 pub fn fourth_order_skew_identity() -> Tensor4 {
     let mut t = Tensor4::zero();
-    for i in 0..3 {
-        for j in 0..3 {
-            for k in 0..3 {
-                for l in 0..3 {
-                    let v = 0.5
+    for (i, ti) in t.data.iter_mut().enumerate() {
+        for (j, tij) in ti.iter_mut().enumerate() {
+            for (k, tijk) in tij.iter_mut().enumerate() {
+                for (l, tijkl) in tijk.iter_mut().enumerate() {
+                    *tijkl = 0.5
                         * (if i == k && j == l { 1.0 } else { 0.0 }
                             - if i == l && j == k { 1.0 } else { 0.0 });
-                    t.data[i][j][k][l] = v;
                 }
             }
         }
@@ -694,30 +671,27 @@ pub fn fourth_order_skew_identity() -> Tensor4 {
 }
 /// Compute the double inner product C :: T for a 4th-order elasticity tensor C
 /// and a symmetric second-order tensor T.  Returns sigma_ij = C_ijkl T_kl.
-#[allow(dead_code)]
 pub fn elasticity_stress(c: &Tensor4, strain: &Tensor2) -> Tensor2 {
     c.double_contract_2(strain)
 }
 /// Compliance tensor from stiffness: S = C^{-1} in Voigt form (6×6 matrix inversion).
 ///
 /// Returns `None` if the Voigt matrix is singular (det ≈ 0).
-#[allow(dead_code)]
 pub fn compliance_from_stiffness(c: &Tensor4) -> Option<[[f64; 6]; 6]> {
     let m = KelvinTensor::from_tensor4(c);
     invert_6x6(&m)
 }
 /// Invert a 6×6 matrix using Gauss–Jordan elimination.
-#[allow(dead_code)]
 pub fn invert_6x6(m: &[[f64; 6]; 6]) -> Option<[[f64; 6]; 6]> {
     let mut a = *m;
     let mut inv = [[0.0f64; 6]; 6];
-    for i in 0..6 {
-        inv[i][i] = 1.0;
+    for (i, inv_i) in inv.iter_mut().enumerate() {
+        inv_i[i] = 1.0;
     }
     for col in 0..6 {
         let mut pivot_row = col;
         let mut max_val = a[col][col].abs();
-        for row in (col + 1)..6 {
+        for (row, _) in a.iter().enumerate().skip(col + 1) {
             if a[row][col].abs() > max_val {
                 max_val = a[row][col].abs();
                 pivot_row = row;
@@ -754,21 +728,18 @@ pub fn invert_6x6(m: &[[f64; 6]; 6]) -> Option<[[f64; 6]; 6]> {
 /// Returns the Eshelby tensor S_ijkl.
 ///
 /// Reference: J.D. Eshelby (1957), nu = Poisson's ratio.
-#[allow(dead_code)]
 pub fn eshelby_sphere(nu: f64) -> Tensor4 {
     let mut s = Tensor4::zero();
     let s_iiii = (7.0 - 5.0 * nu) / (15.0 * (1.0 - nu));
     let s_iijj = (5.0 * nu - 1.0) / (15.0 * (1.0 - nu));
     let s_ijij = (4.0 - 5.0 * nu) / (15.0 * (1.0 - nu));
-    for i in 0..3 {
-        s.data[i][i][i][i] = s_iiii;
-    }
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, si) in s.data.iter_mut().enumerate() {
+        si[i][i][i] = s_iiii;
+        for (j, _) in [0usize; 3].iter().enumerate() {
             if i != j {
-                s.data[i][i][j][j] = s_iijj;
-                s.data[i][j][i][j] = s_ijij;
-                s.data[i][j][j][i] = s_ijij;
+                si[i][j][j] = s_iijj;
+                si[j][i][j] = s_ijij;
+                si[j][j][i] = s_ijij;
             }
         }
     }
@@ -782,14 +753,11 @@ mod tests {
         (a - b).abs() < EPS
     }
     fn tensor_approx_eq(a: &Tensor2, b: &Tensor2) -> bool {
-        for i in 0..3 {
-            for j in 0..3 {
-                if !approx_eq(a.data[i][j], b.data[i][j]) {
-                    return false;
-                }
-            }
-        }
-        true
+        a.data.iter().zip(b.data.iter()).all(|(ai, bi)| {
+            ai.iter()
+                .zip(bi.iter())
+                .all(|(aij, bij)| approx_eq(*aij, *bij))
+        })
     }
     #[test]
     fn test_identity_double_contract_equals_trace() {
@@ -1511,13 +1479,13 @@ mod tests {
     fn test_voigt6x6_isotropic_symmetry() {
         let c = Tensor4::isotropic(1.0, 1.0);
         let m = c.to_voigt_matrix();
-        for p in 0..6 {
-            for q in 0..6 {
+        for (p, row_p) in m.iter().enumerate() {
+            for (q, row_q) in m.iter().enumerate() {
                 assert!(
-                    (m[p][q] - m[q][p]).abs() < 1e-10,
+                    (row_p[q] - row_q[p]).abs() < 1e-10,
                     "Voigt 6x6 should be symmetric at [{p}][{q}]: {} vs {}",
-                    m[p][q],
-                    m[q][p]
+                    row_p[q],
+                    row_q[p]
                 );
             }
         }
@@ -1526,11 +1494,11 @@ mod tests {
     fn test_voigt6x6_positive_diagonal() {
         let c = Tensor4::isotropic(1.0, 1.0);
         let m = c.to_voigt_matrix();
-        for p in 0..6 {
+        for (p, row) in m.iter().enumerate() {
             assert!(
-                m[p][p] > 0.0,
+                row[p] > 0.0,
                 "Voigt diagonal M[{p}][{p}] = {} should be > 0",
-                m[p][p]
+                row[p]
             );
         }
     }

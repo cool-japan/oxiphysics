@@ -175,7 +175,6 @@ pub fn apply_velocity_outlet_d3q19(f: &mut [f64; 19], ux_out: f64) -> f64 {
 ///
 /// # Returns
 /// The computed density `ρ` at this boundary cell.
-#[allow(dead_code)]
 pub fn zou_he_top_wall_d2q9(f: &mut [f64; 9], ux_wall: f64, uy_wall: f64) -> f64 {
     let rho = (f[0] + f[1] + f[3] + 2.0 * (f[2] + f[5] + f[6])) / (1.0 + uy_wall);
     f[4] = f[2] - (2.0 / 3.0) * rho * uy_wall;
@@ -190,7 +189,6 @@ pub fn zou_he_top_wall_d2q9(f: &mut [f64; 9], ux_wall: f64, uy_wall: f64) -> f64
 ///
 /// # Returns
 /// The computed density `ρ` at this boundary cell.
-#[allow(dead_code)]
 pub fn zou_he_bottom_wall_d2q9(f: &mut [f64; 9], ux_wall: f64, uy_wall: f64) -> f64 {
     let rho = (f[0] + f[1] + f[3] + 2.0 * (f[4] + f[7] + f[8])) / (1.0 - uy_wall);
     f[2] = f[4] + (2.0 / 3.0) * rho * uy_wall;
@@ -201,7 +199,6 @@ pub fn zou_he_bottom_wall_d2q9(f: &mut [f64; 9], ux_wall: f64, uy_wall: f64) -> 
 /// Zou-He pressure BC: top wall (y = ny-1), D2Q9.
 ///
 /// Sets the density `rho_wall` at the top boundary. Returns computed `uy`.
-#[allow(dead_code)]
 pub fn zou_he_pressure_top_d2q9(f: &mut [f64; 9], rho_wall: f64) -> f64 {
     let uy = -1.0 + (f[0] + f[1] + f[3] + 2.0 * (f[2] + f[5] + f[6])) / rho_wall;
     f[4] = f[2] - (2.0 / 3.0) * rho_wall * uy;
@@ -212,7 +209,6 @@ pub fn zou_he_pressure_top_d2q9(f: &mut [f64; 9], rho_wall: f64) -> f64 {
 /// Zou-He pressure BC: bottom wall (y = 0), D2Q9.
 ///
 /// Sets the density `rho_wall` at the bottom boundary. Returns computed `uy`.
-#[allow(dead_code)]
 pub fn zou_he_pressure_bottom_d2q9(f: &mut [f64; 9], rho_wall: f64) -> f64 {
     let uy = 1.0 - (f[0] + f[1] + f[3] + 2.0 * (f[4] + f[7] + f[8])) / rho_wall;
     f[2] = f[4] + (2.0 / 3.0) * rho_wall * uy;
@@ -224,14 +220,12 @@ pub fn zou_he_pressure_bottom_d2q9(f: &mut [f64; 9], rho_wall: f64) -> f64 {
 ///
 /// For lid-driven cavity: the top wall moves at `ux_wall`, `uy_wall = 0`.
 /// Returns computed density.
-#[allow(dead_code)]
 pub fn zou_he_moving_wall_top_d2q9(f: &mut [f64; 9], ux_wall: f64) -> f64 {
     zou_he_top_wall_d2q9(f, ux_wall, 0.0)
 }
 /// Zou-He moving wall BC: bottom wall with prescribed horizontal velocity, D2Q9.
 ///
 /// Returns computed density.
-#[allow(dead_code)]
 pub fn zou_he_moving_wall_bottom_d2q9(f: &mut [f64; 9], ux_wall: f64) -> f64 {
     zou_he_bottom_wall_d2q9(f, ux_wall, 0.0)
 }
@@ -239,7 +233,6 @@ pub fn zou_he_moving_wall_bottom_d2q9(f: &mut [f64; 9], ux_wall: f64) -> f64 {
 ///
 /// At a corner, two boundary faces meet. The unknown distributions are
 /// determined by bounce-back of the non-equilibrium part plus imposed density.
-#[allow(dead_code)]
 pub fn zou_he_corner_bottom_left_d2q9(f: &mut [f64; 9], rho_wall: f64) {
     f[1] = f[3];
     f[2] = f[4];
@@ -251,7 +244,6 @@ pub fn zou_he_corner_bottom_left_d2q9(f: &mut [f64; 9], rho_wall: f64) {
     f[5] += correction;
 }
 /// Corner treatment for bottom-right corner (x=nx-1, y=0) of D2Q9.
-#[allow(dead_code)]
 pub fn zou_he_corner_bottom_right_d2q9(f: &mut [f64; 9], rho_wall: f64) {
     f[3] = f[1];
     f[2] = f[4];
@@ -263,7 +255,6 @@ pub fn zou_he_corner_bottom_right_d2q9(f: &mut [f64; 9], rho_wall: f64) {
     f[6] += correction;
 }
 /// Corner treatment for top-left corner (x=0, y=ny-1) of D2Q9.
-#[allow(dead_code)]
 pub fn zou_he_corner_top_left_d2q9(f: &mut [f64; 9], rho_wall: f64) {
     f[1] = f[3];
     f[4] = f[2];
@@ -275,7 +266,6 @@ pub fn zou_he_corner_top_left_d2q9(f: &mut [f64; 9], rho_wall: f64) {
     f[8] += correction;
 }
 /// Corner treatment for top-right corner (x=nx-1, y=ny-1) of D2Q9.
-#[allow(dead_code)]
 pub fn zou_he_corner_top_right_d2q9(f: &mut [f64; 9], rho_wall: f64) {
     f[3] = f[1];
     f[4] = f[2];
@@ -293,7 +283,6 @@ pub fn zou_he_corner_top_right_d2q9(f: &mut [f64; 9], rho_wall: f64) {
 ///
 /// # Returns
 /// The computed density `ρ` at this boundary cell.
-#[allow(dead_code)]
 pub fn zou_he_top_face_d3q19(f: &mut [f64; 19], uy_wall: f64) -> f64 {
     let sum_zero_y = f[0] + f[1] + f[2] + f[5] + f[6] + f[11] + f[12] + f[13] + f[14];
     let sum_pos_y = f[3] + f[7] + f[8] + f[15] + f[17];
@@ -312,7 +301,6 @@ pub fn zou_he_top_face_d3q19(f: &mut [f64; 19], uy_wall: f64) -> f64 {
 ///
 /// # Returns
 /// The computed density `ρ` at this boundary cell.
-#[allow(dead_code)]
 pub fn zou_he_bottom_face_d3q19(f: &mut [f64; 19], uy_wall: f64) -> f64 {
     let sum_zero_y = f[0] + f[1] + f[2] + f[5] + f[6] + f[11] + f[12] + f[13] + f[14];
     let sum_neg_y = f[4] + f[9] + f[10] + f[16] + f[18];
@@ -331,7 +319,6 @@ pub fn zou_he_bottom_face_d3q19(f: &mut [f64; 19], uy_wall: f64) -> f64 {
 ///
 /// # Returns
 /// The computed density `ρ` at this boundary cell.
-#[allow(dead_code)]
 pub fn zou_he_front_face_d3q19(f: &mut [f64; 19], uz_wall: f64) -> f64 {
     let sum_zero_z = f[0] + f[1] + f[2] + f[3] + f[4] + f[7] + f[8] + f[9] + f[10];
     let sum_pos_z = f[5] + f[11] + f[12] + f[15] + f[16];
@@ -350,7 +337,6 @@ pub fn zou_he_front_face_d3q19(f: &mut [f64; 19], uz_wall: f64) -> f64 {
 ///
 /// # Returns
 /// The computed density `ρ` at this boundary cell.
-#[allow(dead_code)]
 pub fn zou_he_back_face_d3q19(f: &mut [f64; 19], uz_wall: f64) -> f64 {
     let sum_zero_z = f[0] + f[1] + f[2] + f[3] + f[4] + f[7] + f[8] + f[9] + f[10];
     let sum_neg_z = f[6] + f[13] + f[14] + f[17] + f[18];
@@ -363,7 +349,6 @@ pub fn zou_he_back_face_d3q19(f: &mut [f64; 19], uz_wall: f64) -> f64 {
     rho
 }
 /// Zou-He pressure BC: top face (y = ny-1), D3Q19. Returns computed `uy`.
-#[allow(dead_code)]
 pub fn zou_he_pressure_top_d3q19(f: &mut [f64; 19], rho_wall: f64) -> f64 {
     let sum_zero_y = f[0] + f[1] + f[2] + f[5] + f[6] + f[11] + f[12] + f[13] + f[14];
     let sum_pos_y = f[3] + f[7] + f[8] + f[15] + f[17];
@@ -376,7 +361,6 @@ pub fn zou_he_pressure_top_d3q19(f: &mut [f64; 19], rho_wall: f64) -> f64 {
     uy
 }
 /// Zou-He pressure BC: bottom face (y = 0), D3Q19. Returns computed `uy`.
-#[allow(dead_code)]
 pub fn zou_he_pressure_bottom_d3q19(f: &mut [f64; 19], rho_wall: f64) -> f64 {
     let sum_zero_y = f[0] + f[1] + f[2] + f[5] + f[6] + f[11] + f[12] + f[13] + f[14];
     let sum_neg_y = f[4] + f[9] + f[10] + f[16] + f[18];
@@ -395,7 +379,6 @@ pub fn zou_he_pressure_bottom_d3q19(f: &mut [f64; 19], rho_wall: f64) -> f64 {
 ///
 /// # Returns
 /// Computed density `ρ`.
-#[allow(dead_code)]
 pub fn zou_he_inlet_left_general_d2q9(f: &mut [f64; 9], ux_in: f64, uy_in: f64) -> f64 {
     let rho = (f[0] + f[2] + f[4] + 2.0 * (f[3] + f[6] + f[7])) / (1.0 - ux_in);
     f[1] = f[3] + (2.0 / 3.0) * rho * ux_in;
@@ -407,7 +390,6 @@ pub fn zou_he_inlet_left_general_d2q9(f: &mut [f64; 9], ux_in: f64, uy_in: f64) 
 ///
 /// # Returns
 /// Computed velocity `ux`.
-#[allow(dead_code)]
 pub fn zou_he_outlet_right_general_d2q9(f: &mut [f64; 9], rho_out: f64, uy_out: f64) -> f64 {
     let ux = -1.0 + (f[0] + f[2] + f[4] + 2.0 * (f[1] + f[5] + f[8])) / rho_out;
     f[3] = f[1] - (2.0 / 3.0) * rho_out * ux;
@@ -419,7 +401,6 @@ pub fn zou_he_outlet_right_general_d2q9(f: &mut [f64; 9], rho_out: f64, uy_out: 
 ///
 /// Reverses all distributions that would leave through x=0. This is a
 /// simple half-way bounce-back (first-order accurate).
-#[allow(dead_code)]
 pub fn bounce_back_left_d2q9(f: &mut [f64; 9]) {
     let (f1, f3) = (f[1], f[3]);
     let (f5, f7) = (f[5], f[7]);
@@ -432,7 +413,6 @@ pub fn bounce_back_left_d2q9(f: &mut [f64; 9]) {
     f[6] = f8;
 }
 /// Apply a full bounce-back no-slip condition on a right wall cell, D2Q9.
-#[allow(dead_code)]
 pub fn bounce_back_right_d2q9(f: &mut [f64; 9]) {
     let (f1, f3) = (f[1], f[3]);
     let (f5, f7) = (f[5], f[7]);
@@ -445,7 +425,6 @@ pub fn bounce_back_right_d2q9(f: &mut [f64; 9]) {
     f[6] = f8;
 }
 /// Apply a full bounce-back no-slip condition on a bottom wall cell, D2Q9.
-#[allow(dead_code)]
 pub fn bounce_back_bottom_d2q9(f: &mut [f64; 9]) {
     let (f2, f4) = (f[2], f[4]);
     let (f5, f7) = (f[5], f[7]);
@@ -458,7 +437,6 @@ pub fn bounce_back_bottom_d2q9(f: &mut [f64; 9]) {
     f[8] = f6;
 }
 /// Apply a full bounce-back no-slip condition on a top wall cell, D2Q9.
-#[allow(dead_code)]
 pub fn bounce_back_top_d2q9(f: &mut [f64; 9]) {
     let (f2, f4) = (f[2], f[4]);
     let (f5, f7) = (f[5], f[7]);
@@ -473,7 +451,6 @@ pub fn bounce_back_top_d2q9(f: &mut [f64; 9]) {
 /// Compute macroscopic density and velocity from a D2Q9 distribution.
 ///
 /// Returns `(rho, ux, uy)`.
-#[allow(dead_code)]
 pub fn macroscopic_d2q9(f: &[f64; 9]) -> (f64, f64, f64) {
     use crate::lattice::D2Q9_VELOCITIES;
     let rho: f64 = f.iter().sum();
@@ -490,7 +467,6 @@ pub fn macroscopic_d2q9(f: &[f64; 9]) -> (f64, f64, f64) {
 /// Compute macroscopic density and velocity from a D3Q19 distribution.
 ///
 /// Returns `(rho, ux, uy, uz)`.
-#[allow(dead_code)]
 pub fn macroscopic_d3q19(f: &[f64; 19]) -> (f64, f64, f64, f64) {
     use crate::lattice::D3Q19_VELOCITIES;
     let rho: f64 = f.iter().sum();
@@ -520,7 +496,6 @@ pub fn macroscopic_d3q19(f: &[f64; 19]) -> (f64, f64, f64, f64) {
 ///
 /// # Returns
 /// Computed density `ρ`.
-#[allow(dead_code)]
 pub fn zou_he_shear_inlet_left_d2q9(
     f: &mut [f64; 9],
     ux_base: f64,
@@ -531,7 +506,6 @@ pub fn zou_he_shear_inlet_left_d2q9(
     zou_he_inlet_left(f, ux_in)
 }
 /// Zou-He pressure BC: front face (z = nz-1), D3Q19. Returns computed `uz`.
-#[allow(dead_code)]
 pub fn zou_he_pressure_front_d3q19(f: &mut [f64; 19], rho_wall: f64) -> f64 {
     let sum_zero_z = f[0] + f[1] + f[2] + f[3] + f[4] + f[7] + f[8] + f[9] + f[10];
     let sum_pos_z = f[5] + f[11] + f[12] + f[15] + f[16];
@@ -544,7 +518,6 @@ pub fn zou_he_pressure_front_d3q19(f: &mut [f64; 19], rho_wall: f64) -> f64 {
     uz
 }
 /// Zou-He pressure BC: back face (z = 0), D3Q19. Returns computed `uz`.
-#[allow(dead_code)]
 pub fn zou_he_pressure_back_d3q19(f: &mut [f64; 19], rho_wall: f64) -> f64 {
     let sum_zero_z = f[0] + f[1] + f[2] + f[3] + f[4] + f[7] + f[8] + f[9] + f[10];
     let sum_neg_z = f[6] + f[13] + f[14] + f[17] + f[18];
@@ -560,7 +533,6 @@ pub fn zou_he_pressure_back_d3q19(f: &mut [f64; 19], rho_wall: f64) -> f64 {
 ///
 /// # Returns
 /// Computed density `ρ`.
-#[allow(dead_code)]
 pub fn zou_he_velocity_front_d3q19(f: &mut [f64; 19], uz_wall: f64) -> f64 {
     zou_he_front_face_d3q19(f, uz_wall)
 }
@@ -568,7 +540,6 @@ pub fn zou_he_velocity_front_d3q19(f: &mut [f64; 19], uz_wall: f64) -> f64 {
 ///
 /// # Returns
 /// Computed density `ρ`.
-#[allow(dead_code)]
 pub fn zou_he_velocity_back_d3q19(f: &mut [f64; 19], uz_wall: f64) -> f64 {
     zou_he_back_face_d3q19(f, uz_wall)
 }
@@ -576,7 +547,6 @@ pub fn zou_he_velocity_back_d3q19(f: &mut [f64; 19], uz_wall: f64) -> f64 {
 ///
 /// Sets the outlet density `rho_out` and reconstructs unknown distributions
 /// pointing in the +x direction. Returns the computed velocity `ux`.
-#[allow(dead_code)]
 pub fn zou_he_pressure_outlet_left_d3q19(f: &mut [f64; 19], rho_out: f64) -> f64 {
     let sum_zero_x = f[0] + f[3] + f[4] + f[5] + f[6] + f[15] + f[16] + f[17] + f[18];
     let sum_pos_x = f[1] + f[7] + f[9] + f[11] + f[13];
@@ -596,7 +566,6 @@ pub fn zou_he_pressure_outlet_left_d3q19(f: &mut [f64; 19], rho_out: f64) -> f64
 ///
 /// # Returns
 /// A 9-element equilibrium distribution array.
-#[allow(dead_code)]
 pub fn d2q9_equilibrium(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
     use crate::lattice::{D2Q9_VELOCITIES, D2Q9_WEIGHTS};
     let cs2 = 1.0 / 3.0;
@@ -616,7 +585,6 @@ pub fn d2q9_equilibrium(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
 ///
 /// # Returns
 /// A 19-element equilibrium distribution array.
-#[allow(dead_code)]
 pub fn d3q19_equilibrium(rho: f64, ux: f64, uy: f64, uz: f64) -> [f64; 19] {
     use crate::lattice::{D3Q19_VELOCITIES, D3Q19_WEIGHTS};
     let cs2 = 1.0 / 3.0;
@@ -633,8 +601,538 @@ pub fn d3q19_equilibrium(rho: f64, ux: f64, uy: f64, uz: f64) -> [f64; 19] {
     }
     feq
 }
+/// Zou-He pressure boundary condition for the left face (x = 0) of D3Q19.
+///
+/// Prescribes density (pressure) at the left inlet; velocity is computed from
+/// the non-equilibrium bounce-back method (Zou & He 1997).
+///
+/// # Arguments
+/// * `f`       – mutable reference to the 19-element D3Q19 distribution
+/// * `rho_in`  – prescribed inlet density
+///
+/// # Returns
+/// The computed inlet velocity `ux`.
+pub fn zou_he_pressure_left_d3q19(f: &mut [f64; 19], rho_in: f64) -> f64 {
+    let sum_known = f[0]
+        + f[2]
+        + f[3]
+        + f[4]
+        + f[5]
+        + f[6]
+        + f[8]
+        + f[10]
+        + f[12]
+        + f[14]
+        + f[15]
+        + f[16]
+        + f[17]
+        + f[18];
+    let ux = 1.0 - (sum_known + 2.0 * (f[2] + f[8] + f[10] + f[12] + f[14])) / rho_in;
+    let rho_ux = rho_in * ux;
+    f[1] = f[2] + (2.0 / 3.0) * rho_ux;
+    f[7] = f[8] - 0.5 * (f[3] - f[4]) + (1.0 / 6.0) * rho_ux;
+    f[9] = f[10] + 0.5 * (f[3] - f[4]) + (1.0 / 6.0) * rho_ux;
+    f[11] = f[12] - 0.5 * (f[5] - f[6]) + (1.0 / 6.0) * rho_ux;
+    f[13] = f[14] + 0.5 * (f[5] - f[6]) + (1.0 / 6.0) * rho_ux;
+    ux
+}
+/// Zou-He pressure boundary condition for the right face (x = Nx-1) of D3Q19.
+///
+/// Prescribes outlet density; velocity is derived from the non-equilibrium method.
+///
+/// # Returns
+/// The computed outlet velocity `ux`.
+pub fn zou_he_pressure_right_d3q19(f: &mut [f64; 19], rho_out: f64) -> f64 {
+    let sum_known = f[0]
+        + f[1]
+        + f[3]
+        + f[4]
+        + f[5]
+        + f[6]
+        + f[7]
+        + f[9]
+        + f[11]
+        + f[13]
+        + f[15]
+        + f[16]
+        + f[17]
+        + f[18];
+    let ux = -1.0 + (sum_known + 2.0 * (f[1] + f[7] + f[9] + f[11] + f[13])) / rho_out;
+    let rho_ux = rho_out * ux;
+    f[2] = f[1] - (2.0 / 3.0) * rho_ux;
+    f[8] = f[7] + 0.5 * (f[3] - f[4]) - (1.0 / 6.0) * rho_ux;
+    f[10] = f[9] - 0.5 * (f[3] - f[4]) - (1.0 / 6.0) * rho_ux;
+    f[12] = f[11] + 0.5 * (f[5] - f[6]) - (1.0 / 6.0) * rho_ux;
+    f[14] = f[13] - 0.5 * (f[5] - f[6]) - (1.0 / 6.0) * rho_ux;
+    ux
+}
+/// D3Q27 weights for reference in boundary conditions.
+pub(super) const D3Q27_W: [f64; 27] = [
+    8.0 / 27.0,
+    2.0 / 27.0,
+    2.0 / 27.0,
+    2.0 / 27.0,
+    2.0 / 27.0,
+    2.0 / 27.0,
+    2.0 / 27.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 54.0,
+    1.0 / 216.0,
+    1.0 / 216.0,
+    1.0 / 216.0,
+    1.0 / 216.0,
+    1.0 / 216.0,
+    1.0 / 216.0,
+    1.0 / 216.0,
+    1.0 / 216.0,
+];
+/// Compute D3Q27 equilibrium distribution.
+///
+/// Standard second-order quadratic expansion:
+/// `feq_i = w_i ρ (1 + c·u/cs² + (c·u)²/(2cs⁴) − u²/(2cs²))`
+pub fn d3q27_equilibrium(rho: f64, ux: f64, uy: f64, uz: f64) -> [f64; 27] {
+    let cv: [[i32; 3]; 27] = [
+        [0, 0, 0],
+        [1, 0, 0],
+        [-1, 0, 0],
+        [0, 1, 0],
+        [0, -1, 0],
+        [0, 0, 1],
+        [0, 0, -1],
+        [1, 1, 0],
+        [-1, 1, 0],
+        [1, -1, 0],
+        [-1, -1, 0],
+        [1, 0, 1],
+        [-1, 0, 1],
+        [1, 0, -1],
+        [-1, 0, -1],
+        [0, 1, 1],
+        [0, -1, 1],
+        [0, 1, -1],
+        [0, -1, -1],
+        [1, 1, 1],
+        [-1, 1, 1],
+        [1, -1, 1],
+        [-1, -1, 1],
+        [1, 1, -1],
+        [-1, 1, -1],
+        [1, -1, -1],
+        [-1, -1, -1],
+    ];
+    let u_sq = ux * ux + uy * uy + uz * uz;
+    let mut feq = [0.0f64; 27];
+    for i in 0..27 {
+        let cx = cv[i][0] as f64;
+        let cy = cv[i][1] as f64;
+        let cz = cv[i][2] as f64;
+        let eu = cx * ux + cy * uy + cz * uz;
+        feq[i] = D3Q27_W[i] * rho * (1.0 + 3.0 * eu + 4.5 * eu * eu - 1.5 * u_sq);
+    }
+    feq
+}
+/// Zou-He velocity inlet for D3Q27 left face (x = 0).
+///
+/// Prescribes the full velocity (ux, uy, uz) at the left boundary.
+/// The unknown distributions pointing into the domain (+x, +x+y, +x-y,
+/// +x+z, +x-z, +x+y+z, +x+y-z, +x-y+z, +x-y-z) are reconstructed
+/// using the non-equilibrium bounce-back method.
+///
+/// # Returns
+/// The computed boundary density ρ.
+pub fn zou_he_velocity_inlet_d3q27(f: &mut [f64; 27], ux: f64, uy: f64, uz: f64) -> f64 {
+    let sum_known = f[0]
+        + f[2]
+        + f[4]
+        + f[6]
+        + f[8]
+        + f[10]
+        + f[12]
+        + f[14]
+        + f[16]
+        + f[18]
+        + f[20]
+        + f[22]
+        + f[24]
+        + f[26];
+    let sum_left = 2.0 * (f[2] + f[8] + f[10] + f[12] + f[14] + f[20] + f[22] + f[24] + f[26]);
+    let rho = (sum_known + sum_left) / (1.0 - ux);
+    let feq = d3q27_equilibrium(rho, ux, uy, uz);
+    let feq_opp = d3q27_equilibrium(rho, -ux, -uy, -uz);
+    let unknowns = [1usize, 7, 9, 11, 13, 19, 21, 23, 25];
+    let opposites = [2usize, 8, 10, 12, 14, 20, 22, 24, 26];
+    for (&u_idx, &o_idx) in unknowns.iter().zip(opposites.iter()) {
+        f[u_idx] = feq[u_idx] - feq_opp[o_idx] + f[o_idx];
+    }
+    rho
+}
+/// Zou-He pressure outlet for D3Q27 right face (x = Nx-1).
+///
+/// Prescribes outlet density ρ_out; velocity is computed from continuity.
+///
+/// # Returns
+/// The computed outlet velocity ux.
+pub fn zou_he_pressure_outlet_d3q27(f: &mut [f64; 27], rho_out: f64) -> f64 {
+    let sum_known = f[0]
+        + f[1]
+        + f[3]
+        + f[5]
+        + f[7]
+        + f[9]
+        + f[11]
+        + f[13]
+        + f[15]
+        + f[17]
+        + f[19]
+        + f[21]
+        + f[23]
+        + f[25];
+    let sum_right = 2.0 * (f[1] + f[7] + f[9] + f[11] + f[13] + f[19] + f[21] + f[23] + f[25]);
+    let ux = -1.0 + (sum_known + sum_right) / rho_out;
+    let feq = d3q27_equilibrium(rho_out, ux, 0.0, 0.0);
+    let feq_neg = d3q27_equilibrium(rho_out, -ux, 0.0, 0.0);
+    let unknowns = [2usize, 8, 10, 12, 14, 20, 22, 24, 26];
+    let opposites = [1usize, 7, 9, 11, 13, 19, 21, 23, 25];
+    for (&u_idx, &o_idx) in unknowns.iter().zip(opposites.iter()) {
+        f[u_idx] = feq[u_idx] - feq_neg[o_idx] + f[o_idx];
+    }
+    ux
+}
+/// Convective outlet boundary condition for D2Q9 right face.
+///
+/// Implements the advective (convective) outflow condition:
+/// `∂f/∂t + uc ∂f/∂x = 0`
+/// where uc is the convective velocity.  The boundary cell distribution is
+/// updated by: `f_new = (f_old + uc * f_interior) / (1 + uc)`.
+///
+/// # Arguments
+/// * `f_boundary`  – distribution at the outlet cell (x = Nx-1)
+/// * `f_interior`  – distribution at the adjacent interior cell (x = Nx-2)
+/// * `uc`          – convective velocity (typically local or mean ux)
+///
+/// # Returns
+/// Updated boundary distribution.
+pub fn convective_outlet_d2q9(f_boundary: &[f64; 9], f_interior: &[f64; 9], uc: f64) -> [f64; 9] {
+    let mut f_new = [0.0f64; 9];
+    for i in 0..9 {
+        f_new[i] = (f_boundary[i] + uc * f_interior[i]) / (1.0 + uc);
+    }
+    f_new
+}
+/// Convective outlet boundary condition for D3Q19 right face.
+///
+/// Same as the D2Q9 version but for 19-component distributions.
+///
+/// # Arguments
+/// * `f_boundary`  – distribution at the outlet cell
+/// * `f_interior`  – distribution at the adjacent interior cell
+/// * `uc`          – convective velocity
+///
+/// # Returns
+/// Updated boundary distribution.
+pub fn convective_outlet_d3q19(
+    f_boundary: &[f64; 19],
+    f_interior: &[f64; 19],
+    uc: f64,
+) -> [f64; 19] {
+    let mut f_new = [0.0f64; 19];
+    for i in 0..19 {
+        f_new[i] = (f_boundary[i] + uc * f_interior[i]) / (1.0 + uc);
+    }
+    f_new
+}
+/// Neumann (zero-gradient) outlet boundary condition for D2Q9.
+///
+/// Implements a zero normal-gradient condition: f_boundary = f_interior.
+/// This is the simplest open boundary and works well for fully developed flows.
+///
+/// # Arguments
+/// * `f_boundary` – mutable distribution at outlet cell (updated in place)
+/// * `f_interior` – distribution at interior cell
+pub fn neumann_outlet_d2q9(f_boundary: &mut [f64; 9], f_interior: &[f64; 9]) {
+    f_boundary.copy_from_slice(f_interior);
+}
+/// Neumann (zero-gradient) outlet boundary condition for D3Q19.
+///
+/// Copies the interior distribution to the boundary cell for all 19 directions.
+pub fn neumann_outlet_d3q19(f_boundary: &mut [f64; 19], f_interior: &[f64; 19]) {
+    f_boundary.copy_from_slice(f_interior);
+}
+/// Second-order extrapolation outlet for D2Q9 (non-reflective).
+///
+/// Uses a quadratic extrapolation scheme based on two interior nodes:
+/// `f_boundary ≈ 2 f_1 − f_2`
+/// where f_1 is the first interior cell and f_2 the second.
+/// This reduces spurious wave reflections compared to zero-gradient.
+///
+/// # Arguments
+/// * `f_boundary` – mutable distribution at outlet (x = Nx-1)
+/// * `f_1`        – distribution at x = Nx-2
+/// * `f_2`        – distribution at x = Nx-3
+pub fn extrapolation_outlet_d2q9(f_boundary: &mut [f64; 9], f_1: &[f64; 9], f_2: &[f64; 9]) {
+    for i in 0..9 {
+        f_boundary[i] = 2.0 * f_1[i] - f_2[i];
+    }
+}
+/// Second-order extrapolation outlet for D3Q19.
+///
+/// Same quadratic extrapolation as the D2Q9 version.
+pub fn extrapolation_outlet_d3q19(f_boundary: &mut [f64; 19], f_1: &[f64; 19], f_2: &[f64; 19]) {
+    for i in 0..19 {
+        f_boundary[i] = 2.0 * f_1[i] - f_2[i];
+    }
+}
+/// Third-order extrapolation outlet for D3Q19.
+///
+/// Uses three interior nodes: `f_boundary = 3f_1 - 3f_2 + f_3`.
+/// Provides better accuracy at the cost of requiring one additional layer.
+pub fn extrapolation3_outlet_d3q19(
+    f_boundary: &mut [f64; 19],
+    f_1: &[f64; 19],
+    f_2: &[f64; 19],
+    f_3: &[f64; 19],
+) {
+    for i in 0..19 {
+        f_boundary[i] = 3.0 * f_1[i] - 3.0 * f_2[i] + f_3[i];
+    }
+}
+/// Characteristic-based non-reflecting boundary condition for D2Q9 outlet.
+///
+/// Implements a simplified LODI (Local One-Dimensional Inviscid) approach.
+/// The outgoing waves carry information out of the domain; incoming waves
+/// are set to zero (fully non-reflecting) or estimated from far-field state.
+///
+/// Reference: Poinsot & Lele, J. Comput. Phys. 101, 104–129 (1992).
+///
+/// # Arguments
+/// * `f`     – distribution at outlet cell (updated in place)
+/// * `rho`   – current local density
+/// * `ux`    – current local x-velocity
+/// * `uy`    – current local y-velocity
+/// * `rho0`  – target far-field density
+/// * `sigma` – relaxation coefficient for incoming wave (0 = non-reflecting)
+pub fn characteristic_outlet_d2q9(
+    f: &mut [f64; 9],
+    rho: f64,
+    ux: f64,
+    uy: f64,
+    rho0: f64,
+    sigma: f64,
+) {
+    let cs = (1.0_f64 / 3.0).sqrt();
+    let dp = (rho - rho0) * cs * cs;
+    let d_rho = -sigma * dp / (cs * cs);
+    let rho_new = rho + d_rho;
+    let feq = d2q9_equilibrium(rho_new, ux, uy);
+    f.copy_from_slice(&feq);
+}
+/// Characteristic-based non-reflecting boundary condition for D3Q19 outlet.
+///
+/// Extends the LODI approach to 3D.  The pressure perturbation drives a
+/// relaxation of the boundary density toward the target ρ₀.
+///
+/// # Arguments
+/// * `f`     – mutable distribution at outlet
+/// * `rho`   – current density
+/// * `ux`    – x-velocity
+/// * `uy`    – y-velocity
+/// * `uz`    – z-velocity
+/// * `rho0`  – target far-field density
+/// * `sigma` – relaxation coefficient
+pub fn characteristic_outlet_d3q19(
+    f: &mut [f64; 19],
+    rho: f64,
+    ux: f64,
+    uy: f64,
+    uz: f64,
+    rho0: f64,
+    sigma: f64,
+) {
+    let cs2 = 1.0 / 3.0;
+    let dp = (rho - rho0) * cs2;
+    let rho_new = rho - sigma * dp / cs2;
+    let feq = d3q19_equilibrium(rho_new, ux, uy, uz);
+    f.copy_from_slice(&feq);
+}
+/// Sponge zone (buffer layer) absorption for D2Q9.
+///
+/// Gradually damps the distribution toward a target state within a sponge region.
+/// The damping strength increases linearly from `sigma_min` at the sponge inlet
+/// to `sigma_max` at the domain boundary:
+/// `f_new = f + sigma(x) * (feq_target - f)`
+///
+/// # Arguments
+/// * `f`          – mutable distribution at sponge cell
+/// * `rho_target` – target density (e.g., far-field value)
+/// * `ux_target`  – target x-velocity
+/// * `uy_target`  – target y-velocity
+/// * `sigma`      – local damping strength ∈ \[0, 1\]
+pub fn sponge_zone_d2q9(
+    f: &mut [f64; 9],
+    rho_target: f64,
+    ux_target: f64,
+    uy_target: f64,
+    sigma: f64,
+) {
+    let feq_target = d2q9_equilibrium(rho_target, ux_target, uy_target);
+    for i in 0..9 {
+        f[i] += sigma * (feq_target[i] - f[i]);
+    }
+}
+/// Sponge zone absorption for D3Q19.
+///
+/// Same damping formula as D2Q9 but extended to 3D.
+///
+/// # Arguments
+/// * `f`          – mutable distribution at sponge cell
+/// * `rho_target` – target density
+/// * `ux_target`  – target x-velocity
+/// * `uy_target`  – target y-velocity
+/// * `uz_target`  – target z-velocity
+/// * `sigma`      – local damping strength ∈ \[0, 1\]
+pub fn sponge_zone_d3q19(
+    f: &mut [f64; 19],
+    rho_target: f64,
+    ux_target: f64,
+    uy_target: f64,
+    uz_target: f64,
+    sigma: f64,
+) {
+    let feq_target = d3q19_equilibrium(rho_target, ux_target, uy_target, uz_target);
+    for i in 0..19 {
+        f[i] += sigma * (feq_target[i] - f[i]);
+    }
+}
+/// Compute sponge zone damping coefficient as a function of position.
+///
+/// Uses a smooth cosine ramp from 0 at `x_start` to `sigma_max` at `x_end`:
+/// `σ(x) = σ_max * 0.5 * (1 − cos(π (x − x_start)/(x_end − x_start)))`
+///
+/// # Arguments
+/// * `x`         – current position
+/// * `x_start`   – sponge zone start
+/// * `x_end`     – sponge zone end (domain boundary)
+/// * `sigma_max` – maximum damping coefficient
+///
+/// # Returns
+/// Damping coefficient σ ∈ \[0, sigma_max\].
+pub fn sponge_sigma(x: f64, x_start: f64, x_end: f64, sigma_max: f64) -> f64 {
+    if x <= x_start {
+        return 0.0;
+    }
+    if x >= x_end {
+        return sigma_max;
+    }
+    let xi = (x - x_start) / (x_end - x_start);
+    sigma_max * 0.5 * (1.0 - (std::f64::consts::PI * xi).cos())
+}
+/// Exponential sponge damping profile.
+///
+/// `σ(x) = σ_max * (exp(α ξ) − 1) / (exp(α) − 1)`
+/// where ξ = (x − x_start) / (x_end − x_start) and α controls steepness.
+pub fn sponge_sigma_exponential(
+    x: f64,
+    x_start: f64,
+    x_end: f64,
+    sigma_max: f64,
+    alpha: f64,
+) -> f64 {
+    if x <= x_start {
+        return 0.0;
+    }
+    if x >= x_end {
+        return sigma_max;
+    }
+    let xi = (x - x_start) / (x_end - x_start);
+    let denom = alpha.exp() - 1.0;
+    if denom.abs() < 1e-10 {
+        sigma_max * xi
+    } else {
+        sigma_max * ((alpha * xi).exp() - 1.0) / denom
+    }
+}
+/// Compute macroscopic density and velocity from a D3Q27 distribution.
+///
+/// # Returns
+/// `(rho, ux, uy, uz)` — density and three velocity components.
+pub fn macroscopic_d3q27(f: &[f64; 27]) -> (f64, f64, f64, f64) {
+    let cv: [[i32; 3]; 27] = [
+        [0, 0, 0],
+        [1, 0, 0],
+        [-1, 0, 0],
+        [0, 1, 0],
+        [0, -1, 0],
+        [0, 0, 1],
+        [0, 0, -1],
+        [1, 1, 0],
+        [-1, 1, 0],
+        [1, -1, 0],
+        [-1, -1, 0],
+        [1, 0, 1],
+        [-1, 0, 1],
+        [1, 0, -1],
+        [-1, 0, -1],
+        [0, 1, 1],
+        [0, -1, 1],
+        [0, 1, -1],
+        [0, -1, -1],
+        [1, 1, 1],
+        [-1, 1, 1],
+        [1, -1, 1],
+        [-1, -1, 1],
+        [1, 1, -1],
+        [-1, 1, -1],
+        [1, -1, -1],
+        [-1, -1, -1],
+    ];
+    let mut rho = 0.0f64;
+    let mut jx = 0.0f64;
+    let mut jy = 0.0f64;
+    let mut jz = 0.0f64;
+    for i in 0..27 {
+        rho += f[i];
+        jx += f[i] * cv[i][0] as f64;
+        jy += f[i] * cv[i][1] as f64;
+        jz += f[i] * cv[i][2] as f64;
+    }
+    let inv_rho = if rho > 1e-14 { 1.0 / rho } else { 1.0 };
+    (rho, jx * inv_rho, jy * inv_rho, jz * inv_rho)
+}
+/// Compute a 2D parabolic (Poiseuille) velocity profile.
+///
+/// Returns the x-velocity at position y ∈ \[0, H\] given peak velocity u_max:
+/// `u(y) = u_max * 4y(H − y)/H²`
+///
+/// # Arguments
+/// * `y`     – transverse coordinate
+/// * `h`     – channel height
+/// * `u_max` – peak centerline velocity
+pub fn poiseuille_profile(y: f64, h: f64, u_max: f64) -> f64 {
+    u_max * 4.0 * y * (h - y) / (h * h)
+}
+/// Compute an error-function (tanh) shear layer profile.
+///
+/// `u(y) = 0.5 * u_max * (1 + tanh((y − y_c) / δ))`
+///
+/// # Arguments
+/// * `y`     – transverse coordinate
+/// * `y_c`   – center of the shear layer
+/// * `delta` – shear layer thickness
+/// * `u_max` – velocity jump amplitude
+pub fn tanh_shear_profile(y: f64, y_c: f64, delta: f64, u_max: f64) -> f64 {
+    0.5 * u_max * (1.0 + ((y - y_c) / delta).tanh())
+}
 #[cfg(test)]
-#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use crate::lattice::{D2Q9_VELOCITIES, D2Q9_WEIGHTS, D3Q19_VELOCITIES, D3Q19_WEIGHTS};
@@ -1346,537 +1844,4 @@ mod tests {
             "Outlet rho should equal prescribed 1: {rho_out}"
         );
     }
-}
-/// Zou-He pressure boundary condition for the left face (x = 0) of D3Q19.
-///
-/// Prescribes density (pressure) at the left inlet; velocity is computed from
-/// the non-equilibrium bounce-back method (Zou & He 1997).
-///
-/// # Arguments
-/// * `f`       – mutable reference to the 19-element D3Q19 distribution
-/// * `rho_in`  – prescribed inlet density
-///
-/// # Returns
-/// The computed inlet velocity `ux`.
-pub fn zou_he_pressure_left_d3q19(f: &mut [f64; 19], rho_in: f64) -> f64 {
-    let sum_known = f[0]
-        + f[2]
-        + f[3]
-        + f[4]
-        + f[5]
-        + f[6]
-        + f[8]
-        + f[10]
-        + f[12]
-        + f[14]
-        + f[15]
-        + f[16]
-        + f[17]
-        + f[18];
-    let ux = 1.0 - (sum_known + 2.0 * (f[2] + f[8] + f[10] + f[12] + f[14])) / rho_in;
-    let rho_ux = rho_in * ux;
-    f[1] = f[2] + (2.0 / 3.0) * rho_ux;
-    f[7] = f[8] - 0.5 * (f[3] - f[4]) + (1.0 / 6.0) * rho_ux;
-    f[9] = f[10] + 0.5 * (f[3] - f[4]) + (1.0 / 6.0) * rho_ux;
-    f[11] = f[12] - 0.5 * (f[5] - f[6]) + (1.0 / 6.0) * rho_ux;
-    f[13] = f[14] + 0.5 * (f[5] - f[6]) + (1.0 / 6.0) * rho_ux;
-    ux
-}
-/// Zou-He pressure boundary condition for the right face (x = Nx-1) of D3Q19.
-///
-/// Prescribes outlet density; velocity is derived from the non-equilibrium method.
-///
-/// # Returns
-/// The computed outlet velocity `ux`.
-pub fn zou_he_pressure_right_d3q19(f: &mut [f64; 19], rho_out: f64) -> f64 {
-    let sum_known = f[0]
-        + f[1]
-        + f[3]
-        + f[4]
-        + f[5]
-        + f[6]
-        + f[7]
-        + f[9]
-        + f[11]
-        + f[13]
-        + f[15]
-        + f[16]
-        + f[17]
-        + f[18];
-    let ux = -1.0 + (sum_known + 2.0 * (f[1] + f[7] + f[9] + f[11] + f[13])) / rho_out;
-    let rho_ux = rho_out * ux;
-    f[2] = f[1] - (2.0 / 3.0) * rho_ux;
-    f[8] = f[7] + 0.5 * (f[3] - f[4]) - (1.0 / 6.0) * rho_ux;
-    f[10] = f[9] - 0.5 * (f[3] - f[4]) - (1.0 / 6.0) * rho_ux;
-    f[12] = f[11] + 0.5 * (f[5] - f[6]) - (1.0 / 6.0) * rho_ux;
-    f[14] = f[13] - 0.5 * (f[5] - f[6]) - (1.0 / 6.0) * rho_ux;
-    ux
-}
-/// D3Q27 weights for reference in boundary conditions.
-pub(super) const D3Q27_W: [f64; 27] = [
-    8.0 / 27.0,
-    2.0 / 27.0,
-    2.0 / 27.0,
-    2.0 / 27.0,
-    2.0 / 27.0,
-    2.0 / 27.0,
-    2.0 / 27.0,
-    1.0 / 54.0,
-    1.0 / 54.0,
-    1.0 / 54.0,
-    1.0 / 54.0,
-    1.0 / 54.0,
-    1.0 / 54.0,
-    1.0 / 54.0,
-    1.0 / 54.0,
-    1.0 / 54.0,
-    1.0 / 54.0,
-    1.0 / 54.0,
-    1.0 / 54.0,
-    1.0 / 216.0,
-    1.0 / 216.0,
-    1.0 / 216.0,
-    1.0 / 216.0,
-    1.0 / 216.0,
-    1.0 / 216.0,
-    1.0 / 216.0,
-    1.0 / 216.0,
-];
-/// Compute D3Q27 equilibrium distribution.
-///
-/// Standard second-order quadratic expansion:
-/// `feq_i = w_i ρ (1 + c·u/cs² + (c·u)²/(2cs⁴) − u²/(2cs²))`
-pub fn d3q27_equilibrium(rho: f64, ux: f64, uy: f64, uz: f64) -> [f64; 27] {
-    let cv: [[i32; 3]; 27] = [
-        [0, 0, 0],
-        [1, 0, 0],
-        [-1, 0, 0],
-        [0, 1, 0],
-        [0, -1, 0],
-        [0, 0, 1],
-        [0, 0, -1],
-        [1, 1, 0],
-        [-1, 1, 0],
-        [1, -1, 0],
-        [-1, -1, 0],
-        [1, 0, 1],
-        [-1, 0, 1],
-        [1, 0, -1],
-        [-1, 0, -1],
-        [0, 1, 1],
-        [0, -1, 1],
-        [0, 1, -1],
-        [0, -1, -1],
-        [1, 1, 1],
-        [-1, 1, 1],
-        [1, -1, 1],
-        [-1, -1, 1],
-        [1, 1, -1],
-        [-1, 1, -1],
-        [1, -1, -1],
-        [-1, -1, -1],
-    ];
-    let u_sq = ux * ux + uy * uy + uz * uz;
-    let mut feq = [0.0f64; 27];
-    for i in 0..27 {
-        let cx = cv[i][0] as f64;
-        let cy = cv[i][1] as f64;
-        let cz = cv[i][2] as f64;
-        let eu = cx * ux + cy * uy + cz * uz;
-        feq[i] = D3Q27_W[i] * rho * (1.0 + 3.0 * eu + 4.5 * eu * eu - 1.5 * u_sq);
-    }
-    feq
-}
-/// Zou-He velocity inlet for D3Q27 left face (x = 0).
-///
-/// Prescribes the full velocity (ux, uy, uz) at the left boundary.
-/// The unknown distributions pointing into the domain (+x, +x+y, +x-y,
-/// +x+z, +x-z, +x+y+z, +x+y-z, +x-y+z, +x-y-z) are reconstructed
-/// using the non-equilibrium bounce-back method.
-///
-/// # Returns
-/// The computed boundary density ρ.
-pub fn zou_he_velocity_inlet_d3q27(f: &mut [f64; 27], ux: f64, uy: f64, uz: f64) -> f64 {
-    let sum_known = f[0]
-        + f[2]
-        + f[4]
-        + f[6]
-        + f[8]
-        + f[10]
-        + f[12]
-        + f[14]
-        + f[16]
-        + f[18]
-        + f[20]
-        + f[22]
-        + f[24]
-        + f[26];
-    let sum_left = 2.0 * (f[2] + f[8] + f[10] + f[12] + f[14] + f[20] + f[22] + f[24] + f[26]);
-    let rho = (sum_known + sum_left) / (1.0 - ux);
-    let feq = d3q27_equilibrium(rho, ux, uy, uz);
-    let feq_opp = d3q27_equilibrium(rho, -ux, -uy, -uz);
-    let unknowns = [1usize, 7, 9, 11, 13, 19, 21, 23, 25];
-    let opposites = [2usize, 8, 10, 12, 14, 20, 22, 24, 26];
-    for (&u_idx, &o_idx) in unknowns.iter().zip(opposites.iter()) {
-        f[u_idx] = feq[u_idx] - feq_opp[o_idx] + f[o_idx];
-    }
-    rho
-}
-/// Zou-He pressure outlet for D3Q27 right face (x = Nx-1).
-///
-/// Prescribes outlet density ρ_out; velocity is computed from continuity.
-///
-/// # Returns
-/// The computed outlet velocity ux.
-pub fn zou_he_pressure_outlet_d3q27(f: &mut [f64; 27], rho_out: f64) -> f64 {
-    let sum_known = f[0]
-        + f[1]
-        + f[3]
-        + f[5]
-        + f[7]
-        + f[9]
-        + f[11]
-        + f[13]
-        + f[15]
-        + f[17]
-        + f[19]
-        + f[21]
-        + f[23]
-        + f[25];
-    let sum_right = 2.0 * (f[1] + f[7] + f[9] + f[11] + f[13] + f[19] + f[21] + f[23] + f[25]);
-    let ux = -1.0 + (sum_known + sum_right) / rho_out;
-    let feq = d3q27_equilibrium(rho_out, ux, 0.0, 0.0);
-    let feq_neg = d3q27_equilibrium(rho_out, -ux, 0.0, 0.0);
-    let unknowns = [2usize, 8, 10, 12, 14, 20, 22, 24, 26];
-    let opposites = [1usize, 7, 9, 11, 13, 19, 21, 23, 25];
-    for (&u_idx, &o_idx) in unknowns.iter().zip(opposites.iter()) {
-        f[u_idx] = feq[u_idx] - feq_neg[o_idx] + f[o_idx];
-    }
-    ux
-}
-/// Convective outlet boundary condition for D2Q9 right face.
-///
-/// Implements the advective (convective) outflow condition:
-/// `∂f/∂t + uc ∂f/∂x = 0`
-/// where uc is the convective velocity.  The boundary cell distribution is
-/// updated by: `f_new = (f_old + uc * f_interior) / (1 + uc)`.
-///
-/// # Arguments
-/// * `f_boundary`  – distribution at the outlet cell (x = Nx-1)
-/// * `f_interior`  – distribution at the adjacent interior cell (x = Nx-2)
-/// * `uc`          – convective velocity (typically local or mean ux)
-///
-/// # Returns
-/// Updated boundary distribution.
-pub fn convective_outlet_d2q9(f_boundary: &[f64; 9], f_interior: &[f64; 9], uc: f64) -> [f64; 9] {
-    let mut f_new = [0.0f64; 9];
-    for i in 0..9 {
-        f_new[i] = (f_boundary[i] + uc * f_interior[i]) / (1.0 + uc);
-    }
-    f_new
-}
-/// Convective outlet boundary condition for D3Q19 right face.
-///
-/// Same as the D2Q9 version but for 19-component distributions.
-///
-/// # Arguments
-/// * `f_boundary`  – distribution at the outlet cell
-/// * `f_interior`  – distribution at the adjacent interior cell
-/// * `uc`          – convective velocity
-///
-/// # Returns
-/// Updated boundary distribution.
-pub fn convective_outlet_d3q19(
-    f_boundary: &[f64; 19],
-    f_interior: &[f64; 19],
-    uc: f64,
-) -> [f64; 19] {
-    let mut f_new = [0.0f64; 19];
-    for i in 0..19 {
-        f_new[i] = (f_boundary[i] + uc * f_interior[i]) / (1.0 + uc);
-    }
-    f_new
-}
-/// Neumann (zero-gradient) outlet boundary condition for D2Q9.
-///
-/// Implements a zero normal-gradient condition: f_boundary = f_interior.
-/// This is the simplest open boundary and works well for fully developed flows.
-///
-/// # Arguments
-/// * `f_boundary` – mutable distribution at outlet cell (updated in place)
-/// * `f_interior` – distribution at interior cell
-pub fn neumann_outlet_d2q9(f_boundary: &mut [f64; 9], f_interior: &[f64; 9]) {
-    f_boundary.copy_from_slice(f_interior);
-}
-/// Neumann (zero-gradient) outlet boundary condition for D3Q19.
-///
-/// Copies the interior distribution to the boundary cell for all 19 directions.
-pub fn neumann_outlet_d3q19(f_boundary: &mut [f64; 19], f_interior: &[f64; 19]) {
-    f_boundary.copy_from_slice(f_interior);
-}
-/// Second-order extrapolation outlet for D2Q9 (non-reflective).
-///
-/// Uses a quadratic extrapolation scheme based on two interior nodes:
-/// `f_boundary ≈ 2 f_1 − f_2`
-/// where f_1 is the first interior cell and f_2 the second.
-/// This reduces spurious wave reflections compared to zero-gradient.
-///
-/// # Arguments
-/// * `f_boundary` – mutable distribution at outlet (x = Nx-1)
-/// * `f_1`        – distribution at x = Nx-2
-/// * `f_2`        – distribution at x = Nx-3
-pub fn extrapolation_outlet_d2q9(f_boundary: &mut [f64; 9], f_1: &[f64; 9], f_2: &[f64; 9]) {
-    for i in 0..9 {
-        f_boundary[i] = 2.0 * f_1[i] - f_2[i];
-    }
-}
-/// Second-order extrapolation outlet for D3Q19.
-///
-/// Same quadratic extrapolation as the D2Q9 version.
-pub fn extrapolation_outlet_d3q19(f_boundary: &mut [f64; 19], f_1: &[f64; 19], f_2: &[f64; 19]) {
-    for i in 0..19 {
-        f_boundary[i] = 2.0 * f_1[i] - f_2[i];
-    }
-}
-/// Third-order extrapolation outlet for D3Q19.
-///
-/// Uses three interior nodes: `f_boundary = 3f_1 - 3f_2 + f_3`.
-/// Provides better accuracy at the cost of requiring one additional layer.
-#[allow(clippy::too_many_arguments)]
-pub fn extrapolation3_outlet_d3q19(
-    f_boundary: &mut [f64; 19],
-    f_1: &[f64; 19],
-    f_2: &[f64; 19],
-    f_3: &[f64; 19],
-) {
-    for i in 0..19 {
-        f_boundary[i] = 3.0 * f_1[i] - 3.0 * f_2[i] + f_3[i];
-    }
-}
-/// Characteristic-based non-reflecting boundary condition for D2Q9 outlet.
-///
-/// Implements a simplified LODI (Local One-Dimensional Inviscid) approach.
-/// The outgoing waves carry information out of the domain; incoming waves
-/// are set to zero (fully non-reflecting) or estimated from far-field state.
-///
-/// Reference: Poinsot & Lele, J. Comput. Phys. 101, 104–129 (1992).
-///
-/// # Arguments
-/// * `f`     – distribution at outlet cell (updated in place)
-/// * `rho`   – current local density
-/// * `ux`    – current local x-velocity
-/// * `uy`    – current local y-velocity
-/// * `rho0`  – target far-field density
-/// * `sigma` – relaxation coefficient for incoming wave (0 = non-reflecting)
-pub fn characteristic_outlet_d2q9(
-    f: &mut [f64; 9],
-    rho: f64,
-    ux: f64,
-    uy: f64,
-    rho0: f64,
-    sigma: f64,
-) {
-    let cs = (1.0_f64 / 3.0).sqrt();
-    let dp = (rho - rho0) * cs * cs;
-    let d_rho = -sigma * dp / (cs * cs);
-    let rho_new = rho + d_rho;
-    let feq = d2q9_equilibrium(rho_new, ux, uy);
-    f.copy_from_slice(&feq);
-}
-/// Characteristic-based non-reflecting boundary condition for D3Q19 outlet.
-///
-/// Extends the LODI approach to 3D.  The pressure perturbation drives a
-/// relaxation of the boundary density toward the target ρ₀.
-///
-/// # Arguments
-/// * `f`     – mutable distribution at outlet
-/// * `rho`   – current density
-/// * `ux`    – x-velocity
-/// * `uy`    – y-velocity
-/// * `uz`    – z-velocity
-/// * `rho0`  – target far-field density
-/// * `sigma` – relaxation coefficient
-#[allow(clippy::too_many_arguments)]
-pub fn characteristic_outlet_d3q19(
-    f: &mut [f64; 19],
-    rho: f64,
-    ux: f64,
-    uy: f64,
-    uz: f64,
-    rho0: f64,
-    sigma: f64,
-) {
-    let cs2 = 1.0 / 3.0;
-    let dp = (rho - rho0) * cs2;
-    let rho_new = rho - sigma * dp / cs2;
-    let feq = d3q19_equilibrium(rho_new, ux, uy, uz);
-    f.copy_from_slice(&feq);
-}
-/// Sponge zone (buffer layer) absorption for D2Q9.
-///
-/// Gradually damps the distribution toward a target state within a sponge region.
-/// The damping strength increases linearly from `sigma_min` at the sponge inlet
-/// to `sigma_max` at the domain boundary:
-/// `f_new = f + sigma(x) * (feq_target - f)`
-///
-/// # Arguments
-/// * `f`          – mutable distribution at sponge cell
-/// * `rho_target` – target density (e.g., far-field value)
-/// * `ux_target`  – target x-velocity
-/// * `uy_target`  – target y-velocity
-/// * `sigma`      – local damping strength ∈ \[0, 1\]
-pub fn sponge_zone_d2q9(
-    f: &mut [f64; 9],
-    rho_target: f64,
-    ux_target: f64,
-    uy_target: f64,
-    sigma: f64,
-) {
-    let feq_target = d2q9_equilibrium(rho_target, ux_target, uy_target);
-    for i in 0..9 {
-        f[i] += sigma * (feq_target[i] - f[i]);
-    }
-}
-/// Sponge zone absorption for D3Q19.
-///
-/// Same damping formula as D2Q9 but extended to 3D.
-///
-/// # Arguments
-/// * `f`          – mutable distribution at sponge cell
-/// * `rho_target` – target density
-/// * `ux_target`  – target x-velocity
-/// * `uy_target`  – target y-velocity
-/// * `uz_target`  – target z-velocity
-/// * `sigma`      – local damping strength ∈ \[0, 1\]
-pub fn sponge_zone_d3q19(
-    f: &mut [f64; 19],
-    rho_target: f64,
-    ux_target: f64,
-    uy_target: f64,
-    uz_target: f64,
-    sigma: f64,
-) {
-    let feq_target = d3q19_equilibrium(rho_target, ux_target, uy_target, uz_target);
-    for i in 0..19 {
-        f[i] += sigma * (feq_target[i] - f[i]);
-    }
-}
-/// Compute sponge zone damping coefficient as a function of position.
-///
-/// Uses a smooth cosine ramp from 0 at `x_start` to `sigma_max` at `x_end`:
-/// `σ(x) = σ_max * 0.5 * (1 − cos(π (x − x_start)/(x_end − x_start)))`
-///
-/// # Arguments
-/// * `x`         – current position
-/// * `x_start`   – sponge zone start
-/// * `x_end`     – sponge zone end (domain boundary)
-/// * `sigma_max` – maximum damping coefficient
-///
-/// # Returns
-/// Damping coefficient σ ∈ \[0, sigma_max\].
-pub fn sponge_sigma(x: f64, x_start: f64, x_end: f64, sigma_max: f64) -> f64 {
-    if x <= x_start {
-        return 0.0;
-    }
-    if x >= x_end {
-        return sigma_max;
-    }
-    let xi = (x - x_start) / (x_end - x_start);
-    sigma_max * 0.5 * (1.0 - (std::f64::consts::PI * xi).cos())
-}
-/// Exponential sponge damping profile.
-///
-/// `σ(x) = σ_max * (exp(α ξ) − 1) / (exp(α) − 1)`
-/// where ξ = (x − x_start) / (x_end − x_start) and α controls steepness.
-pub fn sponge_sigma_exponential(
-    x: f64,
-    x_start: f64,
-    x_end: f64,
-    sigma_max: f64,
-    alpha: f64,
-) -> f64 {
-    if x <= x_start {
-        return 0.0;
-    }
-    if x >= x_end {
-        return sigma_max;
-    }
-    let xi = (x - x_start) / (x_end - x_start);
-    let denom = alpha.exp() - 1.0;
-    if denom.abs() < 1e-10 {
-        sigma_max * xi
-    } else {
-        sigma_max * ((alpha * xi).exp() - 1.0) / denom
-    }
-}
-/// Compute macroscopic density and velocity from a D3Q27 distribution.
-///
-/// # Returns
-/// `(rho, ux, uy, uz)` — density and three velocity components.
-pub fn macroscopic_d3q27(f: &[f64; 27]) -> (f64, f64, f64, f64) {
-    let cv: [[i32; 3]; 27] = [
-        [0, 0, 0],
-        [1, 0, 0],
-        [-1, 0, 0],
-        [0, 1, 0],
-        [0, -1, 0],
-        [0, 0, 1],
-        [0, 0, -1],
-        [1, 1, 0],
-        [-1, 1, 0],
-        [1, -1, 0],
-        [-1, -1, 0],
-        [1, 0, 1],
-        [-1, 0, 1],
-        [1, 0, -1],
-        [-1, 0, -1],
-        [0, 1, 1],
-        [0, -1, 1],
-        [0, 1, -1],
-        [0, -1, -1],
-        [1, 1, 1],
-        [-1, 1, 1],
-        [1, -1, 1],
-        [-1, -1, 1],
-        [1, 1, -1],
-        [-1, 1, -1],
-        [1, -1, -1],
-        [-1, -1, -1],
-    ];
-    let mut rho = 0.0f64;
-    let mut jx = 0.0f64;
-    let mut jy = 0.0f64;
-    let mut jz = 0.0f64;
-    for i in 0..27 {
-        rho += f[i];
-        jx += f[i] * cv[i][0] as f64;
-        jy += f[i] * cv[i][1] as f64;
-        jz += f[i] * cv[i][2] as f64;
-    }
-    let inv_rho = if rho > 1e-14 { 1.0 / rho } else { 1.0 };
-    (rho, jx * inv_rho, jy * inv_rho, jz * inv_rho)
-}
-/// Compute a 2D parabolic (Poiseuille) velocity profile.
-///
-/// Returns the x-velocity at position y ∈ \[0, H\] given peak velocity u_max:
-/// `u(y) = u_max * 4y(H − y)/H²`
-///
-/// # Arguments
-/// * `y`     – transverse coordinate
-/// * `h`     – channel height
-/// * `u_max` – peak centerline velocity
-pub fn poiseuille_profile(y: f64, h: f64, u_max: f64) -> f64 {
-    u_max * 4.0 * y * (h - y) / (h * h)
-}
-/// Compute an error-function (tanh) shear layer profile.
-///
-/// `u(y) = 0.5 * u_max * (1 + tanh((y − y_c) / δ))`
-///
-/// # Arguments
-/// * `y`     – transverse coordinate
-/// * `y_c`   – center of the shear layer
-/// * `delta` – shear layer thickness
-/// * `u_max` – velocity jump amplitude
-pub fn tanh_shear_profile(y: f64, y_c: f64, delta: f64, u_max: f64) -> f64 {
-    0.5 * u_max * (1.0 + ((y - y_c) / delta).tanh())
 }

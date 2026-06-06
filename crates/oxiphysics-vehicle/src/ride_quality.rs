@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,9 +16,6 @@
 //! - [`road_roughness_iri`] — International Roughness Index computation.
 //! - [`psd_road_profile`] — power spectral density of a road profile.
 //! - [`motion_sickness_dose`] — MSDV from vertical acceleration.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -233,8 +229,8 @@ pub fn road_roughness_iri(profile: &[f64], dx: f64, speed: f64) -> f64 {
     let mut sum_rectified = 0.0_f64;
     let n = profile.len() - 1;
 
-    for i in 0..n {
-        let road = profile[i];
+    for (i, &road) in profile.iter().enumerate().take(n) {
+        let _ = i;
 
         // Sprung mass equation: z_s'' = -k_s*(z_s-z_u) - c_s*(z_s'-z_u')
         let a_s = -k_s * (z_s - z_u) - c_s * (z_s_dot - z_u_dot);
@@ -300,10 +296,10 @@ pub fn psd_road_profile(profile: &[f64], dx: f64) -> RoadPsd {
     for k in 0..n_half {
         let mut re = 0.0_f64;
         let mut im = 0.0_f64;
-        for j in 0..n {
+        for (j, &c_j) in centered.iter().enumerate() {
             let angle = -2.0 * PI * k as f64 * j as f64 / n as f64;
-            re += centered[j] * angle.cos();
-            im += centered[j] * angle.sin();
+            re += c_j * angle.cos();
+            im += c_j * angle.sin();
         }
         let power = (re * re + im * im) / n as f64;
         // One-sided: double for non-DC, non-Nyquist bins

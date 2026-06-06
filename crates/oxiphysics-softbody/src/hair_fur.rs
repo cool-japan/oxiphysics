@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -12,37 +11,31 @@
 // Small math helpers
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 #[inline]
 fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-#[allow(dead_code)]
 #[inline]
 fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-#[allow(dead_code)]
 #[inline]
 fn scale3(v: [f64; 3], s: f64) -> [f64; 3] {
     [v[0] * s, v[1] * s, v[2] * s]
 }
 
-#[allow(dead_code)]
 #[inline]
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-#[allow(dead_code)]
 #[inline]
 fn len3(v: [f64; 3]) -> f64 {
     dot3(v, v).sqrt()
 }
 
-#[allow(dead_code)]
 #[inline]
 fn normalize3(v: [f64; 3]) -> [f64; 3] {
     let l = len3(v);
@@ -53,7 +46,6 @@ fn normalize3(v: [f64; 3]) -> [f64; 3] {
     }
 }
 
-#[allow(dead_code)]
 #[inline]
 fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
@@ -63,7 +55,6 @@ fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 
-#[allow(dead_code)]
 #[inline]
 fn clamp(v: f64, lo: f64, hi: f64) -> f64 {
     v.clamp(lo, hi)
@@ -77,7 +68,6 @@ fn clamp(v: f64, lo: f64, hi: f64) -> f64 {
 ///
 /// The strand uses Verlet integration with position-based distance constraints
 /// to simulate hair dynamics.
-#[allow(dead_code)]
 pub struct HairStrand {
     /// World-space positions of strand particles (root at index 0).
     pub positions: Vec<[f64; 3]>,
@@ -251,7 +241,6 @@ impl HairStrand {
 /// A collection of hair strands with shared simulation parameters.
 ///
 /// Manages aerodynamic drag, gravity, and damping for all strands.
-#[allow(dead_code)]
 pub struct HairSimulation {
     /// All hair strands managed by this simulation.
     pub strands: Vec<HairStrand>,
@@ -368,7 +357,6 @@ impl HairSimulation {
 /// A bending constraint acting on three consecutive strand particles.
 ///
 /// Resists deviation from the rest angle between two consecutive segments.
-#[allow(dead_code)]
 pub struct HairBendingConstraint {
     /// Rest angle between the two segments (radians).
     pub rest_angle: f64,
@@ -438,7 +426,6 @@ impl HairBendingConstraint {
 /// A torsion constraint acting on four consecutive strand particles.
 ///
 /// Resists twisting deformation along the strand axis.
-#[allow(dead_code)]
 pub struct TorsionConstraint {
     /// Rest twist angle (radians).
     pub rest_twist: f64,
@@ -469,7 +456,6 @@ impl TorsionConstraint {
     /// * `p1` - Second particle (mutable).
     /// * `p2` - Third particle (mutable).
     /// * `p3` - Fourth particle (mutable).
-    #[allow(clippy::too_many_arguments)]
     pub fn apply(
         &self,
         p0: &mut [f64; 3],
@@ -533,7 +519,6 @@ impl TorsionConstraint {
 /// Collision response handler for hair-object interactions.
 ///
 /// Provides sphere and capsule collision detection and response for hair strands.
-#[allow(dead_code)]
 pub struct HairCollision;
 
 impl HairCollision {
@@ -626,7 +611,6 @@ impl HairCollision {
 /// A fur layer descriptor for a mesh surface.
 ///
 /// Controls the density, length, clumping, and roughness of fur on a mesh.
-#[allow(dead_code)]
 pub struct FurLayer {
     /// Fur density (hairs per cm²).
     pub density: f64,
@@ -720,7 +704,6 @@ impl FurLayer {
 /// Kajiya-Kay anisotropic hair shading model.
 ///
 /// Reference: Kajiya & Kay, "Rendering Fur with Three Dimensional Textures" (1989).
-#[allow(dead_code)]
 pub struct KajiyaKayHair {
     /// Diffuse reflectance coefficient.
     pub kd: f64,
@@ -794,7 +777,6 @@ impl KajiyaKayHair {
 ///
 /// Based on the Kirchhoff rod model used in the SuperHelix hair simulation paper.
 /// Reference: Bertails et al., "Super-Helices for Predicting the Dynamics of Natural Hair" (2006).
-#[allow(dead_code)]
 pub struct SuperHelix {
     /// Intrinsic curvature (1/radius) along the strand (m⁻¹).
     pub curvature: f64,
@@ -917,7 +899,6 @@ impl SuperHelix {
 /// A group of hair strands sharing a common root region.
 ///
 /// Used to model clumping and inter-strand interactions.
-#[allow(dead_code)]
 pub struct StrandGroup {
     /// Strands in this group.
     pub strands: Vec<HairStrand>,
@@ -983,7 +964,6 @@ impl StrandGroup {
 /// Physical parameters for hair strand simulation.
 ///
 /// Encapsulates material properties used in advanced hair dynamics.
-#[allow(dead_code)]
 pub struct HairPhysicsParams {
     /// Young's modulus of hair fibre (Pa), typically ~3.5 GPa.
     pub youngs_modulus: f64,
@@ -1053,7 +1033,6 @@ impl HairPhysicsParams {
 /// Generator for hair wisps (groups of nearby strands that move together).
 ///
 /// A wisp acts as a proxy for a cluster of hair strands to reduce simulation cost.
-#[allow(dead_code)]
 pub struct WispGenerator {
     /// Centre root position of this wisp.
     pub center: [f64; 3],
@@ -1105,7 +1084,6 @@ impl WispGenerator {
 /// Render-ready data for a hair strand.
 ///
 /// Stores positions and tangents for GPU upload.
-#[allow(dead_code)]
 pub struct HairRenderData {
     /// Positions along the strand.
     pub positions: Vec<[f64; 3]>,
@@ -1440,8 +1418,8 @@ mod tests {
         let original = strand.positions.clone();
         // All particles are far from sphere at origin
         HairCollision::collide_with_sphere(&mut strand, [0.0, 0.0, 0.0], 0.1);
-        for i in 0..strand.num_particles() {
-            let diff = len3(sub3(strand.positions[i], original[i]));
+        for (i, (pos, orig)) in strand.positions.iter().zip(original.iter()).enumerate() {
+            let diff = len3(sub3(*pos, *orig));
             assert!(diff < 1e-12, "Outside sphere particle {i} should not move");
         }
     }

@@ -2,10 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
-use super::functions::{EX9, EY9, W9};
+use super::functions::{
+    EX9, EY9, W9, drag_coeff_particle, feq_d2q9, mag3, mixture_viscosity, richardson_zaki_exponent,
+    stokes_settling,
+};
 
 /// Bed formation tracker.
 ///
@@ -1058,17 +1058,22 @@ impl DemParticle {
         let mass = self.mass();
         let vol = 4.0 / 3.0 * std::f64::consts::PI * self.radius.powi(3);
         let buoy_frac = rho_fluid / self.density;
-        for k in 0..3 {
+        let _ = vol;
+        for (k, (vel_k, pos_k)) in self
+            .velocity
+            .iter_mut()
+            .zip(self.position.iter_mut())
+            .enumerate()
+        {
             let net_f = self.force[k] + mass * gravity[k] * (1.0 - buoy_frac);
             let acc = net_f / mass;
-            self.velocity[k] += acc * dt;
-            self.position[k] += self.velocity[k] * dt;
-            let _ = vol;
+            *vel_k += acc * dt;
+            *pos_k += *vel_k * dt;
         }
         let inertia = self.inertia();
-        for k in 0..3 {
-            let alpha = self.torque[k] / inertia;
-            self.omega[k] += alpha * dt;
+        for (omega_k, &torque_k) in self.omega.iter_mut().zip(self.torque.iter()) {
+            let alpha = torque_k / inertia;
+            *omega_k += alpha * dt;
         }
         self.force = [0.0; 3];
         self.torque = [0.0; 3];
@@ -1484,7 +1489,6 @@ pub struct BedCompaction {
 }
 impl BedCompaction {
     /// Create a new bed compaction model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         void_ratio: f64,
         compression_index: f64,

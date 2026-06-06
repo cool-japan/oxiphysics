@@ -2,19 +2,15 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::type_complexity)]
 use crate::types::{CollisionPair, Contact, ContactManifold};
 use oxiphysics_core::Transform;
 use oxiphysics_geometry::Shape;
 use std::collections::HashMap;
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{NarrowPhaseFn, gjk_epa, shape_type_ordinal, try_specialized};
 
 /// Identifies a shape category for dispatch table lookups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub enum ShapeType {
     /// Sphere primitive.
     Sphere,
@@ -41,7 +37,6 @@ pub enum ShapeType {
 }
 /// Configuration for the narrow-phase dispatcher.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DispatchConfig {
     /// Whether to use GJK+EPA as fallback when no specialized test is found.
     pub use_gjk_fallback: bool,
@@ -87,7 +82,6 @@ impl MeshTriangle {
 /// Produced by clipping an incident face against the reference face of an
 /// opposing shape.  May contain up to 8 contact points.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ContactPatch {
     /// Contact points (world space).
     pub points: Vec<[f64; 3]>,
@@ -98,7 +92,6 @@ pub struct ContactPatch {
 }
 impl ContactPatch {
     /// Create an empty contact patch.
-    #[allow(dead_code)]
     pub fn new(normal: [f64; 3], depth: f64) -> Self {
         Self {
             points: Vec::new(),
@@ -107,24 +100,20 @@ impl ContactPatch {
         }
     }
     /// Add a contact point.
-    #[allow(dead_code)]
     pub fn add_point(&mut self, p: [f64; 3]) {
         self.points.push(p);
     }
     /// Number of contact points in this patch.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.points.len()
     }
     /// Whether the patch is empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.points.is_empty()
     }
 }
 /// A convex piece from a convex decomposition.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct ConvexPiece {
     /// Vertices of the convex piece.
     pub vertices: Vec<[f64; 3]>,
@@ -137,7 +126,6 @@ pub struct ConvexPiece {
 }
 impl ConvexPiece {
     /// Create a convex piece from a vertex list.
-    #[allow(dead_code)]
     pub fn new(vertices: Vec<[f64; 3]>) -> Self {
         let aabb_min = vertices.iter().fold([f64::MAX; 3], |mut acc, v| {
             acc[0] = acc[0].min(v[0]);
@@ -159,76 +147,73 @@ impl ConvexPiece {
         }
     }
     /// Check AABB vs AABB overlap with another piece.
-    #[allow(dead_code)]
     pub fn aabb_overlaps(&self, other: &ConvexPiece, expand: f64) -> bool {
-        for i in 0..3 {
-            if self.aabb_max[i] + expand < other.aabb_min[i] - expand {
-                return false;
-            }
-            if other.aabb_max[i] + expand < self.aabb_min[i] - expand {
-                return false;
-            }
-        }
-        true
+        (0..3).all(|i| {
+            self.aabb_max[i] + expand >= other.aabb_min[i] - expand
+                && other.aabb_max[i] + expand >= self.aabb_min[i] - expand
+        })
     }
 }
+/// A single collision pair entry for batch dispatch.
+///
+/// Fields: (shape_a, type_a, transform_a, shape_b, type_b, transform_b, collision_pair).
+pub type BatchCollisionPair<'a> = (
+    &'a dyn Shape,
+    ShapeType,
+    &'a Transform,
+    &'a dyn Shape,
+    ShapeType,
+    &'a Transform,
+    CollisionPair,
+);
+
 /// Narrow-phase dispatcher with a pluggable algorithm registry.
 pub struct NarrowPhaseDispatcher {
     /// Registered pair algorithms.
     pub(super) table: HashMap<DispatchKey, NarrowPhaseFn>,
-    /// Configuration.
-    #[allow(dead_code)]
-    pub(super) config: DispatchConfig,
+    /// Configuration (reserved for future dispatch tuning).
+    pub(super) _config: DispatchConfig,
 }
 impl NarrowPhaseDispatcher {
     /// Create an empty dispatcher (no registered algorithms).
-    #[allow(dead_code)]
     pub fn empty() -> Self {
         NarrowPhaseDispatcher {
             table: HashMap::new(),
-            config: DispatchConfig::default(),
+            _config: DispatchConfig::default(),
         }
     }
     /// Create an empty dispatcher with custom configuration.
-    #[allow(dead_code)]
     pub fn with_config(config: DispatchConfig) -> Self {
         NarrowPhaseDispatcher {
             table: HashMap::new(),
-            config,
+            _config: config,
         }
     }
     /// Register a collision algorithm for the given shape-type pair.
-    #[allow(dead_code)]
     pub fn register_pair(&mut self, type_a: ShapeType, type_b: ShapeType, func: NarrowPhaseFn) {
         let key = DispatchKey::new(type_a, type_b);
         self.table.insert(key, func);
     }
     /// Unregister a collision algorithm for the given shape-type pair.
     /// Returns true if an entry was removed.
-    #[allow(dead_code)]
     pub fn unregister_pair(&mut self, type_a: ShapeType, type_b: ShapeType) -> bool {
         let key = DispatchKey::new(type_a, type_b);
         self.table.remove(&key).is_some()
     }
     /// Check if a pair algorithm is registered for the given types.
-    #[allow(dead_code)]
     pub fn has_pair(&self, type_a: ShapeType, type_b: ShapeType) -> bool {
         let key = DispatchKey::new(type_a, type_b);
         self.table.contains_key(&key)
     }
     /// Returns the number of registered pair algorithms.
-    #[allow(dead_code)]
     pub fn registered_count(&self) -> usize {
         self.table.len()
     }
     /// Returns all registered dispatch keys.
-    #[allow(dead_code)]
     pub fn registered_keys(&self) -> Vec<DispatchKey> {
         self.table.keys().copied().collect()
     }
     /// Dispatch a collision query between two shapes.
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
     pub fn dispatch(
         &self,
         shape_a: &dyn Shape,
@@ -250,8 +235,6 @@ impl NarrowPhaseDispatcher {
     }
     /// Dispatch with swapped result: if the registered algorithm expects
     /// (A,B) but we have (B,A), swap the inputs and flip the contact normal.
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
     pub fn dispatch_symmetric(
         &self,
         shape_a: &dyn Shape,
@@ -300,20 +283,7 @@ impl NarrowPhaseDispatcher {
         gjk_epa(shape_a, transform_a, shape_b, transform_b, pair)
     }
     /// Batch dispatch: process multiple collision pairs at once.
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn dispatch_batch(
-        &self,
-        pairs: &[(
-            &dyn Shape,
-            ShapeType,
-            &Transform,
-            &dyn Shape,
-            ShapeType,
-            &Transform,
-            CollisionPair,
-        )],
-    ) -> Vec<NarrowPhaseResult> {
+    pub fn dispatch_batch<'a>(&self, pairs: &[BatchCollisionPair<'a>]) -> Vec<NarrowPhaseResult> {
         pairs
             .iter()
             .map(|&(sa, ta_type, ta, sb, tb_type, tb, pair)| {
@@ -354,7 +324,6 @@ impl Aabb {
 }
 /// Configuration for speculative contact generation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SpeculativeConfig {
     /// Maximum distance for generating speculative contacts (collision margin).
     pub margin: f64,
@@ -411,7 +380,6 @@ impl DispatchStats {
 }
 /// Result of a heightfield sample at grid coordinates.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct HeightFieldSample {
     /// World-space position of the sample point.
     pub position: [f64; 3],
@@ -421,7 +389,6 @@ pub struct HeightFieldSample {
     pub height: f64,
 }
 /// Simple heightfield representation for dispatch testing.
-#[allow(dead_code)]
 pub struct SimpleHeightField {
     /// Heights in row-major order (rows x cols).
     pub heights: Vec<f64>,
@@ -434,7 +401,6 @@ pub struct SimpleHeightField {
 }
 impl SimpleHeightField {
     /// Create a new heightfield.
-    #[allow(dead_code)]
     pub fn new(heights: Vec<f64>, rows: usize, cols: usize, spacing: f64) -> Self {
         Self {
             heights,
@@ -444,14 +410,12 @@ impl SimpleHeightField {
         }
     }
     /// Sample height at grid coordinates (clamped).
-    #[allow(dead_code)]
     pub fn height_at(&self, row: usize, col: usize) -> f64 {
         let r = row.min(self.rows - 1);
         let c = col.min(self.cols - 1);
         self.heights[r * self.cols + c]
     }
     /// Compute normal at grid coordinates using finite differences.
-    #[allow(dead_code)]
     pub fn normal_at(&self, row: usize, col: usize) -> [f64; 3] {
         let h = self.height_at(row, col);
         let hx = if col + 1 < self.cols {
@@ -477,7 +441,6 @@ impl SimpleHeightField {
         }
     }
     /// Test a sphere against the heightfield.
-    #[allow(dead_code)]
     pub fn test_sphere(
         &self,
         sphere_center: [f64; 3],
@@ -508,25 +471,21 @@ impl SimpleHeightField {
 ///
 /// Entries with higher priority (deeper penetration estimate) are resolved first,
 /// improving simulation stability when many collisions occur simultaneously.
-#[allow(dead_code)]
 pub struct DispatchQueue {
     pub(super) entries: Vec<DispatchQueueEntry>,
 }
 impl DispatchQueue {
     /// Create an empty dispatch queue.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
         }
     }
     /// Push a new entry.
-    #[allow(dead_code)]
     pub fn push(&mut self, pair: CollisionPair, priority: f64) {
         self.entries.push(DispatchQueueEntry { pair, priority });
     }
     /// Pop the highest-priority entry.
-    #[allow(dead_code)]
     pub fn pop(&mut self) -> Option<DispatchQueueEntry> {
         if self.entries.is_empty() {
             return None;
@@ -544,24 +503,20 @@ impl DispatchQueue {
         Some(self.entries.swap_remove(idx))
     }
     /// Number of entries in the queue.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
     /// Whether the queue is empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
     /// Clear the queue.
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.entries.clear();
     }
 }
 /// A priority entry in a dispatch queue.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DispatchQueueEntry {
     /// Collision pair.
     pub pair: CollisionPair,
@@ -592,14 +547,12 @@ impl CompoundDispatchResult {
 ///
 /// After collision detection returns many raw contact points, the patch
 /// reducer keeps only the most geometrically useful subset (typically ≤ 4).
-#[allow(dead_code)]
 pub struct ContactPatchReducer {
     /// Maximum number of contact points to keep.
     pub max_contacts: usize,
 }
 impl ContactPatchReducer {
     /// Create a reducer keeping at most `max_contacts` points.
-    #[allow(dead_code)]
     pub fn new(max_contacts: usize) -> Self {
         Self { max_contacts }
     }
@@ -609,7 +562,6 @@ impl ContactPatchReducer {
     /// 1. Keep the deepest contact.
     /// 2. Keep the contact farthest from the deepest.
     /// 3. Keep contacts that maximise triangle area of the current set.
-    #[allow(dead_code)]
     pub fn reduce(&self, manifold: &mut ContactManifold) {
         if manifold.contacts.len() <= self.max_contacts {
             return;
@@ -674,7 +626,6 @@ impl ContactPatchReducer {
     }
 }
 /// A compound shape: a collection of sub-shapes with local transforms.
-#[allow(dead_code)]
 pub struct CompoundShape {
     /// Sub-shapes.
     pub children: Vec<Box<dyn Shape>>,
@@ -685,7 +636,6 @@ pub struct CompoundShape {
 }
 impl CompoundShape {
     /// Create an empty compound shape.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             children: Vec::new(),
@@ -694,7 +644,6 @@ impl CompoundShape {
         }
     }
     /// Add a child shape.
-    #[allow(dead_code)]
     pub fn add_child(
         &mut self,
         shape: Box<dyn Shape>,
@@ -706,43 +655,36 @@ impl CompoundShape {
         self.local_transforms.push(local_transform);
     }
     /// Number of children.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.children.len()
     }
     /// Whether the compound has no children.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.children.is_empty()
     }
 }
 /// Result returned by a narrow-phase algorithm.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NarrowPhaseResult {
     /// Optional contact manifold (None means separated).
     pub manifold: Option<ContactManifold>,
 }
 impl NarrowPhaseResult {
     /// Construct a result indicating no contact.
-    #[allow(dead_code)]
     pub fn separated() -> Self {
         NarrowPhaseResult { manifold: None }
     }
     /// Construct a result with a contact manifold.
-    #[allow(dead_code)]
     pub fn contact(manifold: ContactManifold) -> Self {
         NarrowPhaseResult {
             manifold: Some(manifold),
         }
     }
     /// Returns true if a contact was found.
-    #[allow(dead_code)]
     pub fn has_contact(&self) -> bool {
         self.manifold.is_some()
     }
     /// Returns the penetration depth if contact exists.
-    #[allow(dead_code)]
     pub fn penetration_depth(&self) -> Option<f64> {
         self.manifold
             .as_ref()
@@ -751,19 +693,16 @@ impl NarrowPhaseResult {
     }
 }
 /// Concave mesh represented as a convex decomposition.
-#[allow(dead_code)]
 pub struct ConcaveMesh {
     /// Convex pieces of the decomposition.
     pub pieces: Vec<ConvexPiece>,
 }
 impl ConcaveMesh {
     /// Create a concave mesh from a list of convex pieces.
-    #[allow(dead_code)]
     pub fn new(pieces: Vec<ConvexPiece>) -> Self {
         Self { pieces }
     }
     /// Number of convex pieces.
-    #[allow(dead_code)]
     pub fn num_pieces(&self) -> usize {
         self.pieces.len()
     }
@@ -820,11 +759,9 @@ impl ShapeFeatureCache {
 /// Key for looking up a registered collision algorithm.
 /// Order is canonicalised: the lower-ordinal type comes first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub struct DispatchKey(pub ShapeType, pub ShapeType);
 impl DispatchKey {
     /// Create a canonicalised dispatch key (order-independent).
-    #[allow(dead_code)]
     pub fn new(a: ShapeType, b: ShapeType) -> Self {
         if shape_type_ordinal(a) <= shape_type_ordinal(b) {
             DispatchKey(a, b)

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 /// Opaque node identifier (index into `Scene::nodes`).
 pub type NodeId = usize;
 /// Column-major 4×4 matrix multiply.
@@ -42,14 +41,10 @@ mod tests {
     #[test]
     fn test_identity_matrix_is_identity() {
         let m = Transform::identity().to_matrix();
-        for col in 0..4 {
-            for row in 0..4 {
+        for (col, mcol) in m.iter().enumerate() {
+            for (row, &mval) in mcol.iter().enumerate() {
                 let expected = if col == row { 1.0 } else { 0.0 };
-                assert!(
-                    (m[col][row] - expected).abs() < 1e-12,
-                    "m[{col}][{row}]={}",
-                    m[col][row]
-                );
+                assert!((mval - expected).abs() < 1e-12, "m[{col}][{row}]={}", mval);
             }
         }
     }
@@ -497,10 +492,10 @@ mod tests {
     #[test]
     fn test_instance_data_identity_transform() {
         let tf = InstanceData::identity_transform();
-        for col in 0..4 {
-            for row in 0..4 {
+        for (col, tfcol) in tf.iter().enumerate() {
+            for (row, &tfval) in tfcol.iter().enumerate() {
                 let expected = if col == row { 1.0 } else { 0.0 };
-                assert!((tf[col][row] - expected).abs() < 1e-6);
+                assert!((tfval - expected).abs() < 1e-6);
             }
         }
     }

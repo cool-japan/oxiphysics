@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::{MeshData, ParamMesh, ParamVertex};
 
 /// Compute per-vertex tangents for a `MeshData` using the UV-based method.
@@ -12,7 +9,6 @@ use super::types::{MeshData, ParamMesh, ParamVertex};
 /// Returns `(tangents, bitangents)` as `Vec<[f64; 3]>`, one per vertex.
 /// Requires the mesh to have UVs.  Where the tangent is degenerate (e.g. no UV
 /// gradient), a fallback perpendicular to the normal is used.
-#[allow(dead_code)]
 pub fn compute_tangent_space(mesh: &MeshData) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
     let n = mesh.positions.len();
     let mut tan1 = vec![[0.0_f64; 3]; n];
@@ -106,6 +102,8 @@ pub fn compute_tangent_space(mesh: &MeshData) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) 
 }
 #[cfg(test)]
 mod mesh_data_tests {
+    use super::super::functions::*;
+    use super::super::types::*;
     use super::*;
 
     fn assert_normals_unit(normals: &[[f64; 3]], tol: f64) {
@@ -383,9 +381,7 @@ mod mesh_data_tests {
     fn test_tangent_space_orthogonal_to_normal() {
         let m = generate_sphere([0.0; 3], 1.0, 4, 6);
         let (tangents, _) = compute_tangent_space(&m);
-        for i in 0..m.vertex_count() {
-            let n = m.normals[i];
-            let t = tangents[i];
+        for (i, (n, t)) in m.normals.iter().zip(tangents.iter()).enumerate() {
             let dot = n[0] * t[0] + n[1] * t[1] + n[2] * t[2];
             assert!(
                 dot.abs() < 0.01,
@@ -408,6 +404,8 @@ mod mesh_data_tests {
 }
 #[cfg(test)]
 mod extra_mesh_tests {
+    use super::super::functions::*;
+    use super::super::types::*;
     use super::*;
     use crate::Color;
 
@@ -790,8 +788,7 @@ mod extra_mesh_tests {
     fn test_generate_cylinder_side_normals_horizontal() {
         let (_, _, normals) = generate_cylinder([0.0; 3], 1.0, 2.0, 8);
         let sector = 8;
-        for i in 0..2 * (sector + 1) {
-            let n = normals[i];
+        for (i, n) in normals[..2 * (sector + 1)].iter().enumerate() {
             assert!(n[1].abs() < 1e-9, "side normal[{i}] y={} should be 0", n[1]);
         }
     }
@@ -816,11 +813,11 @@ mod extra_mesh_tests {
     #[test]
     fn test_generate_cone_base_verts_at_y_zero() {
         let (verts, _, _) = generate_cone([0.0; 3], 1.5, 3.0, 8);
-        for i in 0..9 {
+        for (i, v) in verts[..9].iter().enumerate() {
             assert!(
-                verts[i][1].abs() < 1e-9,
+                v[1].abs() < 1e-9,
                 "cone base vert[{i}] y={} should be 0",
-                verts[i][1]
+                v[1]
             );
         }
     }
@@ -1007,7 +1004,6 @@ mod extra_mesh_tests {
     }
 }
 /// Generate a UV-sphere as a `ParamMesh`.
-#[allow(dead_code)]
 pub fn param_sphere(centre: [f64; 3], radius: f64, n_lat: usize, n_lon: usize) -> ParamMesh {
     let n_lat = n_lat.max(2);
     let n_lon = n_lon.max(3);
@@ -1048,7 +1044,6 @@ pub fn param_sphere(centre: [f64; 3], radius: f64, n_lat: usize, n_lon: usize) -
     ParamMesh { vertices, indices }
 }
 /// Generate a flat disc (filled circle) on the XY plane.
-#[allow(dead_code)]
 pub fn param_disc(centre: [f64; 3], radius: f64, n_segs: usize) -> ParamMesh {
     let n = n_segs.max(3);
     let mut vertices = Vec::with_capacity(n + 1);
@@ -1078,7 +1073,6 @@ pub fn param_disc(centre: [f64; 3], radius: f64, n_segs: usize) -> ParamMesh {
 ///
 /// `major_radius` is the distance from the tube centre to the torus centre.
 /// `minor_radius` is the tube radius.
-#[allow(dead_code)]
 pub fn param_torus(
     centre: [f64; 3],
     major_radius: f64,
@@ -1126,7 +1120,6 @@ pub fn param_torus(
 ///
 /// `n_along` is the number of segments along the strip,
 /// `n_across` is the number of segments across the half-width.
-#[allow(dead_code)]
 pub fn param_mobius(n_along: usize, n_across: usize, radius: f64, half_width: f64) -> ParamMesh {
     let na = n_along.max(3);
     let nc = n_across.max(2);
@@ -1167,14 +1160,12 @@ pub fn param_mobius(n_along: usize, n_across: usize, radius: f64, half_width: f6
 /// Apply a wavy displacement to a `ParamMesh` along the Z-axis.
 ///
 /// Each vertex is moved by `amplitude * sin(frequency * x + phase)` in Z.
-#[allow(dead_code)]
 pub fn apply_sine_displacement(mesh: &mut ParamMesh, amplitude: f64, frequency: f64, phase: f64) {
     for v in &mut mesh.vertices {
         v.pos[2] += amplitude * (frequency * v.pos[0] + phase).sin();
     }
 }
 /// Compute per-vertex normals by averaging adjacent face normals.
-#[allow(dead_code)]
 pub fn recompute_normals(mesh: &mut ParamMesh) {
     let n_verts = mesh.vertices.len();
     let mut normals = vec![[0.0_f64; 3]; n_verts];
@@ -1206,6 +1197,7 @@ pub fn recompute_normals(mesh: &mut ParamMesh) {
 }
 #[cfg(test)]
 mod tests_mesh_gen_ext {
+    use super::super::types::*;
     use super::*;
 
     #[test]

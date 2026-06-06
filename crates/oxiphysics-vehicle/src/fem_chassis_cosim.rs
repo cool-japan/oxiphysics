@@ -68,9 +68,6 @@
 //! println!("FL chassis flex: {:?}", deform);
 //! ```
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ── types ─────────────────────────────────────────────────────────────────────
 
 /// Identification label + FEM node index for a wheel or subframe attachment.

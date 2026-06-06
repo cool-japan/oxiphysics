@@ -19,9 +19,6 @@
 //! - [`LeadLagCompensator`] — lead/lag compensator transfer function
 //! - [`PolesZeros`] — transfer function poles, zeros, DC gain, step response
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Internal complex number helper
 // ---------------------------------------------------------------------------
@@ -76,12 +73,6 @@ impl Cplx {
             im: self.im * s,
         }
     }
-    fn conj(self) -> Self {
-        Self {
-            re: self.re,
-            im: -self.im,
-        }
-    }
 }
 
 // Evaluate polynomial with complex coefficients at complex point s.
@@ -134,11 +125,6 @@ fn mat_transpose(a: &[f64], n: usize, m: usize) -> Vec<f64> {
     out
 }
 
-/// Scale a matrix by scalar.
-fn mat_scale(a: &[f64], s: f64) -> Vec<f64> {
-    a.iter().map(|x| x * s).collect()
-}
-
 /// Identity matrix n×n.
 fn mat_eye(n: usize) -> Vec<f64> {
     let mut out = vec![0.0f64; n * n];
@@ -146,15 +132,6 @@ fn mat_eye(n: usize) -> Vec<f64> {
         out[i * n + i] = 1.0;
     }
     out
-}
-
-/// Invert a 2×2 matrix.
-fn mat_inv2(a: &[f64]) -> Option<Vec<f64>> {
-    let det = a[0] * a[3] - a[1] * a[2];
-    if det.abs() < 1e-300 {
-        return None;
-    }
-    Some(vec![a[3] / det, -a[1] / det, -a[2] / det, a[0] / det])
 }
 
 /// Invert an n×n matrix via Gauss-Jordan elimination.
@@ -1419,6 +1396,15 @@ impl PolesZeros {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Invert a 2×2 matrix (test helper only).
+    fn mat_inv2(a: &[f64]) -> Option<Vec<f64>> {
+        let det = a[0] * a[3] - a[1] * a[2];
+        if det.abs() < 1e-300 {
+            return None;
+        }
+        Some(vec![a[3] / det, -a[1] / det, -a[2] / det, a[0] / det])
+    }
 
     // ---- PidController tests ----
 

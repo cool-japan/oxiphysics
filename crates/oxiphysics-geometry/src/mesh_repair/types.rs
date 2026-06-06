@@ -4,8 +4,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     fill_hole_ear_clipping, find_boundary_loops, fix_non_manifold_edges, merge_duplicate_vertices,
 };

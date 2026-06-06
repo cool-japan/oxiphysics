@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 /// Compute the Euclidean norm of a 3D vector.
 pub fn vec3_norm(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
@@ -488,9 +487,9 @@ mod advanced_tests {
     #[test]
     fn skew_antisymmetric() {
         let s = skew([1.0, 2.0, 3.0]);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((s[i][j] + s[j][i]).abs() < 1e-12);
+        for (i, row) in s.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val + s[j][i]).abs() < 1e-12);
             }
         }
     }

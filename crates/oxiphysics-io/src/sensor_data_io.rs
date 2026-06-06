@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,9 +16,6 @@
 //! - **Thermocouple calibration** tables
 //! - **Sensor fusion** data (Kalman-filtered state)
 //! - **Calibration matrix** storage and retrieval
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Common helpers
@@ -166,8 +162,8 @@ impl ImuStream {
         let n = self.samples.len() as f64;
         let mut sum = [0.0f64; 3];
         for s in &self.samples {
-            for k in 0..3 {
-                sum[k] += s.accel[k];
+            for (acc, &a) in sum.iter_mut().zip(s.accel.iter()) {
+                *acc += a;
             }
         }
         [sum[0] / n, sum[1] / n, sum[2] / n]
@@ -181,8 +177,8 @@ impl ImuStream {
         let n = self.samples.len() as f64;
         let mut sum = [0.0f64; 3];
         for s in &self.samples {
-            for k in 0..3 {
-                sum[k] += s.gyro[k];
+            for (acc, &g) in sum.iter_mut().zip(s.gyro.iter()) {
+                *acc += g;
             }
         }
         [sum[0] / n, sum[1] / n, sum[2] / n]
@@ -1047,9 +1043,9 @@ impl CalibrationMatrix {
             return None;
         }
         let mut out = vec![0.0f64; self.rows];
-        for r in 0..self.rows {
-            for c in 0..self.cols {
-                out[r] += self.data[r * self.cols + c] * v[c];
+        for (r, o) in out.iter_mut().enumerate() {
+            for (c, &vi) in v.iter().enumerate() {
+                *o += self.data[r * self.cols + c] * vi;
             }
         }
         Some(out)

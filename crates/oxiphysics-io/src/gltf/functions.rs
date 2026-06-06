@@ -2,7 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::type_complexity)]
+/// Parsed OBJ geometry: (positions, normals, indices).
+type ObjGeometry = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u32>);
 use super::types::{GltfScene, ValidationIssue};
 
 /// Escape special characters in a JSON string value.
@@ -91,7 +92,7 @@ pub fn write_obj(positions: &[[f32; 3]], normals: &[[f32; 3]], indices: &[u32]) 
 /// Returns `(positions, normals, indices)`. Only `v`, `vn`, and `f` records
 /// are processed. Face records must use the `v//vn` or `v/vt/vn` format;
 /// bare `v` faces use vertex index as normal index.
-pub fn parse_obj(content: &str) -> Result<(Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u32>), String> {
+pub fn parse_obj(content: &str) -> Result<ObjGeometry, String> {
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut normals: Vec<[f32; 3]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();

@@ -1,6 +1,6 @@
 # oxiphysics-vehicle
 
-**Status:** Alpha | **Version:** 0.1.1 | **Tests:** 2,669
+**Status:** Alpha | **Version:** 0.1.2 | **Tests:** 2,687
 
 Full-featured vehicle dynamics simulation for the [OxiPhysics](https://github.com/cool-japan/oxiphysics) engine.
 
@@ -56,7 +56,7 @@ use oxiphysics_vehicle::{
 | Metric | Count |
 |--------|-------|
 | Public items | 3,171 |
-| Tests | 2,669 |
+| Tests | 2,687 |
 | Stubs | 0 |
 | Modules | 35+ |
 

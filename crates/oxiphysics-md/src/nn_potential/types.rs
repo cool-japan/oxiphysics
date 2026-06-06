@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{angular_fourier_basis, triplet_cos_angle};
 use crate::ml_potential::{MlPotential, SymmetryFunction, SymmetryFunctionSet};
 use oxiphysics_core::math::Vec3;
@@ -13,20 +11,17 @@ use oxiphysics_core::math::Vec3;
 /// Uses multiple independently-trained models to estimate mean energy and
 /// epistemic uncertainty (standard deviation).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct EnsembleNNP {
     /// The individual NNP models.
     pub models: Vec<FeedForwardPotential>,
 }
 impl EnsembleNNP {
     /// Create an ensemble from a list of models.
-    #[allow(dead_code)]
     pub fn new(models: Vec<FeedForwardPotential>) -> Self {
         assert!(!models.is_empty(), "ensemble must have at least one model");
         Self { models }
     }
     /// Compute the mean energy prediction across the ensemble.
-    #[allow(dead_code)]
     pub fn mean_energy(&self, positions: &[Vec3], species: &[u32]) -> f64 {
         let n = self.models.len() as f64;
         let sum: f64 = self
@@ -40,7 +35,6 @@ impl EnsembleNNP {
         sum / n
     }
     /// Compute the uncertainty (standard deviation) of energy predictions.
-    #[allow(dead_code)]
     pub fn uncertainty(&self, positions: &[Vec3], species: &[u32]) -> f64 {
         let energies: Vec<f64> = self
             .models
@@ -60,7 +54,6 @@ impl EnsembleNNP {
         var.sqrt()
     }
     /// Number of models in the ensemble.
-    #[allow(dead_code)]
     pub fn n_models(&self) -> usize {
         self.models.len()
     }
@@ -106,10 +99,9 @@ impl FeedForwardPotential {
             let n_out = layer_sizes[l + 1];
             let scale = (2.0 / (n_in + n_out) as f64).sqrt();
             let mut weights = vec![vec![0.0; n_in]; n_out];
-            #[allow(clippy::needless_range_loop)]
-            for i in 0..n_out {
-                for j in 0..n_in {
-                    weights[i][j] = rng.next_f64(scale);
+            for row in &mut weights {
+                for v in row.iter_mut() {
+                    *v = rng.next_f64(scale);
                 }
             }
             let biases = vec![0.0; n_out];
@@ -225,7 +217,6 @@ impl FeedForwardPotential {
 /// ```text
 /// h_i^(t+1) = activation( W_self * h_i^t + sum_{j ∈ N(i)} W_msg * h_j^t + b )
 /// ```
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MpnnLayer {
     /// Weight matrix for self (n_hidden × n_hidden).
@@ -237,7 +228,6 @@ pub struct MpnnLayer {
     /// Activation applied after aggregation.
     pub activation: Activation,
 }
-#[allow(dead_code)]
 impl MpnnLayer {
     /// Create a new MPNN layer with the given weight matrices.
     pub fn new(
@@ -276,14 +266,13 @@ impl MpnnLayer {
     ///
     /// `h_self` – hidden state of node i.
     /// `neighbour_sum` – pre-aggregated sum of neighbour hidden states.
-    #[allow(clippy::needless_range_loop)]
     pub fn forward_node(&self, h_self: &[f64], neighbour_sum: &[f64]) -> Vec<f64> {
         let n = self.bias.len();
         let mut out = self.bias.clone();
-        for i in 0..n {
+        for (i, out_i) in out.iter_mut().enumerate().take(n) {
             for j in 0..h_self.len() {
-                out[i] += self.w_self[i][j] * h_self[j];
-                out[i] += self.w_msg[i][j] * neighbour_sum[j];
+                *out_i += self.w_self[i][j] * h_self[j];
+                *out_i += self.w_msg[i][j] * neighbour_sum[j];
             }
         }
         self.activation.apply(&mut out);
@@ -303,7 +292,6 @@ impl MpnnLayer {
 /// let batch = bp.compute_symmetry_functions_batch(&positions, &species);
 /// // batch[i] is the descriptor vector for atom i
 /// ```
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BehlerParrinello {
     /// Symmetry function set defining the descriptor features.
@@ -311,7 +299,6 @@ pub struct BehlerParrinello {
     /// Cutoff radius (Å).
     pub cutoff: f64,
 }
-#[allow(dead_code)]
 impl BehlerParrinello {
     /// Create a new batch evaluator.
     ///
@@ -397,7 +384,6 @@ impl BehlerParrinello {
     }
 }
 /// Angular triplet (i, j, k) for angular message passing.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct AngularTriplet {
     /// Central atom index.
@@ -429,12 +415,10 @@ impl Lcg {
 /// `predict_forces` API that returns both the mean prediction and an
 /// uncertainty estimate (standard deviation across models).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct EnsembleNnp {
     /// The individual NNP models in the ensemble.
     pub models: Vec<FeedForwardPotential>,
 }
-#[allow(dead_code)]
 impl EnsembleNnp {
     /// Create an ensemble from a list of models.
     ///
@@ -548,7 +532,6 @@ impl EnsembleNnp {
 /// A simple message-passing neural network for molecular property prediction.
 ///
 /// Architecture: initial embedding → T message-passing layers → readout sum.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Mpnn {
     /// Dimensionality of hidden node embeddings.
@@ -560,7 +543,6 @@ pub struct Mpnn {
     /// Cutoff distance for neighbour graph construction.
     pub cutoff: f64,
 }
-#[allow(dead_code)]
 impl Mpnn {
     /// Build a random MPNN with `n_layers` message-passing steps.
     pub fn new(n_hidden: usize, n_layers: usize, cutoff: f64) -> Self {
@@ -624,7 +606,6 @@ impl Mpnn {
 /// For each atom i, collects contributions from all neighbours j:
 ///   h_i^(l+1) = h_i^l + sum_j  h_j^l ⊙ W(r_ij)
 /// where W(r) = DenseNetwork(basis(r)).
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct SchNetInteraction {
     /// Filter network: maps basis vector → feature vector.
@@ -634,7 +615,6 @@ pub struct SchNetInteraction {
     /// Gaussian basis for distance expansion.
     pub basis: GaussianBasis,
 }
-#[allow(dead_code)]
 impl SchNetInteraction {
     /// Build a SchNet interaction layer.
     pub fn new(n_features: usize, basis: GaussianBasis) -> Self {
@@ -719,7 +699,6 @@ impl Activation {
     }
 }
 /// Graph Attention Network Potential.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct GatPotential {
     /// GAT interaction layers.
@@ -731,7 +710,6 @@ pub struct GatPotential {
     /// Number of node features.
     pub n_features: usize,
 }
-#[allow(dead_code)]
 impl GatPotential {
     /// Create a GAT potential.
     pub fn new(n_features: usize, n_layers: usize, cutoff: f64) -> Self {
@@ -768,14 +746,12 @@ impl GatPotential {
     }
 }
 /// Validator that checks energy conservation along a trajectory.
-#[allow(dead_code)]
 pub struct EnergyConservationValidator {
     /// Tolerance for relative energy drift.
     pub tolerance: f64,
     /// Energy values recorded at each step.
     pub energy_history: Vec<f64>,
 }
-#[allow(dead_code)]
 impl EnergyConservationValidator {
     /// Create a new validator with a given relative tolerance.
     pub fn new(tolerance: f64) -> Self {
@@ -829,7 +805,6 @@ impl EnergyConservationValidator {
     }
 }
 /// Descriptor type for the DeePMD-style environment matrix.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DeepPotDescriptor {
     /// Maximum number of neighbours per atom.
@@ -839,7 +814,6 @@ pub struct DeepPotDescriptor {
     /// Inner cutoff for smooth transition (Å).
     pub inner_cutoff: f64,
 }
-#[allow(dead_code)]
 impl DeepPotDescriptor {
     /// Create a new DeePMD descriptor builder.
     pub fn new(max_neighbours: usize, cutoff: f64, inner_cutoff: f64) -> Self {
@@ -874,17 +848,16 @@ impl DeepPotDescriptor {
     ///   column 0: s(r_ij)
     ///   columns 1-3: s(r_ij) * r_hat_ij[0..2]
     pub fn environment_matrix(&self, positions: &[[f64; 3]], center: usize) -> Vec<f64> {
-        let n = positions.len();
+        let _n = positions.len();
         let mut rows: Vec<[f64; 4]> = Vec::new();
         let rc = positions[center];
-        #[allow(clippy::needless_range_loop)]
-        for j in 0..n {
+        for (j, pos_j) in positions.iter().enumerate() {
             if j == center {
                 continue;
             }
-            let dx = positions[j][0] - rc[0];
-            let dy = positions[j][1] - rc[1];
-            let dz = positions[j][2] - rc[2];
+            let dx = pos_j[0] - rc[0];
+            let dy = pos_j[1] - rc[1];
+            let dz = pos_j[2] - rc[2];
             let r2 = dx * dx + dy * dy + dz * dz;
             let r = r2.sqrt();
             if r >= self.cutoff {
@@ -909,7 +882,6 @@ impl DeepPotDescriptor {
 ///
 /// A simple 1D neural network that maps an interatomic distance to
 /// a pair energy contribution.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct NnPairPotential {
     /// The underlying dense layers.
@@ -921,7 +893,6 @@ impl NnPairPotential {
     /// Create a pair potential with a single hidden layer.
     ///
     /// Architecture: 1 → n_hidden → 1.
-    #[allow(dead_code)]
     pub fn new(n_hidden: usize, cutoff: f64) -> Self {
         let mut rng_state: u64 = 12345;
         let mut next_w = |scale: f64| -> f64 {
@@ -944,7 +915,6 @@ impl NnPairPotential {
         Self { layers, cutoff }
     }
     /// Evaluate the NN for a single distance r.
-    #[allow(dead_code)]
     pub fn evaluate(&self, r: f64) -> f64 {
         if r >= self.cutoff {
             return 0.0;
@@ -958,7 +928,6 @@ impl NnPairPotential {
     /// Compute pair energy and force for atoms i and j at distance r.
     ///
     /// Returns (energy, force_magnitude) where force is the scalar dE/dr.
-    #[allow(dead_code)]
     pub fn energy_and_force(&self, r: f64) -> (f64, f64) {
         let e = self.evaluate(r);
         let h = 1e-5;
@@ -970,7 +939,6 @@ impl NnPairPotential {
         (e, -de_dr)
     }
     /// Total energy for a set of atom positions (sum over all pairs within cutoff).
-    #[allow(dead_code)]
     pub fn total_energy(&self, positions: &[Vec3]) -> f64 {
         let n = positions.len();
         let mut energy = 0.0;
@@ -984,7 +952,6 @@ impl NnPairPotential {
     }
 }
 /// Statistics of a descriptor over a training set.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DescriptorStats {
     /// Per-feature minimum.
@@ -998,7 +965,6 @@ pub struct DescriptorStats {
 }
 impl DescriptorStats {
     /// Compute statistics from a collection of descriptor vectors.
-    #[allow(dead_code)]
     pub fn compute(descriptors: &[Vec<f64>]) -> Self {
         assert!(!descriptors.is_empty());
         let dim = descriptors[0].len();
@@ -1035,7 +1001,6 @@ impl DescriptorStats {
         }
     }
     /// Range (max - min) per feature.
-    #[allow(dead_code)]
     pub fn range(&self) -> Vec<f64> {
         self.min
             .iter()
@@ -1066,13 +1031,12 @@ impl DenseLayer {
         }
     }
     /// Forward pass: compute `activation(W * input + b)`.
-    #[allow(clippy::needless_range_loop)]
     pub fn forward(&self, input: &[f64]) -> Vec<f64> {
         let n_out = self.biases.len();
         let mut output = self.biases.clone();
-        for i in 0..n_out {
-            for j in 0..input.len() {
-                output[i] += self.weights[i][j] * input[j];
+        for (i, out_i) in output.iter_mut().enumerate().take(n_out) {
+            for (j, &inp) in input.iter().enumerate() {
+                *out_i += self.weights[i][j] * inp;
             }
         }
         self.activation.apply(&mut output);
@@ -1083,7 +1047,6 @@ impl DenseLayer {
 ///
 /// Maps r to a vector of Gaussian basis values:
 ///   phi_k(r) = exp(-0.5 * ((r - mu_k) / sigma)^2)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GaussianBasis {
     /// Centers of the Gaussians.
@@ -1093,7 +1056,6 @@ pub struct GaussianBasis {
     /// Cutoff radius.
     pub cutoff: f64,
 }
-#[allow(dead_code)]
 impl GaussianBasis {
     /// Create an evenly-spaced Gaussian basis from `r_min` to `r_max`.
     pub fn new(r_min: f64, r_max: f64, n_basis: usize, sigma: f64, cutoff: f64) -> Self {
@@ -1128,7 +1090,6 @@ impl GaussianBasis {
     }
 }
 /// SchNet-style neural network potential.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct SchNetPotential {
     /// Number of atom features.
@@ -1140,7 +1101,6 @@ pub struct SchNetPotential {
     /// Cutoff (Å).
     pub cutoff: f64,
 }
-#[allow(dead_code)]
 impl SchNetPotential {
     /// Create a SchNet potential.
     pub fn new(n_features: usize, n_interactions: usize, n_basis: usize, cutoff: f64) -> Self {
@@ -1178,7 +1138,6 @@ impl SchNetPotential {
     }
 }
 /// A single snapshot of an atomistic system using a neural-network potential.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NnAtomisticSystem {
     /// Atom positions (Cartesian, Å).
@@ -1190,7 +1149,6 @@ pub struct NnAtomisticSystem {
     /// Species labels.
     pub species: Vec<u32>,
 }
-#[allow(dead_code)]
 impl NnAtomisticSystem {
     /// Create a new system at rest.
     pub fn new(
@@ -1244,14 +1202,12 @@ impl NnAtomisticSystem {
 /// Equivalent to [`DescriptorNormalizer`] but exposes a `fit` / `transform`
 /// naming convention that matches common ML-library conventions.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NnpNormalizer {
     /// Per-feature mean (length = descriptor dimension).
     pub mean: Vec<f64>,
     /// Per-feature standard deviation (clamped ≥ 1e-12).
     pub std: Vec<f64>,
 }
-#[allow(dead_code)]
 impl NnpNormalizer {
     /// Fit the normalizer on a collection of descriptor vectors.
     ///
@@ -1315,7 +1271,6 @@ impl NnpNormalizer {
 /// DeePMD-style neural network potential.
 ///
 /// Uses the environment matrix as descriptor input to a feedforward network.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct DeepPotPotential {
     /// Descriptor builder.
@@ -1325,7 +1280,6 @@ pub struct DeepPotPotential {
     /// Fitting network layers.
     pub fitting: Vec<DenseLayer>,
 }
-#[allow(dead_code)]
 impl DeepPotPotential {
     /// Create a DeePMD potential with random weights.
     ///
@@ -1420,7 +1374,6 @@ impl DeepPotPotential {
 /// x_norm = (x - mean) / std
 /// ```
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DescriptorNormalizer {
     /// Per-feature mean.
     pub mean: Vec<f64>,
@@ -1429,7 +1382,6 @@ pub struct DescriptorNormalizer {
 }
 impl DescriptorNormalizer {
     /// Create a normalizer with explicit mean and std.
-    #[allow(dead_code)]
     pub fn new(mean: Vec<f64>, std: Vec<f64>) -> Self {
         assert_eq!(mean.len(), std.len(), "mean and std length mismatch");
         Self { mean, std }
@@ -1437,7 +1389,6 @@ impl DescriptorNormalizer {
     /// Fit the normalizer to a batch of descriptor vectors.
     ///
     /// `data` is a slice of descriptor vectors, each of length `dim`.
-    #[allow(dead_code)]
     pub fn fit(data: &[Vec<f64>]) -> Self {
         assert!(!data.is_empty(), "cannot fit on empty data");
         let dim = data[0].len();
@@ -1465,7 +1416,6 @@ impl DescriptorNormalizer {
         Self { mean, std }
     }
     /// Normalize a single descriptor vector in-place.
-    #[allow(dead_code)]
     pub fn normalize(&self, descriptor: &mut [f64]) {
         assert_eq!(descriptor.len(), self.mean.len(), "dimension mismatch");
         for (i, x) in descriptor.iter_mut().enumerate() {
@@ -1473,14 +1423,12 @@ impl DescriptorNormalizer {
         }
     }
     /// Normalize a single descriptor, returning a new vector.
-    #[allow(dead_code)]
     pub fn normalize_vec(&self, descriptor: &[f64]) -> Vec<f64> {
         let mut result = descriptor.to_vec();
         self.normalize(&mut result);
         result
     }
     /// Inverse-transform a normalized descriptor back to original scale.
-    #[allow(dead_code)]
     pub fn denormalize(&self, normalized: &[f64]) -> Vec<f64> {
         normalized
             .iter()
@@ -1493,7 +1441,6 @@ impl DescriptorNormalizer {
 ///
 /// Freezes base layers and allows fine-tuning only the final layers.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TransferLearning {
     /// The base model (pre-trained).
     pub base: FeedForwardPotential,
@@ -1506,7 +1453,6 @@ impl TransferLearning {
     /// Create a transfer learning wrapper.
     ///
     /// `fine_tune_layers` specifies which layer indices remain trainable.
-    #[allow(dead_code)]
     pub fn new(base: FeedForwardPotential, fine_tune_layers: Vec<usize>) -> Self {
         Self {
             base,
@@ -1515,17 +1461,14 @@ impl TransferLearning {
         }
     }
     /// Freeze all base layers (mark as non-trainable).
-    #[allow(dead_code)]
     pub fn freeze_base(&mut self) {
         self.frozen = true;
     }
     /// Unfreeze all layers.
-    #[allow(dead_code)]
     pub fn unfreeze(&mut self) {
         self.frozen = false;
     }
     /// Check if a given layer index is trainable.
-    #[allow(dead_code)]
     pub fn is_trainable(&self, layer_idx: usize) -> bool {
         if !self.frozen {
             return true;
@@ -1533,17 +1476,14 @@ impl TransferLearning {
         self.fine_tune_layers.contains(&layer_idx)
     }
     /// Forward pass through the full network (base + fine-tune layers).
-    #[allow(dead_code)]
     pub fn forward(&self, descriptor: &[f64]) -> f64 {
         self.base.evaluate_network(descriptor)
     }
     /// Number of total layers.
-    #[allow(dead_code)]
     pub fn n_layers(&self) -> usize {
         self.base.layers.len()
     }
     /// Number of trainable layers (when frozen).
-    #[allow(dead_code)]
     pub fn n_trainable(&self) -> usize {
         if !self.frozen {
             return self.base.layers.len();
@@ -1561,8 +1501,6 @@ impl TransferLearning {
     ///
     /// Uses a simple finite-difference gradient estimate with learning rate
     /// `lr` for `epochs` passes over the dataset (proof-of-concept SGD).
-    #[allow(clippy::too_many_arguments)]
-    #[allow(dead_code)]
     pub fn fine_tune(&mut self, data: &[(Vec<f64>, f64)], lr: f64, epochs: usize) {
         let h = 1e-5_f64;
         for _epoch in 0..epochs {
@@ -1610,7 +1548,6 @@ impl TransferLearning {
 /// DimeNet-style directional message passing: computes interaction
 /// features for edge (i→j) based on angular information from all
 /// other edges (k→j) impinging on atom j.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct DimeNetMessageLayer {
     /// Envelope function cutoff.
@@ -1622,7 +1559,6 @@ pub struct DimeNetMessageLayer {
     /// Number of output features.
     pub n_out: usize,
 }
-#[allow(dead_code)]
 impl DimeNetMessageLayer {
     /// Create a DimeNet message layer.
     pub fn new(n_angular: usize, n_out: usize, cutoff: f64) -> Self {
@@ -1673,7 +1609,6 @@ impl DimeNetMessageLayer {
 /// For each atom i, computes attention weights over its neighbours j:
 ///   alpha_ij = softmax( LeakyReLU(a^T [Wh_i || Wh_j]) )
 ///   h_i^new  = sigma( sum_j alpha_ij * W * h_j )
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct GraphAttentionLayer {
     /// Weight matrix W (n_out × n_in).
@@ -1689,7 +1624,6 @@ pub struct GraphAttentionLayer {
     /// LeakyReLU slope for negative inputs.
     pub leaky_slope: f64,
 }
-#[allow(dead_code)]
 impl GraphAttentionLayer {
     /// Create a randomly-initialised GAT layer.
     pub fn new(n_in: usize, n_out: usize, cutoff: f64) -> Self {
@@ -1710,10 +1644,10 @@ impl GraphAttentionLayer {
     }
     fn transform(&self, h: &[f64]) -> Vec<f64> {
         let mut out = vec![0.0_f64; self.n_out];
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..self.n_out {
-            for j in 0..h.len().min(self.n_in) {
-                out[i] += self.w[i][j] * h[j];
+        for (i, out_i) in out.iter_mut().enumerate().take(self.n_out) {
+            let n_w = h.len().min(self.n_in);
+            for (&hj, &wij) in h.iter().zip(self.w[i].iter()).take(n_w) {
+                *out_i += wij * hj;
             }
         }
         out
@@ -1778,7 +1712,6 @@ impl GraphAttentionLayer {
 ///
 /// E_total = sum_k w_k(x) * E_k(x)
 /// where w_k are Gaussian weights in some reaction coordinate.
-#[allow(dead_code)]
 pub struct PesStiching {
     /// Energy functions (closures stored as `Box<dyn Fn>`).
     /// For simplicity we store them as trait objects.
@@ -1790,7 +1723,6 @@ pub struct PesStiching {
     /// Fixed energy offsets for each region (proxy for sub-potential energies).
     pub energy_offsets: Vec<f64>,
 }
-#[allow(dead_code)]
 impl PesStiching {
     /// Create a PES stitching with `n_regions` sub-potentials.
     pub fn new(centers: Vec<f64>, widths: Vec<f64>, energy_offsets: Vec<f64>) -> Self {

@@ -6,8 +6,6 @@
 //! fiber-reinforced composites, Classical Laminate Theory (CLT),
 //! and additional composite moduli estimates.
 
-#![allow(dead_code)]
-
 use super::advanced::{mori_tanaka_bulk_modulus, mori_tanaka_shear_modulus};
 
 // ============================================================================
@@ -24,7 +22,6 @@ use super::advanced::{mori_tanaka_bulk_modulus, mori_tanaka_shear_modulus};
 /// # Arguments
 /// * `a_vals`   – values of a(y) at uniformly spaced quadrature points
 /// * `cell_len` – length L of the unit cell
-#[allow(dead_code)]
 pub fn asymptotic_homogenization_1d(a_vals: &[f64], cell_len: f64) -> f64 {
     if a_vals.is_empty() {
         return 0.0;
@@ -38,7 +35,6 @@ pub fn asymptotic_homogenization_1d(a_vals: &[f64], cell_len: f64) -> f64 {
 /// Asymptotic homogenization effective coefficient via Voigt (upper) bound.
 ///
 /// For a 1-D cell: a*_Voigt = (1/L) ∫₀ᴸ a(y) dy  (arithmetic mean).
-#[allow(dead_code)]
 pub fn asymptotic_homogenization_1d_voigt(a_vals: &[f64], cell_len: f64) -> f64 {
     if a_vals.is_empty() {
         return 0.0;
@@ -59,7 +55,6 @@ pub fn asymptotic_homogenization_1d_voigt(a_vals: &[f64], cell_len: f64) -> f64 
 /// * `phase_map` – n×n grid of phase index (0 or 1)
 /// * `k0`        – conductivity of phase 0
 /// * `k1`        – conductivity of phase 1
-#[allow(dead_code)]
 pub fn asymptotic_homogenization_2d_conductivity(
     phase_map: &[Vec<usize>],
     k0: f64,
@@ -96,7 +91,6 @@ pub fn asymptotic_homogenization_2d_conductivity(
 /// Voigt (upper) bound on Young's modulus for N phases (rule of mixtures).
 ///
 /// E_V = Σ f_i E_i
-#[allow(dead_code)]
 pub fn voigt_modulus(moduli: &[f64], fractions: &[f64]) -> f64 {
     moduli
         .iter()
@@ -108,7 +102,6 @@ pub fn voigt_modulus(moduli: &[f64], fractions: &[f64]) -> f64 {
 /// Reuss (lower) bound on Young's modulus for N phases.
 ///
 /// 1/E_R = Σ f_i / E_i
-#[allow(dead_code)]
 pub fn reuss_modulus(moduli: &[f64], fractions: &[f64]) -> f64 {
     let inv_sum: f64 = moduli
         .iter()
@@ -123,13 +116,11 @@ pub fn reuss_modulus(moduli: &[f64], fractions: &[f64]) -> f64 {
 }
 
 /// Hill average Young's modulus: E_H = (E_V + E_R) / 2.
-#[allow(dead_code)]
 pub fn hill_modulus(moduli: &[f64], fractions: &[f64]) -> f64 {
     (voigt_modulus(moduli, fractions) + reuss_modulus(moduli, fractions)) / 2.0
 }
 
 /// Voigt shear modulus: G_V = Σ f_i G_i.
-#[allow(dead_code)]
 pub fn voigt_shear_modulus(shear_moduli: &[f64], fractions: &[f64]) -> f64 {
     shear_moduli
         .iter()
@@ -139,7 +130,6 @@ pub fn voigt_shear_modulus(shear_moduli: &[f64], fractions: &[f64]) -> f64 {
 }
 
 /// Reuss shear modulus: 1/G_R = Σ f_i / G_i.
-#[allow(dead_code)]
 pub fn reuss_shear_modulus(shear_moduli: &[f64], fractions: &[f64]) -> f64 {
     let inv: f64 = shear_moduli
         .iter()
@@ -156,7 +146,6 @@ pub fn reuss_shear_modulus(shear_moduli: &[f64], fractions: &[f64]) -> f64 {
 /// Hashin-Shtrikman lower bound for bulk modulus (two-phase, K1 < K2, G1 < G2).
 ///
 /// K_HS⁻ = K1 + f2 / (1/(K2-K1) + 3*f1/(3*K1+4*G1))
-#[allow(dead_code)]
 pub fn hs_bulk_lower_bound(k1: f64, g1: f64, k2: f64, f1: f64, f2: f64) -> f64 {
     let denom = 1.0 / (k2 - k1) + 3.0 * f1 / (3.0 * k1 + 4.0 * g1);
     if denom.abs() < 1e-60 {
@@ -169,7 +158,6 @@ pub fn hs_bulk_lower_bound(k1: f64, g1: f64, k2: f64, f1: f64, f2: f64) -> f64 {
 /// Hashin-Shtrikman upper bound for bulk modulus.
 ///
 /// K_HS⁺ = K2 + f1 / (1/(K1-K2) + 3*f2/(3*K2+4*G2))
-#[allow(dead_code)]
 pub fn hs_bulk_upper_bound(k2: f64, g2: f64, k1: f64, f1: f64, f2: f64) -> f64 {
     let denom = 1.0 / (k1 - k2) + 3.0 * f2 / (3.0 * k2 + 4.0 * g2);
     if denom.abs() < 1e-60 {
@@ -182,7 +170,6 @@ pub fn hs_bulk_upper_bound(k2: f64, g2: f64, k1: f64, f1: f64, f2: f64) -> f64 {
 /// Hashin-Shtrikman lower bound for shear modulus (two-phase).
 ///
 /// G_HS⁻ = G1 + f2 / (1/(G2-G1) + 6*f1*(K1+2*G1)/(5*G1*(3*K1+4*G1)))
-#[allow(dead_code)]
 pub fn hs_shear_lower_bound(k1: f64, g1: f64, g2: f64, f1: f64, f2: f64) -> f64 {
     if (g2 - g1).abs() < 1e-60 {
         return g1;
@@ -199,7 +186,6 @@ pub fn hs_shear_lower_bound(k1: f64, g1: f64, g2: f64, f1: f64, f2: f64) -> f64 
 /// Hashin-Shtrikman upper bound for shear modulus (two-phase).
 ///
 /// G_HS⁺ = G2 + f1 / (1/(G1-G2) + 6*f2*(K2+2*G2)/(5*G2*(3*K2+4*G2)))
-#[allow(dead_code)]
 pub fn hs_shear_upper_bound(k2: f64, g2: f64, g1: f64, f1: f64, f2: f64) -> f64 {
     if (g1 - g2).abs() < 1e-60 {
         return g2;
@@ -218,7 +204,6 @@ pub fn hs_shear_upper_bound(k2: f64, g2: f64, g1: f64, f1: f64, f2: f64) -> f64 
 // ============================================================================
 
 /// Engineering constants for a transversely isotropic fiber-reinforced composite.
-#[allow(dead_code)]
 pub struct FiberCompositeConstants {
     /// Longitudinal Young's modulus E₁ (fiber direction).
     pub e1: f64,
@@ -245,8 +230,6 @@ pub struct FiberCompositeConstants {
 /// * `g_f`  – fiber shear modulus
 /// * `g_m`  – matrix shear modulus
 /// * `vf`   – fiber volume fraction
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn fiber_composite_rom(
     e_f: f64,
     e_m: f64,
@@ -302,7 +285,6 @@ pub fn fiber_composite_rom(
 /// σ₁* = Vf * σ_fu + (1 - Vf) * σ_mu
 ///
 /// where σ_fu is fiber strength and σ_mu is matrix stress at fiber failure strain.
-#[allow(dead_code)]
 pub fn fiber_strength_longitudinal(sigma_fu: f64, sigma_mu: f64, vf: f64) -> f64 {
     vf * sigma_fu + (1.0 - vf) * sigma_mu
 }
@@ -310,7 +292,6 @@ pub fn fiber_strength_longitudinal(sigma_fu: f64, sigma_mu: f64, vf: f64) -> f64
 /// Critical fiber volume fraction below which matrix failure dominates.
 ///
 /// V_crit = (σ_mu - σ_mu_star) / (σ_fu + σ_mu - σ_mu_star)
-#[allow(dead_code)]
 pub fn critical_fiber_volume_fraction(sigma_mu: f64, sigma_mu_star: f64, sigma_fu: f64) -> f64 {
     let denom = sigma_fu + sigma_mu - sigma_mu_star;
     if denom.abs() < 1e-60 {
@@ -325,7 +306,6 @@ pub fn critical_fiber_volume_fraction(sigma_mu: f64, sigma_mu_star: f64, sigma_f
 // ============================================================================
 
 /// Rule of mixtures for density: ρ* = Σ f_i ρ_i.
-#[allow(dead_code)]
 pub fn rule_of_mixtures_density(densities: &[f64], fractions: &[f64]) -> f64 {
     densities
         .iter()
@@ -335,7 +315,6 @@ pub fn rule_of_mixtures_density(densities: &[f64], fractions: &[f64]) -> f64 {
 }
 
 /// Rule of mixtures for thermal conductivity (Voigt = parallel rule).
-#[allow(dead_code)]
 pub fn rule_of_mixtures_conductivity(lambdas: &[f64], fractions: &[f64]) -> f64 {
     lambdas
         .iter()
@@ -345,7 +324,6 @@ pub fn rule_of_mixtures_conductivity(lambdas: &[f64], fractions: &[f64]) -> f64 
 }
 
 /// Inverse rule of mixtures for compliance C_R = Σ f_i / E_i (Reuss).
-#[allow(dead_code)]
 pub fn inverse_rule_of_mixtures(moduli: &[f64], fractions: &[f64]) -> f64 {
     let s: f64 = moduli
         .iter()
@@ -358,7 +336,6 @@ pub fn inverse_rule_of_mixtures(moduli: &[f64], fractions: &[f64]) -> f64 {
 /// Rule of mixtures for CTE: α* = Σ f_i α_i E_i / E*.
 ///
 /// Uses the Schapery model: α* = (Σ f_i α_i E_i) / (Σ f_i E_i).
-#[allow(dead_code)]
 pub fn rule_of_mixtures_cte(alphas: &[f64], moduli: &[f64], fractions: &[f64]) -> f64 {
     let num: f64 = alphas
         .iter()
@@ -379,7 +356,6 @@ pub fn rule_of_mixtures_cte(alphas: &[f64], moduli: &[f64], fractions: &[f64]) -
 // ============================================================================
 
 /// A single lamina (ply) in a laminate stack.
-#[allow(dead_code)]
 pub struct LaminaLayer {
     /// Young's modulus in the fiber direction E₁.
     pub e1: f64,
@@ -399,7 +375,6 @@ pub struct LaminaLayer {
 /// principal material coordinate system.
 ///
 /// Returns the 3×3 in-plane stiffness matrix Q as `[[f64; 3\]; 3]`.
-#[allow(dead_code)]
 pub fn lamina_reduced_stiffness(l: &LaminaLayer) -> [[f64; 3]; 3] {
     let nu21 = l.nu12 * l.e2 / l.e1;
     let denom = 1.0 - l.nu12 * nu21;
@@ -417,7 +392,6 @@ pub fn lamina_reduced_stiffness(l: &LaminaLayer) -> [[f64; 3]; 3] {
 /// coordinate system, producing the transformed stiffness Q̄.
 ///
 /// Returns the 3×3 transformed reduced stiffness matrix.
-#[allow(dead_code)]
 pub fn transform_reduced_stiffness(q: &[[f64; 3]; 3], theta: f64) -> [[f64; 3]; 3] {
     let c = theta.cos();
     let s = theta.sin();
@@ -448,7 +422,6 @@ pub fn transform_reduced_stiffness(q: &[[f64; 3]; 3], theta: f64) -> [[f64; 3]; 
 /// Result of a Classical Laminate Theory analysis.
 ///
 /// Contains the \[A\], \[B\], \[D\] matrices of the laminate.
-#[allow(dead_code)]
 pub struct CltResult {
     /// Extensional stiffness matrix A (3×3) \[N/m\].
     pub a_mat: [[f64; 3]; 3],
@@ -472,7 +445,6 @@ pub struct CltResult {
 ///
 /// # Arguments
 /// * `layers` – ordered list of lamina (from bottom z₁ to top z_n)
-#[allow(dead_code)]
 pub fn clt_analysis(layers: &[LaminaLayer]) -> CltResult {
     let total_thickness: f64 = layers.iter().map(|l| l.thickness).sum();
 
@@ -534,7 +506,6 @@ pub fn clt_analysis(layers: &[LaminaLayer]) -> CltResult {
 /// Compute the in-plane Poisson's ratio ν_xy from the CLT A-matrix.
 ///
 /// ν_xy = A12 / A22 for a symmetric laminate.
-#[allow(dead_code)]
 pub fn clt_poisson_xy(a: &[[f64; 3]; 3]) -> f64 {
     if a[1][1].abs() < 1e-60 {
         0.0
@@ -544,7 +515,6 @@ pub fn clt_poisson_xy(a: &[[f64; 3]; 3]) -> f64 {
 }
 
 /// Check if a laminate is symmetric (B ≈ 0) within a tolerance.
-#[allow(dead_code)]
 pub fn laminate_is_symmetric(b: &[[f64; 3]; 3], tol: f64) -> bool {
     b.iter().all(|row| row.iter().all(|&v| v.abs() < tol))
 }
@@ -557,7 +527,6 @@ pub fn laminate_is_symmetric(b: &[[f64; 3]; 3], tol: f64) -> bool {
 ///
 /// For a two-phase composite with phases ordered K1 < K2:
 /// Returns (K_lower, K_upper).
-#[allow(dead_code)]
 pub fn walpole_bulk_bounds(k1: f64, g1: f64, k2: f64, g2: f64, f2: f64) -> (f64, f64) {
     let f1 = 1.0 - f2;
     let k_lower = hs_bulk_lower_bound(k1, g1, k2, f1, f2);
@@ -569,7 +538,6 @@ pub fn walpole_bulk_bounds(k1: f64, g1: f64, k2: f64, g2: f64, f2: f64) -> (f64,
 ///
 /// Solves implicitly; here we use the explicit approximation:
 /// K* ≈ (f1*K1*(3K2+4G2) + f2*K2*(3K1+4G1)) / (f1*(3K2+4G2) + f2*(3K1+4G1))
-#[allow(dead_code)]
 pub fn self_consistent_bulk(k1: f64, g1: f64, k2: f64, g2: f64, f1: f64, f2: f64) -> f64 {
     let w1 = 3.0 * k2 + 4.0 * g2;
     let w2 = 3.0 * k1 + 4.0 * g1;
@@ -582,7 +550,6 @@ pub fn self_consistent_bulk(k1: f64, g1: f64, k2: f64, g2: f64, f1: f64, f2: f64
 ///
 /// Integrates ODE numerically from K_m to K* by adding inclusions
 /// incrementally.  Uses n_steps Euler increments.
-#[allow(dead_code)]
 pub fn differential_scheme_bulk(k_m: f64, g_m: f64, k_i: f64, f_i: f64, n_steps: usize) -> f64 {
     if n_steps == 0 {
         return k_m;
@@ -608,7 +575,6 @@ pub fn differential_scheme_bulk(k_m: f64, g_m: f64, k_i: f64, f_i: f64, n_steps:
 /// Eshelby sphere inclusion factor for bulk modulus (κ).
 ///
 /// κ = (K_i - K_m) / (K_i + 4/3 G_m)
-#[allow(dead_code)]
 pub fn eshelby_bulk_factor(k_i: f64, k_m: f64, g_m: f64) -> f64 {
     let denom = k_i + 4.0 / 3.0 * g_m;
     if denom.abs() < 1e-60 {
@@ -621,7 +587,6 @@ pub fn eshelby_bulk_factor(k_i: f64, k_m: f64, g_m: f64) -> f64 {
 /// Mori-Tanaka estimate for effective Young's modulus of a two-phase composite.
 ///
 /// Uses the Mori-Tanaka bulk/shear to construct E* from Kfrom and G*.
-#[allow(dead_code)]
 pub fn mori_tanaka_young(k_m: f64, g_m: f64, k_i: f64, g_i: f64, f_i: f64) -> f64 {
     let k_star = mori_tanaka_bulk_modulus(k_m, g_m, k_i, f_i);
     let g_star = mori_tanaka_shear_modulus(k_m, g_m, g_i, f_i);
@@ -629,7 +594,6 @@ pub fn mori_tanaka_young(k_m: f64, g_m: f64, k_i: f64, g_i: f64, f_i: f64) -> f6
 }
 
 /// Mori-Tanaka estimate for effective Poisson's ratio.
-#[allow(dead_code)]
 pub fn mori_tanaka_poisson(k_m: f64, g_m: f64, k_i: f64, g_i: f64, f_i: f64) -> f64 {
     let k_star = mori_tanaka_bulk_modulus(k_m, g_m, k_i, f_i);
     let g_star = mori_tanaka_shear_modulus(k_m, g_m, g_i, f_i);
@@ -647,7 +611,6 @@ pub fn mori_tanaka_poisson(k_m: f64, g_m: f64, k_i: f64, g_i: f64, f_i: f64) -> 
 /// # Arguments
 /// * `strains`   – strain vector per phase `[ε_xx, ε_yy, γ_xy]`
 /// * `fractions` – volume fraction per phase
-#[allow(dead_code)]
 pub fn rve_average_strain(strains: &[[f64; 3]], fractions: &[f64]) -> [f64; 3] {
     let n = strains.len().min(fractions.len());
     let mut avg = [0.0_f64; 3];
@@ -660,7 +623,6 @@ pub fn rve_average_strain(strains: &[[f64; 3]], fractions: &[f64]) -> [f64; 3] {
 }
 
 /// Compute the average stress in an RVE.
-#[allow(dead_code)]
 pub fn rve_average_stress(stresses: &[[f64; 3]], fractions: &[f64]) -> [f64; 3] {
     rve_average_strain(stresses, fractions)
 }
@@ -668,7 +630,6 @@ pub fn rve_average_stress(stresses: &[[f64; 3]], fractions: &[f64]) -> [f64; 3] 
 /// Hill–Mandel energy condition check for in-plane problem.
 ///
 /// Returns |<σ:ε> - <σ>:`ε`|.
-#[allow(dead_code)]
 pub fn hill_mandel_inplane(stresses: &[[f64; 3]], strains: &[[f64; 3]], fractions: &[f64]) -> f64 {
     let n = stresses.len().min(strains.len()).min(fractions.len());
     // Volume-averaged energy <σ:ε>
@@ -701,7 +662,6 @@ pub fn hill_mandel_inplane(stresses: &[[f64; 3]], strains: &[[f64; 3]], fraction
 ///
 /// where R_T is the transverse tensile strength, S21 is the in-plane shear
 /// strength, and p_T is the inclination parameter for mode A (≈ 0.2–0.35).
-#[allow(dead_code)]
 pub fn puck_inter_fiber_failure(sigma_2: f64, tau_21: f64, r_t: f64, s21: f64, p_t: f64) -> f64 {
     if s21.abs() < 1e-60 || r_t.abs() < 1e-60 {
         return 0.0;
@@ -714,7 +674,6 @@ pub fn puck_inter_fiber_failure(sigma_2: f64, tau_21: f64, r_t: f64, s21: f64, p
 /// Returns failure index.  Failure when FI ≥ 1.
 ///
 /// FI = (σ₁/X)² - σ₁σ₂/X² + (σ₂/Y)² + (τ₁₂/S)²
-#[allow(dead_code)]
 pub fn tsai_hill_criterion(
     sigma_1: f64,
     sigma_2: f64,
@@ -731,8 +690,6 @@ pub fn tsai_hill_criterion(
 }
 
 /// Maximum stress failure criterion: returns true if any component exceeds its limit.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn max_stress_failure(
     sigma_1: f64,
     sigma_2: f64,
@@ -749,7 +706,6 @@ pub fn max_stress_failure(
 /// Compute the thermal residual stresses in a laminate after cool-down.
 ///
 /// Simple approximation: σ_r = E* * (α_m - α_f) * ΔT for each phase.
-#[allow(dead_code)]
 pub fn thermal_residual_stress(e_eff: f64, alpha_m: f64, alpha_f: f64, delta_t: f64) -> f64 {
     e_eff * (alpha_m - alpha_f) * delta_t
 }
@@ -829,7 +785,7 @@ mod tests_homogenization_extended {
         let er = reuss_modulus(&moduli, &fracs);
         let eh = hill_modulus(&moduli, &fracs);
         assert!(
-            eh >= er && eh <= ev,
+            (er..=ev).contains(&eh),
             "Hill={eh} must be between Reuss={er} and Voigt={ev}"
         );
     }
@@ -1122,7 +1078,7 @@ mod tests_homogenization_extended {
         let g2 = 80e9_f64;
         let k_sc = self_consistent_bulk(k1, g1, k2, g2, 0.5, 0.5);
         assert!(
-            k_sc >= k1 && k_sc <= k2,
+            (k1..=k2).contains(&k_sc),
             "SC should be between phases: {k_sc}"
         );
     }
@@ -1145,7 +1101,7 @@ mod tests_homogenization_extended {
         let e_i = 9.0 * k_i * g_i / (3.0 * k_i + g_i);
         let e_mt = mori_tanaka_young(k_m, g_m, k_i, g_i, 0.3);
         assert!(
-            e_mt >= e_m && e_mt <= e_i,
+            (e_m..=e_i).contains(&e_mt),
             "MT E = {e_mt} vs [{e_m}, {e_i}]"
         );
     }

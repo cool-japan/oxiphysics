@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use std::f64::consts::PI;
-
 /// Dot product of two equal-length slices.
 #[inline]
 pub(super) fn dot(a: &[f64], b: &[f64]) -> f64 {
@@ -24,11 +21,6 @@ pub(super) fn vadd(a: &[f64], b: &[f64]) -> Vec<f64> {
 #[inline]
 pub(super) fn vsub(a: &[f64], b: &[f64]) -> Vec<f64> {
     a.iter().zip(b.iter()).map(|(x, y)| x - y).collect()
-}
-/// Scale a vector.
-#[inline]
-pub(super) fn vscale(a: &[f64], s: f64) -> Vec<f64> {
-    a.iter().map(|x| x * s).collect()
 }
 /// Rectified linear unit activation.
 #[inline]
@@ -83,6 +75,7 @@ mod tests {
     use crate::neural_control::RunningNormaliser;
     use crate::neural_control::Trajectory;
     use crate::neural_control::Transition;
+    use std::f64::consts::PI;
     #[test]
     fn test_neural_controller_output_shape() {
         let nc = NeuralController::new(4, &[8, 8], 2, 1.0);

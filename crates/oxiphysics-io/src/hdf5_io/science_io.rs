@@ -4,8 +4,6 @@
 //! Domain-specific simulation I/O: phase-space, thermodynamics,
 //! neighbours, RDF, MSD, bonds, charge density, bands, sparse matrices.
 
-#![allow(dead_code)]
-
 use super::convenience::write_f64_dataset;
 use super::file::Hdf5File;
 use super::types::{AttrValue, Hdf5Dtype, Hdf5Error, Hdf5Result};
@@ -15,7 +13,6 @@ use super::types::{AttrValue, Hdf5Dtype, Hdf5Error, Hdf5Result};
 /// Write per-atom velocities (one `[f64;3]` per atom) to a group.
 ///
 /// The dataset `"velocities"` is created with shape `[n_atoms, 3]`.
-#[allow(dead_code)]
 pub fn write_velocities(
     file: &mut Hdf5File,
     group: &str,
@@ -33,7 +30,6 @@ pub fn write_velocities(
 }
 
 /// Read velocities previously stored by [`write_velocities`].
-#[allow(dead_code)]
 pub fn read_velocities(file: &Hdf5File, group: &str) -> Hdf5Result<Vec<[f64; 3]>> {
     let flat = file.open_dataset(group, "velocities")?.read_f64()?;
     if flat.len() % 3 != 0 {
@@ -45,19 +41,16 @@ pub fn read_velocities(file: &Hdf5File, group: &str) -> Hdf5Result<Vec<[f64; 3]>
 }
 
 /// Write per-atom masses as a 1-D dataset.
-#[allow(dead_code)]
 pub fn write_masses(file: &mut Hdf5File, group: &str, masses: &[f64]) -> Hdf5Result<()> {
     write_f64_dataset(file, group, "masses", masses)
 }
 
 /// Read per-atom masses.
-#[allow(dead_code)]
 pub fn read_masses(file: &Hdf5File, group: &str) -> Hdf5Result<Vec<f64>> {
     file.open_dataset(group, "masses")?.read_f64()
 }
 
 /// Write box vectors (3×3 matrix, row-major).
-#[allow(dead_code)]
 pub fn write_box_vectors(file: &mut Hdf5File, group: &str, box_vecs: &[f64; 9]) -> Hdf5Result<()> {
     file.create_group(group)?;
     let _ = file.create_dataset(group, "box_vectors", vec![3, 3], Hdf5Dtype::Float64);
@@ -66,7 +59,6 @@ pub fn write_box_vectors(file: &mut Hdf5File, group: &str, box_vecs: &[f64; 9]) 
 }
 
 /// Read box vectors.
-#[allow(dead_code)]
 pub fn read_box_vectors(file: &Hdf5File, group: &str) -> Hdf5Result<[f64; 9]> {
     let v = file.open_dataset(group, "box_vectors")?.read_f64()?;
     if v.len() != 9 {
@@ -80,13 +72,11 @@ pub fn read_box_vectors(file: &Hdf5File, group: &str) -> Hdf5Result<[f64; 9]> {
 }
 
 /// Write per-atom charges.
-#[allow(dead_code)]
 pub fn write_charges(file: &mut Hdf5File, group: &str, charges: &[f64]) -> Hdf5Result<()> {
     write_f64_dataset(file, group, "charges", charges)
 }
 
 /// Read per-atom charges.
-#[allow(dead_code)]
 pub fn read_charges(file: &Hdf5File, group: &str) -> Hdf5Result<Vec<f64>> {
     file.open_dataset(group, "charges")?.read_f64()
 }
@@ -94,7 +84,6 @@ pub fn read_charges(file: &Hdf5File, group: &str) -> Hdf5Result<Vec<f64>> {
 // ── Thermodynamic observables ─────────────────────────────────────────────────
 
 /// Write a potential energy time series.
-#[allow(dead_code)]
 pub fn write_potential_energy_series(
     file: &mut Hdf5File,
     group: &str,
@@ -104,13 +93,11 @@ pub fn write_potential_energy_series(
 }
 
 /// Write a temperature time series.
-#[allow(dead_code)]
 pub fn write_temperature_series(file: &mut Hdf5File, group: &str, temps: &[f64]) -> Hdf5Result<()> {
     write_f64_dataset(file, group, "temperature", temps)
 }
 
 /// Write a pressure time series.
-#[allow(dead_code)]
 pub fn write_pressure_series(
     file: &mut Hdf5File,
     group: &str,
@@ -120,7 +107,6 @@ pub fn write_pressure_series(
 }
 
 /// Read a named scalar time series from a group.
-#[allow(dead_code)]
 pub fn read_scalar_series(file: &Hdf5File, group: &str, name: &str) -> Hdf5Result<Vec<f64>> {
     file.open_dataset(group, name)?.read_f64()
 }
@@ -129,7 +115,6 @@ pub fn read_scalar_series(file: &Hdf5File, group: &str, name: &str) -> Hdf5Resul
 
 /// Sparse neighbour list in CSR format.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NeighbourList {
     /// Number of atoms.
     pub n_atoms: usize,
@@ -143,7 +128,6 @@ pub struct NeighbourList {
 
 impl NeighbourList {
     /// Create an empty neighbour list.
-    #[allow(dead_code)]
     pub fn new(n_atoms: usize) -> Self {
         Self {
             n_atoms,
@@ -154,20 +138,17 @@ impl NeighbourList {
     }
 
     /// Neighbour indices for atom `i`.
-    #[allow(dead_code)]
     pub fn neighbours(&self, i: usize) -> &[usize] {
         &self.col_idx[self.row_ptr[i]..self.row_ptr[i + 1]]
     }
 
     /// Distances for atom `i`'s neighbours.
-    #[allow(dead_code)]
     pub fn neighbour_distances(&self, i: usize) -> &[f64] {
         &self.distances[self.row_ptr[i]..self.row_ptr[i + 1]]
     }
 }
 
 /// Write a [`NeighbourList`].
-#[allow(dead_code)]
 pub fn write_neighbour_list(
     file: &mut Hdf5File,
     group: &str,
@@ -181,7 +162,6 @@ pub fn write_neighbour_list(
 }
 
 /// Read a [`NeighbourList`].
-#[allow(dead_code)]
 pub fn read_neighbour_list(file: &Hdf5File, group: &str) -> Hdf5Result<NeighbourList> {
     let row_ptr: Vec<usize> = file
         .open_dataset(group, "row_ptr")?
@@ -208,7 +188,6 @@ pub fn read_neighbour_list(file: &Hdf5File, group: &str) -> Hdf5Result<Neighbour
 // ── Radial distribution function ──────────────────────────────────────────────
 
 /// Write a radial distribution function.
-#[allow(dead_code)]
 pub fn write_rdf(file: &mut Hdf5File, group: &str, r_bins: &[f64], gr: &[f64]) -> Hdf5Result<()> {
     assert_eq!(r_bins.len(), gr.len());
     write_f64_dataset(file, group, "r_bins", r_bins)?;
@@ -216,7 +195,6 @@ pub fn write_rdf(file: &mut Hdf5File, group: &str, r_bins: &[f64], gr: &[f64]) -
 }
 
 /// Read a radial distribution function; returns `(r_bins, gr)`.
-#[allow(dead_code)]
 pub fn read_rdf(file: &Hdf5File, group: &str) -> Hdf5Result<(Vec<f64>, Vec<f64>)> {
     let r = file.open_dataset(group, "r_bins")?.read_f64()?;
     let g = file.open_dataset(group, "gr")?.read_f64()?;
@@ -226,7 +204,6 @@ pub fn read_rdf(file: &Hdf5File, group: &str) -> Hdf5Result<(Vec<f64>, Vec<f64>)
 // ── Mean squared displacement ─────────────────────────────────────────────────
 
 /// Write mean-squared displacement data.
-#[allow(dead_code)]
 pub fn write_msd(
     file: &mut Hdf5File,
     group: &str,
@@ -239,7 +216,6 @@ pub fn write_msd(
 }
 
 /// Read MSD data; returns `(time_lags, msd)`.
-#[allow(dead_code)]
 pub fn read_msd(file: &Hdf5File, group: &str) -> Hdf5Result<(Vec<f64>, Vec<f64>)> {
     let t = file.open_dataset(group, "time_lags")?.read_f64()?;
     let m = file.open_dataset(group, "msd")?.read_f64()?;
@@ -249,7 +225,6 @@ pub fn read_msd(file: &Hdf5File, group: &str) -> Hdf5Result<(Vec<f64>, Vec<f64>)
 // ── Velocity autocorrelation ──────────────────────────────────────────────────
 
 /// Write velocity autocorrelation function.
-#[allow(dead_code)]
 pub fn write_vacf(
     file: &mut Hdf5File,
     group: &str,
@@ -264,7 +239,6 @@ pub fn write_vacf(
 // ── Power spectrum ────────────────────────────────────────────────────────────
 
 /// Write a phonon density-of-states.
-#[allow(dead_code)]
 pub fn write_power_spectrum(
     file: &mut Hdf5File,
     group: &str,
@@ -282,7 +256,6 @@ pub fn write_power_spectrum(
 pub type BondPair = (usize, usize);
 
 /// Write a bond list.
-#[allow(dead_code)]
 pub fn write_bonds(file: &mut Hdf5File, group: &str, bonds: &[BondPair]) -> Hdf5Result<()> {
     let flat: Vec<f64> = bonds
         .iter()
@@ -294,7 +267,6 @@ pub fn write_bonds(file: &mut Hdf5File, group: &str, bonds: &[BondPair]) -> Hdf5
 }
 
 /// Read a bond list.
-#[allow(dead_code)]
 pub fn read_bonds(file: &Hdf5File, group: &str) -> Hdf5Result<Vec<BondPair>> {
     let flat = file.open_dataset(group, "bonds")?.read_f64()?;
     if flat.len() % 2 != 0 {
@@ -309,7 +281,6 @@ pub fn read_bonds(file: &Hdf5File, group: &str) -> Hdf5Result<Vec<BondPair>> {
 // ── Charge density grid ───────────────────────────────────────────────────────
 
 /// Write a 3-D charge density grid.
-#[allow(dead_code)]
 pub fn write_charge_density(
     file: &mut Hdf5File,
     group: &str,
@@ -324,7 +295,6 @@ pub fn write_charge_density(
 }
 
 /// Read a charge density grid; returns `(dims, data)`.
-#[allow(dead_code)]
 pub fn read_charge_density(file: &Hdf5File, group: &str) -> Hdf5Result<(Vec<usize>, Vec<f64>)> {
     let ds = file.open_dataset(group, "charge_density")?;
     let dims = ds.shape.clone();
@@ -335,7 +305,6 @@ pub fn read_charge_density(file: &Hdf5File, group: &str) -> Hdf5Result<(Vec<usiz
 // ── Electronic band structure ─────────────────────────────────────────────────
 
 /// Write electronic eigenvalues: `kpoints` shape `[nk, 3]`, `eigenvalues` shape `[nk, nbands]`.
-#[allow(dead_code)]
 pub fn write_band_structure(
     file: &mut Hdf5File,
     group: &str,
@@ -359,7 +328,6 @@ pub fn write_band_structure(
 
 /// Sparse matrix in COO format.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SparseCoo {
     /// Number of rows.
     pub nrows: usize,
@@ -375,7 +343,6 @@ pub struct SparseCoo {
 
 impl SparseCoo {
     /// Create an empty sparse matrix.
-    #[allow(dead_code)]
     pub fn new(nrows: usize, ncols: usize) -> Self {
         Self {
             nrows,
@@ -387,7 +354,6 @@ impl SparseCoo {
     }
 
     /// Push a non-zero entry.
-    #[allow(dead_code)]
     pub fn push(&mut self, r: usize, c: usize, v: f64) {
         self.row.push(r);
         self.col.push(c);
@@ -395,14 +361,12 @@ impl SparseCoo {
     }
 
     /// Number of non-zeros.
-    #[allow(dead_code)]
     pub fn nnz(&self) -> usize {
         self.data.len()
     }
 }
 
 /// Write a [`SparseCoo`] matrix.
-#[allow(dead_code)]
 pub fn write_sparse_coo(file: &mut Hdf5File, group: &str, mat: &SparseCoo) -> Hdf5Result<()> {
     let row_f: Vec<f64> = mat.row.iter().map(|&x| x as f64).collect();
     let col_f: Vec<f64> = mat.col.iter().map(|&x| x as f64).collect();
@@ -417,7 +381,6 @@ pub fn write_sparse_coo(file: &mut Hdf5File, group: &str, mat: &SparseCoo) -> Hd
 }
 
 /// Read a [`SparseCoo`] matrix.
-#[allow(dead_code)]
 pub fn read_sparse_coo(file: &Hdf5File, group: &str) -> Hdf5Result<SparseCoo> {
     let g = file.open_group(group)?;
     let nrows = match g.attributes.get("nrows") {

@@ -1,4 +1,3 @@
-#![allow(clippy::if_same_then_else, clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,9 +16,6 @@
 //! - [`SpeedLimitZone`]: Enforces variable-speed limits on road sections
 //! - [`AccidentPropagation`]: Accident shock-wave propagation model
 //! - [`TrafficLbm`]: D1Q3 LBM solver for macroscopic traffic density/flow
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -43,9 +39,9 @@ const CS2_1D: f64 = 1.0 / 3.0;
 fn feq1d(rho: f64, u: f64) -> [f64; NQ] {
     let mut f = [0.0f64; NQ];
     let u2 = u * u;
-    for q in 0..NQ {
-        let cu = CV[q] * u;
-        f[q] = W3[q]
+    for (f_q, (&cv_q, &w_q)) in f.iter_mut().zip(CV.iter().zip(W3.iter())) {
+        let cu = cv_q * u;
+        *f_q = w_q
             * rho
             * (1.0 + cu / CS2_1D + cu * cu / (2.0 * CS2_1D * CS2_1D) - u2 / (2.0 * CS2_1D));
     }
@@ -352,12 +348,12 @@ impl LwrLattice {
     pub fn step(&mut self) {
         let mut rho_new = self.rho.clone();
         let cfl = self.dt / self.dx;
-        for i in 0..self.nx {
+        for (i, rho_new_i) in rho_new.iter_mut().enumerate() {
             let il = if i == 0 { self.nx - 1 } else { i - 1 };
             let ir = (i + 1) % self.nx;
             let f_right = self.godunov_flux(self.rho[i], self.rho[ir]);
             let f_left = self.godunov_flux(self.rho[il], self.rho[i]);
-            rho_new[i] = (self.rho[i] - cfl * (f_right - f_left)).clamp(0.0, self.diagram.rho_jam);
+            *rho_new_i = (self.rho[i] - cfl * (f_right - f_left)).clamp(0.0, self.diagram.rho_jam);
         }
         self.rho = rho_new;
         self.time += self.dt;
@@ -742,37 +738,49 @@ impl MultiLane {
         let mut rho_new = self.rho.clone();
 
         // LWR advection per lane (Godunov)
-        for l in 0..self.n_lanes {
-            for i in 0..self.nx {
+        for (l, rho_new_l) in rho_new.iter_mut().enumerate() {
+            for (i, rho_new_li) in rho_new_l.iter_mut().enumerate() {
                 let il = if i == 0 { self.nx - 1 } else { i - 1 };
                 let ir = (i + 1) % self.nx;
                 let f_r = godunov_flux_fd(&self.diagram, self.rho[l][i], self.rho[l][ir]);
                 let f_l = godunov_flux_fd(&self.diagram, self.rho[l][il], self.rho[l][i]);
-                rho_new[l][i] -= cfl * (f_r - f_l);
+                *rho_new_li -= cfl * (f_r - f_l);
             }
         }
 
         // Lane-change diffusion between adjacent lanes
+        let lc = self.lc_rate * self.dt;
         for l in 0..self.n_lanes {
-            for i in 0..self.nx {
-                let lc = self.lc_rate * self.dt;
+            // Compute diffs for this lane into a temporary vec to avoid borrow conflicts.
+            let diffs_lo: Vec<f64> = if l > 0 {
+                (0..self.nx)
+                    .map(|i| lc * (self.rho[l - 1][i] - self.rho[l][i]))
+                    .collect()
+            } else {
+                vec![0.0; self.nx]
+            };
+            let diffs_hi: Vec<f64> = if l < self.n_lanes - 1 {
+                (0..self.nx)
+                    .map(|i| lc * (self.rho[l + 1][i] - self.rho[l][i]))
+                    .collect()
+            } else {
+                vec![0.0; self.nx]
+            };
+            for (i, (&d_lo, &d_hi)) in diffs_lo.iter().zip(diffs_hi.iter()).enumerate() {
+                rho_new[l][i] += d_lo + d_hi;
                 if l > 0 {
-                    let diff = lc * (self.rho[l - 1][i] - self.rho[l][i]);
-                    rho_new[l][i] += diff;
-                    rho_new[l - 1][i] -= diff;
+                    rho_new[l - 1][i] -= d_lo;
                 }
                 if l < self.n_lanes - 1 {
-                    let diff = lc * (self.rho[l + 1][i] - self.rho[l][i]);
-                    rho_new[l][i] += diff;
-                    rho_new[l + 1][i] -= diff;
+                    rho_new[l + 1][i] -= d_hi;
                 }
             }
         }
 
         // Clamp
-        for l in 0..self.n_lanes {
-            for i in 0..self.nx {
-                rho_new[l][i] = rho_new[l][i].clamp(0.0, self.diagram.rho_jam);
+        for rho_new_l in rho_new.iter_mut() {
+            for rho_new_li in rho_new_l.iter_mut() {
+                *rho_new_li = rho_new_li.clamp(0.0, self.diagram.rho_jam);
             }
         }
 
@@ -920,9 +928,7 @@ impl AccidentPropagation {
         let distance = (cell as f64 - self.accident_cell as f64) * dx;
         // Queue extends upstream (negative direction)
         let jam_front = self.shock_speed * self.elapsed;
-        if distance >= jam_front && distance <= 0.0 {
-            self.capacity_factor
-        } else if distance == 0.0 {
+        if (distance >= jam_front && distance <= 0.0) || distance == 0.0 {
             self.capacity_factor
         } else {
             1.0
@@ -1065,8 +1071,8 @@ impl TrafficLbm {
             }
 
             let feq = feq1d(rho, v_eq);
-            for q in 0..NQ {
-                self.f[i][q] += (feq[q] - self.f[i][q]) / self.tau;
+            for (f_iq, &feq_q) in self.f[i].iter_mut().zip(feq.iter()) {
+                *f_iq += (feq_q - *f_iq) / self.tau;
             }
         }
     }
@@ -1074,11 +1080,11 @@ impl TrafficLbm {
     /// Streaming step: shift distributions by lattice velocities.
     fn stream(&mut self) {
         let mut f_new = vec![[0.0f64; NQ]; self.nx];
-        for i in 0..self.nx {
-            for q in 0..NQ {
+        for (i, f_new_i) in f_new.iter_mut().enumerate() {
+            for (q, f_new_iq) in f_new_i.iter_mut().enumerate() {
                 let c = CV[q] as isize;
                 let i_src = ((i as isize - c).rem_euclid(self.nx as isize)) as usize;
-                f_new[i][q] = self.f[i_src][q];
+                *f_new_iq = self.f[i_src][q];
             }
         }
         self.f = f_new;
@@ -1141,7 +1147,6 @@ impl TrafficLbm {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Detect congested cells where density exceeds threshold.
-#[allow(dead_code)]
 pub fn detect_congestion(rho: &[f64], threshold: f64) -> Vec<usize> {
     rho.iter()
         .enumerate()
@@ -1151,7 +1156,6 @@ pub fn detect_congestion(rho: &[f64], threshold: f64) -> Vec<usize> {
 }
 
 /// Compute shockwave speed between upstream density `rho_u` and downstream `rho_d`.
-#[allow(dead_code)]
 pub fn shock_wave_speed(diagram: &FundamentalDiagram, rho_u: f64, rho_d: f64) -> f64 {
     let dq = diagram.flow(rho_d) - diagram.flow(rho_u);
     let drho = rho_d - rho_u;
@@ -1162,7 +1166,6 @@ pub fn shock_wave_speed(diagram: &FundamentalDiagram, rho_u: f64, rho_d: f64) ->
 }
 
 /// Compute the oscillation amplitude in speed (standard deviation).
-#[allow(dead_code)]
 pub fn speed_oscillation_amplitude(speeds: &[f64]) -> f64 {
     if speeds.len() < 2 {
         return 0.0;
@@ -1173,7 +1176,6 @@ pub fn speed_oscillation_amplitude(speeds: &[f64]) -> f64 {
 }
 
 /// Compute throughput efficiency (actual flow / capacity).
-#[allow(dead_code)]
 pub fn throughput_efficiency(actual_flow: f64, capacity: f64) -> f64 {
     if capacity < 1e-12 {
         return 0.0;
@@ -1189,7 +1191,6 @@ pub fn throughput_efficiency(actual_flow: f64, capacity: f64) -> f64 {
 ///
 /// Returns optimal phase offset in seconds for signal at distance `d` from
 /// reference, given free-flow speed `v_ff` and cycle time `T`.
-#[allow(dead_code)]
 pub fn green_wave_offset(d: f64, v_ff: f64, cycle: f64) -> f64 {
     if v_ff < 1e-12 {
         return 0.0;
@@ -1201,7 +1202,6 @@ pub fn green_wave_offset(d: f64, v_ff: f64, cycle: f64) -> f64 {
 ///
 /// `q` is the flow (veh/s), `s` is the saturation flow (veh/s), `g` is
 /// green time, `c` is cycle time.
-#[allow(dead_code)]
 pub fn degree_of_saturation(q: f64, s: f64, g: f64, c: f64) -> f64 {
     if s < 1e-12 || g < 1e-12 {
         return f64::INFINITY;
@@ -1212,7 +1212,6 @@ pub fn degree_of_saturation(q: f64, s: f64, g: f64, c: f64) -> f64 {
 /// Webster's optimal cycle length formula.
 ///
 /// `y_sum` is the sum of critical flow ratios, `L` is total lost time.
-#[allow(dead_code)]
 pub fn webster_optimal_cycle(y_sum: f64, l: f64) -> f64 {
     let denom = 1.0 - y_sum;
     if denom <= 0.0 {
@@ -1226,7 +1225,6 @@ pub fn webster_optimal_cycle(y_sum: f64, l: f64) -> f64 {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Estimate CO2 emission rate (g/s·m) from speed using Virginia Tech model.
-#[allow(dead_code)]
 pub fn co2_emission_rate(speed_ms: f64) -> f64 {
     // Simplified: high at idle and high speed, minimum at ~60 km/h (~16.7 m/s)
     let v = speed_ms.max(0.0);
@@ -1236,7 +1234,6 @@ pub fn co2_emission_rate(speed_ms: f64) -> f64 {
 }
 
 /// Compute total road-level emissions (g/s) for a density/speed profile.
-#[allow(dead_code)]
 pub fn total_road_emissions(rho: &[f64], speed: &[f64], dx: f64) -> f64 {
     rho.iter()
         .zip(speed.iter())
@@ -1299,7 +1296,6 @@ impl AlineaController {
 ///
 /// Returns travel time (s) for given volume `q`, free-flow travel time `t0`,
 /// capacity `c`, and BPR parameters `alpha` and `beta`.
-#[allow(dead_code)]
 pub fn bpr_travel_time(q: f64, t0: f64, c: f64, alpha: f64, beta: f64) -> f64 {
     t0 * (1.0 + alpha * (q / c.max(1e-12)).powf(beta))
 }
@@ -1307,7 +1303,6 @@ pub fn bpr_travel_time(q: f64, t0: f64, c: f64, alpha: f64, beta: f64) -> f64 {
 /// Compute queue dissipation time (s) after signal turns green.
 ///
 /// `n_queued` vehicles, saturation flow `s` (veh/s), lost time `tl` (s).
-#[allow(dead_code)]
 pub fn queue_dissipation_time(n_queued: f64, s: f64, tl: f64) -> f64 {
     if s < 1e-12 {
         return f64::INFINITY;
@@ -1374,7 +1369,6 @@ impl TrafficResult {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Generate a sinusoidal density perturbation for testing stability.
-#[allow(dead_code)]
 pub fn sinusoidal_density(x: f64, road_length: f64, rho_mean: f64, amplitude: f64) -> f64 {
     (rho_mean + amplitude * (2.0 * PI * x / road_length).sin()).max(0.0)
 }

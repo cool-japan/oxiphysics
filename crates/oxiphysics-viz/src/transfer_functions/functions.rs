@@ -238,7 +238,6 @@ mod tests {
 /// Normalize a raw scalar value into \[0, 1\] given `[data_min, data_max]`.
 ///
 /// Returns 0.5 if `data_min == data_max`.
-#[allow(dead_code)]
 pub fn normalize_scalar(value: f64, data_min: f64, data_max: f64) -> f64 {
     let range = data_max - data_min;
     if range.abs() < 1e-30 {
@@ -249,7 +248,6 @@ pub fn normalize_scalar(value: f64, data_min: f64, data_max: f64) -> f64 {
 /// Normalize a whole slice of scalars to \[0, 1\], using the slice's own min/max.
 ///
 /// Returns an empty `Vec` if the input is empty.
-#[allow(dead_code)]
 pub fn normalize_slice(data: &[f64]) -> Vec<f64> {
     if data.is_empty() {
         return Vec::new();
@@ -260,14 +258,12 @@ pub fn normalize_slice(data: &[f64]) -> Vec<f64> {
 }
 /// Apply a transfer function to a whole slice of normalized scalars,
 /// returning one `Rgba` per value.
-#[allow(dead_code)]
 pub fn apply_transfer_function(tf: &TransferFunction, normalized: &[f64]) -> Vec<Rgba> {
     normalized.iter().map(|&t| tf.sample(t)).collect()
 }
 /// Compute the gradient magnitude at index `i` in a 1-D scalar field.
 ///
 /// Uses central differences; clamps to boundaries using one-sided differences.
-#[allow(dead_code)]
 pub fn gradient_magnitude_1d(data: &[f64], i: usize) -> f64 {
     let n = data.len();
     if n < 2 {
@@ -287,7 +283,6 @@ pub fn gradient_magnitude_1d(data: &[f64], i: usize) -> f64 {
 /// `base_opacity` is the opacity from the TF at position `t`.
 /// `gradient_mag` should be normalized to \[0, 1\].
 /// `sharpness` controls how steeply the boundary effect kicks in.
-#[allow(dead_code)]
 pub fn gradient_modulated_opacity(base_opacity: f64, gradient_mag: f64, sharpness: f64) -> f64 {
     let boost = (gradient_mag * sharpness).clamp(0.0, 1.0);
     (base_opacity + boost * (1.0 - base_opacity)).clamp(0.0, 1.0)
@@ -301,7 +296,6 @@ pub fn gradient_modulated_opacity(base_opacity: f64, gradient_mag: f64, sharpnes
 /// - `acc_alpha` — currently accumulated alpha
 /// - `sample_rgba` — RGBA of the new sample (straight alpha)
 /// - `step_size` — ray step size (scales opacity per step)
-#[allow(dead_code)]
 pub fn composite_front_to_back(
     acc_rgb: &mut [f64; 3],
     acc_alpha: &mut f64,
@@ -322,7 +316,6 @@ pub fn composite_front_to_back(
 ///
 /// This is a CPU reference implementation suitable for unit tests and offline
 /// rendering; not intended for real-time use.
-#[allow(dead_code)]
 pub fn raymarch_1d(
     data: &[f64],
     data_min: f64,

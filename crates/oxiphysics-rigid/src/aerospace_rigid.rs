@@ -24,22 +24,9 @@
 //! assert!(state.mass > 0.0);
 //! ```
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ── vector helpers ────────────────────────────────────────────────────────────
-
-/// Cross product of two 3-vectors.
-#[inline]
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
 
 /// Dot product.
 #[inline]
@@ -53,17 +40,6 @@ fn norm3(a: [f64; 3]) -> f64 {
     dot3(a, a).sqrt()
 }
 
-/// Normalize. Returns zero if tiny.
-#[inline]
-fn normalize3(a: [f64; 3]) -> [f64; 3] {
-    let n = norm3(a);
-    if n < 1e-30 {
-        [0.0; 3]
-    } else {
-        [a[0] / n, a[1] / n, a[2] / n]
-    }
-}
-
 /// Add two 3-vectors.
 #[inline]
 fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -71,6 +47,7 @@ fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 /// Subtract.
+#[cfg(test)]
 #[inline]
 fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]

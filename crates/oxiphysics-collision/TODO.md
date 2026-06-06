@@ -1,11 +1,11 @@
 # oxiphysics-collision TODO
 
-**Version:** 0.1.1 | **Updated:** 2026-05-17 | **Status:** ✅ COMPLETE
+**Version:** 0.1.2 | **Updated:** 2026-06-06 | **Status:** ✅ COMPLETE
 
 ## Milestone 1: Types & Foundation — ✅ COMPLETE
 - [x] Core collision types (`types`)
 - [x] Basic error handling
-- [x] Unit tests (2,439 tests passing)
+- [x] Unit tests (2,443 tests passing)
 
 ## Milestone 2: Broad Phase — ✅ COMPLETE
 - [x] Sweep-and-Prune (`sap`, `sweep`)

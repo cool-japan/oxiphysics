@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,8 +5,6 @@
 //!
 //! Implements grad-h SPH formulation with Newton-Raphson smoothing length iteration,
 //! Wendland C2 kernel, particle splitting and merging.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Math helpers
@@ -219,7 +216,7 @@ impl SmoothingLengthUpdate {
 
 /// Rules that decide when a particle should be split or merged.
 #[derive(Clone, Debug)]
-#[allow(missing_docs)]
+
 pub enum RefinementCriterion {
     /// Split when density is above `high`, merge when below `low`.
     DensityBased { high: f64, low: f64 },
@@ -310,24 +307,24 @@ impl AdaptiveSphSystem {
     pub fn compute_density(&mut self) {
         let n = self.particles.len();
         let mut densities = vec![0.0_f64; n];
-        for i in 0..n {
+        for (i, d) in densities.iter_mut().enumerate() {
             if !self.particles[i].alive {
                 continue;
             }
             let pi_pos = self.particles[i].pos;
             let pi_h = self.particles[i].h;
             let mut rho = 0.0;
-            for j in 0..n {
-                if !self.particles[j].alive {
+            for pj in &self.particles {
+                if !pj.alive {
                     continue;
                 }
-                let r = length(sub(pi_pos, self.particles[j].pos));
-                rho += self.particles[j].mass * VariableHKernel::w(r, pi_h);
+                let r = length(sub(pi_pos, pj.pos));
+                rho += pj.mass * VariableHKernel::w(r, pi_h);
             }
-            densities[i] = rho;
+            *d = rho;
         }
-        for i in 0..n {
-            self.particles[i].density = densities[i];
+        for (p, &d) in self.particles.iter_mut().zip(densities.iter()) {
+            p.density = d;
         }
     }
 
@@ -478,16 +475,15 @@ impl AdaptiveSphSystem {
 
     /// Compact the particle list by removing dead particles.
     /// Returns a mapping from old indices to new indices (None for dead particles).
-    #[allow(dead_code)]
     pub fn compact(&mut self) -> Vec<Option<usize>> {
         let n = self.particles.len();
         let mut mapping = vec![None; n];
         let mut new_idx = 0;
         let mut compacted = Vec::with_capacity(self.active_count());
-        for i in 0..n {
-            if self.particles[i].alive {
+        for (i, p) in self.particles.iter().enumerate() {
+            if p.alive {
                 mapping[i] = Some(new_idx);
-                compacted.push(self.particles[i].clone());
+                compacted.push(p.clone());
                 new_idx += 1;
             }
         }
@@ -498,7 +494,6 @@ impl AdaptiveSphSystem {
     /// Compute pressure for all alive particles using the Tait equation of state.
     ///
     /// P = B * ((rho / rho0)^gamma - 1)
-    #[allow(dead_code)]
     pub fn compute_pressure_tait(&mut self, rho0: f64, gamma: f64, speed_of_sound: f64) {
         let b = rho0 * speed_of_sound * speed_of_sound / gamma;
         for p in self.particles.iter_mut() {
@@ -511,7 +506,6 @@ impl AdaptiveSphSystem {
     }
 
     /// Mean smoothing length of alive particles.
-    #[allow(dead_code)]
     pub fn mean_h(&self) -> f64 {
         let alive: Vec<&AdaptiveParticle> = self.particles.iter().filter(|p| p.alive).collect();
         if alive.is_empty() {
@@ -522,7 +516,6 @@ impl AdaptiveSphSystem {
     }
 
     /// Centre of mass of alive particles.
-    #[allow(dead_code)]
     pub fn center_of_mass(&self) -> [f64; 3] {
         let mut com = [0.0; 3];
         let mut total_mass = 0.0;
@@ -540,7 +533,6 @@ impl AdaptiveSphSystem {
     }
 
     /// Total momentum of alive particles.
-    #[allow(dead_code)]
     pub fn total_momentum(&self) -> [f64; 3] {
         let mut mom = [0.0; 3];
         for p in &self.particles {
@@ -553,7 +545,6 @@ impl AdaptiveSphSystem {
     }
 
     /// Maximum velocity magnitude among alive particles.
-    #[allow(dead_code)]
     pub fn max_velocity(&self) -> f64 {
         self.particles
             .iter()
@@ -563,7 +554,6 @@ impl AdaptiveSphSystem {
     }
 
     /// Minimum smoothing length among alive particles.
-    #[allow(dead_code)]
     pub fn min_h(&self) -> f64 {
         self.particles
             .iter()
@@ -579,7 +569,6 @@ impl AdaptiveSphSystem {
 
 /// Newton-Raphson iteration for smoothing length to satisfy a target
 /// number-density equation: n_target * h^3 = sum_j W(r_ij, h).
-#[allow(dead_code)]
 pub struct SmoothingLengthSolver {
     /// Target number of neighbors.
     pub n_target: f64,
@@ -593,7 +582,6 @@ pub struct SmoothingLengthSolver {
     pub h_max: f64,
 }
 
-#[allow(dead_code)]
 impl SmoothingLengthSolver {
     /// Create a new solver.
     pub fn new(n_target: f64, h_min: f64, h_max: f64) -> Self {
@@ -646,7 +634,6 @@ impl SmoothingLengthSolver {
 // ---------------------------------------------------------------------------
 
 /// Controls h-refinement with level-dependent smoothing length bounds.
-#[allow(dead_code)]
 pub struct HRefinementManager {
     /// Base smoothing length at level 0.
     pub h_base: f64,
@@ -656,7 +643,6 @@ pub struct HRefinementManager {
     pub ratio: f64,
 }
 
-#[allow(dead_code)]
 impl HRefinementManager {
     /// Create a new h-refinement manager.
     pub fn new(h_base: f64, max_level: u8) -> Self {
@@ -696,7 +682,6 @@ impl HRefinementManager {
 // ---------------------------------------------------------------------------
 
 /// Different strategies for placing daughter particles after splitting.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum SplitStrategy {
     /// Split along the x-axis (default).
@@ -707,7 +692,6 @@ pub enum SplitStrategy {
     AlongGradient,
 }
 
-#[allow(dead_code)]
 impl SplitStrategy {
     /// Compute the offset direction for splitting a particle.
     /// Returns a unit vector indicating the split direction.
@@ -760,7 +744,6 @@ impl SplitStrategy {
 // ---------------------------------------------------------------------------
 
 /// Criteria for selecting merge partners.
-#[allow(dead_code)]
 pub struct MergeCriteria {
     /// Maximum distance (in units of h) for two particles to be merge candidates.
     pub max_distance_ratio: f64,
@@ -770,7 +753,6 @@ pub struct MergeCriteria {
     pub max_level_diff: u8,
 }
 
-#[allow(dead_code)]
 impl MergeCriteria {
     /// Create default merge criteria.
     pub fn new() -> Self {
@@ -815,10 +797,8 @@ impl Default for MergeCriteria {
 // ---------------------------------------------------------------------------
 
 /// SPH density gradient estimator for refinement criteria.
-#[allow(dead_code)]
 pub struct DensityGradientEstimator;
 
-#[allow(dead_code)]
 impl DensityGradientEstimator {
     /// Estimate the density gradient at particle i using SPH interpolation.
     ///
@@ -856,7 +836,6 @@ impl DensityGradientEstimator {
 // ---------------------------------------------------------------------------
 
 /// Statistics about refinement operations.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct RefinementStats {
     /// Number of split operations performed.
@@ -867,7 +846,6 @@ pub struct RefinementStats {
     pub level_counts: Vec<usize>,
 }
 
-#[allow(dead_code)]
 impl RefinementStats {
     /// Compute statistics from a system.
     pub fn from_system(system: &AdaptiveSphSystem) -> Self {

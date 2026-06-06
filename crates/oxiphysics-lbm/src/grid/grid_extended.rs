@@ -1,7 +1,6 @@
 //! Extended grid types: LbmGrid2D, LbmGrid3D, FlatLbmGrid2D/3D, FlaggedGrid3D,
 //! FullGrid3D, TrtGrid2D, CellularGrid3D, BoundaryNodeType, NodeFlag.
 
-#![allow(clippy::needless_range_loop)]
 use crate::lattice::{CS2, Lattice, LatticeType};
 use crate::lattice::{
     bgk_d3q19, bounce_back_node_d2q9, bounce_back_node_d3q19, equilibrium_d2q9, equilibrium_d3q19,
@@ -9,8 +8,6 @@ use crate::lattice::{
     trt_collision_d2q9, trt_magic_omega_anti,
 };
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{C9, C19, OPP9, OPP19, W9, W19, equilibrium_2d, equilibrium_3d};
 
 /// 3D LBM grid for D3Q19 or D3Q27 simulations.
@@ -117,7 +114,6 @@ impl LbmGrid3D {
         (self.ux[k], self.uy[k], self.uz[k])
     }
     /// Set macroscopic fields and reinitialize distributions to equilibrium.
-    #[allow(clippy::too_many_arguments)]
     pub fn set_equilibrium(
         &mut self,
         x: usize,
@@ -145,17 +141,132 @@ impl LbmGrid3D {
     pub fn total_density(&self) -> f64 {
         self.rho.iter().sum()
     }
-    /// Perform a single collide-stream-macroscopic step (placeholder).
+    /// Single BGK collide-and-stream step with periodic boundary conditions.
     ///
-    /// This is a simplified step for the stub; a real simulation would use
-    /// the full collision and streaming modules.
-    #[allow(dead_code)]
-    pub fn step_placeholder(&mut self, _omega: f64) {}
+    /// Collision relaxes each distribution toward local equilibrium with rate
+    /// `omega`; streaming uses the pull scheme so that each destination cell
+    /// reads the post-collision value from the upstream neighbour.  The
+    /// macroscopic fields are refreshed from the new distributions at the end
+    /// so that the next call to `density_at` / `velocity_at` is consistent.
+    pub fn step(&mut self, omega: f64) {
+        let n_cells = self.nx * self.ny * self.nz;
+        let n_q = self.lattice.q();
+
+        // --- Collision ---
+        // f_post[q][i] = f[q][i] - omega * (f[q][i] - f_eq[q][i])
+        // f_eq uses the macroscopic fields that were computed at the end of
+        // the previous step (or initialised by the constructor).
+        let mut f_post = self.f.clone();
+        for (i, (&rho, (&ux, (&uy, &uz)))) in self
+            .rho
+            .iter()
+            .zip(self.ux.iter().zip(self.uy.iter().zip(self.uz.iter())))
+            .enumerate()
+        {
+            for (q, f_post_q) in f_post.iter_mut().enumerate() {
+                let w = self.lattice.weight(q);
+                let c = self.lattice.velocity_3d(q);
+                let cx = c[0] as f64;
+                let cy = c[1] as f64;
+                let cz = c[2] as f64;
+                let f_eq = equilibrium_3d(w, rho, ux, uy, uz, cx, cy, cz);
+                f_post_q[i] -= omega * (f_post_q[i] - f_eq);
+            }
+        }
+
+        // --- Streaming (pull scheme, periodic) ---
+        // Each destination cell (x,y,z) for direction q pulls from the
+        // upstream neighbour (x-cx, y-cy, z-cz) using rem_euclid wrapping.
+        let nx = self.nx as isize;
+        let ny = self.ny as isize;
+        let nz = self.nz as isize;
+        let mut f_new = vec![vec![0.0_f64; n_cells]; n_q];
+        for q in 0..n_q {
+            let c = self.lattice.velocity_3d(q);
+            let cx = c[0] as isize;
+            let cy = c[1] as isize;
+            let cz = c[2] as isize;
+            for iz in 0..nz {
+                for iy in 0..ny {
+                    for ix in 0..nx {
+                        let dst = self.idx(ix as usize, iy as usize, iz as usize);
+                        let sx = (ix - cx).rem_euclid(nx) as usize;
+                        let sy = (iy - cy).rem_euclid(ny) as usize;
+                        let sz = (iz - cz).rem_euclid(nz) as usize;
+                        let src = self.idx(sx, sy, sz);
+                        f_new[q][dst] = f_post[q][src];
+                    }
+                }
+            }
+        }
+
+        self.f = f_new;
+        self.compute_macroscopic();
+    }
+}
+
+#[cfg(test)]
+mod lbm_grid3d_step_tests {
+    use super::*;
+    use crate::lattice::LatticeType;
+
+    fn make_equilibrium_grid(nx: usize, ny: usize, nz: usize) -> LbmGrid3D {
+        // Constructor already initialises f[q][i] = weight(q) which is the
+        // exact equilibrium for rho=1, u=0, so macroscopic fields are
+        // consistent without an extra compute_macroscopic call.
+        LbmGrid3D::new(nx, ny, nz, LatticeType::D3Q19)
+    }
+
+    #[test]
+    fn test_lbm_grid3d_step_mass_conservation() {
+        let mut grid = make_equilibrium_grid(4, 4, 4);
+        let initial_mass: f64 = grid.f.iter().flat_map(|fq| fq.iter()).sum();
+        grid.step(1.0);
+        let final_mass: f64 = grid.f.iter().flat_map(|fq| fq.iter()).sum();
+        assert!(
+            (final_mass - initial_mass).abs() < 1e-10 * initial_mass.abs(),
+            "mass not conserved: initial={initial_mass}, final={final_mass}"
+        );
+    }
+
+    #[test]
+    fn test_lbm_grid3d_step_equilibrium_is_fixed_point() {
+        let mut grid = make_equilibrium_grid(4, 4, 4);
+        let rho_before = grid.rho.clone();
+        let ux_before = grid.ux.clone();
+        grid.step(1.0);
+        for i in 0..grid.rho.len() {
+            assert!(
+                (grid.rho[i] - rho_before[i]).abs() < 1e-10,
+                "rho changed at cell {i}: {} -> {}",
+                rho_before[i],
+                grid.rho[i]
+            );
+            assert!(
+                (grid.ux[i] - ux_before[i]).abs() < 1e-10,
+                "ux changed at cell {i}: {} -> {}",
+                ux_before[i],
+                grid.ux[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_lbm_grid3d_step_aggressive_omega() {
+        // omega near 2 gives maximal relaxation; mass must still be conserved.
+        let mut grid = make_equilibrium_grid(3, 3, 3);
+        let mass_before: f64 = grid.f.iter().flat_map(|fq| fq.iter()).sum();
+        grid.step(1.8);
+        let mass_after: f64 = grid.f.iter().flat_map(|fq| fq.iter()).sum();
+        assert!(
+            (mass_after - mass_before).abs() < 1e-10 * mass_before.abs(),
+            "mass not conserved at omega=1.8: {mass_before} -> {mass_after}"
+        );
+    }
 }
 /// 3D LBM grid (D3Q19) with flat distribution storage and tau-based collision.
 ///
 /// Distribution layout: `f[(z * ny * nx + y * nx + x) * 19 + alpha]`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FlatLbmGrid3D {
     /// Number of cells in x-direction.
@@ -169,7 +280,6 @@ pub struct FlatLbmGrid3D {
     /// Relaxation time tau.
     pub tau: f64,
 }
-#[allow(dead_code)]
 impl FlatLbmGrid3D {
     /// Create a new 3D grid initialized to equilibrium at rest with `rho = 1`.
     pub fn new(nx: usize, ny: usize, nz: usize, tau: f64) -> Self {
@@ -197,23 +307,23 @@ impl FlatLbmGrid3D {
             let mut mx = 0.0_f64;
             let mut my = 0.0_f64;
             let mut mz = 0.0_f64;
-            for a in 0..19 {
+            for (a, c19a) in C19.iter().enumerate() {
                 let fi = self.f[base + a];
                 rho += fi;
-                mx += fi * C19[a][0] as f64;
-                my += fi * C19[a][1] as f64;
-                mz += fi * C19[a][2] as f64;
+                mx += fi * c19a[0] as f64;
+                my += fi * c19a[1] as f64;
+                mz += fi * c19a[2] as f64;
             }
             let ux = if rho.abs() > 1e-15 { mx / rho } else { 0.0 };
             let uy = if rho.abs() > 1e-15 { my / rho } else { 0.0 };
             let uz = if rho.abs() > 1e-15 { mz / rho } else { 0.0 };
             let u_sq = ux * ux + uy * uy + uz * uz;
-            for a in 0..19 {
-                let cx = C19[a][0] as f64;
-                let cy = C19[a][1] as f64;
-                let cz = C19[a][2] as f64;
+            for (a, (c19a, &w19a)) in C19.iter().zip(W19.iter()).enumerate() {
+                let cx = c19a[0] as f64;
+                let cy = c19a[1] as f64;
+                let cz = c19a[2] as f64;
                 let eu = cx * ux + cy * uy + cz * uz;
-                let feq = W19[a]
+                let feq = w19a
                     * rho
                     * (1.0 + eu / CS2 + eu * eu / (2.0 * CS2 * CS2) - u_sq / (2.0 * CS2));
                 self.f[base + a] -= omega * (self.f[base + a] - feq);
@@ -227,10 +337,10 @@ impl FlatLbmGrid3D {
             for y in 0..ny {
                 for x in 0..nx {
                     let dst = (z * ny * nx + y * nx + x) * 19;
-                    for a in 0..19 {
-                        let sx = (x as isize - C19[a][0] as isize).rem_euclid(nx as isize) as usize;
-                        let sy = (y as isize - C19[a][1] as isize).rem_euclid(ny as isize) as usize;
-                        let sz = (z as isize - C19[a][2] as isize).rem_euclid(nz as isize) as usize;
+                    for (a, c19a) in C19.iter().enumerate() {
+                        let sx = (x as isize - c19a[0] as isize).rem_euclid(nx as isize) as usize;
+                        let sy = (y as isize - c19a[1] as isize).rem_euclid(ny as isize) as usize;
+                        let sz = (z as isize - c19a[2] as isize).rem_euclid(nz as isize) as usize;
                         let src = (sz * ny * nx + sy * nx + sx) * 19 + a;
                         self.f[dst + a] = f_old[src];
                     }
@@ -250,12 +360,12 @@ impl FlatLbmGrid3D {
         let mut mx = 0.0_f64;
         let mut my = 0.0_f64;
         let mut mz = 0.0_f64;
-        for a in 0..19 {
+        for (a, c19a) in C19.iter().enumerate() {
             let fi = self.f[base + a];
             rho += fi;
-            mx += fi * C19[a][0] as f64;
-            my += fi * C19[a][1] as f64;
-            mz += fi * C19[a][2] as f64;
+            mx += fi * c19a[0] as f64;
+            my += fi * c19a[1] as f64;
+            mz += fi * c19a[2] as f64;
         }
         if rho.abs() > 1e-15 {
             [mx / rho, my / rho, mz / rho]
@@ -303,7 +413,6 @@ impl FlatLbmGrid3D {
     }
 }
 /// 2D LBM grid that uses the TRT (two-relaxation-time) collision operator.
-#[allow(dead_code)]
 pub struct TrtGrid2D {
     /// Width in cells.
     pub nx: usize,
@@ -320,7 +429,6 @@ pub struct TrtGrid2D {
 }
 impl TrtGrid2D {
     /// Create a TRT grid with automatic "magic" anti-symmetric rate.
-    #[allow(dead_code)]
     pub fn new_magic(nx: usize, ny: usize, omega_sym: f64) -> Self {
         let omega_anti = trt_magic_omega_anti(omega_sym);
         let feq = equilibrium_d2q9(1.0, 0.0, 0.0);
@@ -335,23 +443,19 @@ impl TrtGrid2D {
     }
     /// Linear index for cell `(x, y)`.
     #[inline]
-    #[allow(dead_code)]
     pub fn idx(&self, x: usize, y: usize) -> usize {
         y * self.nx + x
     }
     /// Mark a cell as solid wall.
-    #[allow(dead_code)]
     pub fn set_wall(&mut self, x: usize, y: usize) {
         let i = y * self.nx + x;
         self.wall[i] = true;
     }
     /// Compute total mass.
-    #[allow(dead_code)]
     pub fn total_mass(&self) -> f64 {
         self.pop.iter().flat_map(|n| n.iter()).sum()
     }
     /// Apply TRT collision to all fluid cells.
-    #[allow(dead_code)]
     pub fn collide(&mut self) {
         for idx in 0..self.pop.len() {
             if !self.wall[idx] {
@@ -368,12 +472,10 @@ impl TrtGrid2D {
         }
     }
     /// Apply periodic streaming.
-    #[allow(dead_code)]
     pub fn stream(&mut self) {
         stream_d2q9_periodic(&mut self.pop, self.nx, self.ny);
     }
     /// Apply bounce-back to wall cells.
-    #[allow(dead_code)]
     pub fn bounce_back(&mut self) {
         for idx in 0..self.pop.len() {
             if self.wall[idx] {
@@ -382,14 +484,12 @@ impl TrtGrid2D {
         }
     }
     /// Execute one TRT LBM step.
-    #[allow(dead_code)]
     pub fn step(&mut self) {
         self.collide();
         self.stream();
         self.bounce_back();
     }
     /// Get macroscopic variables at cell `(x, y)`.
-    #[allow(dead_code)]
     pub fn macros_at(&self, x: usize, y: usize) -> (f64, f64, f64) {
         macros_from_d2q9(&self.pop[self.idx(x, y)])
     }
@@ -505,7 +605,6 @@ impl LbmGrid2D {
 ///
 /// Supports `Fluid`, `Wall` (bounce-back), `Inlet`, `Outlet`, and `Symmetry` nodes.
 /// Distribution layout: flat `f[cell_idx * 19 + alpha]`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FlaggedGrid3D {
     /// Number of cells in x-direction.
@@ -521,7 +620,6 @@ pub struct FlaggedGrid3D {
     /// Per-node flags.
     pub flags: Vec<NodeFlag>,
 }
-#[allow(dead_code)]
 impl FlaggedGrid3D {
     /// Create a new 3D grid (D3Q19) initialised to equilibrium at rest.
     pub fn new(nx: usize, ny: usize, nz: usize, omega: f64, rho0: f64) -> Self {
@@ -586,12 +684,12 @@ impl FlaggedGrid3D {
         let mut mx = 0.0_f64;
         let mut my = 0.0_f64;
         let mut mz = 0.0_f64;
-        for a in 0..19 {
+        for (a, c19a) in C19.iter().enumerate() {
             let fi = self.f[base + a];
             rho += fi;
-            mx += fi * C19[a][0] as f64;
-            my += fi * C19[a][1] as f64;
-            mz += fi * C19[a][2] as f64;
+            mx += fi * c19a[0] as f64;
+            my += fi * c19a[1] as f64;
+            mz += fi * c19a[2] as f64;
         }
         if rho.abs() > 1e-15 {
             [mx / rho, my / rho, mz / rho]
@@ -656,28 +754,28 @@ impl FlaggedGrid3D {
                     let mut mx = 0.0_f64;
                     let mut my = 0.0_f64;
                     let mut mz = 0.0_f64;
-                    for a in 0..19 {
+                    for (a, c19a) in C19.iter().enumerate() {
                         let fi = self.f[base + a];
                         rho += fi;
-                        mx += fi * C19[a][0] as f64;
-                        my += fi * C19[a][1] as f64;
-                        mz += fi * C19[a][2] as f64;
+                        mx += fi * c19a[0] as f64;
+                        my += fi * c19a[1] as f64;
+                        mz += fi * c19a[2] as f64;
                     }
                     let (ux, uy, uz) = if rho.abs() > 1e-15 {
                         (mx / rho, my / rho, mz / rho)
                     } else {
                         (0.0, 0.0, 0.0)
                     };
-                    for a in 0..19 {
+                    for (a, (c19a, &w19a)) in C19.iter().zip(W19.iter()).enumerate() {
                         let feq = equilibrium_3d(
-                            W19[a],
+                            w19a,
                             rho,
                             ux,
                             uy,
                             uz,
-                            C19[a][0] as f64,
-                            C19[a][1] as f64,
-                            C19[a][2] as f64,
+                            c19a[0] as f64,
+                            c19a[1] as f64,
+                            c19a[2] as f64,
                         );
                         f_coll[base + a] = self.f[base + a] - omega * (self.f[base + a] - feq);
                     }
@@ -698,10 +796,10 @@ impl FlaggedGrid3D {
             for y in 0..ny {
                 for x in 0..nx {
                     let dst = (z * ny * nx + y * nx + x) * 19;
-                    for a in 0..19 {
-                        let sx = (x as isize - C19[a][0] as isize).rem_euclid(nx as isize) as usize;
-                        let sy = (y as isize - C19[a][1] as isize).rem_euclid(ny as isize) as usize;
-                        let sz = (z as isize - C19[a][2] as isize).rem_euclid(nz as isize) as usize;
+                    for (a, c19a) in C19.iter().enumerate() {
+                        let sx = (x as isize - c19a[0] as isize).rem_euclid(nx as isize) as usize;
+                        let sy = (y as isize - c19a[1] as isize).rem_euclid(ny as isize) as usize;
+                        let sz = (z as isize - c19a[2] as isize).rem_euclid(nz as isize) as usize;
                         let src = (sz * ny * nx + sy * nx + sx) * 19 + a;
                         self.f[dst + a] = f_coll[src];
                     }
@@ -753,7 +851,6 @@ impl FlaggedGrid3D {
 /// A full 3D LBM grid with BGK collision, streaming, and per-node BCs.
 ///
 /// Distribution layout: flat `f[cell_idx * 19 + alpha]`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FullGrid3D {
     /// Number of cells in x-direction.
@@ -769,7 +866,6 @@ pub struct FullGrid3D {
     /// Per-node flags.
     pub flags: Vec<NodeFlag>,
 }
-#[allow(dead_code)]
 impl FullGrid3D {
     /// Create a new FullGrid3D initialized to equilibrium at rest with `rho0`.
     pub fn new(nx: usize, ny: usize, nz: usize, omega: f64, rho0: f64) -> Self {
@@ -813,28 +909,28 @@ impl FullGrid3D {
             let mut mx = 0.0_f64;
             let mut my = 0.0_f64;
             let mut mz = 0.0_f64;
-            for a in 0..19 {
+            for (a, c19a) in C19.iter().enumerate() {
                 let fi = self.f[base + a];
                 rho += fi;
-                mx += fi * C19[a][0] as f64;
-                my += fi * C19[a][1] as f64;
-                mz += fi * C19[a][2] as f64;
+                mx += fi * c19a[0] as f64;
+                my += fi * c19a[1] as f64;
+                mz += fi * c19a[2] as f64;
             }
             let (ux, uy, uz) = if rho.abs() > 1e-15 {
                 (mx / rho, my / rho, mz / rho)
             } else {
                 (0.0, 0.0, 0.0)
             };
-            for a in 0..19 {
+            for (a, (c19a, &w19a)) in C19.iter().zip(W19.iter()).enumerate() {
                 let feq = equilibrium_3d(
-                    W19[a],
+                    w19a,
                     rho,
                     ux,
                     uy,
                     uz,
-                    C19[a][0] as f64,
-                    C19[a][1] as f64,
-                    C19[a][2] as f64,
+                    c19a[0] as f64,
+                    c19a[1] as f64,
+                    c19a[2] as f64,
                 );
                 self.f[base + a] -= omega * (self.f[base + a] - feq);
             }
@@ -850,10 +946,10 @@ impl FullGrid3D {
             for y in 0..ny {
                 for x in 0..nx {
                     let dst = (z * ny * nx + y * nx + x) * 19;
-                    for a in 0..19 {
-                        let sx = (x as isize - C19[a][0] as isize).rem_euclid(nx as isize) as usize;
-                        let sy = (y as isize - C19[a][1] as isize).rem_euclid(ny as isize) as usize;
-                        let sz = (z as isize - C19[a][2] as isize).rem_euclid(nz as isize) as usize;
+                    for (a, c19a) in C19.iter().enumerate() {
+                        let sx = (x as isize - c19a[0] as isize).rem_euclid(nx as isize) as usize;
+                        let sy = (y as isize - c19a[1] as isize).rem_euclid(ny as isize) as usize;
+                        let sz = (z as isize - c19a[2] as isize).rem_euclid(nz as isize) as usize;
                         let src = (sz * ny * nx + sy * nx + sx) * 19 + a;
                         self.f[dst + a] = f_old[src];
                     }
@@ -950,12 +1046,12 @@ impl FullGrid3D {
         let mut mx = 0.0;
         let mut my = 0.0;
         let mut mz = 0.0;
-        for a in 0..19 {
+        for (a, c19a) in C19.iter().enumerate() {
             let fi = self.f[base + a];
             rho += fi;
-            mx += fi * C19[a][0] as f64;
-            my += fi * C19[a][1] as f64;
-            mz += fi * C19[a][2] as f64;
+            mx += fi * c19a[0] as f64;
+            my += fi * c19a[1] as f64;
+            mz += fi * c19a[2] as f64;
         }
         if rho.abs() > 1e-15 {
             [mx / rho, my / rho, mz / rho]
@@ -986,12 +1082,12 @@ impl FullGrid3D {
                 let mut mx = 0.0;
                 let mut my = 0.0;
                 let mut mz = 0.0;
-                for a in 0..19 {
+                for (a, c19a) in C19.iter().enumerate() {
                     let fi = self.f[base + a];
                     rho += fi;
-                    mx += fi * C19[a][0] as f64;
-                    my += fi * C19[a][1] as f64;
-                    mz += fi * C19[a][2] as f64;
+                    mx += fi * c19a[0] as f64;
+                    my += fi * c19a[1] as f64;
+                    mz += fi * c19a[2] as f64;
                 }
                 if rho.abs() > 1e-15 {
                     let ux = mx / rho;
@@ -1048,7 +1144,6 @@ impl FullGrid3D {
 ///
 /// This enum is an alternative to the bit-packed `NodeFlag` above and provides
 /// a cleaner API for setting up inlet/outlet/solid boundary conditions.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BoundaryNodeType {
     /// Normal fluid node: BGK collision + streaming.
@@ -1068,7 +1163,6 @@ pub enum BoundaryNodeType {
     Outlet,
 }
 /// A 3D LBM grid storing D3Q19 populations per cell.
-#[allow(dead_code)]
 pub struct CellularGrid3D {
     /// Width in cells (x-direction).
     pub nx: usize,
@@ -1085,7 +1179,6 @@ pub struct CellularGrid3D {
 }
 impl CellularGrid3D {
     /// Create a 3D grid initialised to rest equilibrium (ρ=1, u=0).
-    #[allow(dead_code)]
     pub fn new(nx: usize, ny: usize, nz: usize, omega: f64) -> Self {
         let n = nx * ny * nz;
         let feq = equilibrium_d3q19(1.0, 0.0, 0.0, 0.0);
@@ -1100,28 +1193,23 @@ impl CellularGrid3D {
     }
     /// Linear index for cell `(x, y, z)`.
     #[inline]
-    #[allow(dead_code)]
     pub fn idx(&self, x: usize, y: usize, z: usize) -> usize {
         z * self.nx * self.ny + y * self.nx + x
     }
     /// Mark a cell as solid wall.
-    #[allow(dead_code)]
     pub fn set_wall(&mut self, x: usize, y: usize, z: usize) {
         let i = self.idx(x, y, z);
         self.wall[i] = true;
     }
     /// Compute total mass (sum of all populations).
-    #[allow(dead_code)]
     pub fn total_mass(&self) -> f64 {
         self.pop.iter().flat_map(|n| n.iter()).sum()
     }
     /// Get macroscopic variables at cell `(x, y, z)`.
-    #[allow(dead_code)]
     pub fn macros_at(&self, x: usize, y: usize, z: usize) -> (f64, f64, f64, f64) {
         macros_from_d3q19(&self.pop[self.idx(x, y, z)])
     }
     /// Apply BGK collision to all fluid cells.
-    #[allow(dead_code)]
     pub fn collide(&mut self) {
         for idx in 0..self.pop.len() {
             if !self.wall[idx] {
@@ -1131,12 +1219,10 @@ impl CellularGrid3D {
         }
     }
     /// Apply periodic streaming.
-    #[allow(dead_code)]
     pub fn stream(&mut self) {
         stream_d3q19_periodic(&mut self.pop, self.nx, self.ny, self.nz);
     }
     /// Apply half-way bounce-back to all wall cells.
-    #[allow(dead_code)]
     pub fn bounce_back(&mut self) {
         for idx in 0..self.pop.len() {
             if self.wall[idx] {
@@ -1145,14 +1231,12 @@ impl CellularGrid3D {
         }
     }
     /// Execute one full LBM step: collide → stream → bounce-back.
-    #[allow(dead_code)]
     pub fn step(&mut self) {
         self.collide();
         self.stream();
         self.bounce_back();
     }
     /// Return maximum velocity magnitude over all fluid cells.
-    #[allow(dead_code)]
     pub fn max_speed(&self) -> f64 {
         self.pop
             .iter()
@@ -1170,7 +1254,6 @@ impl CellularGrid3D {
 /// Distribution layout: `f[y * nx * 9 + x * 9 + alpha]`.
 /// The relaxation time `tau` relates to kinematic viscosity via
 /// `nu = (tau - 0.5) * cs²`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FlatLbmGrid2D {
     /// Number of cells in x-direction.
@@ -1182,7 +1265,6 @@ pub struct FlatLbmGrid2D {
     /// Relaxation time tau (= 1/omega).
     pub tau: f64,
 }
-#[allow(dead_code)]
 impl FlatLbmGrid2D {
     /// Create a new grid initialized to equilibrium at rest with `rho=1`.
     pub fn new(nx: usize, ny: usize, tau: f64) -> Self {
@@ -1209,22 +1291,21 @@ impl FlatLbmGrid2D {
             let mut rho = 0.0_f64;
             let mut mx = 0.0_f64;
             let mut my = 0.0_f64;
-            for a in 0..9 {
+            for (a, c9a) in C9.iter().enumerate() {
                 let fi = self.f[base + a];
                 rho += fi;
-                mx += fi * C9[a][0] as f64;
-                my += fi * C9[a][1] as f64;
+                mx += fi * c9a[0] as f64;
+                my += fi * c9a[1] as f64;
             }
             let ux = if rho.abs() > 1e-15 { mx / rho } else { 0.0 };
             let uy = if rho.abs() > 1e-15 { my / rho } else { 0.0 };
             let u_sq = ux * ux + uy * uy;
-            for a in 0..9 {
-                let cx = C9[a][0] as f64;
-                let cy = C9[a][1] as f64;
+            for (a, (c9a, &w9a)) in C9.iter().zip(W9.iter()).enumerate() {
+                let cx = c9a[0] as f64;
+                let cy = c9a[1] as f64;
                 let eu = cx * ux + cy * uy;
-                let feq = W9[a]
-                    * rho
-                    * (1.0 + eu / CS2 + eu * eu / (2.0 * CS2 * CS2) - u_sq / (2.0 * CS2));
+                let feq =
+                    w9a * rho * (1.0 + eu / CS2 + eu * eu / (2.0 * CS2 * CS2) - u_sq / (2.0 * CS2));
                 self.f[base + a] -= omega * (self.f[base + a] - feq);
             }
         }
@@ -1234,9 +1315,9 @@ impl FlatLbmGrid2D {
         for y in 0..ny {
             for x in 0..nx {
                 let dst = (y * nx + x) * 9;
-                for a in 0..9 {
-                    let sx = (x as isize - C9[a][0] as isize).rem_euclid(nx as isize) as usize;
-                    let sy = (y as isize - C9[a][1] as isize).rem_euclid(ny as isize) as usize;
+                for (a, c9a) in C9.iter().enumerate() {
+                    let sx = (x as isize - c9a[0] as isize).rem_euclid(nx as isize) as usize;
+                    let sy = (y as isize - c9a[1] as isize).rem_euclid(ny as isize) as usize;
                     self.f[dst + a] = f_old[(sy * nx + sx) * 9 + a];
                 }
             }
@@ -1253,11 +1334,11 @@ impl FlatLbmGrid2D {
         let mut rho = 0.0_f64;
         let mut mx = 0.0_f64;
         let mut my = 0.0_f64;
-        for a in 0..9 {
+        for (a, c9a) in C9.iter().enumerate() {
             let fi = self.f[base + a];
             rho += fi;
-            mx += fi * C9[a][0] as f64;
-            my += fi * C9[a][1] as f64;
+            mx += fi * c9a[0] as f64;
+            my += fi * c9a[1] as f64;
         }
         if rho.abs() > 1e-15 {
             [mx / rho, my / rho]
@@ -1302,7 +1383,6 @@ impl FlatLbmGrid2D {
     }
 }
 /// Classification of a grid node for boundary-condition handling.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeFlag {
     /// Normal fluid node.

@@ -8,8 +8,6 @@
 //! nanoparticle melting-point depression, van-der-Waals forces, quantum dots,
 //! Debye screening, nanofluid viscosity/conductivity, and graphene modulus.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 /// Planck constant (J·s).
@@ -36,7 +34,6 @@ const C_LIGHT: f64 = 2.997_924_58e8;
 /// * `sigma_0` – lattice friction stress \[Pa\]
 /// * `k_hp`    – Hall-Petch coefficient \[Pa·√m\]
 /// * `d`       – grain/particle diameter \[m\]
-#[allow(dead_code)]
 pub fn hall_petch_strength(sigma_0: f64, k_hp: f64, d: f64) -> f64 {
     sigma_0 + k_hp / d.sqrt()
 }
@@ -48,7 +45,6 @@ pub fn hall_petch_strength(sigma_0: f64, k_hp: f64, d: f64) -> f64 {
 ///
 /// Sphere and cube both give 6/d; rod with aspect ratio 10 approximates the
 /// lateral + end-cap contribution.
-#[allow(dead_code)]
 pub fn surface_to_volume_ratio(d: f64, shape: &str) -> f64 {
     match shape {
         "sphere" => 6.0 / d,
@@ -70,7 +66,6 @@ pub fn surface_to_volume_ratio(d: f64, shape: &str) -> f64 {
 /// * `d`      – box (quantum dot) diameter \[m\]
 /// * `m_eff`  – effective mass \[kg\]
 /// * `hbar`   – reduced Planck constant \[J·s\]
-#[allow(dead_code)]
 pub fn quantum_confinement_energy(d: f64, m_eff: f64, hbar: f64) -> f64 {
     let n = 1.0_f64;
     (n * PI * hbar).powi(2) / (2.0 * m_eff * d.powi(2))
@@ -85,7 +80,6 @@ pub fn quantum_confinement_energy(d: f64, m_eff: f64, hbar: f64) -> f64 {
 ///
 /// * `chirality_n` – chiral index n
 /// * `chirality_m` – chiral index m
-#[allow(dead_code)]
 pub fn carbon_nanotube_stiffness(chirality_n: usize, chirality_m: usize) -> f64 {
     // Literature: armchair ~1.0 TPa, zigzag ~0.97 TPa, chiral ~1.0 TPa.
     if chirality_n == chirality_m {
@@ -110,7 +104,6 @@ pub fn carbon_nanotube_stiffness(chirality_n: usize, chirality_m: usize) -> f64 
 /// * `bulk_tm` – bulk melting temperature \[K\]
 /// * `d`       – particle diameter \[m\]
 /// * `k_const` – material-specific constant \[m\] (Gibbs-Thomson parameter)
-#[allow(dead_code)]
 pub fn nanoparticle_melting_point(bulk_tm: f64, d: f64, k_const: f64) -> f64 {
     bulk_tm * (1.0 - k_const / d)
 }
@@ -124,7 +117,6 @@ pub fn nanoparticle_melting_point(bulk_tm: f64, d: f64, k_const: f64) -> f64 {
 /// * `d`   – surface-to-surface separation \[m\]
 ///
 /// Uses the simplified equal-sphere Hamaker approximation.
-#[allow(dead_code)]
 pub fn hamaker_van_der_waals(a1: f64, _a2: f64, d: f64) -> f64 {
     // Hamaker constant for generic nanoparticle pair in vacuum ≈ 1e-19 J
     let a_hamaker = 1.0e-19;
@@ -140,7 +132,6 @@ pub fn hamaker_van_der_waals(a1: f64, _a2: f64, d: f64) -> f64 {
 /// * `temperature` – temperature \[K\]
 ///
 /// Uses ε_r = 80 (water), N_A = 6.022e23, e = 1.6e-19 C.
-#[allow(dead_code)]
 pub fn debye_length_nanoparticle(_zeta: f64, c_salt: f64, temperature: f64) -> f64 {
     let eps_r = 80.0;
     let n_a = 6.022_140_76e23;
@@ -158,7 +149,6 @@ pub fn debye_length_nanoparticle(_zeta: f64, c_salt: f64, temperature: f64) -> f
 ///
 /// * `mu_f` – base fluid viscosity \[Pa·s\]
 /// * `phi`  – nanoparticle volume fraction (0–1)
-#[allow(dead_code)]
 pub fn nanofluid_viscosity(mu_f: f64, phi: f64) -> f64 {
     mu_f * (1.0 + 2.5 * phi)
 }
@@ -170,7 +160,6 @@ pub fn nanofluid_viscosity(mu_f: f64, phi: f64) -> f64 {
 /// * `k_f`  – base fluid thermal conductivity \[W/m/K\]
 /// * `k_p`  – particle thermal conductivity \[W/m/K\]
 /// * `phi`  – particle volume fraction (0–1)
-#[allow(dead_code)]
 pub fn nanofluid_thermal_conductivity(k_f: f64, k_p: f64, phi: f64) -> f64 {
     let num = k_p + 2.0 * k_f + 2.0 * phi * (k_p - k_f);
     let den = k_p + 2.0 * k_f - phi * (k_p - k_f);
@@ -180,7 +169,6 @@ pub fn nanofluid_thermal_conductivity(k_f: f64, k_p: f64, phi: f64) -> f64 {
 /// Young's modulus of monolayer graphene \[Pa\].
 ///
 /// Returns the widely cited literature value of 1 TPa.
-#[allow(dead_code)]
 pub fn graphene_young_modulus() -> f64 {
     1.0e12
 }
@@ -193,7 +181,6 @@ pub fn graphene_young_modulus() -> f64 {
 ///
 /// The confinement energy is computed using a simple particle-in-a-sphere
 /// model with the free electron mass as effective mass.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct QuantumDot {
     /// Dot diameter \[nm\].

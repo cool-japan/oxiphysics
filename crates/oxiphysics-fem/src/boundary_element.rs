@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -10,8 +9,6 @@
 //! Helmholtz (acoustic) problems.  Also includes half-space Green's
 //! functions, BEM–FEM coupling, dual BEM for cracks, and a fast
 //! multipole (Barnes–Hut) acceleration scheme.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -116,7 +113,6 @@ pub fn kelvin_laplace_2d(x: &[f64; 3], y: &[f64; 3]) -> f64 {
 /// elastostatics for a source at `y` and field point `x`.
 ///
 /// `U_ij = 1/(16 pi G (1-nu) r) [ (3 - 4 nu) delta_ij + r_i r_j / r^2 ]`
-#[allow(clippy::too_many_arguments)]
 pub fn kelvin_displacement_3d(
     x: &[f64; 3],
     y: &[f64; 3],
@@ -136,7 +132,6 @@ pub fn kelvin_displacement_3d(
 ///
 /// `T_ij = -1/(8 pi (1-nu) r^2) [ dr/dn ((1-2nu) delta_ij + 3 r_i r_j / r^2)
 ///          + (1-2nu)(n_i r_j - n_j r_i) / r ]`
-#[allow(clippy::too_many_arguments)]
 pub fn kelvin_traction_3d(
     x: &[f64; 3],
     y: &[f64; 3],
@@ -546,12 +541,12 @@ impl DenseMatrix {
     pub fn matvec(&self, x: &[f64]) -> Vec<f64> {
         assert_eq!(x.len(), self.cols);
         let mut y = vec![0.0; self.rows];
-        for i in 0..self.rows {
+        for (i, y_i) in y.iter_mut().enumerate().take(self.rows) {
             let mut s = 0.0;
-            for j in 0..self.cols {
-                s += self.data[i * self.cols + j] * x[j];
+            for (j, &x_j) in x.iter().enumerate().take(self.cols) {
+                s += self.data[i * self.cols + j] * x_j;
             }
-            y[i] = s;
+            *y_i = s;
         }
         y
     }
@@ -774,16 +769,16 @@ pub fn solve_laplace_bem(h: &DenseMatrix, g: &DenseMatrix, bcs: &[BemBc]) -> (Ve
     }
 
     // Rearrange: move known columns to RHS
-    for i in 0..n {
+    for (i, rhs_i) in rhs.iter_mut().enumerate().take(n) {
         for j in 0..n {
             if bcs[j].bc_type == BemBcType::Neumann {
                 // unknown is u[j], coefficient from H
                 a_mat.set(i, j, h.get(i, j));
-                rhs[i] += g.get(i, j) * q[j];
+                *rhs_i += g.get(i, j) * q[j];
             } else {
                 // unknown is q[j], coefficient from -G
                 a_mat.set(i, j, -g.get(i, j));
-                rhs[i] -= h.get(i, j) * u[j];
+                *rhs_i -= h.get(i, j) * u[j];
             }
         }
     }
@@ -884,14 +879,14 @@ pub fn interior_flux(mesh: &BoundaryMesh, u: &[f64], q: &[f64], point: &[f64; 3]
     let _n = mesh.num_elements();
     let mut grad = [0.0; 3];
     let eps = 1e-6;
-    for k in 0..3 {
+    for (k, grad_k) in grad.iter_mut().enumerate() {
         let mut pp = *point;
         let mut pm = *point;
         pp[k] += eps;
         pm[k] -= eps;
         let fp = interior_potential(mesh, u, q, &pp);
         let fm = interior_potential(mesh, u, q, &pm);
-        grad[k] = (fp - fm) / (2.0 * eps);
+        *grad_k = (fp - fm) / (2.0 * eps);
     }
     grad
 }
@@ -1021,8 +1016,8 @@ impl BemFemCoupling {
             let mut e = vec![0.0; n];
             e[j] = 1.0;
             let col = gauss_solve(&g, &e);
-            for i in 0..n {
-                g_inv.set(i, j, col[i]);
+            for (i, &col_i) in col.iter().enumerate().take(n) {
+                g_inv.set(i, j, col_i);
             }
         }
         // K_bem = H * G_inv
@@ -1163,15 +1158,15 @@ pub fn build_octree(positions: &[[f64; 3]], charges: &[f64], max_leaf_size: usiz
     let mut bmin = [f64::MAX; 3];
     let mut bmax = [f64::MIN; 3];
     for p in positions {
-        for k in 0..3 {
-            bmin[k] = bmin[k].min(p[k]);
-            bmax[k] = bmax[k].max(p[k]);
+        for (k, (bmin_k, bmax_k)) in bmin.iter_mut().zip(bmax.iter_mut()).enumerate() {
+            *bmin_k = bmin_k.min(p[k]);
+            *bmax_k = bmax_k.max(p[k]);
         }
     }
     // Small padding
-    for k in 0..3 {
-        bmin[k] -= 1e-10;
-        bmax[k] += 1e-10;
+    for (bmin_k, bmax_k) in bmin.iter_mut().zip(bmax.iter_mut()) {
+        *bmin_k -= 1e-10;
+        *bmax_k += 1e-10;
     }
     let indices: Vec<usize> = (0..positions.len()).collect();
     let mut root = OctreeNode::leaf(Aabb::new(bmin, bmax));
@@ -1419,19 +1414,19 @@ pub fn interpolate_triangle(nodes: &[[f64; 3]; 3], xi: f64, eta: f64) -> [f64; 3
 /// Estimate the error of a BEM solution by checking the boundary integral
 /// equation residual at element centroids.
 pub fn bem_residual(
-    mesh: &BoundaryMesh,
+    _mesh: &BoundaryMesh,
     h: &DenseMatrix,
     g: &DenseMatrix,
     u: &[f64],
     q: &[f64],
 ) -> Vec<f64> {
-    let n = mesh.num_elements();
     let hu = h.matvec(u);
     let gq = g.matvec(q);
-    let mut residual = vec![0.0; n];
-    for i in 0..n {
-        residual[i] = (hu[i] - gq[i]).abs();
-    }
+    let residual: Vec<f64> = hu
+        .iter()
+        .zip(gq.iter())
+        .map(|(h_i, g_i)| (h_i - g_i).abs())
+        .collect();
     residual
 }
 
@@ -1708,8 +1703,8 @@ mod tests {
         a.set(2, 2, 1.0);
         let b = vec![1.0, 2.0, 3.0];
         let x = gauss_solve(&a, &b);
-        for i in 0..3 {
-            assert!((x[i] - b[i]).abs() < TOL);
+        for (&xi, &bi) in x.iter().zip(b.iter()) {
+            assert!((xi - bi).abs() < TOL);
         }
     }
 

@@ -9,9 +9,6 @@
 //!
 //! All quantities use SI units unless explicitly noted.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -63,7 +60,6 @@ pub struct SuperconductorProps {
 
 impl SuperconductorProps {
     /// Construct a `SuperconductorProps` with all fields specified.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         critical_temperature: f64,
         critical_field_hc1: f64,
@@ -329,8 +325,7 @@ impl VortexLattice {
         let lambda = self.penetration_depth;
         // Prefactor C = Φ₀²/(2π μ₀ λ²).
         let prefactor = FLUX_QUANTUM.powi(2) / (2.0 * PI * mu0 * lambda.powi(2));
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..n {
+        for (i, force_i) in forces.iter_mut().enumerate() {
             for j in 0..n {
                 if i == j {
                     continue;
@@ -342,8 +337,8 @@ impl VortexLattice {
                 // K₁ approximation.
                 let k1_approx = (1.0 / xi) * (-xi).exp();
                 let mag = prefactor * k1_approx / r;
-                forces[i][0] += mag * dx / r;
-                forces[i][1] += mag * dy / r;
+                force_i[0] += mag * dx / r;
+                force_i[1] += mag * dy / r;
             }
         }
         forces

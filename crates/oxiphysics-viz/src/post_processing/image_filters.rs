@@ -4,8 +4,6 @@
 //! Image-space filters: FXAA, edge detection, chromatic aberration,
 //! lens effects, colour grading, sharpening, bilateral filtering, and more.
 
-#![allow(dead_code)]
-
 use super::core::{Image, PostColor};
 use super::effects::GaussianBlur;
 
@@ -105,7 +103,6 @@ impl Default for FxaaFilter {
 // ─── DepthOfFieldLens ─────────────────────────────────────────────────────────
 
 /// Depth-of-field circle-of-confusion model using f64 (thin-lens formula).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct DepthOfFieldLens {
     /// Distance to the focal plane in world units.
@@ -116,7 +113,6 @@ pub struct DepthOfFieldLens {
     pub focal_length: f64,
 }
 
-#[allow(dead_code)]
 impl DepthOfFieldLens {
     /// Circle-of-confusion diameter for a point at `depth` from the camera.
     ///
@@ -145,7 +141,6 @@ impl DepthOfFieldLens {
 /// Red and blue channels are offset by `r_offset` / `b_offset` respectively.
 /// In a full-image application the offsets drive UV shifts; here we expose a
 /// per-pixel helper that applies the offsets directly to channel values.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ChromaticAberration {
     /// Offset applied to the red channel (positive = shifted).
@@ -154,7 +149,6 @@ pub struct ChromaticAberration {
     pub b_offset: f64,
 }
 
-#[allow(dead_code)]
 impl ChromaticAberration {
     /// Apply chromatic aberration offsets to a single pixel.
     ///
@@ -170,7 +164,6 @@ impl ChromaticAberration {
 // ─── LensFlare ────────────────────────────────────────────────────────────────
 
 /// Lens flare descriptor.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LensFlare {
     /// Screen-space position `[x, y]` in `[0, 1]` NDC.
@@ -181,7 +174,6 @@ pub struct LensFlare {
     pub streak_count: u32,
 }
 
-#[allow(dead_code)]
 impl LensFlare {
     /// Visibility factor in `[0, 1]` based on alignment of `view_dir` and `light_dir`.
     ///
@@ -197,7 +189,6 @@ impl LensFlare {
 // ─── GodRays ──────────────────────────────────────────────────────────────────
 
 /// God-rays (light scattering) parameters.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct GodRays {
     /// Screen-space light position `[x, y]` in `[0, 1]` NDC.
@@ -212,7 +203,6 @@ pub struct GodRays {
     pub exposure: f64,
 }
 
-#[allow(dead_code)]
 impl GodRays {
     /// Compute the accumulated sample weight for a single ray sample.
     ///
@@ -228,7 +218,6 @@ impl GodRays {
 // ─── VignetteEffect ──────────────────────────────────────────────────────────
 
 /// Vignette effect with configurable radius and softness (f64 variant).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct VignetteEffect {
     /// Radius of the unvignetted region in UV space (UV centre = 0.5, 0.5).
@@ -237,7 +226,6 @@ pub struct VignetteEffect {
     pub softness: f64,
 }
 
-#[allow(dead_code)]
 impl VignetteEffect {
     /// Vignette strength in `[0, 1]` for a pixel at `uv` (each component in `[0, 1]`).
     ///
@@ -255,7 +243,6 @@ impl VignetteEffect {
 // ─── ColorGrader ─────────────────────────────────────────────────────────────
 
 /// Simple colour grading using f64 channels (contrast / brightness / saturation).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ColorGrader {
     /// Contrast multiplier around mid-grey (0.5); > 1 increases range.
@@ -266,7 +253,6 @@ pub struct ColorGrader {
     pub saturation: f64,
 }
 
-#[allow(dead_code)]
 impl ColorGrader {
     /// Apply grading to a single `[r, g, b]` colour (f64 components).
     ///
@@ -296,14 +282,12 @@ impl ColorGrader {
 // ─── SharpenFilter ────────────────────────────────────────────────────────────
 
 /// Unsharp-mask sharpening filter operating on f64 pixel data.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct SharpenFilter {
     /// Sharpening strength; higher values produce stronger edges.
     pub strength: f64,
 }
 
-#[allow(dead_code)]
 impl SharpenFilter {
     /// Apply sharpening to a flat pixel slice of size `w × h`.
     ///

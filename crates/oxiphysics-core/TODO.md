@@ -1,11 +1,11 @@
 # oxiphysics-core TODO
 
-**Version:** 0.1.1 | **Updated:** 2026-05-17 | **Status:** ✅ COMPLETE
+**Version:** 0.1.2 | **Updated:** 2026-06-06 | **Status:** ✅ COMPLETE
 
 ## Milestone 1: Foundation — ✅ COMPLETE
 - [x] Define core types and traits (`Vec3`, `Quat`, `Mat3`, `Transform`, `AABB`, `types`)
 - [x] Implement basic error handling
-- [x] Add unit tests (5,348 tests passing)
+- [x] Add unit tests (5,378 tests passing)
 
 ## Milestone 2: Mathematics & Solvers — ✅ COMPLETE
 - [x] Linear algebra (`linalg`, `tensor`, `sparse`, `simd_math`)

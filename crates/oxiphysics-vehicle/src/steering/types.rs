@@ -1,14 +1,10 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use oxiphysics_core::math::Real;
 
 /// Extended steer-by-wire simulator with column torque estimation and
 /// feedback force rendering.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SteerByWireSimulator {
     /// Inner SBW servo.
@@ -20,7 +16,6 @@ pub struct SteerByWireSimulator {
     /// Current road wheel angle (rad).
     pub road_wheel_angle: Real,
 }
-#[allow(dead_code)]
 impl SteerByWireSimulator {
     /// Create a new steer-by-wire simulator.
     pub fn new(servo: SteerByWire, feel: SteeringFeel, column: SteeringColumnCompliance) -> Self {
@@ -69,7 +64,6 @@ impl SteerByWireSimulator {
 /// Models the twist in the steering column shaft between the steering wheel
 /// and the rack input.  The compliance introduces a phase lag in steering
 /// response and affects the feedback feel.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SteeringColumnCompliance {
     /// Torsional stiffness (N·m/rad).
@@ -83,7 +77,6 @@ pub struct SteeringColumnCompliance {
     /// Current twist rate (rad/s, state variable).
     pub(super) twist_rate: Real,
 }
-#[allow(dead_code)]
 impl SteeringColumnCompliance {
     /// Create a new compliance model.
     pub fn new(torsional_stiffness: Real, torsional_damping: Real, gear_ratio: Real) -> Self {
@@ -145,7 +138,6 @@ impl SteeringColumnCompliance {
 /// The fundamental relationship is:
 ///   rack_travel = pinion_angle * pinion_radius
 ///   steer_angle ≈ atan(rack_travel / steer_arm_length)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RackAndPinion {
     /// Pinion pitch radius (meters).
@@ -157,7 +149,6 @@ pub struct RackAndPinion {
     /// Rack compliance: lateral deflection per unit force (m / N).
     pub rack_compliance: Real,
 }
-#[allow(dead_code)]
 impl RackAndPinion {
     /// Create a new rack-and-pinion model.
     pub fn new(
@@ -224,7 +215,6 @@ impl RackAndPinion {
 ///
 /// Compares the measured yaw rate to the expected yaw rate from the bicycle
 /// model.  The difference indicates understeer (positive) or oversteer (negative).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OversteerUndersteerDetector {
     /// Wheelbase (m).
@@ -232,7 +222,6 @@ pub struct OversteerUndersteerDetector {
     /// Dead-band for neutral classification (rad/s).
     pub dead_band: Real,
 }
-#[allow(dead_code)]
 impl OversteerUndersteerDetector {
     /// Create a new detector.
     pub fn new(wheelbase: Real, dead_band: Real) -> Self {
@@ -278,7 +267,6 @@ impl OversteerUndersteerDetector {
 ///
 /// Given wheelbase and track_width, computes ideal inner/outer angles
 /// and turning radius.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AckermannGeometry {
     /// Distance between front and rear axles (meters).
@@ -286,7 +274,6 @@ pub struct AckermannGeometry {
     /// Distance between left and right wheels on the same axle (meters).
     pub track_width: Real,
 }
-#[allow(dead_code)]
 impl AckermannGeometry {
     /// Create a new geometry helper.
     pub fn new(wheelbase: Real, track_width: Real) -> Self {
@@ -332,7 +319,6 @@ impl AckermannGeometry {
 ///
 /// Unequal drive shaft lengths in FWD vehicles cause steering pull under
 /// power. This model computes a corrective steering offset.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TorqueSteerCompensation {
     /// Sensitivity: angular offset per unit drive torque (rad / N*m).
@@ -342,7 +328,6 @@ pub struct TorqueSteerCompensation {
     /// Asymmetry factor: positive means pull to the right under power.
     pub asymmetry: Real,
 }
-#[allow(dead_code)]
 impl TorqueSteerCompensation {
     /// Create a new torque steer compensation model.
     pub fn new(sensitivity: Real, max_correction: Real, asymmetry: Real) -> Self {
@@ -368,7 +353,6 @@ impl TorqueSteerCompensation {
 ///
 /// In some forklifts and specialized vehicles, only the rear wheels steer.
 /// This model computes the rear angle directly from the driver input.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RearWheelSteering {
     /// Maximum rear steering angle (radians).
@@ -376,7 +360,6 @@ pub struct RearWheelSteering {
     /// Steering gain (ratio of rear angle to input).
     pub gain: Real,
 }
-#[allow(dead_code)]
 impl RearWheelSteering {
     /// Create a new rear-wheel steering model.
     pub fn new(max_angle: Real, gain: Real) -> Self {
@@ -403,7 +386,6 @@ impl RearWheelSteering {
 ///
 /// Tracks the correlation between front and rear steering angles and
 /// detects anomalies (e.g. sensor faults).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FrontRearSteeringCorrelation {
     /// Expected ratio of rear angle to front angle at low speed.
@@ -415,7 +397,6 @@ pub struct FrontRearSteeringCorrelation {
     /// Tolerance for fault detection.
     pub fault_tolerance: Real,
 }
-#[allow(dead_code)]
 impl FrontRearSteeringCorrelation {
     /// Create a new correlation model.
     pub fn new(
@@ -452,7 +433,6 @@ impl FrontRearSteeringCorrelation {
 ///
 /// At low speed, the ratio is `low_speed_ratio` (quick steering).
 /// At high speed, the ratio is `high_speed_ratio` (slower, more stable).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SpeedDependentRatio {
     /// Steering ratio at zero speed.
@@ -462,7 +442,6 @@ pub struct SpeedDependentRatio {
     /// Speed (m/s) at which the ratio reaches the high-speed value.
     pub transition_speed: Real,
 }
-#[allow(dead_code)]
 impl SpeedDependentRatio {
     /// Create a new speed-dependent ratio.
     pub fn new(low_ratio: Real, high_ratio: Real, transition_speed: Real) -> Self {
@@ -490,7 +469,6 @@ impl SpeedDependentRatio {
     }
 }
 /// Steer-by-wire actuator model with servo rate limiting and torque feedback.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SteerByWire {
     /// Desired target angle in radians.
@@ -500,7 +478,6 @@ pub struct SteerByWire {
     /// Maximum torque the servo can apply (N·m).
     pub torque_limit: Real,
 }
-#[allow(dead_code)]
 impl SteerByWire {
     /// Create a new steer-by-wire actuator.
     pub fn new(target_angle: Real, servo_rate: Real, torque_limit: Real) -> Self {
@@ -528,7 +505,6 @@ impl SteerByWire {
 }
 /// A complete 4-wheel steering system combining Ackermann front geometry
 /// with speed-dependent rear steering.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FullFourWheelSteering {
     /// Front Ackermann geometry.
@@ -538,7 +514,6 @@ pub struct FullFourWheelSteering {
     /// Speed-dependent ratio.
     pub ratio: SpeedDependentRatio,
 }
-#[allow(dead_code)]
 impl FullFourWheelSteering {
     /// Create a full 4WS system.
     pub fn new(
@@ -567,7 +542,6 @@ impl FullFourWheelSteering {
 /// Enhanced steering feel model with on-centre weighting and speed scaling.
 ///
 /// Adds a velocity-dependent damping gradient and on-centre notch.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SteeringFeelEnhanced {
     /// Base steering feel model.
@@ -579,7 +553,6 @@ pub struct SteeringFeelEnhanced {
     /// Speed scaling factor — feel increases with speed up to `speed_ref` (m/s).
     pub speed_ref: Real,
 }
-#[allow(dead_code)]
 impl SteeringFeelEnhanced {
     /// Create a new enhanced steering feel model.
     pub fn new(
@@ -612,7 +585,6 @@ impl SteeringFeelEnhanced {
 }
 /// Steering feel model — computes self-aligning torque from caster, trail,
 /// kingpin offset and lateral tire force.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SteeringFeel {
     /// Caster angle in radians.
@@ -622,7 +594,6 @@ pub struct SteeringFeel {
     /// Kingpin offset (scrub radius) in meters.
     pub kingpin_offset: Real,
 }
-#[allow(dead_code)]
 impl SteeringFeel {
     /// Create a new steering feel model.
     pub fn new(caster: Real, trail: Real, kingpin_offset: Real) -> Self {
@@ -647,7 +618,6 @@ impl SteeringFeel {
 ///
 /// Extends `SpeedDependentRatio` by adding an angle-dependent component:
 /// at large steering angles the effective ratio decreases (quicker response).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DynamicSteeringRatio {
     /// Base speed-dependent ratio.
@@ -657,7 +627,6 @@ pub struct DynamicSteeringRatio {
     /// Steering angle at which reduction is fully applied (radians).
     pub reduction_angle: Real,
 }
-#[allow(dead_code)]
 impl DynamicSteeringRatio {
     /// Create a new dynamic steering ratio.
     pub fn new(base: SpeedDependentRatio, angle_reduction: Real, reduction_angle: Real) -> Self {
@@ -759,7 +728,6 @@ impl AckermannSteering {
     }
 }
 /// Steering column model with dead zone, hysteresis and return-to-centre spring.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SteeringColumn {
     /// Half-width of the input dead zone (dimensionless, 0..1).
@@ -771,7 +739,6 @@ pub struct SteeringColumn {
     /// Current internal angle state (tracks hysteresis history).
     pub(super) current_state: Real,
 }
-#[allow(dead_code)]
 impl SteeringColumn {
     /// Create a new steering column.
     pub fn new(dead_zone: Real, hysteresis: Real, spring_strength: Real) -> Self {
@@ -806,7 +773,6 @@ impl SteeringColumn {
 ///
 /// At higher speeds the maximum allowed steering angle is reduced to
 /// prevent excessive yaw rates.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SteerLimiter {
     /// Maximum steering angle at rest (radians).
@@ -816,7 +782,6 @@ pub struct SteerLimiter {
     /// Speed at which `min_angle` is reached (m/s).
     pub speed_limit: Real,
 }
-#[allow(dead_code)]
 impl SteerLimiter {
     /// Create a new steering limiter.
     pub fn new(max_angle: Real, min_angle: Real, speed_limit: Real) -> Self {
@@ -839,7 +804,6 @@ impl SteerLimiter {
 }
 /// Steering feedback force model that computes the force the driver feels
 /// through the steering wheel.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SteeringFeedback {
     /// Self-aligning torque gain.
@@ -851,7 +815,6 @@ pub struct SteeringFeedback {
     /// Maximum feedback force (N).
     pub max_force: Real,
 }
-#[allow(dead_code)]
 impl SteeringFeedback {
     /// Create a new steering feedback model.
     pub fn new(
@@ -884,7 +847,6 @@ impl SteeringFeedback {
 ///
 /// At low speed the rear wheels steer out-of-phase (counter-steer) for
 /// tighter turning; at high speed they steer in-phase for stability.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FourWheelSteering {
     /// Scaling factor applied to the front angle for the rear (can be negative).
@@ -892,7 +854,6 @@ pub struct FourWheelSteering {
     /// Speed threshold above which rear steers in-phase (m/s).
     pub rear_rate: Real,
 }
-#[allow(dead_code)]
 impl FourWheelSteering {
     /// Create a new four-wheel steering model.
     pub fn new(front_rate: Real, rear_rate: Real) -> Self {
@@ -922,7 +883,6 @@ impl FourWheelSteering {
 ///
 /// where δ is front steer angle, L is wheelbase, R is turn radius, Ay is
 /// lateral acceleration.  K > 0 → understeer; K < 0 → oversteer.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct UndersteerAnalyzer {
     /// Wheelbase (meters).
@@ -936,10 +896,8 @@ pub struct UndersteerAnalyzer {
     /// Front axle load fraction (0..1).
     pub front_load_fraction: Real,
 }
-#[allow(dead_code)]
 impl UndersteerAnalyzer {
     /// Create a new analyzer.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(wheelbase: Real, cf: Real, cr: Real, mass: Real, front_load_fraction: Real) -> Self {
         Self {
             wheelbase,
@@ -1018,7 +976,6 @@ impl UndersteerAnalyzer {
 ///
 /// Uses a finite horizon bicycle model to compute the steering angle that
 /// minimises future cross-track error and heading error.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ModelPredictiveSteering {
     /// Prediction horizon length (seconds).
@@ -1036,10 +993,8 @@ pub struct ModelPredictiveSteering {
     /// Steering effort weight.
     pub w_steer: Real,
 }
-#[allow(dead_code)]
 impl ModelPredictiveSteering {
     /// Create a new MPC steering controller.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         horizon: Real,
         steps: usize,
@@ -1084,7 +1039,6 @@ impl ModelPredictiveSteering {
     /// Compute cost for a given steering angle over the prediction horizon.
     ///
     /// `target_y` is the desired lateral position (0 = on track).
-    #[allow(clippy::too_many_arguments)]
     pub fn compute_cost(
         &self,
         x0: Real,

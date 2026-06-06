@@ -622,10 +622,10 @@ mod tests {
 
     #[test]
     fn test_nifti_roundtrip() {
-        let path = "/tmp/test_nifti_header.bin";
+        let path = std::env::temp_dir().join("test_nifti_header.bin");
         let hdr = NiftiHeader::new_3d(64, 128, 32, 0.5, 0.5, 1.0);
-        hdr.write_header(path).unwrap();
-        let loaded = NiftiHeader::read_header(path).unwrap();
+        hdr.write_header(path.to_str().unwrap_or("")).unwrap();
+        let loaded = NiftiHeader::read_header(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(loaded.dim[0], 3);
         assert_eq!(loaded.dim[1], 64);
         assert_eq!(loaded.dim[2], 128);
@@ -637,23 +637,26 @@ mod tests {
 
     #[test]
     fn test_nifti_write_nonexistent_dir_fails() {
-        let path = "/tmp/nonexistent_dir_xyz/header.bin";
+        let path = std::env::temp_dir()
+            .join("nonexistent_dir_xyz")
+            .join("header.bin");
         let hdr = NiftiHeader::new_3d(10, 10, 10, 1.0, 1.0, 1.0);
-        assert!(hdr.write_header(path).is_err());
+        assert!(hdr.write_header(path.to_str().unwrap_or("")).is_err());
     }
 
     #[test]
     fn test_nifti_read_nonexistent_fails() {
-        assert!(NiftiHeader::read_header("/tmp/does_not_exist_nifti.bin").is_err());
+        let path = std::env::temp_dir().join("does_not_exist_nifti.bin");
+        assert!(NiftiHeader::read_header(path.to_str().unwrap_or("")).is_err());
     }
 
     #[test]
     fn test_nifti_multiple_roundtrips() {
         for i in 0..3_u8 {
-            let path = format!("/tmp/test_nifti_{i}.bin");
+            let path = std::env::temp_dir().join(format!("test_nifti_{i}.bin"));
             let hdr = NiftiHeader::new_3d(10 + i as usize * 5, 20, 30, 1.0 + i as f64, 1.0, 1.0);
-            hdr.write_header(&path).unwrap();
-            let loaded = NiftiHeader::read_header(&path).unwrap();
+            hdr.write_header(path.to_str().unwrap_or("")).unwrap();
+            let loaded = NiftiHeader::read_header(path.to_str().unwrap_or("")).unwrap();
             assert_eq!(loaded.dim[1], 10 + i as usize * 5);
             assert!((loaded.pixdim[1] - (1.0 + i as f64)).abs() < EPS);
         }

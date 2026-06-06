@@ -12,9 +12,6 @@
 //! - Brake-by-wire actuation
 //! - Pedal feel simulation
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -24,23 +21,11 @@ use std::f64::consts::PI;
 /// Atmospheric pressure in Pa.
 const ATMOSPHERIC_PRESSURE: f64 = 101_325.0;
 
-/// Steel specific heat capacity in J/(kg·K).
-const STEEL_SPECIFIC_HEAT: f64 = 490.0;
-
 /// Cast iron specific heat capacity in J/(kg·K).
 const CAST_IRON_SPECIFIC_HEAT: f64 = 460.0;
 
-/// Minimum brake line pressure considered active (Pa).
-const MIN_ACTIVE_PRESSURE: f64 = 50_000.0;
-
-/// Standard brake fluid density in kg/m³.
-const BRAKE_FLUID_DENSITY: f64 = 1_050.0;
-
 /// Speed of sound in brake fluid (bulk modulus approximation) in m/s.
 const BRAKE_FLUID_BULK_MODULUS: f64 = 1.8e9;
-
-/// Gravity acceleration in m/s².
-const G: f64 = 9.81;
 
 // ---------------------------------------------------------------------------
 // Brake Pad Material

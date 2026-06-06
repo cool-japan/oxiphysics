@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,7 +10,6 @@
 /// A mixed finite element pairing velocity and pressure fields.
 ///
 /// Uses Taylor-Hood P2/P1 elements: quadratic velocity, linear pressure.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MixedElement {
     /// Number of velocity nodes (P2 element).
@@ -35,7 +33,6 @@ impl MixedElement {
     /// * `vel_dofs_per_node` - spatial dimension (2 or 3)
     /// * `stab_param` - Brezzi-Pitkäranta stabilization coefficient
     /// * `penalty` - penalty parameter for incompressibility
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         n_vel_nodes: usize,
         n_pres_nodes: usize,
@@ -151,7 +148,6 @@ pub fn inf_sup_check(b_matrix: &[f64], n_pres: usize, n_vel_dofs: usize) -> f64 
 /// * `div_v` - divergence of each velocity shape function, shape `[n_vel_nodes]`
 /// * `weight` - quadrature weight * Jacobian det
 /// * `dim` - spatial dimension (2)
-#[allow(clippy::too_many_arguments)]
 pub fn stokes_element_matrix(
     viscosity: f64,
     grad_v: &[[f64; 2]],
@@ -189,10 +185,10 @@ pub fn stokes_element_matrix(
     let mut b = vec![0.0f64; n_pres_dofs * n_vel_dofs];
     let _ = div_v; // div_v is redundant given grad_v; use grad_v directly
     for i in 0..n_pres_nodes {
-        for j in 0..n_vel_nodes {
-            for d in 0..dim {
+        for (j, grad_vj) in grad_v.iter().enumerate().take(n_vel_nodes) {
+            for (d, &gvjd) in grad_vj.iter().enumerate().take(dim) {
                 let col = j * dim + d;
-                b[i * n_vel_dofs + col] += -weight * phi_p[i] * grad_v[j][d];
+                b[i * n_vel_dofs + col] += -weight * phi_p[i] * gvjd;
             }
         }
     }

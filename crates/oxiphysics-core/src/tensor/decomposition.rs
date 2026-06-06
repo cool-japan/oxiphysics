@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::operations::*;
 use super::types::*;
 
@@ -10,16 +9,15 @@ use super::types::*;
 ///
 /// Uses iterative algorithm: R_new = (R + R^{-T})/2 normalised.
 /// Returns `(R, U)` where R is proper orthogonal and U is symmetric positive-definite.
-#[allow(dead_code)]
 pub fn polar_decompose_right(f: &Tensor2) -> Option<(Tensor2, Tensor2)> {
     let mut r = Tensor2 { data: f.data };
     for _ in 0..200 {
         let r_inv_t = r.inverse()?.transpose();
         let r_new_data: [[f64; 3]; 3] = {
             let mut d = [[0.0f64; 3]; 3];
-            for i in 0..3 {
-                for j in 0..3 {
-                    d[i][j] = 0.5 * (r.data[i][j] + r_inv_t.data[i][j]);
+            for (di, (ri, ri_t)) in d.iter_mut().zip(r.data.iter().zip(r_inv_t.data.iter())) {
+                for (dij, (rij, ri_tij)) in di.iter_mut().zip(ri.iter().zip(ri_t.iter())) {
+                    *dij = 0.5 * (*rij + *ri_tij);
                 }
             }
             d
@@ -41,7 +39,6 @@ pub fn polar_decompose_right(f: &Tensor2) -> Option<(Tensor2, Tensor2)> {
 /// Approximate matrix logarithm of a tensor close to identity: ln(I + X) ≈ X - X²/2 + X³/3.
 ///
 /// Only accurate for ||X|| < 0.5 (small deformation regime).
-#[allow(dead_code)]
 pub fn log_tensor_approx(f: &Tensor2) -> Tensor2 {
     let id = Tensor2::identity();
     let x = f.sub(&id);
@@ -55,7 +52,6 @@ pub fn log_tensor_approx(f: &Tensor2) -> Tensor2 {
 /// Approximate matrix exponential via Padé (2,2) approximation.
 ///
 /// exp(A) ≈ (I - A/2 + A²/12)^{-1} (I + A/2 + A²/12).
-#[allow(dead_code)]
 pub fn exp_tensor_pade(a: &Tensor2) -> Option<Tensor2> {
     let id = Tensor2::identity();
     let a2 = a.dot(a);
@@ -74,8 +70,6 @@ pub fn exp_tensor_pade(a: &Tensor2) -> Option<Tensor2> {
 /// `contract_b`: list of modes of `b` to contract (must pair with `contract_a`).
 ///
 /// Output shape = \[a.shape\[free_a\[0\]\], a.shape\[free_a\[1\]\], ..., b.shape\[free_b\[0\]\], ...\].
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn general_einsum(
     a: &DenseTensor,
     free_a: &[usize],
@@ -151,7 +145,6 @@ pub fn general_einsum(
     }
 }
 /// Reconstruct a DenseTensor from a CP decomposition.
-#[allow(dead_code)]
 pub fn cp_reconstruct(cp: &CpDecomposition) -> DenseTensor {
     let r = cp.lambdas.len();
     let n0 = cp.a.len();
@@ -172,7 +165,6 @@ pub fn cp_reconstruct(cp: &CpDecomposition) -> DenseTensor {
     out
 }
 /// Relative reconstruction error: ||T - T_approx||_F / ||T||_F.
-#[allow(dead_code)]
 pub fn cp_relative_error(original: &DenseTensor, cp: &CpDecomposition) -> f64 {
     let recon = cp_reconstruct(cp);
     let diff_norm = original.sub_tensor(&recon).frobenius_norm();
@@ -186,36 +178,30 @@ pub fn cp_relative_error(original: &DenseTensor, cp: &CpDecomposition) -> f64 {
 ///
 /// C_ijkl = lambda delta_ij delta_kl + mu (delta_ik delta_jl + delta_il delta_jk - delta_ij delta_kl/3)
 /// (linearised tangent at identity).
-#[allow(dead_code)]
 pub fn neo_hookean_stiffness(lambda: f64, mu: f64) -> Tensor4 {
     Tensor4::isotropic(lambda, mu)
 }
 /// Compute Cauchy stress from linear elasticity: sigma = C : epsilon.
-#[allow(dead_code)]
 pub fn cauchy_stress_linear(c: &Tensor4, epsilon: &Tensor2) -> Tensor2 {
     c.double_contract_2(epsilon)
 }
 /// Compute the engineering Young's modulus E and Poisson's ratio nu from Lame parameters.
-#[allow(dead_code)]
 pub fn lame_to_young_poisson(lambda: f64, mu: f64) -> (f64, f64) {
     let e = mu * (3.0 * lambda + 2.0 * mu) / (lambda + mu);
     let nu = lambda / (2.0 * (lambda + mu));
     (e, nu)
 }
 /// Compute Lame parameters from Young's modulus E and Poisson's ratio nu.
-#[allow(dead_code)]
 pub fn young_poisson_to_lame(e: f64, nu: f64) -> (f64, f64) {
     let lambda = e * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
     let mu = e / (2.0 * (1.0 + nu));
     (lambda, mu)
 }
 /// Compute the bulk modulus K from Lame parameters.
-#[allow(dead_code)]
 pub fn bulk_modulus(lambda: f64, mu: f64) -> f64 {
     lambda + 2.0 * mu / 3.0
 }
 /// Compute the shear modulus (= mu).
-#[allow(dead_code)]
 pub fn shear_modulus(mu: f64) -> f64 {
     mu
 }
@@ -225,8 +211,6 @@ pub fn shear_modulus(mu: f64) -> f64 {
 /// C_1111 = C_2222 = c11, C_3333 = c33,
 /// C_1122 = c12, C_1133 = C_2233 = c13,
 /// C_2323 = C_1313 = c44, C_1212 = (c11-c12)/2.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn transversely_isotropic_stiffness(
     c11: f64,
     c33: f64,
@@ -260,16 +244,15 @@ pub fn transversely_isotropic_stiffness(
 }
 /// Harmonic mean of two stiffness tensors (Reuss bound):
 /// C_Reuss = (C_a^{-1} + C_b^{-1})^{-1} / 2  (in Voigt/Kelvin form).
-#[allow(dead_code)]
 pub fn reuss_average(c_a: &Tensor4, c_b: &Tensor4) -> Option<Tensor4> {
     let ma = KelvinTensor::from_tensor4(c_a);
     let mb = KelvinTensor::from_tensor4(c_b);
     let sa = invert_6x6(&ma)?;
     let sb = invert_6x6(&mb)?;
     let mut sc = [[0.0f64; 6]; 6];
-    for i in 0..6 {
-        for j in 0..6 {
-            sc[i][j] = 0.5 * (sa[i][j] + sb[i][j]);
+    for (sci, (sai, sbi)) in sc.iter_mut().zip(sa.iter().zip(sb.iter())) {
+        for (scij, (saij, sbij)) in sci.iter_mut().zip(sai.iter().zip(sbi.iter())) {
+            *scij = 0.5 * (*saij + *sbij);
         }
     }
     let mc = invert_6x6(&sc)?;
@@ -277,13 +260,11 @@ pub fn reuss_average(c_a: &Tensor4, c_b: &Tensor4) -> Option<Tensor4> {
 }
 /// Arithmetic mean of two stiffness tensors (Voigt bound):
 /// C_Voigt = (C_a + C_b) / 2.
-#[allow(dead_code)]
 pub fn voigt_average(c_a: &Tensor4, c_b: &Tensor4) -> Tensor4 {
     let a = c_a.add(c_b);
     a.scale(0.5)
 }
 /// Hill average: arithmetic mean of Voigt and Reuss bounds.
-#[allow(dead_code)]
 pub fn hill_average(c_a: &Tensor4, c_b: &Tensor4) -> Option<Tensor4> {
     let cv = voigt_average(c_a, c_b);
     let cr = reuss_average(c_a, c_b)?;
@@ -479,28 +460,28 @@ mod tests_extended {
     fn test_invert_6x6_identity() {
         let id6: [[f64; 6]; 6] = {
             let mut m = [[0.0f64; 6]; 6];
-            for i in 0..6 {
-                m[i][i] = 1.0;
+            for (i, mi) in m.iter_mut().enumerate() {
+                mi[i] = 1.0;
             }
             m
         };
         let inv = invert_6x6(&id6).unwrap();
-        for i in 0..6 {
-            for j in 0..6 {
+        for (i, inv_row) in inv.iter().enumerate() {
+            for (j, &inv_ij) in inv_row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((inv[i][j] - expected).abs() < 1e-10);
+                assert!((inv_ij - expected).abs() < 1e-10);
             }
         }
     }
     #[test]
     fn test_invert_6x6_diagonal() {
         let mut m = [[0.0f64; 6]; 6];
-        for i in 0..6 {
-            m[i][i] = (i + 1) as f64;
+        for (i, row) in m.iter_mut().enumerate() {
+            row[i] = (i + 1) as f64;
         }
         let inv = invert_6x6(&m).unwrap();
-        for i in 0..6 {
-            assert!((inv[i][i] - 1.0 / (i + 1) as f64).abs() < 1e-10);
+        for (i, inv_row) in inv.iter().enumerate() {
+            assert!((inv_row[i] - 1.0 / (i + 1) as f64).abs() < 1e-10);
         }
     }
     #[test]

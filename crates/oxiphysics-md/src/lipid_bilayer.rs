@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,9 +16,6 @@
 //! - Protein-membrane interaction (insertion energy, tilt coupling)
 //!
 //! Units: nm for length, kJ/mol for energy, ps for time.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -82,16 +78,6 @@ fn pbc_displacement(r_ij: [f64; 3], box_size: [f64; 3]) -> [f64; 3] {
         r_ij[0] - box_size[0] * (r_ij[0] / box_size[0]).round(),
         r_ij[1] - box_size[1] * (r_ij[1] / box_size[1]).round(),
         r_ij[2] - box_size[2] * (r_ij[2] / box_size[2]).round(),
-    ]
-}
-
-/// Wrap a position into the primary simulation box.
-#[inline]
-fn wrap_position(pos: [f64; 3], box_size: [f64; 3]) -> [f64; 3] {
-    [
-        pos[0] - box_size[0] * (pos[0] / box_size[0]).floor(),
-        pos[1] - box_size[1] * (pos[1] / box_size[1]).floor(),
-        pos[2] - box_size[2] * (pos[2] / box_size[2]).floor(),
     ]
 }
 
@@ -630,9 +616,13 @@ impl MsdData {
             let mut sum_msd = 0.0;
             let mut count = 0usize;
             for t0 in 0..(n_frames - lag) {
-                for lip in 0..n_lipids {
-                    let dx = positions[t0 + lag][lip][0] - positions[t0][lip][0];
-                    let dy = positions[t0 + lag][lip][1] - positions[t0][lip][1];
+                for (p0, p1) in positions[t0]
+                    .iter()
+                    .zip(positions[t0 + lag].iter())
+                    .take(n_lipids)
+                {
+                    let dx = p1[0] - p0[0];
+                    let dy = p1[1] - p0[1];
                     sum_msd += dx * dx + dy * dy;
                     count += 1;
                 }
@@ -1203,9 +1193,9 @@ pub fn compute_msd_2d(traj: &[Vec<[f64; 2]>], max_lag: usize) -> Vec<f64> {
             let mut sum = 0.0;
             let mut count = 0usize;
             for t0 in 0..(n_frames - lag) {
-                for mol in 0..n_mol {
-                    let dx = traj[t0 + lag][mol][0] - traj[t0][mol][0];
-                    let dy = traj[t0 + lag][mol][1] - traj[t0][mol][1];
+                for (m0, m1) in traj[t0].iter().zip(traj[t0 + lag].iter()).take(n_mol) {
+                    let dx = m1[0] - m0[0];
+                    let dy = m1[1] - m0[1];
                     sum += dx * dx + dy * dy;
                     count += 1;
                 }
@@ -1216,7 +1206,7 @@ pub fn compute_msd_2d(traj: &[Vec<[f64; 2]>], max_lag: usize) -> Vec<f64> {
 }
 
 /// Assign lipids to upper or lower leaflet based on their z-position relative to midplane.
-pub fn assign_leaflets(lipids: &mut Vec<CgLipid>) {
+pub fn assign_leaflets(lipids: &mut [CgLipid]) {
     if lipids.is_empty() {
         return;
     }

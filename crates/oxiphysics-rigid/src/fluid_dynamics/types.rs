@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 use super::functions::*;
 // Auto-generated module
 //
@@ -946,16 +945,16 @@ impl SourcePanelMethod {
     pub fn influence_matrix(&self) -> Vec<Vec<f64>> {
         let n = self.panels.len();
         let mut a = vec![vec![0.0f64; n]; n];
-        for i in 0..n {
+        for (i, a_row) in a.iter_mut().enumerate() {
             let cp = self.panels[i].center();
             let ni = self.panels[i].normal();
-            for j in 0..n {
+            for (j, a_ij) in a_row.iter_mut().enumerate() {
                 if i == j {
-                    a[i][j] = 0.5;
+                    *a_ij = 0.5;
                 } else {
                     let inf = self.panels[j].source_influence(cp);
-                    a[i][j] = inf * (ni[0] * 1.0 + ni[1] * 1.0).signum().abs();
-                    a[i][j] = self.panels[j].source_influence(cp);
+                    *a_ij = inf * (ni[0] * 1.0 + ni[1] * 1.0).signum().abs();
+                    *a_ij = self.panels[j].source_influence(cp);
                 }
             }
         }

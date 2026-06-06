@@ -2,23 +2,17 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions_2::*;
 use crate::{Error, Result};
 use oxiphysics_core::math::Vec3;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{VTK_HEX, VTK_QUAD, VTK_TET, VTK_TRIANGLE};
 
 /// Serialize multiple `VtuWriter` pieces into a single VTU XML string
 /// (each piece is a separate `Piece` inside `<UnstructuredGrid>`).
-#[allow(dead_code)]
 pub struct VtuMultiPiece;
-#[allow(dead_code)]
 impl VtuMultiPiece {
     /// Write multiple writers as pieces in a single VTU XML string.
     pub fn write(pieces: &[&VtuWriter]) -> String {
@@ -51,7 +45,6 @@ impl VtuMultiPiece {
     }
 }
 /// A simple metadata tag for annotating VTU files.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VtuAnnotation {
     /// Key name.
@@ -59,7 +52,6 @@ pub struct VtuAnnotation {
     /// Value string.
     pub value: String,
 }
-#[allow(dead_code)]
 pub(super) struct PointVector {
     pub(super) name: String,
     pub(super) vectors: Vec<[f64; 3]>,
@@ -67,9 +59,7 @@ pub(super) struct PointVector {
 /// Legacy static VTU writer (kept for backward compatibility with existing callers).
 ///
 /// New code should use the builder-style [`VtuWriter`] struct instead.
-#[allow(dead_code)]
 pub struct VtuWriterLegacy;
-#[allow(dead_code)]
 impl VtuWriterLegacy {
     /// Write an unstructured grid to a VTU (VTK XML) file.
     ///
@@ -189,7 +179,6 @@ impl VtuWriterLegacy {
         Ok(())
     }
 }
-#[allow(dead_code)]
 pub(super) struct CellVector {
     pub(super) name: String,
     pub(super) vectors: Vec<[f64; 3]>,
@@ -198,7 +187,6 @@ pub(super) struct CellVector {
 ///
 /// Add points, cells, and optional point data; then call [`VtuWriter::to_xml`] or
 /// [`VtuWriter::write_to_file`].
-#[allow(dead_code)]
 pub struct VtuWriter {
     pub(super) points: Vec<[f64; 3]>,
     pub(super) cells: Vec<Vec<usize>>,
@@ -208,7 +196,6 @@ pub struct VtuWriter {
     pub(super) cell_scalars: Vec<CellScalar>,
     pub(super) cell_vectors: Vec<CellVector>,
 }
-#[allow(dead_code)]
 impl VtuWriter {
     /// Create an empty VTU writer.
     pub fn new() -> Self {
@@ -260,7 +247,6 @@ impl VtuWriter {
         self.add_cell(vec![i0, i1, i2, i3], VTK_TET);
     }
     /// Add a hexahedron cell from eight point indices.
-    #[allow(clippy::too_many_arguments)]
     pub fn add_hex(
         &mut self,
         i0: usize,
@@ -292,7 +278,6 @@ impl VtuWriter {
     ///
     /// Each cell supplies 6 components (Voigt notation): xx, yy, zz, xy, xz, yz.
     /// Returns an XML ``DataArray` element string ready to embed in ``CellData`.
-    #[allow(dead_code)]
     pub fn write_cell_data_tensor(name: &str, tensors: &[[f64; 6]]) -> String {
         let mut s = String::new();
         s.push_str(
@@ -314,7 +299,6 @@ impl VtuWriter {
     ///
     /// `piece_files` is a slice of relative paths to the individual `.vtu` pieces.
     /// Returns the pvtu XML string.
-    #[allow(dead_code)]
     pub fn write_pvtu_parallel(
         piece_files: &[&str],
         point_data_names: &[&str],
@@ -600,9 +584,7 @@ impl VtuWriter {
     }
 }
 /// Arithmetic operations on VTU scalar fields.
-#[allow(dead_code)]
 pub struct VtuFieldOps;
-#[allow(dead_code)]
 impl VtuFieldOps {
     /// Add two fields element-wise, returning the result.
     pub fn add(a: &[f64], b: &[f64]) -> Vec<f64> {
@@ -706,34 +688,28 @@ impl VtuFieldOps {
             .collect()
     }
 }
-#[allow(dead_code)]
 pub(super) struct PointScalar {
     pub(super) name: String,
     pub(super) values: Vec<f64>,
 }
-#[allow(dead_code)]
 pub(super) struct CellScalar {
     pub(super) name: String,
     pub(super) values: Vec<f64>,
 }
 /// Simple reader that extracts point coordinates from a VTU XML string.
-#[allow(dead_code)]
 pub struct VtuReader {
     pub(super) points: Vec<[f64; 3]>,
     pub(super) num_cells: usize,
     pub(super) cell_types: Vec<u8>,
-    pub(super) cell_connectivity: Vec<Vec<usize>>,
     pub(super) point_scalar_names: Vec<String>,
     pub(super) cell_scalar_names: Vec<String>,
 }
-#[allow(dead_code)]
 impl VtuReader {
     /// Parse a VTU XML string and extract point coordinates.
     pub fn from_xml(data: &str) -> Result<Self> {
         let mut points = Vec::new();
         let mut in_points_array = false;
         let mut cell_types = Vec::new();
-        let mut cell_connectivity = Vec::new();
         let mut num_cells = 0usize;
         let mut point_scalar_names = Vec::new();
         let mut cell_scalar_names = Vec::new();
@@ -835,21 +811,12 @@ impl VtuReader {
                 in_connectivity = false;
                 continue;
             }
-            if in_connectivity && !trimmed.starts_with('<') && !trimmed.is_empty() {
-                let indices: Vec<usize> = trimmed
-                    .split_whitespace()
-                    .filter_map(|s| s.parse::<usize>().ok())
-                    .collect();
-                if !indices.is_empty() {
-                    cell_connectivity.push(indices);
-                }
-            }
+            // connectivity data is tracked via in_connectivity state machine but not stored
         }
         Ok(Self {
             points,
             num_cells,
             cell_types,
-            cell_connectivity,
             point_scalar_names,
             cell_scalar_names,
         })
@@ -878,7 +845,6 @@ impl VtuReader {
     ///
     /// Returns a `Vec`f64` of the scalar values for the requested array,
     /// or an error if the array is not found in the ``CellData` section.
-    #[allow(dead_code)]
     pub fn read_cell_data(data: &str, array_name: &str) -> std::result::Result<Vec<f64>, String> {
         let mut in_cell_data = false;
         let mut target_found = false;
@@ -950,9 +916,7 @@ impl VtuReader {
 /// Writer for Parallel VTU (.pvtu) header files.
 ///
 /// A PVTU file references a set of VTU piece files for parallel I/O.
-#[allow(dead_code)]
 pub struct PvtuWriter;
-#[allow(dead_code)]
 impl PvtuWriter {
     /// Generate a PVTU XML string referencing the given piece files.
     ///
@@ -1001,13 +965,11 @@ impl PvtuWriter {
     }
 }
 /// Convenience struct for writing a time series of VTU files and a PVD collection.
-#[allow(dead_code)]
 pub struct VtuTimeSeries {
     pub(super) prefix: String,
     pub(super) directory: String,
     pub(super) timesteps: Vec<(f64, String)>,
 }
-#[allow(dead_code)]
 impl VtuTimeSeries {
     /// Create a new time series writer.
     ///
@@ -1054,7 +1016,6 @@ impl VtuTimeSeries {
     }
 }
 /// Quality metric for a single VTU cell.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VtuCellQuality {
     /// Cell index (0-based).
@@ -1074,9 +1035,7 @@ pub struct VtuCellQuality {
 ///
 /// A PVD file references a list of VTU files at different timesteps,
 /// enabling animation playback in ParaView.
-#[allow(dead_code)]
 pub struct PvdWriter;
-#[allow(dead_code)]
 impl PvdWriter {
     /// Generate a PVD XML string referencing the given timesteps.
     ///

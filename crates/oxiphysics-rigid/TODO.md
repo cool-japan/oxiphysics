@@ -1,6 +1,6 @@
 # oxiphysics-rigid TODO
 
-Last updated: 2026-05-17 | Version: 0.1.1
+Last updated: 2026-06-06 | Version: 0.1.2
 
 ## Phase 1: Foundation
 - [x] Define core types and traits
@@ -39,5 +39,8 @@ Last updated: 2026-05-17 | Version: 0.1.1
 - [x] Mechanisms and thruster systems
 - [x] Terrain interaction
 - [x] Constraint forces
-- [x] 3,810 tests passing, 0 stubs
+- [x] 3,820 tests passing, 0 stubs
+
+## v0.1.2 correctness fixes (2026-06-01)
+- [x] `MotionPlanning` — Added `PlanningObstacle` (n-D C-space sphere) and `obstacles: Vec<PlanningObstacle>` field. `is_collision_free` now checks Euclidean distance to all obstacles; `is_segment_collision_free` added (10-sample discretisation) to prevent tunnelling in RRT/PRM edge expansion. Builder `with_obstacles(...)` provided. Previously `is_collision_free` always returned `true`. 6 new tests.
 

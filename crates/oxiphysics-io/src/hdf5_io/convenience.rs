@@ -5,8 +5,6 @@
 //! collective I/O, large-file support, checksums, string & group utilities,
 //! matrix/tensor convenience, and annotations.
 
-#![allow(dead_code)]
-
 use super::dataset::Hdf5Dataset;
 use super::file::Hdf5File;
 use super::group::Hdf5Group;
@@ -393,7 +391,6 @@ pub fn write_tensor3_f64(
 // ---------------------------------------------------------------------------
 
 /// Annotate a dataset with standard simulation metadata attributes.
-#[allow(clippy::too_many_arguments)]
 pub fn annotate_dataset(
     file: &mut Hdf5File,
     group: &str,

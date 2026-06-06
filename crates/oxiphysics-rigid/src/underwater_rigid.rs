@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 //! Underwater rigid body dynamics: added mass, buoyancy, hydrodynamics.
@@ -12,8 +11,6 @@
 //! - Abkowitz maneuvering force model
 //! - Doppler velocity log (DVL) simulation
 //! - Cylindrical pressure-hull buckling
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -117,9 +114,9 @@ impl AddedMassTensor {
     /// Returns the hydrodynamic force/moment vector `F = M_A · a`.
     pub fn apply(&self, acc: [f64; 6]) -> [f64; 6] {
         let mut out = [0.0_f64; 6];
-        for i in 0..6 {
-            for j in 0..6 {
-                out[i] += self.m[i * 6 + j] * acc[j];
+        for (i, out_i) in out.iter_mut().enumerate() {
+            for (j, acc_j) in acc.iter().enumerate() {
+                *out_i += self.m[i * 6 + j] * acc_j;
             }
         }
         out

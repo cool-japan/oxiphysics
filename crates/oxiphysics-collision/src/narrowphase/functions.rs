@@ -30,7 +30,6 @@ pub(super) fn normalize3(a: [f64; 3]) -> [f64; 3] {
         [0.0, 1.0, 0.0]
     }
 }
-#[allow(dead_code)]
 pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -42,7 +41,6 @@ pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 ///
 /// Picks the fastest specialized algorithm when the shape combination is known,
 /// and returns `None` if the shapes are separated.
-#[allow(dead_code)]
 pub fn shape_shape_contact(a: &ShapeKind, b: &ShapeKind) -> Option<NarrowPhaseContact> {
     match (a, b) {
         (
@@ -352,7 +350,6 @@ pub(super) fn closest_segment_segment(
 ///
 /// Extends [`shape_shape_contact`] with feature tagging for faster warm-starting
 /// and incremental manifold updates.
-#[allow(dead_code)]
 pub fn shape_shape_feature_contact(a: &ShapeKind, b: &ShapeKind) -> Option<FeatureContact> {
     let contact = shape_shape_contact(a, b)?;
     let feature = match (a, b) {
@@ -380,7 +377,6 @@ pub fn shape_shape_feature_contact(a: &ShapeKind, b: &ShapeKind) -> Option<Featu
 /// Route a convex shape against every triangle of a concave mesh and collect contacts.
 ///
 /// Returns all contacts whose depth is ≥ `min_depth`.
-#[allow(dead_code)]
 pub fn convex_vs_mesh(
     convex: &ShapeKind,
     mesh: &TriangleMesh,
@@ -409,7 +405,6 @@ pub fn convex_vs_mesh(
 /// Run narrowphase between a compound shape and a single shape.
 ///
 /// Returns one contact per colliding child–shape pair (shallowest first).
-#[allow(dead_code)]
 pub fn compound_vs_shape(
     compound: &CompoundShape,
     other: &ShapeKind,
@@ -433,7 +428,6 @@ pub fn compound_vs_shape(
 /// Run narrowphase between two compound shapes.
 ///
 /// Tests every child pair.  Returns all contacts passing the filter.
-#[allow(dead_code)]
 pub fn compound_vs_compound(
     a: &CompoundShape,
     b: &CompoundShape,
@@ -452,7 +446,6 @@ pub fn compound_vs_compound(
     contacts
 }
 /// Test whether `point` is inside `shape` and return distance information.
-#[allow(dead_code)]
 pub fn point_query(point: [f64; 3], shape: &ShapeKind) -> PointQueryResult {
     match shape {
         ShapeKind::Sphere { center, radius } => {
@@ -607,7 +600,6 @@ pub fn point_query(point: [f64; 3], shape: &ShapeKind) -> PointQueryResult {
 /// against `shape`.
 ///
 /// Returns `Some(result)` if the ray hits within `[0, max_toi]`.
-#[allow(dead_code)]
 pub fn ray_cast(
     origin: [f64; 3],
     dir: [f64; 3],

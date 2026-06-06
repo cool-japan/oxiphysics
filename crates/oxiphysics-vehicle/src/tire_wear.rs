@@ -4,8 +4,6 @@
 //! Tire wear and degradation models: Archard wear, temperature layers,
 //! compound types, pressure, grip degradation, and lap-level simulation.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -633,7 +631,6 @@ impl WearSimulation {
     /// * `lateral_force` — lateral force (N)
     /// * `distance_m` — segment distance (m)
     /// * `dt` — time step (s)
-    #[allow(clippy::too_many_arguments)]
     pub fn step(
         &mut self,
         load: f64,

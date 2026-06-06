@@ -12,24 +12,23 @@ mod tests {
     use crate::VtkWriter;
 
     use oxiphysics_core::math::Vec3;
-    use std::path::Path;
     #[test]
     fn test_vtk_point_cloud_write() {
-        let path = "/tmp/oxiphy_test_points.vtk";
+        let path = std::env::temp_dir().join("oxiphy_test_points.vtk");
         let pts = vec![
             Vec3::new(0.0, 0.0, 0.0),
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
         ];
-        VtkWriter::write_points(path, &pts).unwrap();
-        assert!(Path::new(path).exists());
-        let content = std::fs::read_to_string(path).unwrap();
+        VtkWriter::write_points(path.to_str().unwrap_or(""), &pts).unwrap();
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("POINTS 3 float"));
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_vtk_unstructured_grid_write() {
-        let path = "/tmp/oxiphy_test_ugrid.vtk";
+        let path = std::env::temp_dir().join("oxiphy_test_ugrid.vtk");
         let pts = vec![
             Vec3::new(0.0, 0.0, 0.0),
             Vec3::new(1.0, 0.0, 0.0),
@@ -38,41 +37,47 @@ mod tests {
         ];
         let cells = vec![[0, 1, 2, 3]];
         let scalars = vec![1.0, 2.0, 3.0, 4.0];
-        VtkWriter::write_unstructured_grid(path, &pts, &cells, Some(("pressure", &scalars)), None)
-            .unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        VtkWriter::write_unstructured_grid(
+            path.to_str().unwrap_or(""),
+            &pts,
+            &cells,
+            Some(("pressure", &scalars)),
+            None,
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("UNSTRUCTURED_GRID"));
         assert!(content.contains("CELL_TYPES 1"));
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_vtk_header_format() {
-        let path = "/tmp/oxiphy_test_header.vtk";
+        let path = std::env::temp_dir().join("oxiphy_test_header.vtk");
         let pts = vec![Vec3::new(0.0, 0.0, 0.0)];
-        VtkWriter::write_points(path, &pts).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        VtkWriter::write_points(path.to_str().unwrap_or(""), &pts).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines[0], "# vtk DataFile Version 3.0");
         assert_eq!(lines[2], "ASCII");
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_vtk_polydata_write() {
-        let path = "/tmp/oxiphy_test_polydata.vtk";
+        let path = std::env::temp_dir().join("oxiphy_test_polydata.vtk");
         let pts = vec![
             Vec3::new(0.0, 0.0, 0.0),
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
         ];
         let tris = vec![[0, 1, 2]];
-        VtkWriter::write_polydata(path, &pts, &tris).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        VtkWriter::write_polydata(path.to_str().unwrap_or(""), &pts, &tris).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("POLYGONS 1 4"));
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_vtk_write_read_roundtrip() {
-        let path = "/tmp/oxiphy_test_roundtrip.vtk";
+        let path = std::env::temp_dir().join("oxiphy_test_roundtrip.vtk");
         let positions = vec![
             Vec3::new(1.0, 2.0, 3.0),
             Vec3::new(4.0, 5.0, 6.0),
@@ -82,14 +87,14 @@ mod tests {
         let scalars = vec![10.0, 20.0, 30.0, 40.0];
         let cells: Vec<[usize; 4]> = vec![];
         VtkWriter::write_unstructured_grid(
-            path,
+            path.to_str().unwrap_or(""),
             &positions,
             &cells,
             Some(("density", &scalars)),
             None,
         )
         .unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(
             content.contains("POINTS 4 float"),
             "expected POINTS 4 float header"
@@ -128,14 +133,13 @@ mod tests {
         assert!((parsed[1][0] - 4.0).abs() < tol);
         assert!((parsed[2][1] - 8.0).abs() < tol);
         assert!((parsed[3][2] - 2.5).abs() < tol);
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
 }
 /// Validate a `VtuGrid` for consistency.
 ///
 /// Checks that all cell connectivity indices are valid and all point data
 /// arrays have the correct length.
-#[allow(dead_code)]
 pub fn validate_vtu_grid(grid: &VtuGrid) -> Vec<String> {
     let mut errors = Vec::new();
     let n_pts = grid.n_points();
@@ -450,7 +454,6 @@ mod vtu_grid_tests {
 ///
 /// VTK legacy binary files use big-endian byte order.
 /// Supports arbitrary cell types and float64 point coordinates.
-#[allow(dead_code)]
 pub fn write_vtk_binary_unstructured(
     path: &str,
     points: &[[f64; 3]],
@@ -493,7 +496,6 @@ pub fn write_vtk_binary_unstructured(
 /// Parse a legacy VTK ASCII file, extracting points and point scalars.
 ///
 /// This is a simplified reader that handles POINTS and POINT_DATA/SCALARS sections.
-#[allow(dead_code)]
 pub fn read_vtk_legacy_ascii(content: &str) -> std::result::Result<VtkLegacyData, String> {
     let mut lines = content.lines();
     let magic = lines.next().ok_or("Missing magic line")?;
@@ -570,7 +572,6 @@ pub fn read_vtk_legacy_ascii(content: &str) -> std::result::Result<VtkLegacyData
     Ok(result)
 }
 /// Write a ParaView Data (PVD) collection file pointing to a sequence of VTU files.
-#[allow(dead_code)]
 pub fn write_pvd_file(path: &str, entries: &[PvdEntry]) -> crate::Result<()> {
     let file = std::fs::File::create(path)?;
     let mut w = std::io::BufWriter::new(file);
@@ -593,7 +594,6 @@ pub fn write_pvd_file(path: &str, entries: &[PvdEntry]) -> crate::Result<()> {
     Ok(())
 }
 /// Generate a sequence of PVD entries for evenly spaced time steps.
-#[allow(dead_code)]
 pub fn pvd_entries_uniform(
     base_name: &str,
     extension: &str,
@@ -610,7 +610,6 @@ pub fn pvd_entries_uniform(
         .collect()
 }
 /// Write a triangle surface mesh as a VTK POLYDATA file (ASCII legacy).
-#[allow(dead_code)]
 pub fn write_vtk_polydata(
     path: &str,
     vertices: &[[f64; 3]],
@@ -645,7 +644,6 @@ pub fn write_vtk_polydata(
 /// Write VTK CELL_DATA with a symmetric 3×3 stress tensor per cell.
 ///
 /// VTK represents tensors as 9-component arrays (row-major).
-#[allow(dead_code)]
 pub fn write_vtk_cell_stress(
     path: &str,
     points: &[[f64; 3]],
@@ -687,7 +685,6 @@ pub fn write_vtk_cell_stress(
     Ok(())
 }
 /// Write VTK POINT_DATA with velocity vectors for each point.
-#[allow(dead_code)]
 pub fn write_vtk_point_velocity(
     path: &str,
     points: &[[f64; 3]],
@@ -788,36 +785,36 @@ mod tests_vtk_extended {
     #[test]
     fn test_write_pvd_file() {
         let entries = pvd_entries_uniform("sim", "vtu", 0.0, 0.01, 3);
-        let path = "/tmp/test_oxiphysics_pvd.pvd";
-        write_pvd_file(path, &entries).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_oxiphysics_pvd.pvd");
+        write_pvd_file(path.to_str().unwrap_or(""), &entries).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("Collection"));
         assert!(content.contains("timestep"));
         assert!(content.contains("sim_000000.vtu"));
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_vtk_polydata_no_normals() {
         let verts = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         let tris = vec![[0, 1, 2]];
-        let path = "/tmp/test_oxiphysics_polydata.vtk";
-        write_vtk_polydata(path, &verts, &tris, None).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_oxiphysics_polydata.vtk");
+        write_vtk_polydata(path.to_str().unwrap_or(""), &verts, &tris, None).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("POLYDATA"));
         assert!(content.contains("POINTS 3"));
         assert!(content.contains("POLYGONS 1"));
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_vtk_polydata_with_normals() {
         let verts = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         let tris = vec![[0, 1, 2]];
         let normals = vec![[0.0, 0.0, 1.0]; 3];
-        let path = "/tmp/test_oxiphysics_polydata_normals.vtk";
-        write_vtk_polydata(path, &verts, &tris, Some(&normals)).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_oxiphysics_polydata_normals.vtk");
+        write_vtk_polydata(path.to_str().unwrap_or(""), &verts, &tris, Some(&normals)).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("NORMALS"));
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_vtk_cell_stress() {
@@ -825,50 +822,58 @@ mod tests_vtk_extended {
         let cells = vec![vec![0_usize, 1, 2]];
         let cell_types = vec![5_u8];
         let stress = vec![[[1.0, 0.5, 0.0], [0.5, 2.0, 0.0], [0.0, 0.0, 0.5]]];
-        let path = "/tmp/test_oxiphysics_stress.vtk";
-        write_vtk_cell_stress(path, &points, &cells, &cell_types, &stress).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_oxiphysics_stress.vtk");
+        write_vtk_cell_stress(
+            path.to_str().unwrap_or(""),
+            &points,
+            &cells,
+            &cell_types,
+            &stress,
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("TENSORS stress"));
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_vtk_point_velocity() {
         let points = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
         let velocities = vec![[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]];
-        let path = "/tmp/test_oxiphysics_velocity.vtk";
-        write_vtk_point_velocity(path, &points, &velocities).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_oxiphysics_velocity.vtk");
+        write_vtk_point_velocity(path.to_str().unwrap_or(""), &points, &velocities).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("VECTORS velocity"));
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_vtk_binary_unstructured() {
         let points = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 1.0, 0.0]];
         let cells = vec![vec![0_usize, 1, 2]];
         let cell_types = vec![5_u8];
-        let path = "/tmp/test_oxiphysics_binary.vtk";
-        write_vtk_binary_unstructured(path, &points, &cells, &cell_types).unwrap();
-        let meta = std::fs::metadata(path).unwrap();
+        let path = std::env::temp_dir().join("test_oxiphysics_binary.vtk");
+        write_vtk_binary_unstructured(path.to_str().unwrap_or(""), &points, &cells, &cell_types)
+            .unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
         assert!(meta.len() > 0);
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_vtk_binary_header_ascii() {
         let points = vec![[0.5, 0.5, 0.5]];
         let cells = vec![vec![0_usize]];
         let cell_types = vec![1_u8];
-        let path = "/tmp/test_oxiphysics_binary2.vtk";
-        write_vtk_binary_unstructured(path, &points, &cells, &cell_types).unwrap();
-        let bytes = std::fs::read(path).unwrap();
+        let path = std::env::temp_dir().join("test_oxiphysics_binary2.vtk");
+        write_vtk_binary_unstructured(path.to_str().unwrap_or(""), &points, &cells, &cell_types)
+            .unwrap();
+        let bytes = std::fs::read(&path).unwrap();
         let header_str = std::str::from_utf8(&bytes[..5]).unwrap_or("");
         assert_eq!(header_str, "# vtk");
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
 }
 /// Returns the expected number of nodes for a given [`VtkCellType`].
 ///
 /// Returns `0` for unknown types.
-#[allow(dead_code)]
 pub fn cell_type_node_count(ct: VtkCellType) -> usize {
     match ct {
         VtkCellType::Vertex => 1,
@@ -882,7 +887,6 @@ pub fn cell_type_node_count(ct: VtkCellType) -> usize {
     }
 }
 /// Return a human-readable name for a [`VtkCellType`].
-#[allow(dead_code)]
 pub fn cell_type_name(ct: VtkCellType) -> &'static str {
     match ct {
         VtkCellType::Vertex => "Vertex",
@@ -899,7 +903,6 @@ pub fn cell_type_name(ct: VtkCellType) -> &'static str {
 ///
 /// Returns `([min_x, min_y, min_z], [max_x, max_y, max_z])`, or `None` if
 /// the grid has no points.
-#[allow(dead_code)]
 pub fn grid_bounding_box(grid: &VtuGrid) -> Option<([f64; 3], [f64; 3])> {
     if grid.points.is_empty() {
         return None;
@@ -919,7 +922,6 @@ pub fn grid_bounding_box(grid: &VtuGrid) -> Option<([f64; 3], [f64; 3])> {
     Some((lo, hi))
 }
 /// Compute centroid of all points in a [`VtuGrid`].
-#[allow(dead_code)]
 pub fn grid_centroid(grid: &VtuGrid) -> Option<[f64; 3]> {
     let n = grid.points.len();
     if n == 0 {
@@ -933,7 +935,6 @@ pub fn grid_centroid(grid: &VtuGrid) -> Option<[f64; 3]> {
 /// Merge two [`VtuGrid`]s into one (points and cells are concatenated).
 ///
 /// Point indices in `b`'s cells are offset by `a.n_points()`.
-#[allow(dead_code)]
 pub fn merge_vtu_grids(a: &VtuGrid, b: &VtuGrid) -> VtuGrid {
     let mut out = VtuGrid::new();
     for &p in &a.points {
@@ -955,7 +956,6 @@ pub fn merge_vtu_grids(a: &VtuGrid, b: &VtuGrid) -> VtuGrid {
 /// Compute per-cell volume for tetrahedral cells in a [`VtuGrid`].
 ///
 /// Non-tetrahedral cells get volume `0.0`.
-#[allow(dead_code)]
 pub fn compute_cell_volumes(grid: &VtuGrid) -> Vec<f64> {
     grid.cells
         .iter()
@@ -980,7 +980,6 @@ pub fn compute_cell_volumes(grid: &VtuGrid) -> Vec<f64> {
         .collect()
 }
 /// Compute the Euclidean distance between two 3-D points.
-#[allow(dead_code)]
 pub fn point_distance(a: [f64; 3], b: [f64; 3]) -> f64 {
     let dx = b[0] - a[0];
     let dy = b[1] - a[1];

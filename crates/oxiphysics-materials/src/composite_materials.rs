@@ -8,7 +8,6 @@
 //! failure criteria such as Tsai-Wu.
 
 /// Properties of a reinforcing fiber phase.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct FiberProperties {
     /// Longitudinal (axial) Young's modulus \[Pa\].
@@ -43,7 +42,6 @@ impl FiberProperties {
 }
 
 /// Properties of the matrix (binder) phase.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatrixProperties {
     /// Young's modulus of the matrix \[Pa\].
@@ -63,7 +61,6 @@ impl MatrixProperties {
 }
 
 /// A single ply in a composite laminate.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ply {
     /// Ply angle measured from the laminate reference axis \[radians\].
@@ -82,7 +79,6 @@ pub struct Ply {
 
 impl Ply {
     /// Create a new `Ply`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(angle: f64, thickness: f64, e11: f64, e22: f64, g12: f64, nu12: f64) -> Self {
         Self {
             angle,
@@ -96,7 +92,6 @@ impl Ply {
 }
 
 /// A stack of plies forming a composite laminate.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompositeLayup {
     /// Ordered stack of plies (bottom to top).
@@ -243,7 +238,6 @@ pub fn classical_lamination_theory(layup: &CompositeLayup) -> ([f64; 6], [f64; 6
 /// * `f2t`   – transverse tensile strength \[Pa\]
 /// * `f2c`   – transverse compressive strength \[Pa\] (positive value)
 /// * `f12`   – in-plane shear strength \[Pa\]
-#[allow(clippy::too_many_arguments)]
 pub fn failure_criterion_tsai_wu(
     sigma: [f64; 3],
     f1t: f64,

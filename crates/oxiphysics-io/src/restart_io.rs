@@ -8,9 +8,6 @@
 //! plus a rolling [`CheckpointManager`] and a [`RestartValidator`] for
 //! checksum verification.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ── Magic bytes ───────────────────────────────────────────────────────────────
 
 /// Magic bytes written at the start of every binary restart file: "OXRS".
@@ -1304,15 +1301,16 @@ mod tests {
 
     #[test]
     fn test_checkpoint_manager_list_empty() {
-        let mgr = CheckpointManager::new("/tmp/oxi_test_ckpt_empty", 3);
+        let dir = std::env::temp_dir().join("oxi_test_ckpt_empty");
+        let mgr = CheckpointManager::new(dir.to_str().unwrap_or(""), 3);
         assert!(mgr.list_checkpoints().is_empty());
     }
 
     #[test]
     fn test_checkpoint_manager_prune_keeps_max() {
-        let dir = "/tmp/oxi_test_ckpt_prune";
-        let _ = std::fs::remove_dir_all(dir);
-        let mut mgr = CheckpointManager::new(dir, 2);
+        let dir = std::env::temp_dir().join("oxi_test_ckpt_prune");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut mgr = CheckpointManager::new(dir.to_str().unwrap_or(""), 2);
         let d = make_data(1);
         mgr.save_checkpoint(&d, 1);
         mgr.save_checkpoint(&d, 2);
@@ -1321,6 +1319,6 @@ mod tests {
         // Latest should be step 3.
         let latest = mgr.list_checkpoints().last().unwrap().0;
         assert_eq!(latest, 3);
-        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

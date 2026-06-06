@@ -6,15 +6,13 @@
 //!
 //! All quantities use SI units (Pa, m, kg, N) unless otherwise stated.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
 // Helper: 3×3 matrix ops (private)
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 fn mat3_identity() -> [[f64; 3]; 3] {
     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 }
@@ -853,7 +851,6 @@ impl BiomechanicsAnalysis {
     /// - `f2t` tensile strength in 2-direction (Pa)
     /// - `f2c` compressive strength in 2-direction (Pa)
     /// - `f12` shear strength (Pa)
-    #[allow(clippy::too_many_arguments)]
     pub fn tsai_wu_failure_index(
         sigma11: f64,
         sigma22: f64,

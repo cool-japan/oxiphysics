@@ -13,8 +13,6 @@
 //! - Angles: radians (internally); parameters stored in radians
 //! - Force constants: kcal/(mol·Å²) for bonds, kcal/(mol·rad²) for angles
 
-#![allow(dead_code, missing_docs)]
-
 use std::collections::HashMap;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -605,7 +603,6 @@ pub fn compute_angle(positions: &[[f64; 3]], i: usize, j: usize, k: usize) -> f6
 /// `angle_list` contains tuples `(i, j, k, params)`.
 ///
 /// Returns `(total_angle_energy, forces)`.
-#[allow(clippy::too_many_arguments)]
 pub fn compute_angle_forces(
     positions: &[[f64; 3]],
     angle_list: &[(usize, usize, usize, CharmmAngleParams)],

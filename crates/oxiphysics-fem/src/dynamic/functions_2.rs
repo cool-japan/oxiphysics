@@ -2,10 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_range_contains)]
-#[allow(unused_imports)]
+#[cfg(test)]
 use super::functions::*;
-#[allow(unused_imports)]
+#[cfg(test)]
 use super::types::*;
 #[cfg(test)]
 mod tests_dynamic_extended {
@@ -225,7 +224,7 @@ mod tests_dynamic_extended {
     #[test]
     fn test_cqc_rho_bounded() {
         let rho = cqc_rho(10.0, 30.0, 0.05, 0.05);
-        assert!(rho >= 0.0 && rho <= 1.0, "rho must be in [0,1]: {rho}");
+        assert!((0.0..=1.0).contains(&rho), "rho must be in [0,1]: {rho}");
     }
     #[test]
     fn test_cqc_combination_individual_zeta_single_mode() {

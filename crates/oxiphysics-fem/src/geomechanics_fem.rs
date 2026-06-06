@@ -18,9 +18,6 @@
 //! - [`SlopeStability`]: Infinite-slope factor of safety
 //! - [`settlement_elastic`]: Boussinesq elastic settlement
 
-#![allow(dead_code)]
-#![allow(non_snake_case)]
-
 use std::f64::consts::PI;
 
 // ============================================================================
@@ -41,7 +38,7 @@ pub struct BiotConsolidation {
     /// Number of elements in the FEM mesh.
     pub n_elements: usize,
     /// Young's modulus E (Pa).
-    pub E: f64,
+    pub e: f64,
     /// Poisson's ratio ν (dimensionless).
     pub nu: f64,
     /// Intrinsic permeability k (m/s).
@@ -49,7 +46,7 @@ pub struct BiotConsolidation {
     /// Biot coefficient α (dimensionless, 0 < α ≤ 1).
     pub alpha: f64,
     /// Biot modulus M (Pa).
-    pub M_biot: f64,
+    pub m_biot: f64,
 }
 
 impl BiotConsolidation {
@@ -57,31 +54,31 @@ impl BiotConsolidation {
     pub fn new(
         n_nodes: usize,
         n_elements: usize,
-        E: f64,
+        e: f64,
         nu: f64,
         k_perm: f64,
         alpha: f64,
-        M_biot: f64,
+        m_biot: f64,
     ) -> Self {
         Self {
             n_nodes,
             n_elements,
-            E,
+            e,
             nu,
             k_perm,
             alpha,
-            M_biot,
+            m_biot,
         }
     }
 
     /// Compute the oedometric modulus M_oed = E(1-ν)/((1+ν)(1-2ν)).
     pub fn oedometric_modulus(&self) -> f64 {
-        self.E * (1.0 - self.nu) / ((1.0 + self.nu) * (1.0 - 2.0 * self.nu))
+        self.e * (1.0 - self.nu) / ((1.0 + self.nu) * (1.0 - 2.0 * self.nu))
     }
 
     /// Compute the coefficient of consolidation Cv (m²/s).
     pub fn cv(&self) -> f64 {
-        consolidation_coefficient(self.k_perm, self.E, self.nu)
+        consolidation_coefficient(self.k_perm, self.e, self.nu)
     }
 }
 
@@ -112,14 +109,14 @@ pub fn biot_effective_stress(total_stress: [f64; 6], pore_pressure: f64, alpha: 
 ///
 /// # Arguments
 /// * `k`  – hydraulic conductivity (m/s)
-/// * `E`  – Young's modulus (Pa)
+/// * `e`  – Young's modulus (Pa)
 /// * `nu` – Poisson's ratio
-pub fn consolidation_coefficient(k: f64, E: f64, nu: f64) -> f64 {
+pub fn consolidation_coefficient(k: f64, e: f64, nu: f64) -> f64 {
     let denom = (1.0 + nu) * (1.0 - 2.0 * nu) * GAMMA_W;
     if denom.abs() < 1e-300 {
         return 0.0;
     }
-    k * E * (1.0 - nu) / denom
+    k * e * (1.0 - nu) / denom
 }
 
 /// Terzaghi 1-D consolidation series solution for excess pore pressure.

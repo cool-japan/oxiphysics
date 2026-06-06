@@ -2,11 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 /// Vibration analysis of thin circular cylindrical shells using the
 /// Donnell simplified equations for flexural modes.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ShellVibrationSolver {
     /// Young's modulus \[Pa\].
@@ -75,7 +72,6 @@ impl ShellVibrationSolver {
     }
 }
 /// Doubly-curved shell geometry (principal radii of curvature).
-#[allow(dead_code)]
 pub struct ShellGeometry {
     /// First principal radius of curvature.
     pub r1: f64,
@@ -94,7 +90,6 @@ impl ShellGeometry {
 ///
 /// Computes the A (extensional), B (coupling), D (bending) sub-matrices
 /// of the full 6×6 ABD stiffness matrix.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompositeLaminate {
     /// Ply layers, from bottom to top.
@@ -154,7 +149,6 @@ impl CompositeLaminate {
     }
 }
 /// Thin shell element with in-plane (membrane) and buckling capabilities.
-#[allow(dead_code)]
 pub struct ShellElement {
     /// Young's modulus \[Pa\].
     pub young_modulus: f64,
@@ -163,7 +157,6 @@ pub struct ShellElement {
     /// Thickness \[m\].
     pub thickness: f64,
 }
-#[allow(dead_code)]
 impl ShellElement {
     /// Create a new shell element.
     pub fn new(young_modulus: f64, poisson_ratio: f64, thickness: f64) -> Self {
@@ -321,7 +314,6 @@ impl ShellElement {
 /// 4-node rectangular plate element (Kirchhoff, simplified diagonal stiffness).
 ///
 /// DOF per node: (w, θx, θy) → 12 DOF total.
-#[allow(dead_code)]
 pub struct RectPlateElement {
     /// Plate material parameters.
     pub params: PlateParams,
@@ -390,7 +382,6 @@ impl RectPlateElement {
 ///
 /// Each node has 6 DOF: (u, v, w, θ_x, θ_y, θ_z).
 /// Returns 18×18 stiffness matrix.
-#[allow(dead_code)]
 pub struct FlatShellElement {
     /// Young's modulus.
     pub young_modulus: f64,
@@ -863,7 +854,6 @@ impl KirchhoffPlate {
     }
 }
 /// Mindlin-Reissner 4-node plate element (size: full dimensions).
-#[allow(dead_code)]
 pub struct MindlinElement {
     /// Mindlin plate parameters.
     pub params: MindlinParams,
@@ -879,7 +869,6 @@ impl MindlinElement {
 /// Sandwich plate model with stiff face sheets and a flexible core.
 ///
 /// Assumes equal face-sheet thickness on both sides and a homogeneous core.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SandwichPlate {
     /// Face-sheet Young's modulus \[Pa\].
@@ -941,7 +930,6 @@ impl SandwichPlate {
     }
 }
 /// Material and geometry parameters for a Mindlin-Reissner (shear-deformable) plate.
-#[allow(dead_code)]
 pub struct MindlinParams {
     /// Young's modulus.
     pub e: f64,
@@ -969,7 +957,6 @@ impl MindlinParams {
     }
 }
 /// Thin circular cylindrical shell element (Donnell-Mushtari-Vlasov theory).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CylindricalShellElement {
     /// Young's modulus \[Pa\].
@@ -1045,7 +1032,6 @@ impl CylindricalShellElement {
 /// Orthotropic thin plate using classical Kirchhoff theory.
 ///
 /// Material has different stiffnesses in x and y directions.
-#[allow(dead_code)]
 pub struct OrthotropicPlate {
     /// Young's modulus in x direction \[Pa\].
     pub e1: f64,
@@ -1105,7 +1091,6 @@ impl OrthotropicPlate {
     }
 }
 /// Material and geometry parameters for a thin plate (Kirchhoff-Love theory).
-#[allow(dead_code)]
 pub struct PlateParams {
     /// Young's modulus.
     pub e: f64,
@@ -1139,7 +1124,6 @@ impl PlateParams {
 ///
 /// Properties are defined in the principal material axes:
 /// 1 = fibre direction, 2 = transverse direction.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PlyLayer {
     /// Young's modulus along fibre direction \[Pa\].
@@ -1214,7 +1198,6 @@ impl PlyLayer {
     }
 }
 /// Thin conical shell (apex at origin, generator at half-apex angle α).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConicalShell {
     /// Young's modulus \[Pa\].

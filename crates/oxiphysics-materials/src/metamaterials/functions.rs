@@ -4,12 +4,6 @@
 
 use std::f64::consts::PI;
 
-/// Clamp `x` into `[lo, hi]`.
-#[inline]
-#[allow(dead_code)]
-pub(super) fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
-    x.max(lo).min(hi)
-}
 /// Add a chiral off-diagonal coupling to an achiral 6×6 Voigt stiffness matrix.
 ///
 /// Chirality couples normal stresses to shear strains (and vice-versa) via
@@ -21,11 +15,16 @@ pub fn chiral_elastic_stiffness(c_achiral: &[[f64; 6]; 6], chirality: f64) -> [[
     let mut out = *c_achiral;
     let scale = (c_achiral[0][0] + c_achiral[1][1] + c_achiral[2][2]) / 3.0;
     let delta = chirality * scale;
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..3 {
-        for j in 3..6 {
-            out[i][j] += delta;
-            out[j][i] += delta;
+    // upper-left 3×3 rows coupling into shear columns (3..6)
+    for row in out[..3].iter_mut() {
+        for elem in row[3..].iter_mut() {
+            *elem += delta;
+        }
+    }
+    // symmetric lower-left block: rows 3..6, columns 0..3
+    for row in out[3..].iter_mut() {
+        for elem in row[..3].iter_mut() {
+            *elem += delta;
         }
     }
     out
@@ -336,16 +335,15 @@ mod tests {
         assert_eq!(pm.sound_speed(0.0), 0.0);
     }
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_transform_acoustics_identity() {
         let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let cloak = TransformationAcoustics::new(identity);
         let rho_tensor = cloak.effective_density_tensor(1200.0);
-        for i in 0..3 {
+        for (i, row) in rho_tensor.iter().enumerate() {
             assert!(
-                (rho_tensor[i][i] - 1200.0).abs() < 1e-6,
+                (row[i] - 1200.0).abs() < 1e-6,
                 "Diagonal [{i}][{i}] = {} should be 1200",
-                rho_tensor[i][i]
+                row[i]
             );
         }
         assert!(
@@ -401,32 +399,30 @@ mod tests {
         );
     }
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_chiral_zero() {
         let c: [[f64; 6]; 6] = {
             let mut m = [[0.0f64; 6]; 6];
-            for i in 0..6 {
-                m[i][i] = 1e10;
+            for (i, row) in m.iter_mut().enumerate() {
+                row[i] = 1e10;
             }
             m
         };
         let out = chiral_elastic_stiffness(&c, 0.0);
-        for i in 0..6 {
-            for j in 0..6 {
+        for (i, (out_row, c_row)) in out.iter().zip(c.iter()).enumerate() {
+            for (j, (&ov, &cv)) in out_row.iter().zip(c_row.iter()).enumerate() {
                 assert!(
-                    (out[i][j] - c[i][j]).abs() < EPS,
+                    (ov - cv).abs() < EPS,
                     "Zero chirality should not change matrix at [{i}][{j}]"
                 );
             }
         }
     }
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_chiral_nonzero() {
         let c: [[f64; 6]; 6] = {
             let mut m = [[0.0f64; 6]; 6];
-            for i in 0..6 {
-                m[i][i] = 1e10;
+            for (i, row) in m.iter_mut().enumerate() {
+                row[i] = 1e10;
             }
             m
         };
@@ -515,20 +511,19 @@ mod tests {
         );
     }
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_chiral_symmetry() {
         let c: [[f64; 6]; 6] = {
             let mut m = [[0.0f64; 6]; 6];
-            for i in 0..6 {
-                m[i][i] = 1e10;
+            for (i, row) in m.iter_mut().enumerate() {
+                row[i] = 1e10;
             }
             m
         };
         let out = chiral_elastic_stiffness(&c, 0.05);
-        for i in 0..6 {
-            for j in 0..6 {
+        for (i, row) in out.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (out[i][j] - out[j][i]).abs() < EPS,
+                    (val - out[j][i]).abs() < EPS,
                     "Stiffness matrix should be symmetric at [{i}][{j}]"
                 );
             }

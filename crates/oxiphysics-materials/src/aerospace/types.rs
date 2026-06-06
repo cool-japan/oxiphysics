@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use std::f64::consts::PI;
 
 /// Energy-absorbing crash structure model (foam/tube progressive crushing).
@@ -1020,7 +1018,6 @@ impl CompositeLaminateClt {
     }
     /// Tsai-Wu failure index (simplified plane stress) for the critical ply.
     /// Returns max FI over all plies (FI > 1 = failure).
-    #[allow(clippy::too_many_arguments)]
     pub fn tsai_wu_index(
         &self,
         nx: f64,

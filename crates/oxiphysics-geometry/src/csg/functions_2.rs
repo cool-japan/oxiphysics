@@ -2,12 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests_extended {
-    use super::*;
     use crate::csg::CsgSmoothUnion;
     use crate::csg::CsgTree;
     use crate::csg::MarchingCell;
@@ -17,6 +13,7 @@ mod tests_extended {
     use crate::csg::SdfCone;
     use crate::csg::SdfRoundedBox;
     use crate::csg::SdfSphere;
+    use crate::csg::*;
     #[test]
     fn capped_cylinder_inside_is_negative() {
         let c = SdfCappedCylinder::new([0.0, 0.0, 0.0], 1.0, 2.0);

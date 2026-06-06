@@ -1,4 +1,3 @@
-#![allow(clippy::should_implement_trait)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -66,7 +65,13 @@ impl ElementType {
     }
 
     /// Parse from string (case-insensitive).
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_keyword(s: &str) -> Self {
+        Self::from(s)
+    }
+}
+
+impl From<&str> for ElementType {
+    fn from(s: &str) -> Self {
         match s.trim().to_uppercase().as_str() {
             "C3D4" => ElementType::C3D4,
             "C3D8" => ElementType::C3D8,
@@ -436,7 +441,7 @@ impl AbaqusReader {
                     // Extract type= parameter
                     let etype = Self::extract_param(trimmed, "TYPE")
                         .unwrap_or_else(|| "UNKNOWN".to_string());
-                    current_block = Block::Element(ElementType::from_str(&etype));
+                    current_block = Block::Element(ElementType::from_keyword(&etype));
                 } else {
                     current_block = Block::None;
                 }
@@ -526,27 +531,27 @@ mod tests {
 
     #[test]
     fn test_element_type_from_str_c3d4() {
-        assert_eq!(ElementType::from_str("C3D4"), ElementType::C3D4);
+        assert_eq!(ElementType::from_keyword("C3D4"), ElementType::C3D4);
     }
 
     #[test]
     fn test_element_type_from_str_case_insensitive() {
-        assert_eq!(ElementType::from_str("c3d8"), ElementType::C3D8);
+        assert_eq!(ElementType::from_keyword("c3d8"), ElementType::C3D8);
     }
 
     #[test]
     fn test_element_type_from_str_s4() {
-        assert_eq!(ElementType::from_str("S4"), ElementType::S4);
+        assert_eq!(ElementType::from_keyword("S4"), ElementType::S4);
     }
 
     #[test]
     fn test_element_type_from_str_t3d2() {
-        assert_eq!(ElementType::from_str("T3D2"), ElementType::T3D2);
+        assert_eq!(ElementType::from_keyword("T3D2"), ElementType::T3D2);
     }
 
     #[test]
     fn test_element_type_from_str_unknown() {
-        match ElementType::from_str("FOOBAR") {
+        match ElementType::from_keyword("FOOBAR") {
             ElementType::Unknown(s) => assert_eq!(s, "FOOBAR"),
             _ => panic!("expected Unknown"),
         }
@@ -630,50 +635,68 @@ mod tests {
 
     #[test]
     fn test_write_creates_file() {
-        let path = "/tmp/oxiphysics_abaqus_test_write.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_test_write.inp");
         let mesh = sample_mesh();
         let writer = AbaqusWriter::new();
-        writer.write(&mesh, path).expect("write failed");
-        assert!(std::path::Path::new(path).exists());
+        writer
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write failed");
+        assert!(path.exists());
     }
 
     #[test]
     fn test_roundtrip_node_count() {
-        let path = "/tmp/oxiphysics_abaqus_roundtrip.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_roundtrip.inp");
         let mesh = sample_mesh();
         let writer = AbaqusWriter::new();
-        writer.write(&mesh, path).expect("write failed");
+        writer
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write failed");
 
         let reader = AbaqusReader::new();
-        let parsed = reader.parse(path).expect("parse failed");
+        let parsed = reader
+            .parse(path.to_str().unwrap_or(""))
+            .expect("parse failed");
         assert_eq!(parsed.nodes.len(), 4);
     }
 
     #[test]
     fn test_roundtrip_element_count() {
-        let path = "/tmp/oxiphysics_abaqus_rt_elem.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_rt_elem.inp");
         let mesh = sample_mesh();
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let parsed = AbaqusReader::new().parse(path).expect("parse");
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let parsed = AbaqusReader::new()
+            .parse(path.to_str().unwrap_or(""))
+            .expect("parse");
         assert_eq!(parsed.elements.len(), 1);
     }
 
     #[test]
     fn test_roundtrip_node_ids() {
-        let path = "/tmp/oxiphysics_abaqus_rt_nodeids.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_rt_nodeids.inp");
         let mesh = sample_mesh();
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let parsed = AbaqusReader::new().parse(path).expect("parse");
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let parsed = AbaqusReader::new()
+            .parse(path.to_str().unwrap_or(""))
+            .expect("parse");
         let ids: Vec<usize> = parsed.nodes.iter().map(|n| n.id).collect();
         assert_eq!(ids, vec![1, 2, 3, 4]);
     }
 
     #[test]
     fn test_roundtrip_node_coordinates() {
-        let path = "/tmp/oxiphysics_abaqus_rt_coords.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_rt_coords.inp");
         let mesh = sample_mesh();
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let parsed = AbaqusReader::new().parse(path).expect("parse");
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let parsed = AbaqusReader::new()
+            .parse(path.to_str().unwrap_or(""))
+            .expect("parse");
         let n1 = &parsed.nodes[0];
         assert!((n1.coordinates[0]).abs() < 1e-10);
         let n2 = &parsed.nodes[1];
@@ -682,34 +705,46 @@ mod tests {
 
     #[test]
     fn test_roundtrip_element_type() {
-        let path = "/tmp/oxiphysics_abaqus_rt_etype.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_rt_etype.inp");
         let mesh = sample_mesh();
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let parsed = AbaqusReader::new().parse(path).expect("parse");
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let parsed = AbaqusReader::new()
+            .parse(path.to_str().unwrap_or(""))
+            .expect("parse");
         assert_eq!(parsed.elements[0].element_type, ElementType::C3D4);
     }
 
     #[test]
     fn test_roundtrip_element_nodes() {
-        let path = "/tmp/oxiphysics_abaqus_rt_enodes.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_rt_enodes.inp");
         let mesh = sample_mesh();
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let parsed = AbaqusReader::new().parse(path).expect("parse");
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let parsed = AbaqusReader::new()
+            .parse(path.to_str().unwrap_or(""))
+            .expect("parse");
         assert_eq!(parsed.elements[0].node_ids, vec![1, 2, 3, 4]);
     }
 
     #[test]
     fn test_roundtrip_element_id() {
-        let path = "/tmp/oxiphysics_abaqus_rt_eid.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_rt_eid.inp");
         let mesh = sample_mesh();
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let parsed = AbaqusReader::new().parse(path).expect("parse");
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let parsed = AbaqusReader::new()
+            .parse(path.to_str().unwrap_or(""))
+            .expect("parse");
         assert_eq!(parsed.elements[0].id, 1);
     }
 
     #[test]
     fn test_multiple_element_types() {
-        let path = "/tmp/oxiphysics_abaqus_multtype.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_multtype.inp");
         let mut mesh = AbaqusMesh::new();
         mesh.nodes = vec![
             AbaqusNode::new(1, [0.0, 0.0, 0.0]),
@@ -722,123 +757,148 @@ mod tests {
             AbaqusElement::new(1, ElementType::C3D4, vec![1, 2, 3, 4]),
             AbaqusElement::new(2, ElementType::T3D2, vec![4, 5]),
         ];
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let parsed = AbaqusReader::new().parse(path).expect("parse");
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let parsed = AbaqusReader::new()
+            .parse(path.to_str().unwrap_or(""))
+            .expect("parse");
         assert_eq!(parsed.elements.len(), 2);
     }
 
     #[test]
     fn test_write_contains_heading() {
-        let path = "/tmp/oxiphysics_abaqus_heading.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_heading.inp");
         let mesh = sample_mesh();
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let content = std::fs::read_to_string(path).unwrap();
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("*Heading"), "no *Heading found");
     }
 
     #[test]
     fn test_write_contains_node_keyword() {
-        let path = "/tmp/oxiphysics_abaqus_nkw.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_nkw.inp");
         let mesh = sample_mesh();
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let content = std::fs::read_to_string(path).unwrap();
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("*Node"), "no *Node found");
     }
 
     #[test]
     fn test_write_contains_element_keyword() {
-        let path = "/tmp/oxiphysics_abaqus_ekw.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_ekw.inp");
         let mesh = sample_mesh();
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let content = std::fs::read_to_string(path).unwrap();
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("*Element"), "no *Element found");
     }
 
     #[test]
     fn test_write_material() {
-        let path = "/tmp/oxiphysics_abaqus_mat.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_mat.inp");
         let mut mesh = sample_mesh();
         mesh.materials
             .push(AbaqusMaterial::new_elastic("Steel", 210e9, 0.3, 7800.0));
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let content = std::fs::read_to_string(path).unwrap();
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("*Material"), "no *Material found");
         assert!(content.contains("Steel"));
     }
 
     #[test]
     fn test_write_plastic_material() {
-        let path = "/tmp/oxiphysics_abaqus_plastic.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_plastic.inp");
         let mut mesh = sample_mesh();
         mesh.materials.push(AbaqusMaterial::new_plastic(
             "Steel", 210e9, 0.3, 7800.0, 250e6, 1e9,
         ));
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let content = std::fs::read_to_string(path).unwrap();
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("*Plastic"), "no *Plastic found");
     }
 
     #[test]
     fn test_write_section() {
-        let path = "/tmp/oxiphysics_abaqus_sec.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_sec.inp");
         let mut mesh = sample_mesh();
         mesh.sections
             .push(AbaqusSection::new("SEC1", "Steel", vec![1]));
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let content = std::fs::read_to_string(path).unwrap();
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("*Solid Section"), "no *Solid Section");
     }
 
     #[test]
     fn test_write_bc_encastre() {
-        let path = "/tmp/oxiphysics_abaqus_bc_enc.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_bc_enc.inp");
         let mut mesh = sample_mesh();
         mesh.boundary_conditions.push(BoundaryCondition::Encastre {
             node_set: "FIXED".to_string(),
         });
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let content = std::fs::read_to_string(path).unwrap();
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("ENCASTRE"), "no ENCASTRE");
     }
 
     #[test]
     fn test_write_bc_pinned() {
-        let path = "/tmp/oxiphysics_abaqus_bc_pin.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_bc_pin.inp");
         let mut mesh = sample_mesh();
         mesh.boundary_conditions.push(BoundaryCondition::Pinned {
             node_set: "PINSET".to_string(),
         });
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let content = std::fs::read_to_string(path).unwrap();
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("PINNED"), "no PINNED");
     }
 
     #[test]
     fn test_write_bc_symmetry() {
-        let path = "/tmp/oxiphysics_abaqus_bc_sym.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_bc_sym.inp");
         let mut mesh = sample_mesh();
         mesh.boundary_conditions
             .push(BoundaryCondition::SymmetryPlane {
                 node_set: "SYMSET".to_string(),
                 axis: 2,
             });
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let content = std::fs::read_to_string(path).unwrap();
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("YSYMM"), "no YSYMM");
     }
 
     #[test]
     fn test_parse_empty_file() {
-        let path = "/tmp/oxiphysics_abaqus_empty.inp";
-        std::fs::write(path, "** empty\n").unwrap();
-        let parsed = AbaqusReader::new().parse(path).expect("parse");
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_empty.inp");
+        std::fs::write(&path, "** empty\n").unwrap();
+        let parsed = AbaqusReader::new()
+            .parse(path.to_str().unwrap_or(""))
+            .expect("parse");
         assert!(parsed.nodes.is_empty());
         assert!(parsed.elements.is_empty());
     }
 
     #[test]
     fn test_parse_missing_file() {
-        let result = AbaqusReader::new().parse("/tmp/does_not_exist_oxiphysics.inp");
+        let path = std::env::temp_dir().join("does_not_exist_oxiphysics.inp");
+        let result = AbaqusReader::new().parse(path.to_str().unwrap_or(""));
         assert!(result.is_err());
     }
 
@@ -866,7 +926,7 @@ mod tests {
 
     #[test]
     fn test_large_mesh_roundtrip() {
-        let path = "/tmp/oxiphysics_abaqus_large.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_large.inp");
         let mut mesh = AbaqusMesh::new();
         // 100 nodes
         for i in 1..=100 {
@@ -885,22 +945,30 @@ mod tests {
                 ],
             ));
         }
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let parsed = AbaqusReader::new().parse(path).expect("parse");
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let parsed = AbaqusReader::new()
+            .parse(path.to_str().unwrap_or(""))
+            .expect("parse");
         assert_eq!(parsed.nodes.len(), 100);
         assert_eq!(parsed.elements.len(), 24);
     }
 
     #[test]
     fn test_node_roundtrip_precision() {
-        let path = "/tmp/oxiphysics_abaqus_prec.inp";
+        let path = std::env::temp_dir().join("oxiphysics_abaqus_prec.inp");
         let mut mesh = AbaqusMesh::new();
         mesh.nodes.push(AbaqusNode::new(
             1,
             [1.23456789012345, -9.87654321098765, 2.89793238462643],
         ));
-        AbaqusWriter::new().write(&mesh, path).expect("write");
-        let parsed = AbaqusReader::new().parse(path).expect("parse");
+        AbaqusWriter::new()
+            .write(&mesh, path.to_str().unwrap_or(""))
+            .expect("write");
+        let parsed = AbaqusReader::new()
+            .parse(path.to_str().unwrap_or(""))
+            .expect("parse");
         let c = parsed.nodes[0].coordinates;
         assert!((c[0] - 1.23456789012345).abs() < 1e-10);
         assert!((c[1] - (-9.87654321098765)).abs() < 1e-10);

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 use super::functions::*;
 // Auto-generated module
 //
@@ -22,10 +21,10 @@ impl BroadphaseGpuKernel {
     /// Returns all overlapping pairs (canonical form, `a < b`).
     pub fn dispatch(&self, aabbs: &[AabbGpu]) -> Vec<CollisionPair> {
         let mut pairs = Vec::new();
-        for i in 0..aabbs.len() {
-            let expanded_i = aabbs[i].expanded(self.margin);
-            for j in (i + 1)..aabbs.len() {
-                if expanded_i.overlaps(&aabbs[j]) {
+        for (i, aabb_i) in aabbs.iter().enumerate() {
+            let expanded_i = aabb_i.expanded(self.margin);
+            for (j, aabb_j) in aabbs.iter().enumerate().skip(i + 1) {
+                if expanded_i.overlaps(aabb_j) {
                     pairs.push(CollisionPair::new(i as u32, j as u32));
                 }
             }
@@ -1221,13 +1220,13 @@ impl GpuBroadphase {
             return 0;
         }
         let mut spread = [0.0_f32; 3];
-        for d in 0..3usize {
+        for (d, s) in spread.iter_mut().enumerate() {
             let lo = aabbs.iter().map(|a| a.min[d]).fold(f32::INFINITY, f32::min);
             let hi = aabbs
                 .iter()
                 .map(|a| a.max[d])
                 .fold(f32::NEG_INFINITY, f32::max);
-            spread[d] = hi - lo;
+            *s = hi - lo;
         }
         if spread[0] >= spread[1] && spread[0] >= spread[2] {
             0
@@ -1256,10 +1255,8 @@ impl GpuBroadphase {
         entries.sort_by(|a, b| a.lo.partial_cmp(&b.lo).unwrap_or(std::cmp::Ordering::Equal));
         let mut tests = 0u64;
         let mut hits = 0u64;
-        for i in 0..entries.len() {
-            let ei = &entries[i];
-            for j in (i + 1)..entries.len() {
-                let ej = &entries[j];
+        for (i, ei) in entries.iter().enumerate() {
+            for ej in entries.iter().skip(i + 1) {
                 if ej.lo > ei.hi {
                     break;
                 }

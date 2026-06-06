@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,8 +8,6 @@
 //! via Dörfler marking and triangle bisection, p-adaptivity, multigrid
 //! hierarchical estimates, convergence rate computation, and an adaptive
 //! driver loop.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Math helpers
@@ -24,10 +21,12 @@ fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
+#[cfg(test)]
 fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
+#[cfg(test)]
 fn scale3(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
 }
@@ -36,6 +35,7 @@ fn len3(a: [f64; 3]) -> f64 {
     dot3(a, a).sqrt()
 }
 
+#[cfg(test)]
 fn norm3(a: [f64; 3]) -> [f64; 3] {
     let l = len3(a).max(1e-300);
     scale3(a, 1.0 / l)
@@ -135,12 +135,12 @@ pub fn compute_patch_stress(patch_stresses: &[StressTensor], patch_areas: &[f64]
     }
     let mut s = [0.0f64; 6];
     for (stress, &area) in patch_stresses.iter().zip(patch_areas.iter()) {
-        for k in 0..6 {
-            s[k] += stress.s[k] * area;
+        for (k, sk) in s.iter_mut().enumerate() {
+            *sk += stress.s[k] * area;
         }
     }
-    for k in 0..6 {
-        s[k] /= total_area;
+    for sk in &mut s {
+        *sk /= total_area;
     }
     StressTensor::from_voigt(s)
 }
@@ -283,8 +283,8 @@ impl PatchRecovery {
         let n_nodes = patch_nodes.len() as f64;
         let mut avg = [0.0f64; 6];
         for &n in &patch_nodes {
-            for k in 0..6 {
-                avg[k] += recovered[n].s[k] / n_nodes;
+            for (k, avg_k) in avg.iter_mut().enumerate() {
+                *avg_k += recovered[n].s[k] / n_nodes;
             }
         }
         let avg_stress = StressTensor::from_voigt(avg);
@@ -669,14 +669,14 @@ impl DegreeAdaptivity {
     /// Returns a vector indicating which elements had their degree changed.
     pub fn adapt(&mut self) -> Vec<bool> {
         let mut changed = vec![false; self.degrees.len()];
-        for e in 0..self.degrees.len() {
+        for (e, ch) in changed.iter_mut().enumerate().take(self.degrees.len()) {
             let s = self.smoothness[e];
             if s > self.smooth_threshold && self.degrees[e] < self.p_max {
                 self.degrees[e] += 1;
-                changed[e] = true;
+                *ch = true;
             } else if s < self.singular_threshold && self.degrees[e] > self.p_min {
                 self.degrees[e] -= 1;
-                changed[e] = true;
+                *ch = true;
             }
         }
         changed

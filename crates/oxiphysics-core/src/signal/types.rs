@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::functions::*;
 use crate::complex::Complex;
 use std::f64::consts::PI;
@@ -529,7 +528,6 @@ impl KalmanFilterND {
     /// * `h` — Measurement matrix (m×n, row-major).
     /// * `q` — Process noise covariance (n×n, row-major).
     /// * `r` — Measurement noise covariance (m×m, row-major).
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         n: usize,
         m: usize,
@@ -677,8 +675,8 @@ impl KalmanFilterND {
         let hx = Self::mat_vec_mul(&self.h, &self.x, m, n);
         let innov: Vec<f64> = z.iter().zip(hx.iter()).map(|(zi, hi)| zi - hi).collect();
         let k_innov = Self::mat_vec_mul(&k, &innov, n, m);
-        for i in 0..n {
-            self.x[i] += k_innov[i];
+        for (xi, ki) in self.x.iter_mut().zip(k_innov.iter()) {
+            *xi += ki;
         }
         let kh = Self::mat_mul(&k, &self.h, n, m, n);
         let i_kh = Self::mat_sub(&Self::identity(n), &kh);
@@ -829,11 +827,11 @@ impl HilbertTransform {
         spec.resize(n, Complex::zero());
         fft_inplace_impl(&mut spec, false);
         let half = n / 2;
-        for k in 1..half {
-            spec[k] = spec[k] * Complex::new(2.0, 0.0);
+        for v in &mut spec[1..half] {
+            *v = *v * Complex::new(2.0, 0.0);
         }
-        for k in (half + 1)..n {
-            spec[k] = Complex::zero();
+        for v in &mut spec[half + 1..n] {
+            *v = Complex::zero();
         }
         fft_inplace_impl(&mut spec, true);
         let scale = 1.0 / n as f64;

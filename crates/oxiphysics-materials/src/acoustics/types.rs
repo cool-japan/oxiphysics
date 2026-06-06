@@ -2,15 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::f64::consts::PI;
 
 /// Frequency weighting filters for noise measurement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum WeightingFilter {
     /// A-weighting (most common, approximates human hearing sensitivity)
     A,
@@ -25,7 +20,6 @@ pub enum WeightingFilter {
 /// as a function of resistivity R_f (Pa·s/m²) and frequency f (Hz).
 ///
 /// Reference: Delany & Bazley, Appl. Acoust. 3, 105 (1970).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PorousAbsorber {
     /// Flow resistivity (Pa·s/m²), typically 5000–50000 for common absorbers.
@@ -94,7 +88,6 @@ impl PorousAbsorber {
 /// the effective mass density becomes negative.
 ///
 /// Reference: Liu et al., Science 289, 1734 (2000).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LocallyResonantUnit {
     /// Mass of the heavy inclusion (kg).
@@ -147,7 +140,6 @@ impl LocallyResonantUnit {
 /// a magnesium sulfate (MgSO₄) relaxation term.
 ///
 /// Reference: Francois & Garrison (1982), simplified.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WaterAbsorption {
     /// Temperature \[°C\]
@@ -159,7 +151,6 @@ pub struct WaterAbsorption {
 }
 impl WaterAbsorption {
     /// Create a new WaterAbsorption model.
-    #[allow(dead_code)]
     pub fn new(temperature_c: f64, salinity_ppt: f64, depth_m: f64) -> Self {
         Self {
             temperature_c,
@@ -168,19 +159,16 @@ impl WaterAbsorption {
         }
     }
     /// Freshwater (zero salinity) at 20°C, sea surface.
-    #[allow(dead_code)]
     pub fn freshwater() -> Self {
         Self::new(20.0, 0.0, 0.0)
     }
     /// Seawater at typical ocean conditions (15°C, 35 ppt, 0 m).
-    #[allow(dead_code)]
     pub fn seawater() -> Self {
         Self::new(15.0, 35.0, 0.0)
     }
     /// Absorption coefficient \[dB/km\] at frequency f \[kHz\].
     ///
     /// Uses the Francois-Garrison formula (simplified).
-    #[allow(dead_code)]
     pub fn absorption_db_per_km(&self, freq_khz: f64) -> f64 {
         let t = self.temperature_c;
         let s = self.salinity_ppt;
@@ -197,7 +185,6 @@ impl WaterAbsorption {
     }
 }
 /// Material properties relevant to acoustic wave propagation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AcousticMaterial {
     /// Mass density in kg/m³
@@ -211,7 +198,6 @@ pub struct AcousticMaterial {
 }
 impl AcousticMaterial {
     /// Create a new acoustic material.
-    #[allow(dead_code)]
     pub fn new(density: f64, bulk_modulus: f64, shear_modulus: f64, loss_factor: f64) -> Self {
         Self {
             density,
@@ -221,7 +207,6 @@ impl AcousticMaterial {
         }
     }
     /// Water at 20°C.
-    #[allow(dead_code)]
     pub fn water() -> Self {
         Self {
             density: 998.2,
@@ -231,7 +216,6 @@ impl AcousticMaterial {
         }
     }
     /// Steel (structural).
-    #[allow(dead_code)]
     pub fn steel() -> Self {
         Self {
             density: 7850.0,
@@ -241,7 +225,6 @@ impl AcousticMaterial {
         }
     }
     /// Air at 20°C, 1 atm.
-    #[allow(dead_code)]
     pub fn air() -> Self {
         Self {
             density: 1.204,
@@ -251,7 +234,6 @@ impl AcousticMaterial {
         }
     }
     /// Concrete (normal weight).
-    #[allow(dead_code)]
     pub fn concrete() -> Self {
         Self {
             density: 2300.0,
@@ -261,13 +243,11 @@ impl AcousticMaterial {
         }
     }
     /// Longitudinal (compressional) wave velocity: c_L = sqrt((K + 4G/3) / rho).
-    #[allow(dead_code)]
     pub fn longitudinal_velocity(&self) -> f64 {
         let m_modulus = self.bulk_modulus + 4.0 * self.shear_modulus / 3.0;
         (m_modulus / self.density).sqrt()
     }
     /// Shear wave velocity: c_S = sqrt(G / rho). Returns 0 for fluids.
-    #[allow(dead_code)]
     pub fn shear_velocity(&self) -> f64 {
         if self.shear_modulus == 0.0 {
             0.0
@@ -276,7 +256,6 @@ impl AcousticMaterial {
         }
     }
     /// Characteristic acoustic impedance: Z = rho * c_L (Pa·s/m).
-    #[allow(dead_code)]
     pub fn acoustic_impedance(&self) -> f64 {
         self.density * self.longitudinal_velocity()
     }
@@ -308,7 +287,6 @@ impl AcousticMaterial {
     ///
     /// # Returns
     /// Insertion loss IL \[dB\]
-    #[allow(dead_code)]
     pub fn compute_insertion_loss(
         &self,
         frequency: f64,
@@ -350,7 +328,6 @@ impl AcousticMaterial {
     ///
     /// # Returns
     /// NRC \[dimensionless, 0–1\]
-    #[allow(dead_code)]
     pub fn compute_noise_reduction_coefficient(&self, thickness: f64) -> f64 {
         let bands = [250.0_f64, 500.0, 1000.0, 2000.0];
         let rho_air = 1.204_f64;
@@ -390,7 +367,6 @@ impl AcousticMaterial {
     ///
     /// # Returns
     /// Transmission loss TL \[dB\]
-    #[allow(dead_code)]
     pub fn compute_transmission_loss_mass_law(&self, frequency: f64, thickness: f64) -> f64 {
         let m_s = self.density * thickness;
         let rho_air = 1.204_f64;
@@ -400,7 +376,6 @@ impl AcousticMaterial {
     }
 }
 /// Rubber (natural rubber, acoustic grade).
-#[allow(dead_code)]
 impl AcousticMaterial {
     /// Natural rubber (acoustic grade).
     pub fn rubber() -> Self {
@@ -430,14 +405,12 @@ impl AcousticMaterial {
         }
     }
     /// Sound speed through the material \[m/s\] (alias for longitudinal_velocity).
-    #[allow(dead_code)]
     pub fn sound_speed(&self) -> f64 {
         self.longitudinal_velocity()
     }
     /// Specific acoustic impedance Z = ρ·c normalised to air impedance.
     ///
     /// Z_air = 413 Pa·s/m (20°C, 1 atm).
-    #[allow(dead_code)]
     pub fn relative_impedance(&self) -> f64 {
         self.acoustic_impedance() / 413.0
     }
@@ -447,7 +420,6 @@ impl AcousticMaterial {
 /// Simulates pulse-echo time-of-flight and amplitude for a pulse reflected
 /// from a planar reflector.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct UltrasonicNDE {
     /// Wave velocity in the test material \[m/s\]
     pub velocity: f64,
@@ -460,7 +432,6 @@ pub struct UltrasonicNDE {
 }
 impl UltrasonicNDE {
     /// Create a new `UltrasonicNDE` model.
-    #[allow(dead_code)]
     pub fn new(velocity: f64, frequency: f64, pulse_amplitude: f64, attenuation_db_m: f64) -> Self {
         Self {
             velocity,
@@ -470,14 +441,12 @@ impl UltrasonicNDE {
         }
     }
     /// Round-trip time-of-flight \[s\] for a reflector at depth `depth_m` \[m\].
-    #[allow(dead_code)]
     pub fn time_of_flight(&self, depth_m: f64) -> f64 {
         2.0 * depth_m / self.velocity
     }
     /// Echo amplitude \[Pa\] after round-trip path of `2·depth` \[m\].
     ///
     /// Accounts for beam spreading (1/r law) and material attenuation.
-    #[allow(dead_code)]
     pub fn echo_amplitude(&self, depth_m: f64, reflection_coeff: f64) -> f64 {
         if depth_m <= 0.0 {
             return self.pulse_amplitude * reflection_coeff.abs();
@@ -489,21 +458,18 @@ impl UltrasonicNDE {
         self.pulse_amplitude * reflection_coeff.abs() * geo * att
     }
     /// Wavelength in the material \[m\].
-    #[allow(dead_code)]
     pub fn wavelength(&self) -> f64 {
         self.velocity / self.frequency
     }
     /// Near-field (Fresnel) distance \[m\] for a circular transducer of radius `r` \[m\].
     ///
     /// `N = r² / λ`
-    #[allow(dead_code)]
     pub fn near_field_distance(&self, transducer_radius: f64) -> f64 {
         transducer_radius * transducer_radius / self.wavelength()
     }
     /// Lateral resolution at depth `d` \[m\] (Rayleigh criterion for focused beam):
     ///
     /// `x_r ≈ 1.22 · λ · d / (2·r)`
-    #[allow(dead_code)]
     pub fn lateral_resolution(&self, depth_m: f64, transducer_radius: f64) -> f64 {
         1.22 * self.wavelength() * depth_m / (2.0 * transducer_radius)
     }
@@ -517,7 +483,6 @@ impl UltrasonicNDE {
 ///
 /// This uses a simplified formula from Sigalas & Economou (1992):
 /// Δω/ω_0 ≈ (2/π) * |arcsin((Z_b - Z_a) / (Z_b + Z_a))|
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PhononicCrystal1D {
     /// Material A impedance (Pa·s/m).

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::collections::VecDeque;
 
 use super::types::{NormalDistribution, PcaResult, StatRng};
@@ -335,14 +334,18 @@ pub fn correlation_matrix(data: &[Vec<f64>]) -> Vec<Vec<f64>> {
     }
     let col = |j: usize| -> Vec<f64> { data.iter().map(|row| row[j]).collect() };
     let mut mat = vec![vec![0.0f64; d]; d];
-    for i in 0..d {
-        for j in i..d {
-            let ci = col(i);
-            let cj = col(j);
-            let r = if i == j { 1.0 } else { correlation(&ci, &cj) };
-            mat[i][j] = r;
-            mat[j][i] = r;
-        }
+    let pairs: Vec<(usize, usize, f64)> = (0..d)
+        .flat_map(|i| {
+            (i..d).map(move |j| {
+                let ci = col(i);
+                let cj = col(j);
+                (i, j, if i == j { 1.0 } else { correlation(&ci, &cj) })
+            })
+        })
+        .collect();
+    for (i, j, r) in pairs {
+        mat[i][j] = r;
+        mat[j][i] = r;
     }
     mat
 }
@@ -359,14 +362,18 @@ pub fn covariance_matrix(data: &[Vec<f64>]) -> Vec<Vec<f64>> {
     }
     let col = |j: usize| -> Vec<f64> { data.iter().map(|row| row[j]).collect() };
     let mut mat = vec![vec![0.0f64; d]; d];
-    for i in 0..d {
-        let ci = col(i);
-        for j in i..d {
-            let cj = col(j);
-            let cov = covariance(&ci, &cj);
-            mat[i][j] = cov;
-            mat[j][i] = cov;
-        }
+    let pairs: Vec<(usize, usize, f64)> = (0..d)
+        .flat_map(|i| {
+            let ci = col(i);
+            (i..d).map(move |j| {
+                let cj = col(j);
+                (i, j, covariance(&ci, &cj))
+            })
+        })
+        .collect();
+    for (i, j, cov) in pairs {
+        mat[i][j] = cov;
+        mat[j][i] = cov;
     }
     mat
 }
@@ -401,12 +408,13 @@ pub fn pca(data: &[Vec<f64>], n_components: usize) -> Option<PcaResult> {
     let mut components = Vec::with_capacity(n_comp);
     let mut variances = Vec::with_capacity(n_comp);
     let mut deflated = cov.clone();
-    let mat_vec = |m: &Vec<Vec<f64>>, v: &Vec<f64>| -> Vec<f64> {
-        (0..d)
-            .map(|i| m[i].iter().zip(v.iter()).map(|(a, b)| a * b).sum::<f64>())
+    let mat_vec = |m: &[Vec<f64>], v: &[f64]| -> Vec<f64> {
+        m[..d]
+            .iter()
+            .map(|row| row.iter().zip(v.iter()).map(|(a, b)| a * b).sum::<f64>())
             .collect()
     };
-    let norm_vec = |v: &Vec<f64>| -> f64 { v.iter().map(|x| x * x).sum::<f64>().sqrt() };
+    let norm_vec = |v: &[f64]| -> f64 { v.iter().map(|x| x * x).sum::<f64>().sqrt() };
     for _ in 0..n_comp {
         let mut q: Vec<f64> = (0..d).map(|i| if i == 0 { 1.0 } else { 0.0 }).collect();
         for _ in 0..200 {
@@ -936,7 +944,6 @@ pub fn chi_squared_gof(observed: &[f64], expected: &[f64]) -> (f64, usize) {
 ///
 /// A robust estimator of scale.  For normally distributed data,
 /// MAD × 1.4826 ≈ standard deviation.
-#[allow(dead_code)]
 pub fn mad(data: &[f64]) -> f64 {
     if data.is_empty() {
         return 0.0;
@@ -958,7 +965,6 @@ pub fn mad(data: &[f64]) -> f64 {
 /// 95% efficiency under normality).
 ///
 /// Returns the robust location estimate after at most `max_iter` iterations.
-#[allow(dead_code)]
 pub fn huber_m_estimator(data: &[f64], k: f64, max_iter: usize) -> f64 {
     if data.is_empty() {
         return 0.0;
@@ -1000,7 +1006,6 @@ pub fn huber_m_estimator(data: &[f64], k: f64, max_iter: usize) -> f64 {
 ///
 /// Uses the bisquare ρ function with tuning constant `c` (default 4.685
 /// for 95% efficiency under normality).
-#[allow(dead_code)]
 pub fn tukey_biweight_estimator(data: &[f64], c: f64, max_iter: usize) -> f64 {
     if data.is_empty() {
         return 0.0;
@@ -1046,7 +1051,6 @@ pub fn tukey_biweight_estimator(data: &[f64], c: f64, max_iter: usize) -> f64 {
 /// Compute the empirical CDF of `data`.
 ///
 /// Returns a sorted `Vec<(x, F_n(x))>` where `F_n(x) = (rank of x) / n`.
-#[allow(dead_code)]
 pub fn empirical_cdf(data: &[f64]) -> Vec<(f64, f64)> {
     if data.is_empty() {
         return vec![];
@@ -1063,7 +1067,6 @@ pub fn empirical_cdf(data: &[f64]) -> Vec<(f64, f64)> {
 /// Evaluate the empirical CDF at a given point `x`.
 ///
 /// Returns the fraction of data points ≤ x.
-#[allow(dead_code)]
 pub fn ecdf_at(data: &[f64], x: f64) -> f64 {
     if data.is_empty() {
         return 0.0;
@@ -1075,7 +1078,6 @@ pub fn ecdf_at(data: &[f64], x: f64) -> f64 {
 ///
 /// Returns the A² statistic against a theoretical CDF `cdf`.
 /// Larger values indicate greater discrepancy from the theoretical distribution.
-#[allow(dead_code)]
 pub fn anderson_darling_statistic(data: &[f64], cdf: impl Fn(f64) -> f64) -> f64 {
     let n = data.len();
     if n < 2 {
@@ -1105,7 +1107,6 @@ pub fn anderson_darling_statistic(data: &[f64], cdf: impl Fn(f64) -> f64) -> f64
 /// Tests whether two or more groups have the same distribution.
 /// Returns the H statistic (approximately chi-squared distributed with
 /// `groups.len() - 1` degrees of freedom for large samples).
-#[allow(dead_code)]
 pub fn kruskal_wallis_h(groups: &[&[f64]]) -> f64 {
     let k = groups.len();
     if k < 2 {

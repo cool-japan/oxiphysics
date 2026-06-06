@@ -12,8 +12,6 @@
 //! - Brownian dynamics (Langevin, Stokes-Einstein)
 //! - Nanoparticle aggregation kinetics (DLCA/RLCA)
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // Physical constants
@@ -150,7 +148,6 @@ pub struct DlvoTheory {
 
 impl DlvoTheory {
     /// Create a new DlvoTheory instance.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         radius: f64,
         hamaker: f64,
@@ -242,7 +239,6 @@ pub struct LigandShell {
 
 impl LigandShell {
     /// Create a new LigandShell.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         nanoparticle_radius: f64,
         chain_length: usize,

@@ -5,36 +5,28 @@
 use super::types::{AnimLod, Easing, IkJoint, SkinWeight};
 
 /// 3-component vector.
-#[allow(dead_code)]
 pub type Vec3 = [f64; 3];
 /// 4-component quaternion stored as `[x, y, z, w]`.
-#[allow(dead_code)]
 pub type Quat = [f64; 4];
 /// 4×4 column-major matrix (indices: col * 4 + row).
-#[allow(dead_code)]
 pub type Mat4 = [f64; 16];
 /// Add two Vec3s.
-#[allow(dead_code)]
 pub fn vec3_add(a: Vec3, b: Vec3) -> Vec3 {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 /// Subtract two Vec3s.
-#[allow(dead_code)]
 pub fn vec3_sub(a: Vec3, b: Vec3) -> Vec3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 /// Scale a Vec3.
-#[allow(dead_code)]
 pub fn vec3_scale(a: Vec3, s: f64) -> Vec3 {
     [a[0] * s, a[1] * s, a[2] * s]
 }
 /// Dot product.
-#[allow(dead_code)]
 pub fn vec3_dot(a: Vec3, b: Vec3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 /// Cross product.
-#[allow(dead_code)]
 pub fn vec3_cross(a: Vec3, b: Vec3) -> Vec3 {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -43,12 +35,10 @@ pub fn vec3_cross(a: Vec3, b: Vec3) -> Vec3 {
     ]
 }
 /// Euclidean length.
-#[allow(dead_code)]
 pub fn vec3_len(a: Vec3) -> f64 {
     vec3_dot(a, a).sqrt()
 }
 /// Normalise (returns zero-vector if degenerate).
-#[allow(dead_code)]
 pub fn vec3_normalize(a: Vec3) -> Vec3 {
     let l = vec3_len(a);
     if l < 1e-300 {
@@ -58,7 +48,6 @@ pub fn vec3_normalize(a: Vec3) -> Vec3 {
     }
 }
 /// Linear interpolation of Vec3.
-#[allow(dead_code)]
 pub fn vec3_lerp(a: Vec3, b: Vec3, t: f64) -> Vec3 {
     [
         a[0] + (b[0] - a[0]) * t,
@@ -67,7 +56,6 @@ pub fn vec3_lerp(a: Vec3, b: Vec3, t: f64) -> Vec3 {
     ]
 }
 /// Quaternion normalise.
-#[allow(dead_code)]
 pub fn quat_normalize(q: Quat) -> Quat {
     let len2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
     if len2 < 1e-300 {
@@ -77,7 +65,6 @@ pub fn quat_normalize(q: Quat) -> Quat {
     [q[0] * inv, q[1] * inv, q[2] * inv, q[3] * inv]
 }
 /// Quaternion multiplication `p * q`.
-#[allow(dead_code)]
 pub fn quat_mul(p: Quat, q: Quat) -> Quat {
     [
         p[3] * q[0] + p[0] * q[3] + p[1] * q[2] - p[2] * q[1],
@@ -87,7 +74,6 @@ pub fn quat_mul(p: Quat, q: Quat) -> Quat {
     ]
 }
 /// Quaternion SLERP.
-#[allow(dead_code)]
 pub fn quat_slerp(a: Quat, b: Quat, t: f64) -> Quat {
     let mut cos_half = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
     let b_adj = if cos_half < 0.0 {
@@ -114,7 +100,6 @@ pub fn quat_slerp(a: Quat, b: Quat, t: f64) -> Quat {
     ])
 }
 /// Convert a unit quaternion to a 4×4 rotation matrix (column-major).
-#[allow(dead_code)]
 pub fn quat_to_mat4(q: Quat) -> Mat4 {
     let [x, y, z, w] = q;
     let x2 = x * x;
@@ -146,7 +131,6 @@ pub fn quat_to_mat4(q: Quat) -> Mat4 {
     ]
 }
 /// Compose a TRS matrix (translation * rotation * scale).
-#[allow(dead_code)]
 pub fn trs_matrix(translation: Vec3, rotation: Quat, scale: Vec3) -> Mat4 {
     let r = quat_to_mat4(rotation);
     [
@@ -169,7 +153,6 @@ pub fn trs_matrix(translation: Vec3, rotation: Quat, scale: Vec3) -> Mat4 {
     ]
 }
 /// Multiply two 4×4 column-major matrices.
-#[allow(dead_code)]
 pub fn mat4_mul(a: Mat4, b: Mat4) -> Mat4 {
     let mut out = [0.0_f64; 16];
     for col in 0..4 {
@@ -184,7 +167,6 @@ pub fn mat4_mul(a: Mat4, b: Mat4) -> Mat4 {
     out
 }
 /// Transform a point by a Mat4.
-#[allow(dead_code)]
 pub fn mat4_transform_point(m: Mat4, p: Vec3) -> Vec3 {
     let w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
     let inv_w = if w.abs() < 1e-300 { 1.0 } else { 1.0 / w };
@@ -195,7 +177,6 @@ pub fn mat4_transform_point(m: Mat4, p: Vec3) -> Vec3 {
     ]
 }
 /// Apply the chosen easing function to normalised time `t ∈ [0, 1]`.
-#[allow(dead_code)]
 pub fn apply_easing(easing: Easing, t: f64) -> f64 {
     use std::f64::consts::{PI, TAU};
     match easing {
@@ -253,7 +234,6 @@ pub fn apply_easing(easing: Easing, t: f64) -> f64 {
     }
 }
 /// Bounce ease-out helper.
-#[allow(dead_code)]
 pub(super) fn ease_out_bounce(t: f64) -> f64 {
     pub(super) const N: f64 = 7.5625;
     pub(super) const D: f64 = 2.75;
@@ -272,14 +252,12 @@ pub(super) fn ease_out_bounce(t: f64) -> f64 {
 }
 /// Evaluate a cubic Bézier curve at parameter `t ∈ [0, 1]`.
 /// Control points: `p0` (start), `p1` (ctrl1), `p2` (ctrl2), `p3` (end).
-#[allow(dead_code)]
 pub fn cubic_bezier(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
     let mt = 1.0 - t;
     mt * mt * mt * p0 + 3.0 * mt * mt * t * p1 + 3.0 * mt * t * t * p2 + t * t * t * p3
 }
 /// Evaluate a cubic Hermite spline at `t ∈ [0, 1]`.
 /// `p0`, `p1` are endpoint values; `m0`, `m1` are tangents.
-#[allow(dead_code)]
 pub fn cubic_hermite(p0: f64, m0: f64, p1: f64, m1: f64, t: f64) -> f64 {
     let t2 = t * t;
     let t3 = t2 * t;
@@ -289,7 +267,6 @@ pub fn cubic_hermite(p0: f64, m0: f64, p1: f64, m1: f64, t: f64) -> f64 {
         + (t3 - t2) * m1
 }
 /// Apply skinning to a vertex position given per-bone skinning matrices.
-#[allow(dead_code)]
 pub fn skin_vertex(rest_pos: Vec3, weights: &[SkinWeight], skin_matrices: &[Mat4]) -> Vec3 {
     let mut result = [0.0_f64; 3];
     for sw in weights {
@@ -303,7 +280,6 @@ pub fn skin_vertex(rest_pos: Vec3, weights: &[SkinWeight], skin_matrices: &[Mat4
     result
 }
 /// Linear interpolation of two Mat4 (element-wise).
-#[allow(dead_code)]
 pub(super) fn lerp_mat4(a: Mat4, b: Mat4, t: f64) -> Mat4 {
     let mut out = [0.0_f64; 16];
     for i in 0..16 {
@@ -312,7 +288,6 @@ pub(super) fn lerp_mat4(a: Mat4, b: Mat4, t: f64) -> Mat4 {
     out
 }
 /// Identity 4×4 matrix.
-#[allow(dead_code)]
 pub(super) fn identity_mat4() -> Mat4 {
     [
         1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
@@ -320,7 +295,6 @@ pub(super) fn identity_mat4() -> Mat4 {
 }
 /// CCD (Cyclic Coordinate Descent) IK solver.
 /// Returns the updated joint positions after `max_iter` iterations.
-#[allow(dead_code)]
 pub fn ccd_ik(
     joints: &[IkJoint],
     bone_lengths: &[f64],
@@ -372,7 +346,6 @@ pub fn ccd_ik(
     positions
 }
 /// Choose animation LOD based on distance from camera.
-#[allow(dead_code)]
 pub fn lod_for_distance(distance: f64) -> AnimLod {
     if distance < 10.0 {
         AnimLod::Full

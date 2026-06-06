@@ -1,4 +1,3 @@
-#![allow(clippy::should_implement_trait, clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -172,22 +171,20 @@ pub const M_INV: [[f64; 19]; 19] = {
 /// Multiply a 19x19 matrix by a length-19 vector.
 fn mat_vec(mat: &[[f64; 19]; 19], v: &[f64; 19]) -> [f64; 19] {
     let mut out = [0.0f64; 19];
-    for i in 0..19 {
-        for j in 0..19 {
-            out[i] += mat[i][j] * v[j];
+    for (out_i, row) in out.iter_mut().zip(mat.iter()) {
+        for (row_j, v_j) in row.iter().zip(v.iter()) {
+            *out_i += row_j * v_j;
         }
     }
     out
 }
 
 /// Transform distribution functions to moment space: `m = M * f`.
-#[allow(dead_code)]
 pub fn transform_to_moment_space(f: &[f64; 19]) -> [f64; 19] {
     mat_vec(&M, f)
 }
 
 /// Transform moments back to distribution space: `f = M^{-1} * m`.
-#[allow(dead_code)]
 pub fn inverse_transform(m: &[f64; 19]) -> [f64; 19] {
     mat_vec(&M_INV, m)
 }
@@ -201,29 +198,28 @@ pub fn inverse_transform(m: &[f64; 19]) -> [f64; 19] {
 /// Takes `n` rows (each of length 19) and returns the orthogonalized set.
 /// Useful for constructing custom moment bases from a user-supplied set of
 /// linearly independent vectors.
-#[allow(dead_code)]
 pub fn gram_schmidt_orthogonalize(vectors: &[[f64; 19]]) -> Vec<[f64; 19]> {
     let n = vectors.len();
     let mut result: Vec<[f64; 19]> = Vec::with_capacity(n);
 
-    for i in 0..n {
-        let mut v = vectors[i];
+    for vec_i in vectors.iter() {
+        let mut v = *vec_i;
         // Subtract projections onto already-orthogonalized vectors
         for q in &result {
             let dot_vq = dot19(&v, q);
             let dot_qq = dot19(q, q);
             if dot_qq.abs() > 1e-30 {
                 let coeff = dot_vq / dot_qq;
-                for k in 0..19 {
-                    v[k] -= coeff * q[k];
+                for (v_k, q_k) in v.iter_mut().zip(q.iter()) {
+                    *v_k -= coeff * q_k;
                 }
             }
         }
         // Normalize
         let norm = dot19(&v, &v).sqrt();
         if norm > 1e-30 {
-            for k in 0..19 {
-                v[k] /= norm;
+            for v_k in v.iter_mut() {
+                *v_k /= norm;
             }
         }
         result.push(v);
@@ -232,19 +228,13 @@ pub fn gram_schmidt_orthogonalize(vectors: &[[f64; 19]]) -> Vec<[f64; 19]> {
 }
 
 /// Dot product of two 19-component vectors.
-#[allow(dead_code)]
 fn dot19(a: &[f64; 19], b: &[f64; 19]) -> f64 {
-    let mut s = 0.0;
-    for k in 0..19 {
-        s += a[k] * b[k];
-    }
-    s
+    a.iter().zip(b.iter()).map(|(ai, bi)| ai * bi).sum()
 }
 
 /// Check orthogonality of a set of 19-component vectors.
 ///
 /// Returns the maximum absolute off-diagonal inner product.
-#[allow(dead_code)]
 pub fn check_orthogonality(vectors: &[[f64; 19]]) -> f64 {
     let n = vectors.len();
     let mut max_off_diag = 0.0_f64;
@@ -268,21 +258,19 @@ pub fn check_orthogonality(vectors: &[[f64; 19]]) -> f64 {
 /// The 19 relaxation rates `s[i]` correspond to the 19 moments in the
 /// Lallemand-Luo ordering.  Physically motivated values follow from the
 /// viscosity and the stability analysis in Lallemand & Luo (2000).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MrtRelaxationParams {
     /// Relaxation rates for all 19 moments.
     pub s: [f64; 19],
 }
 
-impl MrtRelaxationParams {
+impl Default for MrtRelaxationParams {
     /// Physically motivated default relaxation rates.
     ///
     /// Viscosity-controlling rates (momentum flux, s9, s11, s13-15) are
     /// set via `omega = 1/(3*nu + 0.5)` with `nu = 1/6`.
     /// Ghost-mode rates are set to 1.0 (instantaneous relaxation).
-    #[allow(dead_code)]
-    pub fn default() -> Self {
+    fn default() -> Self {
         // nu = 1/6 → tau = 1 → omega = 1
         let omega = 1.0_f64;
         Self {
@@ -309,9 +297,10 @@ impl MrtRelaxationParams {
             ],
         }
     }
+}
 
+impl MrtRelaxationParams {
     /// Create from kinematic viscosity `nu`.
-    #[allow(dead_code)]
     pub fn from_viscosity(nu: f64) -> Self {
         let omega = 1.0 / (3.0 * nu + 0.5);
         let mut p = Self::default();
@@ -327,7 +316,6 @@ impl MrtRelaxationParams {
     ///
     /// Sets ghost-mode and energy relaxation rates to values determined by
     /// linear stability analysis (Lallemand & Luo 2000, Sec. IV).
-    #[allow(dead_code)]
     pub fn stability_optimized(nu: f64) -> Self {
         let omega = 1.0 / (3.0 * nu + 0.5);
         Self {
@@ -356,7 +344,6 @@ impl MrtRelaxationParams {
     }
 
     /// Extract the kinematic viscosity implied by the stress relaxation rates.
-    #[allow(dead_code)]
     pub fn viscosity(&self) -> f64 {
         let omega = self.s[9];
         if omega.abs() < 1e-15 {
@@ -368,7 +355,6 @@ impl MrtRelaxationParams {
     /// Check whether all non-conserved relaxation rates are in (0, 2).
     ///
     /// Returns `true` if stable.
-    #[allow(dead_code)]
     pub fn is_stable(&self) -> bool {
         for i in 0..19 {
             // Conserved moments (rho, jx, jy, jz) have s=0
@@ -386,7 +372,6 @@ impl MrtRelaxationParams {
     ///
     /// The spectral radius determines stability: it must be ≤ 1 for all
     /// non-conserved modes.  The spectral radius of each mode is `|1 - s_i|`.
-    #[allow(dead_code)]
     pub fn spectral_radius(&self) -> f64 {
         let mut max_rho = 0.0_f64;
         for i in 0..19 {
@@ -403,32 +388,30 @@ impl MrtRelaxationParams {
 }
 
 /// MRT D3Q19 collision operator.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MrtD3Q19 {
     /// Relaxation rates.
     pub params: MrtRelaxationParams,
 }
 
-impl MrtD3Q19 {
-    /// Create a new MRT operator.
-    #[allow(dead_code)]
-    pub fn new(params: MrtRelaxationParams) -> Self {
-        Self { params }
-    }
-
+impl Default for MrtD3Q19 {
     /// Create with default relaxation parameters.
-    #[allow(dead_code)]
-    pub fn default() -> Self {
+    fn default() -> Self {
         Self {
             params: MrtRelaxationParams::default(),
         }
+    }
+}
+
+impl MrtD3Q19 {
+    /// Create a new MRT operator.
+    pub fn new(params: MrtRelaxationParams) -> Self {
+        Self { params }
     }
 
     /// Apply MRT collision to a single D3Q19 population array.
     ///
     /// `f*  = f - M^{-1} S (m - m_eq)`
-    #[allow(dead_code)]
     pub fn collide(&self, f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
         collide_mrt(f, rho, u, &self.params.s)
     }
@@ -438,7 +421,6 @@ impl MrtD3Q19 {
     /// `f*  = f - M^{-1} S (m - m_eq) + M^{-1} (I - S/2) * F_m`
     ///
     /// where `F_m = M * F_i` are the forcing terms projected to moment space.
-    #[allow(dead_code)]
     pub fn collide_with_force(
         &self,
         f: &[f64; 19],
@@ -457,7 +439,6 @@ impl MrtD3Q19 {
 /// distributions directly from `rho` and `u` using the standard formula,
 /// then transform them with M.  This guarantees exact consistency with the
 /// M and M_INV matrices used in the collision step.
-#[allow(dead_code)]
 fn compute_meq(rho: f64, u: [f64; 3]) -> [f64; 19] {
     use crate::collision::compute_equilibrium_d3q19;
     let feq = compute_equilibrium_d3q19(rho, u);
@@ -470,7 +451,6 @@ fn compute_meq(rho: f64, u: [f64; 3]) -> [f64; 19] {
 ///
 /// where `m = M f`, `m_eq` is the equilibrium in moment space, and `S`
 /// is a diagonal matrix of relaxation rates.
-#[allow(dead_code)]
 pub fn collide_mrt(f: &[f64; 19], rho: f64, u: [f64; 3], s: &[f64; 19]) -> [f64; 19] {
     // Step 1: transform to moment space.
     let m = transform_to_moment_space(f);
@@ -478,14 +458,17 @@ pub fn collide_mrt(f: &[f64; 19], rho: f64, u: [f64; 3], s: &[f64; 19]) -> [f64;
     let meq = compute_meq(rho, u);
     // Step 3: relax each moment independently.
     let mut delta_m = [0.0f64; 19];
-    for i in 0..19 {
-        delta_m[i] = s[i] * (m[i] - meq[i]);
+    for (dm_i, (s_i, (m_i, meq_i))) in delta_m
+        .iter_mut()
+        .zip(s.iter().zip(m.iter().zip(meq.iter())))
+    {
+        *dm_i = s_i * (m_i - meq_i);
     }
     // Step 4: transform back to velocity space and subtract.
     let delta_f = inverse_transform(&delta_m);
     let mut f_out = [0.0f64; 19];
-    for i in 0..19 {
-        f_out[i] = f[i] - delta_f[i];
+    for (fo_i, (f_i, df_i)) in f_out.iter_mut().zip(f.iter().zip(delta_f.iter())) {
+        *fo_i = f_i - df_i;
     }
     f_out
 }
@@ -496,7 +479,6 @@ pub fn collide_mrt(f: &[f64; 19], rho: f64, u: [f64; 3], s: &[f64; 19]) -> [f64;
 ///
 /// `force_dist` contains the Guo forcing term `F_i` for each lattice direction.
 /// This function transforms it to moment space and applies the correction.
-#[allow(dead_code)]
 pub fn collide_mrt_with_force(
     f: &[f64; 19],
     rho: f64,
@@ -509,8 +491,11 @@ pub fn collide_mrt_with_force(
 
     // Relaxation
     let mut delta_m = [0.0f64; 19];
-    for i in 0..19 {
-        delta_m[i] = s[i] * (m[i] - meq[i]);
+    for (dm_i, (s_i, (m_i, meq_i))) in delta_m
+        .iter_mut()
+        .zip(s.iter().zip(m.iter().zip(meq.iter())))
+    {
+        *dm_i = s_i * (m_i - meq_i);
     }
 
     // Forcing in moment space: F_m = M * F
@@ -518,15 +503,18 @@ pub fn collide_mrt_with_force(
 
     // Forcing correction: (I - S/2) * F_m
     let mut force_corr = [0.0f64; 19];
-    for i in 0..19 {
-        force_corr[i] = (1.0 - 0.5 * s[i]) * force_m[i];
+    for (fc_i, (s_i, fm_i)) in force_corr.iter_mut().zip(s.iter().zip(force_m.iter())) {
+        *fc_i = (1.0 - 0.5 * s_i) * fm_i;
     }
 
     let delta_f = inverse_transform(&delta_m);
     let force_f = inverse_transform(&force_corr);
     let mut f_out = [0.0f64; 19];
-    for i in 0..19 {
-        f_out[i] = f[i] - delta_f[i] + force_f[i];
+    for (fo_i, (f_i, (df_i, ff_i))) in f_out
+        .iter_mut()
+        .zip(f.iter().zip(delta_f.iter().zip(force_f.iter())))
+    {
+        *fo_i = f_i - df_i + ff_i;
     }
     f_out
 }
@@ -536,7 +524,6 @@ pub fn collide_mrt_with_force(
 // ---------------------------------------------------------------------------
 
 /// Linear stability analysis result for MRT.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MrtStabilityResult {
     /// Spectral radius (max |1 - s_i| over non-conserved modes).
@@ -553,7 +540,6 @@ pub struct MrtStabilityResult {
 ///
 /// Returns the spectral radius, stability flag, kinematic viscosity,
 /// and bulk viscosity.
-#[allow(dead_code)]
 pub fn analyze_mrt_stability(params: &MrtRelaxationParams) -> MrtStabilityResult {
     let nu = params.viscosity();
     let spectral_radius = params.spectral_radius();
@@ -579,7 +565,6 @@ pub fn analyze_mrt_stability(params: &MrtRelaxationParams) -> MrtStabilityResult
 ///
 /// Returns the symmetric 3x3 stress tensor `[[Sxx, Sxy, Sxz\], [Syx, Syy, Syz], [Szx, Szy, Szz]]`
 /// extracted from the non-equilibrium moments.
-#[allow(dead_code)]
 pub fn compute_neq_stress_tensor(f: &[f64; 19], rho: f64, u: [f64; 3]) -> [[f64; 3]; 3] {
     let m = transform_to_moment_space(f);
     let meq = compute_meq(rho, u);
@@ -608,7 +593,6 @@ pub fn compute_neq_stress_tensor(f: &[f64; 19], rho: f64, u: [f64; 3]) -> [[f64;
 /// Compute the strain rate magnitude from the non-equilibrium moments.
 ///
 /// `|S| = sqrt(2 * sum(S_ab^2))`
-#[allow(dead_code)]
 pub fn strain_rate_magnitude(f: &[f64; 19], rho: f64, u: [f64; 3]) -> f64 {
     let s = compute_neq_stress_tensor(f, rho, u);
     let mut sum_sq = 0.0;
@@ -663,7 +647,6 @@ impl TrtCollision3D {
     }
 
     /// Create a TRT operator with explicit magic parameter.
-    #[allow(dead_code)]
     pub fn with_magic_parameter(viscosity: f64, lambda: f64) -> Self {
         let s_plus = 1.0 / (3.0 * viscosity + 0.5);
         let tau_plus = 1.0 / s_plus;
@@ -673,7 +656,6 @@ impl TrtCollision3D {
     }
 
     /// Return the magic parameter Λ = (τ_+ - 0.5)(τ_- - 0.5).
-    #[allow(dead_code)]
     pub fn magic_parameter(&self) -> f64 {
         (1.0 / self.s_plus - 0.5) * (1.0 / self.s_minus - 0.5)
     }
@@ -687,7 +669,6 @@ impl TrtCollision3D {
     /// f_i^-  = (f_i - f_ī) / 2   (anti-symmetric part)
     /// f_i*   = f_i - s_+ (f_i^+ - feq_i^+) - s_- (f_i^- - feq_i^-)
     /// ```
-    #[allow(clippy::needless_range_loop)]
     pub fn collide_grid(&self, grid: &mut LbmGrid3D) {
         grid.compute_macroscopic();
 
@@ -702,13 +683,13 @@ impl TrtCollision3D {
 
             // Compute equilibrium for all directions.
             let mut feq = vec![0.0_f64; q];
-            for i in 0..q {
+            for (i, feq_i) in feq.iter_mut().enumerate() {
                 let w = grid.lattice.weight(i);
                 let c = grid.lattice.velocity_3d(i);
-                feq[i] = equilibrium_3d(w, rho, ux, uy, uz, c[0] as f64, c[1] as f64, c[2] as f64);
+                *feq_i = equilibrium_3d(w, rho, ux, uy, uz, c[0] as f64, c[1] as f64, c[2] as f64);
             }
 
-            // TRT collision for each direction.
+            // TRT collision for each direction (needs index for opposite direction lookup).
             let mut f_star = vec![0.0_f64; q];
             for i in 0..q {
                 let ibar = grid.lattice.opposite(i);
@@ -728,8 +709,8 @@ impl TrtCollision3D {
             }
 
             // Write back.
-            for i in 0..q {
-                grid.f[i][k] = f_star[i];
+            for (i, &fs_i) in f_star.iter().enumerate() {
+                grid.f[i][k] = fs_i;
             }
         }
     }
@@ -743,7 +724,6 @@ impl TrtCollision3D {
 pub const D3Q27_Q: usize = 27;
 
 /// D3Q27 velocity vectors: all combinations of {-1,0,+1}^3.
-#[allow(dead_code)]
 pub const D3Q27_VELOCITIES: [[i32; 3]; 27] = [
     [0, 0, 0],
     [1, 0, 0],
@@ -775,7 +755,6 @@ pub const D3Q27_VELOCITIES: [[i32; 3]; 27] = [
 ];
 
 /// D3Q27 weights.
-#[allow(dead_code)]
 pub const D3Q27_WEIGHTS: [f64; 27] = [
     8.0 / 27.0, // rest
     2.0 / 27.0,
@@ -807,7 +786,6 @@ pub const D3Q27_WEIGHTS: [f64; 27] = [
 ];
 
 /// Compute D3Q27 BGK equilibrium for a single direction `i`.
-#[allow(dead_code)]
 pub fn d3q27_equilibrium(rho: f64, u: [f64; 3], i: usize) -> f64 {
     let c = D3Q27_VELOCITIES[i];
     let eu = c[0] as f64 * u[0] + c[1] as f64 * u[1] + c[2] as f64 * u[2];
@@ -816,39 +794,35 @@ pub fn d3q27_equilibrium(rho: f64, u: [f64; 3], i: usize) -> f64 {
 }
 
 /// Compute full D3Q27 equilibrium distribution.
-#[allow(dead_code)]
 pub fn d3q27_equilibrium_full(rho: f64, u: [f64; 3]) -> [f64; 27] {
     let mut feq = [0.0f64; 27];
-    for i in 0..27 {
-        feq[i] = d3q27_equilibrium(rho, u, i);
+    for (i, feq_i) in feq.iter_mut().enumerate() {
+        *feq_i = d3q27_equilibrium(rho, u, i);
     }
     feq
 }
 
 /// D3Q27 BGK collision: `f* = f - omega * (f - feq)`.
-#[allow(dead_code)]
 pub fn d3q27_bgk_collide(f: &[f64; 27], rho: f64, u: [f64; 3], omega: f64) -> [f64; 27] {
     let feq = d3q27_equilibrium_full(rho, u);
     let mut f_out = [0.0f64; 27];
-    for i in 0..27 {
-        f_out[i] = f[i] - omega * (f[i] - feq[i]);
+    for (fo_i, (&f_i, &feq_i)) in f_out.iter_mut().zip(f.iter().zip(feq.iter())) {
+        *fo_i = f_i - omega * (f_i - feq_i);
     }
     f_out
 }
 
 /// Compute macroscopic density and velocity from D3Q27 populations.
-#[allow(dead_code)]
 pub fn d3q27_macroscopic(f: &[f64; 27]) -> (f64, [f64; 3]) {
     let mut rho = 0.0;
     let mut mx = 0.0;
     let mut my = 0.0;
     let mut mz = 0.0;
-    for i in 0..27 {
-        rho += f[i];
-        let c = D3Q27_VELOCITIES[i];
-        mx += f[i] * c[0] as f64;
-        my += f[i] * c[1] as f64;
-        mz += f[i] * c[2] as f64;
+    for (&f_i, c) in f.iter().zip(D3Q27_VELOCITIES.iter()) {
+        rho += f_i;
+        mx += f_i * c[0] as f64;
+        my += f_i * c[1] as f64;
+        mz += f_i * c[2] as f64;
     }
     let rho_safe = if rho.abs() > 1e-15 { rho } else { 1.0 };
     (rho, [mx / rho_safe, my / rho_safe, mz / rho_safe])
@@ -862,7 +836,6 @@ pub fn d3q27_macroscopic(f: &[f64; 27]) -> (f64, [f64; 3]) {
 ///
 /// This evaluates the analytic moment equilibrium for Lallemand-Luo D3Q19,
 /// without going through the feq transformation (useful for verification).
-#[allow(dead_code)]
 pub fn mrt_equilibrium_moments(rho: f64, u: [f64; 3]) -> [f64; 19] {
     let ux = u[0];
     let uy = u[1];
@@ -900,7 +873,6 @@ pub fn mrt_equilibrium_moments(rho: f64, u: [f64; 3]) -> [f64; 19] {
 ///
 /// All conserved modes get `s = 0`.  Non-conserved bulk rates are provided
 /// via `s_bulk`, viscous rates via `s_visc`, and ghost rates via `s_ghost`.
-#[allow(dead_code)]
 pub fn build_relaxation_matrix(s_bulk: f64, s_visc: f64, s_ghost: f64) -> [f64; 19] {
     [
         0.0,     // rho (conserved)
@@ -935,7 +907,6 @@ pub fn build_relaxation_matrix(s_bulk: f64, s_visc: f64, s_ghost: f64) -> [f64; 
 /// `sigma_ab = -(1 - s_visc/2) / (s_visc * rho * cs^2) * Pi_ab^neq`
 ///
 /// Returns `[[sigma_xx, sigma_xy, sigma_xz\], [...], [...]]`.
-#[allow(dead_code)]
 pub fn mrt_stress_tensor_ce(f: &[f64; 19], rho: f64, u: [f64; 3], s_visc: f64) -> [[f64; 3]; 3] {
     let m = transform_to_moment_space(f);
     let meq = compute_meq(rho, u);
@@ -971,13 +942,12 @@ pub fn mrt_stress_tensor_ce(f: &[f64; 19], rho: f64, u: [f64; 3], s_visc: f64) -
 /// `Σ = -sum_i (f_i - feq_i)^2 / (feq_i + eps)` (simplified H-theorem proxy)
 ///
 /// A negative value indicates dissipation (entropy production > 0).
-#[allow(dead_code)]
 pub fn entropy_production(f: &[f64; 19], rho: f64, u: [f64; 3]) -> f64 {
     let feq = compute_equilibrium_d3q19(rho, u);
     let mut sigma = 0.0;
-    for i in 0..19 {
-        let fneq = f[i] - feq[i];
-        let feq_safe = feq[i].abs().max(1e-30);
+    for (f_i, feq_i) in f.iter().zip(feq.iter()) {
+        let fneq = f_i - feq_i;
+        let feq_safe = feq_i.abs().max(1e-30);
         sigma -= fneq * fneq / feq_safe;
     }
     sigma
@@ -986,21 +956,16 @@ pub fn entropy_production(f: &[f64; 19], rho: f64, u: [f64; 3]) -> f64 {
 /// Compute the Boltzmann H-function: `H = sum_i f_i * ln(f_i)`.
 ///
 /// A decrease in H corresponds to entropy increase (second law).
-#[allow(dead_code)]
 pub fn h_function_d3q19(f: &[f64; 19]) -> f64 {
-    let mut h = 0.0;
-    for i in 0..19 {
-        if f[i] > 1e-30 {
-            h += f[i] * f[i].ln();
-        }
-    }
-    h
+    f.iter()
+        .filter(|&&fi| fi > 1e-30)
+        .map(|&fi| fi * fi.ln())
+        .sum()
 }
 
 /// Verify that MRT collision satisfies the H-theorem (H does not increase at equilibrium).
 ///
 /// Returns `(h_before, h_after)`.
-#[allow(dead_code)]
 pub fn verify_h_theorem(f: &[f64; 19], rho: f64, u: [f64; 3], s: &[f64; 19]) -> (f64, f64) {
     let h_before = h_function_d3q19(f);
     let f_out = collide_mrt(f, rho, u, s);
@@ -1048,17 +1013,16 @@ mod tests {
             // Instead, compute (M * M_inv)[:,col] directly:
             // First get col of M_inv, then multiply by M.
             let mut minv_col = [0.0f64; 19];
-            for row in 0..19 {
-                minv_col[row] = M_INV[row][col];
+            for (row, o) in minv_col.iter_mut().enumerate() {
+                *o = M_INV[row][col];
             }
             let result = mat_vec(&M, &minv_col);
             // result[row] should be 1 if row==col, else 0.
-            for row in 0..19 {
+            for (row, &res) in result.iter().enumerate() {
                 let expected = if row == col { 1.0 } else { 0.0 };
                 assert!(
-                    (result[row] - expected).abs() < 1e-9,
-                    "M*M_inv[{row},{col}] = {}, expected {expected}",
-                    result[row]
+                    (res - expected).abs() < 1e-9,
+                    "M*M_inv[{row},{col}] = {res}, expected {expected}",
                 );
             }
             // Suppress unused warning

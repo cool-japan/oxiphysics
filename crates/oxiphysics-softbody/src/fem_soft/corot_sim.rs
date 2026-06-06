@@ -4,8 +4,6 @@
 //! CorotFem simulation types: CorotFemNode, CorotFemTet, CorotFemSim,
 //! NewmarkBetaSim, CorotationalTet, and HighLevelFemBody.
 
-#![allow(clippy::needless_range_loop)]
-
 use super::math_helpers::{det3x3, edge_matrix_raw, inv3x3, mul3x3, transpose3x3};
 
 // ---------------------------------------------------------------------------
@@ -14,7 +12,6 @@ use super::math_helpers::{det3x3, edge_matrix_raw, inv3x3, mul3x3, transpose3x3}
 
 /// A single node in a corotational FEM simulation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CorotFemNode {
     /// Current position.
     pub position: [f64; 3],
@@ -28,7 +25,6 @@ pub struct CorotFemNode {
 
 /// A tetrahedral element for the corotational FEM simulation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CorotFemTet {
     /// Indices into the node array.
     pub node_indices: [usize; 4],
@@ -40,7 +36,6 @@ pub struct CorotFemTet {
     pub dm_inv: [[f64; 3]; 3],
 }
 
-#[allow(dead_code)]
 impl CorotFemTet {
     /// Create a new tet from node indices and initial node positions.
     pub fn new(node_indices: [usize; 4], nodes: &[CorotFemNode]) -> Self {
@@ -90,9 +85,9 @@ impl CorotFemTet {
         }
         // Ensure proper rotation (det > 0)
         if det3x3(r) < 0.0 {
-            for i in 0..3 {
-                for j in 0..3 {
-                    r[i][j] = -r[i][j];
+            for r_row in r.iter_mut() {
+                for r_ij in r_row.iter_mut() {
+                    *r_ij = -*r_ij;
                 }
             }
         }
@@ -102,7 +97,6 @@ impl CorotFemTet {
     /// Compute corotational elastic forces on the four nodes.
     ///
     /// Returns forces `[[fx,fy,fz\]; 4]` in order of `node_indices`.
-    #[allow(clippy::too_many_arguments)]
     pub fn compute_elastic_forces(
         &self,
         nodes: &[CorotFemNode],
@@ -153,7 +147,6 @@ impl CorotFemTet {
 
 /// Full corotational FEM simulation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CorotFemSim {
     /// All nodes.
     pub nodes: Vec<CorotFemNode>,
@@ -167,7 +160,6 @@ pub struct CorotFemSim {
     pub dt: f64,
 }
 
-#[allow(dead_code)]
 impl CorotFemSim {
     /// Create a new simulation.
     pub fn new(
@@ -195,10 +187,10 @@ impl CorotFemSim {
         // Accumulate elastic forces
         for tet in &self.tets {
             let fs = tet.compute_elastic_forces(&self.nodes, self.mu, self.lambda);
-            for k in 0..4 {
+            for (k, fs_k) in fs.iter().enumerate() {
                 let idx = tet.node_indices[k];
-                for d in 0..3 {
-                    self.nodes[idx].force[d] += fs[k][d];
+                for (force_d, fs_d) in self.nodes[idx].force.iter_mut().zip(fs_k.iter()) {
+                    *force_d += fs_d;
                 }
             }
         }
@@ -222,19 +214,18 @@ impl CorotFemSim {
             let rt = transpose3x3(r);
             let rtf = mul3x3(rt, f);
             let mut strain = [[0.0f64; 3]; 3];
-            for i in 0..3 {
-                for j in 0..3 {
+            for (i, strain_row) in strain.iter_mut().enumerate() {
+                for (j, s_ij) in strain_row.iter_mut().enumerate() {
                     let delta = if i == j { 1.0 } else { 0.0 };
-                    strain[i][j] = rtf[i][j] - delta;
+                    *s_ij = rtf[i][j] - delta;
                 }
             }
             let trace = strain[0][0] + strain[1][1] + strain[2][2];
-            let mut frobenius_sq = 0.0;
-            for i in 0..3 {
-                for j in 0..3 {
-                    frobenius_sq += strain[i][j] * strain[i][j];
-                }
-            }
+            let frobenius_sq: f64 = strain
+                .iter()
+                .flat_map(|row| row.iter())
+                .map(|x| x * x)
+                .sum();
             energy += tet.volume * (self.mu * frobenius_sq + 0.5 * self.lambda * trace * trace);
         }
         energy
@@ -269,7 +260,6 @@ pub type CorotTet = CorotFemTet;
 /// force evaluation per step), this degenerates to the **explicit Newmark**
 /// form which remains stable for the chosen beta, gamma values at small time steps.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NewmarkBetaSim {
     /// All simulation nodes (position, velocity, force, mass).
     pub nodes: Vec<CorotFemNode>,
@@ -295,7 +285,6 @@ pub struct NewmarkBetaSim {
     pub rayleigh_beta: f64,
 }
 
-#[allow(dead_code)]
 impl NewmarkBetaSim {
     /// Create a new Newmark-beta simulation with default parameters
     /// (beta = 0.25, gamma = 0.5, no Rayleigh damping).
@@ -323,7 +312,6 @@ impl NewmarkBetaSim {
     }
 
     /// Create a new simulation with explicit Newmark parameters and Rayleigh damping.
-    #[allow(clippy::too_many_arguments)]
     pub fn with_params(
         nodes: Vec<CorotFemNode>,
         tets: Vec<CorotFemTet>,
@@ -360,10 +348,10 @@ impl NewmarkBetaSim {
         // Elastic forces from elements
         for tet in &self.tets {
             let fs = tet.compute_elastic_forces(&self.nodes, self.mu, self.lambda);
-            for k in 0..4 {
+            for (k, fs_k) in fs.iter().enumerate() {
                 let idx = tet.node_indices[k];
-                for d in 0..3 {
-                    self.nodes[idx].force[d] += fs[k][d];
+                for (force_d, fs_d) in self.nodes[idx].force.iter_mut().zip(fs_k.iter()) {
+                    *force_d += fs_d;
                 }
             }
         }
@@ -375,8 +363,8 @@ impl NewmarkBetaSim {
                 }
                 let m = self.nodes[i].mass;
                 let v = self.nodes[i].velocity;
-                for d in 0..3 {
-                    self.nodes[i].force[d] -= self.rayleigh_alpha * m * v[d];
+                for (force_d, v_d) in self.nodes[i].force.iter_mut().zip(v.iter()) {
+                    *force_d -= self.rayleigh_alpha * m * v_d;
                 }
             }
         }
@@ -390,10 +378,10 @@ impl NewmarkBetaSim {
                 let mut f_el = vec![[0.0_f64; 3]; n];
                 for tet in &self.tets {
                     let fs = tet.compute_elastic_forces(&self.nodes, self.mu, self.lambda);
-                    for k in 0..4 {
+                    for (k, fs_k) in fs.iter().enumerate() {
                         let idx = tet.node_indices[k];
-                        for d in 0..3 {
-                            f_el[idx][d] += fs[k][d];
+                        for (f_el_d, fs_d) in f_el[idx].iter_mut().zip(fs_k.iter()) {
+                            *f_el_d += fs_d;
                         }
                     }
                 }
@@ -406,35 +394,39 @@ impl NewmarkBetaSim {
                     continue;
                 }
                 let v = self.nodes[i].velocity;
-                for d in 0..3 {
-                    self.nodes[i].position[d] += eps * v[d];
+                for (pos_d, v_d) in self.nodes[i].position.iter_mut().zip(v.iter()) {
+                    *pos_d += eps * v_d;
                 }
             }
             let f_elastic_perturbed: Vec<[f64; 3]> = {
                 let mut f_el = vec![[0.0_f64; 3]; n];
                 for tet in &self.tets {
                     let fs = tet.compute_elastic_forces(&self.nodes, self.mu, self.lambda);
-                    for k in 0..4 {
+                    for (k, fs_k) in fs.iter().enumerate() {
                         let idx = tet.node_indices[k];
-                        for d in 0..3 {
-                            f_el[idx][d] += fs[k][d];
+                        for (f_el_d, fs_d) in f_el[idx].iter_mut().zip(fs_k.iter()) {
+                            *f_el_d += fs_d;
                         }
                     }
                 }
                 f_el
             };
             // Restore positions.
-            for i in 0..n {
-                self.nodes[i].position = saved[i];
+            for (i, saved_pos) in saved.iter().enumerate() {
+                self.nodes[i].position = *saved_pos;
             }
             // Subtract β_r * K * v approximation from the already-accumulated forces.
             for i in 0..n {
                 if self.pinned[i] {
                     continue;
                 }
-                for d in 0..3 {
-                    let kv_d = (f_elastic_perturbed[i][d] - f_elastic_orig[i][d]) / eps;
-                    self.nodes[i].force[d] -= self.rayleigh_beta * kv_d;
+                for (force_d, (fp_d, fo_d)) in self.nodes[i]
+                    .force
+                    .iter_mut()
+                    .zip(f_elastic_perturbed[i].iter().zip(f_elastic_orig[i].iter()))
+                {
+                    let kv_d = (fp_d - fo_d) / eps;
+                    *force_d -= self.rayleigh_beta * kv_d;
                 }
             }
         }
@@ -471,9 +463,9 @@ impl NewmarkBetaSim {
             .collect();
 
         // Apply predicted positions temporarily
-        for i in 0..n {
+        for (i, pred_pos) in pred_positions.iter().enumerate() {
             if !self.pinned[i] {
-                self.nodes[i].position = pred_positions[i];
+                self.nodes[i].position = *pred_pos;
             }
         }
 
@@ -493,18 +485,29 @@ impl NewmarkBetaSim {
             .collect();
 
         // --- Corrector ---
-        for i in 0..n {
-            if self.pinned[i] {
+        for (i, (node, (pinned, (a_n, a_new)))) in self
+            .nodes
+            .iter_mut()
+            .zip(
+                self.pinned
+                    .iter()
+                    .zip(self.prev_accel.iter().zip(new_accel.iter())),
+            )
+            .enumerate()
+        {
+            let _ = i;
+            if *pinned {
                 continue;
             }
-            let a_n = self.prev_accel[i];
-            let a_new = new_accel[i];
-
             // Velocity corrector
-            for d in 0..3 {
-                self.nodes[i].velocity[d] += dt * (1.0 - gamma) * a_n[d] + dt * gamma * a_new[d];
+            for (v_d, (a_n_d, a_new_d)) in
+                node.velocity.iter_mut().zip(a_n.iter().zip(a_new.iter()))
+            {
+                *v_d += dt * (1.0 - gamma) * a_n_d + dt * gamma * a_new_d;
+            }
+            for (pos_d, a_new_d) in node.position.iter_mut().zip(a_new.iter()) {
                 // Position correction: x* already has (0.5-beta)*a_n term; add beta*a*
-                self.nodes[i].position[d] += dt * dt * beta * a_new[d];
+                *pos_d += dt * dt * beta * a_new_d;
             }
         }
 
@@ -521,19 +524,18 @@ impl NewmarkBetaSim {
             let rt = transpose3x3(r);
             let rtf = mul3x3(rt, f);
             let mut strain = [[0.0f64; 3]; 3];
-            for i in 0..3 {
-                for j in 0..3 {
+            for (i, strain_row) in strain.iter_mut().enumerate() {
+                for (j, s_ij) in strain_row.iter_mut().enumerate() {
                     let delta = if i == j { 1.0 } else { 0.0 };
-                    strain[i][j] = rtf[i][j] - delta;
+                    *s_ij = rtf[i][j] - delta;
                 }
             }
             let trace = strain[0][0] + strain[1][1] + strain[2][2];
-            let mut frob_sq = 0.0;
-            for i in 0..3 {
-                for j in 0..3 {
-                    frob_sq += strain[i][j] * strain[i][j];
-                }
-            }
+            let frob_sq: f64 = strain
+                .iter()
+                .flat_map(|row| row.iter())
+                .map(|x| x * x)
+                .sum();
             energy += tet.volume * (self.mu * frob_sq + 0.5 * self.lambda * trace * trace);
         }
         energy
@@ -576,8 +578,8 @@ impl NewmarkBetaSim {
     pub fn apply_impulse(&mut self, idx: usize, impulse: [f64; 3]) {
         if idx < self.nodes.len() && !self.pinned[idx] {
             let inv_m = 1.0 / self.nodes[idx].mass;
-            for d in 0..3 {
-                self.nodes[idx].velocity[d] += impulse[d] * inv_m;
+            for (v_d, imp_d) in self.nodes[idx].velocity.iter_mut().zip(impulse.iter()) {
+                *v_d += imp_d * inv_m;
             }
         }
     }
@@ -607,21 +609,17 @@ impl NewmarkBetaSim {
 /// Stores the reference shape matrix `Dm` and rest volume `V0` explicitly,
 /// matching the notation common in FEM textbooks.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub struct CorotationalTet {
     /// Indices of the four nodes of the tetrahedron.
     pub indices: [usize; 4],
     /// Reference shape matrix: columns are edge vectors `[p1-p0, p2-p0, p3-p0]`.
-    pub Dm: [[f64; 3]; 3],
+    pub dm: [[f64; 3]; 3],
     /// Rest volume of the element (m^3).
-    pub V0: f64,
-    /// Inverse of the reference shape matrix `Dm`.
+    pub v0: f64,
+    /// Inverse of the reference shape matrix `dm`.
     dm_inv: [[f64; 3]; 3],
 }
 
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 impl CorotationalTet {
     /// Create a new `CorotationalTet` from node positions.
     ///
@@ -631,13 +629,13 @@ impl CorotationalTet {
         let p1 = positions[indices[1]];
         let p2 = positions[indices[2]];
         let p3 = positions[indices[3]];
-        let Dm = edge_matrix_raw(p0, p1, p2, p3);
-        let V0 = det3x3(Dm).abs() / 6.0;
-        let dm_inv = inv3x3(Dm);
+        let dm = edge_matrix_raw(p0, p1, p2, p3);
+        let v0 = det3x3(dm).abs() / 6.0;
+        let dm_inv = inv3x3(dm);
         Self {
             indices,
-            Dm,
-            V0,
+            dm,
+            v0,
             dm_inv,
         }
     }
@@ -658,13 +656,13 @@ impl CorotationalTet {
     ///
     /// Returns `(R, S)` where `F = R * S`, `R` is a proper rotation and `S`
     /// is symmetric positive-definite.  Uses the iterative Newton method.
-    pub fn polar_decompose(F: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], [[f64; 3]; 3]) {
-        let mut r = *F;
+    pub fn polar_decompose(f: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], [[f64; 3]; 3]) {
+        let mut r = *f;
         for _ in 0..10 {
             let det = det3x3(r);
             if det.abs() < 1e-30 {
                 let r_id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-                return (r_id, *F);
+                return (r_id, *f);
             }
             let inv = inv3x3(r);
             let inv_t = transpose3x3(inv);
@@ -683,7 +681,7 @@ impl CorotationalTet {
         }
         // S = R^T F
         let rt = transpose3x3(r);
-        let s = mul3x3(rt, *F);
+        let s = mul3x3(rt, *f);
         (r, s)
     }
 
@@ -695,7 +693,6 @@ impl CorotationalTet {
     /// - Strain `eps = R^T F - I` (in rotated frame)
     /// - Stress `sigma = 2mu eps + lambda tr(eps) I`
     /// - Forces `H = -V0 P Dm^{-T}`,  `P = R sigma`
-    #[allow(clippy::too_many_arguments)]
     pub fn elastic_forces(&self, nodes: &[[f64; 3]], mu: f64, lambda: f64) -> [[f64; 3]; 4] {
         let f = self.compute_deformation_gradient(nodes);
         let (r, _s) = Self::polar_decompose(&f);
@@ -730,9 +727,9 @@ impl CorotationalTet {
 
         let mut forces = [[0.0f64; 3]; 4];
         for i in 0..3 {
-            forces[1][i] = -self.V0 * h[i][0];
-            forces[2][i] = -self.V0 * h[i][1];
-            forces[3][i] = -self.V0 * h[i][2];
+            forces[1][i] = -self.v0 * h[i][0];
+            forces[2][i] = -self.v0 * h[i][1];
+            forces[3][i] = -self.v0 * h[i][2];
             forces[0][i] = -(forces[1][i] + forces[2][i] + forces[3][i]);
         }
         forces
@@ -780,8 +777,6 @@ impl CorotationalTet {
 /// - `step(dt)` -- integrate one explicit Euler step with elastic forces only
 /// - `total_elastic_energy()` -- compute the total elastic strain energy
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub struct HighLevelFemBody {
     /// Current node positions (world space).
     pub positions: Vec<[f64; 3]>,
@@ -792,7 +787,7 @@ pub struct HighLevelFemBody {
     /// All tetrahedral elements.
     pub elements: Vec<CorotationalTet>,
     /// Young's modulus E (Pa).
-    pub E: f64,
+    pub e: f64,
     /// Poisson's ratio nu.
     pub nu: f64,
     /// Derived shear modulus mu.
@@ -801,22 +796,20 @@ pub struct HighLevelFemBody {
     lambda: f64,
 }
 
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 impl HighLevelFemBody {
     /// Create a new body from rest positions and node masses.
     ///
     /// `E` is Young's modulus (Pa), `nu` is Poisson's ratio.
-    pub fn new(positions: Vec<[f64; 3]>, masses: Vec<f64>, E: f64, nu: f64) -> Self {
+    pub fn new(positions: Vec<[f64; 3]>, masses: Vec<f64>, e: f64, nu: f64) -> Self {
         let n = positions.len();
-        let mu = E / (2.0 * (1.0 + nu));
-        let lambda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
+        let mu = e / (2.0 * (1.0 + nu));
+        let lambda = e * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
         Self {
             positions,
             velocities: vec![[0.0; 3]; n],
             masses,
             elements: Vec::new(),
-            E,
+            e,
             nu,
             mu,
             lambda,
@@ -847,20 +840,25 @@ impl HighLevelFemBody {
             }
         }
 
-        for i in 0..n {
+        for (i, (vel, (pos, force))) in self
+            .velocities
+            .iter_mut()
+            .zip(self.positions.iter_mut().zip(forces.iter()))
+            .enumerate()
+        {
             let inv_m = 1.0 / self.masses[i];
-            for d in 0..3 {
-                self.velocities[i][d] += forces[i][d] * inv_m * dt;
-                self.positions[i][d] += self.velocities[i][d] * dt;
+            for (v_d, (p_d, f_d)) in vel.iter_mut().zip(pos.iter_mut().zip(force.iter())) {
+                *v_d += f_d * inv_m * dt;
+                *p_d += *v_d * dt;
             }
         }
     }
 
     /// Apply gravitational acceleration to all nodes (adds to velocities).
     pub fn apply_gravity(&mut self, gravity: [f64; 3], dt: f64) {
-        for i in 0..self.positions.len() {
-            for d in 0..3 {
-                self.velocities[i][d] += gravity[d] * dt;
+        for vel in self.velocities.iter_mut() {
+            for (v_d, g_d) in vel.iter_mut().zip(gravity.iter()) {
+                *v_d += g_d * dt;
             }
         }
     }
@@ -889,7 +887,7 @@ impl HighLevelFemBody {
                     frob_sq += x * x;
                 }
             }
-            energy += elem.V0 * (self.mu * frob_sq + 0.5 * self.lambda * trace * trace);
+            energy += elem.v0 * (self.mu * frob_sq + 0.5 * self.lambda * trace * trace);
         }
         energy
     }

@@ -17,8 +17,6 @@
 //! - Particle-based flow visualization with advection
 //! - SPH particle rendering with density shading
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -171,7 +169,6 @@ pub struct ArrowGlyph {
 /// - `spacing` — physical spacing between grid points (assumed uniform).
 /// - `scale` — arrow length scale factor relative to grid spacing.
 /// - `max_speed` — maximum expected speed (for colormap normalisation).
-#[allow(clippy::too_many_arguments)]
 pub fn velocity_arrow_glyphs(
     velocities: &[Vec3],
     nx: usize,
@@ -574,7 +571,6 @@ pub fn pressure_contours(
 /// - `noise` — a white-noise input texture (same indexing, values in [0, 1]).
 /// - `steps` — number of integration steps in each direction.
 /// - `dt` — step size in pixel units.
-#[allow(clippy::too_many_arguments)]
 pub fn lic_2d(
     velocities: &[Vec2],
     noise: &[f32],
@@ -862,7 +858,6 @@ pub fn trilinear_sample(field: &[f64], nx: usize, ny: usize, nz: usize, p: Vec3)
 ///
 /// Returns the accumulated RGBA color for this ray. `ray_dir` should be
 /// normalised. `t_near` and `t_far` are the entry/exit distances along the ray.
-#[allow(clippy::too_many_arguments)]
 pub fn volume_render_ray(
     density: &[f64],
     nx: usize,
@@ -1170,7 +1165,6 @@ pub struct SphParticle {
 /// proportional to its smoothing length `h` (projected to screen space). The
 /// image size is `width × height`. World-to-screen mapping uses `camera_origin`
 /// and `pixel_size` (world units per pixel).
-#[allow(clippy::too_many_arguments)]
 pub fn sph_density_image(
     particles: &[SphParticle],
     width: usize,

@@ -1,9 +1,6 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use std::f64::consts::PI;
 
 /// SOC-based rule strategy for a parallel hybrid electric vehicle (P-HEV).

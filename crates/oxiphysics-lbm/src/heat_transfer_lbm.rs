@@ -1,5 +1,3 @@
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_memcpy)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,8 +12,6 @@
 //! References:
 //! - He, X., Chen, S., & Doolen, G. D. (1998). *JCP* 146, 282–300.
 //! - Shan, X. (1997). *Phys. Rev. E* 55, 2780.
-
-#![allow(dead_code)]
 
 /// Speed of sound squared in D2Q9 lattice units: cs² = 1/3.
 const CS2: f64 = 1.0 / 3.0;
@@ -236,12 +232,10 @@ pub fn rayleigh_benard_init(nx: usize, ny: usize, params: &ThermalParams) -> The
             temp[cell] = t;
 
             let u = [0.0_f64; 2];
-            for q in 0..9_usize {
+            for (q, &_wq) in w.iter().enumerate() {
                 let base = cell * 9 + q;
                 f[base] = equilibrium_thermal(1.0, u, t, q);
                 g[base] = geq(t, u, q);
-                // Suppress unused warning
-                let _ = w[q];
             }
         }
     }
@@ -293,11 +287,11 @@ pub fn step_thermal_lbm(state: &mut ThermalLBM, params: &ThermalParams) {
             let mut ux = 0.0_f64;
             let mut uy = 0.0_f64;
             let mut t = 0.0_f64;
-            for q in 0..9_usize {
+            for (q, cq) in c.iter().enumerate() {
                 let fq = state.f[base + q];
                 rho += fq;
-                ux += c[q][0] as f64 * fq;
-                uy += c[q][1] as f64 * fq;
+                ux += cq[0] as f64 * fq;
+                uy += cq[1] as f64 * fq;
                 t += state.g[base + q];
             }
             if rho > 1e-20 {
@@ -345,9 +339,9 @@ pub fn step_thermal_lbm(state: &mut ThermalLBM, params: &ThermalParams) {
     for j in 0..ny {
         for i in 0..nx {
             let src_base = (j * nx + i) * 9;
-            for q in 0..9_usize {
-                let di = c[q][0] as isize;
-                let dj = c[q][1] as isize;
+            for (q, cq) in c.iter().enumerate() {
+                let di = cq[0] as isize;
+                let dj = cq[1] as isize;
                 let ni = ((i as isize + di).rem_euclid(nx as isize)) as usize;
                 let nj = ((j as isize + dj).rem_euclid(ny as isize)) as usize;
                 let dst_base = (nj * nx + ni) * 9;
@@ -500,16 +494,18 @@ mod tests {
     #[test]
     fn test_weights_axial_equals_1_9() {
         let w = d2q9_weights();
-        for i in 1..=4 {
-            assert!((w[i] - 1.0 / 9.0).abs() < 1e-12, "w[{i}]={}", w[i]);
+        for (offset, &wi) in w[1..=4].iter().enumerate() {
+            let i = offset + 1;
+            assert!((wi - 1.0 / 9.0).abs() < 1e-12, "w[{i}]={wi}");
         }
     }
 
     #[test]
     fn test_weights_diagonal_equals_1_36() {
         let w = d2q9_weights();
-        for i in 5..=8 {
-            assert!((w[i] - 1.0 / 36.0).abs() < 1e-12, "w[{i}]={}", w[i]);
+        for (offset, &wi) in w[5..=8].iter().enumerate() {
+            let i = offset + 5;
+            assert!((wi - 1.0 / 36.0).abs() < 1e-12, "w[{i}]={wi}");
         }
     }
 

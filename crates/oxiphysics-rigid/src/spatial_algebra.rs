@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -12,7 +11,6 @@
 ///
 /// The first three components are angular velocity `ω` (rad/s);
 /// the last three are linear velocity `v` (m/s).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpatialVelocity {
     /// Angular velocity components `[ωx, ωy, ωz]` in rad/s.
@@ -52,7 +50,6 @@ impl SpatialVelocity {
 ///
 /// The first three components are torque `τ` (N·m);
 /// the last three are force `f` (N).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpatialForce {
     /// Torque components `[τx, τy, τz]` in N·m.
@@ -91,7 +88,6 @@ impl SpatialForce {
 /// A 6×6 spatial inertia tensor (articulated-body inertia).
 ///
 /// Stored in row-major order. Symmetric positive-definite for valid bodies.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct SpatialInertia {
     /// Row-major 6×6 matrix entries.
@@ -107,8 +103,8 @@ impl SpatialInertia {
     /// Identity spatial inertia (unit mass, unit rotational inertia).
     pub fn identity() -> Self {
         let mut d = [[0.0f64; 6]; 6];
-        for i in 0..6 {
-            d[i][i] = 1.0;
+        for (i, row) in d.iter_mut().enumerate() {
+            row[i] = 1.0;
         }
         Self { data: d }
     }
@@ -137,9 +133,9 @@ impl SpatialInertia {
     pub fn mul_velocity(&self, vel: &SpatialVelocity) -> SpatialForce {
         let v = vel.as_array();
         let mut result = [0.0f64; 6];
-        for i in 0..6 {
-            for j in 0..6 {
-                result[i] += self.data[i][j] * v[j];
+        for (res_i, row) in result.iter_mut().zip(self.data.iter()) {
+            for (d_ij, v_j) in row.iter().zip(v.iter()) {
+                *res_i += d_ij * v_j;
             }
         }
         SpatialForce {
@@ -203,7 +199,6 @@ pub fn spatial_dot(force: &SpatialForce, vel: &SpatialVelocity) -> f64 {
 /// ω_B = R · ω_A
 /// v_B = R · (v_A - r_ab × ω_A)
 /// ```
-#[allow(clippy::too_many_arguments)]
 pub fn plucker_transform(
     vel: &SpatialVelocity,
     rot: &[[f64; 3]; 3],
@@ -240,9 +235,9 @@ fn mat3_mul_vec(m: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
 /// Composite inertia of a sub-tree is the sum of all constituent inertias.
 pub fn composite_inertia(a: &SpatialInertia, b: &SpatialInertia) -> SpatialInertia {
     let mut d = [[0.0f64; 6]; 6];
-    for i in 0..6 {
-        for j in 0..6 {
-            d[i][j] = a.data[i][j] + b.data[i][j];
+    for (d_row, (a_row, b_row)) in d.iter_mut().zip(a.data.iter().zip(b.data.iter())) {
+        for (d_ij, (a_ij, b_ij)) in d_row.iter_mut().zip(a_row.iter().zip(b_row.iter())) {
+            *d_ij = a_ij + b_ij;
         }
     }
     SpatialInertia { data: d }

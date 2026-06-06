@@ -2,11 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 /// Elastic Network Model node.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EnmNode {
     /// Node position (nm).
@@ -16,7 +13,6 @@ pub struct EnmNode {
 }
 impl EnmNode {
     /// Create a new ENM node.
-    #[allow(dead_code)]
     pub fn new(pos: [f64; 3], name: impl Into<String>) -> Self {
         Self {
             pos,
@@ -101,8 +97,8 @@ impl BeadMapping {
                         centroid[k] += aa_positions[idx][k];
                     }
                 }
-                for k in 0..3 {
-                    centroid[k] /= n;
+                for v in &mut centroid {
+                    *v /= n;
                 }
                 centroid
             })
@@ -128,8 +124,8 @@ impl BeadMapping {
                         vel[k] += masses[idx] * aa_velocities[idx][k];
                     }
                 }
-                for k in 0..3 {
-                    vel[k] /= total_mass;
+                for v in &mut vel {
+                    *v /= total_mass;
                 }
                 vel
             })
@@ -252,8 +248,8 @@ impl CgSystem {
                 nb_forces[j] = sub(nb_forces[j], fvec);
             }
         }
-        for i in 0..n {
-            self.beads[i].force = add(self.beads[i].force, nb_forces[i]);
+        for (bead, nb_f) in self.beads.iter_mut().zip(nb_forces.iter()).take(n) {
+            bead.force = add(bead.force, *nb_f);
         }
     }
     /// Velocity Verlet integration step.
@@ -440,7 +436,6 @@ impl ElasticNetworkModel {
     }
 }
 /// A single coarse-grained water bead (MARTINI W bead: 4 water molecules).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CgWaterBead {
     /// Position (nm).
@@ -452,7 +447,6 @@ pub struct CgWaterBead {
 }
 impl CgWaterBead {
     /// Create a new CG water bead at a given position.
-    #[allow(dead_code)]
     pub fn new(pos: [f64; 3]) -> Self {
         Self {
             pos,
@@ -461,7 +455,6 @@ impl CgWaterBead {
         }
     }
     /// MARTINI W bead mass (4 × 18.015 = 72.06 Da).
-    #[allow(dead_code)]
     pub fn mass() -> f64 {
         72.06
     }
@@ -470,7 +463,6 @@ impl CgWaterBead {
 ///
 /// Each row encodes a bead-type pair interaction following the MARTINI
 /// interaction matrix (C-level approximation).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct MartiniInteraction {
     /// Lennard-Jones sigma parameter (nm).
@@ -480,12 +472,10 @@ pub struct MartiniInteraction {
 }
 impl MartiniInteraction {
     /// Construct from sigma and epsilon.
-    #[allow(dead_code)]
     pub fn new(sigma: f64, epsilon: f64) -> Self {
         Self { sigma, epsilon }
     }
     /// Self-interaction for a MARTINI C-level bead (sigma = 0.47 nm, epsilon = 5.6 kJ/mol).
-    #[allow(dead_code)]
     pub fn c_level() -> Self {
         Self {
             sigma: 0.47,
@@ -493,7 +483,6 @@ impl MartiniInteraction {
         }
     }
     /// Self-interaction for a MARTINI D-level bead (weak: epsilon = 1.5 kJ/mol).
-    #[allow(dead_code)]
     pub fn d_level() -> Self {
         Self {
             sigma: 0.47,
@@ -501,17 +490,14 @@ impl MartiniInteraction {
         }
     }
     /// LJ 12-6 energy between two beads at distance r.
-    #[allow(dead_code)]
     pub fn energy(&self, r: f64) -> f64 {
         MartiniLj::energy(r, self.sigma, self.epsilon)
     }
     /// LJ 12-6 force magnitude (negative = attractive) at distance r.
-    #[allow(dead_code)]
     pub fn force_magnitude(&self, r: f64) -> f64 {
         MartiniLj::force_magnitude(r, self.sigma, self.epsilon)
     }
     /// Minimum energy distance r_min = 2^(1/6) * sigma.
-    #[allow(dead_code)]
     pub fn r_min(&self) -> f64 {
         2.0_f64.powf(1.0 / 6.0) * self.sigma
     }
@@ -519,7 +505,6 @@ impl MartiniInteraction {
 /// Cosine-series Fourier CG dihedral potential.
 ///
 /// V(φ) = sum_{n=0}^{N} k_n * (1 + cos(n*φ - δ_n))
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CgFourierDihedral {
     /// Bead index a.
@@ -537,7 +522,6 @@ pub struct CgFourierDihedral {
 }
 impl CgFourierDihedral {
     /// Create a new Fourier dihedral.
-    #[allow(dead_code)]
     pub fn new(a: usize, b: usize, c: usize, d: usize, k: Vec<f64>, delta: Vec<f64>) -> Self {
         Self {
             a,
@@ -549,7 +533,6 @@ impl CgFourierDihedral {
         }
     }
     /// Compute the dihedral angle for four bead positions.
-    #[allow(dead_code)]
     pub fn dihedral_angle(beads: &[CgBead], a: usize, b: usize, c: usize, d: usize) -> f64 {
         let b1 = sub(beads[b].pos, beads[a].pos);
         let b2 = sub(beads[c].pos, beads[b].pos);
@@ -568,7 +551,6 @@ impl CgFourierDihedral {
         x.acos().copysign(y)
     }
     /// Potential energy.
-    #[allow(dead_code)]
     pub fn energy(&self, beads: &[CgBead]) -> f64 {
         let phi = Self::dihedral_angle(beads, self.a, self.b, self.c, self.d);
         self.k
@@ -749,7 +731,6 @@ impl GoModel {
 /// Shifted MARTINI LJ with smooth cutoff at r_cut.
 ///
 /// V_shifted(r) = V_LJ(r) - V_LJ(r_cut) - (r - r_cut) * dV/dr|_{r_cut}
-#[allow(dead_code)]
 pub struct ShiftedMartiniLj {
     /// Base interaction parameters.
     pub params: MartiniInteraction,
@@ -762,7 +743,6 @@ pub struct ShiftedMartiniLj {
 }
 impl ShiftedMartiniLj {
     /// Construct a shifted LJ potential.
-    #[allow(dead_code)]
     pub fn new(params: MartiniInteraction, r_cut: f64) -> Self {
         let v_cut = MartiniLj::energy(r_cut, params.sigma, params.epsilon);
         let dv_cut = -MartiniLj::force_magnitude(r_cut, params.sigma, params.epsilon);
@@ -774,7 +754,6 @@ impl ShiftedMartiniLj {
         }
     }
     /// Shifted potential energy at r.  Returns 0 for r >= r_cut.
-    #[allow(dead_code)]
     pub fn energy(&self, r: f64) -> f64 {
         if r >= self.r_cut {
             return 0.0;
@@ -890,7 +869,6 @@ impl LangevinThermostat {
     }
 }
 /// Extended Elastic Network Model with named nodes (Cα residue-level ENM).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EnmNodeModel {
     /// Nodes (typically Cα atoms).
@@ -902,7 +880,6 @@ pub struct EnmNodeModel {
 }
 impl EnmNodeModel {
     /// Create a new named-node ENM.
-    #[allow(dead_code)]
     pub fn new(nodes: Vec<EnmNode>, spring_k: f64, cutoff: f64) -> Self {
         Self {
             nodes,
@@ -911,7 +888,6 @@ impl EnmNodeModel {
         }
     }
     /// Count the number of elastic contacts (springs).
-    #[allow(dead_code)]
     pub fn n_contacts(&self) -> usize {
         let n = self.nodes.len();
         let mut count = 0;
@@ -928,7 +904,6 @@ impl EnmNodeModel {
     /// Compute the displaced energy relative to a reference configuration.
     ///
     /// `ref_nodes` should be the native (equilibrium) configuration.
-    #[allow(dead_code)]
     pub fn displaced_energy(&self, ref_nodes: &[EnmNode]) -> f64 {
         let n = self.nodes.len().min(ref_nodes.len());
         let mut e = 0.0;
@@ -946,7 +921,6 @@ impl EnmNodeModel {
         e
     }
     /// Compute the connectivity (number of springs per node).
-    #[allow(dead_code)]
     pub fn connectivity(&self) -> Vec<usize> {
         let n = self.nodes.len();
         let mut conn = vec![0usize; n];

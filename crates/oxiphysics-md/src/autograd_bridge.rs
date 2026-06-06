@@ -64,7 +64,6 @@ pub struct NnTape {
 /// Run the neural network forward pass, recording `z` and `a` at every layer.
 ///
 /// Returns `(energy, tape)` where `energy = Σ a_last`.
-#[allow(clippy::needless_range_loop)]
 pub fn nn_forward_with_tape(layers: &[NeuralNetworkLayer], input: &[f64]) -> (f64, NnTape) {
     let mut tape = NnTape {
         z: Vec::with_capacity(layers.len()),
@@ -77,10 +76,10 @@ pub fn nn_forward_with_tape(layers: &[NeuralNetworkLayer], input: &[f64]) -> (f6
         let n_out = layer.biases.len();
         let n_in = x.len();
         let mut z_l = layer.biases.clone();
-        for i in 0..n_out {
+        for (i, z_val) in z_l.iter_mut().enumerate().take(n_out) {
             let n_weights = layer.weights[i].len().min(n_in);
-            for j in 0..n_weights {
-                z_l[i] += layer.weights[i][j] * x[j];
+            for (j, x_val) in x.iter().enumerate().take(n_weights) {
+                *z_val += layer.weights[i][j] * x_val;
             }
         }
         let a_l: Vec<f64> = z_l.iter().map(|&zj| (layer.activation)(zj)).collect();
@@ -111,7 +110,6 @@ pub struct NnGrads {
 ///
 /// `tape` must have been produced by [`nn_forward_with_tape`] on the same
 /// `layers`.  Returns weight/bias gradients and the descriptor gradient.
-#[allow(clippy::needless_range_loop)]
 pub fn nn_backward(layers: &[NeuralNetworkLayer], tape: &NnTape) -> NnGrads {
     let n_layers = layers.len();
     let mut dw: Vec<Vec<Vec<f64>>> = Vec::with_capacity(n_layers);
@@ -146,10 +144,10 @@ pub fn nn_backward(layers: &[NeuralNetworkLayer], tape: &NnTape) -> NnGrads {
 
         // Propagate delta to previous layer: delta_prev[j] = Σ_i W[i][j] * delta_local[i]
         let mut delta_prev = vec![0.0f64; n_in];
-        for i in 0..n_out {
+        for (i, &dl) in delta_local.iter().enumerate().take(n_out) {
             let n_w = layer.weights[i].len().min(n_in);
-            for j in 0..n_w {
-                delta_prev[j] += layer.weights[i][j] * delta_local[i];
+            for (j, dp) in delta_prev.iter_mut().enumerate().take(n_w) {
+                *dp += layer.weights[i][j] * dl;
             }
         }
 

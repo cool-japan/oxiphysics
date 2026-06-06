@@ -5,8 +5,6 @@
 //! Pure CPU data structures suitable for downstream rendering. No GPU or
 //! windowing dependency is introduced here.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

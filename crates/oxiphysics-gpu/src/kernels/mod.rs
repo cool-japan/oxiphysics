@@ -7,8 +7,6 @@
 //! a CPU-mock implementation that mirrors a GPU kernel in its data layout and
 //! dispatch model, but executes on the CPU using Rayon for parallelism.
 
-#![allow(dead_code)]
-
 pub mod broadphase;
 pub mod md_force;
 pub mod rigid;
@@ -255,13 +253,12 @@ mod kernel_mod_tests {
         workgroup_barrier(); // must not panic
     }
 
-    #[allow(clippy::assertions_on_constants)]
     #[test]
     fn test_group_sizes_constants() {
         use group_sizes::*;
-        assert!(WG_64 < WG_128);
-        assert!(WG_128 < WG_256);
-        assert!(WG_256 < WG_512);
-        assert!(WG_512 < WG_1024);
+        const _: () = assert!(WG_64 < WG_128);
+        const _: () = assert!(WG_128 < WG_256);
+        const _: () = assert!(WG_256 < WG_512);
+        const _: () = assert!(WG_512 < WG_1024);
     }
 }

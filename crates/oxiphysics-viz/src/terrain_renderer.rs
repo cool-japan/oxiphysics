@@ -7,8 +7,6 @@
 //! level-of-detail selection, water surface simulation, and terrain statistics.
 //! All types operate on plain `f64` and `[f64; 3]` — no nalgebra dependency.
 
-#![allow(dead_code)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // HeightField
 // ─────────────────────────────────────────────────────────────────────────────

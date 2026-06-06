@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //!
 //! These models provide foundational probabilistic machinery for physics-informed
 //! machine learning, uncertainty quantification, and data-driven modeling.
-
-#![allow(dead_code)]
 
 use std::f64::consts::{PI, TAU};
 
@@ -42,19 +39,6 @@ fn softmax(logits: &[f64]) -> Vec<f64> {
     let exp: Vec<f64> = logits.iter().map(|&x| (x - max).exp()).collect();
     let sum: f64 = exp.iter().sum::<f64>().max(1e-300);
     exp.iter().map(|&e| e / sum).collect()
-}
-
-/// Computes the multivariate Gaussian log-density (diagonal covariance).
-fn mvn_log_pdf_diag(x: &[f64], mean: &[f64], var: &[f64]) -> f64 {
-    let d = x.len() as f64;
-    let log_det: f64 = var.iter().map(|v| v.max(1e-300).ln()).sum();
-    let maha: f64 = x
-        .iter()
-        .zip(mean.iter())
-        .zip(var.iter())
-        .map(|((&xi, &mi), &vi)| (xi - mi).powi(2) / vi.max(1e-300))
-        .sum();
-    -0.5 * (d * TAU.ln() + log_det + maha)
 }
 
 // ---------------------------------------------------------------------------
@@ -306,21 +290,20 @@ impl HiddenMarkovModel {
             return 0.0;
         }
         let k = self.n_states;
-        let mut alpha = vec![0.0f64; k];
-        // Initialization
-        for s in 0..k {
-            alpha[s] = self.initial[s].ln() + self.log_emit(s, observations[0]);
-        }
+        let mut alpha: Vec<f64> = (0..k)
+            .map(|s| self.initial[s].ln() + self.log_emit(s, observations[0]))
+            .collect();
         // Recursion
-        for t in 1..t_len {
-            let mut alpha_new = vec![f64::NEG_INFINITY; k];
-            for j in 0..k {
-                let log_emit_j = self.log_emit(j, observations[t]);
-                let terms: Vec<f64> = (0..k)
-                    .map(|i| alpha[i] + self.transition[i][j].max(1e-300).ln())
-                    .collect();
-                alpha_new[j] = log_sum_exp(&terms) + log_emit_j;
-            }
+        for obs_t in observations[1..].iter() {
+            let alpha_new: Vec<f64> = (0..k)
+                .map(|j| {
+                    let log_emit_j = self.log_emit(j, *obs_t);
+                    let terms: Vec<f64> = (0..k)
+                        .map(|i| alpha[i] + self.transition[i][j].max(1e-300).ln())
+                        .collect();
+                    log_sum_exp(&terms) + log_emit_j
+                })
+                .collect();
             alpha = alpha_new;
         }
         log_sum_exp(&alpha)
@@ -337,8 +320,8 @@ impl HiddenMarkovModel {
         let mut psi = vec![vec![0usize; k]; t_len];
 
         // Initialization
-        for s in 0..k {
-            delta[0][s] = self.initial[s].max(1e-300).ln() + self.log_emit(s, observations[0]);
+        for (s, d0s) in delta[0].iter_mut().enumerate() {
+            *d0s = self.initial[s].max(1e-300).ln() + self.log_emit(s, observations[0]);
         }
 
         // Recursion
@@ -383,9 +366,8 @@ impl HiddenMarkovModel {
             // E-step: Forward-Backward
             // Forward pass (log scale)
             let mut log_alpha = vec![vec![0.0f64; k]; t_len];
-            for s in 0..k {
-                log_alpha[0][s] =
-                    self.initial[s].max(1e-300).ln() + self.log_emit(s, observations[0]);
+            for (s, la0s) in log_alpha[0].iter_mut().enumerate() {
+                *la0s = self.initial[s].max(1e-300).ln() + self.log_emit(s, observations[0]);
             }
             for t in 1..t_len {
                 for j in 0..k {
@@ -417,23 +399,22 @@ impl HiddenMarkovModel {
             // Compute gamma and xi
             // gamma[t][s] = P(S_t=s | obs)
             let mut gamma = vec![vec![0.0f64; k]; t_len];
-            for t in 0..t_len {
+            for (t, gt) in gamma.iter_mut().enumerate() {
                 let log_probs: Vec<f64> =
                     (0..k).map(|s| log_alpha[t][s] + log_beta[t][s]).collect();
                 let norm = log_sum_exp(&log_probs);
-                for s in 0..k {
-                    gamma[t][s] = (log_probs[s] - norm).exp();
+                for (s, gts) in gt.iter_mut().enumerate() {
+                    *gts = (log_probs[s] - norm).exp();
                 }
             }
 
             // xi[t][i][j] = P(S_t=i, S_{t+1}=j | obs)
             let mut xi = vec![vec![vec![0.0f64; k]; k]; t_len.saturating_sub(1)];
             for t in 0..t_len.saturating_sub(1) {
-                let mut xi_t = vec![vec![0.0f64; k]; k];
                 let mut log_xi_t = vec![vec![0.0f64; k]; k];
-                for i in 0..k {
-                    for j in 0..k {
-                        log_xi_t[i][j] = log_alpha[t][i]
+                for (i, lx_row) in log_xi_t.iter_mut().enumerate() {
+                    for (j, lx_ij) in lx_row.iter_mut().enumerate() {
+                        *lx_ij = log_alpha[t][i]
                             + self.transition[i][j].max(1e-300).ln()
                             + self.log_emit(j, observations[t + 1])
                             + log_beta[t + 1][j];
@@ -441,22 +422,21 @@ impl HiddenMarkovModel {
                 }
                 let flat: Vec<f64> = log_xi_t.iter().flat_map(|r| r.iter().copied()).collect();
                 let norm = log_sum_exp(&flat);
-                for i in 0..k {
-                    for j in 0..k {
-                        xi_t[i][j] = (log_xi_t[i][j] - norm).exp();
-                    }
-                }
+                let xi_t: Vec<Vec<f64>> = log_xi_t
+                    .iter()
+                    .map(|row| row.iter().map(|&v| (v - norm).exp()).collect())
+                    .collect();
                 xi[t] = xi_t;
             }
 
             // M-step: update parameters
             // Update initial
-            for s in 0..k {
-                self.initial[s] = gamma[0][s].max(1e-300);
+            for (s, init_s) in self.initial.iter_mut().enumerate() {
+                *init_s = gamma[0][s].max(1e-300);
             }
             let init_sum: f64 = self.initial.iter().sum::<f64>().max(1e-300);
-            for s in 0..k {
-                self.initial[s] /= init_sum;
+            for init_s in self.initial.iter_mut() {
+                *init_s /= init_sum;
             }
 
             // Update transition
@@ -465,19 +445,24 @@ impl HiddenMarkovModel {
                     .map(|t| gamma[t][i])
                     .sum::<f64>()
                     .max(1e-300);
-                for j in 0..k {
+                for (j, tr_ij) in self.transition[i].iter_mut().enumerate() {
                     let num: f64 = (0..t_len.saturating_sub(1)).map(|t| xi[t][i][j]).sum();
-                    self.transition[i][j] = (num / denom).max(1e-300);
+                    *tr_ij = (num / denom).max(1e-300);
                 }
                 // Renormalize row
                 let row_sum: f64 = self.transition[i].iter().sum::<f64>().max(1e-300);
-                for j in 0..k {
-                    self.transition[i][j] /= row_sum;
+                for tr_ij in self.transition[i].iter_mut() {
+                    *tr_ij /= row_sum;
                 }
             }
 
             // Update emission parameters
-            for s in 0..k {
+            for (s, (em_mean, em_var)) in self
+                .emission_mean
+                .iter_mut()
+                .zip(self.emission_var.iter_mut())
+                .enumerate()
+            {
                 let denom: f64 = (0..t_len).map(|t| gamma[t][s]).sum::<f64>().max(1e-300);
                 let new_mean: f64 = (0..t_len)
                     .map(|t| gamma[t][s] * observations[t])
@@ -488,8 +473,8 @@ impl HiddenMarkovModel {
                     .sum::<f64>()
                     / denom)
                     .max(1e-6);
-                self.emission_mean[s] = new_mean;
-                self.emission_var[s] = new_var;
+                *em_mean = new_mean;
+                *em_var = new_var;
             }
         }
         ll_history
@@ -591,9 +576,9 @@ impl GaussianProcess {
 
         // Build K + noise*I
         let mut k_mat = vec![0.0f64; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                k_mat[i * n + j] = self.k(self.x_train[i], self.x_train[j]);
+        for (i, &xi) in self.x_train.iter().enumerate() {
+            for (j, &xj) in self.x_train.iter().enumerate() {
+                k_mat[i * n + j] = self.k(xi, xj);
             }
             k_mat[i * n + i] += self.noise_var;
         }
@@ -663,8 +648,8 @@ impl GaussianProcess {
         let mut v = k_star.clone();
         for i in 0..n {
             let mut s = v[i];
-            for j in 0..i {
-                s -= self.chol[i * n + j] * v[j];
+            for (j, &vj) in v[..i].iter().enumerate() {
+                s -= self.chol[i * n + j] * vj;
             }
             v[i] = s / self.chol[i * n + i].max(1e-12);
         }
@@ -886,14 +871,18 @@ impl VariationalInference {
             elbo += log_sum_exp(&ll_terms);
         }
         // KL divergence: Σ_k w_k KL(q(z_k) || p(z_k))
-        for k in 0..self.n_components {
+        for ((&wk, &vv), &vm) in weights
+            .iter()
+            .zip(self.var_var.iter())
+            .zip(self.var_mean.iter())
+        {
             // KL(N(μ_q, σ_q²) || N(μ_p, σ_p²))
             let kl = 0.5
-                * (self.prior_var / self.var_var[k].max(1e-12)
-                    + (self.var_mean[k] - self.prior_mean).powi(2) / self.prior_var
+                * (self.prior_var / vv.max(1e-12)
+                    + (vm - self.prior_mean).powi(2) / self.prior_var
                     - 1.0
-                    + (self.var_var[k] / self.prior_var).ln());
-            elbo -= weights[k] * kl;
+                    + (vv / self.prior_var).ln());
+            elbo -= wk * kl;
         }
         elbo
     }
@@ -934,8 +923,8 @@ impl VariationalInference {
         }
         // Renormalize log_weights
         let lse = log_sum_exp(&self.log_weights.clone());
-        for k in 0..self.n_components {
-            self.log_weights[k] -= lse;
+        for lw in self.log_weights.iter_mut() {
+            *lw -= lse;
         }
         let _ = n;
         let elbo_val = self.elbo(observations);
@@ -1159,6 +1148,20 @@ impl ExpectationMaximization {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::TAU;
+
+    /// Computes the multivariate Gaussian log-density (diagonal covariance).
+    fn mvn_log_pdf_diag(x: &[f64], mean: &[f64], var: &[f64]) -> f64 {
+        let d = x.len() as f64;
+        let log_det: f64 = var.iter().map(|v| v.max(1e-300).ln()).sum();
+        let maha: f64 = x
+            .iter()
+            .zip(mean.iter())
+            .zip(var.iter())
+            .map(|((&xi, &mi), &vi)| (xi - mi).powi(2) / vi.max(1e-300))
+            .sum();
+        -0.5 * (d * TAU.ln() + log_det + maha)
+    }
 
     // --- BayesianNetwork ---
 

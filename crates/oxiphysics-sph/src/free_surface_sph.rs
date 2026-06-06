@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,9 +5,6 @@
 //!
 //! Implements free-surface detection, normal estimation, ghost-particle
 //! reflection, wave-height profiling, and volume-conservation monitoring.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -93,19 +89,6 @@ impl FreeSurfaceParams {
 // Kernel helper (cubic spline, 3-D)
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn cubic_kernel_3d(r: f64, h: f64) -> f64 {
-    use std::f64::consts::PI;
-    let q = r / h;
-    let alpha = 1.0 / (PI * h * h * h);
-    if q < 1.0 {
-        alpha * (1.0 - 1.5 * q * q + 0.75 * q * q * q)
-    } else if q < 2.0 {
-        alpha * 0.25 * (2.0 - q).powi(3)
-    } else {
-        0.0
-    }
-}
-
 fn cubic_kernel_grad_3d(rij: [f64; 3], r: f64, h: f64) -> [f64; 3] {
     if r < 1e-30 {
         return [0.0; 3];
@@ -136,7 +119,7 @@ fn cubic_kernel_grad_3d(rij: [f64; 3], r: f64, h: f64) -> [f64; 3] {
 /// # Arguments
 /// * `particles` – mutable particle slice
 /// * `params`    – detection parameters
-pub fn detect_free_surface(particles: &mut Vec<FreeSurfaceParticle>, params: &FreeSurfaceParams) {
+pub fn detect_free_surface(particles: &mut [FreeSurfaceParticle], params: &FreeSurfaceParams) {
     if particles.is_empty() {
         return;
     }
@@ -194,7 +177,7 @@ pub fn free_surface_normal_estimation(
 /// Enforce p = 0 boundary condition at free-surface particles.
 ///
 /// Sets the pressure of every particle flagged as `is_free_surface` to zero.
-pub fn pressure_zero_free_surface(particles: &mut Vec<FreeSurfaceParticle>) {
+pub fn pressure_zero_free_surface(particles: &mut [FreeSurfaceParticle]) {
     for p in particles.iter_mut() {
         if p.is_free_surface {
             p.pressure = 0.0;

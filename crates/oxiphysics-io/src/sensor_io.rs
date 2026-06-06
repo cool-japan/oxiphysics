@@ -6,9 +6,6 @@
 //! Provides writers and readers for IMU, GPS, lidar, force gauge data,
 //! MAVLink-inspired binary protocol, sensor fusion, and data logging.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::collections::VecDeque;
 use std::io::{BufWriter, Write};
 
@@ -1287,9 +1284,9 @@ mod sensor_ts_tests {
     #[test]
     fn test_write_read_csv_roundtrip() {
         let s = make_series(5, 10.0);
-        let path = "/tmp/oxiphysics_sensor_test.csv";
-        write_sensor_csv(&s, path).unwrap();
-        let s2 = read_sensor_csv(path, 1).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_sensor_test.csv");
+        write_sensor_csv(&s, path.to_str().unwrap_or("")).unwrap();
+        let s2 = read_sensor_csv(path.to_str().unwrap_or(""), 1).unwrap();
         assert_eq!(s2.len(), 5);
         for (a, b) in s.readings.iter().zip(s2.readings.iter()) {
             assert!((a.timestamp - b.timestamp).abs() < 1e-10);
@@ -1300,13 +1297,14 @@ mod sensor_ts_tests {
     #[test]
     fn test_write_csv_creates_file() {
         let s = make_series(3, 1.0);
-        let path = "/tmp/oxiphysics_sensor_create_test.csv";
-        assert!(write_sensor_csv(&s, path).is_ok());
+        let path = std::env::temp_dir().join("oxiphysics_sensor_create_test.csv");
+        assert!(write_sensor_csv(&s, path.to_str().unwrap_or("")).is_ok());
     }
 
     #[test]
     fn test_read_csv_nonexistent() {
-        let res = read_sensor_csv("/tmp/nonexistent_oxiphysics_xyz.csv", 0);
+        let path = std::env::temp_dir().join("nonexistent_oxiphysics_xyz.csv");
+        let res = read_sensor_csv(path.to_str().unwrap_or(""), 0);
         assert!(res.is_err());
     }
 
@@ -1500,9 +1498,9 @@ mod sensor_ts_tests {
     #[test]
     fn test_csv_roundtrip_larger_series() {
         let s = make_series(100, 50.0);
-        let path = "/tmp/oxiphysics_sensor_large.csv";
-        write_sensor_csv(&s, path).unwrap();
-        let s2 = read_sensor_csv(path, 1).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_sensor_large.csv");
+        write_sensor_csv(&s, path.to_str().unwrap_or("")).unwrap();
+        let s2 = read_sensor_csv(path.to_str().unwrap_or(""), 1).unwrap();
         assert_eq!(s2.len(), 100);
     }
 

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,14 +10,12 @@
 //!
 //! All computations use plain `f64` arrays — no external linear-algebra crate.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Small linear-algebra helpers (2×2 and 3×3, row-major)
 // ---------------------------------------------------------------------------
 
 /// Solve 2×2 linear system A x = b.  Returns None if singular.
+#[cfg(test)]
 fn solve2(a: [[f64; 2]; 2], b: [f64; 2]) -> Option<[f64; 2]> {
     let det = a[0][0] * a[1][1] - a[0][1] * a[1][0];
     if det.abs() < 1e-14 {
@@ -474,11 +471,11 @@ pub fn rkpm_correction(x: f64, y: f64, basis: &RkpmBasis) -> Vec<f64> {
     let n = basis.num_particles();
     let mut raw_w = vec![0.0_f64; n];
 
-    for i in 0..n {
+    for (i, w_i) in raw_w.iter_mut().enumerate() {
         let dx = x - basis.node_x[i];
         let dy = y - basis.node_y[i];
         let r = (dx * dx + dy * dy).sqrt() / basis.h;
-        raw_w[i] = weight_function(r, basis.weight_type);
+        *w_i = weight_function(r, basis.weight_type);
     }
 
     // Moment conditions: sum w_I = C0, sum w_I x_I = C1 x, sum w_I y_I = C2 y
@@ -486,9 +483,8 @@ pub fn rkpm_correction(x: f64, y: f64, basis: &RkpmBasis) -> Vec<f64> {
     //   M c = e_1  where M_kl = sum_I w_I p_k(x_I) p_l(x_I)
     //   and e_1 = [1, x, y]
     let mut m = [[0.0_f64; 3]; 3];
-    for i in 0..n {
+    for (i, &w) in raw_w.iter().enumerate() {
         let pi = [1.0_f64, basis.node_x[i], basis.node_y[i]];
-        let w = raw_w[i];
         for row in 0..3 {
             for col in 0..3 {
                 m[row][col] += w * pi[row] * pi[col];
@@ -500,10 +496,10 @@ pub fn rkpm_correction(x: f64, y: f64, basis: &RkpmBasis) -> Vec<f64> {
     let c = solve3(m, e1).unwrap_or([0.0, 0.0, 0.0]);
 
     let mut psi = vec![0.0_f64; n];
-    for i in 0..n {
+    for (i, (psi_i, &rw)) in psi.iter_mut().zip(raw_w.iter()).enumerate() {
         let pi = [1.0_f64, basis.node_x[i], basis.node_y[i]];
         let dot: f64 = c.iter().zip(pi.iter()).map(|(ci, pi_k)| ci * pi_k).sum();
-        psi[i] = raw_w[i] * dot;
+        *psi_i = rw * dot;
     }
     psi
 }
@@ -643,14 +639,6 @@ mod tests {
     }
 
     // ---------- MLS shape functions ----------
-
-    fn uniform_nodes_1d(n: usize, x0: f64, x1: f64) -> (Vec<f64>, Vec<f64>) {
-        let node_x: Vec<f64> = (0..n)
-            .map(|i| x0 + i as f64 * (x1 - x0) / (n - 1) as f64)
-            .collect();
-        let node_y = vec![0.0_f64; n];
-        (node_x, node_y)
-    }
 
     fn uniform_nodes_2d(nx: usize, ny: usize) -> (Vec<f64>, Vec<f64>) {
         let mut xs = Vec::new();

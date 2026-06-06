@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     add3_raw, cross3_raw, dot3_raw, negate3_raw, obb_obb_test, sat_test_axis, scale3_raw, sub3_raw,
 };
@@ -12,7 +9,7 @@ use super::types::{ContactFeatureType, Obb};
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::*;
     use crate::narrowphase::ObbSat;
     use crate::narrowphase::ObbSatTest;
     use crate::narrowphase::ObbShape;
@@ -1199,7 +1196,6 @@ mod tests {
 /// Cluster a list of contact points, removing duplicates within `threshold` distance.
 ///
 /// Returns a de-duplicated list where any two points are at least `threshold` apart.
-#[allow(dead_code)]
 pub fn cluster_contact_points(points: &[[f64; 3]], threshold: f64) -> Vec<[f64; 3]> {
     let mut result: Vec<[f64; 3]> = Vec::new();
     let thr_sq = threshold * threshold;
@@ -1218,7 +1214,6 @@ pub fn cluster_contact_points(points: &[[f64; 3]], threshold: f64) -> Vec<[f64; 
 ///
 /// If the normal aligns with any face normal of either OBB, it is a face contact.
 /// Otherwise it is an edge-edge contact.
-#[allow(dead_code)]
 pub fn classify_contact_feature(a: &Obb, b: &Obb, normal: [f64; 3]) -> ContactFeatureType {
     let threshold = 0.99;
     for obb in &[a, b] {
@@ -1233,7 +1228,6 @@ pub fn classify_contact_feature(a: &Obb, b: &Obb, normal: [f64; 3]) -> ContactFe
 /// Compute a simple spatial hash for an OBB center, useful for broad-phase bucketing.
 ///
 /// `cell_size` is the size of each hash cell.
-#[allow(dead_code)]
 pub fn obb_spatial_hash(obb: &Obb, cell_size: f64) -> (i64, i64, i64) {
     fn hash_coord(x: f64, cell: f64) -> i64 {
         (x / cell).floor() as i64
@@ -1252,7 +1246,6 @@ pub fn obb_spatial_hash(obb: &Obb, cell_size: f64) -> (i64, i64, i64) {
 ///
 /// Returns the earliest time of contact (clamped to `max_t`), or `None` if the
 /// swept OBB never intersects.
-#[allow(dead_code)]
 pub fn obb_swept_test(
     moving: &Obb,
     velocity: [f64; 3],
@@ -1279,7 +1272,6 @@ pub fn obb_swept_test(
 ///
 /// The sphere is centered at the OBB center and has radius equal to the
 /// half-diagonal of the OBB (conservative bound).
-#[allow(dead_code)]
 pub fn obb_bounding_sphere(obb: &Obb) -> ([f64; 3], f64) {
     let hx = obb.half_extents[0];
     let hy = obb.half_extents[1];
@@ -1288,7 +1280,6 @@ pub fn obb_bounding_sphere(obb: &Obb) -> ([f64; 3], f64) {
     (obb.center, radius)
 }
 /// Quick sphere-sphere overlap test. Returns `true` if the bounding spheres overlap.
-#[allow(dead_code)]
 pub fn obb_bounding_sphere_test(a: &Obb, b: &Obb) -> bool {
     let (ca, ra) = obb_bounding_sphere(a);
     let (cb, rb) = obb_bounding_sphere(b);
@@ -1298,7 +1289,6 @@ pub fn obb_bounding_sphere_test(a: &Obb, b: &Obb) -> bool {
     dist_sq < sum_r * sum_r
 }
 /// Return the six face normals of an OBB (three positive and three negative).
-#[allow(dead_code)]
 pub fn obb_face_normals(obb: &Obb) -> [[f64; 3]; 6] {
     [
         obb.rotation[0],
@@ -1310,20 +1300,19 @@ pub fn obb_face_normals(obb: &Obb) -> [[f64; 3]; 6] {
     ]
 }
 /// Return the normal of the OBB face closest to the world-space `query` point.
-#[allow(dead_code)]
 pub fn obb_closest_face_normal(obb: &Obb, query: [f64; 3]) -> [f64; 3] {
     let d = sub3_raw(query, obb.center);
     let mut best_dot = f64::NEG_INFINITY;
     let mut best_normal = obb.rotation[0];
-    for i in 0..3 {
-        let proj = dot3_raw(d, obb.rotation[i]);
+    for &rot in &obb.rotation {
+        let proj = dot3_raw(d, rot);
         if proj > best_dot {
             best_dot = proj;
-            best_normal = obb.rotation[i];
+            best_normal = rot;
         }
         if -proj > best_dot {
             best_dot = -proj;
-            best_normal = negate3_raw(obb.rotation[i]);
+            best_normal = negate3_raw(rot);
         }
     }
     best_normal
@@ -1332,7 +1321,6 @@ pub fn obb_closest_face_normal(obb: &Obb, query: [f64; 3]) -> [f64; 3] {
 ///
 /// Returns a list of (axis, overlap) pairs in the order they were tested.
 /// Any axis where the shapes are separated returns `None` in the overlap slot.
-#[allow(dead_code)]
 pub fn obb_obb_all_axis_overlaps(a: &Obb, b: &Obb) -> Vec<([f64; 3], Option<f64>)> {
     let mut results = Vec::with_capacity(15);
     let axes_a = a.rotation;
@@ -1343,9 +1331,9 @@ pub fn obb_obb_all_axis_overlaps(a: &Obb, b: &Obb) -> Vec<([f64; 3], Option<f64>
     for &ax in &axes_b {
         results.push((ax, sat_test_axis(a, b, ax)));
     }
-    for i in 0..3 {
-        for j in 0..3 {
-            let cross = cross3_raw(axes_a[i], axes_b[j]);
+    for &ai in &axes_a {
+        for &bj in &axes_b {
+            let cross = cross3_raw(ai, bj);
             results.push((cross, sat_test_axis(a, b, cross)));
         }
     }
@@ -1447,8 +1435,8 @@ mod tests_obb_extended {
         let obb = Obb::axis_aligned([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
         let (center, radius) = obb_bounding_sphere(&obb);
         let expected_r = 3.0_f64.sqrt();
-        for i in 0..3 {
-            assert!(center[i].abs() < 1e-10, "center[{}]={}", i, center[i]);
+        for (i, &ci) in center.iter().enumerate() {
+            assert!(ci.abs() < 1e-10, "center[{}]={}", i, ci);
         }
         assert!((radius - expected_r).abs() < 1e-10, "radius={}", radius);
     }

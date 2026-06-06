@@ -3,15 +3,11 @@
 //! GearTrain, TorqueSpring, MotorRundownIdentifier, BackEmfObserver,
 //! RegenerativeBrakeController, HarmonicDrive, BldcMotor, SpringDamper,
 //! MotorThermalModel, ZnTuningMethod.
-
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{regenerated_power, regenerative_braking_torque, trapezoidal_wave};
 use super::types::{PidController, TrapPhase};
 
 /// Ziegler-Nichols tuning rule variant.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub enum ZnTuningMethod {
     /// Classic Z-N: highest loop bandwidth, quarter-decay ratio.
     Classic,
@@ -293,8 +289,6 @@ pub struct MotorWindingThermal {
 }
 impl MotorWindingThermal {
     /// Create a new thermal model.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(non_snake_case)]
     pub fn new(
         r_winding_housing: f64,
         r_housing_ambient: f64,
@@ -330,13 +324,45 @@ impl MotorWindingThermal {
         p * (self.r_winding_housing + self.r_housing_ambient)
     }
 }
+/// Gain configuration for a [`CascadedPid`] controller.
+///
+/// Groups the 12 PID parameters (Kp, Ki, Kd, max for each of three loops) into
+/// a single struct so that [`CascadedPid::new`] stays within the argument-count
+/// limit.
+#[derive(Debug, Clone, Copy)]
+pub struct CascadedPidGains {
+    /// Position loop proportional gain
+    pub pos_kp: f64,
+    /// Position loop integral gain
+    pub pos_ki: f64,
+    /// Position loop derivative gain
+    pub pos_kd: f64,
+    /// Position loop output saturation (rad/s)
+    pub pos_max: f64,
+    /// Velocity loop proportional gain
+    pub vel_kp: f64,
+    /// Velocity loop integral gain
+    pub vel_ki: f64,
+    /// Velocity loop derivative gain
+    pub vel_kd: f64,
+    /// Velocity loop output saturation (A)
+    pub vel_max: f64,
+    /// Current loop proportional gain
+    pub cur_kp: f64,
+    /// Current loop integral gain
+    pub cur_ki: f64,
+    /// Current loop derivative gain
+    pub cur_kd: f64,
+    /// Current loop output saturation (V)
+    pub cur_max: f64,
+}
+
 /// Cascaded PID controller: outer position loop drives inner velocity loop,
 /// which in turn drives a current (torque) command.
 ///
 /// # Physical motivation
 /// High-performance servo drives use a cascade architecture to separately tune
 /// bandwidth for position tracking, velocity bandwidth, and current bandwidth.
-#[allow(dead_code)]
 pub struct CascadedPid {
     /// Outer position loop controller.
     pub position_pid: PidController,
@@ -350,28 +376,14 @@ pub struct CascadedPid {
     pub current_cmd_limit: f64,
 }
 impl CascadedPid {
-    /// Create a cascaded PID with separate gains for each loop.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        pos_kp: f64,
-        pos_ki: f64,
-        pos_kd: f64,
-        pos_max: f64,
-        vel_kp: f64,
-        vel_ki: f64,
-        vel_kd: f64,
-        vel_max: f64,
-        cur_kp: f64,
-        cur_ki: f64,
-        cur_kd: f64,
-        cur_max: f64,
-    ) -> Self {
+    /// Create a cascaded PID from a [`CascadedPidGains`] configuration bundle.
+    pub fn new(g: CascadedPidGains) -> Self {
         Self {
-            position_pid: PidController::new(pos_kp, pos_ki, pos_kd, pos_max),
-            velocity_pid: PidController::new(vel_kp, vel_ki, vel_kd, vel_max),
-            current_pid: PidController::new(cur_kp, cur_ki, cur_kd, cur_max),
-            vel_cmd_limit: vel_max,
-            current_cmd_limit: cur_max,
+            position_pid: PidController::new(g.pos_kp, g.pos_ki, g.pos_kd, g.pos_max),
+            velocity_pid: PidController::new(g.vel_kp, g.vel_ki, g.vel_kd, g.vel_max),
+            current_pid: PidController::new(g.cur_kp, g.cur_ki, g.cur_kd, g.cur_max),
+            vel_cmd_limit: g.vel_max,
+            current_cmd_limit: g.cur_max,
         }
     }
     /// Run one update step.
@@ -417,7 +429,6 @@ impl CascadedPid {
 ///
 /// Generates position, velocity, and acceleration commands for smooth
 /// point-to-point motion with bounded acceleration.
-#[allow(dead_code)]
 pub struct TrapezoidalProfile {
     /// Maximum cruise velocity (units/s).
     pub v_max: f64,
@@ -608,7 +619,6 @@ impl PwmController {
 ///
 /// Relates input shaft to output shaft through a gear ratio and efficiency.
 /// gear_ratio = ω_in / ω_out  (> 1 means speed reduction, torque amplification).
-#[allow(dead_code)]
 pub struct GearTrain {
     /// Gear ratio N = ω_in / ω_out.
     pub gear_ratio: f64,
@@ -861,15 +871,13 @@ impl MotorRundownIdentifier {
 /// E_emf = V - R_a·I - L_a·(dI/dt)
 /// ω_est = E_emf / K_e
 /// ```
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub struct BackEmfObserver {
     /// Armature resistance (Ω).
-    pub R_a: f64,
+    pub r_a: f64,
     /// Armature inductance (H).
-    pub L_a: f64,
+    pub l_a: f64,
     /// Back-EMF constant K_e (V·s/rad).
-    pub K_e: f64,
+    pub k_e: f64,
     /// Low-pass filter coefficient α ∈ (0, 1].
     pub alpha: f64,
     /// Previous current sample (A) for derivative estimation.
@@ -881,12 +889,11 @@ impl BackEmfObserver {
     /// Create a new back-EMF observer.
     ///
     /// `alpha` is the IIR filter coefficient.  Set to 1.0 for no filtering.
-    #[allow(non_snake_case)]
-    pub fn new(R_a: f64, L_a: f64, K_e: f64, alpha: f64) -> Self {
+    pub fn new(r_a: f64, l_a: f64, k_e: f64, alpha: f64) -> Self {
         Self {
-            R_a,
-            L_a,
-            K_e,
+            r_a,
+            l_a,
+            k_e,
             alpha,
             prev_current: 0.0,
             omega_est: 0.0,
@@ -896,21 +903,20 @@ impl BackEmfObserver {
     /// timestep `dt`.
     ///
     /// Returns the new estimated speed (rad/s).
-    #[allow(non_snake_case)]
-    pub fn update(&mut self, V: f64, I: f64, dt: f64) -> f64 {
-        let dI_dt = if dt > 1e-15 {
-            (I - self.prev_current) / dt
+    pub fn update(&mut self, v: f64, i: f64, dt: f64) -> f64 {
+        let d_i_dt = if dt > 1e-15 {
+            (i - self.prev_current) / dt
         } else {
             0.0
         };
-        let e_emf = V - self.R_a * I - self.L_a * dI_dt;
-        let omega_raw = if self.K_e.abs() > 1e-15 {
-            e_emf / self.K_e
+        let e_emf = v - self.r_a * i - self.l_a * d_i_dt;
+        let omega_raw = if self.k_e.abs() > 1e-15 {
+            e_emf / self.k_e
         } else {
             0.0
         };
         self.omega_est = self.alpha * omega_raw + (1.0 - self.alpha) * self.omega_est;
-        self.prev_current = I;
+        self.prev_current = i;
         self.omega_est
     }
     /// Reset observer state.
@@ -923,7 +929,6 @@ impl BackEmfObserver {
 ///
 /// Decides whether to apply regenerative braking or friction braking based
 /// on speed and battery state of charge.
-#[allow(dead_code)]
 pub struct RegenerativeBrakeController {
     /// Minimum speed below which regeneration is disabled (rad/s).
     pub min_regen_speed: f64,
@@ -946,7 +951,6 @@ pub struct RegenerativeBrakeController {
 }
 impl RegenerativeBrakeController {
     /// Create a new regenerative brake controller.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         min_regen_speed: f64,
         ke: f64,
@@ -1055,7 +1059,6 @@ pub struct BldcMotor {
 }
 impl BldcMotor {
     /// Create a BLDC motor.
-    #[allow(non_snake_case)]
     pub fn new(
         phase_resistance: f64,
         phase_inductance: f64,
@@ -1168,7 +1171,6 @@ pub struct MotorThermalModel {
 }
 impl MotorThermalModel {
     /// Create a new thermal model.
-    #[allow(non_snake_case)]
     pub fn new(
         ambient_temperature: f64,
         max_temperature: f64,

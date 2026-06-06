@@ -2,12 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(
-    clippy::needless_range_loop,
-    clippy::should_implement_trait,
-    clippy::too_many_arguments
-)]
-#[allow(unused_imports)]
 use super::functions::*;
 /// Alpha-cut representation of a fuzzy number.
 #[derive(Clone, Debug)]
@@ -682,10 +676,10 @@ impl RandomField {
     pub fn covariance_matrix(&self) -> Vec<Vec<f64>> {
         let n = self.mesh.len();
         let mut c = vec![vec![0.0f64; n]; n];
-        for i in 0..n {
-            for j in 0..n {
+        for (i, row) in c.iter_mut().enumerate().take(n) {
+            for (j, cell) in row.iter_mut().enumerate().take(n) {
                 let r = (self.mesh[i] - self.mesh[j]).abs();
-                c[i][j] = self.kernel(r);
+                *cell = self.kernel(r);
             }
         }
         c
@@ -891,22 +885,6 @@ impl IntervalFem {
             u_tip_interval: Interval::new(0.0, 0.0),
         }
     }
-    /// Solve for a given E vector and return tip displacement.
-    #[allow(dead_code)]
-    fn solve_e(&self, e_vec: &[f64]) -> f64 {
-        let sfem = StochasticFem::new(
-            self.n_elem,
-            self.area,
-            self.elem_len * self.n_elem as f64,
-            self.tip_load,
-            e_vec.iter().sum::<f64>() / e_vec.len().max(1) as f64,
-            0.0,
-            1,
-        );
-        let e_uniform = sfem.e_mean;
-        let u = sfem.solve(&vec![e_uniform; self.n_elem]);
-        *u.last().unwrap_or(&0.0)
-    }
     /// Vertex method: enumerate corners of the interval hypercube.
     ///
     /// For `n_elem` up to 20 (2^n_elem evaluations).
@@ -963,12 +941,28 @@ impl Interval {
     pub fn rad(&self) -> f64 {
         0.5 * (self.hi - self.lo)
     }
-    /// Interval addition.
-    pub fn add(self, other: Interval) -> Interval {
+    /// Interval scalar multiply.
+    pub fn scale(self, s: f64) -> Interval {
+        if s >= 0.0 {
+            Interval::new(self.lo * s, self.hi * s)
+        } else {
+            Interval::new(self.hi * s, self.lo * s)
+        }
+    }
+}
+
+impl std::ops::Add for Interval {
+    type Output = Interval;
+    /// Interval addition: [a, b] + [c, d] = [a+c, b+d].
+    fn add(self, other: Interval) -> Interval {
         Interval::new(self.lo + other.lo, self.hi + other.hi)
     }
-    /// Interval multiplication.
-    pub fn mul(self, other: Interval) -> Interval {
+}
+
+impl std::ops::Mul for Interval {
+    type Output = Interval;
+    /// Interval multiplication: [a, b] * [c, d] = [min, max] of all products.
+    fn mul(self, other: Interval) -> Interval {
         let products = [
             self.lo * other.lo,
             self.lo * other.hi,
@@ -979,14 +973,6 @@ impl Interval {
             products.iter().cloned().fold(f64::INFINITY, f64::min),
             products.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
         )
-    }
-    /// Interval scalar multiply.
-    pub fn scale(self, s: f64) -> Interval {
-        if s >= 0.0 {
-            Interval::new(self.lo * s, self.hi * s)
-        } else {
-            Interval::new(self.hi * s, self.lo * s)
-        }
     }
 }
 /// Direct differentiation method for response sensitivities.
@@ -1212,9 +1198,9 @@ impl PerturbationFem {
         let n = self.n_elem;
         let mut var = 0.0;
         let mut sensitivities = vec![0.0f64; n];
-        for ie in 0..n {
+        for (ie, sens_ie) in sensitivities.iter_mut().enumerate().take(n) {
             let u1 = self.first_order_response(ie, &u0);
-            sensitivities[ie] = *u1.last().unwrap_or(&0.0);
+            *sens_ie = *u1.last().unwrap_or(&0.0);
         }
         for i in 0..n {
             for j in 0..n {

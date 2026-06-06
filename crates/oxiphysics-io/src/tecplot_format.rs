@@ -1,4 +1,3 @@
-#![allow(clippy::should_implement_trait)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -64,7 +63,13 @@ impl TecplotZoneType {
     }
 
     /// Parse from a Tecplot ASCII keyword (case-insensitive).
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_keyword(s: &str) -> Self {
+        Self::from(s)
+    }
+}
+
+impl From<&str> for TecplotZoneType {
+    fn from(s: &str) -> Self {
         match s.trim().to_uppercase().as_str() {
             "ORDERED" => TecplotZoneType::Ordered,
             "FETRIANGLE" | "FE_TRIANGLE" => TecplotZoneType::FETriangle,
@@ -439,7 +444,7 @@ impl TecplotReader {
         let zone_type_str = Self::extract_param_value(line, "ZONETYPE")
             .or_else(|| Self::extract_param_value(line, "F"))
             .unwrap_or_else(|| "ORDERED".to_string());
-        let zone_type = TecplotZoneType::from_str(&zone_type_str);
+        let zone_type = TecplotZoneType::from_keyword(&zone_type_str);
 
         let mut zone = if zone_type == TecplotZoneType::Ordered {
             TecplotZone::new_ordered(title, i_dim, j_dim, k_dim)
@@ -554,7 +559,7 @@ mod tests {
     #[test]
     fn test_zone_type_from_str_ordered() {
         assert_eq!(
-            TecplotZoneType::from_str("ORDERED"),
+            TecplotZoneType::from_keyword("ORDERED"),
             TecplotZoneType::Ordered
         );
     }
@@ -562,7 +567,7 @@ mod tests {
     #[test]
     fn test_zone_type_from_str_fe_triangle() {
         assert_eq!(
-            TecplotZoneType::from_str("FETRIANGLE"),
+            TecplotZoneType::from_keyword("FETRIANGLE"),
             TecplotZoneType::FETriangle
         );
     }
@@ -570,7 +575,7 @@ mod tests {
     #[test]
     fn test_zone_type_from_str_fe_tetra() {
         assert_eq!(
-            TecplotZoneType::from_str("FETETRAHEDRON"),
+            TecplotZoneType::from_keyword("FETETRAHEDRON"),
             TecplotZoneType::FETetra
         );
     }
@@ -578,7 +583,7 @@ mod tests {
     #[test]
     fn test_zone_type_from_str_case_insensitive() {
         assert_eq!(
-            TecplotZoneType::from_str("ordered"),
+            TecplotZoneType::from_keyword("ordered"),
             TecplotZoneType::Ordered
         );
     }
@@ -586,7 +591,7 @@ mod tests {
     #[test]
     fn test_zone_type_from_str_unknown_defaults_to_ordered() {
         assert_eq!(
-            TecplotZoneType::from_str("UNKNOWN"),
+            TecplotZoneType::from_keyword("UNKNOWN"),
             TecplotZoneType::Ordered
         );
     }
@@ -682,46 +687,56 @@ mod tests {
 
     #[test]
     fn test_write_creates_file() {
-        let path = "/tmp/oxiphysics_tecplot_write_test.dat";
-        let ds = make_1d_dataset(path, 5);
-        TecplotWriter::new().write(&ds, path).expect("write failed");
-        assert!(std::path::Path::new(path).exists());
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_write_test.dat");
+        let ds = make_1d_dataset(path.to_str().unwrap_or(""), 5);
+        TecplotWriter::new()
+            .write(&ds, path.to_str().unwrap_or(""))
+            .expect("write failed");
+        assert!(path.exists());
     }
 
     #[test]
     fn test_write_contains_title() {
-        let path = "/tmp/oxiphysics_tecplot_title.dat";
-        let ds = make_1d_dataset(path, 3);
-        TecplotWriter::new().write(&ds, path).unwrap();
-        let content = fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_title.dat");
+        let ds = make_1d_dataset(path.to_str().unwrap_or(""), 3);
+        TecplotWriter::new()
+            .write(&ds, path.to_str().unwrap_or(""))
+            .unwrap();
+        let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("Test Dataset"), "no title in output");
     }
 
     #[test]
     fn test_write_contains_variables() {
-        let path = "/tmp/oxiphysics_tecplot_vars.dat";
-        let ds = make_1d_dataset(path, 3);
-        TecplotWriter::new().write(&ds, path).unwrap();
-        let content = fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_vars.dat");
+        let ds = make_1d_dataset(path.to_str().unwrap_or(""), 3);
+        TecplotWriter::new()
+            .write(&ds, path.to_str().unwrap_or(""))
+            .unwrap();
+        let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("VARIABLES"), "no VARIABLES header");
         assert!(content.contains('"'), "variables not quoted");
     }
 
     #[test]
     fn test_write_contains_zone_keyword() {
-        let path = "/tmp/oxiphysics_tecplot_zone_kw.dat";
-        let ds = make_1d_dataset(path, 3);
-        TecplotWriter::new().write(&ds, path).unwrap();
-        let content = fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_zone_kw.dat");
+        let ds = make_1d_dataset(path.to_str().unwrap_or(""), 3);
+        TecplotWriter::new()
+            .write(&ds, path.to_str().unwrap_or(""))
+            .unwrap();
+        let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("ZONE"), "no ZONE header");
     }
 
     #[test]
     fn test_write_ordered_has_ijk() {
-        let path = "/tmp/oxiphysics_tecplot_ijk.dat";
-        let ds = make_1d_dataset(path, 3);
-        TecplotWriter::new().write(&ds, path).unwrap();
-        let content = fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_ijk.dat");
+        let ds = make_1d_dataset(path.to_str().unwrap_or(""), 3);
+        TecplotWriter::new()
+            .write(&ds, path.to_str().unwrap_or(""))
+            .unwrap();
+        let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("I="), "no I= in ZONE header");
         assert!(content.contains("J="), "no J= in ZONE header");
         assert!(content.contains("K="), "no K= in ZONE header");
@@ -730,10 +745,12 @@ mod tests {
     #[test]
     fn test_write_data_lines_count() {
         // A 1D ordered zone with I=4 should produce exactly 4 data rows
-        let path = "/tmp/oxiphysics_tecplot_datarows.dat";
-        let ds = make_1d_dataset(path, 4);
-        TecplotWriter::new().write(&ds, path).unwrap();
-        let content = fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_datarows.dat");
+        let ds = make_1d_dataset(path.to_str().unwrap_or(""), 4);
+        TecplotWriter::new()
+            .write(&ds, path.to_str().unwrap_or(""))
+            .unwrap();
+        let content = fs::read_to_string(&path).unwrap();
         // Count lines that start with a digit or '-' (data lines)
         let data_lines = content
             .lines()
@@ -747,15 +764,17 @@ mod tests {
 
     #[test]
     fn test_write_fe_zone() {
-        let path = "/tmp/oxiphysics_tecplot_fe_zone.dat";
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_fe_zone.dat");
         let mut ds = TecplotDataset::new("FE Dataset");
         ds.variables = vec!["X".to_string()];
         let mut zone = TecplotZone::new_fe("FE Zone", TecplotZoneType::FETetra, 4, 1);
         zone.variables
             .push(TecplotVariable::new("X", vec![0.0, 1.0, 0.0, 0.0]));
         ds.zones.push(zone);
-        TecplotWriter::new().write(&ds, path).unwrap();
-        let content = fs::read_to_string(path).unwrap();
+        TecplotWriter::new()
+            .write(&ds, path.to_str().unwrap_or(""))
+            .unwrap();
+        let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("FETETRAHEDRON"));
     }
 
@@ -763,55 +782,55 @@ mod tests {
 
     #[test]
     fn test_roundtrip_title() {
-        let path = "/tmp/oxiphysics_tecplot_rt_title.dat";
-        let ds = make_1d_dataset(path, 3);
-        ds.write(path).unwrap();
-        let parsed = TecplotDataset::read(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_rt_title.dat");
+        let ds = make_1d_dataset(path.to_str().unwrap_or(""), 3);
+        ds.write(path.to_str().unwrap_or("")).unwrap();
+        let parsed = TecplotDataset::read(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(parsed.title, "Test Dataset");
     }
 
     #[test]
     fn test_roundtrip_variable_names() {
-        let path = "/tmp/oxiphysics_tecplot_rt_varnames.dat";
-        let ds = make_1d_dataset(path, 3);
-        ds.write(path).unwrap();
-        let parsed = TecplotDataset::read(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_rt_varnames.dat");
+        let ds = make_1d_dataset(path.to_str().unwrap_or(""), 3);
+        ds.write(path.to_str().unwrap_or("")).unwrap();
+        let parsed = TecplotDataset::read(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(parsed.variables, vec!["X", "P"]);
     }
 
     #[test]
     fn test_roundtrip_zone_count() {
-        let path = "/tmp/oxiphysics_tecplot_rt_nzones.dat";
-        let ds = make_1d_dataset(path, 3);
-        ds.write(path).unwrap();
-        let parsed = TecplotDataset::read(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_rt_nzones.dat");
+        let ds = make_1d_dataset(path.to_str().unwrap_or(""), 3);
+        ds.write(path.to_str().unwrap_or("")).unwrap();
+        let parsed = TecplotDataset::read(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(parsed.zones.len(), 1, "expected 1 zone");
     }
 
     #[test]
     fn test_roundtrip_zone_type_ordered() {
-        let path = "/tmp/oxiphysics_tecplot_rt_ztype.dat";
-        let ds = make_1d_dataset(path, 3);
-        ds.write(path).unwrap();
-        let parsed = TecplotDataset::read(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_rt_ztype.dat");
+        let ds = make_1d_dataset(path.to_str().unwrap_or(""), 3);
+        ds.write(path.to_str().unwrap_or("")).unwrap();
+        let parsed = TecplotDataset::read(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(parsed.zones[0].zone_type, TecplotZoneType::Ordered);
     }
 
     #[test]
     fn test_roundtrip_zone_i_dim() {
-        let path = "/tmp/oxiphysics_tecplot_rt_idim.dat";
-        let ds = make_1d_dataset(path, 5);
-        ds.write(path).unwrap();
-        let parsed = TecplotDataset::read(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_rt_idim.dat");
+        let ds = make_1d_dataset(path.to_str().unwrap_or(""), 5);
+        ds.write(path.to_str().unwrap_or("")).unwrap();
+        let parsed = TecplotDataset::read(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(parsed.zones[0].i_dim, 5);
     }
 
     #[test]
     fn test_roundtrip_data_values() {
-        let path = "/tmp/oxiphysics_tecplot_rt_data.dat";
-        let ds = make_1d_dataset(path, 3);
-        ds.write(path).unwrap();
-        let parsed = TecplotDataset::read(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_rt_data.dat");
+        let ds = make_1d_dataset(path.to_str().unwrap_or(""), 3);
+        ds.write(path.to_str().unwrap_or("")).unwrap();
+        let parsed = TecplotDataset::read(path.to_str().unwrap_or("")).unwrap();
         let zone = &parsed.zones[0];
         // X variable should be [0,1,2]
         let x_var = zone.variables.iter().find(|v| v.name == "X").unwrap();
@@ -822,10 +841,10 @@ mod tests {
 
     #[test]
     fn test_roundtrip_second_variable() {
-        let path = "/tmp/oxiphysics_tecplot_rt_p.dat";
-        let ds = make_1d_dataset(path, 3);
-        ds.write(path).unwrap();
-        let parsed = TecplotDataset::read(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_rt_p.dat");
+        let ds = make_1d_dataset(path.to_str().unwrap_or(""), 3);
+        ds.write(path.to_str().unwrap_or("")).unwrap();
+        let parsed = TecplotDataset::read(path.to_str().unwrap_or("")).unwrap();
         let zone = &parsed.zones[0];
         let p_var = zone.variables.iter().find(|v| v.name == "P").unwrap();
         assert!((p_var.data[0]).abs() < 1e-6, "P[0]={}", p_var.data[0]);
@@ -835,7 +854,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_multi_zone() {
-        let path = "/tmp/oxiphysics_tecplot_rt_mz.dat";
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_rt_mz.dat");
         let mut ds = TecplotDataset::new("Multi");
         ds.variables = vec!["X".to_string()];
         for i in 0..3usize {
@@ -844,24 +863,25 @@ mod tests {
                 .push(TecplotVariable::new("X", vec![i as f64, i as f64 + 1.0]));
             ds.zones.push(z);
         }
-        ds.write(path).unwrap();
-        let parsed = TecplotDataset::read(path).unwrap();
+        ds.write(path.to_str().unwrap_or("")).unwrap();
+        let parsed = TecplotDataset::read(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(parsed.zones.len(), 3, "expected 3 zones");
     }
 
     #[test]
     fn test_read_missing_file_returns_error() {
-        let result = TecplotDataset::read("/tmp/no_such_file_oxiphysics_tec.dat");
+        let path = std::env::temp_dir().join("no_such_file_oxiphysics_tec.dat");
+        let result = TecplotDataset::read(path.to_str().unwrap_or(""));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_roundtrip_large_ordered_zone() {
-        let path = "/tmp/oxiphysics_tecplot_large.dat";
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_large.dat");
         let n = 50;
-        let ds = make_1d_dataset(path, n);
-        ds.write(path).unwrap();
-        let parsed = TecplotDataset::read(path).unwrap();
+        let ds = make_1d_dataset(path.to_str().unwrap_or(""), n);
+        ds.write(path.to_str().unwrap_or("")).unwrap();
+        let parsed = TecplotDataset::read(path.to_str().unwrap_or("")).unwrap();
         let zone = &parsed.zones[0];
         assert_eq!(zone.i_dim, n);
         let x_var = zone.variables.iter().find(|v| v.name == "X").unwrap();
@@ -870,7 +890,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_3d_zone() {
-        let path = "/tmp/oxiphysics_tecplot_3d.dat";
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_3d.dat");
         let mut ds = TecplotDataset::new("3D");
         ds.variables = vec!["X".to_string()];
         let n = 2usize;
@@ -879,8 +899,8 @@ mod tests {
         let x: Vec<f64> = (0..total).map(|i| i as f64).collect();
         zone.variables.push(TecplotVariable::new("X", x));
         ds.zones.push(zone);
-        ds.write(path).unwrap();
-        let parsed = TecplotDataset::read(path).unwrap();
+        ds.write(path.to_str().unwrap_or("")).unwrap();
+        let parsed = TecplotDataset::read(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(parsed.zones[0].i_dim, n);
         assert_eq!(parsed.zones[0].j_dim, n);
         assert_eq!(parsed.zones[0].k_dim, n);
@@ -890,19 +910,23 @@ mod tests {
 
     #[test]
     fn test_writer_datapacking_point_keyword() {
-        let path = "/tmp/oxiphysics_tecplot_dpkw.dat";
-        let ds = make_1d_dataset(path, 2);
-        TecplotWriter::new().write(&ds, path).unwrap();
-        let content = fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_dpkw.dat");
+        let ds = make_1d_dataset(path.to_str().unwrap_or(""), 2);
+        TecplotWriter::new()
+            .write(&ds, path.to_str().unwrap_or(""))
+            .unwrap();
+        let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("DATAPACKING=POINT"));
     }
 
     #[test]
     fn test_writer_zone_title_in_output() {
-        let path = "/tmp/oxiphysics_tecplot_ztitle.dat";
-        let ds = make_1d_dataset(path, 2);
-        TecplotWriter::new().write(&ds, path).unwrap();
-        let content = fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_tecplot_ztitle.dat");
+        let ds = make_1d_dataset(path.to_str().unwrap_or(""), 2);
+        TecplotWriter::new()
+            .write(&ds, path.to_str().unwrap_or(""))
+            .unwrap();
+        let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("Zone 1"), "zone title missing");
     }
 

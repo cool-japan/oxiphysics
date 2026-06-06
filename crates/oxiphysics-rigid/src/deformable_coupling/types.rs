@@ -1,8 +1,6 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
 use super::functions::*;
 /// One-way coupling: drives deformable body kinematics from a rigid body.
 ///
@@ -485,7 +483,6 @@ impl SkinningMatrix {
         }
     }
     /// Compute skinned position of node `i` given `bone_positions` (m).
-    #[allow(clippy::too_many_arguments)]
     pub fn skinned_position(&self, node_index: usize, bone_positions: &[[f64; 3]]) -> [f64; 3] {
         let mut pos = [0.0; 3];
         for (b, &w) in self.weights[node_index].iter().enumerate() {

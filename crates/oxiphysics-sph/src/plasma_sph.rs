@@ -22,9 +22,6 @@
 //! - Spitzer & Härm (1953): Transport phenomena in a completely ionized gas
 //! - Saha (1920): On the physical theory of stellar spectra
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────

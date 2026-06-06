@@ -7,9 +7,6 @@
 //! fiber composites including rule-of-mixtures, Halpin–Tsai, and
 //! classical laminate theory (CLT) stiffness assembly.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

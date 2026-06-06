@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -19,7 +18,6 @@ use super::config::{Ensemble, KB_REDUCED, MdConfig, MdState};
 /// Records energy at each call to `update`, exposing running statistics:
 /// initial energy, maximum absolute drift, and relative drift.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct EnergyDriftTracker {
     /// Energy at step 0.
     pub e0: f64,
@@ -32,7 +30,6 @@ pub struct EnergyDriftTracker {
     initialized: bool,
 }
 
-#[allow(dead_code)]
 impl EnergyDriftTracker {
     /// Create a new tracker.
     pub fn new() -> Self {
@@ -76,7 +73,6 @@ impl EnergyDriftTracker {
 /// Bins pair distances into a histogram and normalises to yield g(r).
 /// Operates on plain `[f64; 3]` positions with an orthorhombic periodic box.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct RdfHistogram {
     /// Number of histogram bins.
     pub n_bins: usize,
@@ -94,7 +90,6 @@ pub struct RdfHistogram {
     pub volume: f64,
 }
 
-#[allow(dead_code)]
 impl RdfHistogram {
     /// Create a new RDF histogram with `n_bins` bins up to `r_max`.
     pub fn new(r_max: f64, n_bins: usize, volume: f64, n_atoms: usize) -> Self {
@@ -210,7 +205,6 @@ impl RdfHistogram {
 /// Accumulates C(t) = <v(0)·v(t)> / <v(0)·v(0)> by storing an initial
 /// velocity snapshot and correlating against later frames.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct VelocityAutocorrelation {
     /// Reference velocities at t=0 (Å ps⁻¹).
     pub v0: Vec<[f64; 3]>,
@@ -222,7 +216,6 @@ pub struct VelocityAutocorrelation {
     pub has_reference: bool,
 }
 
-#[allow(dead_code)]
 impl VelocityAutocorrelation {
     /// Create a new empty VACF accumulator.
     pub fn new() -> Self {
@@ -306,7 +299,6 @@ impl Default for VelocityAutocorrelation {
 /// Stores the symmetric 3×3 pressure tensor computed from kinetic and
 /// virial contributions.  Uses GROMACS-style units: kJ mol⁻¹ Å⁻³ → bar.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PressureTensor {
     /// 3×3 tensor stored row-major \[P_xx, P_xy, P_xz, P_yx, P_yy, P_yz, P_zx, P_zy, P_zz\].
     pub tensor: [f64; 9],
@@ -314,7 +306,6 @@ pub struct PressureTensor {
 
 pub(crate) const KJ_MOL_PER_ANG3_TO_BAR: f64 = 16_605.4;
 
-#[allow(dead_code)]
 impl PressureTensor {
     /// Create a zero tensor.
     pub fn zero() -> Self {
@@ -355,9 +346,9 @@ impl PressureTensor {
                 }
             }
         }
-        for a in 0..3 {
-            for b in 0..3 {
-                kt[a][b] /= volume;
+        for row in kt.iter_mut() {
+            for v in row.iter_mut() {
+                *v /= volume;
             }
         }
         kt
@@ -418,13 +409,11 @@ impl PressureTensor {
 /// Stores a history of observable values and computes the TCF by
 /// direct O(N²) summation.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct TimecorrelationFn {
     /// Stored observable values.
     pub history: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl TimecorrelationFn {
     /// Create an empty TCF accumulator.
     pub fn new() -> Self {
@@ -480,7 +469,6 @@ impl TimecorrelationFn {
 ///
 /// Supports both full and half (Newton's-third-law) neighbor lists.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NeighborList {
     /// Cutoff distance (Å).
     pub cutoff: f64,
@@ -494,7 +482,6 @@ pub struct NeighborList {
     pub last_positions: Vec<[f64; 3]>,
 }
 
-#[allow(dead_code)]
 impl NeighborList {
     /// Create a new [`NeighborList`] with given cutoff and skin.
     pub fn new(cutoff: f64, skin: f64) -> Self {
@@ -609,7 +596,6 @@ impl NeighborList {
 /// Supports abrupt switching (instant) and gradual ramp-up of
 /// thermostat/barostat coupling over a specified number of steps.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct EnsembleSwitcher {
     /// Current ensemble.
     pub current: Ensemble,
@@ -621,7 +607,6 @@ pub struct EnsembleSwitcher {
     pub ramp_steps: u64,
 }
 
-#[allow(dead_code)]
 impl EnsembleSwitcher {
     /// Create a switcher that is already in the target ensemble (no pending transition).
     pub fn new(ensemble: Ensemble) -> Self {
@@ -671,7 +656,6 @@ impl EnsembleSwitcher {
 
 /// Tracks energy statistics (min, max, running mean, variance) over a run.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct EnergyTracker {
     /// Number of samples accumulated.
     pub n: u64,
@@ -685,7 +669,6 @@ pub struct EnergyTracker {
     pub max: f64,
 }
 
-#[allow(dead_code)]
 impl EnergyTracker {
     /// Create a fresh [`EnergyTracker`].
     pub fn new() -> Self {
@@ -766,13 +749,11 @@ impl Default for EnergyTracker {
 
 /// Accumulates instantaneous pressure measurements for statistical analysis.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct PressureTracker {
     /// Accumulated pressure samples (bar).
     pub samples: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl PressureTracker {
     /// Create an empty tracker.
     pub fn new() -> Self {
@@ -843,7 +824,6 @@ pub trait StepCallback {
 
 /// A simple [`StepCallback`] that records energy and temperature.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct LoggingCallback {
     /// How often to record (0 = never).
     pub freq: u64,
@@ -860,7 +840,6 @@ impl StepCallback for LoggingCallback {
     }
 }
 
-#[allow(dead_code)]
 impl LoggingCallback {
     /// Create a new callback that records every `freq` steps.
     pub fn new(freq: u64) -> Self {
@@ -879,7 +858,6 @@ impl LoggingCallback {
 ///
 /// Useful as a reference system with analytically known forces and energies.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct HarmonicWell {
     /// Spring constant (kJ mol⁻¹ Å⁻²).
     pub k: f64,
@@ -887,7 +865,6 @@ pub struct HarmonicWell {
     pub center: [f64; 3],
 }
 
-#[allow(dead_code)]
 impl HarmonicWell {
     /// Create a harmonic well centred at the origin.
     pub fn new(k: f64) -> Self {
@@ -948,7 +925,6 @@ impl HarmonicWell {
 /// Andersen thermostat: randomly reassigns atom velocities from a Maxwell–
 /// Boltzmann distribution at the target temperature with collision frequency ν.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AndersenThermostat {
     /// Target temperature (K).
     pub temperature: f64,
@@ -956,7 +932,6 @@ pub struct AndersenThermostat {
     pub nu: f64,
 }
 
-#[allow(dead_code)]
 impl AndersenThermostat {
     /// Create an Andersen thermostat.
     pub fn new(temperature: f64, nu: f64) -> Self {
@@ -997,7 +972,6 @@ impl AndersenThermostat {
 /// Applies friction (γ) and Gaussian random forces consistent with the
 /// fluctuation-dissipation theorem: σ² = 2 γ k_B T / m.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct LangevinThermostat {
     /// Target temperature (K).
     pub temperature: f64,
@@ -1005,7 +979,6 @@ pub struct LangevinThermostat {
     pub gamma: f64,
 }
 
-#[allow(dead_code)]
 impl LangevinThermostat {
     /// Create a Langevin thermostat.
     pub fn new(temperature: f64, gamma: f64) -> Self {
@@ -1043,13 +1016,11 @@ impl LangevinThermostat {
 
 /// Monitors box volume fluctuations in an NPT simulation.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct VolumeFluctuationMonitor {
     /// Accumulated volume samples (Å³).
     pub volumes: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl VolumeFluctuationMonitor {
     /// Create an empty monitor.
     pub fn new() -> Self {

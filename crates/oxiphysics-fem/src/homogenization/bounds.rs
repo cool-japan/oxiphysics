@@ -4,8 +4,6 @@
 //! Phase definitions and classical homogenization bounds
 //! (Voigt, Reuss, Hill, Hashin-Shtrikman, Mori-Tanaka).
 
-#![allow(dead_code)]
-
 use super::matrix_utils::*;
 
 // ---------------------------------------------------------------------------

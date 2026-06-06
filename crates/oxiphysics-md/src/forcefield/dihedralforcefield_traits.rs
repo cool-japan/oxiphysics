@@ -13,8 +13,6 @@ use crate::atom::AtomSet;
 use crate::neighbor::{PeriodicBox, distance_pbc};
 
 use super::functions::ForceField;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::DihedralForceField;
 
 impl Default for DihedralForceField {

@@ -2,10 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{
     ArtGalleryResult, ConvexFace3D, ConvexHull3D, DelaunayTri, Line2D, Point2, VoronoiCell2D,
 };
+use std::ops::{Add, Sub};
 
 /// A point in 3D space represented as a plain array.
 pub type Point3 = [f64; 3];
@@ -56,10 +56,6 @@ pub type HalfEdgeId = usize;
 pub type VertexId = usize;
 /// Index of a face in a `HalfEdgeMesh`.
 pub type FaceId = usize;
-/// Compute the signed volume of a tetrahedron formed by three points and the origin.
-pub(super) fn signed_tet_volume(a: Point3, b: Point3, c: Point3) -> f64 {
-    dot3(a, cross3(b, c)) / 6.0
-}
 /// Check if a point `p` is above (in the direction of the outward normal) a face defined
 /// by vertices `a`, `b`, `c` (counter-clockwise order from outside).
 pub(super) fn above_face(a: Point3, b: Point3, c: Point3, p: Point3) -> bool {
@@ -72,29 +68,24 @@ pub(super) fn initial_tetrahedron(pts: &[Point3]) -> Option<ConvexHull3D> {
         return None;
     }
     let p0 = pts[0];
-    let mut p1_idx = None;
-    for i in 1..pts.len() {
-        if mag3(sub3(pts[i], p0)) > 1e-10 {
-            p1_idx = Some(i);
-            break;
-        }
-    }
-    let p1_idx = p1_idx?;
+    let p1_idx = pts
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, p)| mag3(sub3(**p, p0)) > 1e-10)
+        .map(|(i, _)| i)?;
     let p1 = pts[p1_idx];
-    let mut p2_idx = None;
-    for i in (p1_idx + 1)..pts.len() {
-        let v = cross3(sub3(p1, p0), sub3(pts[i], p0));
-        if mag3(v) > 1e-10 {
-            p2_idx = Some(i);
-            break;
-        }
-    }
-    let p2_idx = p2_idx?;
+    let p2_idx = pts
+        .iter()
+        .enumerate()
+        .skip(p1_idx + 1)
+        .find(|(_, p)| mag3(cross3(sub3(p1, p0), sub3(**p, p0))) > 1e-10)
+        .map(|(i, _)| i)?;
     let p2 = pts[p2_idx];
     let mut p3_idx = None;
     let normal = cross3(sub3(p1, p0), sub3(p2, p0));
-    for i in (p2_idx + 1)..pts.len() {
-        if dot3(normal, sub3(pts[i], p0)).abs() > 1e-10 {
+    for (i, &pt) in pts.iter().enumerate().skip(p2_idx + 1) {
+        if dot3(normal, sub3(pt, p0)).abs() > 1e-10 {
             p3_idx = Some(i);
             break;
         }

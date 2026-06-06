@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -18,9 +17,6 @@
 //! - Viewshed analysis (line-of-sight)
 //! - Slope stability index (infinite slope model)
 //! - Solar irradiance on terrain (incidence angle, terrain shading)
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -528,12 +524,12 @@ pub fn terrain_roughness_index(dem: &Dem) -> Vec<f64> {
             let z = dem.heights[r * dem.cols + c];
             let w = dem.window_3x3(r, c);
             let mut sum_sq = 0.0f64;
-            for dr in 0..3usize {
-                for dc in 0..3usize {
+            for (dr, row) in w.iter().enumerate() {
+                for (dc, &wv) in row.iter().enumerate() {
                     if dr == 1 && dc == 1 {
                         continue;
                     }
-                    let diff = w[dr][dc] - z;
+                    let diff = wv - z;
                     sum_sq += diff * diff;
                 }
             }
@@ -938,13 +934,13 @@ pub fn fill_sinks(dem: &Dem, max_iterations: usize) -> Dem {
                 let w = filled.window_3x3(r, c);
                 let min_nb = {
                     let mut m = f64::MAX;
-                    for dr in 0..3usize {
-                        for dc in 0..3usize {
+                    for (dr, row) in w.iter().enumerate() {
+                        for (dc, &wv) in row.iter().enumerate() {
                             if dr == 1 && dc == 1 {
                                 continue;
                             }
-                            if w[dr][dc] < m {
-                                m = w[dr][dc];
+                            if wv < m {
+                                m = wv;
                             }
                         }
                     }

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -13,9 +12,6 @@
 //! - [`GeodesicDome`] — frequency-n geodesic sphere (Class I / II subdivision)
 //! - [`StructuralGlass`] — glass panel sizing under thermal, wind, and self-weight
 //! - [`ParametricFacade`] — adaptive solar-responsive facade paneling
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -569,10 +565,10 @@ impl TensileStructure {
                 forces[*b] = forces[*b].sub(&fv);
             }
             // Pressure load (−z direction for downward)
-            for i in 0..n {
+            for (i, force) in forces.iter_mut().enumerate() {
                 if !anchors.contains(&i) {
                     let fz = pressure * self.trib_areas[i];
-                    forces[i].z -= fz;
+                    force.z -= fz;
                 }
             }
             // Integrate
@@ -758,8 +754,8 @@ impl GeodesicDome {
             let f = frequency as f64;
             // Generate sub-vertices by barycentric interpolation
             let mut local: Vec<Vec<V3>> = vec![vec![V3::zero(); frequency + 1]; frequency + 1];
-            for i in 0..=frequency {
-                for j in 0..=frequency - i {
+            for (i, local_row) in local.iter_mut().enumerate() {
+                for (j, local_ij) in local_row.iter_mut().enumerate().take(frequency + 1 - i) {
                     let k = frequency - i - j;
                     let p = V3::new(
                         (i as f64 * va.x + j as f64 * vb.x + k as f64 * vc.x) / f,
@@ -767,7 +763,7 @@ impl GeodesicDome {
                         (i as f64 * va.z + j as f64 * vb.z + k as f64 * vc.z) / f,
                     );
                     // Project onto sphere
-                    local[i][j] = p.normalize().scale(radius);
+                    *local_ij = p.normalize().scale(radius);
                 }
             }
 

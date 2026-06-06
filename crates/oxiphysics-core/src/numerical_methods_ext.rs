@@ -5,8 +5,6 @@
 //! Provides high-order quadrature, spline interpolation, RBF interpolation,
 //! barycentric interpolation, and Richardson-extrapolated differentiation.
 
-#![allow(dead_code)]
-
 use std::f64::consts::FRAC_1_SQRT_2;
 
 /// Gauss-Legendre quadrature rule with `n` nodes on \[-1, 1\].
@@ -431,6 +429,26 @@ pub struct SimpsonRule {
     pub max_depth: usize,
 }
 
+/// Internal interval state for the adaptive Simpson recursion.
+struct SimpsonInterval {
+    /// Left endpoint.
+    a: f64,
+    /// Right endpoint.
+    b: f64,
+    /// Function value at `a`.
+    fa: f64,
+    /// Function value at midpoint `(a+b)/2`.
+    fm: f64,
+    /// Function value at `b`.
+    fb: f64,
+    /// Current whole-interval Simpson estimate.
+    s: f64,
+    /// Remaining tolerance for this sub-interval.
+    tol: f64,
+    /// Remaining recursion depth.
+    depth: usize,
+}
+
 impl SimpsonRule {
     /// Create with given tolerance.
     pub fn new(tol: f64, max_depth: usize) -> Self {
@@ -443,33 +461,50 @@ impl SimpsonRule {
         let fb = f(b);
         let fm = f(0.5 * (a + b));
         let s = simpson13(a, b, fa, fm, fb);
-        self.recursive(a, b, fa, fm, fb, s, self.tol, self.max_depth, f)
+        let iv = SimpsonInterval {
+            a,
+            b,
+            fa,
+            fm,
+            fb,
+            s,
+            tol: self.tol,
+            depth: self.max_depth,
+        };
+        Self::recursive(&iv, f)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn recursive<F: Fn(f64) -> f64>(
-        &self,
-        a: f64,
-        b: f64,
-        fa: f64,
-        fm: f64,
-        fb: f64,
-        s: f64,
-        tol: f64,
-        depth: usize,
-        f: &F,
-    ) -> f64 {
-        let mid = 0.5 * (a + b);
-        let fml = f(0.5 * (a + mid));
-        let fmr = f(0.5 * (mid + b));
-        let sl = simpson13(a, mid, fa, fml, fm);
-        let sr = simpson13(mid, b, fm, fmr, fb);
-        let err = ((sl + sr) - s).abs() / 15.0;
-        if depth == 0 || err < tol {
+    fn recursive<F: Fn(f64) -> f64>(iv: &SimpsonInterval, f: &F) -> f64 {
+        let mid = 0.5 * (iv.a + iv.b);
+        let fml = f(0.5 * (iv.a + mid));
+        let fmr = f(0.5 * (mid + iv.b));
+        let sl = simpson13(iv.a, mid, iv.fa, fml, iv.fm);
+        let sr = simpson13(mid, iv.b, iv.fm, fmr, iv.fb);
+        let err = ((sl + sr) - iv.s).abs() / 15.0;
+        if iv.depth == 0 || err < iv.tol {
             sl + sr + err
         } else {
-            self.recursive(a, mid, fa, fml, fm, sl, tol / 2.0, depth - 1, f)
-                + self.recursive(mid, b, fm, fmr, fb, sr, tol / 2.0, depth - 1, f)
+            let left = SimpsonInterval {
+                a: iv.a,
+                b: mid,
+                fa: iv.fa,
+                fm: fml,
+                fb: iv.fm,
+                s: sl,
+                tol: iv.tol / 2.0,
+                depth: iv.depth - 1,
+            };
+            let right = SimpsonInterval {
+                a: mid,
+                b: iv.b,
+                fa: iv.fm,
+                fm: fmr,
+                fb: iv.fb,
+                s: sr,
+                tol: iv.tol / 2.0,
+                depth: iv.depth - 1,
+            };
+            Self::recursive(&left, f) + Self::recursive(&right, f)
         }
     }
 
@@ -1022,7 +1057,6 @@ impl NumericalDifferentiation {
     }
 
     /// Arbitrary-order derivative (order 1..4) via finite differences.
-    #[allow(clippy::too_many_arguments)]
     pub fn nth_deriv<F: Fn(f64) -> f64>(&self, x: f64, order: usize, f: &F) -> f64 {
         match order {
             1 => self.first_deriv(x, f),
@@ -1098,20 +1132,20 @@ fn richardson_deriv2<F: Fn(f64) -> f64>(x: f64, h0: f64, levels: usize, f: &F) -
         .expect("row is non-empty")
 }
 
-// Helper trait for tests
-trait DiffExact {
-    fn diff_exact(self) -> f64;
-}
-
-impl DiffExact for f64 {
-    fn diff_exact(self) -> f64 {
-        3.0 * self * self
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Helper trait for tests only
+    trait DiffExact {
+        fn diff_exact(self) -> f64;
+    }
+
+    impl DiffExact for f64 {
+        fn diff_exact(self) -> f64 {
+            3.0 * self * self
+        }
+    }
 
     // ── Gauss-Legendre tests ──────────────────────────────────────────────
 

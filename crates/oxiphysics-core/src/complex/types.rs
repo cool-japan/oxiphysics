@@ -2,10 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 /// A dense N×N complex matrix stored in row-major order.
-#[allow(dead_code)]
 pub struct ComplexMatN {
     /// Number of rows and columns.
     pub n: usize,
@@ -128,7 +125,6 @@ impl ComplexMatN {
 /// `UnitQuaternion`) and provides raw (possibly non-unit) quaternion arithmetic
 /// together with transcendental operations and SLERP.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub struct QuatAlgebra {
     /// Scalar part.
     pub w: f64,
@@ -287,7 +283,6 @@ impl QuatAlgebra {
 }
 /// A complex number `re + im·i`.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub struct Complex {
     /// Real part.
     pub re: f64,

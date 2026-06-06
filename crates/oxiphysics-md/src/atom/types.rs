@@ -2,17 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use oxiphysics_core::math::Vec3;
 
 /// Predicate-based atom selection (MDAnalysis-style).
-#[allow(dead_code)]
 pub struct AtomSelection;
 impl AtomSelection {
     /// Select all atoms with `element == elem`.
-    #[allow(dead_code)]
     pub fn by_element(atoms: &[Atom], elem: Element) -> AtomGroup {
         let indices = atoms
             .iter()
@@ -23,7 +18,6 @@ impl AtomSelection {
         AtomGroup::new(format!("element_{elem:?}"), indices)
     }
     /// Select all atoms with `residue_id == rid`.
-    #[allow(dead_code)]
     pub fn by_residue(atoms: &[Atom], rid: u32) -> AtomGroup {
         let indices = atoms
             .iter()
@@ -34,7 +28,6 @@ impl AtomSelection {
         AtomGroup::new(format!("resid_{rid}"), indices)
     }
     /// Select all atoms whose atom_type contains the substring `needle`.
-    #[allow(dead_code)]
     pub fn by_atom_type(atoms: &[Atom], needle: &str) -> AtomGroup {
         let indices = atoms
             .iter()
@@ -45,7 +38,6 @@ impl AtomSelection {
         AtomGroup::new(format!("type_{needle}"), indices)
     }
     /// Select atoms with charge greater than `min_charge`.
-    #[allow(dead_code)]
     pub fn by_charge_gt(atoms: &[Atom], min_charge: f64) -> AtomGroup {
         let indices = atoms
             .iter()
@@ -56,7 +48,6 @@ impl AtomSelection {
         AtomGroup::new("charge_gt".to_string(), indices)
     }
     /// Select atoms within `radius` nm of a point.
-    #[allow(dead_code)]
     pub fn within_sphere(atoms: &[Atom], center: [f64; 3], radius: f64) -> AtomGroup {
         let r2 = radius * radius;
         let indices = atoms
@@ -73,7 +64,6 @@ impl AtomSelection {
         AtomGroup::new("sphere_sel", indices)
     }
     /// Select all heavy atoms (non-hydrogen).
-    #[allow(dead_code)]
     pub fn heavy_atoms(atoms: &[Atom]) -> AtomGroup {
         let indices = atoms
             .iter()
@@ -85,7 +75,6 @@ impl AtomSelection {
     }
 }
 /// A chain is a linear sequence of residues (e.g., a protein chain).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Chain {
     /// Chain identifier (e.g., 'A').
@@ -95,7 +84,6 @@ pub struct Chain {
 }
 impl Chain {
     /// Create a new empty chain with the given identifier.
-    #[allow(dead_code)]
     pub fn new(id: char) -> Self {
         Self {
             id,
@@ -103,18 +91,15 @@ impl Chain {
         }
     }
     /// Add a residue index.
-    #[allow(dead_code)]
     pub fn add_residue(&mut self, idx: usize) {
         self.residue_indices.push(idx);
     }
     /// Number of residues in this chain.
-    #[allow(dead_code)]
     pub fn n_residues(&self) -> usize {
         self.residue_indices.len()
     }
 }
 /// Common chemical elements used in MD simulations.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Element {
     /// Hydrogen
@@ -152,7 +137,6 @@ pub enum Element {
 }
 impl Element {
     /// Atomic mass in atomic mass units (u).
-    #[allow(dead_code)]
     pub fn mass(self) -> f64 {
         match self {
             Element::H => 1.008,
@@ -174,7 +158,6 @@ impl Element {
         }
     }
     /// Van der Waals radius in Angstrom (Å).
-    #[allow(dead_code)]
     pub fn van_der_waals_radius(self) -> f64 {
         match self {
             Element::H => 1.20,
@@ -196,7 +179,6 @@ impl Element {
         }
     }
     /// Covalent radius in Angstrom (Å).
-    #[allow(dead_code)]
     pub fn covalent_radius(self) -> f64 {
         match self {
             Element::H => 0.31,
@@ -218,7 +200,6 @@ impl Element {
         }
     }
     /// Pauling electronegativity (dimensionless).
-    #[allow(dead_code)]
     pub fn electronegativity(self) -> f64 {
         match self {
             Element::H => 2.20,
@@ -240,7 +221,6 @@ impl Element {
         }
     }
     /// Atomic number (proton count).
-    #[allow(dead_code)]
     pub fn atomic_number(self) -> u32 {
         match self {
             Element::H => 1,
@@ -323,7 +303,6 @@ impl AtomSet {
     /// Remove the atom at index `idx`, swapping with the last element.
     ///
     /// O(1) removal; does not preserve ordering.
-    #[allow(dead_code)]
     pub fn remove_atom(&mut self, idx: usize) {
         let last = self.positions.len() - 1;
         self.positions.swap(idx, last);
@@ -354,7 +333,6 @@ impl AtomSet {
         }
     }
     /// Clear all atoms, resetting to empty.
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.positions.clear();
         self.velocities.clear();
@@ -423,7 +401,6 @@ impl AtomSet {
     /// Rg = sqrt( sum_i m_i |r_i - r_com|^2 / M_total )
     ///
     /// Returns 0.0 for empty or zero-mass systems.
-    #[allow(dead_code)]
     pub fn radius_of_gyration(&self) -> f64 {
         let total_mass: f64 = self.masses.iter().sum();
         if total_mass <= 0.0 || self.positions.is_empty() {
@@ -442,7 +419,6 @@ impl AtomSet {
         (sum_mr2 / total_mass).sqrt()
     }
     /// Apply periodic boundary conditions: wrap all positions into \[0, L).
-    #[allow(dead_code)]
     pub fn apply_pbc(&mut self, box_lengths: [f64; 3]) {
         for pos in &mut self.positions {
             for k in 0..3 {
@@ -454,12 +430,10 @@ impl AtomSet {
         }
     }
     /// Compute the total charge of the system.
-    #[allow(dead_code)]
     pub fn total_charge(&self) -> f64 {
         self.charges.iter().sum()
     }
     /// Compute the total mass of the system.
-    #[allow(dead_code)]
     pub fn total_mass(&self) -> f64 {
         self.masses.iter().sum()
     }
@@ -467,30 +441,40 @@ impl AtomSet {
 impl AtomSet {
     /// Compute a coarse-grained contact map: returns an n×n boolean matrix
     /// where entry \[i\]\[j\] is `true` if atoms i and j are within `cutoff`.
-    #[allow(dead_code)]
     pub fn contact_map(&self, cutoff: f64) -> Vec<Vec<bool>> {
         let n = self.len();
         let mut map = vec![vec![false; n]; n];
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let p = &self.positions[i];
-                let q = &self.positions[j];
-                let dx = p.x - q.x;
-                let dy = p.y - q.y;
-                let dz = p.z - q.z;
-                let r2 = dx * dx + dy * dy + dz * dz;
-                if r2 <= cutoff * cutoff {
-                    map[i][j] = true;
-                    map[j][i] = true;
-                }
-            }
+        let cutoff2 = cutoff * cutoff;
+        let contacts: Vec<(usize, usize)> = self
+            .positions
+            .iter()
+            .enumerate()
+            .flat_map(|(i, p)| {
+                self.positions[(i + 1)..]
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(k, q)| {
+                        let j = i + 1 + k;
+                        let dx = p.x - q.x;
+                        let dy = p.y - q.y;
+                        let dz = p.z - q.z;
+                        if dx * dx + dy * dy + dz * dz <= cutoff2 {
+                            Some((i, j))
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .collect();
+        for (i, j) in contacts {
+            map[i][j] = true;
+            map[j][i] = true;
         }
         map
     }
     /// Scale all velocities to match a target temperature using the equipartition theorem.
     ///
     /// T_current must be > 0. Does nothing if T_current ≈ 0.
-    #[allow(dead_code)]
     pub fn rescale_velocities(&mut self, target_temperature: f64, boltzmann_k: f64) {
         let t_current = self.temperature(boltzmann_k);
         if t_current < 1e-10 {
@@ -504,7 +488,6 @@ impl AtomSet {
         }
     }
     /// Compute the root-mean-square velocity (nm/ps).
-    #[allow(dead_code)]
     pub fn rms_velocity(&self) -> f64 {
         if self.is_empty() {
             return 0.0;
@@ -513,7 +496,6 @@ impl AtomSet {
         (sum_v2 / self.len() as f64).sqrt()
     }
     /// Translate all atoms by a displacement vector.
-    #[allow(dead_code)]
     pub fn translate(&mut self, displacement: [f64; 3]) {
         for pos in &mut self.positions {
             pos.x += displacement[0];
@@ -522,7 +504,6 @@ impl AtomSet {
         }
     }
     /// Return the indices of atoms within a spherical cutoff of a reference point.
-    #[allow(dead_code)]
     pub fn atoms_in_sphere(&self, center: [f64; 3], radius: f64) -> Vec<usize> {
         let r2 = radius * radius;
         self.positions
@@ -543,7 +524,6 @@ impl AtomSet {
     ///
     /// Returns `([xmin, ymin, zmin], [xmax, ymax, zmax])`.
     /// Returns zeros if empty.
-    #[allow(dead_code)]
     pub fn bounding_box(&self) -> ([f64; 3], [f64; 3]) {
         if self.is_empty() {
             return ([0.0; 3], [0.0; 3]);
@@ -564,7 +544,6 @@ impl AtomSet {
         (lo, hi)
     }
     /// Return the maximum pairwise distance among all atoms.
-    #[allow(dead_code)]
     pub fn max_pairwise_distance(&self) -> f64 {
         let n = self.len();
         let mut max_d2 = 0.0_f64;
@@ -584,7 +563,6 @@ impl AtomSet {
     /// Compute the moment of inertia tensor (3×3, row-major) about the center of mass.
     ///
     /// Returns a flat array \[I_xx, I_xy, I_xz, I_yx, I_yy, I_yz, I_zx, I_zy, I_zz\].
-    #[allow(dead_code)]
     pub fn inertia_tensor(&self) -> [f64; 9] {
         let com = self.center_of_mass();
         let mut tensor = [0.0_f64; 9];
@@ -601,7 +579,6 @@ impl AtomSet {
         tensor
     }
     /// Rotate all positions by a rotation matrix R (row-major 3×3) about the origin.
-    #[allow(dead_code)]
     pub fn rotate(&mut self, r: [f64; 9]) {
         for pos in &mut self.positions {
             let x = r[0] * pos.x + r[1] * pos.y + r[2] * pos.z;
@@ -615,7 +592,6 @@ impl AtomSet {
     /// Compute the root-mean-square displacement (RMSD) of positions from a reference set.
     ///
     /// Returns 0.0 if atoms are empty or lengths differ.
-    #[allow(dead_code)]
     pub fn rmsd(&self, reference: &[Vec3]) -> f64 {
         let n = self.len();
         if n == 0 || n != reference.len() {
@@ -635,7 +611,6 @@ impl AtomSet {
         (sum_d2 / n as f64).sqrt()
     }
     /// Scale all positions relative to the origin by a scalar factor.
-    #[allow(dead_code)]
     pub fn scale_positions(&mut self, factor: f64) {
         for pos in &mut self.positions {
             pos.x *= factor;
@@ -644,7 +619,6 @@ impl AtomSet {
         }
     }
     /// Compute the dipole moment (sum of q_i * r_i).
-    #[allow(dead_code)]
     pub fn dipole_moment(&self) -> Vec3 {
         let mut d = Vec3::zeros();
         for (q, p) in self.charges.iter().zip(self.positions.iter()) {
@@ -653,7 +627,6 @@ impl AtomSet {
         d
     }
     /// Return the index of the atom with maximum speed.
-    #[allow(dead_code)]
     pub fn fastest_atom(&self) -> Option<usize> {
         self.velocities
             .iter()
@@ -666,7 +639,6 @@ impl AtomSet {
             .map(|(i, _)| i)
     }
     /// Return the index of the heaviest atom.
-    #[allow(dead_code)]
     pub fn heaviest_atom(&self) -> Option<usize> {
         self.masses
             .iter()
@@ -675,7 +647,6 @@ impl AtomSet {
             .map(|(i, _)| i)
     }
     /// Return indices of all atoms with charge != 0.
-    #[allow(dead_code)]
     pub fn charged_atoms(&self) -> Vec<usize> {
         self.charges
             .iter()
@@ -685,7 +656,6 @@ impl AtomSet {
             .collect()
     }
     /// Compute the total force magnitude (norm of force sum).
-    #[allow(dead_code)]
     pub fn total_force_norm(&self) -> f64 {
         let mut fx = 0.0;
         let mut fy = 0.0;
@@ -698,7 +668,6 @@ impl AtomSet {
         (fx * fx + fy * fy + fz * fz).sqrt()
     }
     /// Compute the maximum force magnitude among all atoms.
-    #[allow(dead_code)]
     pub fn max_force(&self) -> f64 {
         self.forces
             .iter()
@@ -707,7 +676,6 @@ impl AtomSet {
             .sqrt()
     }
     /// Mirror all positions about the XY plane (flip Z coordinates).
-    #[allow(dead_code)]
     pub fn mirror_z(&mut self) {
         for pos in &mut self.positions {
             pos.z = -pos.z;
@@ -715,7 +683,6 @@ impl AtomSet {
     }
 }
 /// An atom group is a named set of atom indices, analogous to MDAnalysis AtomGroup.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AtomGroup {
     /// Group name.
@@ -725,7 +692,6 @@ pub struct AtomGroup {
 }
 impl AtomGroup {
     /// Create a new named group.
-    #[allow(dead_code)]
     pub fn new(name: impl Into<String>, indices: Vec<usize>) -> Self {
         Self {
             name: name.into(),
@@ -733,17 +699,14 @@ impl AtomGroup {
         }
     }
     /// Number of atoms in the group.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.indices.len()
     }
     /// Returns true if the group is empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.indices.is_empty()
     }
     /// Return the union of two groups (no duplicate indices).
-    #[allow(dead_code)]
     pub fn union(&self, other: &AtomGroup) -> AtomGroup {
         let mut idx: Vec<usize> = self.indices.clone();
         for &i in &other.indices {
@@ -755,7 +718,6 @@ impl AtomGroup {
         AtomGroup::new(format!("{}_union_{}", self.name, other.name), idx)
     }
     /// Return the intersection of two groups.
-    #[allow(dead_code)]
     pub fn intersection(&self, other: &AtomGroup) -> AtomGroup {
         let idx: Vec<usize> = self
             .indices
@@ -766,7 +728,6 @@ impl AtomGroup {
         AtomGroup::new(format!("{}_inter_{}", self.name, other.name), idx)
     }
     /// Return the difference (self minus other).
-    #[allow(dead_code)]
     pub fn difference(&self, other: &AtomGroup) -> AtomGroup {
         let idx: Vec<usize> = self
             .indices
@@ -777,12 +738,10 @@ impl AtomGroup {
         AtomGroup::new(format!("{}_diff_{}", self.name, other.name), idx)
     }
     /// Extract the positions from an AtomSet for this group.
-    #[allow(dead_code)]
     pub fn positions<'a>(&self, atoms: &'a AtomSet) -> Vec<&'a Vec3> {
         self.indices.iter().map(|&i| &atoms.positions[i]).collect()
     }
     /// Compute the centroid position (geometric center) of this group.
-    #[allow(dead_code)]
     pub fn centroid(&self, atoms: &AtomSet) -> Vec3 {
         if self.indices.is_empty() {
             return Vec3::zeros();
@@ -794,7 +753,6 @@ impl AtomGroup {
         sum / (self.indices.len() as f64)
     }
     /// Compute the center of mass of this group.
-    #[allow(dead_code)]
     pub fn center_of_mass(&self, atoms: &AtomSet) -> Vec3 {
         let mut total_mass = 0.0;
         let mut com = Vec3::zeros();
@@ -810,13 +768,11 @@ impl AtomGroup {
         }
     }
     /// Compute the total mass of the group.
-    #[allow(dead_code)]
     pub fn total_mass(&self, atoms: &AtomSet) -> f64 {
         self.indices.iter().map(|&i| atoms.masses[i]).sum()
     }
 }
 /// A bond entry in the graph: connects atom `i` and atom `j` with a given bond order.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BondEntry {
     /// Index of first atom.
@@ -827,7 +783,6 @@ pub struct BondEntry {
     pub bond_order: f64,
 }
 /// A single atom with all physical properties.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Atom {
     /// Cartesian position in nm.
@@ -850,7 +805,6 @@ pub struct Atom {
 impl Atom {
     /// Create a new atom with given element, position, and residue id.
     /// Velocity and force are zeroed; mass and charge taken from element defaults.
-    #[allow(dead_code)]
     pub fn new(element: Element, position: [f64; 3], residue_id: u32) -> Self {
         Self {
             position,
@@ -864,14 +818,12 @@ impl Atom {
         }
     }
     /// Kinetic energy of this single atom: 0.5 * m * |v|^2.
-    #[allow(dead_code)]
     pub fn kinetic_energy(&self) -> f64 {
         let v = &self.velocity;
         0.5 * self.mass * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
     }
 }
 /// A residue groups atoms belonging to the same chemical unit (e.g., amino acid).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Residue {
     /// Unique residue identifier.
@@ -885,7 +837,6 @@ pub struct Residue {
 }
 impl Residue {
     /// Create a new residue with the given id, name, and chain.
-    #[allow(dead_code)]
     pub fn new(id: u32, name: impl Into<String>, chain_id: char) -> Self {
         Self {
             id,
@@ -895,18 +846,15 @@ impl Residue {
         }
     }
     /// Add an atom index to this residue.
-    #[allow(dead_code)]
     pub fn add_atom(&mut self, idx: usize) {
         self.atom_indices.push(idx);
     }
     /// Number of atoms in this residue.
-    #[allow(dead_code)]
     pub fn n_atoms(&self) -> usize {
         self.atom_indices.len()
     }
 }
 /// Adjacency-list bond graph for a set of atoms.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct BondGraph {
     /// All bonds stored as a flat list.
@@ -916,7 +864,6 @@ pub struct BondGraph {
 }
 impl BondGraph {
     /// Create an empty bond graph for `n_atoms` atoms.
-    #[allow(dead_code)]
     pub fn new(n_atoms: usize) -> Self {
         Self {
             bonds: Vec::new(),
@@ -924,7 +871,6 @@ impl BondGraph {
         }
     }
     /// Add a bond between atoms `i` and `j` with given order.
-    #[allow(dead_code)]
     pub fn add_bond(&mut self, atom_i: usize, atom_j: usize, bond_order: f64) {
         self.bonds.push(BondEntry {
             atom_i,
@@ -933,7 +879,6 @@ impl BondGraph {
         });
     }
     /// Return all bonds involving atom `idx`.
-    #[allow(dead_code)]
     pub fn bonds_of(&self, idx: usize) -> Vec<&BondEntry> {
         self.bonds
             .iter()
@@ -941,12 +886,10 @@ impl BondGraph {
             .collect()
     }
     /// Return the number of bonds in the graph.
-    #[allow(dead_code)]
     pub fn num_bonds(&self) -> usize {
         self.bonds.len()
     }
     /// Return the bond order between atoms `i` and `j`, or 0.0 if none.
-    #[allow(dead_code)]
     pub fn bond_order(&self, i: usize, j: usize) -> f64 {
         self.bonds
             .iter()
@@ -955,18 +898,15 @@ impl BondGraph {
             .unwrap_or(0.0)
     }
     /// Check whether atoms `i` and `j` are bonded.
-    #[allow(dead_code)]
     pub fn are_bonded(&self, i: usize, j: usize) -> bool {
         self.bond_order(i, j) > 0.0
     }
     /// Clear all bonds.
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.bonds.clear();
     }
 }
 /// Molecular topology: atoms → residues → chains.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct Topology {
     /// All atoms.
@@ -980,33 +920,28 @@ pub struct Topology {
 }
 impl Topology {
     /// Create an empty topology.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
     /// Add an atom to the topology, returning its index.
-    #[allow(dead_code)]
     pub fn add_atom(&mut self, atom: Atom) -> usize {
         let idx = self.atoms.len();
         self.atoms.push(atom);
         idx
     }
     /// Add a residue and return its index.
-    #[allow(dead_code)]
     pub fn add_residue(&mut self, residue: Residue) -> usize {
         let idx = self.residues.len();
         self.residues.push(residue);
         idx
     }
     /// Add a chain and return its index.
-    #[allow(dead_code)]
     pub fn add_chain(&mut self, chain: Chain) -> usize {
         let idx = self.chains.len();
         self.chains.push(chain);
         idx
     }
     /// Return atoms belonging to a given residue id.
-    #[allow(dead_code)]
     pub fn atoms_in_residue(&self, residue_id: u32) -> Vec<&Atom> {
         self.atoms
             .iter()
@@ -1014,7 +949,6 @@ impl Topology {
             .collect()
     }
     /// Return residues belonging to a given chain id.
-    #[allow(dead_code)]
     pub fn residues_in_chain(&self, chain_id: char) -> Vec<&Residue> {
         self.residues
             .iter()
@@ -1022,23 +956,19 @@ impl Topology {
             .collect()
     }
     /// Total number of atoms.
-    #[allow(dead_code)]
     pub fn n_atoms(&self) -> usize {
         self.atoms.len()
     }
     /// Total number of residues.
-    #[allow(dead_code)]
     pub fn n_residues(&self) -> usize {
         self.residues.len()
     }
     /// Total number of chains.
-    #[allow(dead_code)]
     pub fn n_chains(&self) -> usize {
         self.chains.len()
     }
 }
 /// Exclusion policy for non-bonded pairs.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExclusionPolicy {
     /// Exclude 1-2 bonded pairs only.

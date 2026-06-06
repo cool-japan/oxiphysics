@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use rand::Rng;
 use rand::RngExt;
 
@@ -972,8 +969,8 @@ impl PackingOptimizer {
         let dt = self.config.time_step;
         let damp = self.config.damping;
         for (i, s) in self.spheres.iter_mut().enumerate() {
-            for d in 0..3 {
-                s.center[d] += dt * (1.0 - damp) * forces[i][d];
+            for (d, center_d) in s.center.iter_mut().enumerate().take(3) {
+                *center_d += dt * (1.0 - damp) * forces[i][d];
             }
         }
         let mut max_overlap = 0.0f64;

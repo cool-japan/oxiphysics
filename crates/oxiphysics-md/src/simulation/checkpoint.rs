@@ -15,7 +15,6 @@ use super::core_sim::MdSim;
 
 /// Snapshot of an MD simulation state for checkpointing / restart.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SimulationCheckpoint {
     /// Particle positions.
     pub positions: Vec<[f64; 3]>,
@@ -41,7 +40,6 @@ pub struct SimulationCheckpoint {
 
 /// Performance profile recorded during a simulation run.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SimulationProfile {
     /// Total number of integration steps taken.
     pub total_steps: u64,
@@ -63,7 +61,6 @@ pub struct SimulationProfile {
 ///
 /// Tracks total energy drift and momentum conservation.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct NveMonitor {
     /// Initial total energy (KE + PE).
     pub e0: f64,
@@ -73,7 +70,6 @@ pub struct NveMonitor {
     pub p0: f64,
 }
 
-#[allow(dead_code)]
 impl NveMonitor {
     /// Initialise the monitor from a simulation state.
     pub fn init(&mut self, sim: &MdSim) {
@@ -109,7 +105,6 @@ impl NveMonitor {
 ///
 /// Rescales the box and positions by a factor μ = 1 - β·dt/τ·(P_target - P).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NptBarostat {
     /// Target pressure (bar).
     pub target_pressure: f64,
@@ -119,7 +114,6 @@ pub struct NptBarostat {
     pub compressibility: f64,
 }
 
-#[allow(dead_code)]
 impl NptBarostat {
     /// Create a new NPT Berendsen barostat.
     pub fn new(target_pressure: f64, tau_p: f64, compressibility: f64) -> Self {
@@ -158,7 +152,6 @@ impl NptBarostat {
 
 impl MdSim {
     /// Save a checkpoint of the current simulation state.
-    #[allow(dead_code)]
     pub fn checkpoint(&self) -> SimulationCheckpoint {
         SimulationCheckpoint {
             positions: self.state.positions.clone(),
@@ -173,7 +166,6 @@ impl MdSim {
     }
 
     /// Restore a simulation from a checkpoint.
-    #[allow(dead_code)]
     pub fn restore_checkpoint(config: MdConfig, ckpt: SimulationCheckpoint) -> Self {
         let mut state = MdState::new(ckpt.positions, ckpt.velocities, ckpt.masses);
         state.forces = ckpt.forces;
@@ -187,7 +179,6 @@ impl MdSim {
     /// Run for `n_steps` with forces and collect a performance profile.
     ///
     /// Records the number of steps, wall-clock time, and average energy/temperature.
-    #[allow(dead_code)]
     pub fn run_with_profiling(
         &mut self,
         forces_fn: impl Fn(&[[f64; 3]], &[f64; 3]) -> Vec<[f64; 3]>,
@@ -247,7 +238,6 @@ impl MdSim {
     ///
     /// `forces_fn` should also return a scalar virial (sum r·F).
     /// For simplicity this version uses a zero virial (ideal gas).
-    #[allow(dead_code)]
     pub fn run_npt(
         &mut self,
         forces_fn: impl Fn(&[[f64; 3]], &[f64; 3]) -> Vec<[f64; 3]>,

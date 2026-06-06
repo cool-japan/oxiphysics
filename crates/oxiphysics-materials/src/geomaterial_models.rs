@@ -25,23 +25,14 @@
 //! Kozeny, J. (1927); Carman, P. C. (1937,1956).
 //! Terzaghi, K. (1943) *Theoretical Soil Mechanics*, Wiley.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Gravitational acceleration \[m s^-2\].
-const G_ACC: f64 = 9.81;
-
 /// Unit weight of water \[kN m^-3\].
 const GAMMA_W: f64 = 9.81;
-
-/// Absolute zero offset for frozen soil temperature \[C\].
-const ABS_ZERO_C: f64 = -273.15;
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -60,12 +51,14 @@ fn clamp_f64(v: f64, lo: f64, hi: f64) -> f64 {
 }
 
 /// Mean effective stress from principal stresses.
+#[cfg(test)]
 #[inline]
 fn mean_stress(s1: f64, s2: f64, s3: f64) -> f64 {
     (s1 + s2 + s3) / 3.0
 }
 
 /// Deviatoric stress invariant q from principal stresses.
+#[cfg(test)]
 #[inline]
 fn deviatoric_q(s1: f64, s2: f64, s3: f64) -> f64 {
     let t1 = (s1 - s2).powi(2);

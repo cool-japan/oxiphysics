@@ -2,16 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::f64::consts::PI;
 
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// Extended granular simulation that also tracks angular velocities.
-#[allow(dead_code)]
 pub struct GranularSimExtended {
     /// Underlying DEM simulator.
     pub sim: GranularSim,
@@ -24,7 +19,6 @@ pub struct GranularSimExtended {
     /// Rolling friction coefficient.
     pub mu_r: f64,
 }
-#[allow(dead_code)]
 impl GranularSimExtended {
     /// Create a new extended simulation.
     pub fn new(
@@ -83,9 +77,9 @@ impl GranularSimExtended {
                 self.mu_r,
                 self.rolling_model,
             );
-            for k in 0..3 {
-                self.torques[c.i][k] += torque[k];
-                self.torques[c.j][k] -= torque[k];
+            for (k, &tv) in torque.iter().enumerate() {
+                self.torques[c.i][k] += tv;
+                self.torques[c.j][k] -= tv;
             }
         }
         for i in 0..n {
@@ -315,7 +309,6 @@ pub struct DemContact {
 }
 impl DemContact {
     /// Construct a new `DemContact`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         i: usize,
         j: usize,
@@ -408,34 +401,30 @@ pub struct GranularParticle {
 /// Stores the effective elastic and shear moduli for the contact and provides
 /// methods to compute normal (Hertz) and tangential (Mindlin) contact forces.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub struct HertzContact {
     /// Combined elastic modulus E* \[Pa\]:
     /// `1/E* = (1 - ν₁²)/E₁ + (1 - ν₂²)/E₂`.
-    pub E_star: f64,
+    pub e_star: f64,
     /// Combined shear modulus G* \[Pa\]:
     /// `1/G* = (2 - ν₁)/G₁ + (2 - ν₂)/G₂`.
-    pub G_star: f64,
+    pub g_star: f64,
 }
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 impl HertzContact {
     /// Create a `HertzContact` from two materials.
     ///
     /// # Arguments
     /// * `E1, nu1` – Young's modulus and Poisson ratio of particle 1.
     /// * `E2, nu2` – Young's modulus and Poisson ratio of particle 2.
-    pub fn from_materials(E1: f64, nu1: f64, E2: f64, nu2: f64) -> Self {
-        let E_star = 1.0 / ((1.0 - nu1 * nu1) / E1 + (1.0 - nu2 * nu2) / E2);
-        let G1 = E1 / (2.0 * (1.0 + nu1));
-        let G2 = E2 / (2.0 * (1.0 + nu2));
-        let G_star = 1.0 / ((2.0 - nu1) / G1 + (2.0 - nu2) / G2);
-        Self { E_star, G_star }
+    pub fn from_materials(e1: f64, nu1: f64, e2: f64, nu2: f64) -> Self {
+        let e_star = 1.0 / ((1.0 - nu1 * nu1) / e1 + (1.0 - nu2 * nu2) / e2);
+        let g1 = e1 / (2.0 * (1.0 + nu1));
+        let g2 = e2 / (2.0 * (1.0 + nu2));
+        let g_star = 1.0 / ((2.0 - nu1) / g1 + (2.0 - nu2) / g2);
+        Self { e_star, g_star }
     }
     /// Create a `HertzContact` directly from effective moduli.
-    pub fn new(E_star: f64, G_star: f64) -> Self {
-        Self { E_star, G_star }
+    pub fn new(e_star: f64, g_star: f64) -> Self {
+        Self { e_star, g_star }
     }
     /// Hertz normal contact force magnitude.
     ///
@@ -446,7 +435,7 @@ impl HertzContact {
         if delta_n <= 0.0 {
             return 0.0;
         }
-        (4.0 / 3.0) * self.E_star * r_star.sqrt() * delta_n.powf(1.5)
+        (4.0 / 3.0) * self.e_star * r_star.sqrt() * delta_n.powf(1.5)
     }
     /// Mindlin tangential (shear) contact force vector (no-slip regime).
     ///
@@ -471,7 +460,7 @@ impl HertzContact {
         if delta_n <= 0.0 {
             return [0.0; 3];
         }
-        let kt = 8.0 * self.G_star * (r_star * delta_n).sqrt();
+        let kt = 8.0 * self.g_star * (r_star * delta_n).sqrt();
         let ft_raw = [-kt * delta_t[0], -kt * delta_t[1], -kt * delta_t[2]];
         let ft_mag = (ft_raw[0] * ft_raw[0] + ft_raw[1] * ft_raw[1] + ft_raw[2] * ft_raw[2]).sqrt();
         let limit = mu * fn_mag.abs();
@@ -487,7 +476,7 @@ impl HertzContact {
         if delta_n <= 0.0 {
             return 0.0;
         }
-        2.0 * self.E_star * (r_star * delta_n).sqrt()
+        2.0 * self.e_star * (r_star * delta_n).sqrt()
     }
 }
 /// Selects the normal contact law used in DEM calculations.
@@ -502,7 +491,6 @@ pub enum GranularContactModel {
 }
 /// Rolling resistance model type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum RollingResistanceModel {
     /// No rolling resistance.
     None,
@@ -631,7 +619,6 @@ impl GranularParams {
 /// Particles are [`DemParticle`] instances and the contact model is driven by
 /// a [`HertzContact`] instance that is shared across all particle pairs.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct GranularSimulation {
     /// All rigid-sphere particles.
     pub particles: Vec<DemParticle>,
@@ -646,8 +633,6 @@ pub struct GranularSimulation {
     /// Integration time step \[s\].
     pub dt: f64,
 }
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 impl GranularSimulation {
     /// Create a new `GranularSimulation`.
     ///
@@ -681,7 +666,7 @@ impl GranularSimulation {
         self.particles.is_empty()
     }
     /// Apply gravitational acceleration to a force accumulator.
-    pub fn apply_gravity(&self, forces: &mut Vec<[f64; 3]>) {
+    pub fn apply_gravity(&self, forces: &mut [[f64; 3]]) {
         for (i, f) in forces.iter_mut().enumerate() {
             let m = self.particles[i].mass;
             f[0] += m * self.gravity[0];
@@ -764,11 +749,11 @@ impl GranularSimulation {
         }
         for i in 0..n {
             let inv_m = 1.0 / self.particles[i].mass;
-            let inv_I = 1.0 / self.particles[i].moment_of_inertia.max(1e-30);
+            let inv_i = 1.0 / self.particles[i].moment_of_inertia.max(1e-30);
             for k in 0..3 {
                 self.particles[i].velocity[k] += forces[i][k] * inv_m * dt;
                 self.particles[i].position[k] += self.particles[i].velocity[k] * dt;
-                self.particles[i].angular_velocity[k] += torques[i][k] * inv_I * dt;
+                self.particles[i].angular_velocity[k] += torques[i][k] * inv_i * dt;
             }
         }
     }
@@ -812,12 +797,10 @@ impl GranularSimulation {
     }
 }
 /// A simple spatial hash cell for contact detection.
-#[allow(dead_code)]
 pub struct SpatialHashDem {
     pub(super) cell_size: f64,
     pub(super) buckets: std::collections::HashMap<(i64, i64, i64), Vec<usize>>,
 }
-#[allow(dead_code)]
 impl SpatialHashDem {
     /// Build a spatial hash over particle positions with the given cell size.
     pub fn new(positions: &[[f64; 3]], radii: &[f64], max_radius: f64) -> Self {
@@ -945,7 +928,6 @@ pub struct DemSimulation {
 }
 impl DemSimulation {
     /// Create a new `DemSimulation`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         dt: f64,
         gravity: [f64; 3],
@@ -982,9 +964,9 @@ impl DemSimulation {
         let n = self.particles.len();
         let mut forces = vec![[0.0_f64; 3]; n];
         let mut torques = vec![[0.0_f64; 3]; n];
-        for i in 0..n {
-            for k in 0..3 {
-                forces[i][k] += self.particles[i].mass * self.gravity[k];
+        for (i, f) in forces.iter_mut().enumerate() {
+            for (k, fk) in f.iter_mut().enumerate() {
+                *fk += self.particles[i].mass * self.gravity[k];
             }
         }
         for i in 0..n {

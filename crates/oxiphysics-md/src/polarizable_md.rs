@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -38,9 +37,6 @@
 //! - [`dipole_gradient_force`]: force on atom i from gradient of dipole field.
 //! - [`polarizable_virial`]: contribution to pressure tensor from polarization.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ============================================================================
 // 3-vector helpers
 // ============================================================================
@@ -73,15 +69,6 @@ fn scale3(s: f64, a: [f64; 3]) -> [f64; 3] {
 #[inline]
 fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-#[inline]
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 #[inline]
@@ -593,7 +580,7 @@ pub fn dipole_dipole_interaction(d1: [f64; 3], d2: [f64; 3], r: [f64; 3]) -> f64
 /// Returns the number of iterations taken.  Dipoles in `atoms` are updated
 /// in place.  If convergence is not reached within `params.max_scf_iter`
 /// iterations, the last iterate is retained.
-pub fn scf_induced_dipoles(atoms: &mut Vec<PolarizableAtom>, params: &PolarizableParams) -> usize {
+pub fn scf_induced_dipoles(atoms: &mut [PolarizableAtom], params: &PolarizableParams) -> usize {
     for iter in 1..=params.max_scf_iter {
         let mut max_delta = 0.0_f64;
         let old_dipoles: Vec<[f64; 3]> = atoms.iter().map(|a| a.dipole).collect();
@@ -619,7 +606,7 @@ pub fn scf_induced_dipoles(atoms: &mut Vec<PolarizableAtom>, params: &Polarizabl
 ///
 /// Returns the number of iterations taken.
 pub fn scf_induced_dipoles_thole(
-    atoms: &mut Vec<PolarizableAtom>,
+    atoms: &mut [PolarizableAtom],
     params: &PolarizableParams,
 ) -> usize {
     for iter in 1..=params.max_scf_iter {
@@ -1010,12 +997,12 @@ pub fn drude_vv_half_step(drude: &mut DrudeParticle, force: [f64; 3], dt: f64) {
     let m = drude.shell_mass;
     let acc = scale3(1.0 / m, force);
     // v += ½ a dt
-    for k in 0..3 {
-        drude.shell_vel[k] += 0.5 * acc[k] * dt;
+    for (v, &a) in drude.shell_vel.iter_mut().zip(acc.iter()) {
+        *v += 0.5 * a * dt;
     }
     // r += v dt
-    for k in 0..3 {
-        drude.shell_pos[k] += drude.shell_vel[k] * dt;
+    for (r, &v) in drude.shell_pos.iter_mut().zip(drude.shell_vel.iter()) {
+        *r += v * dt;
     }
 }
 
@@ -1358,9 +1345,9 @@ mod tests {
     fn test_relay_symmetric() {
         let r = [1.0, 2.0, 3.0];
         let t = relay_matrix_element(r);
-        for a in 0..3 {
-            for b in 0..3 {
-                assert!((t[a][b] - t[b][a]).abs() < 1e-12);
+        for (a, ta) in t.iter().enumerate() {
+            for (b, &val) in ta.iter().enumerate() {
+                assert!((val - t[b][a]).abs() < 1e-12);
             }
         }
     }
@@ -1635,8 +1622,8 @@ mod tests {
         let m_before = w.m_pos;
         w.o_pos = [1.0, 2.0, 3.0]; // unchanged
         w.update_m_site();
-        for k in 0..3 {
-            assert!((w.m_pos[k] - m_before[k]).abs() < 1e-10);
+        for (m, &mb) in w.m_pos.iter().zip(m_before.iter()) {
+            assert!((m - mb).abs() < 1e-10);
         }
     }
 

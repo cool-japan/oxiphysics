@@ -1082,8 +1082,6 @@ mod conv_rnn_tests {
 /// - V: `[seq_k × d_v]`
 ///
 /// Returns output of shape `[seq_q × d_v]` (flat row-major).
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn scaled_dot_product_attention(
     q: &[f64],
     k: &[f64],

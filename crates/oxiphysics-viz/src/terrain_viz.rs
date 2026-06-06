@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,9 +15,6 @@
 //! - **[`TerrainShadow`]** — ray-marching terrain shadow casting
 //! - **[`CrossSection`]** — terrain profile along an arbitrary polyline
 //! - **[`ElevationColorRamp`]** — configurable elevation-to-color mapping
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Heightfield — core terrain data structure
@@ -288,8 +284,8 @@ impl TextureSplat {
         let mut out = [0.0f32; 4];
         for (w, l) in weights.iter().zip(self.layers.iter()) {
             let wn = w / total;
-            for k in 0..4 {
-                out[k] += wn * l.color[k];
+            for (out_k, col_k) in out.iter_mut().zip(l.color.iter()) {
+                *out_k += wn * col_k;
             }
         }
         out
@@ -1062,8 +1058,10 @@ impl ElevationColorRamp {
                 let hi = &self.stops[idx];
                 let t = ((elevation - lo.elevation) / (hi.elevation - lo.elevation)) as f32;
                 let mut out = [0.0f32; 4];
-                for k in 0..4 {
-                    out[k] = lo.color[k] + t * (hi.color[k] - lo.color[k]);
+                for (out_k, (lo_k, hi_k)) in
+                    out.iter_mut().zip(lo.color.iter().zip(hi.color.iter()))
+                {
+                    *out_k = lo_k + t * (hi_k - lo_k);
                 }
                 out
             }
@@ -1554,12 +1552,12 @@ mod tests {
         let hf = sinusoidal_terrain(8, 8, 1.0, 1.0, 2.0, 1.0, 1.0);
         let sa = SlopeAspectMap::compute(&hf);
         let c = sa.color_for_cell(3, 3);
-        for k in 0..4 {
+        for (k, &ck) in c.iter().enumerate() {
             assert!(
-                c[k] >= 0.0 && c[k] <= 1.0,
+                (0.0..=1.0).contains(&ck),
                 "color component {} out of range: {}",
                 k,
-                c[k]
+                ck
             );
         }
     }

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::ConvexHull3D;
 
 /// Cross product of two 3-vectors.
@@ -172,7 +171,6 @@ pub(super) fn ch_horizon_edges(hull: &[[usize; 3]], visible: &[usize]) -> Vec<(u
 /// along the axis of maximum variance.
 ///
 /// Returns a list of convex hulls, each covering a partition of the input.
-#[allow(dead_code)]
 pub fn approximate_convex_decomposition(
     points: &[[f64; 3]],
     max_depth: usize,
@@ -236,7 +234,6 @@ pub(super) fn acd_recursive(
 /// the volume of the bounding sphere.
 ///
 /// Returns a value in (0, 1]: closer to 1 means the hull is more spherical.
-#[allow(dead_code)]
 pub fn hull_sphericity(hull: &ConvexHull3D) -> f64 {
     if hull.vertices.is_empty() {
         return 0.0;
@@ -270,7 +267,6 @@ pub fn hull_sphericity(hull: &ConvexHull3D) -> f64 {
 /// Compute the aspect ratio of the hull (longest edge / shortest edge of bounding box).
 ///
 /// Returns `f64::INFINITY` if the hull is degenerate.
-#[allow(dead_code)]
 pub fn hull_aspect_ratio(hull: &ConvexHull3D) -> f64 {
     if hull.vertices.is_empty() {
         return f64::INFINITY;
@@ -300,7 +296,6 @@ pub fn hull_aspect_ratio(hull: &ConvexHull3D) -> f64 {
 /// `min_contribution` to the total surface area.
 ///
 /// Returns a new (possibly smaller) point cloud from which the hull can be rebuilt.
-#[allow(dead_code)]
 pub fn simplify_hull_points(hull: &ConvexHull3D, min_contribution: f64) -> Vec<[f64; 3]> {
     if hull.vertices.is_empty() {
         return vec![];
@@ -333,7 +328,6 @@ pub fn simplify_hull_points(hull: &ConvexHull3D, min_contribution: f64) -> Vec<[
 /// Remove duplicate or near-coincident vertices from a point cloud.
 ///
 /// Points within `tolerance` of each other are merged.
-#[allow(dead_code)]
 pub fn deduplicate_points(points: &[[f64; 3]], tolerance: f64) -> Vec<[f64; 3]> {
     let tol_sq = tolerance * tolerance;
     let mut unique: Vec<[f64; 3]> = Vec::new();
@@ -656,7 +650,6 @@ mod tests {
 /// The Minkowski sum A ⊕ B is the set `{ a + b | a ∈ A, b ∈ B }`.
 /// For convex hulls, the result is convex.  This function returns all
 /// pairwise vertex sums; the caller should build a new hull from the result.
-#[allow(dead_code)]
 pub fn minkowski_sum_hulls(a: &ConvexHull3D, b: &ConvexHull3D) -> Vec<[f64; 3]> {
     let mut pts = Vec::with_capacity(a.vertices.len() * b.vertices.len());
     for &va in &a.vertices {
@@ -669,7 +662,6 @@ pub fn minkowski_sum_hulls(a: &ConvexHull3D, b: &ConvexHull3D) -> Vec<[f64; 3]> 
 /// Build the convex hull of the Minkowski sum of `a` and `b`.
 ///
 /// Returns `None` if the result is degenerate (fewer than 4 non-coplanar vertices).
-#[allow(dead_code)]
 pub fn minkowski_sum_hull(a: &ConvexHull3D, b: &ConvexHull3D) -> Option<ConvexHull3D> {
     let pts = minkowski_sum_hulls(a, b);
     let unique = deduplicate_points(&pts, 1e-10);
@@ -679,7 +671,6 @@ pub fn minkowski_sum_hull(a: &ConvexHull3D, b: &ConvexHull3D) -> Option<ConvexHu
 ///
 /// Returns a `Vec` with one `[f64; 3]` unit normal per face, in the same
 /// order as `hull.faces`.
-#[allow(dead_code)]
 pub fn hull_face_normals(hull: &ConvexHull3D) -> Vec<[f64; 3]> {
     hull.faces
         .iter()
@@ -697,7 +688,6 @@ pub fn hull_face_normals(hull: &ConvexHull3D) -> Vec<[f64; 3]> {
 ///
 /// Positive means the centroid is on the interior side (correct for a closed
 /// convex hull with outward normals).
-#[allow(dead_code)]
 pub fn hull_face_offsets(hull: &ConvexHull3D) -> Vec<f64> {
     let c = hull.vertices.iter().fold([0.0f64; 3], |a, v| add(a, *v));
     let n = hull.vertices.len() as f64;
@@ -721,7 +711,6 @@ pub fn hull_face_offsets(hull: &ConvexHull3D) -> Vec<f64> {
 /// contains the origin).
 ///
 /// Implements a simplified 3-D GJK with at most 64 iterations.
-#[allow(dead_code)]
 pub fn gjk_intersect(a: &ConvexHull3D, b: &ConvexHull3D) -> bool {
     if a.vertices.is_empty() || b.vertices.is_empty() {
         return false;
@@ -844,7 +833,6 @@ pub(super) fn gjk_tetrahedron_case(simplex: &mut Vec<[f64; 3]>, dir: &mut [f64; 
 ///
 /// Each vertex is displaced along the average of adjacent face normals scaled
 /// by `epsilon`.  Returns a new point cloud from which a hull can be rebuilt.
-#[allow(dead_code)]
 pub fn chamfer_hull(hull: &ConvexHull3D, epsilon: f64) -> Vec<[f64; 3]> {
     if hull.vertices.is_empty() {
         return vec![];
@@ -878,7 +866,6 @@ pub fn chamfer_hull(hull: &ConvexHull3D, epsilon: f64) -> Vec<[f64; 3]> {
 /// Chamfer a convex hull and return the expanded hull.
 ///
 /// Returns `None` if the result is degenerate.
-#[allow(dead_code)]
 pub fn chamfer_build(hull: &ConvexHull3D, epsilon: f64) -> Option<ConvexHull3D> {
     let pts = chamfer_hull(hull, epsilon);
     ConvexHull3D::build(&pts)
@@ -888,7 +875,7 @@ mod tests_extended {
 
     use crate::ConvexHull3D;
 
-    use crate::add;
+    use super::add;
     use crate::chamfer_build;
     use crate::chamfer_hull;
     use crate::convex_decomposition::dot;
@@ -1062,11 +1049,11 @@ mod tests_extended {
         let hull = unit_cube_hull();
         let (vol, centroid) = hull.volume_centroid();
         assert!((vol - 1.0).abs() < 0.05, "volume={vol}");
-        for k in 0..3 {
+        for (k, &c_k) in centroid.iter().enumerate() {
             assert!(
-                (centroid[k] - 0.5).abs() < 0.1,
+                (c_k - 0.5).abs() < 0.1,
                 "centroid[{k}]={} expected ~0.5",
-                centroid[k]
+                c_k
             );
         }
     }
@@ -1074,11 +1061,11 @@ mod tests_extended {
     fn test_vertex_centroid_cube() {
         let hull = unit_cube_hull();
         let c = hull.vertex_centroid();
-        for k in 0..3 {
+        for (k, &c_k) in c.iter().enumerate() {
             assert!(
-                (c[k] - 0.5).abs() < 1e-9,
+                (c_k - 0.5).abs() < 1e-9,
                 "vertex_centroid[{k}]={} expected 0.5",
-                c[k]
+                c_k
             );
         }
     }
@@ -1158,11 +1145,11 @@ mod tests_ch3d_physics {
     fn test_compute_center_of_mass_unit_cube() {
         let hull = unit_cube_hull();
         let com = hull.compute_center_of_mass();
-        for k in 0..3 {
+        for (k, &com_k) in com.iter().enumerate() {
             assert!(
-                (com[k] - 0.5).abs() < 0.1,
+                (com_k - 0.5).abs() < 0.1,
                 "COM[{k}]={} expected ~0.5",
-                com[k]
+                com_k
             );
         }
     }
@@ -1189,11 +1176,11 @@ mod tests_ch3d_physics {
     fn test_compute_moment_of_inertia_unit_cube() {
         let hull = unit_cube_hull();
         let inertia = hull.compute_moment_of_inertia(1.0);
-        for k in 0..3 {
+        for (k, row) in inertia.iter().enumerate() {
             assert!(
-                inertia[k][k] > 0.0,
+                row[k] > 0.0,
                 "diagonal inertia[{k}][{k}] must be positive, got {}",
-                inertia[k][k]
+                row[k]
             );
         }
     }
@@ -1211,10 +1198,10 @@ mod tests_ch3d_physics {
     fn test_compute_moment_of_inertia_symmetry() {
         let hull = unit_cube_hull();
         let inertia = hull.compute_moment_of_inertia(1.0);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row_i) in inertia.iter().enumerate() {
+            for (j, &val_ij) in row_i.iter().enumerate() {
                 assert!(
-                    (inertia[i][j] - inertia[j][i]).abs() < 1e-10,
+                    (val_ij - inertia[j][i]).abs() < 1e-10,
                     "tensor not symmetric at [{i}][{j}]"
                 );
             }
@@ -1224,11 +1211,11 @@ mod tests_ch3d_physics {
     fn test_compute_moment_of_inertia_tetrahedron_positive_diagonal() {
         let hull = unit_tet_hull();
         let inertia = hull.compute_moment_of_inertia(1.0);
-        for k in 0..3 {
+        for (k, row) in inertia.iter().enumerate() {
             assert!(
-                inertia[k][k] > 0.0,
+                row[k] > 0.0,
                 "tet diagonal inertia[{k}][{k}]={} should be positive",
-                inertia[k][k]
+                row[k]
             );
         }
     }
@@ -1240,7 +1227,6 @@ mod tests_ch3d_physics {
 /// sequence of points forming the lower boundary.
 ///
 /// Returns the lower hull in counter-clockwise order.
-#[allow(dead_code)]
 pub fn lower_hull_2d(mut pts: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
     pts.sort_unstable_by(|a, b| {
         a[0].partial_cmp(&b[0])
@@ -1266,7 +1252,6 @@ pub fn lower_hull_2d(mut pts: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
 /// chain algorithm.
 ///
 /// Returns the upper hull in counter-clockwise order (right-to-left).
-#[allow(dead_code)]
 pub fn upper_hull_2d(mut pts: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
     pts.sort_unstable_by(|a, b| {
         a[0].partial_cmp(&b[0])
@@ -1293,7 +1278,6 @@ pub fn upper_hull_2d(mut pts: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
 /// Compute the full 2D convex hull using Andrew's monotone chain algorithm.
 ///
 /// Returns the hull vertices in counter-clockwise order (no duplicate start/end).
-#[allow(dead_code)]
 pub fn monotone_chain_hull_2d(pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
     if pts.len() < 3 {
         let mut sorted = pts.to_vec();
@@ -1319,7 +1303,6 @@ pub(super) fn cross2d(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
 /// Support function for an axis-aligned box `[min, max]`.
 ///
 /// Returns the furthest point of the box in direction `dir`.
-#[allow(dead_code)]
 pub fn box_support(min: [f64; 3], max: [f64; 3], dir: [f64; 3]) -> [f64; 3] {
     [
         if dir[0] >= 0.0 { max[0] } else { min[0] },
@@ -1328,7 +1311,6 @@ pub fn box_support(min: [f64; 3], max: [f64; 3], dir: [f64; 3]) -> [f64; 3] {
     ]
 }
 /// Support function for a sphere centered at `center` with radius `radius`.
-#[allow(dead_code)]
 pub fn sphere_support(center: [f64; 3], radius: f64, dir: [f64; 3]) -> [f64; 3] {
     let n = normalize(dir);
     add(center, scale(n, radius))
@@ -1336,7 +1318,6 @@ pub fn sphere_support(center: [f64; 3], radius: f64, dir: [f64; 3]) -> [f64; 3] 
 /// Support function for a capsule (cylinder with hemispherical caps).
 ///
 /// The capsule has its axis from `a` to `b` and radius `r`.
-#[allow(dead_code)]
 pub fn capsule_support(a: [f64; 3], b: [f64; 3], r: f64, dir: [f64; 3]) -> [f64; 3] {
     let n = normalize(dir);
     let sa = add(a, scale(n, r));
@@ -1346,7 +1327,6 @@ pub fn capsule_support(a: [f64; 3], b: [f64; 3], r: f64, dir: [f64; 3]) -> [f64;
 /// Support function for a cylinder (flat caps) aligned along the Z axis.
 ///
 /// Center at `center`, half-height `h`, radius `r`.
-#[allow(dead_code)]
 pub fn cylinder_support(center: [f64; 3], h: f64, r: f64, dir: [f64; 3]) -> [f64; 3] {
     let dir_xy_len = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
     let (dx, dy) = if dir_xy_len > 1e-12 {
@@ -1358,7 +1338,6 @@ pub fn cylinder_support(center: [f64; 3], h: f64, r: f64, dir: [f64; 3]) -> [f64
     add(center, [dx, dy, dz])
 }
 /// Support function for an ellipsoid with semi-axes `(a, b, c)` centered at `center`.
-#[allow(dead_code)]
 pub fn ellipsoid_support(center: [f64; 3], semi_axes: [f64; 3], dir: [f64; 3]) -> [f64; 3] {
     let [a, b, c] = semi_axes;
     let numerator = [a * a * dir[0], b * b * dir[1], c * c * dir[2]];
@@ -1378,7 +1357,6 @@ pub fn ellipsoid_support(center: [f64; 3], semi_axes: [f64; 3], dir: [f64; 3]) -
 /// and removes it from the point cloud before rebuilding.
 ///
 /// Returns the simplified point cloud (caller must rebuild the hull).
-#[allow(dead_code)]
 pub fn vertex_decimation(hull: &ConvexHull3D, target_vertices: usize) -> Vec<[f64; 3]> {
     let mut pts = hull.vertices.clone();
     while pts.len() > target_vertices.max(4) {
@@ -1438,7 +1416,6 @@ pub(super) fn least_contributing_vertex_index(
 /// circumscribed radius `r`.
 ///
 /// An icosahedron has 12 vertices and 20 triangular faces.
-#[allow(dead_code)]
 pub fn icosahedron_vertices(r: f64) -> Vec<[f64; 3]> {
     let phi = (1.0 + 5.0_f64.sqrt()) / 2.0;
     let a = r / (1.0 + phi * phi).sqrt();
@@ -1462,7 +1439,6 @@ pub fn icosahedron_vertices(r: f64) -> Vec<[f64; 3]> {
 /// circumscribed radius `r`.
 ///
 /// An octahedron has 6 vertices and 8 triangular faces.
-#[allow(dead_code)]
 pub fn octahedron_vertices(r: f64) -> Vec<[f64; 3]> {
     vec![
         [r, 0.0, 0.0],
@@ -1475,7 +1451,6 @@ pub fn octahedron_vertices(r: f64) -> Vec<[f64; 3]> {
 }
 /// Generate vertices of a regular tetrahedron centered at the origin with
 /// circumscribed radius `r`.
-#[allow(dead_code)]
 pub fn tetrahedron_vertices(r: f64) -> Vec<[f64; 3]> {
     let a = r * (8.0_f64 / 9.0).sqrt();
     let b = r * (2.0_f64 / 9.0).sqrt();
@@ -1491,7 +1466,6 @@ pub fn tetrahedron_vertices(r: f64) -> Vec<[f64; 3]> {
 ///
 /// The Minkowski difference A ⊖ B = A ⊕ (-B) is the set `{ a - b | a∈A, b∈B }`.
 /// The GJK algorithm tests whether the origin lies inside this set.
-#[allow(dead_code)]
 pub fn minkowski_difference_hulls(a: &ConvexHull3D, b: &ConvexHull3D) -> Vec<[f64; 3]> {
     let mut pts = Vec::with_capacity(a.vertices.len() * b.vertices.len());
     for &va in &a.vertices {
@@ -1502,7 +1476,6 @@ pub fn minkowski_difference_hulls(a: &ConvexHull3D, b: &ConvexHull3D) -> Vec<[f6
     pts
 }
 /// Build the convex hull of the Minkowski difference of `a` and `b`.
-#[allow(dead_code)]
 pub fn minkowski_difference_hull(a: &ConvexHull3D, b: &ConvexHull3D) -> Option<ConvexHull3D> {
     let pts = minkowski_difference_hulls(a, b);
     let unique = deduplicate_points(&pts, 1e-10);
@@ -1512,7 +1485,6 @@ pub fn minkowski_difference_hull(a: &ConvexHull3D, b: &ConvexHull3D) -> Option<C
 ///
 /// Returns `([min_x, min_y, min_z], [max_x, max_y, max_z])` or `None` if
 /// the cloud is empty.
-#[allow(dead_code)]
 pub fn point_cloud_aabb(pts: &[[f64; 3]]) -> Option<([f64; 3], [f64; 3])> {
     if pts.is_empty() {
         return None;
@@ -1532,7 +1504,6 @@ pub fn point_cloud_aabb(pts: &[[f64; 3]]) -> Option<([f64; 3], [f64; 3])> {
     Some((mn, mx))
 }
 /// Compute the centroid (mean) of a point cloud.
-#[allow(dead_code)]
 pub fn point_cloud_centroid(pts: &[[f64; 3]]) -> Option<[f64; 3]> {
     if pts.is_empty() {
         return None;
@@ -1542,7 +1513,6 @@ pub fn point_cloud_centroid(pts: &[[f64; 3]]) -> Option<[f64; 3]> {
     Some(scale(sum, 1.0 / n))
 }
 /// Compute the covariance matrix of a point cloud (returns 3x3 row-major).
-#[allow(dead_code)]
 pub fn point_cloud_covariance(pts: &[[f64; 3]]) -> [[f64; 3]; 3] {
     if pts.len() < 2 {
         return [[0.0; 3]; 3];
@@ -1558,20 +1528,18 @@ pub fn point_cloud_covariance(pts: &[[f64; 3]]) -> [[f64; 3]; 3] {
             }
         }
     }
-    for i in 0..3 {
-        for j in 0..3 {
-            cov[i][j] /= n - 1.0;
+    for cov_row in cov.iter_mut() {
+        for cov_ij in cov_row.iter_mut() {
+            *cov_ij /= n - 1.0;
         }
     }
     cov
 }
 /// Scale all points in a cloud by `factor`.
-#[allow(dead_code)]
 pub fn scale_point_cloud(pts: &[[f64; 3]], factor: f64) -> Vec<[f64; 3]> {
     pts.iter().map(|&p| scale(p, factor)).collect()
 }
 /// Translate all points in a cloud by `offset`.
-#[allow(dead_code)]
 pub fn translate_point_cloud(pts: &[[f64; 3]], offset: [f64; 3]) -> Vec<[f64; 3]> {
     pts.iter().map(|&p| add(p, offset)).collect()
 }

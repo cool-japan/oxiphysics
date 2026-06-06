@@ -77,7 +77,6 @@ pub fn variable_temperature_creep(
     strain_history
 }
 /// Predict rupture life from multiple methods for comparison.
-#[allow(clippy::too_many_arguments)]
 pub fn predict_rupture_life(
     temperature: f64,
     lm: &LarsonMillerParameter,

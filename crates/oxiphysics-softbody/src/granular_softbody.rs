@@ -1,4 +1,3 @@
-#![allow(clippy::should_implement_trait)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -19,8 +18,6 @@
 //! - Stress-tensor assembly from contact force chains
 //! - Shear-band detection from incremental strain localisation
 //! - DEM → FEM homogenisation for continuum stress fields
-
-#![allow(dead_code)]
 
 use rand::Rng;
 
@@ -97,16 +94,22 @@ impl Vec3 {
     pub fn scale(self, s: f64) -> Self {
         Self::new(self.x * s, self.y * s, self.z * s)
     }
+}
 
-    /// Add.
+impl std::ops::Add for Vec3 {
+    type Output = Self;
+
     #[inline]
-    pub fn add(self, rhs: Self) -> Self {
+    fn add(self, rhs: Self) -> Self {
         Self::new(self.x + rhs.x, self.y + rhs.y, self.z + rhs.z)
     }
+}
 
-    /// Subtract.
+impl std::ops::Sub for Vec3 {
+    type Output = Self;
+
     #[inline]
-    pub fn sub(self, rhs: Self) -> Self {
+    fn sub(self, rhs: Self) -> Self {
         Self::new(self.x - rhs.x, self.y - rhs.y, self.z - rhs.z)
     }
 }
@@ -152,7 +155,6 @@ pub struct Grain {
 
 impl Grain {
     /// Create a new grain with full parameters.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: usize,
         position: Vec3,
@@ -187,14 +189,14 @@ impl Grain {
     /// Apply an impulse force (added to accumulator).
     pub fn apply_force(&mut self, f: Vec3) {
         if !self.is_fixed {
-            self.force = self.force.add(f);
+            self.force = self.force + f;
         }
     }
 
     /// Apply torque.
     pub fn apply_torque(&mut self, t: Vec3) {
         if !self.is_fixed {
-            self.torque = self.torque.add(t);
+            self.torque = self.torque + t;
         }
     }
 
@@ -211,9 +213,9 @@ impl Grain {
         }
         let accel = self.force.scale(1.0 / self.mass);
         let alpha = self.torque.scale(1.0 / self.inertia);
-        self.velocity = self.velocity.add(accel.scale(dt));
-        self.omega = self.omega.add(alpha.scale(dt));
-        self.position = self.position.add(self.velocity.scale(dt));
+        self.velocity = self.velocity + accel.scale(dt);
+        self.omega = self.omega + alpha.scale(dt);
+        self.position = self.position + self.velocity.scale(dt);
     }
 
     /// Effective Young's modulus for Hertz contact with another grain.
@@ -317,14 +319,13 @@ impl DemParams {
 /// Compute Hertz-Mindlin contact forces between two grains.
 ///
 /// Returns `(force_on_a, torque_on_a, force_on_b, torque_on_b)`.
-#[allow(clippy::too_many_arguments)]
 pub fn hertz_mindlin_force(
     ga: &Grain,
     gb: &Grain,
     delta_t: &mut Vec3,
     params: &DemParams,
 ) -> (Vec3, Vec3, Vec3, Vec3) {
-    let r_ab = gb.position.sub(ga.position);
+    let r_ab = gb.position - ga.position;
     let dist = r_ab.norm();
     let sum_r = ga.radius + gb.radius;
     let overlap = sum_r - dist;
@@ -341,7 +342,7 @@ pub fn hertz_mindlin_force(
     let fn_hertz = (4.0 / 3.0) * e_eff * r_eff.sqrt() * overlap.powf(1.5);
 
     // Normal damping: Fn_damp = -gamma_n * m_eff * v_rel · n
-    let v_rel = gb.velocity.sub(ga.velocity);
+    let v_rel = gb.velocity - ga.velocity;
     let v_n = v_rel.dot(n);
     let fn_damp = -ga.gamma_n * m_eff.sqrt() * v_n;
 
@@ -351,10 +352,10 @@ pub fn hertz_mindlin_force(
     // Tangential displacement update (Mindlin)
     let r_a = ga.radius;
     let r_b = gb.radius;
-    let contact_vel_a = ga.velocity.add(ga.omega.cross(n.scale(-r_a)));
-    let contact_vel_b = gb.velocity.add(gb.omega.cross(n.scale(r_b)));
-    let v_tang_full = contact_vel_b.sub(contact_vel_a);
-    let v_t = v_tang_full.sub(n.scale(v_tang_full.dot(n)));
+    let contact_vel_a = ga.velocity + ga.omega.cross(n.scale(-r_a));
+    let contact_vel_b = gb.velocity + gb.omega.cross(n.scale(r_b));
+    let v_tang_full = contact_vel_b - contact_vel_a;
+    let v_t = v_tang_full - n.scale(v_tang_full.dot(n));
 
     // Shear modulus effective
     let g_a = ga.young / (2.0 * (1.0 + ga.poisson));
@@ -366,14 +367,14 @@ pub fn hertz_mindlin_force(
 
     // Update tangential displacement
     let dt = params.dt;
-    *delta_t = delta_t.add(v_t.scale(dt));
+    *delta_t = *delta_t + v_t.scale(dt);
     // Remove normal component drift
     let n_comp = delta_t.dot(n);
-    *delta_t = delta_t.sub(n.scale(n_comp));
+    *delta_t = *delta_t - n.scale(n_comp);
 
     let ft_spring = delta_t.scale(-kt);
     let ft_damp = v_t.scale(-ga.gamma_t);
-    let ft_total = ft_spring.add(ft_damp);
+    let ft_total = ft_spring + ft_damp;
 
     // Coulomb friction limit
     let ft_max = params.mu_friction * fn_total;
@@ -387,7 +388,7 @@ pub fn hertz_mindlin_force(
         ft_total
     };
 
-    let f_total = f_normal.add(ft_limited);
+    let f_total = f_normal + ft_limited;
 
     // Torques: tau = r x F_t
     let ta = n.scale(-r_a).cross(ft_limited);
@@ -411,7 +412,7 @@ pub fn wall_contact_force(
     params: &DemParams,
 ) -> (Vec3, Vec3) {
     // Overlap: positive if grain penetrates wall
-    let d = grain.position.sub(wall_point).dot(wall_normal);
+    let d = (grain.position - wall_point).dot(wall_normal);
     let overlap = grain.radius - d;
     if overlap <= 0.0 {
         return (Vec3::zero(), Vec3::zero());
@@ -429,7 +430,7 @@ pub fn wall_contact_force(
     let f_n = n.scale(fn_total);
 
     // Tangential friction (simplified)
-    let v_t_full = grain.velocity.sub(n.scale(v_n));
+    let v_t_full = grain.velocity - n.scale(v_n);
     let v_t_norm = v_t_full.norm();
     let f_t = if v_t_norm > 1e-12 {
         let dir = v_t_full.scale(-1.0 / v_t_norm);
@@ -438,7 +439,7 @@ pub fn wall_contact_force(
         Vec3::zero()
     };
 
-    let f_total = f_n.add(f_t);
+    let f_total = f_n + f_t;
     let r_contact = n.scale(-grain.radius);
     let torque = r_contact.cross(f_t);
     (f_total, torque)
@@ -511,7 +512,7 @@ pub fn compute_stress_tensor(
         }
         let ga = &grains[ia];
         let gb = &grains[ib];
-        let branch = gb.position.sub(ga.position);
+        let branch = gb.position - ga.position;
         let force = normal.scale(fn_mag);
         // σ_ij += fi * lj / V
         st.xx += force.x * branch.x;
@@ -566,7 +567,6 @@ impl GrainSizeDistribution {
 ///
 /// Attempts to place `n_grains` grains without overlap, up to `max_attempts`
 /// tries per grain.  Returns the placed grains.
-#[allow(clippy::too_many_arguments)]
 pub fn random_sequential_packing(
     n_grains: usize,
     box_min: Vec3,
@@ -591,7 +591,7 @@ pub fn random_sequential_packing(
 
             let overlap = grains
                 .iter()
-                .any(|g| g.position.sub(pos).norm() < g.radius + r);
+                .any(|g| (g.position - pos).norm() < g.radius + r);
             if !overlap {
                 let mut g = Grain::new(id, pos, r, density, young, poisson, 50.0, 10.0);
                 g.is_fixed = false;
@@ -684,7 +684,7 @@ pub fn attempt_crush(
     *next_id += 1;
     let g1 = Grain::new(
         id1,
-        grain.position.add(offset),
+        grain.position + offset,
         child_r,
         density,
         grain.young,
@@ -694,7 +694,7 @@ pub fn attempt_crush(
     );
     let g2 = Grain::new(
         id2,
-        grain.position.sub(offset),
+        grain.position - offset,
         child_r,
         density,
         grain.young,
@@ -963,8 +963,8 @@ impl FemTriangle {
         let a = grains[nodes[0]].position;
         let b = grains[nodes[1]].position;
         let c = grains[nodes[2]].position;
-        let ab = b.sub(a);
-        let ac = c.sub(a);
+        let ab = b - a;
+        let ac = c - a;
         let area = 0.5 * ab.cross(ac).norm();
         Self {
             nodes,
@@ -1041,7 +1041,7 @@ impl DemFemSystem {
                 let (fa, ta, fb, tb) = hertz_mindlin_force(&ga, &gb, entry, &self.params);
                 let fn_mag = fa.norm();
                 if fn_mag > 0.0 {
-                    let r = gb.position.sub(ga.position);
+                    let r = gb.position - ga.position;
                     let dist = r.norm();
                     let normal = if dist > 1e-15 {
                         r.scale(1.0 / dist)

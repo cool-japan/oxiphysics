@@ -17,8 +17,6 @@
 //! - Masel, R. I. (1996). *Principles of Adsorption and Reaction on Solid Surfaces*.
 //! - Johnson, K. L. (1985). *Contact Mechanics*. Cambridge.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

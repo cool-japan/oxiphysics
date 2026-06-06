@@ -12,32 +12,22 @@ use std::collections::HashMap;
 
 // ── Tiny math helpers ──────────────────────────────────────────────────────
 
-/// Dot product of two 3-vectors.
-#[allow(dead_code)]
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
 /// Add two 3-vectors.
-#[allow(dead_code)]
 fn vec3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 /// Subtract two 3-vectors.
-#[allow(dead_code)]
 fn vec3_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 /// Scale a 3-vector.
-#[allow(dead_code)]
 fn vec3_scale(v: [f64; 3], s: f64) -> [f64; 3] {
     [v[0] * s, v[1] * s, v[2] * s]
 }
 
 /// Linear interpolation for a 3-vector.
-#[allow(dead_code)]
 fn vec3_lerp(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     [
         a[0] + (b[0] - a[0]) * t,
@@ -47,7 +37,6 @@ fn vec3_lerp(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
 }
 
 /// Normalize a quaternion `[x, y, z, w]`.
-#[allow(dead_code)]
 fn quat_normalize(q: [f64; 4]) -> [f64; 4] {
     let len2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
     if len2 < 1e-30 {
@@ -58,13 +47,11 @@ fn quat_normalize(q: [f64; 4]) -> [f64; 4] {
 }
 
 /// Quaternion dot product.
-#[allow(dead_code)]
 fn quat_dot(a: [f64; 4], b: [f64; 4]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
 }
 
 /// Multiply two quaternions (Hamilton product). Layout: `[x, y, z, w]`.
-#[allow(dead_code)]
 fn quat_mul(p: [f64; 4], q: [f64; 4]) -> [f64; 4] {
     let [px, py, pz, pw] = p;
     let [qx, qy, qz, qw] = q;
@@ -77,13 +64,11 @@ fn quat_mul(p: [f64; 4], q: [f64; 4]) -> [f64; 4] {
 }
 
 /// Quaternion conjugate (inverse for unit quaternions).
-#[allow(dead_code)]
 fn quat_conjugate(q: [f64; 4]) -> [f64; 4] {
     [-q[0], -q[1], -q[2], q[3]]
 }
 
 /// Euler XYZ (degrees) to quaternion `[x, y, z, w]`.
-#[allow(dead_code)]
 fn euler_xyz_to_quat(euler_deg: [f64; 3]) -> [f64; 4] {
     let to_rad = std::f64::consts::PI / 180.0;
     let (hx, hy, hz) = (
@@ -103,7 +88,6 @@ fn euler_xyz_to_quat(euler_deg: [f64; 3]) -> [f64; 4] {
 }
 
 /// Quaternion to Euler XYZ (degrees).
-#[allow(dead_code)]
 fn quat_to_euler_xyz(q: [f64; 4]) -> [f64; 3] {
     let [x, y, z, w] = q;
     let to_deg = 180.0 / std::f64::consts::PI;
@@ -130,7 +114,6 @@ fn quat_to_euler_xyz(q: [f64; 4]) -> [f64; 3] {
 ///
 /// Handles the short-arc selection and falls back to linear interpolation
 /// when the quaternions are nearly parallel.
-#[allow(dead_code)]
 pub fn quat_slerp(a: [f64; 4], b: [f64; 4], t: f64) -> [f64; 4] {
     let mut dot = quat_dot(a, b);
     let b = if dot < 0.0 {
@@ -191,7 +174,6 @@ pub struct Skeleton {
 
 impl Skeleton {
     /// Create an empty skeleton.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             joints: Vec::new(),
@@ -200,7 +182,6 @@ impl Skeleton {
     }
 
     /// Add a joint and return its index.
-    #[allow(dead_code)]
     pub fn add_joint(&mut self, name: &str, parent: Option<usize>, offset: [f64; 3]) -> usize {
         let idx = self.joints.len();
         self.name_to_index.insert(name.to_string(), idx);
@@ -214,7 +195,6 @@ impl Skeleton {
     }
 
     /// Add channels to a joint.
-    #[allow(dead_code)]
     pub fn set_channels(&mut self, joint_idx: usize, channels: Vec<String>) {
         if let Some(j) = self.joints.get_mut(joint_idx) {
             j.channels = channels;
@@ -222,13 +202,11 @@ impl Skeleton {
     }
 
     /// Number of joints.
-    #[allow(dead_code)]
     pub fn num_joints(&self) -> usize {
         self.joints.len()
     }
 
     /// Get the children of a joint.
-    #[allow(dead_code)]
     pub fn children(&self, joint_idx: usize) -> Vec<usize> {
         self.joints
             .iter()
@@ -239,13 +217,11 @@ impl Skeleton {
     }
 
     /// Find a joint by name.
-    #[allow(dead_code)]
     pub fn find_joint(&self, name: &str) -> Option<usize> {
         self.name_to_index.get(name).copied()
     }
 
     /// Total number of channels across all joints.
-    #[allow(dead_code)]
     pub fn total_channels(&self) -> usize {
         self.joints.iter().map(|j| j.channels.len()).sum()
     }
@@ -274,7 +250,6 @@ pub struct JointPose {
 
 impl JointPose {
     /// Identity pose.
-    #[allow(dead_code)]
     pub fn identity() -> Self {
         Self {
             translation: [0.0; 3],
@@ -284,7 +259,6 @@ impl JointPose {
     }
 
     /// Interpolate between two poses.
-    #[allow(dead_code)]
     pub fn lerp(&self, other: &JointPose, t: f64) -> JointPose {
         JointPose {
             translation: vec3_lerp(self.translation, other.translation, t),
@@ -303,7 +277,6 @@ pub struct SkeletonPose {
 
 impl SkeletonPose {
     /// Create a default pose for a skeleton.
-    #[allow(dead_code)]
     pub fn default_for(skeleton: &Skeleton) -> Self {
         let n = skeleton.num_joints();
         Self {
@@ -312,7 +285,6 @@ impl SkeletonPose {
     }
 
     /// Interpolate between two skeleton poses.
-    #[allow(dead_code)]
     pub fn lerp(&self, other: &SkeletonPose, t: f64) -> SkeletonPose {
         let poses: Vec<JointPose> = self
             .joint_poses
@@ -339,7 +311,6 @@ pub struct AnimationClip {
 
 impl AnimationClip {
     /// Create an empty clip.
-    #[allow(dead_code)]
     pub fn new(name: &str, fps: f64) -> Self {
         Self {
             name: name.to_string(),
@@ -350,14 +321,12 @@ impl AnimationClip {
     }
 
     /// Add a frame.
-    #[allow(dead_code)]
     pub fn add_frame(&mut self, time: f64, pose: SkeletonPose) {
         self.times.push(time);
         self.frames.push(pose);
     }
 
     /// Duration of the clip.
-    #[allow(dead_code)]
     pub fn duration(&self) -> f64 {
         if self.times.is_empty() {
             return 0.0;
@@ -366,14 +335,12 @@ impl AnimationClip {
     }
 
     /// Number of frames.
-    #[allow(dead_code)]
     pub fn num_frames(&self) -> usize {
         self.frames.len()
     }
 
     /// Sample the animation at a given time using linear interpolation
     /// (with SLERP for rotations).
-    #[allow(dead_code)]
     pub fn sample(&self, time: f64) -> Option<SkeletonPose> {
         if self.frames.is_empty() {
             return None;
@@ -421,7 +388,6 @@ pub struct BvhData {
 }
 
 /// Parse BVH format text into a `BvhData` structure.
-#[allow(dead_code)]
 pub fn parse_bvh(input: &str) -> Result<BvhData, String> {
     let mut skeleton = Skeleton::new();
     let lines = input.lines().map(|l| l.trim()).peekable();
@@ -515,7 +481,6 @@ pub fn parse_bvh(input: &str) -> Result<BvhData, String> {
 }
 
 /// Convert BVH channel data for one frame to a `SkeletonPose`.
-#[allow(dead_code)]
 pub fn bvh_frame_to_pose(skeleton: &Skeleton, channels: &[f64]) -> SkeletonPose {
     let mut pose = SkeletonPose::default_for(skeleton);
     let mut ch_idx = 0;
@@ -553,7 +518,6 @@ pub fn bvh_frame_to_pose(skeleton: &Skeleton, channels: &[f64]) -> SkeletonPose 
 }
 
 /// Convert BVH data to an `AnimationClip`.
-#[allow(dead_code)]
 pub fn bvh_to_clip(bvh: &BvhData) -> AnimationClip {
     let fps = if bvh.frame_time > 1e-15 {
         1.0 / bvh.frame_time
@@ -570,7 +534,6 @@ pub fn bvh_to_clip(bvh: &BvhData) -> AnimationClip {
 }
 
 /// Export BVH data to string.
-#[allow(dead_code)]
 pub fn export_bvh(skeleton: &Skeleton, clip: &AnimationClip) -> String {
     let mut out = String::new();
     out.push_str("HIERARCHY\n");
@@ -676,7 +639,6 @@ pub struct FbxNode {
 
 impl FbxNode {
     /// Create a new FBX node.
-    #[allow(dead_code)]
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -686,19 +648,16 @@ impl FbxNode {
     }
 
     /// Add a property.
-    #[allow(dead_code)]
     pub fn add_property(&mut self, value: &str) {
         self.properties.push(value.to_string());
     }
 
     /// Add a child node.
-    #[allow(dead_code)]
     pub fn add_child(&mut self, child: FbxNode) {
         self.children.push(child);
     }
 
     /// Serialize to FBX ASCII text.
-    #[allow(dead_code)]
     pub fn to_ascii(&self, indent: usize) -> String {
         let prefix = "  ".repeat(indent);
         let mut out = format!("{}{}: ", prefix, self.name);
@@ -717,7 +676,6 @@ impl FbxNode {
     }
 
     /// Find a child by name.
-    #[allow(dead_code)]
     pub fn find_child(&self, name: &str) -> Option<&FbxNode> {
         self.children.iter().find(|c| c.name == name)
     }
@@ -728,7 +686,6 @@ impl FbxNode {
 /// This parser handles the top-level structure of FBX ASCII files. It is
 /// not a full FBX parser but sufficient for extracting skeleton and
 /// animation data from simple scenes.
-#[allow(dead_code)]
 pub fn parse_fbx_ascii(input: &str) -> Result<Vec<FbxNode>, String> {
     let mut nodes = Vec::new();
     let mut stack: Vec<FbxNode> = Vec::new();
@@ -791,7 +748,6 @@ pub fn parse_fbx_ascii(input: &str) -> Result<Vec<FbxNode>, String> {
 }
 
 /// Export a skeleton to basic FBX ASCII format.
-#[allow(dead_code)]
 pub fn export_fbx_ascii_skeleton(skeleton: &Skeleton) -> String {
     let mut root = FbxNode::new("FBXHeaderExtension");
     let mut version = FbxNode::new("FBXVersion");
@@ -826,7 +782,6 @@ pub fn export_fbx_ascii_skeleton(skeleton: &Skeleton) -> String {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Export a skeleton and animation clip to USDA (ASCII USD) format.
-#[allow(dead_code)]
 pub fn export_usda(skeleton: &Skeleton, clip: &AnimationClip, stage_name: &str) -> String {
     let mut out = String::new();
     out.push_str("#usda 1.0\n");
@@ -920,7 +875,6 @@ pub struct BlendShape {
 
 impl BlendShape {
     /// Create a new blend shape.
-    #[allow(dead_code)]
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -929,7 +883,6 @@ impl BlendShape {
     }
 
     /// Add a vertex delta.
-    #[allow(dead_code)]
     pub fn add_delta(&mut self, vertex_idx: usize, delta: [f64; 3]) {
         self.deltas.push((vertex_idx, delta));
     }
@@ -946,7 +899,6 @@ pub struct BlendShapeSet {
 
 impl BlendShapeSet {
     /// Create a new empty blend shape set.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             shapes: Vec::new(),
@@ -955,7 +907,6 @@ impl BlendShapeSet {
     }
 
     /// Add a blend shape and return its index.
-    #[allow(dead_code)]
     pub fn add_shape(&mut self, shape: BlendShape) -> usize {
         let idx = self.shapes.len();
         self.shapes.push(shape);
@@ -964,7 +915,6 @@ impl BlendShapeSet {
     }
 
     /// Set the weight for a blend shape.
-    #[allow(dead_code)]
     pub fn set_weight(&mut self, idx: usize, weight: f64) {
         if idx < self.weights.len() {
             self.weights[idx] = weight;
@@ -974,7 +924,6 @@ impl BlendShapeSet {
     /// Evaluate the blend shapes and return the accumulated deltas per vertex.
     ///
     /// The result maps vertex_index to accumulated delta.
-    #[allow(dead_code)]
     pub fn evaluate(&self) -> HashMap<usize, [f64; 3]> {
         let mut result: HashMap<usize, [f64; 3]> = HashMap::new();
         for (shape, &weight) in self.shapes.iter().zip(&self.weights) {
@@ -990,7 +939,6 @@ impl BlendShapeSet {
     }
 
     /// Interpolate weights between two sets of weights.
-    #[allow(dead_code)]
     pub fn interpolate_weights(a: &[f64], b: &[f64], t: f64) -> Vec<f64> {
         a.iter()
             .zip(b.iter())
@@ -1037,7 +985,6 @@ pub struct TimelineTrack {
 
 impl TimelineTrack {
     /// Create a new track.
-    #[allow(dead_code)]
     pub fn new(name: &str, start: f64, end: f64) -> Self {
         Self {
             name: name.to_string(),
@@ -1049,13 +996,11 @@ impl TimelineTrack {
     }
 
     /// Duration of the track.
-    #[allow(dead_code)]
     pub fn duration(&self) -> f64 {
         self.end - self.start
     }
 
     /// Add an event.
-    #[allow(dead_code)]
     pub fn add_event(&mut self, time: f64, name: &str, payload: &str) {
         self.events.push(TimelineEvent {
             time,
@@ -1065,7 +1010,6 @@ impl TimelineTrack {
     }
 
     /// Get events at or near a given time.
-    #[allow(dead_code)]
     pub fn events_at(&self, time: f64, tolerance: f64) -> Vec<&TimelineEvent> {
         self.events
             .iter()
@@ -1089,7 +1033,6 @@ pub struct Timeline {
 
 impl Timeline {
     /// Create a new timeline.
-    #[allow(dead_code)]
     pub fn new(start: f64, end: f64, fps: f64) -> Self {
         Self {
             tracks: Vec::new(),
@@ -1100,25 +1043,21 @@ impl Timeline {
     }
 
     /// Add a track.
-    #[allow(dead_code)]
     pub fn add_track(&mut self, track: TimelineTrack) {
         self.tracks.push(track);
     }
 
     /// Duration.
-    #[allow(dead_code)]
     pub fn duration(&self) -> f64 {
         self.end - self.start
     }
 
     /// Total number of frames.
-    #[allow(dead_code)]
     pub fn total_frames(&self) -> usize {
         ((self.end - self.start) * self.fps).ceil() as usize
     }
 
     /// Get the time for a given frame index.
-    #[allow(dead_code)]
     pub fn frame_time(&self, frame: usize) -> f64 {
         self.start + (frame as f64) / self.fps
     }
@@ -1141,7 +1080,6 @@ pub struct RetargetMapping {
 
 impl RetargetMapping {
     /// Create a new mapping with a given scale.
-    #[allow(dead_code)]
     pub fn new(scale: f64) -> Self {
         Self {
             joint_map: HashMap::new(),
@@ -1151,19 +1089,16 @@ impl RetargetMapping {
     }
 
     /// Add a joint mapping.
-    #[allow(dead_code)]
     pub fn map_joint(&mut self, source_idx: usize, target_idx: usize) {
         self.joint_map.insert(source_idx, target_idx);
     }
 
     /// Add a rotation offset for a target joint.
-    #[allow(dead_code)]
     pub fn set_rotation_offset(&mut self, target_idx: usize, offset: [f64; 4]) {
         self.rotation_offsets.insert(target_idx, offset);
     }
 
     /// Build a mapping from joint names.
-    #[allow(dead_code)]
     pub fn from_name_mapping(
         source: &Skeleton,
         target: &Skeleton,
@@ -1184,7 +1119,6 @@ impl RetargetMapping {
 }
 
 /// Retarget a single skeleton pose from a source to a target skeleton.
-#[allow(dead_code)]
 pub fn retarget_pose(
     source_pose: &SkeletonPose,
     target_skeleton: &Skeleton,
@@ -1214,7 +1148,6 @@ pub fn retarget_pose(
 }
 
 /// Retarget an entire animation clip.
-#[allow(dead_code)]
 pub fn retarget_clip(
     source_clip: &AnimationClip,
     target_skeleton: &Skeleton,
@@ -1249,19 +1182,16 @@ pub enum InterpolationMode {
 }
 
 /// Perform step interpolation.
-#[allow(dead_code)]
 pub fn step_interpolate(a: f64, _b: f64, _t: f64) -> f64 {
     a
 }
 
 /// Perform linear interpolation.
-#[allow(dead_code)]
 pub fn linear_interpolate(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t
 }
 
 /// Perform cubic Hermite interpolation between two values with tangents.
-#[allow(dead_code)]
 pub fn cubic_hermite_interpolate(p0: f64, m0: f64, p1: f64, m1: f64, t: f64) -> f64 {
     let t2 = t * t;
     let t3 = t2 * t;
@@ -1273,7 +1203,6 @@ pub fn cubic_hermite_interpolate(p0: f64, m0: f64, p1: f64, m1: f64, t: f64) -> 
 }
 
 /// Catmull-Rom tangent estimation.
-#[allow(dead_code)]
 pub fn catmull_rom_tangent(p_prev: f64, p_next: f64, dt: f64) -> f64 {
     if dt.abs() < 1e-15 {
         return 0.0;
@@ -1283,7 +1212,6 @@ pub fn catmull_rom_tangent(p_prev: f64, p_next: f64, dt: f64) -> f64 {
 
 /// Resample an animation clip to a new frame rate using the specified
 /// interpolation mode.
-#[allow(dead_code)]
 pub fn resample_clip(
     clip: &AnimationClip,
     target_fps: f64,
@@ -1311,14 +1239,12 @@ pub fn resample_clip(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Blend two skeleton poses with a weight `t` (0 = fully a, 1 = fully b).
-#[allow(dead_code)]
 pub fn blend_poses(a: &SkeletonPose, b: &SkeletonPose, t: f64) -> SkeletonPose {
     a.lerp(b, t)
 }
 
 /// Additive blend: add the difference (b - ref) to the base pose, scaled
 /// by `weight`.
-#[allow(dead_code)]
 pub fn additive_blend(
     base: &SkeletonPose,
     reference: &SkeletonPose,
@@ -1359,7 +1285,6 @@ pub fn additive_blend(
 /// Export animation data as a simple CSV.
 ///
 /// Columns: `time, joint_index, tx, ty, tz, rx, ry, rz, rw`.
-#[allow(dead_code)]
 pub fn export_animation_csv(clip: &AnimationClip) -> String {
     let mut out = String::from("time,joint,tx,ty,tz,rx,ry,rz,rw\n");
     for (f_idx, frame) in clip.frames.iter().enumerate() {
@@ -1390,7 +1315,6 @@ pub fn export_animation_csv(clip: &AnimationClip) -> String {
 ///
 /// Returns `(fps_estimate, frames_map)` where frames_map groups data by
 /// time.
-#[allow(dead_code)]
 pub fn parse_animation_csv(input: &str, num_joints: usize) -> Result<AnimationClip, String> {
     let mut times_and_poses: Vec<(f64, usize, JointPose)> = Vec::new();
 

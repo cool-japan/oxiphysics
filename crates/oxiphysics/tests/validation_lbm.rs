@@ -16,8 +16,6 @@
 //! cargo test -p oxiphysics --test validation_lbm -- --ignored
 //! ```
 
-#![allow(missing_docs)]
-
 use oxiphysics::lbm::{LbmGrid3D, lattice::LatticeType, stream_3d};
 
 // ---------------------------------------------------------------------------

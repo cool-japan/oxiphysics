@@ -8,7 +8,6 @@ use super::functions::*;
 ///
 /// Detects bond breaking and forming by comparing current distances against
 /// cutoffs, and records breaking events.
-#[allow(dead_code)]
 pub struct TopologyManager {
     /// Current list of bonded pairs `(i, j)` with `i < j`.
     pub current_bonds: Vec<(usize, usize)>,
@@ -23,7 +22,6 @@ pub struct TopologyManager {
 }
 impl TopologyManager {
     /// Create a new topology manager.
-    #[allow(dead_code)]
     pub fn new(break_cutoff: f64, form_cutoff: f64) -> Self {
         Self {
             current_bonds: Vec::new(),
@@ -37,7 +35,6 @@ impl TopologyManager {
     ///
     /// Bonds whose distance exceeds `break_cutoff` are removed and logged.
     /// New bonds within `form_cutoff` are added.
-    #[allow(dead_code)]
     pub fn update(&mut self, positions: &[[f64; 3]], time: f64) {
         let n = positions.len();
         let mut broken_indices = Vec::new();
@@ -74,7 +71,6 @@ impl TopologyManager {
     /// Update topology using bond-order criterion instead of distance.
     ///
     /// Bonds with BO < `bo_threshold` are broken.
-    #[allow(dead_code)]
     pub fn update_by_bond_order(
         &mut self,
         positions: &[[f64; 3]],
@@ -104,18 +100,15 @@ impl TopologyManager {
         }
     }
     /// Number of currently active bonds.
-    #[allow(dead_code)]
     pub fn num_bonds(&self) -> usize {
         self.current_bonds.len()
     }
     /// Number of breaking events recorded.
-    #[allow(dead_code)]
     pub fn num_break_events(&self) -> usize {
         self.break_events.len()
     }
 }
 /// A log entry describing a single reaction event.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReactionEvent {
     /// Simulation step at which the event was detected.
@@ -130,7 +123,6 @@ pub struct ReactionEvent {
 /// Collects running statistics during a reactive MD simulation.
 ///
 /// Records step-by-step energies, temperatures, and bond-event counts.
-#[allow(dead_code)]
 #[derive(Debug, Default, Clone)]
 pub struct ReactiveMDStats {
     /// Total potential energies at each recorded step.
@@ -144,12 +136,10 @@ pub struct ReactiveMDStats {
 }
 impl ReactiveMDStats {
     /// Create a new empty statistics collector.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
     /// Record a new step.
-    #[allow(dead_code)]
     pub fn record(&mut self, energy: f64, temperature: f64, n_breaks: usize, n_forms: usize) {
         self.energies.push(energy);
         self.temperatures.push(temperature);
@@ -157,7 +147,6 @@ impl ReactiveMDStats {
         self.form_counts.push(n_forms);
     }
     /// Mean potential energy over all recorded steps.
-    #[allow(dead_code)]
     pub fn mean_energy(&self) -> f64 {
         if self.energies.is_empty() {
             return 0.0;
@@ -165,7 +154,6 @@ impl ReactiveMDStats {
         self.energies.iter().sum::<f64>() / self.energies.len() as f64
     }
     /// Mean temperature over all recorded steps.
-    #[allow(dead_code)]
     pub fn mean_temperature(&self) -> f64 {
         if self.temperatures.is_empty() {
             return 0.0;
@@ -173,12 +161,10 @@ impl ReactiveMDStats {
         self.temperatures.iter().sum::<f64>() / self.temperatures.len() as f64
     }
     /// Total number of bond-breaking events at the last recorded step.
-    #[allow(dead_code)]
     pub fn total_breaks(&self) -> usize {
         self.break_counts.last().copied().unwrap_or(0)
     }
     /// Number of recorded steps.
-    #[allow(dead_code)]
     pub fn n_steps(&self) -> usize {
         self.energies.len()
     }
@@ -187,7 +173,6 @@ impl ReactiveMDStats {
 ///
 /// When the sum of bond orders on an atom exceeds its valence, ReaxFF applies
 /// a penalty energy to restore the correct coordination.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OverCoordParams {
     /// Expected valence of the atom (e.g. 4 for C, 2 for O).
@@ -199,7 +184,6 @@ pub struct OverCoordParams {
 }
 impl OverCoordParams {
     /// Standard carbon over-coordination parameters.
-    #[allow(dead_code)]
     pub fn carbon() -> Self {
         Self {
             val_i: 4.0,
@@ -208,7 +192,6 @@ impl OverCoordParams {
         }
     }
     /// Standard oxygen over-coordination parameters.
-    #[allow(dead_code)]
     pub fn oxygen() -> Self {
         Self {
             val_i: 2.0,
@@ -217,7 +200,6 @@ impl OverCoordParams {
         }
     }
     /// Standard nitrogen over-coordination parameters.
-    #[allow(dead_code)]
     pub fn nitrogen() -> Self {
         Self {
             val_i: 3.0,
@@ -230,13 +212,11 @@ impl OverCoordParams {
 ///
 /// Allows look-up interpolation: given BO, returns the corresponding bond energy
 /// from a user-supplied table of `(bond_order, energy)` pairs sorted by BO.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BondEnergyTable {
     /// Sorted (bond_order, energy) pairs.
     pub entries: Vec<(f64, f64)>,
 }
-#[allow(dead_code)]
 impl BondEnergyTable {
     /// Create a new lookup table from unsorted entries.
     pub fn new(mut entries: Vec<(f64, f64)>) -> Self {
@@ -278,7 +258,6 @@ impl BondEnergyTable {
 /// ```text
 /// BO' = exp(p_bo1 * (r / r0)^p_bo2) + exp(p_bo3 * (r / r0)^p_bo4)
 /// ```
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ReaxFFBond {
     /// Equilibrium sigma-bond length.
@@ -298,7 +277,6 @@ pub struct ReaxFFBond {
 }
 impl ReaxFFBond {
     /// Construct typical C-C single bond parameters.
-    #[allow(dead_code)]
     pub fn carbon_carbon() -> Self {
         Self {
             r0: 1.54,
@@ -311,7 +289,6 @@ impl ReaxFFBond {
         }
     }
     /// Construct typical C-H bond parameters.
-    #[allow(dead_code)]
     pub fn carbon_hydrogen() -> Self {
         Self {
             r0: 1.09,
@@ -324,7 +301,6 @@ impl ReaxFFBond {
         }
     }
     /// Construct typical O-H bond parameters.
-    #[allow(dead_code)]
     pub fn oxygen_hydrogen() -> Self {
         Self {
             r0: 0.96,
@@ -338,7 +314,6 @@ impl ReaxFFBond {
     }
 }
 /// Oxidation state of an atom based on its formal charge and bonding environment.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OxidationState {
     /// Atom index.
@@ -350,7 +325,6 @@ pub struct OxidationState {
 }
 impl OxidationState {
     /// Create a new oxidation state.
-    #[allow(dead_code)]
     pub fn new(atom_idx: usize, state: i32, electronegativity: f64) -> Self {
         Self {
             atom_idx,
@@ -360,7 +334,6 @@ impl OxidationState {
     }
 }
 /// A reactive simulation container that tracks bond topology over time.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ReactiveSimulation {
     /// Atom positions.
@@ -376,7 +349,6 @@ pub struct ReactiveSimulation {
 }
 impl ReactiveSimulation {
     /// Create a new reactive simulation.
-    #[allow(dead_code)]
     pub fn new(positions: Vec<[f64; 3]>, bond_params: ReaxFFBond, bo_threshold: f64) -> Self {
         let n = positions.len();
         let current_bonds = bond_list_from_bond_orders(&positions, &bond_params, bo_threshold);
@@ -400,7 +372,6 @@ impl ReactiveSimulation {
     /// * `step`          — current simulation step (for logging)
     ///
     /// Returns the number of new reaction events detected.
-    #[allow(dead_code)]
     pub fn detect_reaction_events(&mut self, new_positions: &[[f64; 3]], step: usize) -> usize {
         let new_bonds =
             bond_list_from_bond_orders(new_positions, &self.bond_params, self.bo_threshold);
@@ -429,7 +400,6 @@ impl ReactiveSimulation {
         n_events
     }
     /// Total number of bond-breaking events recorded.
-    #[allow(dead_code)]
     pub fn count_breaks(&self) -> usize {
         self.event_log
             .iter()
@@ -437,7 +407,6 @@ impl ReactiveSimulation {
             .count()
     }
     /// Total number of bond-forming events recorded.
-    #[allow(dead_code)]
     pub fn count_forms(&self) -> usize {
         self.event_log
             .iter()
@@ -446,7 +415,6 @@ impl ReactiveSimulation {
     }
 }
 /// A bond-order potential that includes σ and π bond contributions.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BondOrderPotential {
     /// σ-bond Morse-like parameters.
@@ -456,7 +424,6 @@ pub struct BondOrderPotential {
 }
 impl BondOrderPotential {
     /// Create a C=C double bond potential.
-    #[allow(dead_code)]
     pub fn carbon_double() -> Self {
         Self {
             sigma: ReaxFFBond::carbon_carbon(),
@@ -473,7 +440,6 @@ impl BondOrderPotential {
     /// * `bo_pi` — the π component of the bond order (0 ≤ bo_pi ≤ 1)
     ///
     /// Returns energy in kJ/mol.
-    #[allow(dead_code)]
     pub fn compute_pi_bond_contribution(&self, bo_pi: f64) -> f64 {
         if bo_pi <= 0.0 {
             return 0.0;
@@ -486,7 +452,6 @@ impl BondOrderPotential {
     /// # Arguments
     /// * `r`     — current bond distance (Å)
     /// * `bo_pi` — π component of the bond order
-    #[allow(dead_code)]
     pub fn compute_total_bond_energy(&self, r: f64, bo_pi: f64) -> f64 {
         let e_sigma = compute_reaxff_bond_energy(r, &self.sigma);
         let e_pi = self.compute_pi_bond_contribution(bo_pi);
@@ -497,7 +462,6 @@ impl BondOrderPotential {
 ///
 /// Stores standard element-level properties used for multiple reactive
 /// force field flavours (ReaxFF, REBO, etc.).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ReactiveAtomParams {
     /// Element symbol.
@@ -515,7 +479,6 @@ pub struct ReactiveAtomParams {
 }
 impl ReactiveAtomParams {
     /// Standard C parameters.
-    #[allow(dead_code)]
     pub fn carbon() -> Self {
         Self {
             element: "C",
@@ -527,7 +490,6 @@ impl ReactiveAtomParams {
         }
     }
     /// Standard H parameters.
-    #[allow(dead_code)]
     pub fn hydrogen() -> Self {
         Self {
             element: "H",
@@ -539,7 +501,6 @@ impl ReactiveAtomParams {
         }
     }
     /// Standard O parameters.
-    #[allow(dead_code)]
     pub fn oxygen() -> Self {
         Self {
             element: "O",
@@ -551,7 +512,6 @@ impl ReactiveAtomParams {
         }
     }
     /// Standard N parameters.
-    #[allow(dead_code)]
     pub fn nitrogen() -> Self {
         Self {
             element: "N",
@@ -570,7 +530,6 @@ impl ReactiveAtomParams {
 /// ```text
 /// E_π = D_e^π * BO_pi * exp(p_be1 * (1 − BO_pi^p_be2))
 /// ```
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PiBondParams {
     /// π-bond dissociation energy (kJ/mol).
@@ -582,7 +541,6 @@ pub struct PiBondParams {
 }
 impl PiBondParams {
     /// Typical C=C π bond parameters.
-    #[allow(dead_code)]
     pub fn carbon_carbon_double() -> Self {
         Self {
             d_e_pi: 134.0,
@@ -591,7 +549,6 @@ impl PiBondParams {
         }
     }
     /// Typical C≡C π bond parameters (cumulative).
-    #[allow(dead_code)]
     pub fn carbon_carbon_triple() -> Self {
         Self {
             d_e_pi: 180.0,
@@ -601,7 +558,6 @@ impl PiBondParams {
     }
 }
 /// Type of a reaction event.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReactionEventType {
     /// A bond was broken (BO dropped below threshold).
@@ -610,7 +566,6 @@ pub enum ReactionEventType {
     BondFormed,
 }
 /// Records a bond-breaking event during a reactive MD trajectory.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BondBreakingEvent {
     /// Index of the first atom in the bond.
@@ -624,7 +579,6 @@ pub struct BondBreakingEvent {
 }
 impl BondBreakingEvent {
     /// Create a new bond-breaking event.
-    #[allow(dead_code)]
     pub fn new(atom_i: usize, atom_j: usize, time: f64, reason: BreakReason) -> Self {
         Self {
             atom_i,
@@ -635,7 +589,6 @@ impl BondBreakingEvent {
     }
 }
 /// Morse-like bond-order parameters.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BondOrder {
     /// Equilibrium bond length.
@@ -648,7 +601,6 @@ pub struct BondOrder {
     pub s: f64,
 }
 /// Reason a bond was considered broken during reactive MD.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum BreakReason {
     /// Bond length exceeded a threshold distance.
@@ -661,7 +613,6 @@ pub enum BreakReason {
     BondOrderLow,
 }
 /// A reactive site: a central atom with its bonded neighbors and bond orders.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ReactiveSite {
     /// Index of the central atom.
@@ -673,7 +624,6 @@ pub struct ReactiveSite {
 }
 impl ReactiveSite {
     /// Create a new reactive site.
-    #[allow(dead_code)]
     pub fn new(central_atom: usize) -> Self {
         Self {
             central_atom,
@@ -682,28 +632,23 @@ impl ReactiveSite {
         }
     }
     /// Add a neighbor with the given bond order.
-    #[allow(dead_code)]
     pub fn add_neighbor(&mut self, neighbor: usize, bond_order: f64) {
         self.neighbor_atoms.push(neighbor);
         self.bond_orders.push(bond_order);
     }
     /// Total bond order (sum over all neighbors).
-    #[allow(dead_code)]
     pub fn total_bond_order(&self) -> f64 {
         self.bond_orders.iter().sum()
     }
     /// Number of neighbors.
-    #[allow(dead_code)]
     pub fn coordination_number(&self) -> usize {
         self.neighbor_atoms.len()
     }
     /// Maximum bond order among all neighbors.
-    #[allow(dead_code)]
     pub fn max_bond_order(&self) -> f64 {
         self.bond_orders.iter().cloned().fold(0.0_f64, f64::max)
     }
     /// Remove neighbors with bond order below threshold.
-    #[allow(dead_code)]
     pub fn prune_weak_bonds(&mut self, threshold: f64) {
         let mut i = 0;
         while i < self.bond_orders.len() {
@@ -720,7 +665,6 @@ impl ReactiveSite {
 ///
 /// Holds atom positions, simulation box, Morse bond parameters, and the list
 /// of bonded pairs.  Forces are accumulated per atom using Newton's third law.
-#[allow(dead_code)]
 pub struct ReaxFFSimple {
     /// Atom positions in Cartesian coordinates.
     pub atoms: Vec<[f64; 3]>,
@@ -733,7 +677,6 @@ pub struct ReaxFFSimple {
 }
 impl ReaxFFSimple {
     /// Total Morse bond energy summed over all listed pairs.
-    #[allow(dead_code)]
     pub fn compute_bond_energy(&self) -> f64 {
         self.pairs
             .iter()
@@ -747,7 +690,6 @@ impl ReaxFFSimple {
     /// Per-atom force vectors from Morse bond interactions.
     ///
     /// Returns a `Vec<[f64;3]>` of length `atoms.len()`.
-    #[allow(dead_code)]
     pub fn compute_bond_forces(&self) -> Vec<[f64; 3]> {
         let n = self.atoms.len();
         let mut forces = vec![[0.0f64; 3]; n];
@@ -771,7 +713,6 @@ impl ReaxFFSimple {
         forces
     }
     /// Compute per-bond bond orders using ReaxFF formula.
-    #[allow(dead_code)]
     pub fn compute_bond_orders(&self, reaxff_bond: &ReaxFFBond) -> Vec<f64> {
         self.pairs
             .iter()

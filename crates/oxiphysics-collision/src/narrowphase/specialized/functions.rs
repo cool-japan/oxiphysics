@@ -493,7 +493,6 @@ pub fn convex_convex_gjk_intersect(
 /// Sphere vs triangle-mesh contact (finds the closest triangle).
 ///
 /// Returns the shallowest penetrating contact, or `None` if no overlap.
-#[allow(dead_code)]
 pub fn sphere_triangle_mesh(
     sphere: &Sphere,
     sphere_t: &Transform,
@@ -579,7 +578,6 @@ pub(super) fn closest_point_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> V
 /// Cylinder vs infinite plane contact.
 ///
 /// Plane: `dot(n_hat, x) = d`. Cylinder axis aligned along local Y.
-#[allow(dead_code)]
 pub fn cylinder_plane(
     cyl: &Cylinder,
     cyl_t: &Transform,
@@ -614,7 +612,6 @@ pub fn cylinder_plane(
     ))
 }
 /// Capsule vs triangle-mesh contact.
-#[allow(dead_code)]
 pub fn capsule_triangle_mesh(
     capsule: &Capsule,
     capsule_t: &Transform,
@@ -663,7 +660,6 @@ pub fn capsule_triangle_mesh(
     best
 }
 /// Sphere vs HeightField contact using bilinear height interpolation.
-#[allow(dead_code)]
 pub fn heightfield_sphere(
     hf: &oxiphysics_geometry::HeightField,
     sphere: &Sphere,
@@ -705,7 +701,6 @@ pub fn heightfield_sphere(
 ///
 /// The torus lies in its local XZ plane; its symmetry axis is local Y.
 /// Plane: `dot(n_hat, x) = d`.
-#[allow(dead_code)]
 pub fn torus_plane(
     torus: &Torus,
     torus_t: &Transform,
@@ -789,7 +784,6 @@ pub(super) fn closest_points_segments(a1: &Vec3, b1: &Vec3, a2: &Vec3, b2: &Vec3
 /// Precise cylinder vs cylinder collision test.
 ///
 /// Returns both a contact and a diagnostic contact mode.
-#[allow(dead_code)]
 pub fn cylinder_cylinder_precise(
     c1: &Cylinder,
     t1: &Transform,
@@ -925,7 +919,6 @@ pub(super) fn closest_points_segments_impl(
 ///
 /// The torus lies in the XZ plane in its local frame; its major axis is Y.
 /// Returns the shallowest penetrating contact.
-#[allow(dead_code)]
 pub fn torus_sphere(
     torus: &Torus,
     torus_t: &Transform,
@@ -971,7 +964,6 @@ pub fn torus_sphere(
 ///
 /// Tests each corner of the box against the heightfield and returns the
 /// deepest penetrating contact found.
-#[allow(dead_code)]
 pub fn heightfield_box(
     hf: &oxiphysics_geometry::HeightField,
     box_shape: &BoxShape,
@@ -1030,7 +1022,6 @@ pub fn heightfield_box(
 /// A rounded box is the Minkowski sum of an axis-aligned box and a sphere of
 /// radius `margin`.  This expands each face outward by `margin`, rounds all
 /// edges, and inflates all corners.
-#[allow(dead_code)]
 pub fn rounded_box_sphere(
     box_shape: &BoxShape,
     box_t: &Transform,
@@ -1051,7 +1042,6 @@ pub fn rounded_box_sphere(
 ///
 /// A rounded capsule with extra margin `extra_radius` is equivalent to a capsule
 /// with radius = `capsule.radius + extra_radius`.
-#[allow(dead_code)]
 pub fn rounded_capsule_sphere(
     capsule: &oxiphysics_geometry::Capsule,
     capsule_t: &Transform,
@@ -1067,7 +1057,6 @@ pub fn rounded_capsule_sphere(
 ///
 /// Each box is expanded by its margin.  Contact is detected by testing the
 /// inflated boxes with the standard box-box SAT, then adjusting the depth.
-#[allow(dead_code)]
 pub fn rounded_box_rounded_box(
     box_a: &BoxShape,
     margin_a: f64,
@@ -1092,7 +1081,6 @@ pub fn rounded_box_rounded_box(
 ///
 /// Given two convex hulls represented as vertex arrays, returns a contact
 /// if the hulls intersect.
-#[allow(dead_code)]
 pub fn convex_hull_vs_convex_hull(
     verts_a: &[Vec3],
     transform_a: &Transform,
@@ -1137,7 +1125,6 @@ pub fn convex_hull_vs_convex_hull(
 ///
 /// Uses the standalone GJK vertex-array path from `convex_convex_gjk_intersect`
 /// and then runs a simplified EPA to extract the contact normal.
-#[allow(dead_code)]
 pub fn convex_hull_contact_gjk_epa(
     verts_a: &[Vec3],
     transform_a: &Transform,
@@ -1147,7 +1134,6 @@ pub fn convex_hull_contact_gjk_epa(
     convex_hull_vs_convex_hull(verts_a, transform_a, verts_b, transform_b)
 }
 /// Compute the signed gap between two spheres (positive = separated).
-#[allow(dead_code)]
 pub fn sphere_sphere_gap(s1: &Sphere, t1: &Transform, s2: &Sphere, t2: &Transform) -> f64 {
     let dist = (t2.position - t1.position).norm();
     dist - (s1.radius + s2.radius)
@@ -1155,7 +1141,6 @@ pub fn sphere_sphere_gap(s1: &Sphere, t1: &Transform, s2: &Sphere, t2: &Transfor
 /// Compute the closing speed between two moving spheres along their connecting axis.
 ///
 /// Positive = approaching, negative = receding.
-#[allow(dead_code)]
 pub fn sphere_sphere_closing_speed(t1: &Transform, vel1: Vec3, t2: &Transform, vel2: Vec3) -> f64 {
     let diff = t2.position - t1.position;
     let dist = diff.norm();
@@ -1172,7 +1157,6 @@ pub fn sphere_sphere_closing_speed(t1: &Transform, vel1: Vec3, t2: &Transform, v
 /// outward-facing normal `plane_normal`.  Objects on the *negative* side
 /// (in the half-space) are considered outside; objects whose sphere centre is
 /// within `radius` of the plane boundary are in contact.
-#[allow(dead_code)]
 pub fn sphere_halfspace(
     sphere: &Sphere,
     sphere_t: &Transform,
@@ -1195,7 +1179,6 @@ pub fn sphere_halfspace(
     Some(Contact::new(point_a, contact_on_plane, n_hat, depth))
 }
 /// Capsule vs oriented half-space contact.
-#[allow(dead_code)]
 pub fn capsule_halfspace(
     capsule: &oxiphysics_geometry::Capsule,
     capsule_t: &Transform,
@@ -1224,7 +1207,6 @@ pub fn capsule_halfspace(
 /// Box vs oriented half-space contact.
 ///
 /// Returns a contact if any corner of the box is on the negative side of the plane.
-#[allow(dead_code)]
 pub fn box_halfspace(
     box_shape: &BoxShape,
     box_t: &Transform,

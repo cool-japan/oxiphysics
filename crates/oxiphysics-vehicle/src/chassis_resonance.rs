@@ -22,9 +22,6 @@
 //! - [`tire_envelopment_filter`] — tire contact-patch envelopment filter gain.
 //! - [`insertion_loss_db`] — treatment insertion loss in dB.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────

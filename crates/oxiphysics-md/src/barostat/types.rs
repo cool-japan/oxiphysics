@@ -2,10 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
-
 /// Simplified isotropic Parrinello-Rahman barostat.
 ///
 /// Uses an extended-Lagrangian approach where the box has its own
@@ -119,7 +115,6 @@ impl ParrinelloRahmanBarostat {
 }
 /// Pressure coupling mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum PressureCouplingMode {
     /// No pressure coupling (NVT/NVE).
     None,
@@ -208,7 +203,6 @@ impl PressureTensor {
     /// * `masses`    – mass per atom.
     /// * `positions` – `[x, y, z]` per atom.
     /// * `forces`    – `[fx, fy, fz]` per atom.
-    #[allow(clippy::too_many_arguments)]
     pub fn compute(
         volume: f64,
         velocities: &[[f64; 3]],
@@ -229,9 +223,9 @@ impl PressureTensor {
         }
         if volume > 1e-30 {
             let inv_v = 1.0 / volume;
-            for a in 0..3 {
-                for b in 0..3 {
-                    tensor[a][b] *= inv_v;
+            for row in &mut tensor {
+                for v in row.iter_mut() {
+                    *v *= inv_v;
                 }
             }
         }
@@ -278,7 +272,6 @@ impl PressureTensor {
 /// The box is represented as a 3×3 matrix `h` where each column is a
 /// cell vector.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct BoxTensor {
     /// Cell matrix H (rows = cell vectors or columns, depending on convention).
     /// Here: h\[i\]\[j\] is element (i, j).
@@ -290,7 +283,6 @@ pub struct BoxTensor {
     /// Barostat mass W.
     pub mass: f64,
 }
-#[allow(dead_code)]
 impl BoxTensor {
     /// Create a cubic BoxTensor of edge length `l`.
     pub fn cubic(l: f64) -> Self {
@@ -342,9 +334,9 @@ impl BoxTensor {
     /// Hdot is updated and H is advanced.
     pub fn advance(&mut self, p_current: &[[f64; 3]; 3], dt: f64) {
         let vol = self.volume();
-        for i in 0..3 {
-            for j in 0..3 {
-                let g = vol * (p_current[i][j] - self.p_ref[i][j]);
+        for (i, p_row) in p_current.iter().enumerate() {
+            for (j, &p_val) in p_row.iter().enumerate() {
+                let g = vol * (p_val - self.p_ref[i][j]);
                 self.hdot[i][j] += g / self.mass * dt;
                 self.h[i][j] += self.hdot[i][j] * dt;
             }
@@ -360,7 +352,6 @@ impl BoxTensor {
 /// Can be used directly in a simulation loop without an external RNG,
 /// via the `try_volume_move` method.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct McBarostatRng {
     /// Target pressure P₀.
     pub target_pressure: f64,
@@ -373,7 +364,6 @@ pub struct McBarostatRng {
     /// LCG RNG state.
     pub(super) rng_state: u64,
 }
-#[allow(dead_code)]
 impl McBarostatRng {
     /// Create a new MC barostat with default move size 0.01.
     pub fn new(target_pressure: f64) -> Self {
@@ -660,7 +650,6 @@ pub struct MtkBarostat {
 }
 impl MtkBarostat {
     /// Create a new MTK barostat.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         target_pressure: f64,
         mass: f64,
@@ -762,7 +751,6 @@ pub struct SemiIsotropicBerendsenBarostat {
 }
 impl SemiIsotropicBerendsenBarostat {
     /// Create a new semi-isotropic barostat.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         target_p_xy: f64,
         target_p_z: f64,
@@ -892,7 +880,6 @@ impl MonteCarloBarostat {
     /// * `n_atoms`       – number of atoms N.
     /// * `temp`          – temperature T.
     /// * `boltzmann_k`   – Boltzmann constant k_B.
-    #[allow(clippy::too_many_arguments)]
     pub fn compute_volume_change_energy(
         &self,
         delta_pot: f64,

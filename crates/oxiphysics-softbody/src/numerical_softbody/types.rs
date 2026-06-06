@@ -2,11 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
-#[allow(unused_imports)]
 use super::functions::*;
 /// A spring connecting two particles, used in implicit soft body integration.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct ImplicitSpring {
     /// Index of the first particle.
@@ -63,7 +60,6 @@ impl ImplicitSpring {
     }
 }
 /// A single projective constraint.
-#[allow(dead_code)]
 pub struct ProjectiveConstraint {
     /// The constraint kind and parameters.
     pub kind: ProjectiveConstraintKind,
@@ -115,7 +111,6 @@ impl ProjectiveConstraint {
 ///
 /// Used to find a step size that sufficiently reduces the total elastic
 /// energy in gradient-based solvers.
-#[allow(dead_code)]
 pub struct LineSearch {
     /// Armijo (sufficient decrease) parameter, typically 1e-4.
     pub c1: f64,
@@ -151,7 +146,6 @@ impl LineSearch {
 /// Ensures the step does not cause any inter-penetration (distance < 0)
 /// by computing the continuous collision detection (CCD) step fraction
 /// and using it as an upper bound in the backtracking search.
-#[allow(dead_code)]
 pub struct FilterLineSearch {
     /// Maximum CCD step fraction (0 < τ ≤ 1).
     pub tau_max: f64,
@@ -215,7 +209,6 @@ impl FilterLineSearch {
 ///
 /// Reference: Müller et al., "Fast Simulation of Inextensible Hair and Fur",
 /// adapted to the projective dynamics framework.
-#[allow(dead_code)]
 pub struct FastShapeMatchingConstraint {
     /// Rest-shape particle positions (relative to center of mass).
     pub rest_positions: Vec<[f64; 3]>,
@@ -328,7 +321,6 @@ impl FastShapeMatchingConstraint {
     }
 }
 /// Result of a PCG solve.
-#[allow(dead_code)]
 pub struct PcgResult {
     /// Solution vector.
     pub x: Vec<f64>,
@@ -349,7 +341,6 @@ pub struct PcgResult {
 /// ```
 ///
 /// Linearised via Newton-Raphson at each time step.
-#[allow(dead_code)]
 pub struct BackwardEulerIntegrator {
     /// Maximum Newton-Raphson iterations per step.
     pub max_newton_iter: usize,
@@ -375,7 +366,7 @@ impl BackwardEulerIntegrator {
     /// Returns the number of Newton iterations performed.
     pub fn step(
         &self,
-        particles: &mut Vec<ImplicitParticle>,
+        particles: &mut [ImplicitParticle],
         springs: &[ImplicitSpring],
         gravity: [f64; 3],
         dt: f64,
@@ -478,7 +469,6 @@ impl BackwardEulerIntegrator {
 /// Solves the nonlinear optimality condition arising from backward Euler
 /// discretisation of the elastic potential energy.  Uses the PCG solver
 /// internally for the linear sub-problem.
-#[allow(dead_code)]
 pub struct NewtonRaphsonSolver {
     /// Maximum outer Newton iterations.
     pub max_iter: usize,
@@ -505,7 +495,7 @@ impl NewtonRaphsonSolver {
     /// where `y` is the inertia target.
     pub fn minimise(
         &self,
-        particles: &mut Vec<ImplicitParticle>,
+        particles: &mut [ImplicitParticle],
         springs: &[ImplicitSpring],
         inertia_target: &[[f64; 3]],
         dt: f64,
@@ -585,7 +575,7 @@ impl NewtonRaphsonSolver {
             let rho = self.line_search.rho;
             let mut alpha = 1.0_f64;
             for _ in 0..self.line_search.max_iter {
-                let mut test_particles = particles.clone();
+                let mut test_particles = particles.to_owned();
                 for i in 0..n {
                     if test_particles[i].is_static() {
                         continue;
@@ -640,7 +630,6 @@ impl NewtonRaphsonSolver {
     }
 }
 /// Type of projective constraint supported.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum ProjectiveConstraintKind {
     /// Spring / distance constraint (stretch).
@@ -668,7 +657,6 @@ pub enum ProjectiveConstraintKind {
 ///
 /// Stores only non-zero entries. Used as the system matrix for PCG solvers
 /// applied to deformable body dynamics.
-#[allow(dead_code)]
 pub struct CsrMatrix {
     /// Number of rows.
     pub nrows: usize,
@@ -761,11 +749,11 @@ impl CsrMatrix {
     pub fn matvec(&self, x: &[f64]) -> Vec<f64> {
         assert_eq!(x.len(), self.ncols);
         let mut y = vec![0.0f64; self.nrows];
-        for r in 0..self.nrows {
+        for (r, y_r) in y.iter_mut().enumerate() {
             let start = self.row_ptr[r];
             let end = self.row_ptr[r + 1];
             for k in start..end {
-                y[r] += self.values[k] * x[self.col_idx[k]];
+                *y_r += self.values[k] * x[self.col_idx[k]];
             }
         }
         y
@@ -773,12 +761,12 @@ impl CsrMatrix {
     /// Extract diagonal vector.
     pub fn diagonal(&self) -> Vec<f64> {
         let mut d = vec![0.0f64; self.nrows];
-        for r in 0..self.nrows {
+        for (r, d_r) in d.iter_mut().enumerate() {
             let start = self.row_ptr[r];
             let end = self.row_ptr[r + 1];
             for k in start..end {
                 if self.col_idx[k] == r {
-                    d[r] = self.values[k];
+                    *d_r = self.values[k];
                 }
             }
         }
@@ -799,7 +787,6 @@ impl CsrMatrix {
 ///
 /// Stores position, velocity, and mass for use in backward Euler or other
 /// implicit schemes.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct ImplicitParticle {
     /// Current position in world space (m).
@@ -843,7 +830,6 @@ impl ImplicitParticle {
 /// # References
 /// - Shewchuk, "An Introduction to the Conjugate Gradient Method Without the
 ///   Agonizing Pain", 1994.
-#[allow(dead_code)]
 pub struct PcgSolver {
     /// Solver parameters.
     pub params: PcgParams,
@@ -924,7 +910,6 @@ impl PcgSolver {
 /// independently projects each constraint.
 ///
 /// This enables real-time simulation of elastic solids at low iteration counts.
-#[allow(dead_code)]
 pub struct ProjectiveDynamicsSolver {
     /// Number of particles (n).
     pub n_particles: usize,
@@ -978,12 +963,7 @@ impl ProjectiveDynamicsSolver {
     ///
     /// Alternates between local (constraint projection) and global
     /// (system solve) steps for `n_iterations` rounds.
-    pub fn step(
-        &self,
-        positions: &mut Vec<[f64; 3]>,
-        velocities: &mut Vec<[f64; 3]>,
-        gravity: [f64; 3],
-    ) {
+    pub fn step(&self, positions: &mut [[f64; 3]], velocities: &mut [[f64; 3]], gravity: [f64; 3]) {
         let n = self.n_particles;
         let dt = self.dt;
         let y = self.inertia_target(positions, velocities, gravity);
@@ -1047,7 +1027,6 @@ impl ProjectiveDynamicsSolver {
 ///
 /// Reference: Li et al., "Incremental Potential Contact: Intersection- and
 /// Inversion-free Large Deformation Dynamics", SIGGRAPH 2020.
-#[allow(dead_code)]
 pub struct IpcBarrierParams {
     /// Activation distance: barrier activates when gap < d_hat (m).
     pub d_hat: f64,
@@ -1088,7 +1067,6 @@ impl IpcBarrierParams {
     }
 }
 /// Parameters for the Preconditioned Conjugate Gradient solver.
-#[allow(dead_code)]
 pub struct PcgParams {
     /// Maximum number of iterations.
     pub max_iter: usize,
@@ -1099,7 +1077,6 @@ pub struct PcgParams {
 ///
 /// Computes `H * v` without explicitly forming the Hessian matrix, where
 /// `H` is the Hessian of the total implicit energy.  Used in matrix-free PCG.
-#[allow(dead_code)]
 pub struct MatrixFreeHessian {
     /// Spring definitions.
     pub springs: Vec<ImplicitSpring>,
@@ -1162,7 +1139,6 @@ impl MatrixFreeHessian {
 ///
 /// Computes barrier energies and gradients for a list of particle-plane
 /// contact pairs, and applies the filter line search to avoid penetration.
-#[allow(dead_code)]
 pub struct IpcContactSolver {
     /// IPC barrier parameters.
     pub params: IpcBarrierParams,

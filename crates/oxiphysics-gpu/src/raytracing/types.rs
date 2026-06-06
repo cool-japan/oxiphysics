@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
-#[allow(unused_imports)]
 use super::functions::*;
 use std::f64::consts::PI;
 
@@ -594,14 +592,18 @@ impl Aabb {
     pub fn intersect_ray(&self, ray: &Ray) -> Option<(f64, f64)> {
         let mut t_near = ray.t_min;
         let mut t_far = ray.t_max;
-        for i in 0..3 {
-            let inv_d = if ray.direction[i].abs() < 1e-15 {
+        for (&dir, (&min, (&max, &origin))) in ray
+            .direction
+            .iter()
+            .zip(self.min.iter().zip(self.max.iter().zip(&ray.origin)))
+        {
+            let inv_d = if dir.abs() < 1e-15 {
                 f64::INFINITY
             } else {
-                1.0 / ray.direction[i]
+                1.0 / dir
             };
-            let t0 = (self.min[i] - ray.origin[i]) * inv_d;
-            let t1 = (self.max[i] - ray.origin[i]) * inv_d;
+            let t0 = (min - origin) * inv_d;
+            let t1 = (max - origin) * inv_d;
             let (t0, t1) = if inv_d < 0.0 { (t1, t0) } else { (t0, t1) };
             t_near = t_near.max(t0);
             t_far = t_far.min(t1);
@@ -654,7 +656,7 @@ impl Bvh {
             let mut best_cost = f64::INFINITY;
             let mut best_axis = 0usize;
             let mut best_split = 0.0f64;
-            for axis in 0..3 {
+            for axis in [0usize, 1, 2] {
                 let slice = &mut prim_indices[first..first + count];
                 slice.sort_unstable_by(|&a, &b| {
                     centroids[a as usize][axis]

@@ -5,9 +5,6 @@
 //!
 //! Exposes per-frame scope profiling with CSV and JSON export.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::profiler::ProfilerSession;
 use pyo3::prelude::*;
 

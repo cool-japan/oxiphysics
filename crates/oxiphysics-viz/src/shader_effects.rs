@@ -7,8 +7,6 @@
 //! PBR BRDF (GGX NDF), chromatic aberration, vignette, film grain,
 //! lens flare, and depth-of-field circle-of-confusion utilities.
 
-#![allow(dead_code)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal vector helpers
 // ─────────────────────────────────────────────────────────────────────────────

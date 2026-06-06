@@ -2,18 +2,26 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use crate::types::CollisionPair;
 use oxiphysics_core::Aabb;
 use oxiphysics_core::math::{Real, Vec3};
 
+use super::functions::{BroadPhase, aabb_in_frustum, inflate_aabb, ray_aabb_intersect};
+
+/// Returns true if `outer` fully contains `inner` (every point of inner is inside outer).
+#[inline]
+fn aabb_contains_aabb(outer: &Aabb, inner: &Aabb) -> bool {
+    outer.min.x <= inner.min.x
+        && outer.min.y <= inner.min.y
+        && outer.min.z <= inner.min.z
+        && inner.max.x <= outer.max.x
+        && inner.max.y <= outer.max.y
+        && inner.max.z <= outer.max.z
+}
+
 /// O(n^2) brute force broad phase for reference/debugging.
 pub struct BruteForceBroadPhase;
 /// Object type classification for pair-count histograms.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ObjectType {
     /// Static immovable object.
@@ -34,11 +42,9 @@ pub(super) enum BvhNodeData {
 /// A hierarchical scene graph that accelerates broadphase by skipping
 /// subtrees whose root AABB does not overlap the query.
 #[derive(Debug, Default)]
-#[allow(dead_code)]
 pub struct BroadphaseSceneGraph {
     pub(super) nodes: Vec<SceneGraphNode>,
 }
-#[allow(dead_code)]
 impl BroadphaseSceneGraph {
     /// Create an empty scene graph.
     pub fn new() -> Self {
@@ -130,7 +136,6 @@ impl BroadphaseSceneGraph {
 }
 /// Instruments a broadphase query to collect timing information.
 #[derive(Debug, Default)]
-#[allow(dead_code)]
 pub struct BroadphaseProfiler {
     /// Elapsed nanoseconds for the last query.
     pub(super) last_elapsed_ns: u64,
@@ -139,7 +144,6 @@ pub struct BroadphaseProfiler {
     /// Total elapsed nanoseconds across all calls.
     pub(super) total_elapsed_ns: u64,
 }
-#[allow(dead_code)]
 impl BroadphaseProfiler {
     /// Create a new profiler.
     pub fn new() -> Self {
@@ -194,12 +198,10 @@ impl BroadphaseProfiler {
 /// defines the plane boundary.  The normal points inward (toward the
 /// visible region).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Frustum {
     /// Six frustum planes: `(inward_normal, offset)`.
     pub planes: [(Vec3, Real); 6],
 }
-#[allow(dead_code)]
 impl Frustum {
     /// Create a frustum from six plane definitions.
     pub fn new(planes: [(Vec3, Real); 6]) -> Self {
@@ -266,7 +268,6 @@ impl Frustum {
 ///
 /// Each object gets a fattened AABB; the tree is only updated when the
 /// object moves outside its fat AABB.
-#[allow(dead_code)]
 pub struct DynamicAabbTree {
     /// Object AABBs (tight).
     pub(super) tight_aabbs: Vec<Aabb>,
@@ -279,7 +280,6 @@ pub struct DynamicAabbTree {
     /// Whether the tree needs rebuilding.
     pub(super) dirty: bool,
 }
-#[allow(dead_code)]
 impl DynamicAabbTree {
     /// Create a new dynamic tree with the given fattening margin.
     pub fn new(margin: Real) -> Self {
@@ -305,7 +305,7 @@ impl DynamicAabbTree {
     /// Returns `true` if the internal tree was invalidated.
     pub fn update(&mut self, index: usize, aabb: Aabb) -> bool {
         self.tight_aabbs[index] = aabb.clone();
-        if !self.fat_aabbs[index].contains_aabb(&aabb) {
+        if !aabb_contains_aabb(&self.fat_aabbs[index], &aabb) {
             self.fat_aabbs[index] = self.fatten(&aabb);
             self.dirty = true;
             return true;
@@ -351,7 +351,6 @@ impl DynamicAabbTree {
         Aabb::new(aabb.min - m, aabb.max + m)
     }
 }
-#[allow(dead_code)]
 impl DynamicAabbTree {
     /// Mark the tree as dirty so it will be rebuilt on the next query.
     pub fn mark_dirty(&mut self) {
@@ -419,7 +418,6 @@ impl DynamicAabbTree {
 /// These values can be used to configure a GPU compute shader for
 /// uniform-grid or sort-based broadphase.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct GpuBroadphaseHints {
     /// Number of objects in the scene.
     pub n_objects: usize,
@@ -434,7 +432,6 @@ pub struct GpuBroadphaseHints {
     /// Recommended number of GPU threads.
     pub recommended_threads: usize,
 }
-#[allow(dead_code)]
 impl GpuBroadphaseHints {
     /// Compute GPU hints from a slice of AABBs.
     pub fn from_aabbs(aabbs: &[Aabb]) -> Self {
@@ -515,7 +512,6 @@ impl GpuBroadphaseHints {
     }
 }
 /// Quality metrics for a static BVH.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct BvhQualityMetrics {
     /// SAH cost normalised by root surface area.
@@ -538,7 +534,6 @@ pub(super) struct BvhNode {
 }
 /// Statistics from a broad-phase query.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct BroadphaseStats {
     /// Number of objects.
     pub num_objects: usize,
@@ -549,7 +544,6 @@ pub struct BroadphaseStats {
 }
 /// A node in the broadphase scene graph.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SceneGraphNode {
     /// World-space AABB for this node.
     pub aabb: Aabb,
@@ -561,7 +555,6 @@ pub struct SceneGraphNode {
     pub active: bool,
 }
 /// Histogram entry: how many collision pairs exist between two object types.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct PairCountHistogram {
     /// Static vs Static pairs.
@@ -579,7 +572,6 @@ pub struct PairCountHistogram {
 }
 impl PairCountHistogram {
     /// Total pair count across all categories.
-    #[allow(dead_code)]
     pub fn total(&self) -> usize {
         self.static_static
             + self.static_dynamic
@@ -745,7 +737,6 @@ impl BvhBroadphase {
         }
     }
 }
-#[allow(dead_code)]
 impl BvhBroadphase {
     /// Compute quality metrics for this BVH.
     ///
@@ -833,10 +824,10 @@ impl BvhBroadphase {
                 if self.nodes[right].parent != Some(idx) {
                     return false;
                 }
-                if !self.nodes[idx].aabb.contains_aabb(&self.nodes[left].aabb) {
+                if !aabb_contains_aabb(&self.nodes[idx].aabb, &self.nodes[left].aabb) {
                     return false;
                 }
-                if !self.nodes[idx].aabb.contains_aabb(&self.nodes[right].aabb) {
+                if !aabb_contains_aabb(&self.nodes[idx].aabb, &self.nodes[right].aabb) {
                     return false;
                 }
                 self.validate_node(left) && self.validate_node(right)
@@ -927,11 +918,9 @@ impl SweepAndPrune {
 /// 2. Merge with newly detected pairs.
 /// 3. Update the cache with the merged set.
 #[derive(Debug, Default)]
-#[allow(dead_code)]
 pub struct BroadphaseWarmstart {
     pub(super) cached_pairs: Vec<CollisionPair>,
 }
-#[allow(dead_code)]
 impl BroadphaseWarmstart {
     /// Create a new empty warmstart cache.
     pub fn new() -> Self {

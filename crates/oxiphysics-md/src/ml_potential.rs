@@ -1,4 +1,3 @@
-#![allow(clippy::too_many_arguments)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -118,7 +117,6 @@ impl SymmetryFunctionSet {
     /// Compute the descriptor vector for atom `center`.
     ///
     /// The returned vector has the same length as `self.functions`.
-    #[allow(clippy::needless_range_loop)]
     pub fn compute_descriptor(
         &self,
         positions: &[Vec3],
@@ -134,11 +132,11 @@ impl SymmetryFunctionSet {
             match sf {
                 SymmetryFunction::G2 { eta, rs, rc } => {
                     let rc_use = rc.min(cutoff);
-                    for j in 0..n {
+                    for (j, &pos_j) in positions.iter().enumerate() {
                         if j == center {
                             continue;
                         }
-                        let rij = (positions[j] - ri).norm();
+                        let rij = (pos_j - ri).norm();
                         if rij < rc_use {
                             let fc = cutoff_function(rij, rc_use);
                             descriptor[idx] += (-eta * (rij - rs).powi(2)).exp() * fc;
@@ -208,7 +206,6 @@ impl Default for SymmetryFunctionSet {
 /// ```
 ///
 /// Returns 0.0 when `r_ij >= rc`.
-#[allow(dead_code)]
 pub fn compute_g2(r_ij: f64, eta: f64, rs: f64, rc: f64) -> f64 {
     if r_ij >= rc {
         return 0.0;
@@ -225,7 +222,6 @@ pub fn compute_g2(r_ij: f64, eta: f64, rs: f64, rc: f64) -> f64 {
 /// ```
 ///
 /// Returns 0.0 if any distance is >= rc.
-#[allow(dead_code)]
 pub fn compute_g4(
     r_ij: f64,
     r_ik: f64,
@@ -251,7 +247,6 @@ pub fn compute_g4(
 // ---------------------------------------------------------------------------
 
 /// Parameters for a G2 symmetry function.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct G2Params {
     /// Width parameter η.
@@ -261,7 +256,6 @@ pub struct G2Params {
 }
 
 /// Parameters for a G4 symmetry function.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct G4Params {
     /// Width parameter η.
@@ -273,7 +267,6 @@ pub struct G4Params {
 }
 
 /// Builder for Behler-Parrinello atom-centered descriptors.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BehlerParrinelloDescriptor {
     /// G2 parameter sets.
@@ -286,7 +279,6 @@ pub struct BehlerParrinelloDescriptor {
 
 impl BehlerParrinelloDescriptor {
     /// Create a new descriptor builder.
-    #[allow(dead_code)]
     pub fn new(r_cut: f64) -> Self {
         Self {
             g2_params: Vec::new(),
@@ -296,19 +288,16 @@ impl BehlerParrinelloDescriptor {
     }
 
     /// Add a G2 parameter set.
-    #[allow(dead_code)]
     pub fn add_g2(&mut self, eta: f64, rs: f64) {
         self.g2_params.push(G2Params { eta, rs });
     }
 
     /// Add a G4 parameter set.
-    #[allow(dead_code)]
     pub fn add_g4(&mut self, eta: f64, zeta: f64, lambda: f64) {
         self.g4_params.push(G4Params { eta, zeta, lambda });
     }
 
     /// Expected length of the descriptor vector.
-    #[allow(dead_code)]
     pub fn descriptor_len(&self) -> usize {
         self.g2_params.len() + self.g4_params.len()
     }
@@ -317,7 +306,6 @@ impl BehlerParrinelloDescriptor {
     ///
     /// `positions` is a slice of `[f64;3]` arrays; `neighbor_idxs` lists
     /// the neighbors to consider (typically all atoms except center).
-    #[allow(dead_code)]
     pub fn compute(
         &self,
         positions: &[[f64; 3]],
@@ -385,38 +373,32 @@ impl BehlerParrinelloDescriptor {
 // ---------------------------------------------------------------------------
 
 /// Hyperbolic tangent activation.
-#[allow(dead_code)]
 pub fn tanh_activation(x: f64) -> f64 {
     x.tanh()
 }
 
 /// Derivative of the hyperbolic tangent: 1 - tanh(x)².
-#[allow(dead_code)]
 pub fn tanh_derivative(x: f64) -> f64 {
     let t = x.tanh();
     1.0 - t * t
 }
 
 /// Rectified linear unit activation.
-#[allow(dead_code)]
 pub fn relu_activation(x: f64) -> f64 {
     x.max(0.0)
 }
 
 /// Derivative of the ReLU: 1 if x > 0, else 0.
-#[allow(dead_code)]
 pub fn relu_derivative(x: f64) -> f64 {
     if x > 0.0 { 1.0 } else { 0.0 }
 }
 
 /// Identity (linear) activation.
-#[allow(dead_code)]
 pub fn identity_activation(x: f64) -> f64 {
     x
 }
 
 /// Derivative of the identity activation: always 1.
-#[allow(dead_code)]
 pub fn identity_derivative(_x: f64) -> f64 {
     1.0
 }
@@ -443,7 +425,6 @@ fn derive_activation_for(f: fn(f64) -> f64) -> fn(f64) -> f64 {
 /// A single fully-connected layer: `y = activation(W * x + b)`.
 ///
 /// Uses a function pointer for the activation, enabling zero-overhead dispatch.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct NeuralNetworkLayer {
     /// Weight matrix, row-major: `weights[i][j]` = weight from input `j` to output `i`.
@@ -460,7 +441,6 @@ impl NeuralNetworkLayer {
     /// Create a new layer. The derivative is auto-detected from the activation
     /// function pointer for the three built-in activations (tanh, relu, identity).
     /// Unknown activation functions fall back to `identity_derivative`.
-    #[allow(dead_code)]
     pub fn new(weights: Vec<Vec<f64>>, biases: Vec<f64>, activation: fn(f64) -> f64) -> Self {
         let dactivation = derive_activation_for(activation);
         Self {
@@ -473,7 +453,6 @@ impl NeuralNetworkLayer {
 
     /// Create a new layer with an explicitly provided derivative function.
     /// Use this for custom activation functions not in the built-in set.
-    #[allow(dead_code)]
     pub fn with_explicit_derivative(
         weights: Vec<Vec<f64>>,
         biases: Vec<f64>,
@@ -489,16 +468,15 @@ impl NeuralNetworkLayer {
     }
 
     /// Forward pass: `output[i] = activation(sum_j W[i][j] * input[j] + b[i])`.
-    #[allow(dead_code)]
-    #[allow(clippy::needless_range_loop)]
     pub fn forward(&self, input: &[f64]) -> Vec<f64> {
         let n_out = self.biases.len();
         let mut output = self.biases.clone();
-        for i in 0..n_out {
-            for j in 0..input.len().min(self.weights[i].len()) {
-                output[i] += self.weights[i][j] * input[j];
+        for (i, out_i) in output.iter_mut().enumerate().take(n_out) {
+            let n_w = input.len().min(self.weights[i].len());
+            for (&inp_j, &w_ij) in input.iter().zip(self.weights[i].iter()).take(n_w) {
+                *out_i += w_ij * inp_j;
             }
-            output[i] = (self.activation)(output[i]);
+            *out_i = (self.activation)(*out_i);
         }
         output
     }
@@ -512,7 +490,6 @@ impl NeuralNetworkLayer {
 ///
 /// Maps BP descriptors through a stack of [`NeuralNetworkLayer`]s to a
 /// scalar atomic energy.  Total energy = sum of atomic energies.
-#[allow(dead_code)]
 pub struct BpNeuralNetworkPotential {
     /// Network layers.
     pub layers: Vec<NeuralNetworkLayer>,
@@ -522,13 +499,11 @@ pub struct BpNeuralNetworkPotential {
 
 impl BpNeuralNetworkPotential {
     /// Create a new potential with the given layers and descriptor.
-    #[allow(dead_code)]
     pub fn new(layers: Vec<NeuralNetworkLayer>, descriptor: BehlerParrinelloDescriptor) -> Self {
         Self { layers, descriptor }
     }
 
     /// Evaluate the network on a descriptor vector → scalar energy.
-    #[allow(dead_code)]
     pub fn energy(&self, descriptor_vec: &[f64]) -> f64 {
         let mut x = descriptor_vec.to_vec();
         for layer in &self.layers {
@@ -542,7 +517,6 @@ impl BpNeuralNetworkPotential {
     /// Returns a vector of force contributions (length = `neighbors.len() + 1`
     /// for center and each neighbor; here we return forces on the center atom
     /// for each spatial dimension as a `Vec<[f64;3]>` with one entry).
-    #[allow(dead_code)]
     pub fn forces_by_finite_diff(
         &self,
         positions: &[[f64; 3]],
@@ -589,7 +563,6 @@ fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// Squared-exponential (RBF) kernel for Gaussian Approximation Potentials.
 ///
 /// k(x, x') = σ_f² · exp(-‖x - x'‖² / (2 l²))
-#[allow(dead_code)]
 pub struct GapKernel {
     /// Signal variance σ_f².
     pub signal_variance: f64,
@@ -599,7 +572,6 @@ pub struct GapKernel {
 
 impl GapKernel {
     /// Create a new GAP kernel.
-    #[allow(dead_code)]
     pub fn new(signal_variance: f64, length_scale: f64) -> Self {
         Self {
             signal_variance,
@@ -608,7 +580,6 @@ impl GapKernel {
     }
 
     /// Evaluate the kernel k(x, x').
-    #[allow(dead_code)]
     pub fn evaluate(&self, x: &[f64], x_prime: &[f64]) -> f64 {
         debug_assert_eq!(x.len(), x_prime.len());
         let sq_dist: f64 = x
@@ -620,7 +591,6 @@ impl GapKernel {
     }
 
     /// Build the full kernel matrix K\[i\]\[j\] = k(X\[i\], X\[j\]).
-    #[allow(dead_code)]
     pub fn kernel_matrix(&self, training_data: &[Vec<f64>]) -> Vec<Vec<f64>> {
         let n = training_data.len();
         let mut k = vec![vec![0.0; n]; n];
@@ -633,7 +603,6 @@ impl GapKernel {
     }
 
     /// Compute the kernel vector k*(x*) = \[k(x*, x_1), ..., k(x*, x_n)\].
-    #[allow(dead_code)]
     pub fn kernel_vector(&self, x_star: &[f64], training_data: &[Vec<f64>]) -> Vec<f64> {
         training_data
             .iter()
@@ -651,7 +620,6 @@ impl GapKernel {
 /// Fits: E(x) = Σ_i α_i k(x, x_i)
 /// where α are the regression coefficients solved via
 /// (K + λI) α = y.
-#[allow(dead_code)]
 pub struct KrrPotential {
     /// Training descriptors.
     pub training_descriptors: Vec<Vec<f64>>,
@@ -665,7 +633,6 @@ pub struct KrrPotential {
 
 impl KrrPotential {
     /// Create a new KRR potential with pre-computed α coefficients.
-    #[allow(dead_code)]
     pub fn new(
         training_descriptors: Vec<Vec<f64>>,
         alpha: Vec<f64>,
@@ -684,8 +651,6 @@ impl KrrPotential {
     ///
     /// Solves (K + λI) α = y using Cholesky-like Gaussian elimination
     /// (naïve O(n³) solver for small training sets).
-    #[allow(dead_code)]
-    #[allow(clippy::needless_range_loop)]
     pub fn fit(
         descriptors: Vec<Vec<f64>>,
         energies: &[f64],
@@ -697,8 +662,8 @@ impl KrrPotential {
 
         // Build (K + λI)
         let mut km = kernel.kernel_matrix(&descriptors);
-        for i in 0..n {
-            km[i][i] += lambda;
+        for (i, row) in km.iter_mut().enumerate() {
+            row[i] += lambda;
         }
 
         // Solve via Gaussian elimination with partial pivoting
@@ -713,7 +678,6 @@ impl KrrPotential {
     }
 
     /// Predict energy for a new descriptor.
-    #[allow(dead_code)]
     pub fn predict_energy(&self, descriptor: &[f64]) -> f64 {
         let kv = self
             .kernel
@@ -724,7 +688,6 @@ impl KrrPotential {
     /// Predict uncertainty (posterior variance).
     ///
     /// σ²(x*) = k(x*, x*) - k*(K + λI)^{-1} k*^T
-    #[allow(dead_code)]
     pub fn predict_uncertainty(&self, descriptor: &[f64]) -> f64 {
         let k_star_star = self.kernel.evaluate(descriptor, descriptor);
         let kv = self
@@ -737,8 +700,6 @@ impl KrrPotential {
 }
 
 /// Simple Gaussian elimination solver for A x = b (square A).
-#[allow(dead_code)]
-#[allow(clippy::needless_range_loop)]
 fn gaussian_elimination(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
     let n = b.len();
     let mut aug: Vec<Vec<f64>> = (0..n)
@@ -754,9 +715,9 @@ fn gaussian_elimination(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
         // Partial pivot
         let mut max_row = col;
         let mut max_val = aug[col][col].abs();
-        for row in (col + 1)..n {
-            if aug[row][col].abs() > max_val {
-                max_val = aug[row][col].abs();
+        for (row, aug_row) in aug.iter().enumerate().take(n).skip(col + 1) {
+            if aug_row[col].abs() > max_val {
+                max_val = aug_row[col].abs();
                 max_row = row;
             }
         }
@@ -769,9 +730,9 @@ fn gaussian_elimination(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
 
         for row in (col + 1)..n {
             let factor = aug[row][col] / pivot;
-            for j in col..=n {
-                let val = aug[col][j];
-                aug[row][j] -= factor * val;
+            let pivot_row: Vec<f64> = aug[col][col..=n].to_vec();
+            for (aug_row_c, &pv) in aug[row][col..=n].iter_mut().zip(pivot_row.iter()) {
+                *aug_row_c -= factor * pv;
             }
         }
     }
@@ -795,7 +756,6 @@ fn gaussian_elimination(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
 // ---------------------------------------------------------------------------
 
 /// Active learning criterion: select the sample with the highest uncertainty.
-#[allow(dead_code)]
 pub struct ActiveLearningSampler {
     /// Minimum uncertainty threshold to trigger new calculation.
     pub uncertainty_threshold: f64,
@@ -803,7 +763,6 @@ pub struct ActiveLearningSampler {
 
 impl ActiveLearningSampler {
     /// Create a new active learning sampler.
-    #[allow(dead_code)]
     pub fn new(threshold: f64) -> Self {
         Self {
             uncertainty_threshold: threshold,
@@ -814,7 +773,6 @@ impl ActiveLearningSampler {
     /// (descriptor, uncertainty) pairs.
     ///
     /// Returns `None` if all uncertainties are below the threshold.
-    #[allow(dead_code)]
     pub fn select_most_uncertain(&self, uncertainties: &[f64]) -> Option<usize> {
         let (idx, &max_unc) = uncertainties
             .iter()
@@ -828,7 +786,6 @@ impl ActiveLearningSampler {
     }
 
     /// Query-by-committee uncertainty: standard deviation across committee predictions.
-    #[allow(dead_code)]
     pub fn committee_uncertainty(predictions: &[f64]) -> f64 {
         if predictions.is_empty() {
             return 0.0;
@@ -853,7 +810,6 @@ impl ActiveLearningSampler {
 /// This implements a reduced version: the radial basis is a set of Gaussian
 /// functions centred at distances r_n, and the angular part uses spherical
 /// harmonics of degree l=0 (just the monopole), giving a 1D radial profile.
-#[allow(dead_code)]
 pub struct SoapDescriptor {
     /// Radial basis centres r_n.
     pub r_centres: Vec<f64>,
@@ -865,7 +821,6 @@ pub struct SoapDescriptor {
 
 impl SoapDescriptor {
     /// Create a new SOAP descriptor.
-    #[allow(dead_code)]
     pub fn new(r_centres: Vec<f64>, sigma: f64, r_cut: f64) -> Self {
         Self {
             r_centres,
@@ -875,7 +830,6 @@ impl SoapDescriptor {
     }
 
     /// Build a default SOAP descriptor with evenly spaced radial centres.
-    #[allow(dead_code)]
     pub fn default_descriptor(r_cut: f64, n_radial: usize) -> Self {
         let dr = r_cut / n_radial as f64;
         let centres: Vec<f64> = (1..=n_radial).map(|i| i as f64 * dr).collect();
@@ -885,7 +839,6 @@ impl SoapDescriptor {
     /// Compute the SOAP power spectrum for atom `center_idx`.
     ///
     /// Returns a vector of length `n_radial` (one element per radial basis).
-    #[allow(dead_code)]
     pub fn compute(&self, positions: &[[f64; 3]], center_idx: usize) -> Vec<f64> {
         let rc = self.r_cut;
         let ri = positions[center_idx];
@@ -915,7 +868,6 @@ impl SoapDescriptor {
     }
 
     /// Number of features in the descriptor.
-    #[allow(dead_code)]
     pub fn n_features(&self) -> usize {
         self.r_centres.len()
     }
@@ -1155,15 +1107,14 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_gap_kernel_matrix_symmetric() {
         let kernel = GapKernel::new(1.0, 0.5);
         let data = vec![vec![0.0f64], vec![1.0], vec![2.0]];
         let km = kernel.kernel_matrix(&data);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in km.iter().enumerate() {
+            for (j, &kmij) in row.iter().enumerate() {
                 assert!(
-                    (km[i][j] - km[j][i]).abs() < 1e-12,
+                    (kmij - km[j][i]).abs() < 1e-12,
                     "kernel matrix not symmetric"
                 );
             }

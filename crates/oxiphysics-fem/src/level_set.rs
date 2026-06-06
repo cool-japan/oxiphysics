@@ -13,8 +13,6 @@
 //! - Boolean set operations (union, intersection, complement)
 //! - Free functions: distance to segment, winding number, polygon SDF
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

@@ -9,8 +9,6 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::PreStepHook;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::{BodySnapshot, DampingHook};
 
 impl PreStepHook for DampingHook {

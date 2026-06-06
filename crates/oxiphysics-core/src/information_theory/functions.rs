@@ -552,22 +552,21 @@ pub fn channel_capacity_blahut(transition: &[Vec<f64>]) -> f64 {
             }
         }
         let mut c = vec![0.0_f64; n_in];
-        for i in 0..n_in {
+        for (ci, ti) in c.iter_mut().zip(transition.iter()) {
             let mut s = 0.0_f64;
-            for j in 0..n_out {
-                let pij = transition[i][j];
-                if pij > 0.0 && py[j] > 0.0 {
-                    s += pij * (pij / py[j]).ln();
+            for (&pij, &py_j) in ti.iter().zip(py.iter()) {
+                if pij > 0.0 && py_j > 0.0 {
+                    s += pij * (pij / py_j).ln();
                 }
             }
-            c[i] = s;
+            *ci = s;
         }
         let c_max = c.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let mut new_q = vec![0.0_f64; n_in];
         let mut sum = 0.0_f64;
-        for i in 0..n_in {
-            new_q[i] = q[i] * (c[i] - c_max).exp();
-            sum += new_q[i];
+        for ((nq, &qi), &ci) in new_q.iter_mut().zip(q.iter()).zip(c.iter()) {
+            *nq = qi * (ci - c_max).exp();
+            sum += *nq;
         }
         for qi in &mut new_q {
             *qi /= sum;
@@ -581,14 +580,13 @@ pub fn channel_capacity_blahut(transition: &[Vec<f64>]) -> f64 {
         }
     }
     let mut cap = 0.0_f64;
-    for i in 0..n_in {
-        if q[i] <= 0.0 {
+    for (&qi, ti) in q.iter().zip(transition.iter()) {
+        if qi <= 0.0 {
             continue;
         }
-        for j in 0..n_out {
-            let pij = transition[i][j];
-            if pij > 0.0 && py[j] > 0.0 {
-                cap += q[i] * pij * (pij / py[j]).log2();
+        for (&pij, &py_j) in ti.iter().zip(py.iter()) {
+            if pij > 0.0 && py_j > 0.0 {
+                cap += qi * pij * (pij / py_j).log2();
             }
         }
     }

@@ -14,8 +14,6 @@
 //! - **Merge of distributed outputs** – reassembling per-rank files
 //! - **Parallel HDF5-like layout** – dataset headers + contiguous data blocks
 
-#![allow(dead_code)]
-
 use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -95,7 +93,6 @@ pub struct RankDomain {
 
 impl RankDomain {
     /// Construct domain metadata for a single rank.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         rank: usize,
         n_ranks: usize,
@@ -1505,52 +1502,62 @@ mod tests {
 
     #[test]
     fn test_checkpoint_write_read_roundtrip() {
-        let path = "/tmp/test_oxiphysics_ckpt.txt";
+        let path = std::env::temp_dir().join("test_oxiphysics_ckpt.txt");
         let header = CheckpointHeader::new(10, 1.5, 2, 3, "test");
         let positions = vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
-        write_checkpoint(path, &header, &positions).unwrap();
-        let (h2, pos2) = read_checkpoint(path).unwrap();
+        write_checkpoint(path.to_str().unwrap_or(""), &header, &positions).unwrap();
+        let (h2, pos2) = read_checkpoint(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(h2.step, 10);
         assert_eq!(pos2.len(), 3);
         assert!((pos2[0][0] - 1.0).abs() < 1e-6);
         assert!((pos2[2][2] - 9.0).abs() < 1e-6);
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     // ── merge_chunk_files / merge_rank_files ──────────────────────────────────
 
     #[test]
     fn test_merge_chunk_files() {
-        let base = "/tmp/test_merge_par_chunks";
-        let output = "/tmp/test_merge_par_output.bin";
+        let tmpdir = std::env::temp_dir();
+        let base = tmpdir
+            .join("test_merge_par_chunks")
+            .to_str()
+            .unwrap_or("")
+            .to_string();
+        let output = tmpdir.join("test_merge_par_output.bin");
         for i in 0..3usize {
             fs::write(format!("{base}.chunk{i}"), format!("chunk{i}\n")).unwrap();
         }
-        merge_chunk_files(base, 3, output).unwrap();
-        let merged = fs::read_to_string(output).unwrap();
+        merge_chunk_files(&base, 3, output.to_str().unwrap_or("")).unwrap();
+        let merged = fs::read_to_string(&output).unwrap();
         assert!(merged.contains("chunk0"));
         assert!(merged.contains("chunk2"));
         for i in 0..3usize {
             let _ = fs::remove_file(format!("{base}.chunk{i}"));
         }
-        let _ = fs::remove_file(output);
+        let _ = fs::remove_file(&output);
     }
 
     #[test]
     fn test_merge_rank_files() {
-        let base = "/tmp/test_merge_par_ranks";
-        let output = "/tmp/test_merge_par_rank_output.bin";
+        let tmpdir = std::env::temp_dir();
+        let base = tmpdir
+            .join("test_merge_par_ranks")
+            .to_str()
+            .unwrap_or("")
+            .to_string();
+        let output = tmpdir.join("test_merge_par_rank_output.bin");
         for r in 0..2usize {
             fs::write(format!("{base}.rank{r}"), format!("rank{r}\n")).unwrap();
         }
-        merge_rank_files(base, 2, output).unwrap();
-        let merged = fs::read_to_string(output).unwrap();
+        merge_rank_files(&base, 2, output.to_str().unwrap_or("")).unwrap();
+        let merged = fs::read_to_string(&output).unwrap();
         assert!(merged.contains("rank0"));
         assert!(merged.contains("rank1"));
         for r in 0..2usize {
             let _ = fs::remove_file(format!("{base}.rank{r}"));
         }
-        let _ = fs::remove_file(output);
+        let _ = fs::remove_file(&output);
     }
 
     // ── estimate_io_bandwidth ─────────────────────────────────────────────────
@@ -1585,13 +1592,17 @@ mod tests {
 
     #[test]
     fn test_write_read_chunked_xyz_roundtrip() {
-        let base = "/tmp/test_chunked_traj_par2";
+        let base = std::env::temp_dir()
+            .join("test_chunked_traj_par2")
+            .to_str()
+            .unwrap_or("")
+            .to_string();
         let mut traj = ChunkedTrajectory::new(2, 2);
         traj.push_frame(vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]);
         traj.push_frame(vec![[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]);
         traj.push_frame(vec![[9.0, 8.0, 7.0], [6.0, 5.0, 4.0]]);
-        write_chunked_xyz(&traj, base).unwrap();
-        let loaded = read_chunked_xyz(base, traj.n_chunks()).unwrap();
+        write_chunked_xyz(&traj, &base).unwrap();
+        let loaded = read_chunked_xyz(&base, traj.n_chunks()).unwrap();
         assert_eq!(loaded.n_frames, 3);
         assert!((loaded.frames[0][0][0] - 1.0).abs() < 1e-4);
         for i in 0..traj.n_chunks() {

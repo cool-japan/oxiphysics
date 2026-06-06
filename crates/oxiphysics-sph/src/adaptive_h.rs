@@ -1,6 +1,5 @@
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
-#![allow(dead_code)]
 
 //! Adaptive smoothing-length (h) algorithms for SPH.
 //!
@@ -159,7 +158,6 @@ pub fn sph_density_dh(
 /// * `h_max`        — maximum allowed h.
 ///
 /// Returns `Some(h)` on convergence within `[h_min, h_max]`, `None` otherwise.
-#[allow(clippy::too_many_arguments)]
 pub fn solve_h_newton(
     pos_i: [f64; 3],
     h_guess: f64,
@@ -242,7 +240,6 @@ pub fn omega_correction(
 /// divided by 2 for the symmetric form used in force evaluation.
 ///
 /// Returns the 3D gradient vector.
-#[allow(clippy::too_many_arguments)]
 pub fn variable_h_kernel_gradient(
     r_ij: [f64; 3],
     h_i: f64,
@@ -686,7 +683,6 @@ pub fn zhu_fox_criterion(
 /// Decide whether to refine based on the Zhu-Fox criterion.
 ///
 /// Returns `true` when `zhu_fox_criterion > threshold` AND `level < max_level`.
-#[allow(clippy::too_many_arguments)]
 pub fn should_refine_zhu_fox(
     pos_i: [f64; 3],
     rho_i: f64,
@@ -745,7 +741,6 @@ pub fn update_h_continuity(
 /// ```
 ///
 /// This uses the anti-symmetric velocity-gradient form.
-#[allow(clippy::too_many_arguments)]
 pub fn sph_drho_dt(
     pos_i: [f64; 3],
     vel_i: [f64; 3],
@@ -977,6 +972,19 @@ pub fn max_h_ratio(positions: &[[f64; 3]], hs: &[f64], radius: f64) -> f64 {
 // Variable-h pressure force (Springel & Hernquist symmetric)
 // ---------------------------------------------------------------------------
 
+/// Scalar state of the central particle for [`variable_h_pressure_accel`].
+#[derive(Debug, Clone, Copy)]
+pub struct VariableHParticleState {
+    /// Pressure \[Pa\]
+    pub pressure: f64,
+    /// Density \[kg/m³\]
+    pub rho: f64,
+    /// Smoothing length \[m\]
+    pub h: f64,
+    /// Ω correction factor (gradient correction denominator)
+    pub omega: f64,
+}
+
 /// Compute the symmetric variable-h pressure acceleration on particle i.
 ///
 /// Uses the Springel & Hernquist (2002) conservative form:
@@ -987,13 +995,9 @@ pub fn max_h_ratio(positions: &[[f64; 3]], hs: &[f64], radius: f64) -> f64 {
 /// where `f_i = (1 + (h_i / (d * ρ_i)) * dρ_i/dh)^{-1}` ≈ 1/Ω_i.
 ///
 /// Returns a 3-vector acceleration.
-#[allow(clippy::too_many_arguments)]
 pub fn variable_h_pressure_accel(
     pos_i: [f64; 3],
-    pressure_i: f64,
-    rho_i: f64,
-    h_i: f64,
-    omega_i: f64,
+    state_i: VariableHParticleState,
     neighbor_pos: &[[f64; 3]],
     neighbor_mass: &[f64],
     neighbor_pressure: &[f64],
@@ -1001,6 +1005,10 @@ pub fn variable_h_pressure_accel(
     neighbor_h: &[f64],
     neighbor_omega: &[f64],
 ) -> [f64; 3] {
+    let pressure_i = state_i.pressure;
+    let rho_i = state_i.rho;
+    let h_i = state_i.h;
+    let omega_i = state_i.omega;
     let kernel = CubicSplineKernel;
     let mut accel = [0.0_f64; 3];
     let rho_i_sq = (rho_i * rho_i).max(1e-28);
@@ -1813,10 +1821,12 @@ mod tests {
         let pos_i = [0.0_f64; 3];
         let accel = variable_h_pressure_accel(
             pos_i,
-            0.0,
-            1000.0,
-            0.1,
-            1.0,
+            VariableHParticleState {
+                pressure: 0.0,
+                rho: 1000.0,
+                h: 0.1,
+                omega: 1.0,
+            },
             &[[0.05, 0.0, 0.0_f64]],
             &[0.001],
             &[0.0], // neighbour pressure = 0
@@ -1833,10 +1843,12 @@ mod tests {
         let pos_i = [0.0_f64; 3];
         let accel = variable_h_pressure_accel(
             pos_i,
-            1000.0,
-            1000.0,
-            0.1,
-            1.0,
+            VariableHParticleState {
+                pressure: 1000.0,
+                rho: 1000.0,
+                h: 0.1,
+                omega: 1.0,
+            },
             &[[0.05, 0.0, 0.0_f64]],
             &[0.001],
             &[500.0],

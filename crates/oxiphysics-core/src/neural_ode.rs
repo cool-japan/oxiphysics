@@ -12,9 +12,6 @@
 //! - [`TimeSeriesOde`]: convenience wrapper for time-series fitting
 //! - Free functions [`rk4_step`] and [`dopri5_step`]
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Free integration helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -157,11 +154,6 @@ pub fn dopri5_step(
 // ─────────────────────────────────────────────────────────────────────────────
 // Activation helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Element-wise hyperbolic tangent.
-fn tanh_vec(v: &[f64]) -> Vec<f64> {
-    v.iter().map(|x| x.tanh()).collect()
-}
 
 /// Dense layer: `output = tanh(W * input + b)`.
 ///
@@ -343,7 +335,7 @@ impl NeuralOdeFunc {
         let params = self.params_flat();
         let mut grad = vec![0.0_f64; n_p];
         let mut tmp = self.clone();
-        for j in 0..n_p {
+        for (j, g) in grad.iter_mut().enumerate() {
             let mut p_plus = params.clone();
             let mut p_minus = params.clone();
             p_plus[j] += eps;
@@ -352,7 +344,7 @@ impl NeuralOdeFunc {
             let f_plus = tmp.forward(t, z);
             tmp.set_params_flat(&p_minus);
             let f_minus = tmp.forward(t, z);
-            grad[j] = adj
+            *g = adj
                 .iter()
                 .zip(f_plus.iter().zip(f_minus.iter()))
                 .map(|(&ai, (&fp, &fm))| ai * (fp - fm) / (2.0 * eps))

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -22,8 +21,6 @@
 //! let imp = impulse(2.0, [3.0, 0.0, 0.0]);
 //! assert!((imp[0] - 6.0).abs() < 1e-10);
 //! ```
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -238,7 +235,6 @@ impl WaveImpact {
     /// `R = (Z2 - Z1) / (Z2 + Z1)`
     ///
     /// Range: −1 (free surface) to +1 (rigid wall).
-    #[allow(non_snake_case)]
     pub fn reflection_coeff(z1: f64, z2: f64) -> f64 {
         if (z1 + z2).abs() < 1e-30 {
             return 0.0;
@@ -249,7 +245,6 @@ impl WaveImpact {
     /// Compute the transmission coefficient at the same interface.
     ///
     /// `T = 2 * Z1 / (Z1 + Z2)`
-    #[allow(non_snake_case)]
     pub fn transmission_coeff(z1: f64, z2: f64) -> f64 {
         if (z1 + z2).abs() < 1e-30 {
             return 0.0;
@@ -610,8 +605,8 @@ pub fn head_injury_criterion(a_t: &[f64], dt: f64) -> f64 {
     let mut hic_max = 0.0_f64;
     for i in 0..n {
         let mut sum = 0.0_f64;
-        for j in (i + 1)..n {
-            sum += a_t[j];
+        for (j, &a_val) in a_t.iter().enumerate().skip(i + 1) {
+            sum += a_val;
             let count = (j - i) as f64;
             let t_interval = count * dt;
             let mean_a = (sum / count).abs();

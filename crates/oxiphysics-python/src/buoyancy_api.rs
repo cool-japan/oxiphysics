@@ -5,9 +5,6 @@
 //!
 //! Exposes Archimedes buoyancy and viscous drag for bodies in fluid volumes.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::buoyancy::{BuoyancyWorld, BuoyantBody, BuoyantShape};
 use pyo3::prelude::*;
 

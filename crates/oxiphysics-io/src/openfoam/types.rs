@@ -2,11 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{foam_header, parse_dict_tokens, strip_foam_comments, tokenise_foam};
-#[allow(unused_imports)]
-use super::functions_2::*;
 
 /// A single boundary condition entry for a `FoamField`.
 pub struct FoamBc {
@@ -18,7 +14,6 @@ pub struct FoamBc {
     pub value: Option<String>,
 }
 /// Common boundary condition constructors.
-#[allow(dead_code)]
 impl FoamBc {
     /// Zero-gradient (Neumann) condition.
     pub fn zero_gradient(patch: &str) -> Self {
@@ -361,7 +356,6 @@ impl FoamMesh {
         s
     }
 }
-#[allow(dead_code)]
 impl FoamMesh {
     /// Count internal faces (those with a non-negative neighbour).
     pub fn n_internal_faces(&self) -> usize {
@@ -424,7 +418,6 @@ impl FoamMesh {
     }
 }
 /// Represents a single time directory's metadata.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FoamTimeDir {
     /// Time value (e.g. 0.0, 0.5, 1.0).
@@ -464,9 +457,9 @@ impl ControlDict {
             write_precision: 6,
         }
     }
-    /// Render the controlDict as an OpenFOAM-formatted `String`.
-    #[allow(clippy::inherent_to_string)]
-    pub fn to_string(&self) -> String {
+}
+impl std::fmt::Display for ControlDict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = foam_header("dictionary", "controlDict");
         s.push('\n');
         s.push_str(&format!("application     {};\n\n", self.application));
@@ -482,7 +475,7 @@ impl ControlDict {
         s.push_str("timePrecision   6;\n\n");
         s.push_str("runTimeModifiable true;\n\n");
         s.push_str(&format!("writeInterval   {};\n", self.write_interval));
-        s
+        write!(f, "{s}")
     }
 }
 /// Boundary patch definition for OpenFOAM output.
@@ -498,13 +491,11 @@ pub struct FoamPatch {
     pub n_faces: usize,
 }
 /// A parsed OpenFOAM dictionary (key-value map preserving insertion order).
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct FoamDict {
     /// Ordered key-value entries.
     pub entries: Vec<(String, FoamValue)>,
 }
-#[allow(dead_code)]
 impl FoamDict {
     /// Create an empty dictionary.
     pub fn new() -> Self {
@@ -622,7 +613,6 @@ impl Default for FoamDict {
     }
 }
 /// Writer for the OpenFOAM `system/fvSchemes` file.
-#[allow(dead_code)]
 pub struct FvSchemes {
     /// Time derivative scheme.
     pub ddt_scheme: String,
@@ -637,7 +627,6 @@ pub struct FvSchemes {
     /// Surface-normal gradient scheme.
     pub sn_grad_scheme: String,
 }
-#[allow(dead_code)]
 impl FvSchemes {
     /// Create default second-order schemes.
     pub fn default_second_order() -> Self {
@@ -656,9 +645,9 @@ impl FvSchemes {
             sn_grad_scheme: "corrected".to_string(),
         }
     }
-    /// Render to OpenFOAM format.
-    #[allow(clippy::inherent_to_string)]
-    pub fn to_string(&self) -> String {
+}
+impl std::fmt::Display for FvSchemes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = foam_header("dictionary", "fvSchemes");
         s.push('\n');
         s.push_str("ddtSchemes\n{\n");
@@ -686,11 +675,10 @@ impl FvSchemes {
         s.push_str("snGradSchemes\n{\n");
         s.push_str(&format!("    default         {};\n", self.sn_grad_scheme));
         s.push_str("}\n");
-        s
+        write!(f, "{s}")
     }
 }
 /// A parsed OpenFOAM solver residual entry (from log file).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FoamResidual {
     /// Time step (or iteration) number.
@@ -705,7 +693,6 @@ pub struct FoamResidual {
     pub n_iterations: usize,
 }
 /// A parsed OpenFOAM dictionary entry.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum FoamValue {
     /// A scalar number.
@@ -720,14 +707,12 @@ pub enum FoamValue {
     List(Vec<FoamValue>),
 }
 /// Writer for `constant/transportProperties`.
-#[allow(dead_code)]
 pub struct TransportProperties {
     /// Transport model: "Newtonian", "CrossPowerLaw", etc.
     pub transport_model: String,
     /// Kinematic viscosity \[m^2/s\].
     pub nu: f64,
 }
-#[allow(dead_code)]
 impl TransportProperties {
     /// Create Newtonian transport with given kinematic viscosity.
     pub fn newtonian(nu: f64) -> Self {
@@ -736,14 +721,14 @@ impl TransportProperties {
             nu,
         }
     }
-    /// Render to OpenFOAM format.
-    #[allow(clippy::inherent_to_string)]
-    pub fn to_string(&self) -> String {
+}
+impl std::fmt::Display for TransportProperties {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = foam_header("dictionary", "transportProperties");
         s.push('\n');
         s.push_str(&format!("transportModel  {};\n\n", self.transport_model));
         s.push_str(&format!("nu              [0 2 -1 0 0 0 0] {};\n", self.nu));
-        s
+        write!(f, "{s}")
     }
 }
 /// A scalar or vector field for OpenFOAM output (volScalarField / volVectorField).
@@ -761,10 +746,9 @@ pub struct FoamField {
     /// Boundary condition list (one entry per patch).
     pub boundary_conditions: Vec<FoamBc>,
 }
-impl FoamField {
-    /// Render this field as an OpenFOAM-formatted `String`.
-    #[allow(clippy::inherent_to_string)]
-    pub fn to_string(&self) -> String {
+impl FoamField {}
+impl std::fmt::Display for FoamField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = foam_header(&self.field_class, &self.field_name);
         s.push('\n');
         s.push_str(&format!("dimensions      {};\n\n", self.dimensions));
@@ -805,7 +789,7 @@ impl FoamField {
             s.push_str("    }\n");
         }
         s.push_str("}\n");
-        s
+        write!(f, "{s}")
     }
 }
 /// Internal/boundary field values for a `FoamField`.
@@ -820,7 +804,6 @@ pub enum FieldValues {
     NonUniformVec(Vec<[f64; 3]>),
 }
 /// Writer for the OpenFOAM `system/fvSolution` file.
-#[allow(dead_code)]
 pub struct FvSolution {
     /// Solver settings per field (field_name, solver, preconditioner, tolerance, relTol).
     pub solvers: Vec<FvSolverEntry>,
@@ -835,7 +818,6 @@ pub struct FvSolution {
     /// Pressure reference value.
     pub p_ref_value: f64,
 }
-#[allow(dead_code)]
 impl FvSolution {
     /// Create default PISO solution settings.
     pub fn default_piso() -> Self {
@@ -863,9 +845,9 @@ impl FvSolution {
             p_ref_value: 0.0,
         }
     }
-    /// Render to OpenFOAM format.
-    #[allow(clippy::inherent_to_string)]
-    pub fn to_string(&self) -> String {
+}
+impl std::fmt::Display for FvSolution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = foam_header("dictionary", "fvSolution");
         s.push('\n');
         s.push_str("solvers\n{\n");
@@ -890,11 +872,10 @@ impl FvSolution {
         s.push_str(&format!("    pRefCell        {};\n", self.p_ref_cell));
         s.push_str(&format!("    pRefValue       {};\n", self.p_ref_value));
         s.push_str("}\n");
-        s
+        write!(f, "{s}")
     }
 }
 /// A single solver entry in fvSolution.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FvSolverEntry {
     /// Field name (e.g. "p", "U").
@@ -909,7 +890,6 @@ pub struct FvSolverEntry {
     pub rel_tol: f64,
 }
 /// Parsed contents of an OpenFOAM `FoamFile` header block.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct FoamFileHeader {
     /// Format version (e.g., `2.0`).
@@ -925,7 +905,6 @@ pub struct FoamFileHeader {
     /// Optional location path.
     pub location: Option<String>,
 }
-#[allow(dead_code)]
 impl FoamFileHeader {
     /// Parse a `FoamFile { ... }` header from OpenFOAM file content.
     ///
@@ -990,9 +969,9 @@ impl FoamFileHeader {
             location,
         })
     }
-    /// Write a `FoamFile` header block as a string.
-    #[allow(clippy::inherent_to_string)]
-    pub fn to_string(&self) -> String {
+}
+impl std::fmt::Display for FoamFileHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = String::new();
         s.push_str("FoamFile\n{\n");
         s.push_str(&format!("    version     {};\n", self.version));
@@ -1006,6 +985,6 @@ impl FoamFileHeader {
             s.push_str(&format!("    note        \"{}\";\n", note));
         }
         s.push_str("}\n");
-        s
+        write!(f, "{s}")
     }
 }

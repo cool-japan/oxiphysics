@@ -12,8 +12,6 @@
 //! - Bone fracture mechanics (Paris law, stress intensity).
 //! - Wolff's law density adaptation.
 
-#![allow(dead_code)]
-
 // ── BoneStructure ─────────────────────────────────────────────────────────────
 
 /// A cortical or trabecular bone specimen described by its microstructural

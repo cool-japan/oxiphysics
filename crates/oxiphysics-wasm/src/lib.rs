@@ -30,11 +30,10 @@
 //! let pos = engine.get_position(ball);
 //! assert!(pos[1] < 10.0, "ball should have fallen");
 //! ```
-#![allow(missing_docs)]
-#![allow(dead_code)]
 
 use wasm_bindgen::prelude::*;
 
+/// WASM entry point: initialises the panic hook for better error messages in the browser.
 #[wasm_bindgen(start)]
 pub fn wasm_main() {
     console_error_panic_hook::set_once();

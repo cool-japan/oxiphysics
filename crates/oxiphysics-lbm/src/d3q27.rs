@@ -1,7 +1,5 @@
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
-#![allow(dead_code, missing_docs)]
 
 //! D3Q27 lattice Boltzmann (27 velocities in 3D).
 //!
@@ -58,10 +56,10 @@ pub const OPPOSITES: [usize; Q] = D3Q27_OPPOSITES;
 pub fn mrt_moment_matrix() -> [f64; Q * Q] {
     let mut m = [0.0_f64; Q * Q];
 
-    for i in 0..Q {
-        let cx = VELOCITIES[i][0] as f64;
-        let cy = VELOCITIES[i][1] as f64;
-        let cz = VELOCITIES[i][2] as f64;
+    for (i, velocity) in VELOCITIES.iter().enumerate() {
+        let cx = velocity[0] as f64;
+        let cy = velocity[1] as f64;
+        let cz = velocity[2] as f64;
         let c2 = cx * cx + cy * cy + cz * cz;
 
         // Row 0: rho = 1 for all directions
@@ -118,12 +116,12 @@ pub fn mrt_moment_matrix() -> [f64; Q * Q] {
 /// Transforms the distribution function to moment space.
 pub fn transform_to_moments(m: &[f64; Q * Q], f: &[f64; Q]) -> [f64; Q] {
     let mut moments = [0.0_f64; Q];
-    for row in 0..Q {
+    for (row, moment) in moments.iter_mut().enumerate() {
         let mut s = 0.0;
-        for col in 0..Q {
-            s += m[row * Q + col] * f[col];
+        for (col, &fc) in f.iter().enumerate() {
+            s += m[row * Q + col] * fc;
         }
-        moments[row] = s;
+        *moment = s;
     }
     moments
 }
@@ -142,22 +140,22 @@ pub fn transform_from_moments(m: &[f64; Q * Q], moments: &[f64; Q]) -> [f64; Q] 
 
     // Compute norms for each moment row.
     let mut norms = [0.0_f64; Q];
-    for row in 0..Q {
+    for (row, norm) in norms.iter_mut().enumerate() {
         let mut n = 0.0;
-        for col in 0..Q {
+        for (col, &weight_col) in WEIGHTS.iter().enumerate() {
             let val = m[row * Q + col];
-            n += val * val * WEIGHTS[col];
+            n += val * val * weight_col;
         }
-        norms[row] = if n.abs() > 1e-30 { n } else { 1.0 };
+        *norm = if n.abs() > 1e-30 { n } else { 1.0 };
     }
 
     let mut f = [0.0_f64; Q];
-    for i in 0..Q {
+    for (i, fi) in f.iter_mut().enumerate() {
         let mut s = 0.0;
-        for j in 0..Q {
-            s += m[j * Q + i] * moments[j] * WEIGHTS[i] / norms[j];
+        for (j, &moment_j) in moments.iter().enumerate() {
+            s += m[j * Q + i] * moment_j * WEIGHTS[i] / norms[j];
         }
-        f[i] = s;
+        *fi = s;
     }
     f
 }
@@ -275,8 +273,8 @@ impl D3Q27Lattice {
                 (0.0, 0.0, 0.0)
             };
             let feq = Self::equilibrium(rho, ux, uy, uz);
-            for i in 0..Q {
-                cell[i] -= omega * (cell[i] - feq[i]);
+            for (i, fi) in cell.iter_mut().enumerate() {
+                *fi -= omega * (*fi - feq[i]);
             }
         }
 
@@ -286,13 +284,13 @@ impl D3Q27Lattice {
             for y in 0..ny {
                 for x in 0..nx {
                     let dst = z * ny * nx + y * nx + x;
-                    for i in 0..Q {
+                    for (i, fi) in self.f[dst].iter_mut().enumerate() {
                         let c = VELOCITIES[i];
                         let src_x = ((x as i64 - c[0] as i64).rem_euclid(nx as i64)) as usize;
                         let src_y = ((y as i64 - c[1] as i64).rem_euclid(ny as i64)) as usize;
                         let src_z = ((z as i64 - c[2] as i64).rem_euclid(nz as i64)) as usize;
                         let src = src_z * ny * nx + src_y * nx + src_x;
-                        self.f[dst][i] = f_old[src][i];
+                        *fi = f_old[src][i];
                     }
                 }
             }
@@ -320,8 +318,8 @@ impl D3Q27Lattice {
                 (0.0, 0.0, 0.0)
             };
             let feq = Self::equilibrium(rho, ux, uy, uz);
-            for i in 0..Q {
-                cell[i] -= omega * (cell[i] - feq[i]);
+            for (i, fi) in cell.iter_mut().enumerate() {
+                *fi -= omega * (*fi - feq[i]);
             }
         }
     }
@@ -336,13 +334,13 @@ impl D3Q27Lattice {
             for y in 0..ny {
                 for x in 0..nx {
                     let dst = z * ny * nx + y * nx + x;
-                    for i in 0..Q {
+                    for (i, fi) in self.f[dst].iter_mut().enumerate() {
                         let c = VELOCITIES[i];
                         let src_x = ((x as i64 - c[0] as i64).rem_euclid(nx as i64)) as usize;
                         let src_y = ((y as i64 - c[1] as i64).rem_euclid(ny as i64)) as usize;
                         let src_z = ((z as i64 - c[2] as i64).rem_euclid(nz as i64)) as usize;
                         let src = src_z * ny * nx + src_y * nx + src_x;
-                        self.f[dst][i] = f_old[src][i];
+                        *fi = f_old[src][i];
                     }
                 }
             }
@@ -388,8 +386,7 @@ impl D3Q27Lattice {
             let feq = Self::equilibrium(rho, ux, uy, uz);
 
             // TRT collision: decompose non-eq into symmetric and anti-symmetric parts.
-            for i in 0..Q {
-                let opp = OPPOSITES[i];
+            for (i, &opp) in OPPOSITES.iter().enumerate() {
                 let f_neq_i = cell[i] - feq[i];
                 let f_neq_opp = cell[opp] - feq[opp];
                 let f_neq_plus = 0.5 * (f_neq_i + f_neq_opp);
@@ -405,13 +402,10 @@ impl D3Q27Lattice {
     ///   F_i = (1 - omega/2) * w_i * \[(e_i - u)/cs^2 + (e_i . u) * e_i / cs^4\] . F
     ///
     /// This modifies the distribution functions in-place.
-    #[allow(clippy::too_many_arguments)]
     pub fn apply_guo_forcing(&mut self, fx: f64, fy: f64, fz: f64) {
         let omega = self.omega;
-        let n = self.nx * self.ny * self.nz;
 
-        for idx in 0..n {
-            let cell = &self.f[idx];
+        for cell in self.f.iter_mut() {
             let mut rho = 0.0_f64;
             let mut mx_val = 0.0_f64;
             let mut my_val = 0.0_f64;
@@ -429,7 +423,7 @@ impl D3Q27Lattice {
                 (0.0, 0.0, 0.0)
             };
 
-            for i in 0..Q {
+            for (i, fi) in cell.iter_mut().enumerate() {
                 let c = VELOCITIES[i];
                 let ci = [c[0] as f64, c[1] as f64, c[2] as f64];
                 let eu = ci[0] * ux + ci[1] * uy + ci[2] * uz;
@@ -440,7 +434,7 @@ impl D3Q27Lattice {
 
                 let fi_force =
                     (1.0 - omega / 2.0) * WEIGHTS[i] * (term_x * fx + term_y * fy + term_z * fz);
-                self.f[idx][i] += fi_force;
+                *fi += fi_force;
             }
         }
     }
@@ -450,8 +444,8 @@ impl D3Q27Lattice {
         let idx = self.idx(x, y, z);
         let mut temp = [0.0_f64; Q];
         temp.copy_from_slice(&self.f[idx]);
-        for i in 0..Q {
-            self.f[idx][i] = temp[OPPOSITES[i]];
+        for (i, fi) in self.f[idx].iter_mut().enumerate() {
+            *fi = temp[OPPOSITES[i]];
         }
     }
 
@@ -502,8 +496,8 @@ impl D3Q27Lattice {
         let (rho, ux, uy, uz) = self.compute_macroscopic(cell);
         let feq = Self::equilibrium(rho, ux, uy, uz);
         let mut sum_sq = 0.0;
-        for i in 0..Q {
-            let diff = cell[i] - feq[i];
+        for (&ci, &fi) in cell.iter().zip(&feq) {
+            let diff = ci - fi;
             sum_sq += diff * diff;
         }
         sum_sq.sqrt()
@@ -538,13 +532,11 @@ impl D3Q27Lattice {
 /// - Mode 1 (energy): s_e
 /// - Mode 9-13 (stress tensor): s_nu (viscous)
 /// - Others: s_q (ghost / energy flux)
-#[allow(dead_code)]
 pub struct MrtRelaxationRates {
     /// 27 diagonal relaxation rates.
     pub s: [f64; Q],
 }
 
-#[allow(dead_code)]
 impl MrtRelaxationRates {
     /// Create relaxation rates for given kinematic viscosity `nu` and bulk viscosity `xi`.
     ///
@@ -576,8 +568,8 @@ impl MrtRelaxationRates {
         s[6] = s_q;
         s[8] = s_q;
         // Higher-order modes
-        for i in 14..Q {
-            s[i] = s_q;
+        for s_i in &mut s[14..Q] {
+            *s_i = s_q;
         }
         Self { s }
     }
@@ -610,7 +602,6 @@ impl MrtRelaxationRates {
 /// weighted pseudo-inverse, so we use an equivalent BGK-like formulation
 /// with per-velocity weights derived from the mode decomposition.
 /// For a rigorous full MRT, an orthogonalized basis (Gram-Schmidt) is needed.
-#[allow(dead_code)]
 pub fn collide_mrt_full(
     f: &mut [f64; Q],
     rho: f64,
@@ -626,8 +617,8 @@ pub fn collide_mrt_full(
     let omega_eff = rates.s[9];
 
     // BGK-equivalent collapse: f_i -> feq_i + (1 - omega) * (f_i - feq_i)
-    for i in 0..Q {
-        f[i] = feq[i] + (1.0 - omega_eff) * (f[i] - feq[i]);
+    for (i, fi) in f.iter_mut().enumerate() {
+        *fi = feq[i] + (1.0 - omega_eff) * (*fi - feq[i]);
     }
 }
 
@@ -640,7 +631,6 @@ pub fn collide_mrt_full(
 /// Returns the forcing contribution to add to `f`.
 ///
 /// `F_i = (1 - omega/2) * w_i * [ (e_i - u)/cs^2 + (e_i · u) * e_i / cs^4 ] · F`
-#[allow(dead_code)]
 pub fn guo_force_term(
     ux: f64,
     uy: f64,
@@ -651,14 +641,14 @@ pub fn guo_force_term(
     omega: f64,
 ) -> [f64; Q] {
     let mut fi = [0.0_f64; Q];
-    for i in 0..Q {
+    for (i, fi_i) in fi.iter_mut().enumerate() {
         let c = VELOCITIES[i];
         let ci = [c[0] as f64, c[1] as f64, c[2] as f64];
         let eu = ci[0] * ux + ci[1] * uy + ci[2] * uz;
         let tx = (ci[0] - ux) / CS2 + eu * ci[0] / (CS2 * CS2);
         let ty = (ci[1] - uy) / CS2 + eu * ci[1] / (CS2 * CS2);
         let tz = (ci[2] - uz) / CS2 + eu * ci[2] / (CS2 * CS2);
-        fi[i] = (1.0 - omega / 2.0) * WEIGHTS[i] * (tx * fx + ty * fy + tz * fz);
+        *fi_i = (1.0 - omega / 2.0) * WEIGHTS[i] * (tx * fx + ty * fy + tz * fz);
     }
     fi
 }
@@ -667,7 +657,6 @@ pub fn guo_force_term(
 ///
 /// In the Guo scheme, the actual velocity is shifted:
 /// `u_actual = u_raw + F / (2 * rho)`
-#[allow(dead_code)]
 pub fn guo_corrected_velocity(
     ux_raw: f64,
     uy_raw: f64,
@@ -699,11 +688,10 @@ pub fn guo_corrected_velocity(
 ///
 /// This function applies bounce-back for a single cell `(x, y, z)` by
 /// swapping in-place.
-#[allow(dead_code)]
 pub fn apply_half_way_bounce_back(f: &mut [f64; Q]) {
     let mut temp = [0.0_f64; Q];
-    for i in 0..Q {
-        temp[OPPOSITES[i]] = f[i];
+    for (i, &fi) in f.iter().enumerate() {
+        temp[OPPOSITES[i]] = fi;
     }
     *f = temp;
 }
@@ -719,7 +707,6 @@ pub fn apply_half_way_bounce_back(f: &mut [f64; Q]) {
 ///
 /// For generality, we implement the "equilibrium reset" variant:
 /// `f_i = feq_i(rho, u)` at the boundary (simpler but less accurate).
-#[allow(dead_code)]
 pub fn zou_he_velocity_inlet(f: &mut [f64; Q], rho: f64, ux: f64, uy: f64, uz: f64) {
     *f = D3Q27Lattice::equilibrium(rho, ux, uy, uz);
 }
@@ -731,14 +718,12 @@ pub fn zou_he_velocity_inlet(f: &mut [f64; Q], rho: f64, ux: f64, uy: f64, uz: f
 /// Here we implement the copy variant: `f_outlet = f_interior`.
 ///
 /// In practice the caller provides the interior cell.
-#[allow(dead_code)]
 pub fn convective_outlet(f_outlet: &mut [f64; Q], f_interior: &[f64; Q]) {
     *f_outlet = *f_interior;
 }
 
 /// Periodic remap: given an index in one direction that may be out of bounds,
 /// return the wrapped index in `[0, n)`.
-#[allow(dead_code)]
 #[inline]
 pub fn periodic_index(i: i64, n: usize) -> usize {
     i.rem_euclid(n as i64) as usize
@@ -750,7 +735,6 @@ pub fn periodic_index(i: i64, n: usize) -> usize {
 /// the post-streaming f is reversed.
 ///
 /// `is_wall_cell(z)` returns true for the two planes at `z=0` and `z=nz-1`.
-#[allow(dead_code)]
 pub fn apply_wall_bounce_back_z(lat: &mut D3Q27Lattice, z_wall: usize) {
     let nx = lat.nx;
     let ny = lat.ny;
@@ -769,7 +753,6 @@ pub fn apply_wall_bounce_back_z(lat: &mut D3Q27Lattice, z_wall: usize) {
 /// in the x-direction, varying in the z-direction.
 ///
 /// `ux(z) = u_max * (1 - ((z - nz/2) / (nz/2))^2)`
-#[allow(dead_code)]
 pub fn init_poiseuille_profile_z(lat: &mut D3Q27Lattice, u_max: f64, rho_uniform: f64) {
     let nx = lat.nx;
     let ny = lat.ny;
@@ -789,7 +772,6 @@ pub fn init_poiseuille_profile_z(lat: &mut D3Q27Lattice, u_max: f64, rho_uniform
 /// Initialize with a sinusoidal density perturbation in the x-direction.
 ///
 /// `rho(x) = rho0 + delta * sin(2*pi*x/nx)`
-#[allow(dead_code)]
 pub fn init_density_sine_wave(lat: &mut D3Q27Lattice, rho0: f64, delta: f64) {
     let nx = lat.nx;
     let ny = lat.ny;
@@ -807,7 +789,6 @@ pub fn init_density_sine_wave(lat: &mut D3Q27Lattice, rho0: f64, delta: f64) {
 /// Initialize a shear layer: top half moves in +x, bottom half in -x.
 ///
 /// `ux(z) = u0 if z >= nz/2, else -u0`
-#[allow(dead_code)]
 pub fn init_shear_layer(lat: &mut D3Q27Lattice, u0: f64, rho0: f64) {
     let nx = lat.nx;
     let ny = lat.ny;
@@ -826,7 +807,6 @@ pub fn init_shear_layer(lat: &mut D3Q27Lattice, u0: f64, rho0: f64) {
 ///
 /// `ux(x,y) = u0 * sin(2*pi*x/nx) * cos(2*pi*y/ny)`
 /// `uy(x,y) = -u0 * cos(2*pi*x/nx) * sin(2*pi*y/ny)`
-#[allow(dead_code)]
 pub fn init_taylor_green_xy(lat: &mut D3Q27Lattice, u0: f64, rho0: f64) {
     let nx = lat.nx;
     let ny = lat.ny;
@@ -847,15 +827,14 @@ pub fn init_taylor_green_xy(lat: &mut D3Q27Lattice, u0: f64, rho0: f64) {
 /// Copy all macroscopic fields from the lattice into flat arrays.
 ///
 /// Returns `(rho_arr, ux_arr, uy_arr, uz_arr)`, each of length `nx*ny*nz`.
-#[allow(dead_code)]
 pub fn extract_macroscopic_fields(lat: &D3Q27Lattice) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
     let n = lat.nx * lat.ny * lat.nz;
     let mut rho_arr = vec![0.0f64; n];
     let mut ux_arr = vec![0.0f64; n];
     let mut uy_arr = vec![0.0f64; n];
     let mut uz_arr = vec![0.0f64; n];
-    for k in 0..n {
-        let (r, u, v, w) = lat.compute_macroscopic(&lat.f[k]);
+    for (k, cell) in lat.f.iter().enumerate() {
+        let (r, u, v, w) = lat.compute_macroscopic(cell);
         rho_arr[k] = r;
         ux_arr[k] = u;
         uy_arr[k] = v;
@@ -865,7 +844,6 @@ pub fn extract_macroscopic_fields(lat: &D3Q27Lattice) -> (Vec<f64>, Vec<f64>, Ve
 }
 
 /// Compute the maximum velocity magnitude across the entire lattice.
-#[allow(dead_code)]
 pub fn max_velocity_magnitude(lat: &D3Q27Lattice) -> f64 {
     let mut max_u2 = 0.0_f64;
     for cell in &lat.f {
@@ -881,7 +859,6 @@ pub fn max_velocity_magnitude(lat: &D3Q27Lattice) -> f64 {
 /// Compute the Mach number field (Ma = |u| / cs) across the lattice.
 ///
 /// Returns a flat Vec of Mach numbers.
-#[allow(dead_code)]
 pub fn compute_mach_field(lat: &D3Q27Lattice) -> Vec<f64> {
     let cs = CS2.sqrt();
     lat.f
@@ -899,7 +876,6 @@ pub fn compute_mach_field(lat: &D3Q27Lattice) -> Vec<f64> {
 /// `Pxy_neq = -sum_i (fi - feq_i) * ci_x * ci_y`
 ///
 /// Returns the `[3x3]` tensor as `[[Pxx, Pxy, Pxz\], [Pyx, Pyy, Pyz], [Pzx, Pzy, Pzz]]`.
-#[allow(dead_code)]
 pub fn non_equilibrium_stress_tensor(
     cell: &[f64; Q],
     rho: f64,
@@ -909,13 +885,12 @@ pub fn non_equilibrium_stress_tensor(
 ) -> [[f64; 3]; 3] {
     let feq = D3Q27Lattice::equilibrium(rho, ux, uy, uz);
     let mut pi = [[0.0_f64; 3]; 3];
-    for i in 0..Q {
-        let c = VELOCITIES[i];
+    for (i, c) in VELOCITIES.iter().enumerate() {
         let ci = [c[0] as f64, c[1] as f64, c[2] as f64];
         let f_neq = cell[i] - feq[i];
-        for alpha in 0..3 {
-            for beta in 0..3 {
-                pi[alpha][beta] += f_neq * ci[alpha] * ci[beta];
+        for (alpha, pi_row) in pi.iter_mut().enumerate() {
+            for (beta, pi_ab) in pi_row.iter_mut().enumerate() {
+                *pi_ab += f_neq * ci[alpha] * ci[beta];
             }
         }
     }
@@ -925,20 +900,18 @@ pub fn non_equilibrium_stress_tensor(
 /// Apply full MRT collision to all cells in the lattice.
 ///
 /// Uses the pre-computed moment matrix and the supplied relaxation rates.
-#[allow(dead_code)]
 pub fn collide_all_mrt_full(
     lat: &mut D3Q27Lattice,
     m_matrix: &[f64; Q * Q],
     rates: &MrtRelaxationRates,
 ) {
-    let n = lat.nx * lat.ny * lat.nz;
-    for k in 0..n {
+    for cell in lat.f.iter_mut() {
         // Compute macroscopic
         let mut rho = 0.0_f64;
         let mut mx = 0.0_f64;
         let mut my = 0.0_f64;
         let mut mz = 0.0_f64;
-        for (i, &fi) in lat.f[k].iter().enumerate() {
+        for (i, &fi) in cell.iter().enumerate() {
             rho += fi;
             let c = VELOCITIES[i];
             mx += fi * c[0] as f64;
@@ -950,7 +923,7 @@ pub fn collide_all_mrt_full(
         } else {
             (0.0, 0.0, 0.0)
         };
-        collide_mrt_full(&mut lat.f[k], rho, ux, uy, uz, m_matrix, rates);
+        collide_mrt_full(cell, rho, ux, uy, uz, m_matrix, rates);
     }
 }
 
@@ -1016,8 +989,7 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn test_d3q27_face_weights() {
-        for i in 0..Q {
-            let c = VELOCITIES[i];
+        for (i, c) in VELOCITIES.iter().enumerate() {
             let c2 = c[0] * c[0] + c[1] * c[1] + c[2] * c[2];
             if c2 == 1 {
                 assert!(
@@ -1034,8 +1006,7 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn test_d3q27_edge_weights() {
-        for i in 0..Q {
-            let c = VELOCITIES[i];
+        for (i, c) in VELOCITIES.iter().enumerate() {
             let c2 = c[0] * c[0] + c[1] * c[1] + c[2] * c[2];
             if c2 == 2 {
                 assert!(
@@ -1052,8 +1023,7 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn test_d3q27_corner_weights() {
-        for i in 0..Q {
-            let c = VELOCITIES[i];
+        for (i, c) in VELOCITIES.iter().enumerate() {
             let c2 = c[0] * c[0] + c[1] * c[1] + c[2] * c[2];
             if c2 == 3 {
                 assert!(
@@ -1072,12 +1042,12 @@ mod tests {
     fn test_d3q27_equilibrium_zero_velocity() {
         let rho = 1.5;
         let feq = D3Q27Lattice::equilibrium(rho, 0.0, 0.0, 0.0);
-        for i in 0..Q {
+        for (i, &fq) in feq.iter().enumerate() {
             let expected = WEIGHTS[i] * rho;
             assert!(
-                (feq[i] - expected).abs() < 1e-14,
+                (fq - expected).abs() < 1e-14,
                 "feq[{i}] = {}, expected {}",
-                feq[i],
+                fq,
                 expected
             );
         }
@@ -1137,8 +1107,7 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn test_d3q27_opposite_pairs() {
-        for i in 0..Q {
-            let opp = OPPOSITES[i];
+        for (i, &opp) in OPPOSITES.iter().enumerate() {
             let c = VELOCITIES[i];
             let c_opp = VELOCITIES[opp];
             assert_eq!(
@@ -1156,11 +1125,11 @@ mod tests {
     fn test_mrt_moment_matrix_row0() {
         let m = mrt_moment_matrix();
         // Row 0 should be all ones (density moment).
-        for i in 0..Q {
+        for (i, &mi) in m[..Q].iter().enumerate() {
             assert!(
-                (m[i] - 1.0).abs() < 1e-14,
+                (mi - 1.0).abs() < 1e-14,
                 "M[0][{i}] should be 1.0, got {}",
-                m[i]
+                mi
             );
         }
     }
@@ -1296,19 +1265,19 @@ mod tests {
     fn test_d3q27_bounce_back() {
         let mut lat = D3Q27Lattice::new(3, 3, 3, 1.0);
         let idx = lat.idx(1, 1, 1);
-        for i in 0..Q {
-            lat.f[idx][i] = (i + 1) as f64;
+        for (i, fi) in lat.f[idx].iter_mut().enumerate() {
+            *fi = (i + 1) as f64;
         }
 
         lat.apply_bounce_back(1, 1, 1);
 
-        for i in 0..Q {
+        for (i, &fi) in lat.f[idx].iter().enumerate() {
             let opp = OPPOSITES[i];
             let expected = (opp + 1) as f64;
             assert!(
-                (lat.f[idx][i] - expected).abs() < 1e-14,
+                (fi - expected).abs() < 1e-14,
                 "BB failed for direction {i}: got {}, expected {expected}",
-                lat.f[idx][i]
+                fi
             );
         }
     }
@@ -1420,8 +1389,7 @@ mod tests {
         let mut face = 0;
         let mut edge = 0;
         let mut corner = 0;
-        for i in 0..Q {
-            let c = VELOCITIES[i];
+        for c in &VELOCITIES {
             let c2 = c[0] * c[0] + c[1] * c[1] + c[2] * c[2];
             match c2 {
                 0 => rest += 1,
@@ -1516,8 +1484,8 @@ mod tests {
         let fi = guo_force_term(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0);
         // x-momentum contribution: sum_i fi[i] * ci_x should be ~Fx * (1 - omega/2) * sum(wi * ci_x^2 / cs2)
         let mut mx = 0.0_f64;
-        for i in 0..Q {
-            mx += fi[i] * VELOCITIES[i][0] as f64;
+        for (&fii, c) in fi.iter().zip(&VELOCITIES) {
+            mx += fii * c[0] as f64;
         }
         assert!(mx > 0.0, "Guo term should add x-momentum: {mx}");
     }
@@ -1567,12 +1535,12 @@ mod tests {
         let interior = D3Q27Lattice::equilibrium(1.0, 0.05, 0.0, 0.0);
         let mut outlet = [0.0_f64; Q];
         convective_outlet(&mut outlet, &interior);
-        for i in 0..Q {
+        for (i, (&o, &ii)) in outlet.iter().zip(&interior).enumerate() {
             assert!(
-                (outlet[i] - interior[i]).abs() < 1e-14,
+                (o - ii).abs() < 1e-14,
                 "Outlet[{i}] = {}, interior[{i}] = {}",
-                outlet[i],
-                interior[i]
+                o,
+                ii
             );
         }
     }
@@ -1687,12 +1655,12 @@ mod tests {
         let f = D3Q27Lattice::equilibrium(rho, ux, uy, uz);
         let pi = non_equilibrium_stress_tensor(&f, rho, ux, uy, uz);
         // At equilibrium, all stress tensor components should be zero
-        for alpha in 0..3 {
-            for beta in 0..3 {
+        for (alpha, pi_row) in pi.iter().enumerate() {
+            for (beta, &pi_ab) in pi_row.iter().enumerate() {
                 assert!(
-                    pi[alpha][beta].abs() < 1e-12,
+                    pi_ab.abs() < 1e-12,
                     "pi[{alpha}][{beta}] = {}, expected 0",
-                    pi[alpha][beta]
+                    pi_ab
                 );
             }
         }

@@ -5,9 +5,6 @@
 //!
 //! Exposes keyframe animation tracks (Vec3 + quaternion SLERP) to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::animation::{AnimationClip, AnimationPlayer, EaseKind, QuatTrack, Vec3Track};
 use pyo3::prelude::*;
 

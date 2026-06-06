@@ -35,7 +35,6 @@ pub struct HolzapfelGasserOgden {
 }
 impl HolzapfelGasserOgden {
     /// Create an HGO model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         c1: f64,
         k1: f64,
@@ -86,25 +85,13 @@ impl HolzapfelGasserOgden {
         kappa_disp * i1_bar + (1.0 - 3.0 * kappa_disp) * i4_bar
     }
     /// Isochoric fiber stretch squared: Ī₄ = a · C̄ · a.
-    #[allow(clippy::needless_range_loop)]
     fn isochoric_fiber_stretch_sq(f: &[[f64; 3]; 3], a: &[f64; 3]) -> f64 {
         let j = det3(f);
         let j_13 = j.powf(-1.0 / 3.0);
-        let f_bar: [[f64; 3]; 3] = {
-            let mut fb = [[0.0f64; 3]; 3];
-            for i in 0..3 {
-                for j in 0..3 {
-                    fb[i][j] = j_13 * f[i][j];
-                }
-            }
-            fb
-        };
-        let mut fa = [0.0f64; 3];
-        for i in 0..3 {
-            for k in 0..3 {
-                fa[i] += f_bar[i][k] * a[k];
-            }
-        }
+        let f_bar: [[f64; 3]; 3] =
+            std::array::from_fn(|i| std::array::from_fn(|jj| j_13 * f[i][jj]));
+        let fa: [f64; 3] =
+            std::array::from_fn(|i| f_bar[i].iter().zip(a.iter()).map(|(fb, ak)| fb * ak).sum());
         fa[0] * fa[0] + fa[1] * fa[1] + fa[2] * fa[2]
     }
     /// Strain energy density from deformation gradient F.
@@ -378,7 +365,6 @@ impl MooneyRivlin {
         self.c10 * (i1_bar - 3.0) + self.c01 * (i2_bar - 3.0) + d1 * (j - 1.0).powi(2)
     }
     /// First Piola-Kirchhoff stress tensor P = dW/dF.
-    #[allow(clippy::needless_range_loop)]
     pub fn first_piola_kirchhoff_stress(&self, f: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
         let j = det3(f);
         if j.abs() < 1e-30 {
@@ -386,43 +372,25 @@ impl MooneyRivlin {
         }
         let j_23 = j.powf(-2.0 / 3.0);
         let f_inv_t = transpose3(&inv3(f));
-        let mut c = [[0.0; 3]; 3];
-        for i in 0..3 {
-            for k in 0..3 {
-                for l in 0..3 {
-                    c[i][k] += f[l][i] * f[l][k];
-                }
-            }
-        }
+        let c: [[f64; 3]; 3] = std::array::from_fn(|i| {
+            std::array::from_fn(|k| (0..3).map(|l| f[l][i] * f[l][k]).sum())
+        });
         let i1 = c[0][0] + c[1][1] + c[2][2];
+        let c2_trace: f64 = (0..3)
+            .flat_map(|a| (0..3).map(move |b| c[a][b] * c[b][a]))
+            .sum();
         let mut p = [[0.0; 3]; 3];
-        for i in 0..3 {
-            for j_idx in 0..3 {
+        for (i, pi) in p.iter_mut().enumerate() {
+            for (j_idx, pij) in pi.iter_mut().enumerate() {
                 let iso1 = 2.0 * self.c10 * j_23 * (f[i][j_idx] - i1 / 3.0 * f_inv_t[i][j_idx]);
+                let cfij: f64 = (0..3).map(|k| c[j_idx][k] * f[i][k]).sum();
                 let iso2 = 2.0
                     * self.c01
                     * j_23
                     * j_23
-                    * (i1 * f[i][j_idx]
-                        - {
-                            let mut cfij = 0.0;
-                            for k in 0..3 {
-                                cfij += c[j_idx][k] * f[i][k];
-                            }
-                            cfij
-                        }
-                        - (i1 * i1 - {
-                            let mut c2_trace = 0.0;
-                            for a in 0..3 {
-                                for b in 0..3 {
-                                    c2_trace += c[a][b] * c[b][a];
-                                }
-                            }
-                            c2_trace
-                        }) / 3.0
-                            * f_inv_t[i][j_idx]);
+                    * (i1 * f[i][j_idx] - cfij - (i1 * i1 - c2_trace) / 3.0 * f_inv_t[i][j_idx]);
                 let vol = self.bulk_modulus * (j - 1.0) * j * f_inv_t[i][j_idx];
-                p[i][j_idx] = iso1 + iso2 + vol;
+                *pij = iso1 + iso2 + vol;
             }
         }
         p
@@ -878,10 +846,9 @@ impl Hencky {
         }
     }
     /// Create from Young's modulus and Poisson's ratio.
-    #[allow(non_snake_case)]
-    pub fn from_young_poisson(E: f64, nu: f64) -> Self {
-        let lame_lambda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
-        let mu = E / (2.0 * (1.0 + nu));
+    pub fn from_young_poisson(e: f64, nu: f64) -> Self {
+        let lame_lambda = e * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
+        let mu = e / (2.0 * (1.0 + nu));
         Self::new(lame_lambda, mu)
     }
     /// Bulk modulus K = λ + 2G/3.
@@ -1067,7 +1034,6 @@ pub struct HolzapfelOgden {
 }
 impl HolzapfelOgden {
     /// Create a new Holzapfel-Ogden model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         a: f64,
         b: f64,
@@ -1110,14 +1076,9 @@ impl HolzapfelOgden {
         )
     }
     /// Compute fibre stretch squared I₄ = (Fa)·(Fa) for a given F and fibre direction a.
-    #[allow(clippy::needless_range_loop)]
     fn fibre_stretch_squared(f: &[[f64; 3]; 3], a: &[f64; 3]) -> f64 {
-        let mut fa = [0.0; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                fa[i] += f[i][j] * a[j];
-            }
-        }
+        let fa: [f64; 3] =
+            std::array::from_fn(|i| f[i].iter().zip(a.iter()).map(|(fij, aj)| fij * aj).sum());
         fa[0] * fa[0] + fa[1] * fa[1] + fa[2] * fa[2]
     }
     /// Strain energy density given deformation gradient F.

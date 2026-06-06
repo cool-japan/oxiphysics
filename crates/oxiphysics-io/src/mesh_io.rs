@@ -6,8 +6,6 @@
 //! Provides writers and readers for glTF 2.0, USD ASCII, Gmsh .msh v2/v4,
 //! Abaqus .inp, NASTRAN BDF, mesh conversion, and mesh quality validation.
 
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 

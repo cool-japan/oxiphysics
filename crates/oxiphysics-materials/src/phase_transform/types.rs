@@ -5,8 +5,6 @@
 use std::f64::consts::E;
 
 use super::functions::R_GAS;
-#[allow(unused_imports)]
-use super::functions::*;
 
 /// Stress-assisted and strain-induced martensitic transformation model.
 ///
@@ -16,7 +14,6 @@ use super::functions::*;
 /// For strain-induced transformation, uses the Olson-Cohen model:
 /// `f_m = 1 - exp(-β * f_sh^n)`
 /// where `f_sh` is the volume fraction of shear bands.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StressAidedMartensite {
     /// Stress-free martensite start temperature Ms₀ \[K\]
@@ -102,15 +99,13 @@ impl PhaseFieldOrder {
     /// * `dt`      - Time step (s).
     /// * `m`       - Mobility coefficient M.
     /// * `df_dphi` - Variational derivative δF/δφ for each phase (length = n_phases).
-    #[allow(clippy::needless_range_loop)]
     pub fn update_allen_cahn(&mut self, dt: f64, m: f64, df_dphi: &[f64]) {
         assert_eq!(df_dphi.len(), self.n_phases, "df_dphi length mismatch");
-        for i in 0..self.n_phases {
-            self.phi[i] += dt * m * (-df_dphi[i]);
+        for (phi_i, df_i) in self.phi.iter_mut().zip(df_dphi.iter()) {
+            *phi_i += dt * m * (-df_i);
         }
     }
     /// Total "free energy" proxy: Σ φ_i^2 (for monitoring purposes).
-    #[allow(dead_code)]
     pub fn order_norm(&self) -> f64 {
         self.phi.iter().map(|x| x * x).sum::<f64>().sqrt()
     }
@@ -121,7 +116,6 @@ impl PhaseFieldOrder {
 /// X_b(t, T) = 1 - exp(-k(T) · t^n)
 ///
 /// where k(T) = k0 · exp(-Q_b / (R·T)) is Arrhenius-activated.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BainiteTransformation {
     /// Avrami exponent n (dimensionless, typically 2..4 for bainite).
@@ -269,7 +263,6 @@ impl ClausiusClapeyron {
 /// - `k`   is the equilibrium partition coefficient C_solid/C_liquid
 ///
 /// Ref: Scheil (1942), Gulliver (1913).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ScheilSolidification {
     /// Initial alloy composition C₀ (wt% or mol fraction).
@@ -458,7 +451,6 @@ impl TripEffect {
 /// bainite, pearlite, ferrite) as functions of time and temperature.
 ///
 /// Fractions are constrained to sum to ≤ 1.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VolumeFractionTracker {
     /// Phase labels.
@@ -484,11 +476,9 @@ impl VolumeFractionTracker {
         }
     }
     /// Update phase fractions (normalised to sum ≤ 1).
-    #[allow(clippy::needless_range_loop)]
     pub fn update(&mut self, new_fractions: Vec<f64>, time: f64, temperature: f64) {
-        let n = self.fractions.len().min(new_fractions.len());
-        for i in 0..n {
-            self.fractions[i] = new_fractions[i].clamp(0.0, 1.0);
+        for (frac, &new_val) in self.fractions.iter_mut().zip(new_fractions.iter()) {
+            *frac = new_val.clamp(0.0, 1.0);
         }
         self.history
             .push((time, temperature, self.fractions.clone()));
@@ -517,7 +507,6 @@ impl VolumeFractionTracker {
 /// `τ(T) = τ_nose * exp(A * (T - T_nose)²)`
 ///
 /// where A is the curvature parameter.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TttCcurve {
     /// Nose temperature T_nose \[K\]
@@ -585,7 +574,6 @@ impl TttCcurve {
 /// Given the volume fractions of martensite, bainite, ferrite, and austenite,
 /// compute the effective Young's modulus, yield strength, and hardness by
 /// the rule of mixtures.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PhaseDependentProperties {
     /// Young's moduli \[Pa\] for each phase: \[martensite, bainite, ferrite, austenite\].
@@ -837,7 +825,6 @@ impl JohnsonMehlAvramiKolmogorov {
 ///
 /// Very similar to bainite but with different kinetic parameters and
 /// applicable temperature range (above bainite nose).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PearliteTransformation {
     /// Avrami exponent n.
@@ -893,7 +880,6 @@ impl PearliteTransformation {
 /// - Pearlite (diffusion-controlled)
 /// - Bainite (mixed mechanism)
 /// - Martensite (displacive, instantaneous at Ms)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TttExtended {
     /// Nose temperature for pearlite C-curve \[K\]
@@ -915,7 +901,6 @@ pub struct TttExtended {
 }
 impl TttExtended {
     /// Create a new extended TTT diagram.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         t_nose_pearlite: f64,
         t_nose_pearlite_time: f64,
@@ -1005,7 +990,6 @@ impl TttExtended {
 ///
 /// Stores the start and finish temperatures and cooling rate boundaries
 /// for each transformation product (ferrite, pearlite, bainite, martensite).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CctDiagram {
     /// Cooling rate at which bainite transformation starts \[K/s\].
@@ -1095,7 +1079,6 @@ pub struct BrinsonModel {
 }
 impl BrinsonModel {
     /// Create a new Brinson SMA model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         e_austenite: f64,
         e_martensite: f64,
@@ -1176,7 +1159,6 @@ impl BrinsonModel {
 /// - nose (T_nose, t_nose): fastest transformation
 /// - high-temperature arm
 /// - martensite start temperature M_s
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TttDiagram {
     /// Nose temperature \[K\].
@@ -1343,7 +1325,6 @@ impl CahnHilliardField {
         self.c = c_new;
     }
     /// Total concentration (should be conserved).
-    #[allow(dead_code)]
     pub fn total_concentration(&self) -> f64 {
         self.c.iter().sum()
     }
@@ -1760,7 +1741,6 @@ impl JmakExtended {
 /// The interlamellar spacing is given by the Jackson-Hunt theory:
 /// `λ² * v = K` (constant for a given alloy)
 /// where `λ` is lamellar spacing \[m\] and `v` is growth velocity \[m/s\].
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EutecticTransformation {
     /// Eutectic temperature \[K\]

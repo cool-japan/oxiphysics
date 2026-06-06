@@ -7,8 +7,6 @@
 //! texture rendering, impedance/admittance control, passivity-based stability
 //! analysis, and multi-point haptic interaction for grasping.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -739,7 +737,6 @@ impl StabilityAnalysis {
     ///
     /// `K_max = 2 * B / T - (B^2 * T) / (2 * M)`
     /// simplified for zero-order hold at sample period `T`.
-    #[allow(clippy::too_many_arguments)]
     pub fn max_stable_stiffness(damping: f64, mass: f64, sample_period: f64) -> f64 {
         if sample_period < 1e-15 {
             return f64::INFINITY;

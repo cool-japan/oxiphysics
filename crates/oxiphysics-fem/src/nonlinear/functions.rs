@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use crate::solvers::conjugate_gradient;
 use crate::sparse::CsrMatrix;
 
@@ -74,7 +73,6 @@ where
     }
 }
 /// Compute the determinant of a 3×3 matrix.
-#[allow(dead_code)]
 pub fn mat3_det(m: &[[f64; 3]; 3]) -> f64 {
     m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
         - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
@@ -83,7 +81,6 @@ pub fn mat3_det(m: &[[f64; 3]; 3]) -> f64 {
 /// Compute the inverse of a 3×3 matrix.
 ///
 /// Panics if the matrix is singular (det ≈ 0).
-#[allow(dead_code)]
 pub fn mat3_inv(m: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let det = mat3_det(m);
     assert!(det.abs() > 1e-15, "mat3_inv: singular matrix (det={det})");
@@ -107,7 +104,6 @@ pub fn mat3_inv(m: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     ]
 }
 /// Multiply two 3×3 matrices: C = A * B.
-#[allow(dead_code)]
 pub fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut c = [[0.0f64; 3]; 3];
     for i in 0..3 {
@@ -120,7 +116,6 @@ pub fn mat3_mul(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     c
 }
 /// Transpose a 3×3 matrix.
-#[allow(dead_code)]
 pub fn mat3_transpose(m: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut t = [[0.0f64; 3]; 3];
     for i in 0..3 {
@@ -131,12 +126,10 @@ pub fn mat3_transpose(m: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     t
 }
 /// Trace of a 3×3 matrix: tr(M) = M\[0\]\[0\] + M\[1\]\[1\] + M\[2\]\[2\].
-#[allow(dead_code)]
 pub fn mat3_trace(m: &[[f64; 3]; 3]) -> f64 {
     m[0][0] + m[1][1] + m[2][2]
 }
 /// Return the 3×3 identity matrix.
-#[allow(dead_code)]
 pub fn mat3_identity() -> [[f64; 3]; 3] {
     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 }
@@ -148,7 +141,6 @@ pub fn mat3_identity() -> [[f64; 3]; 3] {
 /// Algorithm: F = ds * DS^{-1} where
 ///   ds = \[x\[1\\]-x\[0\], x\[2\]-x\[0\], x\[3\]-x\[0\]] (columns, stored row-major as 3×3)
 ///   DS = \[x0\[1\\]-x0\[0\], x0\[2\]-x0\[0\], x0\[3\]-x0\[0\]]
-#[allow(dead_code)]
 pub fn deformation_gradient(x: &[[f64; 3]; 4], x0: &[[f64; 3]; 4]) -> [[f64; 3]; 3] {
     let ds: [[f64; 3]; 3] = [
         [x[1][0] - x[0][0], x[2][0] - x[0][0], x[3][0] - x[0][0]],
@@ -176,19 +168,16 @@ pub fn deformation_gradient(x: &[[f64; 3]; 4], x0: &[[f64; 3]; 4]) -> [[f64; 3];
     mat3_mul(&ds, &ds0_inv)
 }
 /// Right Cauchy-Green deformation tensor C = F^T * F.
-#[allow(dead_code)]
 pub fn right_cauchy_green(f: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let ft = mat3_transpose(f);
     mat3_mul(&ft, f)
 }
 /// Left Cauchy-Green deformation tensor B = F * F^T.
-#[allow(dead_code)]
 pub fn left_cauchy_green(f: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let ft = mat3_transpose(f);
     mat3_mul(f, &ft)
 }
 /// Green-Lagrange strain tensor E = (C - I) / 2.
-#[allow(dead_code)]
 pub fn green_lagrange_strain(f: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let c = right_cauchy_green(f);
     let mut e = [[0.0f64; 3]; 3];
@@ -206,7 +195,6 @@ pub fn green_lagrange_strain(f: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
 /// - I1 = tr(B)
 /// - I2 = (tr(B)² − tr(B²)) / 2
 /// - I3 = det(B)
-#[allow(dead_code)]
 pub fn invariants(b: &[[f64; 3]; 3]) -> (f64, f64, f64) {
     let i1 = mat3_trace(b);
     let b2 = mat3_mul(b, b);
@@ -220,7 +208,6 @@ pub fn invariants(b: &[[f64; 3]; 3]) -> (f64, f64, f64) {
 /// P = μ (F − F^{−T}) + λ ln(J) F^{−T}
 ///
 /// where J = det(F).
-#[allow(dead_code)]
 pub fn neo_hookean_stress(f: &[[f64; 3]; 3], mu: f64, lambda: f64) -> [[f64; 3]; 3] {
     let j = mat3_det(f);
     let f_inv = mat3_inv(f);
@@ -242,7 +229,6 @@ pub fn neo_hookean_stress(f: &[[f64; 3]; 3], mu: f64, lambda: f64) -> [[f64; 3];
 /// P = 2 c10 F + 2 c01 (I1 F − F C)
 ///
 /// (deviatoric, incompressible form)
-#[allow(dead_code)]
 pub fn mooney_rivlin_stress(f: &[[f64; 3]; 3], c10: f64, c01: f64) -> [[f64; 3]; 3] {
     let b = left_cauchy_green(f);
     let i1 = mat3_trace(&b);
@@ -265,8 +251,6 @@ pub fn mooney_rivlin_stress(f: &[[f64; 3]; 3], c10: f64, c01: f64) -> [[f64; 3];
 ///   2. P = neo_hookean_stress(F, mu, lambda)
 ///   3. Build shape-function gradient matrix BN (4×3) in reference config
 ///   4. f_int\[a\] = V0 * P * N_{a,X}  for each node a
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn internal_forces_tet(
     x: &[[f64; 3]; 4],
     x0: &[[f64; 3]; 4],
@@ -301,9 +285,10 @@ pub fn internal_forces_tet(
             grad_n[a + 1][i] = ds0_inv_t[i][a];
         }
     }
-    for i in 0..3 {
-        grad_n[0][i] = -(grad_n[1][i] + grad_n[2][i] + grad_n[3][i]);
-    }
+    // Compute grad_n[0] = -(grad_n[1] + grad_n[2] + grad_n[3]) component-wise
+    let [ref _r0, ref r1, ref r2, ref r3] = grad_n;
+    let new_r0: [f64; 3] = std::array::from_fn(|i| -(r1[i] + r2[i] + r3[i]));
+    grad_n[0] = new_r0;
     let mut forces = [[0.0f64; 3]; 4];
     for a in 0..4 {
         for i in 0..3 {
@@ -335,13 +320,9 @@ mod large_deform_tests {
     fn test_green_lagrange_at_identity() {
         let f = identity();
         let e = green_lagrange_strain(&f);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(
-                    e[i][j].abs() < 1e-15,
-                    "E[{i}][{j}] = {} should be 0",
-                    e[i][j]
-                );
+        for (i, row) in e.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!(val.abs() < 1e-15, "E[{i}][{j}] = {} should be 0", val);
             }
         }
     }
@@ -358,12 +339,12 @@ mod large_deform_tests {
     fn test_neo_hookean_stress_at_identity() {
         let f = identity();
         let p = neo_hookean_stress(&f, 1.0, 1.0);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in p.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    p[i][j].abs() < 1e-14,
+                    val.abs() < 1e-14,
                     "P[{i}][{j}] = {} should be 0 at F=I",
-                    p[i][j]
+                    val
                 );
             }
         }
@@ -373,13 +354,13 @@ mod large_deform_tests {
     fn test_right_cauchy_green_at_identity() {
         let f = identity();
         let c = right_cauchy_green(&f);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in c.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (c[i][j] - expected).abs() < 1e-15,
+                    (val - expected).abs() < 1e-15,
                     "C[{i}][{j}] = {}, expected {expected}",
-                    c[i][j]
+                    val
                 );
             }
         }
@@ -397,10 +378,10 @@ mod large_deform_tests {
     #[test]
     fn test_mat3_identity() {
         let i = mat3_identity();
-        for row in 0..3 {
-            for col in 0..3 {
+        for (row, r) in i.iter().enumerate() {
+            for (col, &val) in r.iter().enumerate() {
                 let expected = if row == col { 1.0 } else { 0.0 };
-                assert_eq!(i[row][col], expected, "identity[{row}][{col}]");
+                assert_eq!(val, expected, "identity[{row}][{col}]");
             }
         }
     }
@@ -409,13 +390,13 @@ mod large_deform_tests {
     fn test_deformation_gradient_undeformed() {
         let x0 = ref_tet();
         let f = deformation_gradient(&x0, &x0);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in f.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (f[i][j] - expected).abs() < 1e-14,
+                    (val - expected).abs() < 1e-14,
                     "F[{i}][{j}] = {}, expected {expected}",
-                    f[i][j]
+                    val
                 );
             }
         }
@@ -425,13 +406,9 @@ mod large_deform_tests {
     fn test_internal_forces_at_rest() {
         let x0 = ref_tet();
         let forces = internal_forces_tet(&x0, &x0, 1.0, 1.0);
-        for a in 0..4 {
-            for i in 0..3 {
-                assert!(
-                    forces[a][i].abs() < 1e-13,
-                    "force[{a}][{i}] = {}, expected 0",
-                    forces[a][i]
-                );
+        for (a, node) in forces.iter().enumerate() {
+            for (i, &val) in node.iter().enumerate() {
+                assert!(val.abs() < 1e-13, "force[{a}][{i}] = {}, expected 0", val);
             }
         }
     }
@@ -583,7 +560,6 @@ pub fn bfgs_update(h_inv: &mut [f64], s: &[f64], y: &[f64], n: usize) {
 /// Finds `x` such that `grad_fn(x) ≈ 0` starting from `x0`.
 /// `m_hist` is the history size (typically 5–20).
 /// Returns `(x, final_gradient_norm, converged)`.
-#[allow(dead_code)]
 pub fn lbfgs_1d(
     x0: f64,
     grad_fn: impl Fn(f64) -> f64,
@@ -610,7 +586,6 @@ pub fn lbfgs_1d(
 ///
 /// Returns the 4th-order tangent `C[i][j][k][l]` stored as a 6×6 Voigt matrix.
 /// The tangent is `d sigma / d epsilon` in spatial description.
-#[allow(dead_code)]
 pub fn neo_hookean_tangent_modulus(f: &[[f64; 3]; 3], mu: f64, lambda: f64) -> [[f64; 6]; 6] {
     let j = mat3_det(f);
     let ln_j = j.ln();
@@ -958,8 +933,8 @@ mod tests {
     fn test_internal_forces_uniform_stretch() {
         let x0 = ref_tet();
         let mut x = x0;
-        for node in 0..4 {
-            x[node][0] *= 1.1;
+        for node in x.iter_mut() {
+            node[0] *= 1.1;
         }
         let forces = internal_forces_tet(&x, &x0, 1.0, 1.0);
         let total: f64 = forces.iter().flat_map(|f| f.iter()).map(|&v| v * v).sum();
@@ -973,8 +948,6 @@ mod tests {
 /// and a predictor step `(du_pred, dlambda_pred)`.
 ///
 /// The corrector uses Newton-Raphson with the augmented system.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn pseudo_arclength_step<F>(
     n_dof: usize,
     u_prev: &[f64],

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,9 +5,6 @@
 //!
 //! Provides binary trajectory writers/readers, DCD format support,
 //! minimal XTC-like compression, energy log writers, and checkpoint I/O.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ── BinaryHeader ─────────────────────────────────────────────────────────────
 
@@ -1113,8 +1109,8 @@ mod tests {
         let vel = vec![[0.0f64; 3]; 5];
         let buf = CheckpointWriter::save_state(&pos, &vel, 0, 0.0);
         let (pos2, _, _, _) = CheckpointWriter::load_state(&buf);
-        for i in 0..5 {
-            assert!((pos2[i][0] - i as f64).abs() < 1e-15);
+        for (i, p) in pos2.iter().enumerate().take(5) {
+            assert!((p[0] - i as f64).abs() < 1e-15);
         }
     }
 

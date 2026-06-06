@@ -10,8 +10,6 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::PostStepHook;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::{BodySnapshot, EnergyMonitorHook};
 
 impl PostStepHook for EnergyMonitorHook {

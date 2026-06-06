@@ -12,8 +12,6 @@ use crate::atom::AtomSet;
 use crate::neighbor::PeriodicBox;
 
 use super::functions::Barostat;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::ParrinelloRahmanBarostat;
 
 impl Barostat for ParrinelloRahmanBarostat {

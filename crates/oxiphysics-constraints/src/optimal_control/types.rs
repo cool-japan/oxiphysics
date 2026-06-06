@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
-#[allow(unused_imports)]
 use super::functions::*;
 /// Solution returned by MPC.
 #[derive(Debug, Clone)]
@@ -97,10 +95,10 @@ impl IlqrSolver {
             let mut v_x = {
                 let xf = &traj[t * n..];
                 let mut grad = vec![0.0; n];
-                for i in 0..n {
+                for (i, gi) in grad.iter_mut().enumerate() {
                     let mut xp = xf.to_vec();
                     xp[i] += eps;
-                    grad[i] = (terminal_cost(&xp) - terminal_cost(xf)) / eps;
+                    *gi = (terminal_cost(&xp) - terminal_cost(xf)) / eps;
                 }
                 grad
             };
@@ -132,15 +130,15 @@ impl IlqrSolver {
                 let c0 = running_cost(&xk, &uk);
                 let mut lx = vec![0.0; n];
                 let mut lu = vec![0.0; m];
-                for i in 0..n {
+                for (i, lxi) in lx.iter_mut().enumerate() {
                     let mut xp = xk.clone();
                     xp[i] += eps;
-                    lx[i] = (running_cost(&xp, &uk) - c0) / eps;
+                    *lxi = (running_cost(&xp, &uk) - c0) / eps;
                 }
-                for i in 0..m {
+                for (i, lui) in lu.iter_mut().enumerate() {
                     let mut up = uk.clone();
                     up[i] += eps;
-                    lu[i] = (running_cost(&xk, &up) - c0) / eps;
+                    *lui = (running_cost(&xk, &up) - c0) / eps;
                 }
                 let lxx = mat_eye(n);
                 let luu_diag = mat_eye(m);
@@ -375,9 +373,9 @@ impl LqrController {
     /// Compute the optimal control input u = -K x.
     pub fn control(&self, state: &[f64]) -> Vec<f64> {
         let mut u = vec![0.0; self.m];
-        for i in 0..self.m {
-            for j in 0..self.n {
-                u[i] -= self.k[i * self.n + j] * state[j];
+        for (i, u_i) in u[..self.m].iter_mut().enumerate() {
+            for (j, s_j) in state[..self.n].iter().enumerate() {
+                *u_i -= self.k[i * self.n + j] * *s_j;
             }
         }
         u
@@ -496,10 +494,10 @@ impl ModelPredictiveControl {
         for _iter in 0..500 {
             let c0 = cost_fn(&u_seq);
             let mut grad = vec![0.0; h * m];
-            for i in 0..h * m {
+            for (i, gi) in grad.iter_mut().enumerate() {
                 let mut u_perturbed = u_seq.clone();
                 u_perturbed[i] += 1e-6;
-                grad[i] = (cost_fn(&u_perturbed) - c0) / 1e-6;
+                *gi = (cost_fn(&u_perturbed) - c0) / 1e-6;
             }
             for k in 0..h {
                 for j in 0..m {
@@ -603,8 +601,8 @@ impl KalmanFilter {
         let s_inv = mat_inv(&s, self.p).expect("Innovation covariance S must be invertible");
         let kg = mat_mul_rect(&p_ct, self.n, self.p, &s_inv, self.p);
         let k_nu = mat_mul_rect(&kg, self.n, self.p, &innovation, 1);
-        for i in 0..self.n {
-            self.x_hat[i] += k_nu[i];
+        for (i, xh) in self.x_hat.iter_mut().enumerate() {
+            *xh += k_nu[i];
         }
         let kc = mat_mul_rect(&kg, self.n, self.p, &self.c, self.n);
         let i_minus_kc = mat_sub(&mat_eye(self.n), &kc, self.n);
@@ -844,8 +842,8 @@ impl PontryaginMinimum {
         let at = mat_transpose(a, self.n);
         let at_lam = mat_vec(&at, &self.costate, self.n);
         let qx = mat_vec(q, x, self.n);
-        for i in 0..self.n {
-            self.costate[i] -= dt * (at_lam[i] + qx[i]);
+        for (i, ci) in self.costate.iter_mut().enumerate() {
+            *ci -= dt * (at_lam[i] + qx[i]);
         }
     }
     /// Evaluate the Hamiltonian H = xᵀQx + uᵀRu + λᵀ(Ax + Bu).

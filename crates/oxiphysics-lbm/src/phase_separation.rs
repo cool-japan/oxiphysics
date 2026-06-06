@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,8 +14,6 @@
 //! - [`CahnHilliardParams`] — mobility M, interface width ε, surface tension σ
 //! - [`StructureFactor`] — S(k) = |φ̂(k)|²/N, dominant wavevector tracking
 //! - [`PhaseFieldEnergy`] — bulk + gradient + wetting energy breakdown
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -240,8 +237,8 @@ impl CahnHilliardLBM {
             let lap_mu = (right - 2.0 * mu[i] + left) / (self.dx * self.dx);
             dphi[i] = self.dt * self.params.mobility * lap_mu;
         }
-        for i in 0..n {
-            self.phi[i] += dphi[i];
+        for (phi_i, dp_i) in self.phi.iter_mut().zip(dphi.iter()) {
+            *phi_i += dp_i;
         }
         self.time += self.dt;
         self.steps += 1;
@@ -323,12 +320,12 @@ impl AllenCahnLBM {
     pub fn step(&mut self) {
         let n = self.phi.len();
         let mut new_phi = self.phi.clone();
-        for i in 0..n {
+        for (i, np) in new_phi.iter_mut().enumerate() {
             let left = self.phi[if i == 0 { n - 1 } else { i - 1 }];
             let right = self.phi[if i == n - 1 { 0 } else { i + 1 }];
             let laplacian = (right - 2.0 * self.phi[i] + left) / (self.dx * self.dx);
             let mu = self.fe.df_dphi(self.phi[i]) - self.kappa * laplacian;
-            new_phi[i] = self.phi[i] - self.dt * self.mobility * mu;
+            *np = self.phi[i] - self.dt * self.mobility * mu;
         }
         self.phi = new_phi;
         self.time += self.dt;
@@ -381,10 +378,10 @@ impl StructureFactor {
             let kval = 2.0 * PI * m as f64 / length;
             let mut re = 0.0_f64;
             let mut im = 0.0_f64;
-            for j in 0..n {
+            for (j, &phi_j) in phi.iter().enumerate() {
                 let arg = 2.0 * PI * m as f64 * j as f64 / n as f64;
-                re += phi[j] * arg.cos();
-                im -= phi[j] * arg.sin();
+                re += phi_j * arg.cos();
+                im -= phi_j * arg.sin();
             }
             let sk_val = (re * re + im * im) / n as f64;
             k.push(kval);
@@ -526,7 +523,7 @@ impl WettingBoundary {
     /// φ_ghost = φ_interior + 2·dx · tan(π/2 − θ) · |∇φ_interior|
     ///
     /// Here we use the simpler approximation: set φ at wall to the equilibrium value.
-    pub fn apply(&self, phi: &mut Vec<f64>, _dx: f64) {
+    pub fn apply(&self, phi: &mut [f64], _dx: f64) {
         if phi.is_empty() {
             return;
         }

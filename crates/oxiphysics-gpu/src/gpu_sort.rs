@@ -1,4 +1,3 @@
-#![allow(clippy::if_same_then_else, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,8 +13,6 @@
 //! - Morton Z-order sort for 3-D point clouds
 //! - [`GpuSortBuffer`] — key+value buffer with `sort_pairs`
 //! - Parallel merge
-
-#![allow(dead_code)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bitonic sort (f32)
@@ -40,7 +37,7 @@ pub fn bitonic_sort(data: &mut Vec<f32>) {
 ///
 /// Padding uses sentinel key `u32::MAX`; after sorting, only the first
 /// `orig_len` elements (those with valid indices) are retained.
-pub fn bitonic_sort_by_key<T: Clone>(data: &mut Vec<T>, key_fn: impl Fn(&T) -> u32) {
+pub fn bitonic_sort_by_key<T: Clone>(data: &mut [T], key_fn: impl Fn(&T) -> u32) {
     let orig = data.len();
     if orig <= 1 {
         return;
@@ -64,9 +61,12 @@ pub fn bitonic_sort_by_key<T: Clone>(data: &mut Vec<T>, key_fn: impl Fn(&T) -> u
                 let l = i ^ j;
                 if l > i {
                     let ascending = (i & k) == 0;
-                    if ascending && pairs[i].0 > pairs[l].0 {
-                        pairs.swap(i, l);
-                    } else if !ascending && pairs[i].0 < pairs[l].0 {
+                    let should_swap = if ascending {
+                        pairs[i].0 > pairs[l].0
+                    } else {
+                        pairs[i].0 < pairs[l].0
+                    };
+                    if should_swap {
                         pairs.swap(i, l);
                     }
                 }
@@ -77,7 +77,7 @@ pub fn bitonic_sort_by_key<T: Clone>(data: &mut Vec<T>, key_fn: impl Fn(&T) -> u
     }
 
     // Reconstruct data: take the first `orig` sorted entries that have valid indices.
-    let old = data.clone();
+    let old: Vec<T> = data.to_vec();
     let mut out: Vec<T> = pairs
         .iter()
         .filter(|&&(_, idx)| idx < orig)
@@ -101,9 +101,12 @@ fn bitonic_sort_slice_f32(data: &mut [f32]) {
                 let l = i ^ j;
                 if l > i {
                     let ascending = (i & k) == 0;
-                    if ascending && data[i] > data[l] {
-                        data.swap(i, l);
-                    } else if !ascending && data[i] < data[l] {
+                    let should_swap = if ascending {
+                        data[i] > data[l]
+                    } else {
+                        data[i] < data[l]
+                    };
+                    if should_swap {
                         data.swap(i, l);
                     }
                 }
@@ -152,7 +155,7 @@ pub fn radix_sort_u32(data: &mut Vec<u32>) {
 /// negatives so that the full IEEE 754 ordering maps to unsigned integer order.
 ///
 /// After sorting, the bits are un-flipped back to valid `f32` values.
-pub fn radix_sort_f32(data: &mut Vec<f32>) {
+pub fn radix_sort_f32(data: &mut [f32]) {
     if data.len() <= 1 {
         return;
     }
@@ -240,7 +243,7 @@ pub fn histogram(data: &[u32], n_bins: usize) -> Vec<u32> {
 ///
 /// Creates a count array of size `max_val + 1` and reconstructs sorted data
 /// from it. O(n + max_val) time and space.
-pub fn counting_sort(data: &mut Vec<u32>, max_val: u32) {
+pub fn counting_sort(data: &mut [u32], max_val: u32) {
     if data.len() <= 1 {
         return;
     }
@@ -267,7 +270,7 @@ pub fn counting_sort(data: &mut Vec<u32>, max_val: u32) {
 ///
 /// Coordinates are quantised to 10-bit integers before interleaving, which
 /// gives 30-bit Morton codes that fit in a `u32`.
-pub fn morton_sort_3d(points: &mut Vec<[f32; 3]>) {
+pub fn morton_sort_3d(points: &mut [[f32; 3]]) {
     if points.len() <= 1 {
         return;
     }
@@ -300,7 +303,7 @@ pub fn morton_sort_3d(points: &mut Vec<[f32; 3]>) {
 
     pairs.sort_unstable_by_key(|&(code, _)| code);
 
-    let old = points.clone();
+    let old: Vec<[f32; 3]> = points.to_vec();
     for (i, &(_, idx)) in pairs.iter().enumerate() {
         points[i] = old[idx];
     }

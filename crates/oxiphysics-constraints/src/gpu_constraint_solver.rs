@@ -43,9 +43,6 @@
 //! println!("Solved {} constraints (GPU={})", results.n_constraints, results.used_gpu);
 //! ```
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use oxiphysics_gpu::compute::{WgpuBackend, WgpuBufferHandle};
 
 // ── WGSL source ───────────────────────────────────────────────────────────────
@@ -189,40 +186,56 @@ pub struct GpuConstraint {
 //   _pad0.._pad4         =  5 × f32 = 20 bytes  (cumul  80)  ← 80 % 16 == 0 ✓
 const CONSTRAINT_F64_SLOTS: usize = 20;
 
+/// Parameters shared by [`GpuConstraint::contact`] and [`GpuConstraint::bilateral`].
+#[derive(Debug, Clone, Copy)]
+pub struct GpuConstraintParams {
+    /// Contact normal x component.
+    pub nx: f32,
+    /// Contact normal y component.
+    pub ny: f32,
+    /// Contact normal z component.
+    pub nz: f32,
+    /// Effective mass (1/K).
+    pub effective_mass: f32,
+    /// Velocity bias (Baumgarte + restitution).
+    pub bias: f32,
+    /// Index of body A.
+    pub body_a: u32,
+    /// Index of body B.
+    pub body_b: u32,
+    /// r-vector from body A CoM to contact, x.
+    pub rax: f32,
+    /// r-vector from body A CoM to contact, y.
+    pub ray: f32,
+    /// r-vector from body A CoM to contact, z.
+    pub raz: f32,
+    /// r-vector from body B CoM to contact, x.
+    pub rbx: f32,
+    /// r-vector from body B CoM to contact, y.
+    pub rby: f32,
+    /// r-vector from body B CoM to contact, z.
+    pub rbz: f32,
+}
+
 impl GpuConstraint {
     /// Create a contact constraint (lambda ≥ 0).
-    #[allow(clippy::too_many_arguments)]
-    pub fn contact(
-        nx: f32,
-        ny: f32,
-        nz: f32,
-        effective_mass: f32,
-        bias: f32,
-        body_a: u32,
-        body_b: u32,
-        rax: f32,
-        ray: f32,
-        raz: f32,
-        rbx: f32,
-        rby: f32,
-        rbz: f32,
-    ) -> Self {
+    pub fn contact(p: GpuConstraintParams) -> Self {
         Self {
-            nx,
-            ny,
-            nz,
-            em: effective_mass,
-            bias,
+            nx: p.nx,
+            ny: p.ny,
+            nz: p.nz,
+            em: p.effective_mass,
+            bias: p.bias,
             lambda_lo: 0.0,
             lambda_hi: f32::MAX,
-            body_a,
-            body_b,
-            rax,
-            ray,
-            raz,
-            rbx,
-            rby,
-            rbz,
+            body_a: p.body_a,
+            body_b: p.body_b,
+            rax: p.rax,
+            ray: p.ray,
+            raz: p.raz,
+            rbx: p.rbx,
+            rby: p.rby,
+            rbz: p.rbz,
             _pad0: 0.0,
             _pad1: 0.0,
             _pad2: 0.0,
@@ -232,40 +245,11 @@ impl GpuConstraint {
     }
 
     /// Create a bilateral (equality) constraint (lambda unconstrained).
-    #[allow(clippy::too_many_arguments)]
-    pub fn bilateral(
-        nx: f32,
-        ny: f32,
-        nz: f32,
-        effective_mass: f32,
-        bias: f32,
-        body_a: u32,
-        body_b: u32,
-        rax: f32,
-        ray: f32,
-        raz: f32,
-        rbx: f32,
-        rby: f32,
-        rbz: f32,
-    ) -> Self {
+    pub fn bilateral(p: GpuConstraintParams) -> Self {
         Self {
             lambda_lo: f32::NEG_INFINITY,
             lambda_hi: f32::MAX,
-            ..Self::contact(
-                nx,
-                ny,
-                nz,
-                effective_mass,
-                bias,
-                body_a,
-                body_b,
-                rax,
-                ray,
-                raz,
-                rbx,
-                rby,
-                rbz,
-            )
+            ..Self::contact(p)
         }
     }
 }
@@ -361,8 +345,6 @@ pub struct GpuConstraintSolver {
     pub config: GpuSolverConfig,
     /// GPU backend (`None` → CPU fallback).
     backend: Option<WgpuBackend>,
-    /// True if the WGSL shader has been registered in the backend.
-    shader_registered: bool,
     // GPU buffer handles (re-created when data size changes)
     buf_constraints: Option<WgpuBufferHandle>,
     buf_lambda: Option<WgpuBufferHandle>,
@@ -376,18 +358,17 @@ pub struct GpuConstraintSolver {
 impl GpuConstraintSolver {
     /// Create a new solver.  Attempts GPU initialisation; falls back silently.
     pub fn new(config: GpuSolverConfig) -> Self {
-        let (backend, registered) = match WgpuBackend::try_new() {
+        let backend = match WgpuBackend::try_new() {
             Ok(mut b) => {
                 b.register_shader("constraint_pgs", WGSL_CONSTRAINT_PGS);
-                (Some(b), true)
+                Some(b)
             }
-            Err(_) => (None, false),
+            Err(_) => None,
         };
 
         Self {
             config,
             backend,
-            shader_registered: registered,
             buf_constraints: None,
             buf_lambda: None,
             buf_vel_lin: None,
@@ -402,7 +383,6 @@ impl GpuConstraintSolver {
         Self {
             config,
             backend: None,
-            shader_registered: false,
             buf_constraints: None,
             buf_lambda: None,
             buf_vel_lin: None,
@@ -507,9 +487,7 @@ impl GpuConstraintSolver {
         let omega = self.config.omega;
 
         for _iter in 0..self.config.iterations {
-            for ci in 0..nc {
-                let c = &data.constraints[ci];
-
+            for (ci, c) in data.constraints.iter().enumerate() {
                 let (vla, wla, inv_ma) = gather_body(&vel_lin, &vel_ang, c.body_a);
                 let (vlb, wlb, inv_mb) = gather_body(&vel_lin, &vel_ang, c.body_b);
 

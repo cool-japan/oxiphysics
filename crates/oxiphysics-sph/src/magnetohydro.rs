@@ -11,17 +11,13 @@
 //! - [`magnetic_pressure`]: Magnetic pressure p_mag = B²/(2μ₀)
 //! - [`total_pressure`]: Total pressure including magnetic contribution
 //! - [`LorentzForce`]: Lorentz force density **J** × **B**
-//! - [`curl_B`]: SPH estimate of ∇ × **B**
-//! - [`div_B`]: SPH estimate of ∇·**B** (divergence cleaning monitor)
+//! - [`curl_b`]: SPH estimate of ∇ × **B**
+//! - [`div_b`]: SPH estimate of ∇·**B** (divergence cleaning monitor)
 //! - [`induction_equation_rhs`]: Ideal MHD induction: d**B**/dt = ∇×(**v**×**B**)
 //! - [`dedner_cleaning`]: Dedner hyperbolic divergence cleaning
 //! - [`MhdSolver`]: Resistive MHD solver accumulating particles
 //! - [`lundquist_number`]: Magnetic Reynolds number S = vA·L/η
 //! - [`plasma_beta`]: Ratio of thermal to magnetic pressure
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-#![allow(non_snake_case)]
 
 use std::f64::consts::PI;
 
@@ -81,7 +77,7 @@ pub struct MhdParticle {
     /// Velocity **v** (m/s).
     pub vel: [f64; 3],
     /// Magnetic flux density **B** (T).
-    pub B: [f64; 3],
+    pub b: [f64; 3],
     /// Mass density ρ (kg/m³).
     pub rho: f64,
     /// Thermal pressure p (Pa).
@@ -97,7 +93,7 @@ impl MhdParticle {
     pub fn new(
         pos: [f64; 3],
         vel: [f64; 3],
-        B: [f64; 3],
+        b: [f64; 3],
         rho: f64,
         p: f64,
         mass: f64,
@@ -106,7 +102,7 @@ impl MhdParticle {
         Self {
             pos,
             vel,
-            B,
+            b,
             rho,
             p,
             mass,
@@ -121,7 +117,7 @@ impl MhdParticle {
             return 0.0;
         }
         let vol = self.mass / self.rho;
-        magnetic_pressure(self.B) * vol
+        magnetic_pressure(self.b) * vol
     }
 
     /// Kinetic energy of this particle: E_kin = ½·m·|v|².
@@ -137,14 +133,14 @@ impl MhdParticle {
 /// Alfvén wave speed: v_A = |B| / √(μ₀·ρ).
 ///
 /// # Arguments
-/// * `B`   – magnetic flux density (T)
+/// * `b`   – magnetic flux density (T)
 /// * `rho` – mass density (kg/m³)
-pub fn alfven_velocity(B: [f64; 3], rho: f64) -> f64 {
+pub fn alfven_velocity(b: [f64; 3], rho: f64) -> f64 {
     let denom = MU_0 * rho;
     if denom <= 0.0 {
         return 0.0;
     }
-    len3(B) / denom.sqrt()
+    len3(b) / denom.sqrt()
 }
 
 /// Fast magnetosonic speed: c_ms = √(cs² + vA²).
@@ -159,18 +155,18 @@ pub fn magnetosonic_speed(cs: f64, va: f64) -> f64 {
 /// Magnetic pressure: p_mag = |B|² / (2·μ₀)  (Pa).
 ///
 /// # Arguments
-/// * `B` – magnetic flux density (T)
-pub fn magnetic_pressure(B: [f64; 3]) -> f64 {
-    dot3(B, B) / (2.0 * MU_0)
+/// * `b` – magnetic flux density (T)
+pub fn magnetic_pressure(b: [f64; 3]) -> f64 {
+    dot3(b, b) / (2.0 * MU_0)
 }
 
 /// Total pressure: p_tot = p + p_mag.
 ///
 /// # Arguments
 /// * `p` – thermal pressure (Pa)
-/// * `B` – magnetic flux density (T)
-pub fn total_pressure(p: f64, B: [f64; 3]) -> f64 {
-    p + magnetic_pressure(B)
+/// * `b` – magnetic flux density (T)
+pub fn total_pressure(p: f64, b: [f64; 3]) -> f64 {
+    p + magnetic_pressure(b)
 }
 
 // ============================================================================
@@ -180,20 +176,20 @@ pub fn total_pressure(p: f64, B: [f64; 3]) -> f64 {
 /// Lorentz force density **f** = **J** × **B** (N/m³).
 pub struct LorentzForce {
     /// Current density **J** (A/m²).
-    pub J: [f64; 3],
+    pub j: [f64; 3],
     /// Magnetic flux density **B** (T).
-    pub B: [f64; 3],
+    pub b: [f64; 3],
 }
 
 impl LorentzForce {
     /// Create a `LorentzForce`.
-    pub fn new(J: [f64; 3], B: [f64; 3]) -> Self {
-        Self { J, B }
+    pub fn new(j: [f64; 3], b: [f64; 3]) -> Self {
+        Self { j, b }
     }
 
     /// Compute force density **f** = **J** × **B** (N/m³).
     pub fn force_density(&self) -> [f64; 3] {
-        cross3(self.J, self.B)
+        cross3(self.j, self.b)
     }
 }
 
@@ -212,7 +208,7 @@ impl LorentzForce {
 /// * `particles` – slice of MHD particles
 /// * `i`         – index of the particle at which to evaluate
 /// * `kernel`    – SPH kernel function `W(r, h) -> f64`
-pub fn curl_B(particles: &[MhdParticle], i: usize, kernel: impl Fn(f64, f64) -> f64) -> [f64; 3] {
+pub fn curl_b(particles: &[MhdParticle], i: usize, kernel: impl Fn(f64, f64) -> f64) -> [f64; 3] {
     let pi = &particles[i];
     let mut result = [0.0f64; 3];
     for (j, pj) in particles.iter().enumerate() {
@@ -230,7 +226,7 @@ pub fn curl_B(particles: &[MhdParticle], i: usize, kernel: impl Fn(f64, f64) -> 
         let grad_w = scale3(rij, dw_dr / r);
         // contribution: (m_j / rho_j) * B_j × grad_W
         let factor = pj.mass / (pj.rho + 1e-300);
-        let bj_cross_gw = cross3(pj.B, grad_w);
+        let bj_cross_gw = cross3(pj.b, grad_w);
         result = add3(result, scale3(bj_cross_gw, factor));
     }
     result
@@ -246,7 +242,7 @@ pub fn curl_B(particles: &[MhdParticle], i: usize, kernel: impl Fn(f64, f64) -> 
 /// * `particles` – slice of MHD particles
 /// * `i`         – index of the particle at which to evaluate
 /// * `kernel`    – SPH kernel function `W(r, h) -> f64`
-pub fn div_B(particles: &[MhdParticle], i: usize, kernel: impl Fn(f64, f64) -> f64) -> f64 {
+pub fn div_b(particles: &[MhdParticle], i: usize, kernel: impl Fn(f64, f64) -> f64) -> f64 {
     let pi = &particles[i];
     let mut result = 0.0f64;
     for (j, pj) in particles.iter().enumerate() {
@@ -261,7 +257,7 @@ pub fn div_B(particles: &[MhdParticle], i: usize, kernel: impl Fn(f64, f64) -> f
         let dr = 1e-6 * pi.h.max(1e-10);
         let dw_dr = (kernel(r + dr, pi.h) - kernel(r - dr, pi.h)) / (2.0 * dr);
         let grad_w = scale3(rij, dw_dr / r);
-        let db = sub3(pj.B, pi.B);
+        let db = sub3(pj.b, pi.b);
         let factor = pj.mass / (pj.rho + 1e-300);
         result += factor * dot3(db, grad_w);
     }
@@ -297,7 +293,7 @@ pub fn induction_equation_rhs(
         let dw_dr = (kernel(r + dr, pi.h) - kernel(r - dr, pi.h)) / (2.0 * dr);
         let grad_w = scale3(rij, dw_dr / r);
         // vxB at particle j
-        let vxb_j = cross3(pj.vel, pj.B);
+        let vxb_j = cross3(pj.vel, pj.b);
         let factor = pj.mass / (pj.rho + 1e-300);
         // SPH curl contribution
         let contrib = cross3(grad_w, vxb_j);
@@ -331,7 +327,7 @@ pub fn dedner_cleaning(particles: &mut [MhdParticle], ch: f64, cp: f64, dt: f64)
     }
     let decay = (-cp * cp / (ch * ch) * dt).exp();
     for p in particles.iter_mut() {
-        p.B = scale3(p.B, decay);
+        p.b = scale3(p.b, decay);
     }
 }
 
@@ -415,9 +411,9 @@ pub fn lundquist_number(va: f64, l: f64, eta: f64) -> f64 {
 ///
 /// # Arguments
 /// * `p` – thermal pressure (Pa)
-/// * `B` – magnetic flux density (T)
-pub fn plasma_beta(p: f64, B: [f64; 3]) -> f64 {
-    let pmag = magnetic_pressure(B);
+/// * `b` – magnetic flux density (T)
+pub fn plasma_beta(p: f64, b: [f64; 3]) -> f64 {
+    let pmag = magnetic_pressure(b);
     if pmag.abs() < 1e-300 {
         return f64::INFINITY;
     }
@@ -469,12 +465,12 @@ mod tests {
     }
 
     #[test]
-    fn test_alfven_velocity_zero_B_returns_zero() {
+    fn test_alfven_velocity_zero_b_returns_zero() {
         assert_eq!(alfven_velocity([0.0; 3], 1000.0), 0.0);
     }
 
     #[test]
-    fn test_alfven_velocity_scales_with_B() {
+    fn test_alfven_velocity_scales_with_b() {
         let va1 = alfven_velocity([0.01, 0.0, 0.0], 1000.0);
         let va2 = alfven_velocity([0.02, 0.0, 0.0], 1000.0);
         assert!((va2 - 2.0 * va1).abs() < 1e-15);
@@ -576,9 +572,9 @@ mod tests {
             0.001,
             0.05,
         )];
-        let b0 = len3(particles[0].B);
+        let b0 = len3(particles[0].b);
         dedner_cleaning(&mut particles, 1e3, 1e2, 0.01);
-        let b1 = len3(particles[0].B);
+        let b1 = len3(particles[0].b);
         // Decay factor < 1, so |B| must decrease
         assert!(b1 < b0 || (b1 - b0).abs() < 1e-20);
     }
@@ -594,9 +590,9 @@ mod tests {
             0.001,
             0.05,
         )];
-        let b0 = len3(particles[0].B);
+        let b0 = len3(particles[0].b);
         dedner_cleaning(&mut particles, 0.0, 1e2, 0.01);
-        let b1 = len3(particles[0].B);
+        let b1 = len3(particles[0].b);
         assert!((b1 - b0).abs() < 1e-20);
     }
 
@@ -697,7 +693,7 @@ mod tests {
             MhdParticle::new([0.0, 0.0, 0.0], [0.0; 3], [0.0; 3], 1.0, 0.0, 0.001, 0.5),
             MhdParticle::new([0.1, 0.0, 0.0], [0.0; 3], [0.0; 3], 1.0, 0.0, 0.001, 0.5),
         ];
-        let db = div_B(&particles, 0, simple_kernel);
+        let db = div_b(&particles, 0, simple_kernel);
         assert!(db.abs() < 1e-10);
     }
 
@@ -707,7 +703,7 @@ mod tests {
             MhdParticle::new([0.0, 0.0, 0.0], [0.0; 3], [0.0; 3], 1.0, 0.0, 0.001, 0.5),
             MhdParticle::new([0.1, 0.0, 0.0], [0.0; 3], [0.0; 3], 1.0, 0.0, 0.001, 0.5),
         ];
-        let curl = curl_B(&particles, 0, simple_kernel);
+        let curl = curl_b(&particles, 0, simple_kernel);
         for &c in &curl {
             assert!(c.abs() < 1e-10);
         }

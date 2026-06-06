@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_range_contains)]
 /// Stefan-Boltzmann constant (W m⁻² K⁻⁴).
 pub const STEFAN_BOLTZMANN: f64 = 5.670_374_4e-8;
 /// Solar constant (W m⁻²).
@@ -145,7 +144,7 @@ mod tests {
     fn test_effective_albedo_range() {
         let ice = IceAlbedoFeedback::new();
         let a = ice.effective_albedo();
-        assert!(a >= 0.0 && a <= 1.0);
+        assert!((0.0..=1.0).contains(&a));
     }
     #[test]
     fn test_ice_albedo_feedback_positive() {
@@ -205,7 +204,7 @@ mod tests {
     fn test_ghg_effective_emissivity_range() {
         let ghg = GreenhouseGasEffect::new();
         let eps = ghg.effective_emissivity();
-        assert!(eps >= 0.0 && eps <= 1.0);
+        assert!((0.0..=1.0).contains(&eps));
     }
     #[test]
     fn test_ghg_greenhouse_enhancement_positive() {
@@ -250,7 +249,7 @@ mod tests {
     fn test_sea_level_ice_fraction_range() {
         let sl = SeaLevelRiseModel::new();
         let f = sl.ice_fraction();
-        assert!(f >= 0.0 && f <= 1.0);
+        assert!((0.0..=1.0).contains(&f));
     }
     #[test]
     fn test_carbon_total_conserved_approx() {

@@ -32,7 +32,6 @@ pub struct DensityErrorMetrics {
 
 impl DensityErrorMetrics {
     /// Create zero metrics.
-    #[allow(dead_code)]
     pub fn zero() -> Self {
         Self {
             avg_error: 0.0,
@@ -48,7 +47,6 @@ impl DensityErrorMetrics {
 // ---------------------------------------------------------------------------
 
 /// Adapts the timestep based on IISPH convergence quality.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IisphTimestepAdapter {
     /// Current timestep.
@@ -71,7 +69,6 @@ pub struct IisphTimestepAdapter {
 
 impl IisphTimestepAdapter {
     /// Create a new timestep adapter.
-    #[allow(dead_code)]
     pub fn new(dt: f64, min_dt: f64, max_dt: f64) -> Self {
         Self {
             dt,
@@ -86,7 +83,6 @@ impl IisphTimestepAdapter {
     }
 
     /// Update the timestep based on density error metrics.
-    #[allow(dead_code)]
     pub fn adapt(&mut self, metrics: &DensityErrorMetrics) -> f64 {
         if !metrics.converged || metrics.avg_error > self.target_error * 10.0 {
             // Poor convergence: shrink dt
@@ -106,7 +102,6 @@ impl IisphTimestepAdapter {
     }
 
     /// Reset the adapter to its initial state.
-    #[allow(dead_code)]
     pub fn reset(&mut self, initial_dt: f64) {
         self.dt = initial_dt.clamp(self.min_dt, self.max_dt);
         self.good_steps = 0;
@@ -122,7 +117,6 @@ impl IisphTimestepAdapter {
 /// a_ii = dt² * Σ_j m_j / ρ_j² * |∇W_ij|²
 ///
 /// This diagonal dominance is required for Jacobi convergence.
-#[allow(dead_code, clippy::too_many_arguments)]
 pub fn compute_diagonal_coefficient(
     pos_i: Vec3,
     positions: &[Vec3],
@@ -152,7 +146,6 @@ pub fn compute_diagonal_coefficient(
 /// Compute the source term (density deviation from rest) for IISPH.
 ///
 /// source_i = ρ₀ - ρ_adv_i
-#[allow(dead_code)]
 pub fn compute_source_term(rho_adv: f64, rho0: f64) -> f64 {
     rho0 - rho_adv
 }
@@ -166,7 +159,6 @@ pub fn compute_source_term(rho_adv: f64, rho0: f64) -> f64 {
 /// p_i^{new} = (1-ω) * p_i + ω * (source_i - ap_off_i) / a_ii
 ///
 /// Returns the updated pressure (clamped to ≥ 0).
-#[allow(dead_code)]
 pub fn relaxed_jacobi_update(
     pressure_i: f64,
     source_i: f64,
@@ -185,7 +177,6 @@ pub fn relaxed_jacobi_update(
 ///
 /// Uses the Gershgorin circle theorem approximation.
 /// Returns ω ∈ \[0.3, 0.9\].
-#[allow(dead_code)]
 pub fn estimate_optimal_omega(a_ii_values: &[f64], _n_particles: usize) -> f64 {
     if a_ii_values.is_empty() {
         return 0.5;
@@ -243,7 +234,6 @@ impl IisphSolver {
     /// Compute SPH densities via kernel summation (including self-contribution).
     ///
     /// Returns a `Vec`f64` of length `positions.len()`.
-    #[allow(clippy::needless_range_loop)]
     pub fn compute_densities(
         positions: &[Vec3],
         masses: &[f64],
@@ -279,7 +269,6 @@ impl IisphSolver {
     /// # Returns
     /// `(pressure_forces, avg_density_error)` where `pressure_forces\[i\]` is
     /// the net pressure acceleration (force per unit mass) on particle `i`.
-    #[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
     pub fn solve_pressure(
         &self,
         positions: &[Vec3],
@@ -430,7 +419,6 @@ impl IisphSolver {
     }
 
     /// Solve pressure and return detailed metrics.
-    #[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
     pub fn solve_pressure_with_metrics(
         &self,
         positions: &[Vec3],
@@ -582,7 +570,6 @@ impl IisphSolver {
 /// returns the IISPH forces unchanged; with `blend = 1` it returns them too but
 /// the caller is expected to blend `v_pic = v_old + dt * f` with
 /// `v_flip = v_old + dt * (f - f_old)` externally.
-#[allow(dead_code)]
 pub fn iisph_flip_blend(
     pressure_forces: &[Vec3],
     _velocities_old: &[Vec3],
@@ -602,7 +589,6 @@ pub fn iisph_flip_blend(
 
 /// Tracks per-step IISPH convergence metrics across multiple time steps.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct IisphErrorMonitor {
     /// Per-step average density errors.
     pub errors: Vec<f64>,
@@ -610,7 +596,6 @@ pub struct IisphErrorMonitor {
     pub iteration_counts: Vec<usize>,
 }
 
-#[allow(dead_code)]
 impl IisphErrorMonitor {
     /// Create a new monitor.
     pub fn new() -> Self {
@@ -667,7 +652,6 @@ impl IisphErrorMonitor {
 /// allows O(1) lookup per particle instead of re-computing neighbours each
 /// Jacobi iteration.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct IisphNeighborhoodCache {
     /// Neighbour indices per particle.
     neighbors: Vec<Vec<usize>>,
@@ -675,7 +659,6 @@ pub struct IisphNeighborhoodCache {
     pub cutoff: f64,
 }
 
-#[allow(dead_code)]
 impl IisphNeighborhoodCache {
     /// Build the cache from particle positions and a cutoff radius.
     pub fn build(positions: &[Vec3], cutoff: f64) -> Self {
@@ -722,7 +705,6 @@ impl IisphSolver {
     /// Accepts a `previous_pressure` slice to use as the initial guess for the
     /// Jacobi iteration.  Using the pressure from the previous time step as
     /// a warm start can significantly reduce the number of iterations needed.
-    #[allow(clippy::needless_range_loop, clippy::too_many_arguments, dead_code)]
     pub fn solve_pressure_warm_start(
         &self,
         positions: &[Vec3],
@@ -845,28 +827,6 @@ impl IisphSolver {
 mod tests {
     use super::*;
     use crate::kernel::CubicSplineKernel;
-
-    /// Build a uniform 2×2×2 block of 8 particles.
-    #[allow(dead_code)]
-    fn uniform_8_particles(spacing: f64, mass: f64) -> (Vec<Vec3>, Vec<Vec3>, Vec<f64>) {
-        let mut positions = Vec::new();
-        let mut velocities = Vec::new();
-        let mut masses = Vec::new();
-        for i in 0..2_usize {
-            for j in 0..2_usize {
-                for k in 0..2_usize {
-                    positions.push(Vec3::new(
-                        i as f64 * spacing,
-                        j as f64 * spacing,
-                        k as f64 * spacing,
-                    ));
-                    velocities.push(Vec3::zeros());
-                    masses.push(mass);
-                }
-            }
-        }
-        (positions, velocities, masses)
-    }
 
     /// Build a larger uniform grid of particles for interior-density tests.
     fn uniform_block(

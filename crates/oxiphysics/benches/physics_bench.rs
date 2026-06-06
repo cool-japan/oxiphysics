@@ -603,13 +603,12 @@ fn build_sph_particles(n: usize) -> (ParticleSet, Vec<Vec<usize>>) {
     let r2 = (2.0 * h) * (2.0 * h);
     let n_actual = particles.len();
     let mut neighbors = vec![Vec::new(); n_actual];
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..n_actual {
+    for (i, neighbor_list) in neighbors.iter_mut().enumerate() {
         for j in 0..n_actual {
             if i != j {
                 let dr = particles.positions[i] - particles.positions[j];
                 if dr.norm_squared() < r2 {
-                    neighbors[i].push(j);
+                    neighbor_list.push(j);
                 }
             }
         }

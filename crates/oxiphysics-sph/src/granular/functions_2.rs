@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 #[cfg(test)]
 use super::types::{DemContact, DemParticle, DemSimulation, GranularContactModel};
 

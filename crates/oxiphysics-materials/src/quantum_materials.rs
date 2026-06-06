@@ -7,9 +7,6 @@
 //! All energies are in electron-volts (eV) unless stated otherwise.
 //! Temperature is in Kelvin.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 /// Boltzmann constant in eV/K.

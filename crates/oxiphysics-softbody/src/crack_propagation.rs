@@ -6,8 +6,6 @@
 //! Implements fracture mechanics concepts including crack tip tracking,
 //! stress intensity factor computation, and mesh splitting.
 
-#![allow(dead_code)]
-
 /// A crack tip in the simulation mesh.
 #[derive(Debug, Clone)]
 pub struct CrackTip {
@@ -348,7 +346,6 @@ pub fn nearest_edge_to_point(mesh: &SoftBodyMesh, point: [f64; 3]) -> Option<usi
 // ---------------------------------------------------------------------------
 
 /// Tracker that monitors multiple crack tips and their velocities.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CrackTracker {
     /// All active crack paths.
@@ -359,7 +356,6 @@ pub struct CrackTracker {
     pub energy_release_rate: f64,
 }
 
-#[allow(dead_code)]
 impl CrackTracker {
     /// Create a new tracker with no cracks.
     pub fn new() -> Self {
@@ -407,7 +403,6 @@ impl CrackPath {
     ///
     /// After branching, `tips` will contain 2 new tips replacing the primary.
     /// The new tips diverge symmetrically in the XY plane.
-    #[allow(dead_code)]
     pub fn branch(&mut self, branch_angle: f64) {
         if let Some(tip) = self.tips.first().cloned() {
             // Compute two new directions by rotating the propagation direction
@@ -454,7 +449,6 @@ impl CrackPath {
     }
 
     /// Number of tips (1 for unbranched, 2+ after branching).
-    #[allow(dead_code)]
     pub fn tip_count(&self) -> usize {
         self.tips.len()
     }
@@ -465,7 +459,6 @@ impl CrackPath {
 // ---------------------------------------------------------------------------
 
 /// Criteria for crack arrest (stopping).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CrackArrestCriteria {
     /// Minimum stress intensity below which the crack arrests (MPa*sqrt(m)).
@@ -476,7 +469,6 @@ pub struct CrackArrestCriteria {
     pub max_length: f64,
 }
 
-#[allow(dead_code)]
 impl CrackArrestCriteria {
     /// Create arrest criteria.
     pub fn new(k_arrest: f64, min_speed: f64, max_length: f64) -> Self {
@@ -494,7 +486,6 @@ impl CrackArrestCriteria {
 }
 
 /// Check arrest and deactivate crack tips if criteria are met.
-#[allow(dead_code)]
 pub fn check_arrest(crack: &mut CrackPath, criteria: &CrackArrestCriteria, k_i: f64) -> bool {
     let speed = crack
         .current_tip()
@@ -518,7 +509,6 @@ pub fn check_arrest(crack: &mut CrackPath, criteria: &CrackArrestCriteria, k_i: 
 // ---------------------------------------------------------------------------
 
 /// Dynamic fracture state tracking.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DynamicFracture {
     /// Fracture criteria.
@@ -533,7 +523,6 @@ pub struct DynamicFracture {
     pub energy_history: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl DynamicFracture {
     /// Create a new dynamic fracture model.
     pub fn new(criteria: CrackCriteria, g_c: f64) -> Self {
@@ -601,7 +590,6 @@ impl DynamicFracture {
 }
 
 /// Compute per-node displacement magnitudes.
-#[allow(dead_code)]
 pub fn displacement_magnitudes(displacements: &[[f64; 3]]) -> Vec<f64> {
     displacements
         .iter()
@@ -610,7 +598,6 @@ pub fn displacement_magnitudes(displacements: &[[f64; 3]]) -> Vec<f64> {
 }
 
 /// Compute the maximum displacement magnitude.
-#[allow(dead_code)]
 pub fn max_displacement(displacements: &[[f64; 3]]) -> f64 {
     displacement_magnitudes(displacements)
         .into_iter()
@@ -622,7 +609,6 @@ pub fn max_displacement(displacements: &[[f64; 3]]) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Mode-I, II, III stress intensity factors for linear elastic fracture.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct StressIntensityFactors {
     /// Mode-I (opening) stress intensity factor (Pa·√m).
@@ -633,7 +619,6 @@ pub struct StressIntensityFactors {
     pub k3: f64,
 }
 
-#[allow(dead_code)]
 impl StressIntensityFactors {
     /// Create with only Mode-I loading.
     pub fn mode1(k1: f64) -> Self {
@@ -690,7 +675,6 @@ impl StressIntensityFactors {
 /// A cohesive zone element connecting two node pairs.
 ///
 /// Models progressive damage across the interface using a bilinear traction-separation law.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CohesiveElement {
     /// Indices of the top-face node pair `[a, b]`.
@@ -707,7 +691,6 @@ pub struct CohesiveElement {
     pub is_fractured: bool,
 }
 
-#[allow(dead_code)]
 impl CohesiveElement {
     /// Create a new cohesive element.
     pub fn new(top_nodes: [usize; 2], bottom_nodes: [usize; 2], t_max: f64, delta_c: f64) -> Self {
@@ -827,7 +810,6 @@ pub fn insert_cohesive_elements(
 // ---------------------------------------------------------------------------
 
 /// Snap-shot of a crack front at a given simulation time.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CrackFrontSnapshot {
     /// Simulation time when this snapshot was taken.
@@ -839,7 +821,6 @@ pub struct CrackFrontSnapshot {
 }
 
 /// Tracks the evolution of a crack front over time.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CrackFrontTracker {
     /// Time-ordered list of crack front snapshots.
@@ -848,7 +829,6 @@ pub struct CrackFrontTracker {
     pub max_snapshots: usize,
 }
 
-#[allow(dead_code)]
 impl CrackFrontTracker {
     /// Create a new tracker with the given snapshot capacity.
     pub fn new(max_snapshots: usize) -> Self {
@@ -916,7 +896,6 @@ impl CrackFrontTracker {
 
 /// A fragment is a set of node indices that form a connected component
 /// after crack propagation has severed some edges.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Fragment {
     /// Node indices belonging to this fragment.
@@ -930,7 +909,6 @@ pub struct Fragment {
 ///
 /// Returns a list of fragments. Each fragment contains the node indices of
 /// one connected component.
-#[allow(dead_code)]
 pub fn identify_fragments(mesh: &SoftBodyMesh) -> Vec<Fragment> {
     let n = mesh.node_count();
     if n == 0 {
@@ -976,7 +954,6 @@ pub fn identify_fragments(mesh: &SoftBodyMesh) -> Vec<Fragment> {
 }
 
 /// Compute the centre of mass of a fragment.
-#[allow(dead_code)]
 pub fn fragment_centre_of_mass(fragment: &Fragment, mesh: &SoftBodyMesh) -> [f64; 3] {
     if fragment.node_indices.is_empty() {
         return [0.0; 3];
@@ -1010,7 +987,6 @@ pub fn fragment_centre_of_mass(fragment: &Fragment, mesh: &SoftBodyMesh) -> [f64
 /// Evaluate whether a crack should branch based on energy and velocity criteria.
 ///
 /// Returns `true` when branching is recommended.
-#[allow(dead_code)]
 pub fn should_branch(
     k_i: f64,
     k_ic: f64,
@@ -1026,7 +1002,6 @@ pub fn should_branch(
 ///   branch_angle ≈ arccos(1 - 0.14*(v/c)^2) where c is Rayleigh wave speed.
 ///
 /// Clamps to \[0, π/3\].
-#[allow(dead_code)]
 pub fn branching_angle(velocity: f64, rayleigh_speed: f64) -> f64 {
     if rayleigh_speed < 1e-12 {
         return 0.0;

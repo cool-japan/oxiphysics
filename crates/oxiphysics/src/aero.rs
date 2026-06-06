@@ -63,9 +63,6 @@
 //! assert!(forces[0].force[0] < 0.0, "drag opposes +X motion");
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -385,7 +382,8 @@ pub struct AeroForce {
 }
 
 impl AeroForce {
-    fn zero() -> Self {
+    /// Return a zeroed aerodynamic force (no force, no torque).
+    pub fn zero() -> Self {
         Self {
             force: [0.0; 3],
             torque: [0.0; 3],

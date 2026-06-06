@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,9 +5,6 @@
 //!
 //! Provides CPU-side mock implementations of GPU buffer types, a pool allocator,
 //! transfer queue, and memory statistics — all without requiring an actual GPU.
-
-#![allow(dead_code)]
-#![allow(missing_docs)]
 
 use std::collections::HashMap;
 
@@ -466,20 +462,20 @@ impl VertexBuffer {
         for (i, v) in vertices.iter().enumerate() {
             let base = i * stride;
             // Position (3 × f32 = 12 bytes)
-            for j in 0..3 {
-                let bytes = v[j].to_le_bytes();
+            for (j, &comp) in v[..3].iter().enumerate() {
+                let bytes = comp.to_le_bytes();
                 self.data[base + j * 4..base + j * 4 + 4].copy_from_slice(&bytes);
             }
             // Normal (3 × f32)
             let no = self.layout.normal_offset;
-            for j in 0..3 {
-                let bytes = v[3 + j].to_le_bytes();
+            for (j, &comp) in v[3..6].iter().enumerate() {
+                let bytes = comp.to_le_bytes();
                 self.data[base + no + j * 4..base + no + j * 4 + 4].copy_from_slice(&bytes);
             }
             // UV (2 × f32)
             let uo = self.layout.uv_offset;
-            for j in 0..2 {
-                let bytes = v[6 + j].to_le_bytes();
+            for (j, &comp) in v[6..8].iter().enumerate() {
+                let bytes = comp.to_le_bytes();
                 self.data[base + uo + j * 4..base + uo + j * 4 + 4].copy_from_slice(&bytes);
             }
         }

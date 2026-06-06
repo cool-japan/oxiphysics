@@ -5,9 +5,6 @@
 //!
 //! Exposes smooth damp, exponential decay, spring followers, and lerp utilities.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::interpolator::{SpringFollower, SpringFollower3};
 use pyo3::prelude::*;
 

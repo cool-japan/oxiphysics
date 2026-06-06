@@ -7,7 +7,6 @@ use super::types::{DockingPose, PdbqtAtom, PoseCluster, SmilesAtom, VinaResult};
 /// Parse a single ATOM/HETATM line from a PDBQT file.
 ///
 /// Returns `None` if the line is too short or unparseable.
-#[allow(dead_code)]
 pub fn parse_pdbqt_atom_line(line: &str) -> Option<PdbqtAtom> {
     if line.len() < 60 {
         return None;
@@ -47,7 +46,6 @@ pub fn parse_pdbqt_atom_line(line: &str) -> Option<PdbqtAtom> {
     ))
 }
 /// Tokenize element symbols from a SMILES string (organic subset).
-#[allow(dead_code)]
 pub(super) fn tokenize_smiles_atoms(smiles: &str) -> Vec<SmilesAtom> {
     let organic_subset = ["Cl", "Br", "C", "N", "O", "S", "P", "F", "I", "B"];
     let mut atoms = Vec::new();
@@ -101,7 +99,6 @@ pub(super) fn tokenize_smiles_atoms(smiles: &str) -> Vec<SmilesAtom> {
 /// Parse Vina log output into a list of `VinaResult` entries.
 ///
 /// Looks for lines of the form: `   1      -9.0      0.000      0.000`
-#[allow(dead_code)]
 pub fn parse_vina_log(log: &str) -> Vec<VinaResult> {
     let mut results = Vec::new();
     let mut in_results = false;
@@ -132,7 +129,6 @@ pub fn parse_vina_log(log: &str) -> Vec<VinaResult> {
 /// * `rmsd_cutoff` – maximum RMSD (Angstrom) to be in the same cluster.
 ///
 /// Returns a list of `PoseCluster` instances.
-#[allow(dead_code)]
 pub fn cluster_poses_by_rmsd(poses: &[DockingPose], rmsd_cutoff: f64) -> Vec<PoseCluster> {
     let mut clusters: Vec<PoseCluster> = Vec::new();
     let mut assigned = vec![false; poses.len()];

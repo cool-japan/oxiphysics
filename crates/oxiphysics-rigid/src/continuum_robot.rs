@@ -23,8 +23,6 @@
 //! - [`tendon_length_to_curvature`] — mapping from differential tendon lengths
 //!   to curvature for a two-tendon arrangement.
 
-#![allow(dead_code)]
-
 // PI is used only in tests — imported there
 
 // ---------------------------------------------------------------------------
@@ -42,11 +40,6 @@ fn vec3_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 #[inline]
-fn vec3_scale(a: [f64; 3], s: f64) -> [f64; 3] {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-
-#[inline]
 fn vec3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -54,15 +47,6 @@ fn vec3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 #[inline]
 fn vec3_len(a: [f64; 3]) -> f64 {
     vec3_dot(a, a).sqrt()
-}
-
-#[inline]
-fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -1214,7 +1198,6 @@ pub fn cable_tension_to_curvature(tensions: &[f64], d: f64, ei: f64) -> f64 {
 ///
 /// Returns `J[row][col]` where rows are `[∂x, ∂z]` and columns are `[∂κ, ∂φ]`.
 /// For `κ ≈ 0` a linearised approximation is used.
-#[allow(clippy::too_many_arguments)]
 pub fn jacobian_continuum_2d(kappa: f64, _phi: f64, l: f64) -> [[f64; 2]; 2] {
     if kappa.abs() < 1e-9 {
         // Linearise: x ≈ 0, z ≈ l → dx/dkappa ≈ 0, dz/dkappa ≈ 0 at kappa=0

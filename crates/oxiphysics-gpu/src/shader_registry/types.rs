@@ -1,8 +1,6 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
 use super::functions::*;
 use std::collections::HashMap;
 
@@ -653,7 +651,6 @@ pub struct PipelineDescriptor {
     /// Human-readable label for debugging.
     pub label: String,
 }
-#[allow(clippy::too_many_arguments)]
 impl PipelineDescriptor {
     /// Create a new pipeline descriptor.
     pub fn new(

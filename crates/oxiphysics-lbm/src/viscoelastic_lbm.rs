@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -25,7 +24,6 @@
 /// # Arguments
 /// * `lambda`     – polymer relaxation time (s)
 /// * `shear_rate` – characteristic shear rate (1/s)
-#[allow(dead_code)]
 pub fn weissenberg_number(lambda: f64, shear_rate: f64) -> f64 {
     lambda * shear_rate
 }
@@ -37,7 +35,6 @@ pub fn weissenberg_number(lambda: f64, shear_rate: f64) -> f64 {
 /// # Arguments
 /// * `lambda`    – polymer relaxation time (s)
 /// * `t_process` – characteristic process time (s)
-#[allow(dead_code)]
 pub fn deborah_number(lambda: f64, t_process: f64) -> f64 {
     if t_process == 0.0 {
         return f64::INFINITY;
@@ -48,7 +45,6 @@ pub fn deborah_number(lambda: f64, t_process: f64) -> f64 {
 /// Return the Trouton ratio for a purely Newtonian fluid (= 3).
 ///
 /// For a Newtonian fluid, extensional viscosity = 3 × shear viscosity.
-#[allow(dead_code)]
 pub fn trouton_ratio_newtonian() -> f64 {
     3.0
 }
@@ -75,7 +71,6 @@ impl MaxwellFluid {
     /// * `viscosity_s`    – solvent viscosity (Pa·s)
     /// * `viscosity_p`    – polymer viscosity (Pa·s)
     /// * `relaxation_time` – relaxation time λ (s)
-    #[allow(dead_code)]
     pub fn new(viscosity_s: f64, viscosity_p: f64, relaxation_time: f64) -> Self {
         Self {
             viscosity_s,
@@ -87,19 +82,16 @@ impl MaxwellFluid {
     /// Compute the Weissenberg number for a given shear rate.
     ///
     /// Wi = λ · γ̇
-    #[allow(dead_code)]
     pub fn weissenberg_number(&self, shear_rate: f64) -> f64 {
         self.relaxation_time * shear_rate
     }
 
     /// Total zero-shear viscosity η = η_s + η_p.
-    #[allow(dead_code)]
     pub fn total_viscosity(&self) -> f64 {
         self.viscosity_s + self.viscosity_p
     }
 
     /// Viscosity ratio β = η_s / (η_s + η_p).
-    #[allow(dead_code)]
     pub fn viscosity_ratio(&self) -> f64 {
         let total = self.total_viscosity();
         if total == 0.0 {
@@ -133,7 +125,6 @@ impl OldroydBModel {
     /// # Arguments
     /// * `ucm`  – underlying Maxwell fluid
     /// * `beta` – solvent viscosity fraction β
-    #[allow(dead_code)]
     pub fn new(ucm: MaxwellFluid, beta: f64) -> Self {
         Self {
             upper_convected_maxwell: ucm,
@@ -155,7 +146,6 @@ impl OldroydBModel {
     /// # Arguments
     /// * `velocity_gradient` – 3×3 velocity gradient κ (row-major, 1/s)
     /// * `dt`                – time step (s)
-    #[allow(dead_code)]
     pub fn evolve_stress(&mut self, velocity_gradient: &[f64; 9], dt: f64) {
         let lambda = self.upper_convected_maxwell.relaxation_time;
         let eta_p = self.upper_convected_maxwell.viscosity_p;
@@ -177,13 +167,11 @@ impl OldroydBModel {
     }
 
     /// Return the first normal stress difference N1 = τ_xx − τ_yy.
-    #[allow(dead_code)]
     pub fn normal_stress_difference_1(&self) -> f64 {
         self.stress_tensor[0] - self.stress_tensor[4]
     }
 
     /// Return the second normal stress difference N2 = τ_yy − τ_zz.
-    #[allow(dead_code)]
     pub fn normal_stress_difference_2(&self) -> f64 {
         self.stress_tensor[4] - self.stress_tensor[8]
     }
@@ -211,7 +199,6 @@ impl FenePModel {
     /// # Arguments
     /// * `extensibility_l`  – maximum extensibility L (chain fully stretched)
     /// * `spring_constant`  – spring stiffness H (N/m)
-    #[allow(dead_code)]
     pub fn new(extensibility_l: f64, spring_constant: f64) -> Self {
         Self {
             extensibility_l,
@@ -224,7 +211,6 @@ impl FenePModel {
     /// **F** = H · f(|Q|²) · **Q**,   f(r) = 1/(1 − r/L²)
     ///
     /// Returns zero vector if Q is fully extended (|Q|² ≥ L²).
-    #[allow(dead_code)]
     pub fn compute_spring_force(&self, q: [f64; 3]) -> [f64; 3] {
         let l2 = self.extensibility_l * self.extensibility_l;
         let q2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
@@ -247,7 +233,6 @@ impl FenePModel {
     ///   τ_p = conc · H · f(Q²) · Q ⊗ Q
     ///
     /// Returns a 3×3 row-major stress tensor (Pa).
-    #[allow(dead_code)]
     pub fn stress_from_distribution(&self, q: [f64; 3], conc: f64) -> [f64; 9] {
         let l2 = self.extensibility_l * self.extensibility_l;
         let q2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
@@ -320,7 +305,6 @@ impl ViscoelasticLbm {
     /// * `omega`    – BGK relaxation frequency (1/τ)
     /// * `lambda`   – polymer relaxation time (lattice units)
     /// * `eta_p`    – polymer viscosity (lattice units)
-    #[allow(dead_code)]
     pub fn new(nx: usize, ny: usize, omega: f64, lambda: f64, eta_p: f64) -> Self {
         let n = nx * ny;
         // Equilibrium at rest: f_i = w_i * rho_0 with rho_0 = 1
@@ -342,7 +326,6 @@ impl ViscoelasticLbm {
     /// 2. BGK collision with polymer stress correction.
     /// 3. Stream distributions to neighbours (periodic boundaries).
     /// 4. Evolve polymer stress using velocity gradient estimate.
-    #[allow(dead_code)]
     pub fn step(&mut self, dt: f64) {
         let nx = self.nx;
         let ny = self.ny;
@@ -350,7 +333,7 @@ impl ViscoelasticLbm {
 
         // ── 1. Collision ──────────────────────────────────────────────────────
         let mut f_post = self.f_distributions.clone();
-        for node in 0..n {
+        for (node, f_post_node) in f_post.iter_mut().enumerate() {
             let f = &self.f_distributions[node];
             let rho: f64 = f.iter().sum();
             if rho == 0.0 {
@@ -386,7 +369,7 @@ impl ViscoelasticLbm {
                         + 2.0 * CX9[i] * CY9[i] * tau_xy
                         + CY9[i] * CY9[i] * tau_yy);
 
-                f_post[node][i] =
+                f_post_node[i] =
                     f[i] - self.omega * (f[i] - feq) + (1.0 - 0.5 * self.omega) * g_poly * dt;
             }
 
@@ -429,13 +412,11 @@ impl ViscoelasticLbm {
     }
 
     /// Return macroscopic density at node (ix, iy).
-    #[allow(dead_code)]
     pub fn density(&self, ix: usize, iy: usize) -> f64 {
         self.f_distributions[iy * self.nx + ix].iter().sum()
     }
 
     /// Return macroscopic velocity (ux, uy) at node (ix, iy).
-    #[allow(dead_code)]
     pub fn velocity(&self, ix: usize, iy: usize) -> (f64, f64) {
         let f = &self.f_distributions[iy * self.nx + ix];
         let rho: f64 = f.iter().sum();
@@ -472,7 +453,6 @@ pub struct ExtensionalFlow {
 
 impl ExtensionalFlow {
     /// Create an extensional flow with the given extension rate ε̇.
-    #[allow(dead_code)]
     pub fn new(extension_rate: f64) -> Self {
         Self { extension_rate }
     }
@@ -482,7 +462,6 @@ impl ExtensionalFlow {
     /// # Arguments
     /// * `viscosity`            – shear viscosity η (Pa·s)
     /// * `extensional_viscosity` – extensional (Trouton) viscosity η_E (Pa·s)
-    #[allow(dead_code)]
     pub fn compute_trouton_ratio(&self, viscosity: f64, extensional_viscosity: f64) -> f64 {
         if viscosity == 0.0 {
             return 0.0;
@@ -491,7 +470,6 @@ impl ExtensionalFlow {
     }
 
     /// Predict the Hencky strain ε = ε̇ · t accumulated after time t.
-    #[allow(dead_code)]
     pub fn hencky_strain(&self, t: f64) -> f64 {
         self.extension_rate * t
     }

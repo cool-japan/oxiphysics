@@ -20,9 +20,6 @@
 //! assert!(zeta_opt > 0.0);
 //! ```
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ── SuspensionParams ──────────────────────────────────────────────────────────

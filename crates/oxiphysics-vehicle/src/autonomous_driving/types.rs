@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use std::collections::{BinaryHeap, VecDeque};
 
@@ -77,16 +75,18 @@ impl KalmanTracker {
         let ph0 = [self.p[0], self.p[4], self.p[8], self.p[12]];
         let ph1 = [self.p[1], self.p[5], self.p[9], self.p[13]];
         let mut k = [[0.0f64; 2]; 4];
-        for i in 0..4 {
-            k[i][0] = ph0[i] * s_inv[0] + ph1[i] * s_inv[2];
-            k[i][1] = ph0[i] * s_inv[1] + ph1[i] * s_inv[3];
+        for (i, (k_i, (ph0_i, ph1_i))) in k.iter_mut().zip(ph0.iter().zip(ph1.iter())).enumerate() {
+            let _ = i;
+            k_i[0] = ph0_i * s_inv[0] + ph1_i * s_inv[2];
+            k_i[1] = ph0_i * s_inv[1] + ph1_i * s_inv[3];
         }
-        for i in 0..4 {
-            self.x[i] += k[i][0] * y[0] + k[i][1] * y[1];
+        for (i, (x_i, k_i)) in self.x.iter_mut().zip(k.iter()).enumerate() {
+            let _ = i;
+            *x_i += k_i[0] * y[0] + k_i[1] * y[1];
         }
-        for i in 0..4 {
-            self.p[i * 4] -= k[i][0] * self.p[0] + k[i][1] * self.p[4];
-            self.p[i * 4 + 1] -= k[i][0] * self.p[1] + k[i][1] * self.p[5];
+        for (i, k_i) in k.iter().enumerate() {
+            self.p[i * 4] -= k_i[0] * self.p[0] + k_i[1] * self.p[4];
+            self.p[i * 4 + 1] -= k_i[0] * self.p[1] + k_i[1] * self.p[5];
         }
         self.time_since_update = 0.0;
         self.hit_streak += 1;

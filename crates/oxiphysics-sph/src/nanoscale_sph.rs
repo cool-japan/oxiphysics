@@ -16,9 +16,6 @@
 //! - [`DissipativeParticleNano`]: DPD-SPH hybrid with conservative/dissipative/random forces
 //! - [`NonequilibriumNano`]: NEMD-SPH, heat flux, shear stress, Green-Kubo relations
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use rand::RngExt;
 use std::f64::consts::PI;
 
@@ -42,10 +39,8 @@ const EPS_0: f64 = 8.854_187_817e-12;
 const T_REF: f64 = 298.15;
 
 /// Dielectric constant of water (dimensionless).
+#[cfg(test)]
 const EPS_WATER: f64 = 78.5;
-
-/// Universal gas constant (J mol⁻¹ K⁻¹).
-const GAS_CONSTANT: f64 = 8.314_462_618;
 
 // ---------------------------------------------------------------------------
 // Vector helpers

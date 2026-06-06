@@ -2,13 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests_closest_points {
 
-    use super::*;
+    use super::super::*;
 
     use crate::gjk_enhanced::EnhBox;
 
@@ -159,7 +156,7 @@ mod tests_epa_pipeline {
 #[cfg(test)]
 mod tests_toi {
     use super::super::types::*;
-    use super::*;
+    use super::super::*;
 
     #[test]
     fn test_toi_approaching_spheres() {

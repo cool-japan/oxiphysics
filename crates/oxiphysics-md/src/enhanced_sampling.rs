@@ -12,8 +12,6 @@
 //! [`crate::metadynamics`], and [`crate::sampling`] with a higher-level API
 //! that matches the interface described in the crate documentation.
 
-#![allow(dead_code, missing_docs)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
@@ -501,12 +499,11 @@ impl UmbrellaSampling {
     ///
     /// # Arguments
     /// * `n_bins` – Number of bins for the combined histogram.
-    /// * `kT`     – Thermal energy (kJ/mol).
+    /// * `k_t`   – Thermal energy (kJ/mol).
     ///
     /// # Returns
     /// `(bin_centers, pmf_values)`.
-    #[allow(non_snake_case)]
-    pub fn compute_pmf(&self, n_bins: usize, kT: f64) -> (Vec<f64>, Vec<f64>) {
+    pub fn compute_pmf(&self, n_bins: usize, k_t: f64) -> (Vec<f64>, Vec<f64>) {
         if self.windows.is_empty() || n_bins == 0 {
             return (vec![], vec![]);
         }
@@ -563,7 +560,7 @@ impl UmbrellaSampling {
                     let xi_b = bin_centers[b];
                     let v_bias = window.bias_potential(xi_b);
                     // F_unbiased = −kT ln(p) + V_bias (up to a constant)
-                    f_window[b] = -kT * p.ln() + v_bias;
+                    f_window[b] = -k_t * p.ln() + v_bias;
                 }
             }
             // Subtract the minimum to put each window on the same scale
@@ -658,7 +655,6 @@ pub struct AdaptiveBiasMetadynamics {
 
 impl AdaptiveBiasMetadynamics {
     /// Create a new adaptive-bias metadynamics controller.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         height: f64,
         width_min: f64,

@@ -7,8 +7,6 @@
 //! integration, forces (gravity, turbulence), collision response, pooling,
 //! and render-data collection for billboard quads.
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // Internal LCG random number generator (no external crate needed)
 // ---------------------------------------------------------------------------
@@ -718,7 +716,6 @@ impl Default for ParticleRenderer {
 ///
 /// Applies gravity, turbulence, integrates, resolves collisions, recycles dead
 /// particles, then emits new ones from the emitter.
-#[allow(clippy::too_many_arguments)]
 pub fn tick(
     pool: &mut ParticlePool,
     emitter: &mut ParticleEmitter,

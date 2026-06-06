@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,9 +7,10 @@
 //! Sobol sensitivity indices, response surface methods, and failure probability
 //! calculations for structural safety assessment.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
+
+/// Type alias for a thread-safe evaluation closure used in limit-state functions.
+type EvalFn = Box<dyn Fn(&[f64]) -> f64 + Send + Sync>;
 
 // ---------------------------------------------------------------------------
 // Utility functions
@@ -74,7 +74,7 @@ pub struct LimitStateFunction {
     /// Standard deviations of the random input variables.
     pub std_dev: Vec<f64>,
     /// Closure that evaluates g(x).
-    eval: Box<dyn Fn(&[f64]) -> f64 + Send + Sync>,
+    eval: EvalFn,
 }
 
 impl LimitStateFunction {
@@ -685,7 +685,7 @@ mod tests {
     fn test_monte_carlo_pf_range() {
         let g = LimitStateFunction::new(vec![10.0], vec![2.0], |x| x[0] - 6.0);
         let result = MonteCarloReliability::compute_pf(&g, 1000);
-        assert!(result.pf >= 0.0 && result.pf <= 1.0);
+        assert!((0.0..=1.0).contains(&result.pf));
     }
 
     #[test]
@@ -841,7 +841,7 @@ mod tests {
     fn test_failure_probability_pf_bounds() {
         for beta in [0.5, 1.0, 2.0, 3.0, 4.0] {
             let fp = FailureProbability::from_beta(beta);
-            assert!(fp.pf >= 0.0 && fp.pf <= 1.0);
+            assert!((0.0..=1.0).contains(&fp.pf));
         }
     }
 }

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -143,7 +142,6 @@ impl CsfSurfaceTension {
 ///
 /// W(r, h) = (315 / (64 * pi * h^9)) * (h^2 - r^2)^3   for r <= h
 ///         = 0 otherwise
-#[allow(dead_code)]
 pub fn poly6_kernel(r_sq: f64, h: f64) -> f64 {
     let h2 = h * h;
     if r_sq > h2 {
@@ -157,7 +155,6 @@ pub fn poly6_kernel(r_sq: f64, h: f64) -> f64 {
 /// Gradient of the Poly6 kernel with respect to the position vector `r_vec`.
 ///
 /// grad W = -6 * (315 / (64 * pi * h^9)) * (h^2 - r^2)^2 * r_vec
-#[allow(dead_code)]
 pub fn poly6_gradient(r_vec: [f64; 3], r_sq: f64, h: f64) -> [f64; 3] {
     let h2 = h * h;
     if r_sq > h2 {
@@ -396,8 +393,8 @@ impl MarchingCubesSph {
 
                     // Compute cube index (which corners are inside)
                     let mut cube_idx: usize = 0;
-                    for c in 0..8 {
-                        if corner_vals[c] >= iso_value {
+                    for (c, &cv) in corner_vals.iter().enumerate() {
+                        if cv >= iso_value {
                             cube_idx |= 1 << c;
                         }
                     }
@@ -448,7 +445,6 @@ impl MarchingCubesSph {
 
 /// Returns the full 256-entry MC triangle table.
 /// Each row lists edge indices (0..11) forming triangles, terminated by -1.
-#[allow(clippy::too_many_lines)]
 fn mc_tri_table() -> Vec<Vec<i8>> {
     // Compact representation: each sub-array is one row.
     // Source: Lorensen & Cline 1987 table (widely reproduced).
@@ -780,7 +776,6 @@ pub fn build_anisotropic_kernels(
 /// F = sigma * kappa * n  where kappa = -div(n / |n|)
 ///
 /// Here we approximate kappa via finite differences of the colour-field gradient.
-#[allow(dead_code)]
 pub fn implicit_surface_tension_force(color: &SphColorField, i: usize, sigma: f64) -> [f64; 3] {
     let pos = color.positions[i];
     let grad = color.color_field_gradient_at(pos);
@@ -853,7 +848,6 @@ fn mat3_det(m: [[f64; 3]; 3]) -> f64 {
 /// * `density` – density of particle i
 /// * `rest_density` – reference rest density ρ₀
 /// * `threshold` – fraction of rest density below which a particle is "surface" (e.g. 0.9)
-#[allow(dead_code)]
 pub fn color_function_surface_detect(density: f64, rest_density: f64, threshold: f64) -> bool {
     if rest_density < 1e-30 {
         return false;
@@ -864,7 +858,6 @@ pub fn color_function_surface_detect(density: f64, rest_density: f64, threshold:
 /// Compute the color function value c = ρ / ρ₀.
 ///
 /// Returns a scalar in \[0, 1\] for typical SPH densities.
-#[allow(dead_code)]
 pub fn color_function_value(density: f64, rest_density: f64) -> f64 {
     if rest_density < 1e-30 {
         return 0.0;
@@ -881,7 +874,6 @@ pub fn color_function_value(density: f64, rest_density: f64) -> f64 {
 /// κ = −div(n̂) = −Σ_α (∂n̂_α / ∂x_α)
 ///
 /// where `n̂` is the unit surface normal.
-#[allow(dead_code)]
 pub fn curvature_from_color_gradient(_normal: [f64; 3], grad_normal: [[f64; 3]; 3]) -> f64 {
     -(grad_normal[0][0] + grad_normal[1][1] + grad_normal[2][2])
 }
@@ -889,7 +881,6 @@ pub fn curvature_from_color_gradient(_normal: [f64; 3], grad_normal: [[f64; 3]; 
 /// Compute the unit surface normal from the color gradient.
 ///
 /// Returns zero vector if the gradient is negligibly small.
-#[allow(dead_code)]
 pub fn color_normal_from_gradient(grad_color: [f64; 3]) -> [f64; 3] {
     let mag = (grad_color[0] * grad_color[0]
         + grad_color[1] * grad_color[1]
@@ -913,7 +904,6 @@ pub fn color_normal_from_gradient(grad_color: [f64; 3]) -> [f64; 3] {
 ///
 /// φ(x) = Σ_j c_j * W(|x - x_j|, h)
 /// where c_j is the color (indicator) value of particle j and W is the Poly6 kernel.
-#[allow(dead_code)]
 pub fn level_set_extraction(positions: &[[f64; 3]], colors: &[f64], x: [f64; 3], h: f64) -> f64 {
     let mut phi = 0.0_f64;
     for (idx, &pos_j) in positions.iter().enumerate() {
@@ -927,7 +917,6 @@ pub fn level_set_extraction(positions: &[[f64; 3]], colors: &[f64], x: [f64; 3],
 /// Extract the level-set gradient at point `x`.
 ///
 /// ∇φ(x) = Σ_j c_j * ∇W(x - x_j, h)
-#[allow(dead_code)]
 pub fn level_set_gradient(positions: &[[f64; 3]], colors: &[f64], x: [f64; 3], h: f64) -> [f64; 3] {
     let mut grad = [0.0_f64; 3];
     for (idx, &pos_j) in positions.iter().enumerate() {
@@ -961,7 +950,6 @@ pub fn level_set_gradient(positions: &[[f64; 3]], colors: &[f64], x: [f64; 3], h
 /// |   |  (bottom face)
 /// 3---2
 /// ```
-#[allow(dead_code)]
 pub fn marching_cubes_cell_triangle_count(corners: &[f64; 8], iso_level: f64) -> usize {
     // Build the 8-bit case index
     let mut cube_idx = 0u8;
@@ -979,7 +967,6 @@ pub fn marching_cubes_cell_triangle_count(corners: &[f64; 8], iso_level: f64) ->
 ///
 /// Index is the 8-bit configuration of corner signs.
 /// Value is the number of triangles for that configuration.
-#[allow(dead_code)]
 static MC_TRI_COUNT: [usize; 256] = compute_mc_tri_count();
 
 const fn compute_mc_tri_count() -> [usize; 256] {
@@ -1019,7 +1006,6 @@ const fn compute_mc_tri_count() -> [usize; 256] {
 /// θ = arccos(n_fluid · n_wall)
 ///
 /// Both normals are expected to be unit vectors.
-#[allow(dead_code)]
 pub fn contact_angle(n_fluid: [f64; 3], n_wall: [f64; 3]) -> f64 {
     let dot = n_fluid[0] * n_wall[0] + n_fluid[1] * n_wall[1] + n_fluid[2] * n_wall[2];
     dot.clamp(-1.0, 1.0).acos()
@@ -1031,7 +1017,6 @@ pub fn contact_angle(n_fluid: [f64; 3], n_wall: [f64; 3]) -> f64 {
 /// n̂_modified = cos(θ_c) * n_wall + sin(θ_c) * t̂
 ///
 /// where `t̂` is the tangential component of the current fluid normal.
-#[allow(dead_code)]
 pub fn apply_contact_angle(
     n_fluid: [f64; 3],
     n_wall: [f64; 3],
@@ -1068,7 +1053,6 @@ pub fn apply_contact_angle(
 /// σ(T) = σ₀ - k_σ * T
 ///
 /// where σ₀ = 0.0756 N/m, k_σ ≈ 1.55e-4 N/(m·K), T in Celsius.
-#[allow(dead_code)]
 pub fn surface_tension_coefficient(temperature_celsius: f64) -> f64 {
     const SIGMA_0: f64 = 0.0756_f64;
     const K_SIGMA: f64 = 1.55e-4_f64;
@@ -1086,7 +1070,6 @@ pub fn surface_tension_coefficient(temperature_celsius: f64) -> f64 {
 /// * `sigma` – surface tension coefficient (N/m)
 /// * `kappa` – curvature (1/m)
 /// * `normal` – unit surface normal
-#[allow(dead_code)]
 pub fn csf_surface_force(sigma: f64, kappa: f64, normal: [f64; 3]) -> [f64; 3] {
     let scale = sigma * kappa;
     [scale * normal[0], scale * normal[1], scale * normal[2]]
@@ -1542,11 +1525,11 @@ mod tests {
     #[test]
     fn test_csf_surface_force_zero_kappa() {
         let force = csf_surface_force(0.0728, 0.0, [1.0, 0.0, 0.0]);
-        for k in 0..3 {
+        for (k, &fk) in force.iter().enumerate() {
             assert!(
-                force[k].abs() < 1e-14,
+                fk.abs() < 1e-14,
                 "Zero curvature → zero force: force[{k}]={}",
-                force[k]
+                fk
             );
         }
     }
@@ -1575,11 +1558,11 @@ mod tests {
     #[test]
     fn test_color_normal_from_gradient_zero_gradient() {
         let normal = color_normal_from_gradient([0.0, 0.0, 0.0]);
-        for k in 0..3 {
+        for (k, &nk) in normal.iter().enumerate() {
             assert!(
-                normal[k].abs() < 1e-14,
+                nk.abs() < 1e-14,
                 "Zero gradient → zero normal: normal[{k}]={}",
-                normal[k]
+                nk
             );
         }
     }

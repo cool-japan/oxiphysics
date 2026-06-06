@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::items_after_test_module)]
 use super::types::{
     ElementQuality, ExodusMesh, ExodusResult, ExodusSideSet, ExodusTimeStep, ExodusVariable,
     FieldStats, MeshPartition, MeshValidationReport,
@@ -97,16 +95,22 @@ pub fn parse_text(s: &str) -> Result<ExodusMesh, String> {
         other => return Err(format!("Expected EXODUS_MESH header, got: {:?}", other)),
     }
     let title = match lines.next() {
-        Some(line) if line.starts_with("TITLE ") => line[6..].trim().to_string(),
-        other => return Err(format!("Expected TITLE, got: {:?}", other)),
+        Some(line) => match line.strip_prefix("TITLE ") {
+            Some(rest) => rest.trim().to_string(),
+            None => return Err(format!("Expected TITLE, got: {:?}", line)),
+        },
+        None => return Err("Expected TITLE, got: None".to_string()),
     };
     let mut mesh = ExodusMesh::new(&title);
     let n_nodes: usize = match lines.next() {
-        Some(line) if line.starts_with("NODES ") => line[6..]
-            .trim()
-            .parse()
-            .map_err(|e| format!("Bad node count: {}", e))?,
-        other => return Err(format!("Expected NODES, got: {:?}", other)),
+        Some(line) => match line.strip_prefix("NODES ") {
+            Some(rest) => rest
+                .trim()
+                .parse()
+                .map_err(|e| format!("Bad node count: {}", e))?,
+            None => return Err(format!("Expected NODES, got: {:?}", line)),
+        },
+        None => return Err("Expected NODES, got: None".to_string()),
     };
     for _ in 0..n_nodes {
         let line = lines.next().ok_or("Unexpected EOF reading nodes")?;
@@ -120,11 +124,14 @@ pub fn parse_text(s: &str) -> Result<ExodusMesh, String> {
         mesh.add_node(x, y, z);
     }
     let n_blocks: usize = match lines.next() {
-        Some(line) if line.starts_with("BLOCKS ") => line[7..]
-            .trim()
-            .parse()
-            .map_err(|e| format!("Bad block count: {}", e))?,
-        other => return Err(format!("Expected BLOCKS, got: {:?}", other)),
+        Some(line) => match line.strip_prefix("BLOCKS ") {
+            Some(rest) => rest
+                .trim()
+                .parse()
+                .map_err(|e| format!("Bad block count: {}", e))?,
+            None => return Err(format!("Expected BLOCKS, got: {:?}", line)),
+        },
+        None => return Err("Expected BLOCKS, got: None".to_string()),
     };
     for _ in 0..n_blocks {
         let header = lines.next().ok_or("Unexpected EOF reading block header")?;
@@ -155,11 +162,14 @@ pub fn parse_text(s: &str) -> Result<ExodusMesh, String> {
         }
     }
     let n_node_sets: usize = match lines.next() {
-        Some(line) if line.starts_with("NODE_SETS ") => line[10..]
-            .trim()
-            .parse()
-            .map_err(|e| format!("Bad node set count: {}", e))?,
-        other => return Err(format!("Expected NODE_SETS, got: {:?}", other)),
+        Some(line) => match line.strip_prefix("NODE_SETS ") {
+            Some(rest) => rest
+                .trim()
+                .parse()
+                .map_err(|e| format!("Bad node set count: {}", e))?,
+            None => return Err(format!("Expected NODE_SETS, got: {:?}", line)),
+        },
+        None => return Err("Expected NODE_SETS, got: None".to_string()),
     };
     for _ in 0..n_node_sets {
         let header = lines
@@ -189,11 +199,14 @@ pub fn parse_text(s: &str) -> Result<ExodusMesh, String> {
         mesh.add_node_set(id, &name, nodes);
     }
     let n_side_sets: usize = match lines.next() {
-        Some(line) if line.starts_with("SIDE_SETS ") => line[10..]
-            .trim()
-            .parse()
-            .map_err(|e| format!("Bad side set count: {}", e))?,
-        other => return Err(format!("Expected SIDE_SETS, got: {:?}", other)),
+        Some(line) => match line.strip_prefix("SIDE_SETS ") {
+            Some(rest) => rest
+                .trim()
+                .parse()
+                .map_err(|e| format!("Bad side set count: {}", e))?,
+            None => return Err(format!("Expected SIDE_SETS, got: {:?}", line)),
+        },
+        None => return Err("Expected SIDE_SETS, got: None".to_string()),
     };
     for _ in 0..n_side_sets {
         let header = lines
@@ -273,7 +286,6 @@ pub fn translate_mesh(mesh: &mut ExodusMesh, offset: [f64; 3]) {
     }
 }
 /// Compute the time values for `n_steps` linearly spaced from `t_start` to `t_end`.
-#[allow(dead_code)]
 pub fn linear_time_steps(t_start: f64, t_end: f64, n_steps: usize) -> Vec<f64> {
     if n_steps == 0 {
         return vec![];
@@ -287,7 +299,6 @@ pub fn linear_time_steps(t_start: f64, t_end: f64, n_steps: usize) -> Vec<f64> {
 /// Compute the time values for `n_steps` logarithmically spaced from `t_start` to `t_end`.
 ///
 /// Both `t_start` and `t_end` must be positive.
-#[allow(dead_code)]
 pub fn log_time_steps(t_start: f64, t_end: f64, n_steps: usize) -> Vec<f64> {
     if n_steps == 0 || t_start <= 0.0 || t_end <= 0.0 {
         return vec![];
@@ -303,7 +314,6 @@ pub fn log_time_steps(t_start: f64, t_end: f64, n_steps: usize) -> Vec<f64> {
         .collect()
 }
 /// Add a time step with a scalar node variable to an `ExodusResult`.
-#[allow(dead_code)]
 pub fn add_node_variable_step(
     result: &mut ExodusResult,
     time: f64,
@@ -320,7 +330,6 @@ pub fn add_node_variable_step(
     });
 }
 /// Add a time step with an element variable to an `ExodusResult`.
-#[allow(dead_code)]
 pub fn add_element_variable_step(
     result: &mut ExodusResult,
     time: f64,
@@ -345,7 +354,6 @@ pub fn add_element_variable_step(
 /// - Side set element IDs are in valid range.
 /// - No duplicate block IDs.
 /// - No duplicate node-set IDs.
-#[allow(dead_code)]
 pub fn validate_mesh(mesh: &ExodusMesh) -> MeshValidationReport {
     let mut report = MeshValidationReport {
         is_valid: true,
@@ -428,7 +436,6 @@ pub fn validate_mesh(mesh: &ExodusMesh) -> MeshValidationReport {
     report
 }
 /// Scale all node coordinates by a uniform factor.
-#[allow(dead_code)]
 pub fn scale_mesh(mesh: &mut ExodusMesh, factor: f64) {
     for coord in &mut mesh.coordinates {
         coord[0] *= factor;
@@ -437,7 +444,6 @@ pub fn scale_mesh(mesh: &mut ExodusMesh, factor: f64) {
     }
 }
 /// Compute the centroid of a mesh (arithmetic mean of node coordinates).
-#[allow(dead_code)]
 pub fn mesh_centroid(mesh: &ExodusMesh) -> [f64; 3] {
     let n = mesh.coordinates.len();
     if n == 0 {
@@ -452,7 +458,6 @@ pub fn mesh_centroid(mesh: &ExodusMesh) -> [f64; 3] {
     [sum[0] / n as f64, sum[1] / n as f64, sum[2] / n as f64]
 }
 /// Build a unit-cube HEX8 mesh with 8 nodes and 1 element.
-#[allow(dead_code)]
 pub fn build_unit_hex_mesh(title: &str) -> ExodusMesh {
     let mut mesh = ExodusMesh::new(title);
     let coords = [
@@ -473,7 +478,6 @@ pub fn build_unit_hex_mesh(title: &str) -> ExodusMesh {
     mesh
 }
 /// Build a unit tetrahedron mesh with 4 nodes and 1 TET4 element.
-#[allow(dead_code)]
 pub fn build_unit_tet_mesh(title: &str) -> ExodusMesh {
     let mut mesh = ExodusMesh::new(title);
     mesh.add_node(0.0, 0.0, 0.0);
@@ -488,7 +492,6 @@ pub fn build_unit_tet_mesh(title: &str) -> ExodusMesh {
 ///
 /// Returns a new mesh combining both. Node IDs in the second mesh are offset
 /// by the number of nodes in the first mesh.
-#[allow(dead_code)]
 pub fn merge_meshes(a: &ExodusMesh, b: &ExodusMesh) -> ExodusMesh {
     let mut out = ExodusMesh::new(&format!("merged_{}_{}", a.title, b.title));
     for &c in &a.coordinates {
@@ -527,6 +530,602 @@ pub fn merge_meshes(a: &ExodusMesh, b: &ExodusMesh) -> ExodusMesh {
         out.add_node_set(ns.id + a.node_sets.len() as u32, &ns.name, shifted);
     }
     out
+}
+/// Compute the Euclidean distance between two nodes.
+pub fn node_distance(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    let dz = b[2] - a[2];
+    (dx * dx + dy * dy + dz * dz).sqrt()
+}
+/// Compute quality metrics for all TET4 elements in a mesh.
+///
+/// Elements that do not belong to TET4 blocks are skipped.
+pub fn tet4_quality(mesh: &ExodusMesh) -> Vec<ElementQuality> {
+    let mut result = Vec::new();
+    for block in &mesh.blocks {
+        if block.element_type != "TET4" || block.n_nodes_per_elem != 4 {
+            continue;
+        }
+        let n_elem = block.connectivity.len() / 4;
+        for ei in 0..n_elem {
+            let base = ei * 4;
+            let n0 = mesh.coordinates[block.connectivity[base] - 1];
+            let n1 = mesh.coordinates[block.connectivity[base + 1] - 1];
+            let n2 = mesh.coordinates[block.connectivity[base + 2] - 1];
+            let n3 = mesh.coordinates[block.connectivity[base + 3] - 1];
+            let edges = [
+                node_distance(n0, n1),
+                node_distance(n0, n2),
+                node_distance(n0, n3),
+                node_distance(n1, n2),
+                node_distance(n1, n3),
+                node_distance(n2, n3),
+            ];
+            let min_e = edges.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max_e = edges.iter().cloned().fold(0.0_f64, f64::max);
+            let aspect = if max_e > 1e-30 { min_e / max_e } else { 0.0 };
+            let e1 = [n1[0] - n0[0], n1[1] - n0[1], n1[2] - n0[2]];
+            let e2 = [n2[0] - n0[0], n2[1] - n0[1], n2[2] - n0[2]];
+            let e3 = [n3[0] - n0[0], n3[1] - n0[1], n3[2] - n0[2]];
+            let jdet = e1[0] * (e2[1] * e3[2] - e2[2] * e3[1])
+                - e1[1] * (e2[0] * e3[2] - e2[2] * e3[0])
+                + e1[2] * (e2[0] * e3[1] - e2[1] * e3[0]);
+            let len1 = (e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]).sqrt();
+            let len2 = (e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2]).sqrt();
+            let len3 = (e3[0] * e3[0] + e3[1] * e3[1] + e3[2] * e3[2]).sqrt();
+            let denom = len1 * len2 * len3;
+            let scaled_jac = if denom > 1e-30 { jdet / denom } else { 0.0 };
+            result.push(ElementQuality {
+                block_id: block.id,
+                element_index: ei,
+                aspect_ratio: aspect,
+                scaled_jacobian: scaled_jac,
+                min_edge: min_e,
+                max_edge: max_e,
+            });
+        }
+    }
+    result
+}
+/// Compute quality metrics for all HEX8 elements in a mesh.
+pub fn hex8_quality(mesh: &ExodusMesh) -> Vec<ElementQuality> {
+    let mut result = Vec::new();
+    for block in &mesh.blocks {
+        if block.element_type != "HEX8" || block.n_nodes_per_elem != 8 {
+            continue;
+        }
+        let n_elem = block.connectivity.len() / 8;
+        for ei in 0..n_elem {
+            let base = ei * 8;
+            let nodes: Vec<[f64; 3]> = (0..8)
+                .map(|k| mesh.coordinates[block.connectivity[base + k] - 1])
+                .collect();
+            let edge_pairs = [
+                (0, 1),
+                (1, 2),
+                (2, 3),
+                (3, 0),
+                (4, 5),
+                (5, 6),
+                (6, 7),
+                (7, 4),
+                (0, 4),
+                (1, 5),
+                (2, 6),
+                (3, 7),
+            ];
+            let edges: Vec<f64> = edge_pairs
+                .iter()
+                .map(|&(a, b)| node_distance(nodes[a], nodes[b]))
+                .collect();
+            let min_e = edges.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max_e = edges.iter().cloned().fold(0.0_f64, f64::max);
+            let aspect = if max_e > 1e-30 { min_e / max_e } else { 0.0 };
+            let e1 = [
+                nodes[1][0] - nodes[0][0],
+                nodes[1][1] - nodes[0][1],
+                nodes[1][2] - nodes[0][2],
+            ];
+            let e2 = [
+                nodes[3][0] - nodes[0][0],
+                nodes[3][1] - nodes[0][1],
+                nodes[3][2] - nodes[0][2],
+            ];
+            let e3 = [
+                nodes[4][0] - nodes[0][0],
+                nodes[4][1] - nodes[0][1],
+                nodes[4][2] - nodes[0][2],
+            ];
+            let jdet = e1[0] * (e2[1] * e3[2] - e2[2] * e3[1])
+                - e1[1] * (e2[0] * e3[2] - e2[2] * e3[0])
+                + e1[2] * (e2[0] * e3[1] - e2[1] * e3[0]);
+            let len1 = (e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]).sqrt();
+            let len2 = (e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2]).sqrt();
+            let len3 = (e3[0] * e3[0] + e3[1] * e3[1] + e3[2] * e3[2]).sqrt();
+            let denom = len1 * len2 * len3;
+            let scaled_jac = if denom > 1e-30 { jdet / denom } else { 0.0 };
+            result.push(ElementQuality {
+                block_id: block.id,
+                element_index: ei,
+                aspect_ratio: aspect,
+                scaled_jacobian: scaled_jac,
+                min_edge: min_e,
+                max_edge: max_e,
+            });
+        }
+    }
+    result
+}
+/// Interpolate a scalar field at an arbitrary point using nearest-node
+/// inverse-distance weighting.
+///
+/// `field` must have one value per node.
+pub fn idw_interpolate(mesh: &ExodusMesh, field: &[f64], query: [f64; 3], power: f64) -> f64 {
+    if field.is_empty() || mesh.coordinates.is_empty() {
+        return 0.0;
+    }
+    let mut num = 0.0_f64;
+    let mut den = 0.0_f64;
+    for (i, &c) in mesh.coordinates.iter().enumerate() {
+        if i >= field.len() {
+            break;
+        }
+        let d = node_distance(c, query);
+        if d < 1e-15 {
+            return field[i];
+        }
+        let w = 1.0 / d.powf(power);
+        num += w * field[i];
+        den += w;
+    }
+    if den.abs() < 1e-30 { 0.0 } else { num / den }
+}
+/// Find the index of the node closest to a query point.
+pub fn find_nearest_node(mesh: &ExodusMesh, query: [f64; 3]) -> Option<usize> {
+    if mesh.coordinates.is_empty() {
+        return None;
+    }
+    let mut best_idx = 0;
+    let mut best_dist = f64::INFINITY;
+    for (i, &c) in mesh.coordinates.iter().enumerate() {
+        let d = node_distance(c, query);
+        if d < best_dist {
+            best_dist = d;
+            best_idx = i;
+        }
+    }
+    Some(best_idx)
+}
+/// Extract the subset of nodes within a spherical region.
+///
+/// Returns 0-based indices of nodes whose distance from `center` is ≤ `radius`.
+pub fn nodes_in_sphere(mesh: &ExodusMesh, center: [f64; 3], radius: f64) -> Vec<usize> {
+    mesh.coordinates
+        .iter()
+        .enumerate()
+        .filter(|&(_, c)| node_distance(*c, center) <= radius)
+        .map(|(i, _)| i)
+        .collect()
+}
+/// Extract a sub-mesh containing only elements in the specified block.
+pub fn extract_block(mesh: &ExodusMesh, block_id: u32) -> Option<ExodusMesh> {
+    let block = mesh.blocks.iter().find(|b| b.id == block_id)?;
+    let mut out = ExodusMesh::new(&format!("{}_block_{}", mesh.title, block_id));
+    let mut used_nodes: Vec<usize> = block.connectivity.clone();
+    used_nodes.sort_unstable();
+    used_nodes.dedup();
+    let mut remap = std::collections::HashMap::new();
+    for (new_idx, &old_id) in used_nodes.iter().enumerate() {
+        remap.insert(old_id, new_idx + 1);
+    }
+    for &old_id in &used_nodes {
+        if old_id <= mesh.coordinates.len() {
+            let c = mesh.coordinates[old_id - 1];
+            out.coordinates.push(c);
+        }
+    }
+    let new_conn: Vec<usize> = block
+        .connectivity
+        .iter()
+        .map(|&n| *remap.get(&n).unwrap_or(&n))
+        .collect();
+    let bi = out.add_block(
+        block.id,
+        &block.name,
+        &block.element_type,
+        block.n_nodes_per_elem,
+    );
+    out.add_element_to_block(bi, &new_conn);
+    Some(out)
+}
+/// Extract a sub-mesh containing only the nodes in a node set.
+pub fn extract_node_set_coords(mesh: &ExodusMesh, ns_id: u32) -> Option<Vec<[f64; 3]>> {
+    let ns = mesh.node_sets.iter().find(|ns| ns.id == ns_id)?;
+    let coords: Vec<[f64; 3]> = ns
+        .node_ids
+        .iter()
+        .filter_map(|&nid| {
+            if nid >= 1 && nid <= mesh.coordinates.len() {
+                Some(mesh.coordinates[nid - 1])
+            } else {
+                None
+            }
+        })
+        .collect();
+    Some(coords)
+}
+/// Refine a mesh by midpoint subdivision of TET4 elements.
+///
+/// Each TET4 is split into 8 smaller tetrahedra by inserting 6 midpoint nodes
+/// on every edge (regular octasection). This produces a conforming mesh.
+pub fn refine_tet4_mesh(mesh: &ExodusMesh) -> ExodusMesh {
+    let mut out = ExodusMesh::new(&format!("{}_refined", mesh.title));
+    for &c in &mesh.coordinates {
+        out.coordinates.push(c);
+    }
+    let mut edge_mid: std::collections::HashMap<(usize, usize), usize> =
+        std::collections::HashMap::new();
+    let add_midpoint = |coords: &mut Vec<[f64; 3]>, a: usize, b: usize| -> usize {
+        let ca = coords[a - 1];
+        let cb = coords[b - 1];
+        let mid = [
+            (ca[0] + cb[0]) * 0.5,
+            (ca[1] + cb[1]) * 0.5,
+            (ca[2] + cb[2]) * 0.5,
+        ];
+        coords.push(mid);
+        coords.len()
+    };
+    for block in &mesh.blocks {
+        if block.element_type != "TET4" || block.n_nodes_per_elem != 4 {
+            let bi = out.add_block(
+                block.id,
+                &block.name,
+                &block.element_type,
+                block.n_nodes_per_elem,
+            );
+            out.add_element_to_block(bi, &block.connectivity);
+            continue;
+        }
+        let bi = out.add_block(block.id, &block.name, "TET4", 4);
+        let n_elem = block.connectivity.len() / 4;
+        for ei in 0..n_elem {
+            let base = ei * 4;
+            let (v0, v1, v2, v3) = (
+                block.connectivity[base],
+                block.connectivity[base + 1],
+                block.connectivity[base + 2],
+                block.connectivity[base + 3],
+            );
+            let get_mid = |a: usize,
+                           b: usize,
+                           coords: &mut Vec<[f64; 3]>,
+                           cache: &mut std::collections::HashMap<(usize, usize), usize>|
+             -> usize {
+                let key = if a < b { (a, b) } else { (b, a) };
+                if let Some(&mid) = cache.get(&key) {
+                    mid
+                } else {
+                    let mid = add_midpoint(coords, a, b);
+                    cache.insert(key, mid);
+                    mid
+                }
+            };
+            let m01 = get_mid(v0, v1, &mut out.coordinates, &mut edge_mid);
+            let m02 = get_mid(v0, v2, &mut out.coordinates, &mut edge_mid);
+            let m03 = get_mid(v0, v3, &mut out.coordinates, &mut edge_mid);
+            let m12 = get_mid(v1, v2, &mut out.coordinates, &mut edge_mid);
+            let m13 = get_mid(v1, v3, &mut out.coordinates, &mut edge_mid);
+            let m23 = get_mid(v2, v3, &mut out.coordinates, &mut edge_mid);
+            let sub_tets = [
+                [v0, m01, m02, m03],
+                [v1, m01, m12, m13],
+                [v2, m02, m12, m23],
+                [v3, m03, m13, m23],
+                [m01, m02, m03, m13],
+                [m01, m02, m12, m13],
+                [m02, m03, m13, m23],
+                [m02, m12, m13, m23],
+            ];
+            for tet in &sub_tets {
+                out.add_element_to_block(bi, tet);
+            }
+        }
+    }
+    out
+}
+/// Extract all unique node IDs referenced in node sets as a sorted vec.
+pub fn all_boundary_nodes(mesh: &ExodusMesh) -> Vec<usize> {
+    let mut ids: Vec<usize> = mesh
+        .node_sets
+        .iter()
+        .flat_map(|ns| ns.node_ids.iter().cloned())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+/// Count how many times each node appears in element connectivity.
+///
+/// Returns a vector of length `n_nodes` with valence counts (0-based index).
+pub fn node_valence(mesh: &ExodusMesh) -> Vec<usize> {
+    let n = mesh.node_count();
+    let mut valence = vec![0usize; n];
+    for block in &mesh.blocks {
+        for &nid in &block.connectivity {
+            if nid >= 1 && nid <= n {
+                valence[nid - 1] += 1;
+            }
+        }
+    }
+    valence
+}
+/// Write an `ExodusResult` (mesh + time steps) to a text representation.
+///
+/// Variables are written after the mesh section with their time stamps.
+pub fn write_result_text(result: &ExodusResult) -> String {
+    let mut s = write_text(&result.mesh);
+    if s.ends_with("END\n") {
+        s.truncate(s.len() - 4);
+    }
+    s.push_str(&format!("TIME_STEPS {}\n", result.time_steps.len()));
+    for ts in &result.time_steps {
+        s.push_str(&format!("TIME_STEP {:.15e}\n", ts.time));
+        s.push_str(&format!("VARIABLES {}\n", ts.variables.len()));
+        for var in &ts.variables {
+            s.push_str(&format!(
+                "VAR {} {} {}\n",
+                var.entity_type,
+                var.name,
+                var.values.len()
+            ));
+            let vals: Vec<String> = var.values.iter().map(|v| format!("{:.15e}", v)).collect();
+            s.push_str(&vals.join(" "));
+            s.push('\n');
+        }
+    }
+    s.push_str("END\n");
+    s
+}
+/// Parse an `ExodusResult` from the text format written by `write_result_text`.
+pub fn parse_result_text(data: &str) -> std::result::Result<ExodusResult, String> {
+    let ts_marker = "TIME_STEPS ";
+    if let Some(pos) = data.find(ts_marker) {
+        let mesh_part = format!("{}END\n", &data[..pos]);
+        let mesh = parse_text(&mesh_part)?;
+        let mut result = ExodusResult {
+            mesh,
+            time_steps: Vec::new(),
+        };
+        let rest = &data[pos..];
+        let mut lines = rest.lines().peekable();
+        let n_steps: usize = match lines.next() {
+            Some(line) => match line.strip_prefix("TIME_STEPS ") {
+                Some(rest) => rest
+                    .trim()
+                    .parse()
+                    .map_err(|e| format!("Bad TIME_STEPS: {}", e))?,
+                None => return Err(format!("Expected TIME_STEPS, got: {:?}", line)),
+            },
+            None => return Err("Expected TIME_STEPS, got: None".to_string()),
+        };
+        for _ in 0..n_steps {
+            let time: f64 = match lines.next() {
+                Some(line) => match line.strip_prefix("TIME_STEP ") {
+                    Some(rest) => rest
+                        .trim()
+                        .parse()
+                        .map_err(|e| format!("Bad TIME_STEP: {}", e))?,
+                    None => return Err(format!("Expected TIME_STEP, got: {:?}", line)),
+                },
+                None => return Err("Expected TIME_STEP, got: None".to_string()),
+            };
+            let n_vars: usize = match lines.next() {
+                Some(line) => match line.strip_prefix("VARIABLES ") {
+                    Some(rest) => rest
+                        .trim()
+                        .parse()
+                        .map_err(|e| format!("Bad VARIABLES: {}", e))?,
+                    None => return Err(format!("Expected VARIABLES, got: {:?}", line)),
+                },
+                None => return Err("Expected VARIABLES, got: None".to_string()),
+            };
+            let mut variables = Vec::new();
+            for _ in 0..n_vars {
+                let hdr = lines.next().ok_or("Unexpected EOF reading VAR")?;
+                let parts: Vec<&str> = hdr.split_whitespace().collect();
+                if parts.len() < 4 || parts[0] != "VAR" {
+                    return Err(format!("Expected VAR header, got: {}", hdr));
+                }
+                let entity_type = parts[1].to_string();
+                let name = parts[2].to_string();
+                let n_vals: usize = parts[3]
+                    .parse()
+                    .map_err(|e| format!("Bad VAR count: {}", e))?;
+                let vals_line = lines.next().ok_or("Unexpected EOF reading VAR data")?;
+                let values: std::result::Result<Vec<f64>, _> = vals_line
+                    .split_whitespace()
+                    .take(n_vals)
+                    .map(|v| v.parse::<f64>())
+                    .collect();
+                let values = values.map_err(|e| format!("Bad VAR values: {}", e))?;
+                variables.push(ExodusVariable {
+                    name,
+                    entity_type,
+                    values,
+                });
+            }
+            result.time_steps.push(ExodusTimeStep { time, variables });
+        }
+        Ok(result)
+    } else {
+        let mesh = parse_text(data)?;
+        Ok(ExodusResult {
+            mesh,
+            time_steps: Vec::new(),
+        })
+    }
+}
+/// Partition a mesh into `n_parts` using a round-robin element assignment.
+///
+/// Only the first block is partitioned; subsequent blocks are copied to part 0.
+pub fn partition_mesh_round_robin(mesh: &ExodusMesh, n_parts: usize) -> Vec<MeshPartition> {
+    if n_parts == 0 || mesh.blocks.is_empty() {
+        return Vec::new();
+    }
+    let mut parts: Vec<ExodusMesh> = (0..n_parts)
+        .map(|i| ExodusMesh::new(&format!("{}_part_{}", mesh.title, i)))
+        .collect();
+    for p in &mut parts {
+        for &c in &mesh.coordinates {
+            p.coordinates.push(c);
+        }
+    }
+    let block = &mesh.blocks[0];
+    let n_elem = block
+        .connectivity
+        .len()
+        .checked_div(block.n_nodes_per_elem)
+        .unwrap_or(0);
+    let block_idxs: Vec<usize> = (0..n_parts)
+        .map(|pi| {
+            parts[pi].add_block(
+                block.id,
+                &block.name,
+                &block.element_type,
+                block.n_nodes_per_elem,
+            )
+        })
+        .collect();
+    for ei in 0..n_elem {
+        let part = ei % n_parts;
+        let base = ei * block.n_nodes_per_elem;
+        let conn = &block.connectivity[base..base + block.n_nodes_per_elem];
+        parts[part].add_element_to_block(block_idxs[part], conn);
+    }
+    for ns in &mesh.node_sets {
+        for p in &mut parts {
+            p.add_node_set(ns.id, &ns.name, ns.node_ids.clone());
+        }
+    }
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(i, m)| MeshPartition {
+            partition_id: i,
+            mesh: m,
+        })
+        .collect()
+}
+/// Compute statistics for a scalar field.
+pub fn field_stats(values: &[f64]) -> FieldStats {
+    if values.is_empty() {
+        return FieldStats {
+            min: 0.0,
+            max: 0.0,
+            mean: 0.0,
+            std_dev: 0.0,
+            count: 0,
+        };
+    }
+    let count = values.len();
+    let mut min_v = values[0];
+    let mut max_v = values[0];
+    let mut sum = 0.0_f64;
+    for &v in values {
+        if v < min_v {
+            min_v = v;
+        }
+        if v > max_v {
+            max_v = v;
+        }
+        sum += v;
+    }
+    let mean = sum / count as f64;
+    let var: f64 = values
+        .iter()
+        .map(|&v| {
+            let d = v - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / count as f64;
+    FieldStats {
+        min: min_v,
+        max: max_v,
+        mean,
+        std_dev: var.sqrt(),
+        count,
+    }
+}
+/// Normalize a scalar field to the range \[0, 1\].
+pub fn normalize_field(values: &[f64]) -> Vec<f64> {
+    if values.is_empty() {
+        return Vec::new();
+    }
+    let stats = field_stats(values);
+    let range = stats.max - stats.min;
+    if range < 1e-30 {
+        return vec![0.5; values.len()];
+    }
+    values.iter().map(|&v| (v - stats.min) / range).collect()
+}
+/// Compute the L2 norm of a field.
+pub fn field_l2_norm(values: &[f64]) -> f64 {
+    let sum_sq: f64 = values.iter().map(|&v| v * v).sum();
+    sum_sq.sqrt()
+}
+/// Export node coordinates to a CSV string.
+pub fn export_nodes_csv(mesh: &ExodusMesh) -> String {
+    let mut s = String::from("node_id,x,y,z\n");
+    for (i, &c) in mesh.coordinates.iter().enumerate() {
+        s.push_str(&format!("{},{},{},{}\n", i + 1, c[0], c[1], c[2]));
+    }
+    s
+}
+/// Export node field values to a CSV string alongside node coordinates.
+pub fn export_field_csv(mesh: &ExodusMesh, field_name: &str, values: &[f64]) -> String {
+    let mut s = format!("node_id,x,y,z,{}\n", field_name);
+    for (i, &c) in mesh.coordinates.iter().enumerate() {
+        let v = values.get(i).copied().unwrap_or(0.0);
+        s.push_str(&format!("{},{},{},{},{}\n", i + 1, c[0], c[1], c[2], v));
+    }
+    s
+}
+/// Export element connectivity to a CSV string.
+pub fn export_connectivity_csv(mesh: &ExodusMesh) -> String {
+    let mut s = String::from("block_id,element_id");
+    let max_npe = mesh
+        .blocks
+        .iter()
+        .map(|b| b.n_nodes_per_elem)
+        .max()
+        .unwrap_or(0);
+    for k in 0..max_npe {
+        s.push_str(&format!(",n{}", k));
+    }
+    s.push('\n');
+    let mut global_elem = 1;
+    for block in &mesh.blocks {
+        if block.n_nodes_per_elem == 0 {
+            continue;
+        }
+        let n_elem = block.connectivity.len() / block.n_nodes_per_elem;
+        for ei in 0..n_elem {
+            let base = ei * block.n_nodes_per_elem;
+            s.push_str(&format!("{},{}", block.id, global_elem));
+            for k in 0..block.n_nodes_per_elem {
+                s.push_str(&format!(",{}", block.connectivity[base + k]));
+            }
+            for _ in block.n_nodes_per_elem..max_npe {
+                s.push_str(",-1");
+            }
+            s.push('\n');
+            global_elem += 1;
+        }
+    }
+    s
 }
 #[cfg(test)]
 mod tests {
@@ -981,611 +1580,4 @@ mod tests {
         assert!(report.is_valid);
         assert!(report.errors.is_empty());
     }
-}
-/// Compute the Euclidean distance between two nodes.
-#[allow(dead_code)]
-pub fn node_distance(a: [f64; 3], b: [f64; 3]) -> f64 {
-    let dx = b[0] - a[0];
-    let dy = b[1] - a[1];
-    let dz = b[2] - a[2];
-    (dx * dx + dy * dy + dz * dz).sqrt()
-}
-/// Compute quality metrics for all TET4 elements in a mesh.
-///
-/// Elements that do not belong to TET4 blocks are skipped.
-#[allow(dead_code)]
-pub fn tet4_quality(mesh: &ExodusMesh) -> Vec<ElementQuality> {
-    let mut result = Vec::new();
-    for block in &mesh.blocks {
-        if block.element_type != "TET4" || block.n_nodes_per_elem != 4 {
-            continue;
-        }
-        let n_elem = block.connectivity.len() / 4;
-        for ei in 0..n_elem {
-            let base = ei * 4;
-            let n0 = mesh.coordinates[block.connectivity[base] - 1];
-            let n1 = mesh.coordinates[block.connectivity[base + 1] - 1];
-            let n2 = mesh.coordinates[block.connectivity[base + 2] - 1];
-            let n3 = mesh.coordinates[block.connectivity[base + 3] - 1];
-            let edges = [
-                node_distance(n0, n1),
-                node_distance(n0, n2),
-                node_distance(n0, n3),
-                node_distance(n1, n2),
-                node_distance(n1, n3),
-                node_distance(n2, n3),
-            ];
-            let min_e = edges.iter().cloned().fold(f64::INFINITY, f64::min);
-            let max_e = edges.iter().cloned().fold(0.0_f64, f64::max);
-            let aspect = if max_e > 1e-30 { min_e / max_e } else { 0.0 };
-            let e1 = [n1[0] - n0[0], n1[1] - n0[1], n1[2] - n0[2]];
-            let e2 = [n2[0] - n0[0], n2[1] - n0[1], n2[2] - n0[2]];
-            let e3 = [n3[0] - n0[0], n3[1] - n0[1], n3[2] - n0[2]];
-            let jdet = e1[0] * (e2[1] * e3[2] - e2[2] * e3[1])
-                - e1[1] * (e2[0] * e3[2] - e2[2] * e3[0])
-                + e1[2] * (e2[0] * e3[1] - e2[1] * e3[0]);
-            let len1 = (e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]).sqrt();
-            let len2 = (e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2]).sqrt();
-            let len3 = (e3[0] * e3[0] + e3[1] * e3[1] + e3[2] * e3[2]).sqrt();
-            let denom = len1 * len2 * len3;
-            let scaled_jac = if denom > 1e-30 { jdet / denom } else { 0.0 };
-            result.push(ElementQuality {
-                block_id: block.id,
-                element_index: ei,
-                aspect_ratio: aspect,
-                scaled_jacobian: scaled_jac,
-                min_edge: min_e,
-                max_edge: max_e,
-            });
-        }
-    }
-    result
-}
-/// Compute quality metrics for all HEX8 elements in a mesh.
-#[allow(dead_code)]
-pub fn hex8_quality(mesh: &ExodusMesh) -> Vec<ElementQuality> {
-    let mut result = Vec::new();
-    for block in &mesh.blocks {
-        if block.element_type != "HEX8" || block.n_nodes_per_elem != 8 {
-            continue;
-        }
-        let n_elem = block.connectivity.len() / 8;
-        for ei in 0..n_elem {
-            let base = ei * 8;
-            let nodes: Vec<[f64; 3]> = (0..8)
-                .map(|k| mesh.coordinates[block.connectivity[base + k] - 1])
-                .collect();
-            let edge_pairs = [
-                (0, 1),
-                (1, 2),
-                (2, 3),
-                (3, 0),
-                (4, 5),
-                (5, 6),
-                (6, 7),
-                (7, 4),
-                (0, 4),
-                (1, 5),
-                (2, 6),
-                (3, 7),
-            ];
-            let edges: Vec<f64> = edge_pairs
-                .iter()
-                .map(|&(a, b)| node_distance(nodes[a], nodes[b]))
-                .collect();
-            let min_e = edges.iter().cloned().fold(f64::INFINITY, f64::min);
-            let max_e = edges.iter().cloned().fold(0.0_f64, f64::max);
-            let aspect = if max_e > 1e-30 { min_e / max_e } else { 0.0 };
-            let e1 = [
-                nodes[1][0] - nodes[0][0],
-                nodes[1][1] - nodes[0][1],
-                nodes[1][2] - nodes[0][2],
-            ];
-            let e2 = [
-                nodes[3][0] - nodes[0][0],
-                nodes[3][1] - nodes[0][1],
-                nodes[3][2] - nodes[0][2],
-            ];
-            let e3 = [
-                nodes[4][0] - nodes[0][0],
-                nodes[4][1] - nodes[0][1],
-                nodes[4][2] - nodes[0][2],
-            ];
-            let jdet = e1[0] * (e2[1] * e3[2] - e2[2] * e3[1])
-                - e1[1] * (e2[0] * e3[2] - e2[2] * e3[0])
-                + e1[2] * (e2[0] * e3[1] - e2[1] * e3[0]);
-            let len1 = (e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]).sqrt();
-            let len2 = (e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2]).sqrt();
-            let len3 = (e3[0] * e3[0] + e3[1] * e3[1] + e3[2] * e3[2]).sqrt();
-            let denom = len1 * len2 * len3;
-            let scaled_jac = if denom > 1e-30 { jdet / denom } else { 0.0 };
-            result.push(ElementQuality {
-                block_id: block.id,
-                element_index: ei,
-                aspect_ratio: aspect,
-                scaled_jacobian: scaled_jac,
-                min_edge: min_e,
-                max_edge: max_e,
-            });
-        }
-    }
-    result
-}
-/// Interpolate a scalar field at an arbitrary point using nearest-node
-/// inverse-distance weighting.
-///
-/// `field` must have one value per node.
-#[allow(dead_code)]
-pub fn idw_interpolate(mesh: &ExodusMesh, field: &[f64], query: [f64; 3], power: f64) -> f64 {
-    if field.is_empty() || mesh.coordinates.is_empty() {
-        return 0.0;
-    }
-    let mut num = 0.0_f64;
-    let mut den = 0.0_f64;
-    for (i, &c) in mesh.coordinates.iter().enumerate() {
-        if i >= field.len() {
-            break;
-        }
-        let d = node_distance(c, query);
-        if d < 1e-15 {
-            return field[i];
-        }
-        let w = 1.0 / d.powf(power);
-        num += w * field[i];
-        den += w;
-    }
-    if den.abs() < 1e-30 { 0.0 } else { num / den }
-}
-/// Find the index of the node closest to a query point.
-#[allow(dead_code)]
-pub fn find_nearest_node(mesh: &ExodusMesh, query: [f64; 3]) -> Option<usize> {
-    if mesh.coordinates.is_empty() {
-        return None;
-    }
-    let mut best_idx = 0;
-    let mut best_dist = f64::INFINITY;
-    for (i, &c) in mesh.coordinates.iter().enumerate() {
-        let d = node_distance(c, query);
-        if d < best_dist {
-            best_dist = d;
-            best_idx = i;
-        }
-    }
-    Some(best_idx)
-}
-/// Extract the subset of nodes within a spherical region.
-///
-/// Returns 0-based indices of nodes whose distance from `center` is ≤ `radius`.
-#[allow(dead_code)]
-pub fn nodes_in_sphere(mesh: &ExodusMesh, center: [f64; 3], radius: f64) -> Vec<usize> {
-    mesh.coordinates
-        .iter()
-        .enumerate()
-        .filter(|&(_, c)| node_distance(*c, center) <= radius)
-        .map(|(i, _)| i)
-        .collect()
-}
-/// Extract a sub-mesh containing only elements in the specified block.
-#[allow(dead_code)]
-pub fn extract_block(mesh: &ExodusMesh, block_id: u32) -> Option<ExodusMesh> {
-    let block = mesh.blocks.iter().find(|b| b.id == block_id)?;
-    let mut out = ExodusMesh::new(&format!("{}_block_{}", mesh.title, block_id));
-    let mut used_nodes: Vec<usize> = block.connectivity.clone();
-    used_nodes.sort_unstable();
-    used_nodes.dedup();
-    let mut remap = std::collections::HashMap::new();
-    for (new_idx, &old_id) in used_nodes.iter().enumerate() {
-        remap.insert(old_id, new_idx + 1);
-    }
-    for &old_id in &used_nodes {
-        if old_id <= mesh.coordinates.len() {
-            let c = mesh.coordinates[old_id - 1];
-            out.coordinates.push(c);
-        }
-    }
-    let new_conn: Vec<usize> = block
-        .connectivity
-        .iter()
-        .map(|&n| *remap.get(&n).unwrap_or(&n))
-        .collect();
-    let bi = out.add_block(
-        block.id,
-        &block.name,
-        &block.element_type,
-        block.n_nodes_per_elem,
-    );
-    out.add_element_to_block(bi, &new_conn);
-    Some(out)
-}
-/// Extract a sub-mesh containing only the nodes in a node set.
-#[allow(dead_code)]
-pub fn extract_node_set_coords(mesh: &ExodusMesh, ns_id: u32) -> Option<Vec<[f64; 3]>> {
-    let ns = mesh.node_sets.iter().find(|ns| ns.id == ns_id)?;
-    let coords: Vec<[f64; 3]> = ns
-        .node_ids
-        .iter()
-        .filter_map(|&nid| {
-            if nid >= 1 && nid <= mesh.coordinates.len() {
-                Some(mesh.coordinates[nid - 1])
-            } else {
-                None
-            }
-        })
-        .collect();
-    Some(coords)
-}
-/// Refine a mesh by midpoint subdivision of TET4 elements.
-///
-/// Each TET4 is split into 8 smaller tetrahedra by inserting 6 midpoint nodes
-/// on every edge (regular octasection). This produces a conforming mesh.
-#[allow(dead_code)]
-pub fn refine_tet4_mesh(mesh: &ExodusMesh) -> ExodusMesh {
-    let mut out = ExodusMesh::new(&format!("{}_refined", mesh.title));
-    for &c in &mesh.coordinates {
-        out.coordinates.push(c);
-    }
-    let mut edge_mid: std::collections::HashMap<(usize, usize), usize> =
-        std::collections::HashMap::new();
-    let add_midpoint = |coords: &mut Vec<[f64; 3]>, a: usize, b: usize| -> usize {
-        let ca = coords[a - 1];
-        let cb = coords[b - 1];
-        let mid = [
-            (ca[0] + cb[0]) * 0.5,
-            (ca[1] + cb[1]) * 0.5,
-            (ca[2] + cb[2]) * 0.5,
-        ];
-        coords.push(mid);
-        coords.len()
-    };
-    for block in &mesh.blocks {
-        if block.element_type != "TET4" || block.n_nodes_per_elem != 4 {
-            let bi = out.add_block(
-                block.id,
-                &block.name,
-                &block.element_type,
-                block.n_nodes_per_elem,
-            );
-            out.add_element_to_block(bi, &block.connectivity);
-            continue;
-        }
-        let bi = out.add_block(block.id, &block.name, "TET4", 4);
-        let n_elem = block.connectivity.len() / 4;
-        for ei in 0..n_elem {
-            let base = ei * 4;
-            let (v0, v1, v2, v3) = (
-                block.connectivity[base],
-                block.connectivity[base + 1],
-                block.connectivity[base + 2],
-                block.connectivity[base + 3],
-            );
-            let get_mid = |a: usize,
-                           b: usize,
-                           coords: &mut Vec<[f64; 3]>,
-                           cache: &mut std::collections::HashMap<(usize, usize), usize>|
-             -> usize {
-                let key = if a < b { (a, b) } else { (b, a) };
-                if let Some(&mid) = cache.get(&key) {
-                    mid
-                } else {
-                    let mid = add_midpoint(coords, a, b);
-                    cache.insert(key, mid);
-                    mid
-                }
-            };
-            let m01 = get_mid(v0, v1, &mut out.coordinates, &mut edge_mid);
-            let m02 = get_mid(v0, v2, &mut out.coordinates, &mut edge_mid);
-            let m03 = get_mid(v0, v3, &mut out.coordinates, &mut edge_mid);
-            let m12 = get_mid(v1, v2, &mut out.coordinates, &mut edge_mid);
-            let m13 = get_mid(v1, v3, &mut out.coordinates, &mut edge_mid);
-            let m23 = get_mid(v2, v3, &mut out.coordinates, &mut edge_mid);
-            let sub_tets = [
-                [v0, m01, m02, m03],
-                [v1, m01, m12, m13],
-                [v2, m02, m12, m23],
-                [v3, m03, m13, m23],
-                [m01, m02, m03, m13],
-                [m01, m02, m12, m13],
-                [m02, m03, m13, m23],
-                [m02, m12, m13, m23],
-            ];
-            for tet in &sub_tets {
-                out.add_element_to_block(bi, tet);
-            }
-        }
-    }
-    out
-}
-/// Extract all unique node IDs referenced in node sets as a sorted vec.
-#[allow(dead_code)]
-pub fn all_boundary_nodes(mesh: &ExodusMesh) -> Vec<usize> {
-    let mut ids: Vec<usize> = mesh
-        .node_sets
-        .iter()
-        .flat_map(|ns| ns.node_ids.iter().cloned())
-        .collect();
-    ids.sort_unstable();
-    ids.dedup();
-    ids
-}
-/// Count how many times each node appears in element connectivity.
-///
-/// Returns a vector of length `n_nodes` with valence counts (0-based index).
-#[allow(dead_code)]
-pub fn node_valence(mesh: &ExodusMesh) -> Vec<usize> {
-    let n = mesh.node_count();
-    let mut valence = vec![0usize; n];
-    for block in &mesh.blocks {
-        for &nid in &block.connectivity {
-            if nid >= 1 && nid <= n {
-                valence[nid - 1] += 1;
-            }
-        }
-    }
-    valence
-}
-/// Write an `ExodusResult` (mesh + time steps) to a text representation.
-///
-/// Variables are written after the mesh section with their time stamps.
-#[allow(dead_code)]
-pub fn write_result_text(result: &ExodusResult) -> String {
-    let mut s = write_text(&result.mesh);
-    if s.ends_with("END\n") {
-        s.truncate(s.len() - 4);
-    }
-    s.push_str(&format!("TIME_STEPS {}\n", result.time_steps.len()));
-    for ts in &result.time_steps {
-        s.push_str(&format!("TIME_STEP {:.15e}\n", ts.time));
-        s.push_str(&format!("VARIABLES {}\n", ts.variables.len()));
-        for var in &ts.variables {
-            s.push_str(&format!(
-                "VAR {} {} {}\n",
-                var.entity_type,
-                var.name,
-                var.values.len()
-            ));
-            let vals: Vec<String> = var.values.iter().map(|v| format!("{:.15e}", v)).collect();
-            s.push_str(&vals.join(" "));
-            s.push('\n');
-        }
-    }
-    s.push_str("END\n");
-    s
-}
-/// Parse an `ExodusResult` from the text format written by `write_result_text`.
-#[allow(dead_code)]
-pub fn parse_result_text(data: &str) -> std::result::Result<ExodusResult, String> {
-    let ts_marker = "TIME_STEPS ";
-    if let Some(pos) = data.find(ts_marker) {
-        let mesh_part = format!("{}END\n", &data[..pos]);
-        let mesh = parse_text(&mesh_part)?;
-        let mut result = ExodusResult {
-            mesh,
-            time_steps: Vec::new(),
-        };
-        let rest = &data[pos..];
-        let mut lines = rest.lines().peekable();
-        let n_steps: usize = match lines.next() {
-            Some(line) if line.starts_with("TIME_STEPS ") => line[11..]
-                .trim()
-                .parse()
-                .map_err(|e| format!("Bad TIME_STEPS: {}", e))?,
-            other => return Err(format!("Expected TIME_STEPS, got: {:?}", other)),
-        };
-        for _ in 0..n_steps {
-            let time: f64 = match lines.next() {
-                Some(line) if line.starts_with("TIME_STEP ") => line[10..]
-                    .trim()
-                    .parse()
-                    .map_err(|e| format!("Bad TIME_STEP: {}", e))?,
-                other => return Err(format!("Expected TIME_STEP, got: {:?}", other)),
-            };
-            let n_vars: usize = match lines.next() {
-                Some(line) if line.starts_with("VARIABLES ") => line[10..]
-                    .trim()
-                    .parse()
-                    .map_err(|e| format!("Bad VARIABLES: {}", e))?,
-                other => return Err(format!("Expected VARIABLES, got: {:?}", other)),
-            };
-            let mut variables = Vec::new();
-            for _ in 0..n_vars {
-                let hdr = lines.next().ok_or("Unexpected EOF reading VAR")?;
-                let parts: Vec<&str> = hdr.split_whitespace().collect();
-                if parts.len() < 4 || parts[0] != "VAR" {
-                    return Err(format!("Expected VAR header, got: {}", hdr));
-                }
-                let entity_type = parts[1].to_string();
-                let name = parts[2].to_string();
-                let n_vals: usize = parts[3]
-                    .parse()
-                    .map_err(|e| format!("Bad VAR count: {}", e))?;
-                let vals_line = lines.next().ok_or("Unexpected EOF reading VAR data")?;
-                let values: std::result::Result<Vec<f64>, _> = vals_line
-                    .split_whitespace()
-                    .take(n_vals)
-                    .map(|v| v.parse::<f64>())
-                    .collect();
-                let values = values.map_err(|e| format!("Bad VAR values: {}", e))?;
-                variables.push(ExodusVariable {
-                    name,
-                    entity_type,
-                    values,
-                });
-            }
-            result.time_steps.push(ExodusTimeStep { time, variables });
-        }
-        Ok(result)
-    } else {
-        let mesh = parse_text(data)?;
-        Ok(ExodusResult {
-            mesh,
-            time_steps: Vec::new(),
-        })
-    }
-}
-/// Partition a mesh into `n_parts` using a round-robin element assignment.
-///
-/// Only the first block is partitioned; subsequent blocks are copied to part 0.
-#[allow(dead_code)]
-pub fn partition_mesh_round_robin(mesh: &ExodusMesh, n_parts: usize) -> Vec<MeshPartition> {
-    if n_parts == 0 || mesh.blocks.is_empty() {
-        return Vec::new();
-    }
-    let mut parts: Vec<ExodusMesh> = (0..n_parts)
-        .map(|i| ExodusMesh::new(&format!("{}_part_{}", mesh.title, i)))
-        .collect();
-    for p in &mut parts {
-        for &c in &mesh.coordinates {
-            p.coordinates.push(c);
-        }
-    }
-    let block = &mesh.blocks[0];
-    let n_elem = block
-        .connectivity
-        .len()
-        .checked_div(block.n_nodes_per_elem)
-        .unwrap_or(0);
-    let block_idxs: Vec<usize> = (0..n_parts)
-        .map(|pi| {
-            parts[pi].add_block(
-                block.id,
-                &block.name,
-                &block.element_type,
-                block.n_nodes_per_elem,
-            )
-        })
-        .collect();
-    for ei in 0..n_elem {
-        let part = ei % n_parts;
-        let base = ei * block.n_nodes_per_elem;
-        let conn = &block.connectivity[base..base + block.n_nodes_per_elem];
-        parts[part].add_element_to_block(block_idxs[part], conn);
-    }
-    for ns in &mesh.node_sets {
-        for p in &mut parts {
-            p.add_node_set(ns.id, &ns.name, ns.node_ids.clone());
-        }
-    }
-    parts
-        .into_iter()
-        .enumerate()
-        .map(|(i, m)| MeshPartition {
-            partition_id: i,
-            mesh: m,
-        })
-        .collect()
-}
-/// Compute statistics for a scalar field.
-#[allow(dead_code)]
-pub fn field_stats(values: &[f64]) -> FieldStats {
-    if values.is_empty() {
-        return FieldStats {
-            min: 0.0,
-            max: 0.0,
-            mean: 0.0,
-            std_dev: 0.0,
-            count: 0,
-        };
-    }
-    let count = values.len();
-    let mut min_v = values[0];
-    let mut max_v = values[0];
-    let mut sum = 0.0_f64;
-    for &v in values {
-        if v < min_v {
-            min_v = v;
-        }
-        if v > max_v {
-            max_v = v;
-        }
-        sum += v;
-    }
-    let mean = sum / count as f64;
-    let var: f64 = values
-        .iter()
-        .map(|&v| {
-            let d = v - mean;
-            d * d
-        })
-        .sum::<f64>()
-        / count as f64;
-    FieldStats {
-        min: min_v,
-        max: max_v,
-        mean,
-        std_dev: var.sqrt(),
-        count,
-    }
-}
-/// Normalize a scalar field to the range \[0, 1\].
-#[allow(dead_code)]
-pub fn normalize_field(values: &[f64]) -> Vec<f64> {
-    if values.is_empty() {
-        return Vec::new();
-    }
-    let stats = field_stats(values);
-    let range = stats.max - stats.min;
-    if range < 1e-30 {
-        return vec![0.5; values.len()];
-    }
-    values.iter().map(|&v| (v - stats.min) / range).collect()
-}
-/// Compute the L2 norm of a field.
-#[allow(dead_code)]
-pub fn field_l2_norm(values: &[f64]) -> f64 {
-    let sum_sq: f64 = values.iter().map(|&v| v * v).sum();
-    sum_sq.sqrt()
-}
-/// Export node coordinates to a CSV string.
-#[allow(dead_code)]
-pub fn export_nodes_csv(mesh: &ExodusMesh) -> String {
-    let mut s = String::from("node_id,x,y,z\n");
-    for (i, &c) in mesh.coordinates.iter().enumerate() {
-        s.push_str(&format!("{},{},{},{}\n", i + 1, c[0], c[1], c[2]));
-    }
-    s
-}
-/// Export node field values to a CSV string alongside node coordinates.
-#[allow(dead_code)]
-pub fn export_field_csv(mesh: &ExodusMesh, field_name: &str, values: &[f64]) -> String {
-    let mut s = format!("node_id,x,y,z,{}\n", field_name);
-    for (i, &c) in mesh.coordinates.iter().enumerate() {
-        let v = values.get(i).copied().unwrap_or(0.0);
-        s.push_str(&format!("{},{},{},{},{}\n", i + 1, c[0], c[1], c[2], v));
-    }
-    s
-}
-/// Export element connectivity to a CSV string.
-#[allow(dead_code)]
-pub fn export_connectivity_csv(mesh: &ExodusMesh) -> String {
-    let mut s = String::from("block_id,element_id");
-    let max_npe = mesh
-        .blocks
-        .iter()
-        .map(|b| b.n_nodes_per_elem)
-        .max()
-        .unwrap_or(0);
-    for k in 0..max_npe {
-        s.push_str(&format!(",n{}", k));
-    }
-    s.push('\n');
-    let mut global_elem = 1;
-    for block in &mesh.blocks {
-        if block.n_nodes_per_elem == 0 {
-            continue;
-        }
-        let n_elem = block.connectivity.len() / block.n_nodes_per_elem;
-        for ei in 0..n_elem {
-            let base = ei * block.n_nodes_per_elem;
-            s.push_str(&format!("{},{}", block.id, global_elem));
-            for k in 0..block.n_nodes_per_elem {
-                s.push_str(&format!(",{}", block.connectivity[base + k]));
-            }
-            for _ in block.n_nodes_per_elem..max_npe {
-                s.push_str(",-1");
-            }
-            s.push('\n');
-            global_elem += 1;
-        }
-    }
-    s
 }

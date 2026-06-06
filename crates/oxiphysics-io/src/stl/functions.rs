@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_strip)]
-#![allow(clippy::items_after_test_module)]
 use std::collections::HashMap;
 
 use super::types::{
@@ -100,7 +98,6 @@ pub(super) fn parse_vertex_line(line: &str) -> Result<[f32; 3], String> {
     parse_vec3_from_line(line, "vertex")
 }
 /// Validate an STL mesh and return a validation report.
-#[allow(dead_code)]
 pub fn validate_stl(mesh: &StlMesh) -> StlValidation {
     let mut degenerate_count = 0;
     let mut nan_inf_count = 0;
@@ -141,14 +138,12 @@ pub fn validate_stl(mesh: &StlMesh) -> StlValidation {
     }
 }
 /// Recalculate all triangle normals from vertex positions.
-#[allow(dead_code)]
 pub fn recalculate_normals(mesh: &mut StlMesh) {
     for tri in &mut mesh.triangles {
         tri.normal = compute_normal(tri.v0, tri.v1, tri.v2);
     }
 }
 /// Flip all triangle normals (reverses winding order).
-#[allow(dead_code)]
 pub fn flip_normals(mesh: &mut StlMesh) {
     for tri in &mut mesh.triangles {
         std::mem::swap(&mut tri.v1, &mut tri.v2);
@@ -156,12 +151,10 @@ pub fn flip_normals(mesh: &mut StlMesh) {
     }
 }
 /// Remove degenerate (zero-area) triangles from the mesh.
-#[allow(dead_code)]
 pub fn remove_degenerate_triangles(mesh: &mut StlMesh) {
     mesh.triangles.retain(|tri| triangle_area(tri) >= 1e-10);
 }
 /// Remove duplicate triangles (exact vertex match).
-#[allow(dead_code)]
 pub fn remove_duplicate_triangles(mesh: &mut StlMesh) {
     let mut seen: std::collections::HashSet<[u32; 9]> = std::collections::HashSet::new();
     mesh.triangles.retain(|tri| {
@@ -180,7 +173,6 @@ pub fn remove_duplicate_triangles(mesh: &mut StlMesh) {
     });
 }
 /// Merge two STL meshes into one.
-#[allow(dead_code)]
 pub fn merge_meshes(a: &StlMesh, b: &StlMesh) -> StlMesh {
     let mut result = StlMesh::new(&format!("{}_merged_{}", a.name, b.name));
     result
@@ -205,7 +197,6 @@ pub fn merge_meshes(a: &StlMesh, b: &StlMesh) -> StlMesh {
     result
 }
 /// Compute statistics for an STL mesh.
-#[allow(dead_code)]
 pub fn compute_statistics(mesh: &StlMesh) -> StlStatistics {
     let n = mesh.triangles.len();
     if n == 0 {
@@ -266,7 +257,6 @@ pub fn compute_statistics(mesh: &StlMesh) -> StlStatistics {
     }
 }
 /// Translate all vertices by the given offset.
-#[allow(dead_code)]
 pub fn translate(mesh: &mut StlMesh, offset: [f32; 3]) {
     for tri in &mut mesh.triangles {
         for v in [&mut tri.v0, &mut tri.v1, &mut tri.v2] {
@@ -277,7 +267,6 @@ pub fn translate(mesh: &mut StlMesh, offset: [f32; 3]) {
     }
 }
 /// Scale all vertices uniformly from the origin.
-#[allow(dead_code)]
 pub fn scale_uniform(mesh: &mut StlMesh, factor: f32) {
     for tri in &mut mesh.triangles {
         for v in [&mut tri.v0, &mut tri.v1, &mut tri.v2] {
@@ -288,7 +277,6 @@ pub fn scale_uniform(mesh: &mut StlMesh, factor: f32) {
     }
 }
 /// Scale each axis independently.
-#[allow(dead_code)]
 pub fn scale_nonuniform(mesh: &mut StlMesh, factors: [f32; 3]) {
     for tri in &mut mesh.triangles {
         for v in [&mut tri.v0, &mut tri.v1, &mut tri.v2] {
@@ -300,7 +288,6 @@ pub fn scale_nonuniform(mesh: &mut StlMesh, factors: [f32; 3]) {
     recalculate_normals(mesh);
 }
 /// Center the mesh at the origin (translate so bounding box center is at 0,0,0).
-#[allow(dead_code)]
 pub fn center_at_origin(mesh: &mut StlMesh) {
     let (lo, hi) = mesh.bounding_box();
     let offset = [
@@ -311,7 +298,6 @@ pub fn center_at_origin(mesh: &mut StlMesh) {
     translate(mesh, offset);
 }
 /// Rotate mesh about the Z axis by `angle_deg` degrees.
-#[allow(dead_code)]
 pub fn rotate_z(mesh: &mut StlMesh, angle_deg: f32) {
     let theta = angle_deg.to_radians();
     let c = theta.cos();
@@ -325,6 +311,264 @@ pub fn rotate_z(mesh: &mut StlMesh, angle_deg: f32) {
         }
     }
     recalculate_normals(mesh);
+}
+/// Validate an STL mesh for watertightness and manifoldness.
+///
+/// An edge is represented as a sorted pair of vertex indices (by quantised
+/// coordinates).  In a valid closed manifold every edge appears exactly twice.
+pub fn validate_mesh(mesh: &StlMesh) -> StlValidationReport {
+    let quantise = |v: [f32; 3]| -> [i64; 3] {
+        [
+            (v[0] * 1_000_000.0) as i64,
+            (v[1] * 1_000_000.0) as i64,
+            (v[2] * 1_000_000.0) as i64,
+        ]
+    };
+    let mut edge_count: HashMap<([i64; 3], [i64; 3]), usize> = HashMap::new();
+    let mut degenerate_count = 0usize;
+    for tri in &mesh.triangles {
+        let e1 = [
+            tri.v1[0] - tri.v0[0],
+            tri.v1[1] - tri.v0[1],
+            tri.v1[2] - tri.v0[2],
+        ];
+        let e2 = [
+            tri.v2[0] - tri.v0[0],
+            tri.v2[1] - tri.v0[1],
+            tri.v2[2] - tri.v0[2],
+        ];
+        let cross = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        let area2 = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+        if area2 < 1e-12 {
+            degenerate_count += 1;
+        }
+        let va = quantise(tri.v0);
+        let vb = quantise(tri.v1);
+        let vc = quantise(tri.v2);
+        for (a, b) in [(va, vb), (vb, vc), (vc, va)] {
+            let key = if a <= b { (a, b) } else { (b, a) };
+            *edge_count.entry(key).or_insert(0) += 1;
+        }
+    }
+    let boundary_edge_count = edge_count.values().filter(|&&c| c != 2).count();
+    let is_watertight = boundary_edge_count == 0;
+    let is_manifold = edge_count.values().all(|&c| c == 2);
+    StlValidationReport {
+        boundary_edge_count,
+        is_watertight,
+        is_manifold,
+        degenerate_count,
+    }
+}
+/// Serialize `mesh` to binary STL bytes with per-triangle color in the
+/// attribute field (VisCAM format).  `colors` must be the same length as
+/// `mesh.triangles`; if shorter, remaining triangles get attribute = 0.
+pub fn to_binary_bytes_with_color(mesh: &StlMesh, colors: &[StlColor]) -> Vec<u8> {
+    let n = mesh.triangles.len();
+    let mut buf = Vec::with_capacity(84 + n * 50);
+    let mut header = [0u8; 80];
+    let nb = mesh.name.as_bytes();
+    let cl = nb.len().min(80);
+    header[..cl].copy_from_slice(&nb[..cl]);
+    buf.extend_from_slice(&header);
+    buf.extend_from_slice(&(n as u32).to_le_bytes());
+    for (idx, tri) in mesh.triangles.iter().enumerate() {
+        for &f in &tri.normal {
+            buf.extend_from_slice(&f.to_le_bytes());
+        }
+        for &f in &tri.v0 {
+            buf.extend_from_slice(&f.to_le_bytes());
+        }
+        for &f in &tri.v1 {
+            buf.extend_from_slice(&f.to_le_bytes());
+        }
+        for &f in &tri.v2 {
+            buf.extend_from_slice(&f.to_le_bytes());
+        }
+        let attr: u16 = colors.get(idx).map(|c| c.encode()).unwrap_or(0);
+        buf.extend_from_slice(&attr.to_le_bytes());
+    }
+    buf
+}
+/// Merge two STL meshes into a new mesh with the given name.
+///
+/// All triangles from both meshes are copied; no deduplication is performed.
+pub fn merge_meshes_named(a: &StlMesh, b: &StlMesh, name: &str) -> StlMesh {
+    let mut out = StlMesh::new(name);
+    for tri in &a.triangles {
+        out.triangles.push(StlTriangle {
+            normal: tri.normal,
+            v0: tri.v0,
+            v1: tri.v1,
+            v2: tri.v2,
+        });
+    }
+    for tri in &b.triangles {
+        out.triangles.push(StlTriangle {
+            normal: tri.normal,
+            v0: tri.v0,
+            v1: tri.v1,
+            v2: tri.v2,
+        });
+    }
+    out
+}
+/// Recompute all triangle normals from vertex positions using the right-hand rule.
+pub fn fix_normals(mesh: &mut StlMesh) {
+    for tri in mesh.triangles.iter_mut() {
+        tri.normal = compute_normal(tri.v0, tri.v1, tri.v2);
+    }
+}
+/// Flip the winding order of all triangles in `mesh`.
+///
+/// This reverses the orientation of every triangle (useful when all normals
+/// are pointing inward and need to be flipped outward).
+pub fn flip_winding(mesh: &mut StlMesh) {
+    for tri in mesh.triangles.iter_mut() {
+        std::mem::swap(&mut tri.v1, &mut tri.v2);
+        tri.normal = compute_normal(tri.v0, tri.v1, tri.v2);
+    }
+}
+/// Attempt to close small holes in `mesh` by inserting degenerate "cap"
+/// triangles over boundary edges.
+///
+/// **Important**: this is a heuristic repair that works only for meshes with
+/// a small number of boundary edges.  The cap triangles use the midpoint of
+/// each boundary edge as the third vertex.
+pub fn repair_close_holes(mesh: &mut StlMesh) {
+    let quantise = |v: [f32; 3]| -> [i64; 3] {
+        [
+            (v[0] * 1_000_000.0) as i64,
+            (v[1] * 1_000_000.0) as i64,
+            (v[2] * 1_000_000.0) as i64,
+        ]
+    };
+    let dequantise = |k: [i64; 3]| -> [f32; 3] {
+        [
+            k[0] as f32 / 1_000_000.0,
+            k[1] as f32 / 1_000_000.0,
+            k[2] as f32 / 1_000_000.0,
+        ]
+    };
+    let mut edge_count: HashMap<([i64; 3], [i64; 3]), usize> = HashMap::new();
+    for tri in &mesh.triangles {
+        let va = quantise(tri.v0);
+        let vb = quantise(tri.v1);
+        let vc = quantise(tri.v2);
+        for (a, b) in [(va, vb), (vb, vc), (vc, va)] {
+            let key = if a <= b { (a, b) } else { (b, a) };
+            *edge_count.entry(key).or_insert(0) += 1;
+        }
+    }
+    let mut new_tris: Vec<StlTriangle> = Vec::new();
+    for ((ka, kb), &cnt) in &edge_count {
+        if cnt != 1 {
+            continue;
+        }
+        let va = dequantise(*ka);
+        let vb = dequantise(*kb);
+        let mid = [
+            (va[0] + vb[0]) / 2.0,
+            (va[1] + vb[1]) / 2.0,
+            (va[2] + vb[2]) / 2.0,
+        ];
+        let normal = compute_normal(va, vb, mid);
+        new_tris.push(StlTriangle {
+            normal,
+            v0: va,
+            v1: vb,
+            v2: mid,
+        });
+    }
+    mesh.triangles.extend(new_tris);
+}
+/// Compute the axis-aligned bounding box of a standalone triangle set.
+///
+/// Returns `([min_x, min_y, min_z], [max_x, max_y, max_z])` or `None` if
+/// `triangles` is empty.
+pub fn triangle_bounding_box(triangles: &[StlTriangle]) -> Option<([f32; 3], [f32; 3])> {
+    if triangles.is_empty() {
+        return None;
+    }
+    let mut lo = [f32::INFINITY; 3];
+    let mut hi = [f32::NEG_INFINITY; 3];
+    for tri in triangles {
+        for v in [tri.v0, tri.v1, tri.v2] {
+            for d in 0..3 {
+                if v[d] < lo[d] {
+                    lo[d] = v[d];
+                }
+                if v[d] > hi[d] {
+                    hi[d] = v[d];
+                }
+            }
+        }
+    }
+    Some((lo, hi))
+}
+/// Convert an STL mesh to a Wavefront OBJ string.
+///
+/// Since STL has no shared-vertex semantics, each triangle is emitted as
+/// three independent vertices.  Groups are not emitted; a single `g default`
+/// line is written.
+pub fn stl_to_obj(mesh: &StlMesh) -> String {
+    let mut out = String::new();
+    out.push_str("# Converted from STL by OxiPhysics\n");
+    out.push_str(&format!("o {}\n", mesh.name));
+    out.push_str("g default\n");
+    for tri in &mesh.triangles {
+        for v in [tri.v0, tri.v1, tri.v2] {
+            out.push_str(&format!("v {} {} {}\n", v[0], v[1], v[2]));
+        }
+    }
+    for i in 0..mesh.triangles.len() {
+        let base = i * 3 + 1;
+        out.push_str(&format!("f {} {} {}\n", base, base + 1, base + 2));
+    }
+    out
+}
+/// Parse a minimal Wavefront OBJ string back into an STL mesh.
+///
+/// Only `v` and `f` records are handled.  The mesh name is taken from the
+/// `o` record if present.
+pub fn obj_to_stl(obj: &str) -> StlMesh {
+    let mut vertices: Vec<[f32; 3]> = Vec::new();
+    let mut name = "imported".to_string();
+    let mut mesh = StlMesh::new(&name);
+    for line in obj.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("o ") {
+            name = rest.trim().to_string();
+            mesh.name = name.clone();
+        } else if let Some(rest) = (!line.starts_with("vt") && !line.starts_with("vn"))
+            .then(|| line.strip_prefix("v "))
+            .flatten()
+        {
+            let parts: Vec<f32> = rest
+                .split_whitespace()
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            if parts.len() >= 3 {
+                vertices.push([parts[0], parts[1], parts[2]]);
+            }
+        } else if let Some(rest) = line.strip_prefix("f ") {
+            let idx: Vec<usize> = rest
+                .split_whitespace()
+                .filter_map(|tok| tok.split('/').next()?.parse::<usize>().ok())
+                .collect();
+            if idx.len() >= 3 {
+                let v0 = vertices.get(idx[0] - 1).copied().unwrap_or([0.0; 3]);
+                let v1 = vertices.get(idx[1] - 1).copied().unwrap_or([0.0; 3]);
+                let v2 = vertices.get(idx[2] - 1).copied().unwrap_or([0.0; 3]);
+                mesh.add_triangle(v0, v1, v2);
+            }
+        }
+    }
+    mesh
 }
 #[cfg(test)]
 mod tests {
@@ -720,259 +964,4 @@ mod tests {
         let area_after = m.surface_area();
         assert!((area_after - area_before * 9.0).abs() < 0.01);
     }
-}
-/// Validate an STL mesh for watertightness and manifoldness.
-///
-/// An edge is represented as a sorted pair of vertex indices (by quantised
-/// coordinates).  In a valid closed manifold every edge appears exactly twice.
-pub fn validate_mesh(mesh: &StlMesh) -> StlValidationReport {
-    let quantise = |v: [f32; 3]| -> [i64; 3] {
-        [
-            (v[0] * 1_000_000.0) as i64,
-            (v[1] * 1_000_000.0) as i64,
-            (v[2] * 1_000_000.0) as i64,
-        ]
-    };
-    let mut edge_count: HashMap<([i64; 3], [i64; 3]), usize> = HashMap::new();
-    let mut degenerate_count = 0usize;
-    for tri in &mesh.triangles {
-        let e1 = [
-            tri.v1[0] - tri.v0[0],
-            tri.v1[1] - tri.v0[1],
-            tri.v1[2] - tri.v0[2],
-        ];
-        let e2 = [
-            tri.v2[0] - tri.v0[0],
-            tri.v2[1] - tri.v0[1],
-            tri.v2[2] - tri.v0[2],
-        ];
-        let cross = [
-            e1[1] * e2[2] - e1[2] * e2[1],
-            e1[2] * e2[0] - e1[0] * e2[2],
-            e1[0] * e2[1] - e1[1] * e2[0],
-        ];
-        let area2 = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
-        if area2 < 1e-12 {
-            degenerate_count += 1;
-        }
-        let va = quantise(tri.v0);
-        let vb = quantise(tri.v1);
-        let vc = quantise(tri.v2);
-        for (a, b) in [(va, vb), (vb, vc), (vc, va)] {
-            let key = if a <= b { (a, b) } else { (b, a) };
-            *edge_count.entry(key).or_insert(0) += 1;
-        }
-    }
-    let boundary_edge_count = edge_count.values().filter(|&&c| c != 2).count();
-    let is_watertight = boundary_edge_count == 0;
-    let is_manifold = edge_count.values().all(|&c| c == 2);
-    StlValidationReport {
-        boundary_edge_count,
-        is_watertight,
-        is_manifold,
-        degenerate_count,
-    }
-}
-/// Serialize `mesh` to binary STL bytes with per-triangle color in the
-/// attribute field (VisCAM format).  `colors` must be the same length as
-/// `mesh.triangles`; if shorter, remaining triangles get attribute = 0.
-pub fn to_binary_bytes_with_color(mesh: &StlMesh, colors: &[StlColor]) -> Vec<u8> {
-    let n = mesh.triangles.len();
-    let mut buf = Vec::with_capacity(84 + n * 50);
-    let mut header = [0u8; 80];
-    let nb = mesh.name.as_bytes();
-    let cl = nb.len().min(80);
-    header[..cl].copy_from_slice(&nb[..cl]);
-    buf.extend_from_slice(&header);
-    buf.extend_from_slice(&(n as u32).to_le_bytes());
-    for (idx, tri) in mesh.triangles.iter().enumerate() {
-        for &f in &tri.normal {
-            buf.extend_from_slice(&f.to_le_bytes());
-        }
-        for &f in &tri.v0 {
-            buf.extend_from_slice(&f.to_le_bytes());
-        }
-        for &f in &tri.v1 {
-            buf.extend_from_slice(&f.to_le_bytes());
-        }
-        for &f in &tri.v2 {
-            buf.extend_from_slice(&f.to_le_bytes());
-        }
-        let attr: u16 = colors.get(idx).map(|c| c.encode()).unwrap_or(0);
-        buf.extend_from_slice(&attr.to_le_bytes());
-    }
-    buf
-}
-/// Merge two STL meshes into a new mesh with the given name.
-///
-/// All triangles from both meshes are copied; no deduplication is performed.
-pub fn merge_meshes_named(a: &StlMesh, b: &StlMesh, name: &str) -> StlMesh {
-    let mut out = StlMesh::new(name);
-    for tri in &a.triangles {
-        out.triangles.push(StlTriangle {
-            normal: tri.normal,
-            v0: tri.v0,
-            v1: tri.v1,
-            v2: tri.v2,
-        });
-    }
-    for tri in &b.triangles {
-        out.triangles.push(StlTriangle {
-            normal: tri.normal,
-            v0: tri.v0,
-            v1: tri.v1,
-            v2: tri.v2,
-        });
-    }
-    out
-}
-/// Recompute all triangle normals from vertex positions using the right-hand rule.
-pub fn fix_normals(mesh: &mut StlMesh) {
-    for tri in mesh.triangles.iter_mut() {
-        tri.normal = compute_normal(tri.v0, tri.v1, tri.v2);
-    }
-}
-/// Flip the winding order of all triangles in `mesh`.
-///
-/// This reverses the orientation of every triangle (useful when all normals
-/// are pointing inward and need to be flipped outward).
-pub fn flip_winding(mesh: &mut StlMesh) {
-    for tri in mesh.triangles.iter_mut() {
-        std::mem::swap(&mut tri.v1, &mut tri.v2);
-        tri.normal = compute_normal(tri.v0, tri.v1, tri.v2);
-    }
-}
-/// Attempt to close small holes in `mesh` by inserting degenerate "cap"
-/// triangles over boundary edges.
-///
-/// **Important**: this is a heuristic repair that works only for meshes with
-/// a small number of boundary edges.  The cap triangles use the midpoint of
-/// each boundary edge as the third vertex.
-pub fn repair_close_holes(mesh: &mut StlMesh) {
-    let quantise = |v: [f32; 3]| -> [i64; 3] {
-        [
-            (v[0] * 1_000_000.0) as i64,
-            (v[1] * 1_000_000.0) as i64,
-            (v[2] * 1_000_000.0) as i64,
-        ]
-    };
-    let dequantise = |k: [i64; 3]| -> [f32; 3] {
-        [
-            k[0] as f32 / 1_000_000.0,
-            k[1] as f32 / 1_000_000.0,
-            k[2] as f32 / 1_000_000.0,
-        ]
-    };
-    let mut edge_count: HashMap<([i64; 3], [i64; 3]), usize> = HashMap::new();
-    for tri in &mesh.triangles {
-        let va = quantise(tri.v0);
-        let vb = quantise(tri.v1);
-        let vc = quantise(tri.v2);
-        for (a, b) in [(va, vb), (vb, vc), (vc, va)] {
-            let key = if a <= b { (a, b) } else { (b, a) };
-            *edge_count.entry(key).or_insert(0) += 1;
-        }
-    }
-    let mut new_tris: Vec<StlTriangle> = Vec::new();
-    for ((ka, kb), &cnt) in &edge_count {
-        if cnt != 1 {
-            continue;
-        }
-        let va = dequantise(*ka);
-        let vb = dequantise(*kb);
-        let mid = [
-            (va[0] + vb[0]) / 2.0,
-            (va[1] + vb[1]) / 2.0,
-            (va[2] + vb[2]) / 2.0,
-        ];
-        let normal = compute_normal(va, vb, mid);
-        new_tris.push(StlTriangle {
-            normal,
-            v0: va,
-            v1: vb,
-            v2: mid,
-        });
-    }
-    mesh.triangles.extend(new_tris);
-}
-/// Compute the axis-aligned bounding box of a standalone triangle set.
-///
-/// Returns `([min_x, min_y, min_z], [max_x, max_y, max_z])` or `None` if
-/// `triangles` is empty.
-pub fn triangle_bounding_box(triangles: &[StlTriangle]) -> Option<([f32; 3], [f32; 3])> {
-    if triangles.is_empty() {
-        return None;
-    }
-    let mut lo = [f32::INFINITY; 3];
-    let mut hi = [f32::NEG_INFINITY; 3];
-    for tri in triangles {
-        for v in [tri.v0, tri.v1, tri.v2] {
-            for d in 0..3 {
-                if v[d] < lo[d] {
-                    lo[d] = v[d];
-                }
-                if v[d] > hi[d] {
-                    hi[d] = v[d];
-                }
-            }
-        }
-    }
-    Some((lo, hi))
-}
-/// Convert an STL mesh to a Wavefront OBJ string.
-///
-/// Since STL has no shared-vertex semantics, each triangle is emitted as
-/// three independent vertices.  Groups are not emitted; a single `g default`
-/// line is written.
-pub fn stl_to_obj(mesh: &StlMesh) -> String {
-    let mut out = String::new();
-    out.push_str("# Converted from STL by OxiPhysics\n");
-    out.push_str(&format!("o {}\n", mesh.name));
-    out.push_str("g default\n");
-    for tri in &mesh.triangles {
-        for v in [tri.v0, tri.v1, tri.v2] {
-            out.push_str(&format!("v {} {} {}\n", v[0], v[1], v[2]));
-        }
-    }
-    for i in 0..mesh.triangles.len() {
-        let base = i * 3 + 1;
-        out.push_str(&format!("f {} {} {}\n", base, base + 1, base + 2));
-    }
-    out
-}
-/// Parse a minimal Wavefront OBJ string back into an STL mesh.
-///
-/// Only `v` and `f` records are handled.  The mesh name is taken from the
-/// `o` record if present.
-pub fn obj_to_stl(obj: &str) -> StlMesh {
-    let mut vertices: Vec<[f32; 3]> = Vec::new();
-    let mut name = "imported".to_string();
-    let mut mesh = StlMesh::new(&name);
-    for line in obj.lines() {
-        let line = line.trim();
-        if line.starts_with("o ") {
-            name = line[2..].trim().to_string();
-            mesh.name = name.clone();
-        } else if line.starts_with("v ") && !line.starts_with("vt") && !line.starts_with("vn") {
-            let parts: Vec<f32> = line[2..]
-                .split_whitespace()
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            if parts.len() >= 3 {
-                vertices.push([parts[0], parts[1], parts[2]]);
-            }
-        } else if line.starts_with("f ") {
-            let idx: Vec<usize> = line[2..]
-                .split_whitespace()
-                .filter_map(|tok| tok.split('/').next()?.parse::<usize>().ok())
-                .collect();
-            if idx.len() >= 3 {
-                let v0 = vertices.get(idx[0] - 1).copied().unwrap_or([0.0; 3]);
-                let v1 = vertices.get(idx[1] - 1).copied().unwrap_or([0.0; 3]);
-                let v2 = vertices.get(idx[2] - 1).copied().unwrap_or([0.0; 3]);
-                mesh.add_triangle(v0, v1, v2);
-            }
-        }
-    }
-    mesh
 }

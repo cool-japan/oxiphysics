@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use crate::lattice::{D2Q9_VELOCITIES, D2Q9_WEIGHTS};
 
 /// Speed of sound squared (cs² = 1/3).
@@ -410,11 +409,8 @@ mod multiscale_extended_tests {
         let mut ce = ChapmanEnskogExpansion::new(1.0, [0.01, 0.0], 0.6, 0.001);
         ce.compute_f1(0.01, 0.0, 0.0, 0.01);
         let ftot = ce.total_distribution();
-        for alpha in 0..9 {
-            assert!(
-                (ftot[alpha] - ce.f0[alpha]).abs() < 0.01,
-                "Large deviation at alpha={alpha}"
-            );
+        for (alpha, (&ft, &f0)) in ftot.iter().zip(ce.f0.iter()).enumerate() {
+            assert!((ft - f0).abs() < 0.01, "Large deviation at alpha={alpha}");
         }
     }
     #[test]

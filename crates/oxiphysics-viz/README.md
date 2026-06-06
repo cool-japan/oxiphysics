@@ -1,6 +1,6 @@
 # oxiphysics-viz
 
-**Status:** Alpha (CPU-only soft renderer) | **Version:** 0.1.1 | **Tests:** 4,072
+**Status:** Alpha (CPU-only soft renderer) | **Version:** 0.1.2 | **Tests:** 4,114
 
 Largest visualization crate in the OxiPhysics ecosystem — a pure-CPU software renderer with
 scientific, engineering, and physics-specific visualization tools.
@@ -66,7 +66,7 @@ use oxiphysics_viz::{
 | Metric | Count |
 |--------|-------|
 | Public items | 5,229 |
-| Tests | 4,072 |
+| Tests | 4,114 |
 | Stubs | 0 |
 | Modules | 45+ |
 

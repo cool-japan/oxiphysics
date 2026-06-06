@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::ptr_arg, clippy::too_many_arguments)]
 use oxiphysics_core::math::{Real, Vec3};
 
 use super::types::CcdBroadphasePair;
@@ -324,23 +323,51 @@ pub fn bilateral_advancement_spheres(
     }
     None
 }
+/// Parameters for [`bilateral_advancement_with_rotation`].
+#[derive(Debug, Clone, Copy)]
+pub struct RotationalAdvancementParams {
+    /// Position of body A.
+    pub pos_a: Vec3,
+    /// Linear velocity of body A.
+    pub vel_a: Vec3,
+    /// Angular velocity of body A.
+    pub ang_vel_a: Vec3,
+    /// Bounding radius of body A.
+    pub radius_a: f64,
+    /// Position of body B.
+    pub pos_b: Vec3,
+    /// Linear velocity of body B.
+    pub vel_b: Vec3,
+    /// Angular velocity of body B.
+    pub ang_vel_b: Vec3,
+    /// Bounding radius of body B.
+    pub radius_b: f64,
+    /// Time step length.
+    pub dt: f64,
+    /// Contact tolerance (gap threshold for a hit).
+    pub contact_tolerance: f64,
+    /// Maximum number of advancement iterations.
+    pub max_iterations: usize,
+}
+
 /// Bilateral advancement with angular velocity consideration.
 ///
 /// Accounts for the fact that rotating bodies can have points moving
 /// faster than their center of mass, requiring smaller safe steps.
-pub fn bilateral_advancement_with_rotation(
-    pos_a: Vec3,
-    vel_a: Vec3,
-    ang_vel_a: Vec3,
-    radius_a: f64,
-    pos_b: Vec3,
-    vel_b: Vec3,
-    ang_vel_b: Vec3,
-    radius_b: f64,
-    dt: f64,
-    contact_tolerance: f64,
-    max_iterations: usize,
-) -> Option<f64> {
+pub fn bilateral_advancement_with_rotation(p: RotationalAdvancementParams) -> Option<f64> {
+    let RotationalAdvancementParams {
+        pos_a,
+        vel_a,
+        ang_vel_a,
+        radius_a,
+        pos_b,
+        vel_b,
+        ang_vel_b,
+        radius_b,
+        dt,
+        contact_tolerance,
+        max_iterations,
+    } = p;
     let sum_radius = radius_a + radius_b;
     let max_speed_a = vel_a.norm() + ang_vel_a.norm() * radius_a;
     let max_speed_b = vel_b.norm() + ang_vel_b.norm() * radius_b;
@@ -383,7 +410,6 @@ pub fn bilateral_advancement_with_rotation(
 /// 3. Compute impulse `j = Δv / (1/m_a + 1/m_b)`.
 ///
 /// Returns `(j, v_post_a, v_post_b)`.
-#[allow(dead_code)]
 pub fn toi_restitution_impulse(
     vel_a: Vec3,
     inv_mass_a: Real,
@@ -409,7 +435,6 @@ pub fn toi_restitution_impulse(
 /// Compute the kinetic energy change due to a restitution impulse.
 ///
 /// Returns `(KE_before, KE_after)`.
-#[allow(dead_code)]
 pub fn toi_kinetic_energy_change(
     vel_a: Vec3,
     mass_a: Real,
@@ -426,7 +451,6 @@ pub fn toi_kinetic_energy_change(
 /// Filter CCD broadphase pairs by a TOI threshold.
 ///
 /// Returns only pairs whose upper-bound TOI is ≤ `toi_threshold`.
-#[allow(dead_code)]
 pub fn filter_ccd_pairs(
     pairs: &[CcdBroadphasePair],
     toi_threshold: Real,
@@ -437,8 +461,7 @@ pub fn filter_ccd_pairs(
         .collect()
 }
 /// Sort broadphase pairs by ascending TOI upper bound.
-#[allow(dead_code)]
-pub fn sort_ccd_pairs_by_toi(pairs: &mut Vec<CcdBroadphasePair>) {
+pub fn sort_ccd_pairs_by_toi(pairs: &mut [CcdBroadphasePair]) {
     pairs.sort_by(|a, b| {
         a.toi_upper_bound
             .partial_cmp(&b.toi_upper_bound)
@@ -765,9 +788,19 @@ mod tests {
         let pos_b = Vec3::zeros();
         let vel_b = Vec3::zeros();
         let ang_b = Vec3::zeros();
-        let toi = bilateral_advancement_with_rotation(
-            pos_a, vel_a, ang_a, 0.5, pos_b, vel_b, ang_b, 0.5, 1.0, 1e-4, 200,
-        );
+        let toi = bilateral_advancement_with_rotation(RotationalAdvancementParams {
+            pos_a,
+            vel_a,
+            ang_vel_a: ang_a,
+            radius_a: 0.5,
+            pos_b,
+            vel_b,
+            ang_vel_b: ang_b,
+            radius_b: 0.5,
+            dt: 1.0,
+            contact_tolerance: 1e-4,
+            max_iterations: 200,
+        });
         assert!(toi.is_some(), "Should detect collision with rotation");
     }
     #[test]

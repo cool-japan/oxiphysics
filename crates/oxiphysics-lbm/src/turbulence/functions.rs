@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
 use crate::grid::{LbmGrid2D, equilibrium_2d};
@@ -79,7 +78,6 @@ pub fn bgk_collide_smagorinsky_2d(grid: &mut LbmGrid2D, base_omega: f64, cs_smag
 /// `f_neq` must contain `f_i - f_eq_i` for all 19 directions.
 /// Returns `|S| = sqrt(2 * S_ab * S_ab)` where
 /// `S_ab = -1/(2 * rho * cs² * tau) * Pi_ab_neq`.
-#[allow(dead_code)]
 pub fn compute_strain_rate_d3q19(f_neq: &[f64; 19], rho: f64) -> f64 {
     use crate::lattice::D3Q19_VELOCITIES;
     let mut pi = [[0.0f64; 3]; 3];
@@ -91,12 +89,7 @@ pub fn compute_strain_rate_d3q19(f_neq: &[f64; 19], rho: f64) -> f64 {
             }
         }
     }
-    let mut norm_sq = 0.0f64;
-    for a in 0..3 {
-        for b in 0..3 {
-            norm_sq += pi[a][b] * pi[a][b];
-        }
-    }
+    let norm_sq: f64 = pi.iter().flat_map(|row| row.iter()).map(|&x| x * x).sum();
     let cs4 = CS2 * CS2;
     (norm_sq / (2.0 * rho * rho * cs4)).sqrt()
 }
@@ -106,7 +99,6 @@ pub fn compute_strain_rate_d3q19(f_neq: &[f64; 19], rho: f64) -> f64 {
 ///
 /// `dx` is the lattice spacing (typically 1.0 in LBM units),
 /// `dt` is the time step (typically 1.0).
-#[allow(dead_code)]
 pub fn compute_effective_omega(omega_base: f64, strain_rate: f64, dx: f64, _dt: f64) -> f64 {
     let tau = 1.0 / omega_base;
     let cs_dx = 0.1 * dx;
@@ -119,7 +111,6 @@ pub fn compute_effective_omega(omega_base: f64, strain_rate: f64, dx: f64, _dt: 
 /// `nu_t = l_mix² * |S|`
 ///
 /// where `l_mix = Cs * Delta` is the Smagorinsky mixing length.
-#[allow(dead_code)]
 pub fn compute_turbulent_viscosity(strain_rate: f64, mixing_length: f64) -> f64 {
     mixing_length * mixing_length * strain_rate
 }
@@ -138,37 +129,36 @@ pub fn compute_turbulent_viscosity(strain_rate: f64, mixing_length: f64) -> f64 
 ///
 /// Returns `(Cw * Delta)^2` scaled numerator / denominator; the caller should
 /// multiply by `(Cw * Delta)^2` to get the dimensional eddy viscosity.
-#[allow(dead_code)]
 pub fn wale_model(velocity_gradient: &[f64; 9]) -> f64 {
     let g = |i: usize, j: usize| velocity_gradient[i * 3 + j];
     let s = |i: usize, j: usize| 0.5 * (g(i, j) + g(j, i));
     let mut sd = [[0.0f64; 3]; 3];
     let mut trace_gsq = 0.0f64;
     let mut gsq = [[0.0f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, gsq_row) in gsq.iter_mut().enumerate() {
+        for (j, gsq_ij) in gsq_row.iter_mut().enumerate() {
             let mut val = 0.0f64;
             for k in 0..3 {
                 val += g(i, k) * g(k, j);
             }
-            gsq[i][j] = val;
+            *gsq_ij = val;
             if i == j {
                 trace_gsq += val;
             }
         }
     }
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, sd_row) in sd.iter_mut().enumerate() {
+        for (j, sd_ij) in sd_row.iter_mut().enumerate() {
             let sym_gsq = 0.5 * (gsq[i][j] + gsq[j][i]);
             let delta_ij = if i == j { 1.0 } else { 0.0 };
-            sd[i][j] = sym_gsq - (1.0 / 3.0) * delta_ij * trace_gsq;
+            *sd_ij = sym_gsq - (1.0 / 3.0) * delta_ij * trace_gsq;
         }
     }
     let mut sd_sq = 0.0f64;
     let mut s_sq = 0.0f64;
-    for i in 0..3 {
-        for j in 0..3 {
-            sd_sq += sd[i][j] * sd[i][j];
+    for (i, sd_row) in sd.iter().enumerate() {
+        for (j, &sd_ij) in sd_row.iter().enumerate() {
+            sd_sq += sd_ij * sd_ij;
             let sij = s(i, j);
             s_sq += sij * sij;
         }
@@ -187,7 +177,6 @@ pub fn wale_model(velocity_gradient: &[f64; 9]) -> f64 {
 ///
 /// `velocity_gradient` is row-major `[du/dx, du/dy, du/dz, dv/dx, ...]`.
 /// `cv` is the Vreman constant (typically ~0.07).
-#[allow(dead_code)]
 pub fn vreman_model(velocity_gradient: &[f64; 9], cv: f64) -> f64 {
     let g = |i: usize, j: usize| velocity_gradient[i * 3 + j];
     let mut alpha_sq = 0.0f64;
@@ -201,10 +190,10 @@ pub fn vreman_model(velocity_gradient: &[f64; 9], cv: f64) -> f64 {
         return 0.0;
     }
     let mut beta = [[0.0f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, beta_row) in beta.iter_mut().enumerate() {
+        for (j, beta_ij) in beta_row.iter_mut().enumerate() {
             for m in 0..3 {
-                beta[i][j] += g(m, i) * g(m, j);
+                *beta_ij += g(m, i) * g(m, j);
             }
         }
     }
@@ -223,7 +212,6 @@ pub fn vreman_model(velocity_gradient: &[f64; 9], cv: f64) -> f64 {
 /// where `u+ = u/u_tau` and `y+ = y * u_tau / nu`.
 ///
 /// Returns the friction velocity `u_tau`.
-#[allow(dead_code)]
 pub fn wall_function_log_law(u_tangential: f64, y: f64, nu: f64) -> f64 {
     pub(super) const KAPPA: f64 = 0.41;
     pub(super) const B: f64 = 5.2;
@@ -249,12 +237,10 @@ pub fn wall_function_log_law(u_tangential: f64, y: f64, nu: f64) -> f64 {
     u_tau
 }
 /// Wall shear stress from friction velocity: `tau_w = rho * u_tau^2`.
-#[allow(dead_code)]
 pub fn wall_shear_stress(rho: f64, u_tau: f64) -> f64 {
     rho * u_tau * u_tau
 }
 /// Compute y+ (dimensionless wall distance).
-#[allow(dead_code)]
 pub fn y_plus(y: f64, u_tau: f64, nu: f64) -> f64 {
     y * u_tau / nu
 }
@@ -263,7 +249,6 @@ pub fn y_plus(y: f64, u_tau: f64, nu: f64) -> f64 {
 /// `u+ = y+ + exp(-kappa*B) * [exp(kappa*u+) - 1 - kappa*u+ - (kappa*u+)^2/2 - (kappa*u+)^3/6]`
 ///
 /// Given y+, find u+ iteratively.
-#[allow(dead_code)]
 pub fn spalding_profile(y_plus_val: f64) -> f64 {
     pub(super) const KAPPA: f64 = 0.41;
     pub(super) const B: f64 = 5.2;
@@ -290,14 +275,12 @@ pub fn spalding_profile(y_plus_val: f64) -> f64 {
 /// `TKE = 0.5 * (u'^2 + v'^2 + w'^2)`
 ///
 /// `fluctuations` is a 3-element array `[u', v', w']`.
-#[allow(dead_code)]
 pub fn turbulent_kinetic_energy(fluctuations: &[f64; 3]) -> f64 {
     0.5 * (fluctuations[0].powi(2) + fluctuations[1].powi(2) + fluctuations[2].powi(2))
 }
 /// Turbulence intensity: TI = u_rms / U_mean.
 ///
 /// Returns `f64::INFINITY` when `u_mean` is zero (caller should guard).
-#[allow(dead_code)]
 pub fn turbulence_intensity(u_rms: f64, u_mean: f64) -> f64 {
     if u_mean.abs() < 1e-30 {
         f64::INFINITY
@@ -309,13 +292,12 @@ pub fn turbulence_intensity(u_rms: f64, u_mean: f64) -> f64 {
 ///
 /// Returns `n/2` values corresponding to frequencies `k / n` for `k = 0..n/2`.
 /// This is an O(n²) implementation suitable for moderate-length signals.
-#[allow(dead_code)]
 pub fn estimate_power_spectrum(signal: &[f64]) -> Vec<f64> {
     let n = signal.len();
     let half = n / 2;
     let mut spectrum = vec![0.0_f64; half];
     use std::f64::consts::PI;
-    for k in 0..half {
+    for (k, spec_k) in spectrum.iter_mut().enumerate() {
         let mut re = 0.0_f64;
         let mut im = 0.0_f64;
         for (j, &s) in signal.iter().enumerate() {
@@ -323,21 +305,19 @@ pub fn estimate_power_spectrum(signal: &[f64]) -> Vec<f64> {
             re += s * angle.cos();
             im -= s * angle.sin();
         }
-        spectrum[k] = (re * re + im * im) / (n as f64 * n as f64);
+        *spec_k = (re * re + im * im) / (n as f64 * n as f64);
     }
     spectrum
 }
 /// Turbulent kinetic energy production: `P_k = nu_t * S^2`
 ///
 /// where `S^2 = 2 * S_ij * S_ij` is twice the resolved strain rate invariant.
-#[allow(dead_code)]
 pub fn tke_production(nu_t: f64, s_sq: f64) -> f64 {
     nu_t * s_sq
 }
 /// Turbulent diffusion of TKE: `D_t = sigma_k * nu_t * d^2k/dx^2`
 ///
 /// Simplified 1D version using second derivative estimate.
-#[allow(dead_code)]
 pub fn tke_turbulent_diffusion(nu_t: f64, k_laplacian: f64, sigma_k: f64) -> f64 {
     sigma_k * nu_t * k_laplacian
 }
@@ -345,7 +325,6 @@ pub fn tke_turbulent_diffusion(nu_t: f64, k_laplacian: f64, sigma_k: f64) -> f64
 ///
 /// Represents the length scale at which viscous effects begin to affect the
 /// turbulent velocity fluctuations.
-#[allow(dead_code)]
 pub fn taylor_microscale(u_rms: f64, nu: f64, epsilon: f64) -> f64 {
     if epsilon < 1e-30 {
         return f64::INFINITY;
@@ -355,7 +334,6 @@ pub fn taylor_microscale(u_rms: f64, nu: f64, epsilon: f64) -> f64 {
 /// Kolmogorov length scale: `eta = (nu^3 / epsilon)^0.25`.
 ///
 /// The smallest scale in turbulent flow where viscosity dominates.
-#[allow(dead_code)]
 pub fn kolmogorov_length_scale(nu: f64, epsilon: f64) -> f64 {
     if epsilon < 1e-30 {
         return f64::INFINITY;
@@ -363,7 +341,6 @@ pub fn kolmogorov_length_scale(nu: f64, epsilon: f64) -> f64 {
     (nu * nu * nu / epsilon).powf(0.25)
 }
 /// Kolmogorov time scale: `tau_eta = sqrt(nu / epsilon)`.
-#[allow(dead_code)]
 pub fn kolmogorov_time_scale(nu: f64, epsilon: f64) -> f64 {
     if epsilon < 1e-30 {
         return f64::INFINITY;
@@ -371,7 +348,6 @@ pub fn kolmogorov_time_scale(nu: f64, epsilon: f64) -> f64 {
     (nu / epsilon).sqrt()
 }
 /// Kolmogorov velocity scale: `u_eta = (nu * epsilon)^0.25`.
-#[allow(dead_code)]
 pub fn kolmogorov_velocity_scale(nu: f64, epsilon: f64) -> f64 {
     (nu * epsilon).powf(0.25)
 }
@@ -379,7 +355,6 @@ pub fn kolmogorov_velocity_scale(nu: f64, epsilon: f64) -> f64 {
 ///
 /// Uses the standard coefficient `C_mu^{3/4}` absorbed into the leading factor.
 /// For simplicity this returns `k^{3/2} / epsilon`.
-#[allow(dead_code)]
 pub fn integral_length_scale(k: f64, epsilon: f64) -> f64 {
     if epsilon < 1e-30 {
         return f64::INFINITY;
@@ -387,7 +362,6 @@ pub fn integral_length_scale(k: f64, epsilon: f64) -> f64 {
     k.powf(1.5) / epsilon
 }
 /// Turbulent Reynolds number: `Re_t = k^2 / (nu * epsilon)`.
-#[allow(dead_code)]
 pub fn turbulent_reynolds_number(k: f64, nu: f64, epsilon: f64) -> f64 {
     if nu < 1e-30 || epsilon < 1e-30 {
         return 0.0;
@@ -398,7 +372,6 @@ pub fn turbulent_reynolds_number(k: f64, nu: f64, epsilon: f64) -> f64 {
 ///
 /// `wavenumber` is the wavenumber magnitude, `epsilon` is the dissipation rate,
 /// and `c_k` is the Kolmogorov constant (typically ~1.5).
-#[allow(dead_code)]
 pub fn kolmogorov_energy_spectrum(wavenumber: f64, epsilon: f64, c_k: f64) -> f64 {
     if wavenumber < 1e-30 {
         return 0.0;
@@ -410,7 +383,6 @@ pub fn kolmogorov_energy_spectrum(wavenumber: f64, epsilon: f64, c_k: f64) -> f6
 /// `E(k) = alpha * epsilon^{2/3} * k^{-5/3} * (k * L)^4 / (1 + (k*L)^2)^{17/6}`
 ///
 /// where `L` is the integral length scale and `alpha` ≈ 1.5.
-#[allow(dead_code)]
 pub fn von_karman_spectrum(wavenumber: f64, epsilon: f64, integral_scale: f64) -> f64 {
     pub(super) const ALPHA: f64 = 1.5;
     if wavenumber < 1e-30 || integral_scale < 1e-30 {
@@ -426,7 +398,6 @@ pub fn von_karman_spectrum(wavenumber: f64, epsilon: f64, integral_scale: f64) -
 /// `|S| = sqrt(S_ij S_ij)` where `S_ij = (g_ij + g_ji) / 2`.
 ///
 /// `velocity_gradient` is row-major `[du/dx, du/dy, du/dz, dv/dx, ...]`.
-#[allow(dead_code)]
 pub fn strain_rate_magnitude(velocity_gradient: &[f64; 9]) -> f64 {
     let g = |i: usize, j: usize| velocity_gradient[i * 3 + j];
     let mut s_sq = 0.0f64;
@@ -440,7 +411,6 @@ pub fn strain_rate_magnitude(velocity_gradient: &[f64; 9]) -> f64 {
 }
 /// Turbulent Prandtl number: `Pr_t = nu_t / alpha_t` where `alpha_t` is the
 /// turbulent thermal diffusivity.
-#[allow(dead_code)]
 pub fn turbulent_prandtl_number(nu_t: f64, alpha_t: f64) -> f64 {
     if alpha_t.abs() < 1e-30 {
         return 0.0;
@@ -448,7 +418,6 @@ pub fn turbulent_prandtl_number(nu_t: f64, alpha_t: f64) -> f64 {
     nu_t / alpha_t
 }
 /// Eddy viscosity from k-omega model: `nu_t = k / omega`.
-#[allow(dead_code)]
 pub fn k_omega_eddy_viscosity(k: f64, omega: f64) -> f64 {
     if omega.abs() < 1e-30 {
         return 0.0;
@@ -456,7 +425,6 @@ pub fn k_omega_eddy_viscosity(k: f64, omega: f64) -> f64 {
     k / omega
 }
 /// k-omega specific dissipation rate from epsilon: `omega = epsilon / (C_mu * k)`.
-#[allow(dead_code)]
 pub fn k_omega_from_k_epsilon(k: f64, epsilon: f64) -> f64 {
     pub(super) const C_MU: f64 = 0.09;
     if k.abs() < 1e-30 {
@@ -465,7 +433,6 @@ pub fn k_omega_from_k_epsilon(k: f64, epsilon: f64) -> f64 {
     epsilon / (C_MU * k)
 }
 /// k-omega production term: `P_omega = alpha * omega / k * P_k`.
-#[allow(dead_code)]
 pub fn k_omega_production(k: f64, omega: f64, p_k: f64) -> f64 {
     pub(super) const ALPHA: f64 = 5.0 / 9.0;
     if k.abs() < 1e-30 {
@@ -474,7 +441,6 @@ pub fn k_omega_production(k: f64, omega: f64, p_k: f64) -> f64 {
     ALPHA * omega / k * p_k
 }
 /// k-omega destruction term: `D_omega = beta * omega^2`.
-#[allow(dead_code)]
 pub fn k_omega_destruction(omega: f64) -> f64 {
     pub(super) const BETA: f64 = 3.0 / 40.0;
     BETA * omega * omega
@@ -486,7 +452,6 @@ pub fn k_omega_destruction(omega: f64) -> f64 {
 /// In practice, backscatter occurs when the local SGS stress does negative work.
 /// Here we return the absolute difference between the symmetric and anti-symmetric
 /// parts of the velocity gradient, normalized by the Frobenius norm.
-#[allow(dead_code)]
 pub fn backscatter_indicator(velocity_gradient: &[f64; 9]) -> f64 {
     let g = |i: usize, j: usize| velocity_gradient[i * 3 + j];
     let mut sym_sq = 0.0f64;
@@ -520,8 +485,6 @@ pub fn backscatter_indicator(velocity_gradient: &[f64; 9]) -> f64 {
 /// - `y`:      wall-normal distance
 /// - `nu`:     kinematic viscosity
 /// - `dk_domega_dot`: dot product `grad(k) · grad(omega)` (cross-diffusion term)
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub fn sst_blending_f1(k: f64, omega: f64, y: f64, nu: f64, dk_domega_dot: f64) -> f64 {
     pub(super) const C_MU: f64 = 0.09;
     pub(super) const SIGMA_W2: f64 = 0.856;
@@ -532,8 +495,8 @@ pub fn sst_blending_f1(k: f64, omega: f64, y: f64, nu: f64, dk_domega_dot: f64) 
     let sqrt_k = k.max(0.0).sqrt();
     let term1 = sqrt_k / (C_MU * omega * y);
     let term2 = NU_DISS * nu / (omega * y * y);
-    let CD_kw = (2.0 * SIGMA_W2 * dk_domega_dot / omega.max(1e-30)).max(1e-10);
-    let term3 = 4.0 * SIGMA_W2 * k / (CD_kw * y * y);
+    let cd_kw = (2.0 * SIGMA_W2 * dk_domega_dot / omega.max(1e-30)).max(1e-10);
+    let term3 = 4.0 * SIGMA_W2 * k / (cd_kw * y * y);
     let arg1 = term1.max(term2).min(term3);
     arg1.powi(4).tanh()
 }
@@ -543,8 +506,6 @@ pub fn sst_blending_f1(k: f64, omega: f64, y: f64, nu: f64, dk_domega_dot: f64) 
 /// `arg2 = max( 2*sqrt(k)/(C_mu*omega*y), 500*nu/(omega*y^2) )`
 ///
 /// F2 is used to limit the eddy-viscosity near walls.
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub fn sst_blending_f2(k: f64, omega: f64, y: f64, nu: f64) -> f64 {
     pub(super) const C_MU: f64 = 0.09;
     pub(super) const NU_DISS: f64 = 500.0;
@@ -560,7 +521,6 @@ pub fn sst_blending_f2(k: f64, omega: f64, y: f64, nu: f64) -> f64 {
 /// Blend a pair of k-ε and k-ω coefficients using the SST F1 function.
 ///
 /// `phi_sst = F1 * phi_kw + (1 - F1) * phi_ke`
-#[allow(dead_code)]
 pub fn sst_blend_coefficient(phi_kw: f64, phi_ke: f64, f1: f64) -> f64 {
     f1 * phi_kw + (1.0 - f1) * phi_ke
 }
@@ -570,7 +530,6 @@ pub fn sst_blend_coefficient(phi_kw: f64, phi_ke: f64, f1: f64) -> f64 {
 ///
 /// where `a1 = 0.31`, `S` is the strain-rate magnitude, and `F2` limits the
 /// eddy viscosity in adverse pressure gradient regions.
-#[allow(dead_code)]
 pub fn sst_eddy_viscosity(k: f64, omega: f64, strain_rate_s: f64, f2: f64) -> f64 {
     pub(super) const A1: f64 = 0.31;
     let denom = (A1 * omega).max(strain_rate_s * f2);
@@ -589,7 +548,6 @@ pub fn sst_eddy_viscosity(k: f64, omega: f64, strain_rate_s: f64, f2: f64) -> f6
 /// - `B`:      log-law intercept (default 5.2)
 ///
 /// Returns `u+`.
-#[allow(dead_code)]
 pub fn log_law_u_plus(y_plus: f64, kappa: f64, b: f64) -> f64 {
     if y_plus < 1e-30 {
         return 0.0;
@@ -602,7 +560,6 @@ pub fn log_law_u_plus(y_plus: f64, kappa: f64, b: f64) -> f64 {
 /// - For `y+ >= y_plus_match`: returns `(1/kappa)*ln(y+) + B`
 ///
 /// `y_plus_match` is typically set to 11.3 (intersection of sub-layer and log-law).
-#[allow(dead_code)]
 pub fn composite_wall_law(y_plus: f64) -> f64 {
     pub(super) const KAPPA: f64 = 0.41;
     pub(super) const B: f64 = 5.2;
@@ -614,7 +571,6 @@ pub fn composite_wall_law(y_plus: f64) -> f64 {
     }
 }
 /// Compute the friction Reynolds number `Re_tau = delta * u_tau / nu`.
-#[allow(dead_code)]
 pub fn friction_reynolds_number(delta: f64, u_tau: f64, nu: f64) -> f64 {
     if nu < 1e-30 {
         return 0.0;
@@ -627,7 +583,6 @@ pub fn friction_reynolds_number(delta: f64, u_tau: f64, nu: f64) -> f64 {
 /// This is an O(N²) direct implementation for moderate N.
 ///
 /// Returns the filtered signal.
-#[allow(dead_code)]
 pub fn spectral_cutoff_filter(signal: &[f64], k_cutoff: usize) -> Vec<f64> {
     let n = signal.len();
     let mut re = vec![0.0_f64; n];
@@ -648,13 +603,13 @@ pub fn spectral_cutoff_filter(signal: &[f64], k_cutoff: usize) -> Vec<f64> {
     }
     let mut out = vec![0.0_f64; n];
     let n_f64 = n as f64;
-    for j in 0..n {
+    for (j, out_j) in out.iter_mut().enumerate() {
         let mut val = 0.0_f64;
         for k in 0..n {
             let angle = 2.0 * PI * k as f64 * j as f64 / n_f64;
             val += re[k] * angle.cos() - im[k] * angle.sin();
         }
-        out[j] = val / n_f64;
+        *out_j = val / n_f64;
     }
     out
 }
@@ -665,7 +620,6 @@ pub fn spectral_cutoff_filter(signal: &[f64], k_cutoff: usize) -> Vec<f64> {
 ///
 /// Here we implement the discrete convolution version using a truncated kernel
 /// of half-width `trunc` grid points.
-#[allow(dead_code)]
 pub fn gaussian_les_filter(signal: &[f64], delta: f64, dx: f64, trunc: usize) -> Vec<f64> {
     let n = signal.len();
     let sigma2 = delta * delta / 6.0;
@@ -701,7 +655,6 @@ pub fn gaussian_les_filter(signal: &[f64], delta: f64, dx: f64, trunc: usize) ->
 /// Reduces to the constant `Pr_t ≈ 0.85` for high `nu_t/nu`.
 ///
 /// Returns `Pr_t` (typically 0.7–0.9).
-#[allow(dead_code)]
 pub fn turbulent_prandtl_kays_crawford(nu_t: f64, nu: f64) -> f64 {
     if nu < 1e-30 {
         return 0.85;
@@ -724,7 +677,6 @@ pub fn turbulent_prandtl_kays_crawford(nu_t: f64, nu: f64) -> f64 {
 /// A return value close to -5/3 ≈ -1.667 indicates a resolved inertial subrange.
 ///
 /// `spectrum[i]` is the energy at wavenumber `i+1` (1-indexed to avoid log(0)).
-#[allow(dead_code)]
 pub fn les_spectrum_slope(spectrum: &[f64], k_lo: usize, k_hi: usize) -> f64 {
     if k_lo >= k_hi || k_hi > spectrum.len() {
         return 0.0;
@@ -763,7 +715,6 @@ pub fn les_spectrum_slope(spectrum: &[f64], k_lo: usize, k_hi: usize) -> f64 {
 /// Verify that the energy spectrum has the Kolmogorov -5/3 slope within a tolerance.
 ///
 /// Returns `true` if `|slope + 5/3| < tolerance`.
-#[allow(dead_code)]
 pub fn spectrum_is_kolmogorov(spectrum: &[f64], k_lo: usize, k_hi: usize, tolerance: f64) -> bool {
     let slope = les_spectrum_slope(spectrum, k_lo, k_hi);
     (slope + 5.0 / 3.0).abs() < tolerance
@@ -772,7 +723,6 @@ pub fn spectrum_is_kolmogorov(spectrum: &[f64], k_lo: usize, k_hi: usize, tolera
 ///
 /// `E(k) = C_k * epsilon^(2/3) * k^(-5/3)` for `k = 1..n`.
 /// Returns a `Vec`f64` of length `n`.
-#[allow(dead_code)]
 pub fn synthetic_kolmogorov_spectrum(n: usize, epsilon: f64, c_k: f64) -> Vec<f64> {
     (1..=n)
         .map(|k| c_k * epsilon.powf(2.0 / 3.0) * (k as f64).powf(-5.0 / 3.0))
@@ -785,14 +735,13 @@ pub fn synthetic_kolmogorov_spectrum(n: usize, epsilon: f64, c_k: f64) -> Vec<f6
 /// where `beta_ij = sum_m alpha_mi * alpha_mj` and `alpha_ij = du_i/dx_j`.
 ///
 /// Returns `B_beta` (non-negative for physical flows).
-#[allow(dead_code)]
 pub fn vreman_b_beta(velocity_gradient: &[f64; 9]) -> f64 {
     let g = |i: usize, j: usize| velocity_gradient[i * 3 + j];
     let mut beta = [[0.0f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, beta_row) in beta.iter_mut().enumerate() {
+        for (j, beta_ij) in beta_row.iter_mut().enumerate() {
             for m in 0..3 {
-                beta[i][j] += g(m, i) * g(m, j);
+                *beta_ij += g(m, i) * g(m, j);
             }
         }
     }
@@ -802,14 +751,12 @@ pub fn vreman_b_beta(velocity_gradient: &[f64; 9]) -> f64 {
         - beta[1][2] * beta[1][2]
 }
 /// Compute `alpha_ij^2 = sum_ij (du_i/dx_j)^2` from the velocity-gradient tensor.
-#[allow(dead_code)]
 pub fn vreman_alpha_sq(velocity_gradient: &[f64; 9]) -> f64 {
     velocity_gradient.iter().map(|&v| v * v).sum()
 }
 /// Vreman eddy-viscosity from pre-computed `B_beta` and `alpha_sq`.
 ///
 /// `nu_t = cv * sqrt(B_beta / alpha_sq)` when `B_beta > 0`.
-#[allow(dead_code)]
 pub fn vreman_from_invariants(b_beta: f64, alpha_sq: f64, cv: f64) -> f64 {
     if alpha_sq < 1e-30 || b_beta <= 0.0 {
         return 0.0;

@@ -8,8 +8,6 @@
 //! debris spawning, fracture energy accounting, pre-scored fracture
 //! patterns, and radial/planar fracture modes.
 
-#![allow(dead_code)]
-
 use rand::RngExt;
 use std::f64::consts::PI;
 
@@ -327,7 +325,6 @@ pub fn nearest_site(point: [f64; 3], sites: &[VoronoiSite]) -> usize {
 /// and centroid.
 ///
 /// * `resolution` — grid divisions per axis.
-#[allow(clippy::too_many_arguments)]
 pub fn build_voronoi_cells(
     aabb_min: [f64; 3],
     aabb_max: [f64; 3],
@@ -1100,7 +1097,6 @@ pub fn split_points_by_plane(
 // ---------------------------------------------------------------------------
 
 /// Generate a combined radial + concentric pattern (like glass impact).
-#[allow(clippy::too_many_arguments)]
 pub fn generate_radial_concentric_pattern(
     impact: [f64; 3],
     normal: [f64; 3],
@@ -1159,7 +1155,6 @@ pub struct DestructionEvent {
 /// * `material` — fracture material properties.
 /// * `num_fragments` — desired fragment count.
 /// * `resolution` — Voronoi grid resolution.
-#[allow(clippy::too_many_arguments)]
 pub fn execute_voronoi_destruction(
     body_id: usize,
     aabb_min: [f64; 3],
@@ -1198,21 +1193,40 @@ pub fn execute_voronoi_destruction(
     }
 }
 
+/// Impact and geometry parameters for [`execute_radial_destruction`].
+#[derive(Debug, Clone, Copy)]
+pub struct RadialDestructionParams {
+    /// Minimum corner of the body's AABB \[m\]
+    pub aabb_min: [f64; 3],
+    /// Maximum corner of the body's AABB \[m\]
+    pub aabb_max: [f64; 3],
+    /// World-space impact point \[m\]
+    pub impact_point: [f64; 3],
+    /// Unit normal at the impact surface
+    pub impact_normal: [f64; 3],
+    /// Total kinetic energy deposited at impact \[J\]
+    pub impact_energy: f64,
+    /// Velocity of the parent body before fracture \[m/s\]
+    pub parent_velocity: [f64; 3],
+}
+
 /// Execute a radial destruction sequence.
-#[allow(clippy::too_many_arguments)]
 pub fn execute_radial_destruction(
     body_id: usize,
-    aabb_min: [f64; 3],
-    aabb_max: [f64; 3],
-    impact_point: [f64; 3],
-    impact_normal: [f64; 3],
-    impact_energy: f64,
-    parent_velocity: [f64; 3],
+    params: RadialDestructionParams,
     material: &FractureMaterial,
     num_rays: usize,
     num_rings: usize,
     resolution: usize,
 ) -> DestructionEvent {
+    let RadialDestructionParams {
+        aabb_min,
+        aabb_max,
+        impact_point,
+        impact_normal,
+        impact_energy,
+        parent_velocity,
+    } = params;
     let _pattern = generate_radial_concentric_pattern(
         impact_point,
         impact_normal,

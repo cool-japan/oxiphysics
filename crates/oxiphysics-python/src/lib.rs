@@ -26,8 +26,6 @@
 //! print(f"Ball fell to y={y:.3f}")
 //! ```
 
-#![allow(missing_docs)]
-
 use pyo3::prelude::*;
 
 pub mod aero_api;

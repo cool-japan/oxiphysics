@@ -7,9 +7,6 @@
 //! (Kawasaki, Maekawa), Miura-ori geometry, waterbomb and Yoshimura patterns,
 //! kirigami cells, and crease stiffness.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

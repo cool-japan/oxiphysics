@@ -38,14 +38,6 @@ pub(super) fn vec_scale(a: [f64; 3], s: f64) -> [f64; 3] {
 pub(super) fn vec_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-#[allow(dead_code)]
-pub(super) fn vec_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
 pub(super) fn vec_length(a: [f64; 3]) -> f64 {
     vec_dot(a, a).sqrt()
 }
@@ -180,7 +172,7 @@ mod tests {
     }
     #[test]
     fn test_step_humanoid_no_panic() {
-        let mut rag = HumanoidRagdoll::new();
+        let mut rag = HumanoidRagdoll::build();
         for _ in 0..10 {
             rag.step(1.0 / 60.0, 4);
         }
@@ -207,7 +199,7 @@ mod tests {
     }
     #[test]
     fn test_humanoid_bone_count() {
-        let rag = HumanoidRagdoll::new();
+        let rag = HumanoidRagdoll::build();
         assert!(
             rag.bones.len() >= 10,
             "Humanoid should have at least 10 bones"
@@ -312,14 +304,14 @@ mod tests {
     }
     #[test]
     fn test_root_bone() {
-        let rag = HumanoidRagdoll::new();
+        let rag = HumanoidRagdoll::build();
         let root = rag.root_bone();
         assert!(root.is_some());
         assert_eq!(rag.bones[root.unwrap()].name, "pelvis");
     }
     #[test]
     fn test_total_mass() {
-        let rag = HumanoidRagdoll::new();
+        let rag = HumanoidRagdoll::build();
         let mass = rag.total_mass();
         assert!(mass > 0.0, "total mass: {mass}");
     }

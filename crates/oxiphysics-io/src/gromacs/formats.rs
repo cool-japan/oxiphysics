@@ -1,4 +1,3 @@
-#![allow(clippy::manual_strip, clippy::should_implement_trait)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -66,7 +65,6 @@ impl XtcTrajectory {
 // ============================================================================
 
 /// An extended XTC trajectory writer that produces compact binary frames.
-#[allow(dead_code)]
 pub struct XtcWriter {
     /// Number of atoms (constant across frames).
     pub n_atoms: usize,
@@ -76,7 +74,6 @@ pub struct XtcWriter {
     pub n_frames: u32,
 }
 
-#[allow(dead_code)]
 impl XtcWriter {
     /// Create a new XTC writer for `n_atoms` atoms.
     pub fn new(n_atoms: usize) -> Self {
@@ -213,7 +210,6 @@ pub fn parse_energy_summary(s: &str) -> Vec<EnergyEntry> {
 
 /// A parsed GROMACS XVG (Grace/xmgrace) data file.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct XvgFile {
     /// Title from `@ title` directive.
     pub title: String,
@@ -227,10 +223,9 @@ pub struct XvgFile {
     pub data: Vec<Vec<f64>>,
 }
 
-#[allow(dead_code)]
 impl XvgFile {
     /// Parse an XVG file from a string.
-    pub fn from_str(s: &str) -> Result<Self, String> {
+    pub fn parse(s: &str) -> Result<Self, String> {
         let mut xvg = XvgFile::default();
 
         for line in s.lines() {
@@ -238,8 +233,8 @@ impl XvgFile {
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
-            if trimmed.starts_with('@') {
-                let directive = &trimmed[1..].trim_start();
+            if let Some(after_at) = trimmed.strip_prefix('@') {
+                let directive = &after_at.trim_start();
                 if let Some(rest) = directive.strip_prefix("title") {
                     xvg.title = rest.trim().trim_matches('"').to_string();
                 } else if directive.contains("xaxis") && directive.contains("label") {
@@ -338,13 +333,19 @@ impl XvgFile {
     }
 }
 
+impl std::str::FromStr for XvgFile {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
 // ============================================================================
 // ITP Atom Types
 // ============================================================================
 
 /// An atom type definition for GROMACS.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct AtomTypeDef {
     /// Atom type name.
     pub name: String,
@@ -360,16 +361,14 @@ pub struct AtomTypeDef {
 
 /// A GROMACS force-field include file (`.itp`) atom type section entry.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct ItpAtomTypes {
     /// Parsed atom type definitions.
     pub atom_types: Vec<AtomTypeDef>,
 }
 
-#[allow(dead_code)]
 impl ItpAtomTypes {
     /// Parse atom type definitions from a GROMACS `[ atomtypes ]` section string.
-    pub fn from_str(s: &str) -> Result<Self, String> {
+    pub fn parse(s: &str) -> Result<Self, String> {
         let mut atom_types = Vec::new();
         let mut in_section = false;
 
@@ -378,8 +377,8 @@ impl ItpAtomTypes {
             if trimmed.is_empty() || trimmed.starts_with(';') {
                 continue;
             }
-            if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                let sec_name = trimmed[1..trimmed.len() - 1].trim().to_lowercase();
+            if let Some(inner) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+                let sec_name = inner.trim().to_lowercase();
                 in_section = sec_name == "atomtypes";
                 continue;
             }
@@ -425,13 +424,19 @@ impl ItpAtomTypes {
     }
 }
 
+impl std::str::FromStr for ItpAtomTypes {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
 // ============================================================================
 // Residue Library
 // ============================================================================
 
 /// A minimal residue template entry.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct ResidueAtomTemplate {
     /// Atom name.
     pub atom_name: String,
@@ -445,7 +450,6 @@ pub struct ResidueAtomTemplate {
 
 /// A residue template.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ResidueTemplate {
     /// Three-letter residue code.
     pub name: String,
@@ -453,7 +457,6 @@ pub struct ResidueTemplate {
     pub atoms: Vec<ResidueAtomTemplate>,
 }
 
-#[allow(dead_code)]
 impl ResidueTemplate {
     /// Create a new residue template.
     pub fn new(name: &str) -> Self {
@@ -491,13 +494,11 @@ impl ResidueTemplate {
 
 /// A library of residue templates.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct ResidueLibrary {
     /// Residue templates indexed by name.
     pub templates: Vec<ResidueTemplate>,
 }
 
-#[allow(dead_code)]
 impl ResidueLibrary {
     /// Create an empty residue library.
     pub fn new() -> Self {
@@ -561,7 +562,6 @@ impl ResidueLibrary {
 // ============================================================================
 
 /// Compute the running average of a data column.
-#[allow(dead_code)]
 pub fn running_average(data: &[f64]) -> Vec<f64> {
     let mut result = Vec::with_capacity(data.len());
     let mut sum = 0.0;
@@ -573,7 +573,6 @@ pub fn running_average(data: &[f64]) -> Vec<f64> {
 }
 
 /// Compute the block average of `data` using blocks of size `block_size`.
-#[allow(dead_code)]
 pub fn block_average(data: &[f64], block_size: usize) -> Vec<f64> {
     if block_size == 0 || data.is_empty() {
         return Vec::new();
@@ -584,7 +583,6 @@ pub fn block_average(data: &[f64], block_size: usize) -> Vec<f64> {
 }
 
 /// Compute the autocorrelation function of `data` at lag `lag`.
-#[allow(dead_code)]
 pub fn autocorrelation(data: &[f64], lag: usize) -> f64 {
     let n = data.len();
     if n <= lag {
@@ -613,7 +611,7 @@ mod tests_formats {
     #[test]
     fn test_xvg_parse_basic() {
         let xvg_str = "# comment\n@ title \"Total Energy\"\n@ xaxis label \"Time (ps)\"\n@ yaxis label \"E (kJ/mol)\"\n0.000  -1234.56  567.89\n0.002  -1230.11  568.22\n";
-        let xvg = XvgFile::from_str(xvg_str).expect("parse");
+        let xvg = XvgFile::parse(xvg_str).expect("parse");
         assert_eq!(xvg.n_rows(), 2);
         assert_eq!(xvg.title, "Total Energy");
     }
@@ -621,7 +619,7 @@ mod tests_formats {
     #[test]
     fn test_xvg_column_mean() {
         let xvg_str = "0.0  10.0\n0.1  20.0\n0.2  30.0\n";
-        let xvg = XvgFile::from_str(xvg_str).expect("parse");
+        let xvg = XvgFile::parse(xvg_str).expect("parse");
         let mean = xvg.column_mean(1).expect("mean");
         assert!((mean - 20.0).abs() < 1e-9);
     }
@@ -657,7 +655,7 @@ mod tests_formats {
     #[test]
     fn test_itp_atom_types_parse() {
         let itp = "[ atomtypes ]\nCT   12.011  0.000  A  3.39967e-01  4.57730e-01\n";
-        let types = ItpAtomTypes::from_str(itp).expect("parse");
+        let types = ItpAtomTypes::parse(itp).expect("parse");
         assert_eq!(types.len(), 1);
     }
 

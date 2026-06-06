@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::FoamDict;
 
 /// Estimate mesh Reynolds number: `Re = U * L / nu`.
-#[allow(dead_code)]
 pub fn mesh_reynolds_number(u_ref: f64, length_scale: f64, nu: f64) -> f64 {
     if nu < 1e-30 {
         return f64::INFINITY;
@@ -17,7 +14,6 @@ pub fn mesh_reynolds_number(u_ref: f64, length_scale: f64, nu: f64) -> f64 {
 /// Courant-Friedrichs-Lewy (CFL) number for an explicit time scheme.
 ///
 /// `CFL = U * dt / dx`
-#[allow(dead_code)]
 pub fn cfl_number(u: f64, dt: f64, dx: f64) -> f64 {
     if dx < 1e-30 {
         return f64::INFINITY;
@@ -28,7 +24,6 @@ pub fn cfl_number(u: f64, dt: f64, dx: f64) -> f64 {
 /// given a CFL limit.
 ///
 /// `dt_max = CFL_limit * dx / U`
-#[allow(dead_code)]
 pub fn max_dt_from_cfl(cfl_limit: f64, dx: f64, u: f64) -> f64 {
     if u < 1e-30 {
         return f64::INFINITY;
@@ -37,7 +32,6 @@ pub fn max_dt_from_cfl(cfl_limit: f64, dx: f64, u: f64) -> f64 {
 }
 /// Merge two `FoamDict` objects, with entries from `other` overwriting same-key
 /// entries in `base`.
-#[allow(dead_code)]
 pub fn merge_foam_dicts(base: &FoamDict, other: &FoamDict) -> FoamDict {
     let mut result = base.clone();
     for (key, val) in &other.entries {
@@ -48,9 +42,7 @@ pub fn merge_foam_dicts(base: &FoamDict, other: &FoamDict) -> FoamDict {
 }
 #[cfg(test)]
 mod tests_openfoam_mesh {
-    use super::*;
-    use crate::openfoam::FoamMesh;
-    use crate::openfoam::FoamValue;
+    use crate::openfoam::*;
     #[test]
     fn test_face_area_unit_square() {
         let verts = vec![

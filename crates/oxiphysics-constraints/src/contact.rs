@@ -26,15 +26,12 @@ const SLOP: Real = 0.005;
 const RESTITUTION_VELOCITY_THRESHOLD: Real = 1.0;
 
 /// Maximum number of contacts in a reduced manifold.
-#[allow(dead_code)]
 const MAX_MANIFOLD_CONTACTS: usize = 4;
 
 /// Distance threshold for matching contacts across frames.
-#[allow(dead_code)]
 const CONTACT_MATCH_THRESHOLD: Real = 0.02;
 
 /// Maximum age (in frames) before a persistent contact is discarded.
-#[allow(dead_code)]
 const MAX_CONTACT_AGE: u32 = 120;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -99,7 +96,6 @@ pub struct ContactConstraint {
 
 impl ContactConstraint {
     /// Create a new contact constraint.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         body_handle_a: BodyHandle,
         body_handle_b: BodyHandle,
@@ -163,7 +159,6 @@ impl ContactConstraint {
     ///
     /// `dt` – time step used during solving.
     /// Returns the force vector in world space.
-    #[allow(dead_code)]
     pub fn estimated_force(&self, dt: Real) -> Vec3 {
         if dt < 1e-12 {
             return Vec3::zeros();
@@ -175,7 +170,6 @@ impl ContactConstraint {
     }
 
     /// Estimate the normal force magnitude.
-    #[allow(dead_code)]
     pub fn normal_force(&self, dt: Real) -> Real {
         if dt < 1e-12 {
             return 0.0;
@@ -184,7 +178,6 @@ impl ContactConstraint {
     }
 
     /// Estimate the friction force magnitude.
-    #[allow(dead_code)]
     pub fn friction_force(&self, dt: Real) -> Real {
         if dt < 1e-12 {
             return 0.0;
@@ -195,13 +188,11 @@ impl ContactConstraint {
     }
 
     /// Check if the contact is separating (accumulated normal impulse is zero).
-    #[allow(dead_code)]
     pub fn is_separating(&self) -> bool {
         self.accumulated_normal_impulse < 1e-12
     }
 
     /// Check if the contact is sliding (friction impulse at Coulomb limit).
-    #[allow(dead_code)]
     pub fn is_sliding(&self) -> bool {
         let limit = self.friction * self.accumulated_normal_impulse;
         if limit < 1e-12 {
@@ -214,13 +205,11 @@ impl ContactConstraint {
     }
 
     /// Get the contact midpoint in world space.
-    #[allow(dead_code)]
     pub fn contact_point(&self) -> Vec3 {
         (self.point_a + self.point_b) * 0.5
     }
 
     /// Set warm-start impulses from a previous frame.
-    #[allow(dead_code)]
     pub fn set_warm_start(
         &mut self,
         normal_impulse: Real,
@@ -609,7 +598,6 @@ impl Constraint for ContactConstraint {
 
 /// A single contact point within a manifold.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct ManifoldContact {
     /// World-space contact point on body A.
     pub point_a: Vec3,
@@ -627,7 +615,6 @@ pub struct ManifoldContact {
     pub cached_friction_impulse: [Real; 2],
 }
 
-#[allow(dead_code)]
 impl ManifoldContact {
     /// Create a new manifold contact.
     pub fn new(point_a: Vec3, point_b: Vec3, normal: Vec3, penetration: Real, id: u64) -> Self {
@@ -661,7 +648,6 @@ impl ManifoldContact {
 /// Stores up to `MAX_MANIFOLD_CONTACTS` contacts and provides methods
 /// for contact reduction, caching, and warm-start transfer.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ContactManifold {
     /// Body A handle.
     pub body_a: BodyHandle,
@@ -675,7 +661,6 @@ pub struct ContactManifold {
     pub average_normal: Vec3,
 }
 
-#[allow(dead_code)]
 impl ContactManifold {
     /// Create a new empty manifold.
     pub fn new(body_a: BodyHandle, body_b: BodyHandle) -> Self {
@@ -828,7 +813,6 @@ impl ContactManifold {
 ///
 /// Stores manifolds indexed by body pair and handles lifetime management.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ContactCache {
     /// All active manifolds.
     pub manifolds: Vec<ContactManifold>,
@@ -840,7 +824,6 @@ impl Default for ContactCache {
     }
 }
 
-#[allow(dead_code)]
 impl ContactCache {
     /// Create an empty cache.
     pub fn new() -> Self {
@@ -915,7 +898,6 @@ impl ContactCache {
 /// 1. Keep the deepest penetrating contact.
 /// 2. Keep the contact farthest from the deepest.
 /// 3. Keep contacts that maximize the area of the contact polygon.
-#[allow(dead_code)]
 pub fn reduce_contacts(contacts: &[ManifoldContact], max_contacts: usize) -> Vec<ManifoldContact> {
     if contacts.len() <= max_contacts || contacts.is_empty() {
         return contacts.to_vec();

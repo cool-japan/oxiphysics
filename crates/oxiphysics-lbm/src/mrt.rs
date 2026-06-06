@@ -1,4 +1,3 @@
-#![allow(clippy::manual_range_contains, clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -10,9 +9,7 @@
 //!
 //! Reference: d'Humières et al. (2002), Phil. Trans. R. Soc. Lond. A 360, 437–451.
 
-#![allow(dead_code)]
-
-use crate::grid::{LbmGrid2D, equilibrium_2d};
+use crate::grid::LbmGrid2D;
 
 // ---------------------------------------------------------------------------
 // D2Q9 transformation matrix M (row-major, 9×9)
@@ -128,7 +125,6 @@ impl MrtCollision2D {
     /// # Returns
     ///
     /// Post-collision distribution functions `f*` (9 components).
-    #[allow(clippy::needless_range_loop)]
     pub fn collide(&self, f: &[f64; 9], rho: f64, ux: f64, uy: f64) -> [f64; 9] {
         // 1. Forward transform: m = M * f
         let mut m = [0.0_f64; 9];
@@ -173,7 +169,6 @@ impl MrtCollision2D {
     ///
     /// Macroscopic fields are recomputed from the distributions before
     /// collision so they are always up-to-date.
-    #[allow(clippy::needless_range_loop)]
     pub fn collide_grid(&self, grid: &mut LbmGrid2D) {
         grid.compute_macroscopic();
 
@@ -181,8 +176,8 @@ impl MrtCollision2D {
         for k in 0..n {
             // Gather current distributions for this cell.
             let mut f_cell = [0.0_f64; 9];
-            for i in 0..9 {
-                f_cell[i] = grid.f[i][k];
+            for (i, f_cell_i) in f_cell.iter_mut().enumerate() {
+                *f_cell_i = grid.f[i][k];
             }
 
             let rho = grid.rho[k];
@@ -192,8 +187,8 @@ impl MrtCollision2D {
             let f_star = self.collide(&f_cell, rho, ux, uy);
 
             // Write back.
-            for i in 0..9 {
-                grid.f[i][k] = f_star[i];
+            for (i, &fs) in f_star.iter().enumerate() {
+                grid.f[i][k] = fs;
             }
         }
     }
@@ -206,8 +201,9 @@ impl MrtCollision2D {
 /// Compute equilibrium distribution for the full D2Q9 set.
 ///
 /// Used internally by tests that compare MRT output with BGK.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn d2q9_equilibrium(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
+    use crate::grid::equilibrium_2d;
     use crate::lattice::{D2Q9_VELOCITIES, D2Q9_WEIGHTS};
     let mut feq = [0.0_f64; 9];
     for i in 0..9 {
@@ -262,7 +258,6 @@ pub(crate) fn d2q9_equilibrium(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
 /// Row `k` of M is the k-th moment basis vector evaluated at all 19 velocities.
 /// The row order follows d'Humières et al. (2002) Table 1 with the velocity
 /// ordering used throughout this crate.
-#[allow(dead_code)]
 pub fn mrt_transform_matrix() -> [[f64; 19]; 19] {
     // Velocity components (same ordering as D3Q19_EX/EY/EZ in d3q19_full.rs)
     let ex: [i32; 19] = [0, 1, -1, 0, 0, 0, 0, 1, -1, 1, -1, 1, -1, 1, -1, 0, 0, 0, 0];
@@ -345,7 +340,6 @@ pub fn mrt_transform_matrix() -> [[f64; 19]; 19] {
 /// The matrix is computed by Gaussian elimination on `[M | I]` in f64 arithmetic.
 /// Since M is known to be exactly invertible (orthogonal basis after weighting),
 /// the result is accurate to machine precision.
-#[allow(dead_code)]
 pub fn mrt_inverse_matrix() -> [[f64; 19]; 19] {
     let m = mrt_transform_matrix();
     // Build augmented matrix [M | I].
@@ -361,25 +355,26 @@ pub fn mrt_inverse_matrix() -> [[f64; 19]; 19] {
         // Find pivot row.
         let mut max_row = col;
         let mut max_val = aug[col][col].abs();
-        for row in (col + 1)..19 {
-            if aug[row][col].abs() > max_val {
-                max_val = aug[row][col].abs();
+        for (offset, aug_row) in aug[col + 1..].iter().enumerate() {
+            let row = col + 1 + offset;
+            if aug_row[col].abs() > max_val {
+                max_val = aug_row[col].abs();
                 max_row = row;
             }
         }
         aug.swap(col, max_row);
         let pivot = aug[col][col];
-        for c in col..38 {
-            aug[col][c] /= pivot;
+        for elem in aug[col][col..38].iter_mut() {
+            *elem /= pivot;
         }
-        for row in 0..19 {
+        let col_row: [f64; 38] = aug[col];
+        for (row, aug_row) in aug.iter_mut().enumerate() {
             if row == col {
                 continue;
             }
-            let factor = aug[row][col];
-            for c in 0..38 {
-                let v = aug[col][c];
-                aug[row][c] -= factor * v;
+            let factor = aug_row[col];
+            for (elem, &cv) in aug_row.iter_mut().zip(col_row.iter()) {
+                *elem -= factor * cv;
             }
         }
     }
@@ -567,6 +562,7 @@ impl MrtD3Q19 {
     }
 
     /// Flat linear index for cell `(x, y, z)`.
+    #[cfg(test)]
     #[inline]
     fn idx(&self, x: usize, y: usize, z: usize) -> usize {
         x + y * self.nx + z * self.nx * self.ny
@@ -809,12 +805,12 @@ mod tests {
         use crate::mrt3d::TrtCollision3D;
         let trt = TrtCollision3D::new(1.0 / 6.0);
         assert!(
-            trt.s_plus > 0.0 && trt.s_plus < 2.0,
+            (0.0..2.0).contains(&trt.s_plus),
             "s_plus out of range: {}",
             trt.s_plus
         );
         assert!(
-            trt.s_minus > 0.0 && trt.s_minus < 2.0,
+            (0.0..2.0).contains(&trt.s_minus),
             "s_minus out of range: {}",
             trt.s_minus
         );
@@ -1044,7 +1040,7 @@ mod tests {
     fn test_mrt_relaxation_bgk_equivalent_s_in_range() {
         let relax = MrtRelaxation::bgk_equivalent(1.0 / 6.0);
         for (i, &si) in relax.s.iter().enumerate() {
-            assert!(si > 0.0 && si < 2.0, "s[{i}] = {si} is not in (0, 2)");
+            assert!((0.0..2.0).contains(&si), "s[{i}] = {si} is not in (0, 2)");
         }
     }
 
@@ -1379,7 +1375,7 @@ pub fn mrt_spectral_radius(rates: &[f64; 9]) -> f64 {
 /// Linear stability requires all rates in (0, 2).  Conserved-mode rates
 /// should be 0.
 pub fn mrt_is_stable(rates: &[f64; 9]) -> bool {
-    rates.iter().all(|&s| s >= 0.0 && s <= 2.0)
+    rates.iter().all(|&s| (0.0..=2.0).contains(&s))
 }
 
 /// Compute the effective bulk viscosity from MRT relaxation rates.
@@ -1566,7 +1562,7 @@ mod trt_tests {
         let mut rates9 = [0.0f64; 9];
         rates9.copy_from_slice(&relax.s[..9]);
         let rmax = mrt_spectral_radius(&rates9);
-        assert!(rmax > 0.0 && rmax <= 2.0, "spectral radius = {rmax}");
+        assert!((0.0..=2.0).contains(&rmax), "spectral radius = {rmax}");
     }
 
     /// MRT stability check — standard rates should be stable.

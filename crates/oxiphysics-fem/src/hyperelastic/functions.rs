@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{NeoHookean, OgdenTerm};
 
 /// Multiply two 3x3 matrices: result\[i\]\[j\] = Σ_k a\[i\]\[k\] * b\[k\]\[j\].
@@ -194,7 +193,7 @@ pub fn material_tangent(f: [[f64; 3]; 3], energy: impl Fn([[f64; 3]; 3]) -> f64)
     tangent
 }
 /// Add a 3x3 matrix `a` to another: `a[i][j] += b[i][j]`.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn mat3_add(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut c = [[0.0_f64; 3]; 3];
     for i in 0..3 {
@@ -205,12 +204,12 @@ pub(super) fn mat3_add(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     c
 }
 /// Frobenius norm of a 3x3 matrix.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn mat3_frobenius(a: [[f64; 3]; 3]) -> f64 {
     let mut sum = 0.0;
-    for i in 0..3 {
-        for j in 0..3 {
-            sum += a[i][j] * a[i][j];
+    for row in &a {
+        for &val in row {
+            sum += val * val;
         }
     }
     sum.sqrt()
@@ -348,7 +347,6 @@ pub fn tet_shape_gradient_node0(ref_coords: &[[f64; 3]; 4]) -> [f64; 3] {
 /// This checks a random set of 6 axis-aligned perturbations.
 ///
 /// Returns `true` if stable (all dP:dF ≥ -tol).
-#[allow(dead_code)]
 pub fn check_drucker_stability(
     f: [[f64; 3]; 3],
     energy: &impl Fn([[f64; 3]; 3]) -> f64,
@@ -378,7 +376,6 @@ pub fn check_drucker_stability(
 ///
 /// Returns the minimum acoustic tensor eigenvalue estimate over a set
 /// of direction pairs. A positive value indicates strong ellipticity.
-#[allow(dead_code)]
 pub fn legendre_hadamard_check(f: [[f64; 3]; 3], tangent: &[f64]) -> f64 {
     let dirs: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     let mut min_val = f64::INFINITY;
@@ -386,13 +383,13 @@ pub fn legendre_hadamard_check(f: [[f64; 3]; 3], tangent: &[f64]) -> f64 {
     for n in &dirs {
         for m in &dirs {
             let mut q = [[0.0_f64; 3]; 3];
-            for i in 0..3 {
-                for k in 0..3 {
+            for (i, q_row) in q.iter_mut().enumerate() {
+                for (k, q_ik) in q_row.iter_mut().enumerate() {
                     for big_i in 0..3 {
                         for big_j in 0..3 {
                             let idx_a = (i * 3 + big_i) * 9 + k * 3 + big_j;
                             if idx_a < tangent.len() {
-                                q[i][k] += tangent[idx_a] * n[big_i] * n[big_j];
+                                *q_ik += tangent[idx_a] * n[big_i] * n[big_j];
                             }
                         }
                     }
@@ -413,7 +410,6 @@ pub fn legendre_hadamard_check(f: [[f64; 3]; 3], tangent: &[f64]) -> f64 {
 ///
 /// Returns the ratio W(F_perturbed) / W(F) for a small isochoric perturbation.
 /// Values > 1 indicate the material resists isochoric distortions (stable).
-#[allow(dead_code)]
 pub fn isochoric_stability_ratio(
     f: [[f64; 3]; 3],
     energy: &impl Fn([[f64; 3]; 3]) -> f64,

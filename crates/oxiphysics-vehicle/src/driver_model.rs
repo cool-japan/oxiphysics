@@ -46,7 +46,6 @@ pub struct DriverParams {
 /// * `integral`      – running integral term (updated in place)
 /// * `prev_err`      – previous error (updated in place)
 /// * `dt`            – time step \[s\]
-#[allow(clippy::too_many_arguments)]
 pub fn pid_throttle(
     target_speed: f64,
     current_speed: f64,
@@ -177,8 +176,7 @@ pub fn slip_angle_target(speed: f64, params: &DriverParams) -> f64 {
 /// * `mu`             – tyre–road friction coefficient
 /// * `mass`           – vehicle mass \[kg\] (unused — see note)
 /// * `g`              – gravitational acceleration \[m/s²\]
-#[allow(unused_variables)]
-pub fn trail_braking(speed: f64, corner_radius: f64, mu: f64, mass: f64, g: f64) -> (f64, f64) {
+pub fn trail_braking(speed: f64, corner_radius: f64, mu: f64, _mass: f64, g: f64) -> (f64, f64) {
     if corner_radius < 1e-10 {
         return (0.0, 1.0);
     }

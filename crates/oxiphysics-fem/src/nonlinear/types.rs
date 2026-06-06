@@ -2,10 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// Convergence history record for a Newton-Raphson solve.
 #[derive(Debug, Clone)]
 pub struct ConvergenceHistory {
@@ -41,7 +37,6 @@ impl ConvergenceHistory {
     }
 }
 /// State for the Riks arc-length method.
-#[allow(dead_code)]
 pub struct RiksState {
     /// Current displacement vector.
     pub u: Vec<f64>,
@@ -56,7 +51,6 @@ pub struct RiksState {
 }
 impl RiksState {
     /// Create the initial Riks state.
-    #[allow(dead_code)]
     pub fn new(n_dof: usize, arc_length: f64) -> Self {
         Self {
             u: vec![0.0; n_dof],
@@ -76,7 +70,6 @@ impl RiksState {
 ///
 /// Monitors the sign of the determinant of the tangent stiffness matrix across
 /// load steps. A sign change indicates a critical (buckling/snap-through) point.
-#[allow(dead_code)]
 pub struct SnapThroughDetector {
     /// Determinant signs from previous steps.
     pub det_signs: Vec<f64>,
@@ -118,7 +111,6 @@ impl SnapThroughDetector {
 ///
 /// Convergence is declared when the incremental work `Δu · R` is less than
 /// `energy_tol * (u · R_0)`, where `R_0` is the initial residual.
-#[allow(dead_code)]
 pub struct EnergyConvergenceCriteria {
     /// Maximum iterations.
     pub max_iter: usize,
@@ -227,7 +219,6 @@ pub struct ConvergenceCriteria {
     pub displacement_tol: f64,
 }
 /// Result of a single continuation step.
-#[allow(dead_code)]
 pub struct ContinuationStepResult {
     /// Displacement at this load level.
     pub displacement: Vec<f64>,

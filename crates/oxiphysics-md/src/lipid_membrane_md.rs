@@ -11,9 +11,6 @@
 //! - [`PeptideLipidInteraction`] — amphipathic helix insertion, pore formation
 //! - [`PhaseTransitionLipid`] — gel-to-liquid transition, melting temperature
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 

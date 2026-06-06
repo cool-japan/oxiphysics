@@ -7,9 +7,6 @@
 //! bone remodelling (Wolff's law), wound healing, pressure ulcers, and general
 //! biomechanics analysis.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Helper math
 // ---------------------------------------------------------------------------
@@ -29,14 +26,6 @@ fn normalize3(v: [f64; 3]) -> [f64; 3] {
     } else {
         [v[0] / n, v[1] / n, v[2] / n]
     }
-}
-
-fn lerp(a: f64, b: f64, t: f64) -> f64 {
-    a + (b - a) * t
-}
-
-fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
-    x.max(lo).min(hi)
 }
 
 // ---------------------------------------------------------------------------
@@ -1027,7 +1016,6 @@ mod tests {
 // ── Vascular Wall Mechanics ───────────────────────────────────────────────────
 
 /// Layer description for layered arterial wall models (e.g., intima-media-adventitia).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VascularLayer {
     /// Layer name.
@@ -1107,7 +1095,6 @@ impl VascularLayer {
 }
 
 /// Multi-layer cylindrical arterial wall model.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArterialWall {
     /// Wall layers from inner to outer.
@@ -1193,7 +1180,6 @@ impl ArterialWall {
 ///
 /// Models cartilage/meniscus as a solid phase (elastic matrix) + fluid phase.
 /// Fluid exudation during compression provides time-dependent response.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BiphasicTissue {
     /// Drained elastic modulus E_s (Pa).
@@ -1292,7 +1278,6 @@ impl BiphasicTissue {
 // ── Tendon Viscoelastic Model ──────────────────────────────────────────────────
 
 /// Viscoelastic tendon/ligament model with toe, linear, and failure regions.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TendonViscoelastic {
     /// Cross-sectional area A₀ (m²).
@@ -1392,7 +1377,6 @@ impl TendonViscoelastic {
 // ── Wound Healing and Tissue Remodeling ───────────────────────────────────────
 
 /// Wound healing phase classification.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum WoundHealingPhase {
     /// Hemostasis (0–1 days).
@@ -1408,7 +1392,6 @@ pub enum WoundHealingPhase {
 }
 
 /// Tissue remodeling simulation tracking collagen turnover.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TissueRemodeling {
     /// Current collagen density (normalized, 0–1).
@@ -1484,7 +1467,6 @@ impl TissueRemodeling {
 /// Simplified Hodgkin-Huxley neuron model for tissue-nerve interaction.
 ///
 /// Tracks membrane potential and gating variables.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HodgkinHuxley {
     /// Membrane capacitance (µF/cm²).
@@ -1603,7 +1585,6 @@ impl HodgkinHuxley {
 /// Simplified corneal biomechanics model.
 ///
 /// Models the cornea as a thin curved shell with hyperelastic properties.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CornealModel {
     /// Central corneal thickness (m).

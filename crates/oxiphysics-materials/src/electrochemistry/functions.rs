@@ -33,7 +33,6 @@ pub fn cell_voltage(e_cathode: f64, e_anode: f64) -> f64 {
 /// Extracts electrochemical kinetic parameters from Tafel plot data.
 /// A Tafel plot shows log|i| vs. overpotential η; the slope gives
 /// the Tafel slope b = 2.303·RT/(α·F).
-#[allow(dead_code)]
 pub fn tafel_slope(alpha: f64, temp_k: f64) -> f64 {
     2.303 * GAS_CONSTANT * temp_k / (alpha * FARADAY)
 }
@@ -46,7 +45,6 @@ pub fn tafel_slope(alpha: f64, temp_k: f64) -> f64 {
 /// # Arguments
 /// * `eta_1`, `log_i_1` — point 1 on the Tafel line (V, log10(A/m²))
 /// * `eta_2`, `log_i_2` — point 2 on the Tafel line (V, log10(A/m²))
-#[allow(dead_code)]
 pub fn exchange_current_from_tafel(eta_1: f64, log_i_1: f64, eta_2: f64, log_i_2: f64) -> f64 {
     if (eta_2 - eta_1).abs() < 1e-12 {
         return 0.0;
@@ -65,7 +63,6 @@ pub fn exchange_current_from_tafel(eta_1: f64, log_i_1: f64, eta_2: f64, log_i_2
 /// * `molar_mass` — molar mass \[g/mol\]
 /// * `n_electrons`— valence
 /// * `density`    — metal density \[g/cm³\]
-#[allow(dead_code)]
 pub fn corrosion_penetration_rate(
     i_corr: f64,
     molar_mass: f64,
@@ -653,7 +650,6 @@ mod tests {
 /// * `alpha` — transfer coefficient (0 < α < 1, typically 0.5)
 /// * `eta`   — overpotential \[V\]
 /// * `temp`  — temperature \[K\]
-#[allow(dead_code)]
 pub fn symmetric_bv_current(j0: f64, alpha: f64, eta: f64, temp: f64) -> f64 {
     let q = FARADAY / (GAS_CONSTANT * temp);
     2.0 * j0 * (alpha * q * eta).sinh()
@@ -667,7 +663,6 @@ pub fn symmetric_bv_current(j0: f64, alpha: f64, eta: f64, temp: f64) -> f64 {
 /// * `alpha` — transfer coefficient
 /// * `eta`   — overpotential \[V\] (positive = anodic)
 /// * `temp`  — temperature \[K\]
-#[allow(dead_code)]
 pub fn tafel_current_anodic(j0: f64, alpha: f64, eta: f64, temp: f64) -> f64 {
     let q = FARADAY / (GAS_CONSTANT * temp);
     j0 * (alpha * q * eta).exp()
@@ -681,7 +676,6 @@ pub fn tafel_current_anodic(j0: f64, alpha: f64, eta: f64, temp: f64) -> f64 {
 /// * `alpha_a`, `alpha_c` — transfer coefficients
 /// * `eta`     — overpotential \[V\]
 /// * `temp`    — temperature \[K\]
-#[allow(dead_code)]
 pub fn linearised_bv_current(j0: f64, alpha_a: f64, alpha_c: f64, eta: f64, temp: f64) -> f64 {
     let q = FARADAY / (GAS_CONSTANT * temp);
     j0 * (alpha_a + alpha_c) * q * eta
@@ -698,7 +692,6 @@ pub fn linearised_bv_current(j0: f64, alpha_a: f64, alpha_c: f64, eta: f64, temp
 /// * `temp`    — temperature \[K\]
 /// * `a_red`   — activity of reduced form (dimensionless)
 /// * `a_ox`    — activity of oxidised form
-#[allow(dead_code)]
 pub fn nernst_with_activity(e0: f64, n: u32, temp: f64, a_red: f64, a_ox: f64) -> f64 {
     let rt_over_nf = GAS_CONSTANT * temp / (n as f64 * FARADAY);
     e0 - rt_over_nf * (a_red / a_ox).ln()
@@ -706,7 +699,6 @@ pub fn nernst_with_activity(e0: f64, n: u32, temp: f64, a_red: f64, a_ox: f64) -
 /// Nernst potential shift \[V\] due to a tenfold change in concentration ratio.
 ///
 /// `ΔE = -(RT / n·F) * ln(10)`  per decade change.
-#[allow(dead_code)]
 pub fn nernst_shift_per_decade(n: u32, temp: f64) -> f64 {
     let rt_over_nf = GAS_CONSTANT * temp / (n as f64 * FARADAY);
     rt_over_nf * 10.0_f64.ln()
@@ -723,7 +715,6 @@ pub fn nernst_shift_per_decade(n: u32, temp: f64) -> f64 {
 /// - `C_bulk` — bulk concentration \[mol/m³\]
 ///
 /// Returns the limiting current density \[A/m²\].
-#[allow(dead_code)]
 pub fn levich_limiting_current(
     n_electrons: u32,
     diffusivity: f64,
@@ -745,7 +736,6 @@ pub fn levich_limiting_current(
 ///
 /// where `j_k` is the kinetic current density and `j_L` is the Levich limiting current.
 /// Returns the total measured current density \[A/m²\].
-#[allow(dead_code)]
 pub fn koutecky_levich_current(j_kinetic: f64, j_levich: f64) -> f64 {
     if j_kinetic.abs() < f64::EPSILON || j_levich.abs() < f64::EPSILON {
         return 0.0;
@@ -753,7 +743,6 @@ pub fn koutecky_levich_current(j_kinetic: f64, j_levich: f64) -> f64 {
     1.0 / (1.0 / j_kinetic + 1.0 / j_levich)
 }
 /// Standard galvanic series (selected metals, vs SHE in seawater).
-#[allow(dead_code)]
 pub const GALVANIC_SERIES: &[GalvanicSeriesEntry] = &[
     GalvanicSeriesEntry {
         name: "Magnesium",
@@ -812,7 +801,6 @@ pub const GALVANIC_SERIES: &[GalvanicSeriesEntry] = &[
 /// `i_anode = i_couple * (A_cathode / A_anode)`
 ///
 /// Returns the accelerated corrosion current \[A/m²\] on the anode.
-#[allow(dead_code)]
 pub fn galvanic_area_ratio_current(
     i_couple_a: f64,
     area_cathode_m2: f64,

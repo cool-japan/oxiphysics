@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -20,9 +19,6 @@
 //! - Karniadakis, G., Beskok, A., Aluru, N. (2005). *Microflows and Nanoflows*.
 //! - Li, D. (2004). *Electrokinetics in Microfluidics*.
 //! - Stone, H. A., Stroock, A. D., Ajdari, A. (2004). Annu. Rev. Fluid Mech.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -431,8 +427,8 @@ impl ElectroosmosisLBM {
         for j in 0..self.ny {
             let rho = self.f[j].iter().sum::<f64>().max(1e-10);
             let mut ux = 0.0;
-            for i in 0..9 {
-                ux += D2Q9_C[i][0] * self.f[j][i];
+            for (i, &c) in D2Q9_C.iter().enumerate() {
+                ux += c[0] * self.f[j][i];
             }
             ux = (ux + 0.5 * self.eo_force(j)) / rho;
             self.u[j] = ux;
@@ -895,8 +891,8 @@ impl DiffusiophoresisSolver {
     pub fn diffuse_concentration(&mut self, d_solute: f64, dt: f64) {
         let mut c_new = self.concentration.clone();
         let r = d_solute * dt / (self.dx * self.dx);
-        for i in 1..self.nx - 1 {
-            c_new[i] = self.concentration[i]
+        for (c_out, i) in c_new[1..self.nx - 1].iter_mut().zip(1..self.nx - 1) {
+            *c_out = self.concentration[i]
                 + r * (self.concentration[i + 1] - 2.0 * self.concentration[i]
                     + self.concentration[i - 1]);
         }
@@ -1206,10 +1202,10 @@ impl MicrofluidicLBMGrid {
                 let mut rho = 0.0;
                 let mut ux = 0.0;
                 let mut uy = 0.0;
-                for i in 0..9 {
+                for (i, &c) in D2Q9_C.iter().enumerate() {
                     rho += self.f[idx][i];
-                    ux += D2Q9_C[i][0] * self.f[idx][i];
-                    uy += D2Q9_C[i][1] * self.f[idx][i];
+                    ux += c[0] * self.f[idx][i];
+                    uy += c[1] * self.f[idx][i];
                 }
                 rho = rho.max(1e-10);
                 self.rho[idx] = rho;
@@ -1251,13 +1247,11 @@ impl MicrofluidicLBMGrid {
     pub fn stress_xy(&self, x: usize, y: usize) -> f64 {
         let idx = self.idx(x, y);
         let mut s_xy = 0.0;
-        for i in 0..9 {
-            let cx = D2Q9_C[i][0];
-            let cy = D2Q9_C[i][1];
-            let ux = self.vel[idx][0];
-            let uy = self.vel[idx][1];
+        let ux = self.vel[idx][0];
+        let uy = self.vel[idx][1];
+        for (i, &c) in D2Q9_C.iter().enumerate() {
             let feq = Self::feq(self.rho[idx], ux, uy, i);
-            s_xy += cx * cy * (self.f[idx][i] - feq);
+            s_xy += c[0] * c[1] * (self.f[idx][i] - feq);
         }
         -self.omega * s_xy
     }

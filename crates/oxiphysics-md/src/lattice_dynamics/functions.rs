@@ -8,8 +8,6 @@ use std::f64::consts::PI;
 pub(super) const HBAR: f64 = 1.054_571_817e-34;
 /// Boltzmann constant (J/K).
 pub(super) const KB: f64 = 1.380_649e-23;
-/// Gas constant (J mol⁻¹ K⁻¹).
-pub(super) const R_GAS: f64 = 8.314_462_618;
 /// Dot product of two 3-vectors.
 #[inline]
 pub fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -33,11 +31,6 @@ pub(super) fn scale3(a: [f64; 3], s: f64) -> [f64; 3] {
 #[inline]
 pub(super) fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-/// Subtract two 3-vectors.
-#[inline]
-pub(super) fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 /// Norm of a 3-vector.
 #[inline]

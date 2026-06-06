@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use std::f64::consts::PI;
 
 use super::types::{Complex, PidController, StateSpaceModel, TransferFunction};
@@ -67,7 +65,6 @@ pub fn poly_deriv(coeffs: &[f64]) -> Vec<f64> {
 /// Find polynomial roots using Durand-Kerner method.
 ///
 /// Returns approximate complex roots for polynomials of any degree.
-#[allow(dead_code)]
 pub fn poly_roots(coeffs: &[f64]) -> Vec<Complex> {
     let mut start = 0;
     while start < coeffs.len() && coeffs[start].abs() < 1e-300 {
@@ -194,41 +191,50 @@ pub fn routh_hurwitz_stable(coeffs: &[f64]) -> bool {
 }
 /// Advance state by one Euler step: x_{k+1} = x_k + dt*(A*x_k + B*u_k).
 pub fn ss_step(model: &StateSpaceModel, state: &[f64], input: &[f64], dt: f64) -> Vec<f64> {
-    let n = model.state_dim();
-    let mut dx = vec![0.0; n];
-    for i in 0..n {
-        for j in 0..n {
-            dx[i] += model.a[i][j] * state[j];
-        }
-        for (j, &u) in input.iter().enumerate() {
-            if j < model.b[i].len() {
-                dx[i] += model.b[i][j] * u;
-            }
-        }
-    }
-    let mut new_state = vec![0.0; n];
-    for i in 0..n {
-        new_state[i] = state[i] + dt * dx[i];
-    }
-    new_state
+    let dx: Vec<f64> = model
+        .a
+        .iter()
+        .zip(model.b.iter())
+        .map(|(a_row, b_row)| {
+            let ax: f64 = a_row
+                .iter()
+                .zip(state.iter())
+                .map(|(aij, sj)| aij * sj)
+                .sum();
+            let bu: f64 = b_row
+                .iter()
+                .zip(input.iter())
+                .map(|(bij, uj)| bij * uj)
+                .sum();
+            ax + bu
+        })
+        .collect();
+    state
+        .iter()
+        .zip(dx.iter())
+        .map(|(si, dxi)| si + dt * dxi)
+        .collect()
 }
 /// Compute output: y = C*x + D*u.
 pub fn ss_output(model: &StateSpaceModel, state: &[f64], input: &[f64]) -> Vec<f64> {
-    let p = model.output_dim();
-    let mut y = vec![0.0; p];
-    for i in 0..p {
-        for (j, &s) in state.iter().enumerate() {
-            if j < model.c[i].len() {
-                y[i] += model.c[i][j] * s;
-            }
-        }
-        for (j, &u) in input.iter().enumerate() {
-            if j < model.d[i].len() {
-                y[i] += model.d[i][j] * u;
-            }
-        }
-    }
-    y
+    model
+        .c
+        .iter()
+        .zip(model.d.iter())
+        .map(|(c_row, d_row)| {
+            let cx: f64 = c_row
+                .iter()
+                .zip(state.iter())
+                .map(|(cij, sj)| cij * sj)
+                .sum();
+            let du: f64 = d_row
+                .iter()
+                .zip(input.iter())
+                .map(|(dij, uj)| dij * uj)
+                .sum();
+            cx + du
+        })
+        .collect()
 }
 /// Simulate state-space model over time steps, returning state history.
 pub fn ss_simulate(
@@ -425,34 +431,49 @@ pub fn root_locus_breakpoints(tf: &TransferFunction) -> Vec<f64> {
 /// where T is the sampling period.
 pub fn discretize_zoh(model: &StateSpaceModel, dt: f64) -> StateSpaceModel {
     let n = model.state_dim();
-    let m = model.input_dim();
-    let mut ad = vec![vec![0.0; n]; n];
-    let mut a2 = vec![vec![0.0; n]; n];
-    for i in 0..n {
-        for j in 0..n {
-            for k in 0..n {
-                a2[i][j] += model.a[i][k] * model.a[k][j];
-            }
-        }
-    }
-    for i in 0..n {
-        for j in 0..n {
-            ad[i][j] = model.a[i][j] * dt + a2[i][j] * dt * dt / 2.0;
-            if i == j {
-                ad[i][j] += 1.0;
-            }
-        }
-    }
-    let mut bd = vec![vec![0.0; m]; n];
-    for i in 0..n {
-        for j in 0..m {
-            let mut val = dt * model.b[i][j];
-            for k in 0..n {
-                val += model.a[i][k] * model.b[k][j] * dt * dt / 2.0;
-            }
-            bd[i][j] = val;
-        }
-    }
+    // a2[i][j] = (A^2)[i][j]
+    let a2: Vec<Vec<f64>> = (0..n)
+        .map(|i| {
+            (0..n)
+                .map(|j| {
+                    model.a[i]
+                        .iter()
+                        .zip(model.a.iter())
+                        .map(|(&aik, ak_row)| aik * ak_row[j])
+                        .sum()
+                })
+                .collect()
+        })
+        .collect();
+    let ad: Vec<Vec<f64>> = (0..n)
+        .map(|i| {
+            (0..n)
+                .map(|j| {
+                    let base = model.a[i][j] * dt + a2[i][j] * dt * dt / 2.0;
+                    if i == j { base + 1.0 } else { base }
+                })
+                .collect()
+        })
+        .collect();
+    let bd: Vec<Vec<f64>> = model
+        .a
+        .iter()
+        .zip(model.b.iter())
+        .map(|(a_row, b_row)| {
+            b_row
+                .iter()
+                .enumerate()
+                .map(|(j, &bij)| {
+                    let a_b_term: f64 = a_row
+                        .iter()
+                        .zip(model.b.iter())
+                        .map(|(&aik, bk_row)| aik * bk_row[j])
+                        .sum();
+                    dt * bij + a_b_term * dt * dt / 2.0
+                })
+                .collect()
+        })
+        .collect();
     StateSpaceModel::new(ad, bd, model.c.clone(), model.d.clone())
 }
 /// Discretize a transfer function using Tustin (bilinear) transform.
@@ -510,7 +531,6 @@ pub fn discretize_tustin(tf: &TransferFunction, dt: f64) -> TransferFunction {
     TransferFunction::new(num_z, den_z)
 }
 /// Multiply n-by-k matrix A by k-by-m matrix B, returning n-by-m.
-#[allow(dead_code)]
 pub fn mat_mul(a: &[f64], b: &[f64], n: usize, k: usize, m: usize) -> Vec<f64> {
     let mut c = vec![0.0; n * m];
     for i in 0..n {
@@ -523,7 +543,6 @@ pub fn mat_mul(a: &[f64], b: &[f64], n: usize, k: usize, m: usize) -> Vec<f64> {
     c
 }
 /// Transpose n-by-m matrix to m-by-n.
-#[allow(dead_code)]
 pub fn mat_transpose(a: &[f64], n: usize, m: usize) -> Vec<f64> {
     let mut t = vec![0.0; n * m];
     for i in 0..n {
@@ -534,7 +553,6 @@ pub fn mat_transpose(a: &[f64], n: usize, m: usize) -> Vec<f64> {
     t
 }
 /// Identity matrix of size n.
-#[allow(dead_code)]
 pub fn mat_eye(n: usize) -> Vec<f64> {
     let mut m = vec![0.0; n * n];
     for i in 0..n {
@@ -543,17 +561,14 @@ pub fn mat_eye(n: usize) -> Vec<f64> {
     m
 }
 /// Add two n-by-m matrices.
-#[allow(dead_code)]
 pub fn mat_add(a: &[f64], b: &[f64]) -> Vec<f64> {
     a.iter().zip(b.iter()).map(|(&x, &y)| x + y).collect()
 }
 /// Subtract two n-by-m matrices: a - b.
-#[allow(dead_code)]
 pub fn mat_sub(a: &[f64], b: &[f64]) -> Vec<f64> {
     a.iter().zip(b.iter()).map(|(&x, &y)| x - y).collect()
 }
 /// Scale matrix by scalar.
-#[allow(dead_code)]
 pub fn mat_scale(a: &[f64], s: f64) -> Vec<f64> {
     a.iter().map(|&x| x * s).collect()
 }
@@ -1409,7 +1424,15 @@ mod tests {
         let b = vec![0.005, 0.1];
         let q = vec![1.0, 0.0, 0.0, 1.0];
         let r = vec![0.1];
-        let mpc = MpcController::new(a, b, 2, 1, 3, q, r);
+        let mpc = MpcController {
+            a,
+            b,
+            n: 2,
+            m: 1,
+            horizon: 3,
+            q,
+            r,
+        };
         let u = mpc.compute(&[1.0, 0.0], &[0.0, 0.0]);
         assert_eq!(u.len(), 1);
     }

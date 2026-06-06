@@ -28,23 +28,6 @@ pub(super) fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
 pub(super) fn len3(v: [f64; 3]) -> f64 {
     dot3(v, v).sqrt()
 }
-#[inline]
-pub(super) fn norm3(v: [f64; 3]) -> [f64; 3] {
-    let l = len3(v);
-    if l < 1e-300 {
-        [0.0; 3]
-    } else {
-        scale3(v, 1.0 / l)
-    }
-}
-#[inline]
-pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
 /// Nuclear saturation density ρ₀ in fm⁻³.
 pub const RHO_0: f64 = 0.16;
 /// Nucleon mass in MeV/c².

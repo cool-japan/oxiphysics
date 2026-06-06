@@ -1,4 +1,3 @@
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 //! LBM for granular flows: dense suspensions, avalanches, jamming.
@@ -29,9 +28,6 @@
 //! - GDR MiDi (2004). On dense granular flows. *Eur. Phys. J. E*, 14, 341–365.
 //! - Jop, P., Forterre, Y., & Pouliquen, O. (2006). *Nature*, 441, 727–730.
 //! - Bagnold, R. A. (1954). *Proc. R. Soc. Lond. A*, 225, 49–63.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -1013,7 +1009,7 @@ mod tests {
     fn test_solid_fraction_clamped() {
         let model = MuIPressureModel::glass_beads();
         let phi = model.solid_fraction(-1.0);
-        assert!(phi >= 0.0 && phi <= model.phi_max);
+        assert!((0.0..=model.phi_max).contains(&phi));
     }
 
     #[test]
@@ -1049,7 +1045,7 @@ mod tests {
         let av = AvalancheDynamics::new(34.0, 28.0, 10.0, 5e-4);
         let deg = av.repose_degrees();
         assert!(
-            deg >= 15.0 && deg <= 45.0,
+            (15.0_f64..=45.0).contains(&deg),
             "angle_of_repose={:.2} not in [15,45]",
             deg
         );

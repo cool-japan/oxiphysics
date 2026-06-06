@@ -20,9 +20,6 @@
 //! - Henkelman, G. & Jonsson, H. (2000). J. Chem. Phys. 113, 9978.
 //! - Venables, J. A. (2000). *Introduction to Surface and Thin Film Processes*.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -34,9 +31,6 @@ const KB: f64 = 1.380_649e-23;
 
 /// Avogadro's number (mol⁻¹).
 const NA: f64 = 6.022_140_76e23;
-
-/// Gas constant (J/(mol·K)).
-const R_GAS: f64 = 8.314_462_618;
 
 /// Planck constant (J·s).
 const H_PLANCK: f64 = 6.626_070_15e-34;

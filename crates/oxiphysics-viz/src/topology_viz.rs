@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,8 +13,6 @@
 //! - **Topological features** — persistence, dimension, representative cycles
 //! - **Simplification** — pair cancellation, Reeb graph pruning
 //! - **Visualization styles** — color by dimension, size by persistence
-
-#![allow(dead_code)]
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
@@ -578,7 +575,6 @@ impl ReebGraph {
     /// Build a Reeb graph from a triangulated surface with vertex scalar values.
     ///
     /// `vertices` are (x, y, z, scalar) tuples; `triangles` are index triples.
-    #[allow(clippy::too_many_arguments)]
     pub fn from_triangle_mesh(
         vertices: &[(f64, f64, f64, f64)],
         triangles: &[(usize, usize, usize)],
@@ -1078,11 +1074,8 @@ impl ContourTree {
         adjacency: &[Vec<usize>],
     ) -> BTreeMap<usize, Vec<usize>> {
         let n = values.len();
-        let mut uf_parent = vec![0usize; n];
+        let mut uf_parent: Vec<usize> = (0..n).collect();
         let mut uf_rank = vec![0u32; n];
-        for i in 0..n {
-            uf_parent[i] = i;
-        }
         let mut processed = vec![false; n];
         let mut tree: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
 

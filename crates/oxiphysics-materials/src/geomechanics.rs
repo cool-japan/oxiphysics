@@ -18,20 +18,7 @@
 //! Terzaghi, K. (1943) *Theoretical Soil Mechanics*, Wiley.
 //! Biot, M. A. (1941) *J. Appl. Phys.* 12, 155–164.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Gravitational acceleration \[m s⁻²\].
-const G: f64 = 9.81;
-
-/// Unit weight of fresh water \[N m⁻³\].
-const GAMMA_W: f64 = 9_810.0;
 
 // ---------------------------------------------------------------------------
 // SoilType

@@ -1,14 +1,10 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use rand::RngExt;
 use std::f64::consts::PI;
 
 /// Pinhole camera model.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PinholeCamera {
     /// Focal length in pixels along the x axis.
@@ -28,7 +24,6 @@ impl PinholeCamera {
     /// Construct from a horizontal field-of-view angle and image dimensions.
     ///
     /// Assumes square pixels and centred principal point.
-    #[allow(dead_code)]
     pub fn new(fov_deg: f64, width: u32, height: u32) -> Self {
         let fx = (width as f64) / (2.0 * (fov_deg.to_radians() / 2.0).tan());
         let fy = fx;
@@ -46,7 +41,6 @@ impl PinholeCamera {
     /// Project a 3-D point (in camera frame, Z forward) to pixel coordinates.
     ///
     /// Returns `None` if the point is behind the camera or outside the image.
-    #[allow(dead_code)]
     pub fn project(&self, point_3d: [f64; 3]) -> Option<[f64; 2]> {
         let (x, y, z) = (point_3d[0], point_3d[1], point_3d[2]);
         if z <= 0.0 {
@@ -60,7 +54,6 @@ impl PinholeCamera {
         Some([u, v])
     }
     /// Back-project a pixel plus depth to a 3-D point in camera frame.
-    #[allow(dead_code)]
     pub fn unproject(&self, pixel: [f64; 2], depth: f64) -> [f64; 3] {
         let x = (pixel[0] - self.cx) * depth / self.fx;
         let y = (pixel[1] - self.cy) * depth / self.fy;
@@ -68,7 +61,6 @@ impl PinholeCamera {
     }
 }
 /// A steering angle sensor measurement.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SteeringAngleSensor {
     /// 1-σ noise in radians.
@@ -78,7 +70,6 @@ pub struct SteeringAngleSensor {
 }
 impl SteeringAngleSensor {
     /// Create a high-resolution optical encoder model.
-    #[allow(dead_code)]
     pub fn optical_encoder() -> Self {
         Self {
             noise_rad: 0.001,
@@ -88,7 +79,6 @@ impl SteeringAngleSensor {
     /// Measure the steering angle.
     ///
     /// Returns the noisy steering angle in radians.
-    #[allow(dead_code)]
     pub fn measure(&self, true_angle_rad: f64, noise_sample: f64) -> f64 {
         true_angle_rad + self.bias_rad + self.noise_rad * noise_sample
     }
@@ -101,7 +91,6 @@ impl SteeringAngleSensor {
 /// alpha_r =       - atan((vy - b * yaw_rate) / vx)
 /// ```
 /// where `a` is the distance from CoM to front axle and `b` to the rear axle.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SlipAngleEstimator {
     /// Distance from CoM to front axle (m).
@@ -111,7 +100,6 @@ pub struct SlipAngleEstimator {
 }
 impl SlipAngleEstimator {
     /// Create a new estimator from axle distances.
-    #[allow(dead_code)]
     pub fn new(a: f64, b: f64) -> Self {
         Self { a, b }
     }
@@ -124,7 +112,6 @@ impl SlipAngleEstimator {
     /// * `delta`     – front steering angle (rad)
     ///
     /// Returns `(alpha_front_rad, alpha_rear_rad)`.
-    #[allow(dead_code)]
     pub fn estimate(&self, vx: f64, vy: f64, yaw_rate: f64, delta: f64) -> (f64, f64) {
         if vx.abs() < 0.5 {
             return (0.0, 0.0);
@@ -137,13 +124,11 @@ impl SlipAngleEstimator {
     /// linearised cornering stiffness model.
     ///
     /// `Fy = C_alpha * alpha`  (N, positive = left)
-    #[allow(dead_code)]
     pub fn lateral_force(&self, c_alpha: f64, slip_angle_rad: f64) -> f64 {
         c_alpha * slip_angle_rad
     }
 }
 /// A single LiDAR return point.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LidarPoint {
     /// X coordinate in sensor frame (metres).
@@ -161,7 +146,6 @@ pub struct LidarPoint {
 ///
 /// (Note: the existing `ImuSensor` is a stateless helper; this struct holds
 /// configuration state.)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImuUnit {
     /// 1-σ accelerometer noise (m/s²).
@@ -171,7 +155,6 @@ pub struct ImuUnit {
     /// Constant accelerometer bias `[bx, by, bz]` (m/s²).
     pub bias: [f64; 3],
 }
-#[allow(dead_code)]
 impl ImuUnit {
     /// Create a new IMU unit.
     pub fn new(noise_std_accel: f64, noise_std_gyro: f64, bias: [f64; 3]) -> Self {
@@ -211,7 +194,6 @@ impl ImuUnit {
 ///
 /// This provides a principled fusion of a noisy position sensor (e.g. GPS)
 /// with dead-reckoning (integrated velocity).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct KalmanFilter1D {
     /// Estimated position (m).
@@ -237,7 +219,6 @@ impl KalmanFilter1D {
     /// * `q_pos` – process noise for position (m² s⁻¹)
     /// * `q_vel` – process noise for velocity (m² s⁻¹)
     /// * `r_obs` – observation noise variance (m²)
-    #[allow(dead_code)]
     pub fn new(q_pos: f64, q_vel: f64, r_obs: f64) -> Self {
         Self {
             position: 0.0,
@@ -251,7 +232,6 @@ impl KalmanFilter1D {
         }
     }
     /// Predict step: propagate state forward by `dt` seconds.
-    #[allow(dead_code)]
     pub fn predict(&mut self, dt: f64) {
         self.position += self.velocity * dt;
         let p_pos_new =
@@ -265,7 +245,6 @@ impl KalmanFilter1D {
     /// Update step: incorporate a position measurement `z`.
     ///
     /// Uses an H = \[1, 0\] observation matrix (position-only sensor).
-    #[allow(dead_code)]
     pub fn update(&mut self, z: f64) {
         let s = self.p_pos + self.r_obs;
         if s.abs() < 1e-30 {
@@ -284,24 +263,20 @@ impl KalmanFilter1D {
         self.p_pv = p_pv_new;
     }
     /// Position standard deviation (m).
-    #[allow(dead_code)]
     pub fn position_std(&self) -> f64 {
         self.p_pos.max(0.0).sqrt()
     }
     /// Velocity standard deviation (m/s).
-    #[allow(dead_code)]
     pub fn velocity_std(&self) -> f64 {
         self.p_vel.max(0.0).sqrt()
     }
 }
 /// Simple GPS position sensor with isotropic Gaussian noise.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GpsUnit {
     /// 1-σ position noise in each axis (m).
     pub position_noise: f64,
 }
-#[allow(dead_code)]
 impl GpsUnit {
     /// Create a new GPS unit.
     pub fn new(position_noise: f64) -> Self {
@@ -326,7 +301,6 @@ impl GpsUnit {
 /// Uses the pinhole projection formula: flow = v * f / h
 /// where `v` is the lateral/longitudinal velocity, `f` is the focal length,
 /// and `h` is the camera height above the ground plane.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OpticalFlowSensor {
     /// Camera focal length (pixels).
@@ -338,7 +312,6 @@ pub struct OpticalFlowSensor {
 }
 impl OpticalFlowSensor {
     /// Create a typical downward-facing camera for a ground vehicle.
-    #[allow(dead_code)]
     pub fn ground_vehicle_camera() -> Self {
         Self {
             focal_length_px: 600.0,
@@ -350,7 +323,6 @@ impl OpticalFlowSensor {
     ///
     /// * `flow_x_px`, `flow_y_px` – measured optical flow (pixels/frame)
     /// * `dt`                      – frame period (s)
-    #[allow(dead_code)]
     pub fn velocity_from_flow(&self, flow_x_px: f64, flow_y_px: f64, dt: f64) -> [f64; 2] {
         if dt < 1e-12 || self.focal_length_px < 1.0 {
             return [0.0; 2];
@@ -361,7 +333,6 @@ impl OpticalFlowSensor {
     /// Simulate optical-flow measurement from true velocity.
     ///
     /// Returns `(flow_x_px, flow_y_px)` per frame.
-    #[allow(dead_code)]
     pub fn simulate_flow(
         &self,
         vx: f64,
@@ -378,7 +349,6 @@ impl OpticalFlowSensor {
 }
 /// Three independent scalar Kalman filters, one per axis, providing a
 /// 3-D position and velocity estimate.
-#[allow(dead_code)]
 pub struct Kalman3D {
     /// Filter for the X axis.
     pub kf_x: KalmanFilter1D,
@@ -389,7 +359,6 @@ pub struct Kalman3D {
 }
 impl Kalman3D {
     /// Create three independent Kalman filters with the same noise parameters.
-    #[allow(dead_code)]
     pub fn new(q_pos: f64, q_vel: f64, r_obs: f64) -> Self {
         Self {
             kf_x: KalmanFilter1D::new(q_pos, q_vel, r_obs),
@@ -398,31 +367,26 @@ impl Kalman3D {
         }
     }
     /// Predict all three filters by `dt` seconds.
-    #[allow(dead_code)]
     pub fn predict(&mut self, dt: f64) {
         self.kf_x.predict(dt);
         self.kf_y.predict(dt);
         self.kf_z.predict(dt);
     }
     /// Update all three filters with a 3-D position observation.
-    #[allow(dead_code)]
     pub fn update(&mut self, z: [f64; 3]) {
         self.kf_x.update(z[0]);
         self.kf_y.update(z[1]);
         self.kf_z.update(z[2]);
     }
     /// Fused position estimate `[x, y, z]`.
-    #[allow(dead_code)]
     pub fn position(&self) -> [f64; 3] {
         [self.kf_x.position, self.kf_y.position, self.kf_z.position]
     }
     /// Fused velocity estimate `[vx, vy, vz]`.
-    #[allow(dead_code)]
     pub fn velocity(&self) -> [f64; 3] {
         [self.kf_x.velocity, self.kf_y.velocity, self.kf_z.velocity]
     }
     /// RMS position standard deviation across all three axes.
-    #[allow(dead_code)]
     pub fn position_std_rms(&self) -> f64 {
         let v = (self.kf_x.p_pos + self.kf_y.p_pos + self.kf_z.p_pos) / 3.0;
         v.max(0.0).sqrt()
@@ -432,7 +396,6 @@ impl Kalman3D {
 /// position and velocity.
 ///
 /// Operates in 2-D (X, Y) in the vehicle's local horizontal plane.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImuDeadReckoning {
     /// Current position `[x, y]` (m).
@@ -446,7 +409,6 @@ pub struct ImuDeadReckoning {
 }
 impl ImuDeadReckoning {
     /// Create a new dead-reckoning navigator starting at the origin.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             position: [0.0; 2],
@@ -460,7 +422,6 @@ impl ImuDeadReckoning {
     /// * `ax`, `ay` – body-frame accelerations (m/s²), X = forward, Y = left
     /// * `yaw_rate` – yaw rate from gyroscope (rad/s)
     /// * `dt`       – time step (s)
-    #[allow(dead_code)]
     pub fn step(&mut self, ax: f64, ay: f64, yaw_rate: f64, dt: f64) {
         self.heading += yaw_rate * dt;
         self.integrated_yaw += yaw_rate * dt;
@@ -474,23 +435,19 @@ impl ImuDeadReckoning {
         self.position[1] += self.velocity[1] * dt;
     }
     /// Speed magnitude (m/s).
-    #[allow(dead_code)]
     pub fn speed(&self) -> f64 {
         (self.velocity[0].powi(2) + self.velocity[1].powi(2)).sqrt()
     }
     /// Reset position to the given value (e.g. after a GPS correction).
-    #[allow(dead_code)]
     pub fn reset_position(&mut self, pos: [f64; 2]) {
         self.position = pos;
     }
     /// Reset velocity to zero (e.g. at startup).
-    #[allow(dead_code)]
     pub fn reset_velocity(&mut self) {
         self.velocity = [0.0; 2];
     }
 }
 /// A single IMU measurement sample.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImuMeasurement {
     /// Measured specific force (acceleration minus gravity) `[ax, ay, az]` in m/s².
@@ -507,7 +464,6 @@ pub struct ImuMeasurement {
 /// `b(t+dt) = b(t) * exp(-dt/T) + σ_d * w`
 ///
 /// where T is the correlation time and σ_d is the diffusion coefficient.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImuBiasModel {
     /// Accelerometer bias `[bx, by, bz]` (m/s²).
@@ -525,7 +481,6 @@ pub struct ImuBiasModel {
 }
 impl ImuBiasModel {
     /// Create a new IMU bias model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         accel_time_const: f64,
         gyro_time_const: f64,
@@ -608,7 +563,6 @@ impl ImuBiasModel {
 /// Simple resistive temperature sensor model.
 ///
 /// Measures temperature with a constant bias and Gaussian noise.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TemperatureSensor {
     /// 1-σ noise in °C.
@@ -620,7 +574,6 @@ pub struct TemperatureSensor {
 }
 impl TemperatureSensor {
     /// Typical thermocouple sensor for engine bay use.
-    #[allow(dead_code)]
     pub fn thermocouple() -> Self {
         Self {
             noise_c: 1.0,
@@ -629,7 +582,6 @@ impl TemperatureSensor {
         }
     }
     /// High-accuracy RTD (Pt100) for tyre temperature.
-    #[allow(dead_code)]
     pub fn rtd_tyre() -> Self {
         Self {
             noise_c: 0.2,
@@ -638,7 +590,6 @@ impl TemperatureSensor {
         }
     }
     /// Measure temperature (°C).
-    #[allow(dead_code)]
     pub fn measure(&self, true_temp_c: f64, noise_sample: f64) -> f64 {
         true_temp_c + self.bias_c + self.noise_c * noise_sample
     }
@@ -653,7 +604,6 @@ impl TemperatureSensor {
 ///
 /// All coefficients are for the accelerometer (in m/s²); gyro uses the same
 /// structure but in rad/s.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AllenDeviationImu {
     /// Accelerometer white-noise coefficient N (m/s² / √Hz).
@@ -667,7 +617,6 @@ pub struct AllenDeviationImu {
 }
 impl AllenDeviationImu {
     /// Create a new Allan-deviation IMU noise model.
-    #[allow(dead_code)]
     pub fn new(accel_n: f64, accel_b: f64, accel_k: f64, gyro_n: f64) -> Self {
         Self {
             accel_n,
@@ -679,7 +628,6 @@ impl AllenDeviationImu {
     /// Automotive MEMS preset.
     ///
     /// Typical values for a consumer-grade automotive accelerometer.
-    #[allow(dead_code)]
     pub fn automotive_mems() -> Self {
         Self {
             accel_n: 0.05,
@@ -692,7 +640,6 @@ impl AllenDeviationImu {
     ///
     /// Combined Allan deviation (simplified):
     /// `σ(τ) = sqrt((N/√τ)² + (0.664·B)² + (K·√τ)²)`
-    #[allow(dead_code)]
     pub fn accel_noise_at_tau(&self, tau: f64) -> f64 {
         if tau <= 0.0 {
             return self.accel_n;
@@ -703,7 +650,6 @@ impl AllenDeviationImu {
         (arw * arw + bi * bi + rrw * rrw).sqrt()
     }
     /// Compute the gyroscope noise standard deviation at averaging time τ (s).
-    #[allow(dead_code)]
     pub fn gyro_noise_at_tau(&self, tau: f64) -> f64 {
         if tau <= 0.0 {
             return self.gyro_n;
@@ -712,7 +658,6 @@ impl AllenDeviationImu {
     }
 }
 /// Constant False Alarm Rate (CFAR) detection parameters.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CfarParams {
     /// Number of guard cells on each side of the cell under test.
@@ -724,7 +669,6 @@ pub struct CfarParams {
 }
 impl CfarParams {
     /// Default CFAR for automotive radar.
-    #[allow(dead_code)]
     pub fn automotive() -> Self {
         Self {
             n_guard: 2,
@@ -744,7 +688,6 @@ impl CfarParams {
     }
 }
 /// A GPS measurement sample.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GpsMeasurement {
     /// Estimated position `[x, y, z]` in metres (local ENU frame).
@@ -765,7 +708,6 @@ pub struct GpsMeasurement {
 ///
 /// Unlike the basic `SensorFusion`, this struct is self-contained and does
 /// not delegate to `ImuSensor::accel_attitude`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ComplementaryFilter {
     /// Roll estimate (radians).
@@ -777,7 +719,6 @@ pub struct ComplementaryFilter {
 }
 impl ComplementaryFilter {
     /// Create a new filter at zero attitude.
-    #[allow(dead_code)]
     pub fn new(alpha: f64) -> Self {
         Self {
             roll: 0.0,
@@ -791,7 +732,6 @@ impl ComplementaryFilter {
     /// * `accel` – specific force `[ax, ay, az]` (m/s²)
     /// * `gyro`  – angular velocity `[ωx, ωy, ωz]` (rad/s), ωx=roll rate, ωy=pitch rate
     /// * `dt`    – time step (s)
-    #[allow(dead_code)]
     pub fn update(&mut self, accel: [f64; 3], gyro: [f64; 3], dt: f64) {
         let roll_gyro = self.roll + gyro[0] * dt;
         let pitch_gyro = self.pitch + gyro[1] * dt;
@@ -801,7 +741,6 @@ impl ComplementaryFilter {
         self.pitch = self.alpha * pitch_gyro + (1.0 - self.alpha) * pitch_accel;
     }
     /// Reset to zero attitude.
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         self.roll = 0.0;
         self.pitch = 0.0;
@@ -812,7 +751,6 @@ impl ComplementaryFilter {
 ///
 /// Uses a median-of-four approach: excludes the highest and lowest readings,
 /// then averages the two middle values.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WheelSpeedFusion {
     /// Effective wheel rolling radius (m).
@@ -862,7 +800,6 @@ impl WheelSpeedFusion {
     }
 }
 /// Stateless GPS sensor functions.
-#[allow(dead_code)]
 pub struct GpsSensor;
 impl GpsSensor {
     /// Simulate a GPS position measurement.
@@ -874,7 +811,6 @@ impl GpsSensor {
     /// * `noise_h`      – unit-normal horizontal noise sample
     /// * `noise_v`      – unit-normal vertical noise sample
     /// * `satellites`   – number of satellites in view
-    #[allow(dead_code)]
     pub fn measure(
         config: &GpsConfig,
         true_pos: [f64; 3],
@@ -897,7 +833,6 @@ impl GpsSensor {
     }
 }
 /// Configuration for a GPS receiver.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GpsConfig {
     /// 1-σ horizontal position error in metres.
@@ -909,7 +844,6 @@ pub struct GpsConfig {
 }
 impl GpsConfig {
     /// Typical automotive-grade GPS (e.g. u-blox M8).
-    #[allow(dead_code)]
     pub fn automotive() -> Self {
         Self {
             horizontal_accuracy_m: 2.5,
@@ -918,7 +852,6 @@ impl GpsConfig {
         }
     }
     /// High-precision RTK GPS.
-    #[allow(dead_code)]
     pub fn rtk() -> Self {
         Self {
             horizontal_accuracy_m: 0.02,
@@ -928,7 +861,6 @@ impl GpsConfig {
     }
 }
 /// Wheel speed sensor based on a toothed ring (ABS/encoder type).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WheelPulse {
     /// Number of teeth on the tone wheel.
@@ -936,7 +868,6 @@ pub struct WheelPulse {
     /// 1-σ angular velocity noise (rad/s), applied to speed estimate.
     pub noise: f64,
 }
-#[allow(dead_code)]
 impl WheelPulse {
     /// Create a new wheel pulse sensor.
     pub fn new(n_teeth: u32, noise: f64) -> Self {
@@ -967,7 +898,6 @@ impl WheelPulse {
 /// `p = p0 * (1 - L*h / T0)^(g*M/(R*L))`
 /// Simplified to the linear approximation for small altitude differences:
 /// `h ≈ (p0 - p) / (rho * g)`
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BarometricSensor {
     /// Sea-level pressure in Pascals (e.g. 101 325 Pa).
@@ -981,7 +911,6 @@ pub struct BarometricSensor {
 }
 impl BarometricSensor {
     /// Standard atmosphere sensor preset.
-    #[allow(dead_code)]
     pub fn standard() -> Self {
         Self {
             p0: 101_325.0,
@@ -993,7 +922,6 @@ impl BarometricSensor {
     /// Simulate a pressure measurement at altitude `h_true` (m).
     ///
     /// Returns the measured pressure (Pa).
-    #[allow(dead_code)]
     pub fn measure_pressure(&self, h_true: f64, noise_sample: f64) -> f64 {
         let true_p = self.p0 - self.rho * self.g * h_true;
         true_p + self.noise_pa * noise_sample
@@ -1001,13 +929,11 @@ impl BarometricSensor {
     /// Estimate altitude from a pressure measurement.
     ///
     /// Returns altitude in metres above the reference level.
-    #[allow(dead_code)]
     pub fn altitude_from_pressure(&self, pressure: f64) -> f64 {
         (self.p0 - pressure) / (self.rho * self.g)
     }
 }
 /// A wheel-speed-based vehicle speed sensor with Gaussian noise.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SpeedSensor {
     /// Effective wheel rolling radius (m).
@@ -1015,7 +941,6 @@ pub struct SpeedSensor {
     /// 1-σ noise standard deviation (m/s).
     pub noise_std: f64,
 }
-#[allow(dead_code)]
 impl SpeedSensor {
     /// Create a new speed sensor.
     pub fn new(wheel_radius: f64, noise_std: f64) -> Self {
@@ -1041,7 +966,6 @@ impl SpeedSensor {
 /// complementary filter.
 ///
 /// State:  fused_velocity (scalar, m/s),  fused_position (\[x, y, z\], m).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PositionFusion {
     /// Current fused speed estimate (m/s).
@@ -1051,7 +975,6 @@ pub struct PositionFusion {
     /// Complementary filter weight for GPS (0 = trust only IMU, 1 = trust only GPS).
     pub gps_weight: f64,
 }
-#[allow(dead_code)]
 impl PositionFusion {
     /// Create a new fusion object, starting at the origin.
     pub fn new(gps_weight: f64) -> Self {

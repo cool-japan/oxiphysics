@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,6 +10,9 @@
 //! boundary conditions, concentrated loads, and analysis steps.
 
 use std::collections::HashMap;
+
+/// Partial material data accumulated while parsing a `*MATERIAL` block.
+type MatData = HashMap<String, (Option<f64>, Option<f64>, Option<f64>)>;
 use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::io::{self, BufRead};
@@ -266,7 +268,7 @@ impl CalculixReader {
         // Track current material name for multi-keyword material definition
         let mut current_material: Option<String> = None;
         // Partial material data: name -> (young, poisson, density)
-        let mut mat_data: HashMap<String, (Option<f64>, Option<f64>, Option<f64>)> = HashMap::new();
+        let mut mat_data: MatData = HashMap::new();
         // Track whether we are inside a *STEP
         let mut in_step = false;
 
@@ -1071,7 +1073,8 @@ mod tests {
 
     #[test]
     fn test_parse_missing_file() {
-        let result = CalculixReader::new().parse("/tmp/does_not_exist_oxiphysics_ccx.inp");
+        let path = std::env::temp_dir().join("does_not_exist_oxiphysics_ccx.inp");
+        let result = CalculixReader::new().parse(path.to_str().unwrap_or(""));
         assert!(result.is_err());
     }
 

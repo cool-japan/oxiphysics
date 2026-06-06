@@ -12,7 +12,6 @@
 /// * `cg_height` — centre of gravity height (m).
 /// * `track_width` — average track width (m).
 /// * `front_weight_ratio` — fraction of weight on front axle (0–1).
-#[allow(dead_code)]
 pub fn lateral_load_transfer(
     total_mass: f64,
     lateral_accel: f64,
@@ -33,7 +32,6 @@ pub fn lateral_load_transfer(
 /// * `longitudinal_accel` — deceleration (positive = braking, m/s^2).
 /// * `cg_height` — CG height (m).
 /// * `wheelbase` — axle-to-axle distance (m).
-#[allow(dead_code)]
 pub fn longitudinal_load_transfer(
     total_mass: f64,
     longitudinal_accel: f64,
@@ -47,7 +45,6 @@ pub fn longitudinal_load_transfer(
 /// alpha = atan2(v_lateral, |v_forward|)
 ///
 /// Positive slip angle means the wheel is sliding toward the right (yaw pushes car left).
-#[allow(dead_code)]
 pub fn slip_angle(v_forward: f64, v_lateral: f64) -> f64 {
     if v_forward.abs() < 1e-4 {
         return 0.0;
@@ -59,7 +56,6 @@ pub fn slip_angle(v_forward: f64, v_lateral: f64) -> f64 {
 /// kappa = (omega * r - v) / max(|v|, |omega * r|)
 ///
 /// Positive = acceleration (wheel spin > vehicle speed), negative = braking.
-#[allow(dead_code)]
 pub fn slip_ratio(omega: f64, radius: f64, vehicle_speed: f64) -> f64 {
     let wheel_speed = omega * radius;
     let denom = vehicle_speed.abs().max(wheel_speed.abs()).max(1e-4);
@@ -68,7 +64,6 @@ pub fn slip_ratio(omega: f64, radius: f64, vehicle_speed: f64) -> f64 {
 /// Compute the combined slip magnitude used for Pacejka combined-slip scaling.
 ///
 /// sigma = sqrt(kappa^2 + tan(alpha)^2)
-#[allow(dead_code)]
 pub fn combined_slip(kappa: f64, alpha: f64) -> f64 {
     (kappa * kappa + alpha.tan() * alpha.tan()).sqrt()
 }
@@ -78,7 +73,6 @@ pub fn combined_slip(kappa: f64, alpha: f64) -> f64 {
 /// a gyroscopic moment that resists the steering input.
 ///
 /// M_gyro = I * omega * yaw_rate
-#[allow(dead_code)]
 pub fn gyroscopic_moment(inertia: f64, spin_omega: f64, yaw_rate: f64) -> f64 {
     inertia * spin_omega * yaw_rate
 }

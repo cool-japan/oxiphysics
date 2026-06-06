@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,7 +8,6 @@
 //! by periodically redistributing particles toward a more uniform arrangement.
 
 /// Parameters controlling the particle shifting algorithm.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ParticleShift {
     /// Shifting coefficient (typically 0.01–0.5).
@@ -98,7 +96,6 @@ pub fn shifting_vector(
 /// * `diffusion_coeff` - Fickian diffusion coefficient D
 /// * `dt` - time step
 /// * `dim` - spatial dimension
-#[allow(clippy::too_many_arguments)]
 pub fn fickian_shift(
     pos_i: &[f64],
     pos_j: &[Vec<f64>],
@@ -117,8 +114,8 @@ pub fn fickian_shift(
             delta[d] += (pos_j[j][d] - pos_i[d]) * wv;
         }
     }
-    for d in 0..dim {
-        delta[d] *= diffusion_coeff * dt;
+    for item in delta.iter_mut().take(dim) {
+        *item *= diffusion_coeff * dt;
     }
     delta
 }

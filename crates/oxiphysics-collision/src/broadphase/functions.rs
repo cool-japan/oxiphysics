@@ -19,12 +19,10 @@ pub trait BroadPhase {
 /// Perform a batch query: for each query AABB, find all overlapping objects.
 ///
 /// Returns a vector of hit lists (one per query).
-#[allow(dead_code)]
 pub fn batch_query(bvh: &BvhBroadphase, queries: &[Aabb]) -> Vec<Vec<usize>> {
     queries.iter().map(|q| bvh.query(q)).collect()
 }
 /// Perform a batch ray query: for each ray, find all hit objects.
-#[allow(dead_code)]
 pub fn batch_ray_query(
     bvh: &BvhBroadphase,
     rays: &[(Vec3, Vec3)],
@@ -37,7 +35,6 @@ pub fn batch_ray_query(
 /// Frustum culling: filter a BVH by a view frustum.
 ///
 /// Returns indices of objects whose AABBs are potentially visible.
-#[allow(dead_code)]
 pub fn frustum_cull(_bvh: &BvhBroadphase, aabbs: &[Aabb], frustum: &Frustum) -> Vec<usize> {
     let all: Vec<usize> = (0..aabbs.len()).collect();
     all.into_iter()
@@ -45,7 +42,6 @@ pub fn frustum_cull(_bvh: &BvhBroadphase, aabbs: &[Aabb], frustum: &Frustum) -> 
         .collect()
 }
 /// Collect statistics from a brute-force query.
-#[allow(dead_code)]
 pub fn brute_force_with_stats(aabbs: &[Aabb]) -> (Vec<CollisionPair>, BroadphaseStats) {
     let bf = BruteForceBroadPhase;
     let pairs = bf.find_pairs(aabbs);
@@ -58,7 +54,6 @@ pub fn brute_force_with_stats(aabbs: &[Aabb]) -> (Vec<CollisionPair>, Broadphase
     (pairs, stats)
 }
 /// Collect statistics from a SAP query.
-#[allow(dead_code)]
 pub fn sap_with_stats(aabbs: &[Aabb], axis: usize) -> (Vec<CollisionPair>, BroadphaseStats) {
     let sap = SweepAndPrune::new(axis);
     let pairs = sap.find_pairs(aabbs);
@@ -76,13 +71,11 @@ pub fn sap_with_stats(aabbs: &[Aabb], axis: usize) -> (Vec<CollisionPair>, Broad
 ///
 /// This implementation is functionally identical to [`SweepAndPrune`];
 /// the "parallel" aspect refers to the data-layout strategy.
-#[allow(dead_code)]
 pub fn parallel_sap(aabbs: &[Aabb], axis: usize) -> Vec<CollisionPair> {
     SweepAndPrune::new(axis).find_pairs(aabbs)
 }
 /// Parallel brute-force: chunks the pair index space.
 /// Useful for small scenes where BVH overhead is not worth it.
-#[allow(dead_code)]
 pub fn parallel_brute_force(aabbs: &[Aabb]) -> Vec<CollisionPair> {
     let mut pairs = Vec::new();
     let n = aabbs.len();
@@ -117,7 +110,6 @@ pub(super) fn inflate_aabb(aabb: &Aabb, amount: Real) -> Aabb {
 ///
 /// This is an extension trait method that we implement as a free function
 /// to avoid modifying the core crate.
-#[allow(dead_code)]
 pub(super) fn aabb_contains(outer: &Aabb, inner: &Aabb) -> bool {
     outer.min.x <= inner.min.x
         && outer.min.y <= inner.min.y
@@ -139,7 +131,6 @@ impl AabbContains for Aabb {
 ///
 /// `aabbs` and `types` must have the same length.  `pairs` is the output of
 /// any broadphase `find_pairs` call.
-#[allow(dead_code)]
 pub fn compute_pair_count_histogram(
     pairs: &[CollisionPair],
     types: &[ObjectType],
@@ -175,7 +166,6 @@ pub fn compute_pair_count_histogram(
 /// `updates` maps object index → new tight AABB.  Objects not present in
 /// `updates` are left unchanged.  The tree is marked dirty and rebuilt lazily
 /// on the next query.
-#[allow(dead_code)]
 pub fn update_batch(tree: &mut DynamicAabbTree, updates: &[(usize, Aabb)]) {
     for (idx, aabb) in updates {
         tree.update(*idx, aabb.clone());
@@ -188,7 +178,6 @@ pub fn update_batch(tree: &mut DynamicAabbTree, updates: &[(usize, Aabb)]) {
 /// The BVH topology (shape) is preserved; only node AABBs are updated.
 ///
 /// Returns the number of internal nodes that were refitted.
-#[allow(dead_code)]
 pub fn refit_bottom_up(bvh: &mut BvhBroadphase) -> usize {
     let Some(root) = bvh.root else {
         return 0;

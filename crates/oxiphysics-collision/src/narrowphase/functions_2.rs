@@ -2,11 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 pub use super::specialized::*;
 
-use super::functions::{add3, dot3, len3, normalize3, ray_vs_sphere, scale3, sub3};
+use super::functions::{
+    add3, dot3, len3, normalize3, point_query, ray_cast, ray_vs_sphere, scale3, sub3,
+};
 use super::types::{PointQueryResult, RayCastResult, SegmentCastResult, ShapeKind};
 
 pub(super) fn ray_vs_capsule(
@@ -73,7 +73,6 @@ pub(super) fn ray_vs_capsule(
 /// Cast a line segment from `start` to `end` against `shape`.
 ///
 /// Returns `Some` if the segment intersects the shape.
-#[allow(dead_code)]
 pub fn segment_cast(
     start: [f64; 3],
     end: [f64; 3],
@@ -103,7 +102,6 @@ pub fn segment_cast(
     })
 }
 /// Cast a ray against multiple shapes and return all hits, sorted by TOI.
-#[allow(dead_code)]
 pub fn ray_cast_batch(
     origin: [f64; 3],
     dir: [f64; 3],
@@ -123,7 +121,6 @@ pub fn ray_cast_batch(
     hits
 }
 /// Query a point against multiple shapes and return all shapes that contain it.
-#[allow(dead_code)]
 pub fn point_query_batch(point: [f64; 3], shapes: &[ShapeKind]) -> Vec<(usize, PointQueryResult)> {
     shapes
         .iter()
@@ -136,7 +133,7 @@ pub fn point_query_batch(point: [f64; 3], shapes: &[ShapeKind]) -> Vec<(usize, P
 }
 #[cfg(test)]
 mod extra_tests {
-    use super::*;
+    use super::super::*;
     use crate::narrowphase::TriangleMesh;
     use crate::narrowphase::types::{
         CompoundShape, ContactFeature, ContactFilter, FeatureContact, NarrowPhaseContact,

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,9 +15,6 @@
 //! - [`LaneKeeping`] — simple lane-keeping correction from lateral/angular error
 //! - [`ObstacleAvoidance`] — potential-field repulsive force computation
 //! - [`SpeedPlanner`] — curvature-aware longitudinal speed planning
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -150,11 +146,11 @@ impl Path {
             return vec![0.0; n];
         }
         let mut curvatures = vec![0.0; n];
-        for i in 1..n - 1 {
-            let p0 = self.waypoints[i - 1].position;
-            let p1 = self.waypoints[i].position;
-            let p2 = self.waypoints[i + 1].position;
-            curvatures[i] = three_point_curvature(p0, p1, p2);
+        for (idx, w) in self.waypoints.windows(3).enumerate() {
+            let p0 = w[0].position;
+            let p1 = w[1].position;
+            let p2 = w[2].position;
+            curvatures[idx + 1] = three_point_curvature(p0, p1, p2);
         }
         curvatures[0] = curvatures[1];
         curvatures[n - 1] = curvatures[n - 2];

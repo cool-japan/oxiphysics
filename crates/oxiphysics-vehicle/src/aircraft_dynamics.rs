@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,8 +15,6 @@
 //! - **Propeller / turbofan thrust** model
 //! - **Flight envelope** (Vmin, Vmax, service ceiling)
 //! - **Trim conditions** (straight-and-level, climbing)
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -48,7 +45,6 @@ pub const LAPSE_RATE: f64 = 0.0065;
 // ============================================================================
 
 /// International Standard Atmosphere (ISA) properties at a given altitude.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct AtmosphereState {
     /// Altitude above MSL (m).
@@ -123,7 +119,6 @@ impl AtmosphereState {
 ///
 /// Coefficients are dimensionless and referenced to the wing reference area
 /// `S_ref` and mean aerodynamic chord `c_mac`.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct AeroCoefficients {
     /// Lift coefficient CL.
@@ -158,7 +153,6 @@ impl AeroCoefficients {
 ///
 /// Uses the classical parabolic polar:
 /// `CD = CD0 + CL² / (π e AR)`
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct LiftDragPolar {
     /// Zero-lift drag coefficient CD0.
@@ -238,7 +232,6 @@ impl LiftDragPolar {
 /// Longitudinal stability derivatives.
 ///
 /// All derivatives are per radian unless noted.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct LongitudinalDerivatives {
     /// CL-α: lift-curve slope (per rad).
@@ -276,7 +269,6 @@ impl LongitudinalDerivatives {
 }
 
 /// Lateral-directional stability derivatives.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct LateralDerivatives {
     /// Cy-β: side-force due to sideslip (per rad). Usually negative.
@@ -330,7 +322,6 @@ impl LateralDerivatives {
 // ============================================================================
 
 /// Parameters of a second-order dynamic mode (complex eigenvalue pair).
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct DynamicMode {
     /// Natural frequency (rad/s).
@@ -368,7 +359,6 @@ impl DynamicMode {
 /// Longitudinal stability analysis.
 ///
 /// Provides analytical approximations for phugoid and short-period modes.
-#[allow(dead_code)]
 pub struct LongitudinalStability {
     /// Flight speed (m/s TAS).
     pub v0: f64,
@@ -390,7 +380,6 @@ pub struct LongitudinalStability {
 
 impl LongitudinalStability {
     /// Create a longitudinal stability model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         v0: f64,
         rho: f64,
@@ -471,7 +460,6 @@ impl LongitudinalStability {
 /// Lateral-directional stability analysis.
 ///
 /// Provides analytical approximations for Dutch roll, spiral, and roll modes.
-#[allow(dead_code)]
 pub struct LateralStability {
     /// Flight speed (m/s TAS).
     pub v0: f64,
@@ -495,7 +483,6 @@ pub struct LateralStability {
 
 impl LateralStability {
     /// Create a lateral stability model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         v0: f64,
         rho: f64,
@@ -588,7 +575,6 @@ impl LateralStability {
 // ============================================================================
 
 /// Control surface (elevator, aileron, rudder) model.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct ControlSurface {
     /// Surface name.
@@ -658,7 +644,6 @@ impl ControlSurface {
 // ============================================================================
 
 /// Propeller thrust model (momentum theory + Mach correction).
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct PropellerThrustModel {
     /// Diameter of the propeller (m).
@@ -711,7 +696,6 @@ impl PropellerThrustModel {
 /// Turbofan thrust model.
 ///
 /// Models net thrust as a function of Mach number and altitude.
-#[allow(dead_code)]
 pub struct TurbofanThrustModelImpl {
     /// Sea-level static thrust (N).
     pub t_sls: f64,
@@ -763,7 +747,6 @@ impl TurbofanThrustModelImpl {
 // ============================================================================
 
 /// Flight envelope boundaries for an aircraft.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct FlightEnvelope {
     /// Wing area (m²).
@@ -867,7 +850,6 @@ impl FlightEnvelope {
 ///
 /// Positions are in Earth (NED) frame; velocities, angular rates, and
 /// orientations are in body frame.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct AircraftState6Dof {
     /// Position in NED frame (m): \[North, East, Down\].
@@ -938,7 +920,6 @@ impl AircraftState6Dof {
 /// 6-DOF aircraft equations of motion integrator.
 ///
 /// Integrates Newton-Euler EOM in body axes using 4th-order Runge-Kutta.
-#[allow(dead_code)]
 pub struct SixDofIntegrator {
     /// Aircraft total mass (kg).
     pub mass: f64,
@@ -962,7 +943,6 @@ pub struct SixDofIntegrator {
 
 impl SixDofIntegrator {
     /// Compute aerodynamic force and moment coefficients at the current state.
-    #[allow(clippy::too_many_arguments)]
     pub fn aero_coefficients(
         &self,
         alpha: f64,
@@ -996,7 +976,6 @@ impl SixDofIntegrator {
     }
 
     /// Integrate one RK4 step.
-    #[allow(clippy::too_many_arguments)]
     pub fn rk4_step(
         &self,
         state: &AircraftState6Dof,
@@ -1045,7 +1024,6 @@ impl SixDofIntegrator {
     }
 
     /// Compute time derivatives of the full state vector (body-axis EOM).
-    #[allow(clippy::too_many_arguments)]
     fn derivatives(
         &self,
         s: &AircraftState6Dof,
@@ -1143,7 +1121,6 @@ fn mat3_mul_v3(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
 // ============================================================================
 
 /// Trim solution for straight-and-level flight.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct TrimCondition {
     /// True airspeed (m/s).
@@ -1771,13 +1748,13 @@ mod tests {
     fn test_body_to_ned_identity() {
         let s = AircraftState6Dof::level_flight(100.0);
         let dcm = s.body_to_ned();
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in dcm.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (dcm[i][j] - expected).abs() < EPS,
+                    (val - expected).abs() < EPS,
                     "DCM[{i}][{j}] = {}, expected {}",
-                    dcm[i][j],
+                    val,
                     expected
                 );
             }

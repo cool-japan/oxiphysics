@@ -471,12 +471,25 @@ impl ParticleSoA {
     #[must_use]
     pub fn to_aos(&self) -> Vec<Particle> {
         let mut out = Vec::with_capacity(self.len);
-        for i in 0..self.len {
+        for (((((((((x, y), z), vx), vy), vz), fx), fy), fz), mass) in self
+            .x
+            .iter()
+            .zip(self.y.iter())
+            .zip(self.z.iter())
+            .zip(self.vx.iter())
+            .zip(self.vy.iter())
+            .zip(self.vz.iter())
+            .zip(self.fx.iter())
+            .zip(self.fy.iter())
+            .zip(self.fz.iter())
+            .zip(self.mass.iter())
+            .take(self.len)
+        {
             out.push(Particle {
-                pos: [self.x[i], self.y[i], self.z[i]],
-                vel: [self.vx[i], self.vy[i], self.vz[i]],
-                force: [self.fx[i], self.fy[i], self.fz[i]],
-                mass: self.mass[i],
+                pos: [*x, *y, *z],
+                vel: [*vx, *vy, *vz],
+                force: [*fx, *fy, *fz],
+                mass: *mass,
             });
         }
         out
@@ -677,24 +690,30 @@ impl ParticleSoA {
         }
         let mut min = [f64::INFINITY; 3];
         let mut max = [f64::NEG_INFINITY; 3];
-        for i in 0..self.len {
-            if self.x[i] < min[0] {
-                min[0] = self.x[i];
+        for ((x, y), z) in self
+            .x
+            .iter()
+            .zip(self.y.iter())
+            .zip(self.z.iter())
+            .take(self.len)
+        {
+            if *x < min[0] {
+                min[0] = *x;
             }
-            if self.x[i] > max[0] {
-                max[0] = self.x[i];
+            if *x > max[0] {
+                max[0] = *x;
             }
-            if self.y[i] < min[1] {
-                min[1] = self.y[i];
+            if *y < min[1] {
+                min[1] = *y;
             }
-            if self.y[i] > max[1] {
-                max[1] = self.y[i];
+            if *y > max[1] {
+                max[1] = *y;
             }
-            if self.z[i] < min[2] {
-                min[2] = self.z[i];
+            if *z < min[2] {
+                min[2] = *z;
             }
-            if self.z[i] > max[2] {
-                max[2] = self.z[i];
+            if *z > max[2] {
+                max[2] = *z;
             }
         }
         Ok((min, max))
@@ -704,9 +723,16 @@ impl ParticleSoA {
     #[must_use]
     pub fn kinetic_energy(&self) -> f64 {
         let mut ke = 0.0;
-        for i in 0..self.len {
-            let v2 = self.vx[i] * self.vx[i] + self.vy[i] * self.vy[i] + self.vz[i] * self.vz[i];
-            ke += 0.5 * self.mass[i] * v2;
+        for (((vx, vy), vz), m) in self
+            .vx
+            .iter()
+            .zip(self.vy.iter())
+            .zip(self.vz.iter())
+            .zip(self.mass.iter())
+            .take(self.len)
+        {
+            let v2 = vx * vx + vy * vy + vz * vz;
+            ke += 0.5 * m * v2;
         }
         ke
     }
@@ -722,11 +748,17 @@ impl ParticleSoA {
         let mut cx = 0.0;
         let mut cy = 0.0;
         let mut cz = 0.0;
-        for i in 0..self.len {
-            let m = self.mass[i];
-            cx += m * self.x[i];
-            cy += m * self.y[i];
-            cz += m * self.z[i];
+        for (((m, x), y), z) in self
+            .mass
+            .iter()
+            .zip(self.x.iter())
+            .zip(self.y.iter())
+            .zip(self.z.iter())
+            .take(self.len)
+        {
+            cx += m * x;
+            cy += m * y;
+            cz += m * z;
             total_mass += m;
         }
         if total_mass.abs() < f64::EPSILON {

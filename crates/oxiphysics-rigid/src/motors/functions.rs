@@ -550,8 +550,8 @@ mod tests_motors_ext {
     #[test]
     fn test_stepper_em_torque_at_zero_angle() {
         let mut sm = StepperMotor::new(50, 1.0, 0.001, 0.4, 0.02, 24.0, 1e-5, 1e-6);
-        sm.iA = 0.0;
-        sm.iB = 2.0;
+        sm.i_a = 0.0;
+        sm.i_b = 2.0;
         sm.theta = 0.0;
         let tau = sm.electromagnetic_torque();
         assert!((tau - (-0.4 * 2.0)).abs() < 1e-10, "tau = {tau}");
@@ -575,7 +575,7 @@ mod tests_motors_ext {
         let mut sm = StepperMotor::new(50, 1.0, 0.001, 0.4, 0.02, 24.0, 1e-5, 1e-6);
         sm.theta = 0.01;
         let t1 = sm.detent_torque().abs();
-        sm.theta = std::f64::consts::PI / (sm.N_r as f64) - 0.01;
+        sm.theta = std::f64::consts::PI / (sm.n_r as f64) - 0.01;
         let t2 = sm.detent_torque().abs();
         assert!(t1.is_finite() && t2.is_finite());
     }
@@ -908,7 +908,7 @@ mod tests_motors_extra {
 #[cfg(test)]
 mod new_motor_tests {
 
-    use crate::motors::CascadedPid;
+    use crate::motors::{CascadedPid, CascadedPidGains};
 
     use crate::motors::ElectricMotor;
 
@@ -925,17 +925,39 @@ mod new_motor_tests {
 
     #[test]
     fn test_cascaded_pid_drives_toward_target() {
-        let mut cpid = CascadedPid::new(
-            10.0, 0.1, 0.5, 100.0, 5.0, 0.1, 0.1, 50.0, 2.0, 0.0, 0.0, 24.0,
-        );
+        let mut cpid = CascadedPid::new(CascadedPidGains {
+            pos_kp: 10.0,
+            pos_ki: 0.1,
+            pos_kd: 0.5,
+            pos_max: 100.0,
+            vel_kp: 5.0,
+            vel_ki: 0.1,
+            vel_kd: 0.1,
+            vel_max: 50.0,
+            cur_kp: 2.0,
+            cur_ki: 0.0,
+            cur_kd: 0.0,
+            cur_max: 24.0,
+        });
         let output = cpid.update(1.0, 0.0, 0.0, 0.0, 0.01);
         assert!(output > 0.0, "output should be positive: {output}");
     }
     #[test]
     fn test_cascaded_pid_no_error_gives_small_output() {
-        let mut cpid = CascadedPid::new(
-            10.0, 0.1, 0.5, 100.0, 5.0, 0.1, 0.1, 50.0, 2.0, 0.0, 0.0, 24.0,
-        );
+        let mut cpid = CascadedPid::new(CascadedPidGains {
+            pos_kp: 10.0,
+            pos_ki: 0.1,
+            pos_kd: 0.5,
+            pos_max: 100.0,
+            vel_kp: 5.0,
+            vel_ki: 0.1,
+            vel_kd: 0.1,
+            vel_max: 50.0,
+            cur_kp: 2.0,
+            cur_ki: 0.0,
+            cur_kd: 0.0,
+            cur_max: 24.0,
+        });
         let output = cpid.update(0.0, 0.0, 0.0, 0.0, 0.01);
         assert!(
             output.abs() < 1e-9,
@@ -944,9 +966,20 @@ mod new_motor_tests {
     }
     #[test]
     fn test_cascaded_pid_reset_clears_state() {
-        let mut cpid = CascadedPid::new(
-            10.0, 1.0, 0.5, 100.0, 5.0, 1.0, 0.1, 50.0, 2.0, 0.5, 0.0, 24.0,
-        );
+        let mut cpid = CascadedPid::new(CascadedPidGains {
+            pos_kp: 10.0,
+            pos_ki: 1.0,
+            pos_kd: 0.5,
+            pos_max: 100.0,
+            vel_kp: 5.0,
+            vel_ki: 1.0,
+            vel_kd: 0.1,
+            vel_max: 50.0,
+            cur_kp: 2.0,
+            cur_ki: 0.5,
+            cur_kd: 0.0,
+            cur_max: 24.0,
+        });
         for _ in 0..50 {
             cpid.update(1.0, 0.0, 0.0, 0.0, 0.01);
         }
@@ -957,9 +990,20 @@ mod new_motor_tests {
     }
     #[test]
     fn test_cascaded_pid_output_clamped() {
-        let mut cpid = CascadedPid::new(
-            1000.0, 0.0, 0.0, 5.0, 1000.0, 0.0, 0.0, 5.0, 1000.0, 0.0, 0.0, 24.0,
-        );
+        let mut cpid = CascadedPid::new(CascadedPidGains {
+            pos_kp: 1000.0,
+            pos_ki: 0.0,
+            pos_kd: 0.0,
+            pos_max: 5.0,
+            vel_kp: 1000.0,
+            vel_ki: 0.0,
+            vel_kd: 0.0,
+            vel_max: 5.0,
+            cur_kp: 1000.0,
+            cur_ki: 0.0,
+            cur_kd: 0.0,
+            cur_max: 24.0,
+        });
         let output = cpid.update(100.0, 0.0, 0.0, 0.0, 0.01);
         assert!(
             output.abs() <= 24.0 + 1e-9,
@@ -968,9 +1012,20 @@ mod new_motor_tests {
     }
     #[test]
     fn test_cascaded_pid_negative_target() {
-        let mut cpid = CascadedPid::new(
-            10.0, 0.1, 0.5, 100.0, 5.0, 0.1, 0.1, 50.0, 2.0, 0.0, 0.0, 24.0,
-        );
+        let mut cpid = CascadedPid::new(CascadedPidGains {
+            pos_kp: 10.0,
+            pos_ki: 0.1,
+            pos_kd: 0.5,
+            pos_max: 100.0,
+            vel_kp: 5.0,
+            vel_ki: 0.1,
+            vel_kd: 0.1,
+            vel_max: 50.0,
+            cur_kp: 2.0,
+            cur_ki: 0.0,
+            cur_kd: 0.0,
+            cur_max: 24.0,
+        });
         let output = cpid.update(-1.0, 0.0, 0.0, 0.0, 0.01);
         assert!(
             output < 0.0,
@@ -1246,7 +1301,6 @@ mod new_motor_tests {
 ///
 /// Takes the ultimate (marginal stability) gain `ku` and oscillation period
 /// `tu` and sets kp, ki, kd according to the chosen `method`.
-#[allow(dead_code)]
 pub fn zn_tune_pid(pid: &mut PidController, ku: f64, tu: f64, method: ZnTuningMethod) {
     match method {
         ZnTuningMethod::Classic => {

@@ -5,7 +5,6 @@
 use crate::potential::Potential;
 
 use super::functions::PotentialClone;
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// A 1-4 pair entry.
@@ -51,7 +50,6 @@ impl CgenffForceField {
         }
     }
     /// Add a CGenFF atom type.
-    #[allow(clippy::too_many_arguments)]
     pub fn add_atom_type(
         &mut self,
         name: &str,
@@ -180,7 +178,6 @@ impl OneFourScaling {
     }
 }
 /// Lennard-Jones mixing rule types.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MixingRule {
     /// Lorentz-Berthelot: sigma = (s_i + s_j)/2, epsilon = sqrt(e_i * e_j)
@@ -238,7 +235,6 @@ impl CharmmForceField {
         }
     }
     /// Add an atom type.
-    #[allow(clippy::too_many_arguments)]
     pub fn add_atom_type(
         &mut self,
         name: &str,
@@ -392,7 +388,6 @@ impl AmberForceField {
 ///
 /// These supplement the existing CHARMM/GROMOS/CGenFF containers and can be
 /// combined freely with any of those force fields.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct Forcefield {
     /// Name label (e.g. "CHARMM36", "AMBER99SB").
@@ -400,7 +395,6 @@ pub struct Forcefield {
 }
 impl Forcefield {
     /// Create a new empty force field wrapper.
-    #[allow(dead_code)]
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -421,7 +415,6 @@ impl Forcefield {
     /// * `phi0`  — equilibrium improper angle (radians)
     ///
     /// Returns the energy in the same energy unit as `k_imp`.
-    #[allow(dead_code)]
     pub fn compute_improper_dihedral(
         ri: [f64; 3],
         rj: [f64; 3],
@@ -450,7 +443,6 @@ impl Forcefield {
     /// * `r0`       — equilibrium 1-3 distance
     ///
     /// Returns energy in the same units as `k_ub * distance²`.
-    #[allow(dead_code)]
     pub fn compute_urey_bradley(r1: [f64; 3], r3: [f64; 3], k_ub: f64, r0: f64) -> f64 {
         let dx = r3[0] - r1[0];
         let dy = r3[1] - r1[1];
@@ -473,7 +465,6 @@ impl Forcefield {
     /// * `n`     — grid dimension (must satisfy `grid.len() == n * n` and `n ≥ 2`)
     ///
     /// Returns the bilinearly interpolated CMAP energy at (φ, ψ).
-    #[allow(dead_code)]
     pub fn compute_cmap_correction(phi: f64, psi: f64, grid: &[f64], n: usize) -> f64 {
         if n < 2 || grid.len() != n * n {
             return 0.0;
@@ -621,7 +612,6 @@ impl GromosForceField {
         }
     }
     /// Add a GROMOS atom type.
-    #[allow(clippy::too_many_arguments)]
     pub fn add_atom_type(&mut self, name: &str, mass: f64, charge: f64, c6: f64, c12: f64) {
         self.atom_types.push(GromosAtomType {
             name: name.to_string(),
@@ -690,7 +680,6 @@ impl DihedralForceField {
         }
     }
     /// Add a dihedral term.
-    #[allow(clippy::too_many_arguments)]
     pub fn add_dihedral(
         &mut self,
         i: usize,
@@ -858,7 +847,6 @@ impl OplsForceField {
         }
     }
     /// Add an atom type.
-    #[allow(clippy::too_many_arguments)]
     pub fn add_atom_type(
         &mut self,
         name: &str,

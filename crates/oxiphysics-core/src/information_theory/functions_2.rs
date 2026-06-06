@@ -2,11 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::*;
     use crate::information_theory::DiscreteDistribution;
     use crate::information_theory::FisherGeometry;
     use crate::information_theory::GaussianInfoGeometry;

@@ -6,7 +6,6 @@ use super::functions::*;
 
 /// Identifies which pressure solver variant to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum SolverType {
     /// Weakly Compressible SPH (Tait EOS).
     Wcsph,
@@ -17,7 +16,6 @@ pub enum SolverType {
 }
 /// Adaptive solver that switches between WCSPH and PCISPH based on
 /// the current density error.
-#[allow(dead_code)]
 pub struct AdaptiveSolverSwitch {
     /// Threshold for switching from WCSPH to PCISPH.
     pub error_threshold: f64,
@@ -38,7 +36,6 @@ pub struct AdaptiveSolverSwitch {
     /// Number of switches performed.
     pub switch_count: usize,
 }
-#[allow(dead_code)]
 impl AdaptiveSolverSwitch {
     /// Create a new adaptive solver.
     pub fn new(rho0: f64, c0: f64, error_threshold: f64) -> Self {
@@ -103,7 +100,6 @@ impl AdaptiveSolverSwitch {
 /// Each particle contributes off-diagonal coefficients from the SPH kernel
 /// gradient sum.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct IisphMatrixBuilder {
     /// Smoothing length.
     pub h: f64,
@@ -112,7 +108,6 @@ pub struct IisphMatrixBuilder {
     /// Time step.
     pub dt: f64,
 }
-#[allow(dead_code)]
 impl IisphMatrixBuilder {
     /// Create a matrix builder.
     pub fn new(h: f64, rho0: f64, dt: f64) -> Self {
@@ -122,7 +117,6 @@ impl IisphMatrixBuilder {
     ///
     /// `aij[i]` lists `(j, coeff)` off-diagonal pairs.
     /// The SPH kernel gradient is approximated as `r_ij / (|r_ij| * h²)`.
-    #[allow(clippy::too_many_arguments)]
     pub fn build_matrix(
         &self,
         positions: &[[f64; 3]],
@@ -230,7 +224,6 @@ impl PcisphSolverSimple {
 /// Encapsulates the full PCISPH prediction-correction loop parameters and
 /// provides a density-error convergence monitor with early exit.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PcisphIterativeLoop {
     /// Rest density ρ₀ \[kg/m³\].
     pub rho0: f64,
@@ -243,7 +236,6 @@ pub struct PcisphIterativeLoop {
     /// Convergence criterion: max |ρ_err| / ρ₀ < eta.
     pub eta: f64,
 }
-#[allow(dead_code)]
 impl PcisphIterativeLoop {
     /// Create a loop controller with default min/max iterations.
     pub fn new(rho0: f64, delta: f64, eta: f64) -> Self {
@@ -350,7 +342,6 @@ impl WcSphSolver {
 }
 /// Results from a solver benchmark run.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SolverBenchmarkResult {
     /// Which solver was used.
     pub solver_type: SolverType,
@@ -365,7 +356,6 @@ pub struct SolverBenchmarkResult {
 }
 /// Diagnostic record for one pressure-solver iteration.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct IterationDiagnostic {
     /// Iteration number (1-based).
     pub iteration: usize,
@@ -380,12 +370,10 @@ pub struct IterationDiagnostic {
 }
 /// Accumulates per-iteration convergence data for pressure solvers.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct ConvergenceDiagnostics {
     /// History of all iterations recorded.
     pub history: Vec<IterationDiagnostic>,
 }
-#[allow(dead_code)]
 impl ConvergenceDiagnostics {
     /// Create a new empty diagnostics collector.
     pub fn new() -> Self {
@@ -458,7 +446,6 @@ impl ConvergenceDiagnostics {
 /// Executes up to `max_iter` relaxed-Jacobi steps on the pressure Poisson
 /// system `A p = rhs` and records convergence diagnostics.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct JacobiPressureIterator {
     /// Relaxation factor ω (default 0.7).
     pub omega: f64,
@@ -469,7 +456,6 @@ pub struct JacobiPressureIterator {
     /// Rest density (for recording diagnostics).
     pub rho0: f64,
 }
-#[allow(dead_code)]
 impl JacobiPressureIterator {
     /// Create a new iterator with given parameters.
     pub fn new(rho0: f64, omega: f64, max_iter: usize, tolerance: f64) -> Self {
@@ -484,7 +470,6 @@ impl JacobiPressureIterator {
     ///
     /// The system matrix is given in sparse CSR-like form: `aij[i]` is a list
     /// of `(j, a_ij)` off-diagonal pairs.  Diagonal is inferred as `-Σ a_ij`.
-    #[allow(clippy::too_many_arguments)]
     pub fn run(
         &self,
         rhs: &[f64],
@@ -527,14 +512,12 @@ impl JacobiPressureIterator {
 ///
 /// The density evolution follows `Dρᵢ/Dt = Σⱼ mⱼ (vᵢ - vⱼ) · ∇Wᵢⱼ`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SphDensityIntegrator {
     /// Rest density ρ₀ \[kg/m³\].
     pub rho0: f64,
     /// Smoothing length h \[m\].
     pub h: f64,
 }
-#[allow(dead_code)]
 impl SphDensityIntegrator {
     /// Create a new integrator.
     pub fn new(rho0: f64, h: f64) -> Self {
@@ -611,14 +594,12 @@ impl SphDensityIntegrator {
 /// Applies pressure-gradient corrections to predicted velocities and positions
 /// at the end of the PCISPH loop.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PcisphCorrector {
     /// Time step.
     pub dt: f64,
     /// Rest density.
     pub rho0: f64,
 }
-#[allow(dead_code)]
 impl PcisphCorrector {
     /// Create a corrector.
     pub fn new(dt: f64, rho0: f64) -> Self {
@@ -629,7 +610,6 @@ impl PcisphCorrector {
     /// `v_corr_i = v_pred_i - dt/m_i * Σⱼ m_j (p_i/ρᵢ² + p_j/ρⱼ²) ∇Wᵢⱼ`
     ///
     /// The kernel gradient is approximated as `r_ij / (h * |r_ij|²)`.
-    #[allow(clippy::too_many_arguments)]
     pub fn correct_velocities(
         &self,
         positions: &[[f64; 3]],
@@ -833,7 +813,6 @@ impl IisphSolver {
 /// Projects the velocity field onto the divergence-free subspace using the
 /// DFSPH approach: correct velocity until `|∇·v| < tol`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DivergenceFreeProjector {
     /// Rest density.
     pub rho0: f64,
@@ -844,7 +823,6 @@ pub struct DivergenceFreeProjector {
     /// Relaxation factor.
     pub omega: f64,
 }
-#[allow(dead_code)]
 impl DivergenceFreeProjector {
     /// Create a new projector.
     pub fn new(rho0: f64, max_iter: usize, tolerance: f64, omega: f64) -> Self {
@@ -1051,7 +1029,6 @@ impl IisphSolverSimple {
 /// Solves `A p = b` where `A` is a Laplacian-like matrix encoded as sparse
 /// off-diagonal coefficients.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PressurePoissonSolver {
     /// Over-relaxation factor ω ∈ (0, 2).
     pub omega: f64,
@@ -1062,7 +1039,6 @@ pub struct PressurePoissonSolver {
     /// Whether to clamp pressures ≥ 0.
     pub clamp_non_negative: bool,
 }
-#[allow(dead_code)]
 impl PressurePoissonSolver {
     /// Create a solver with given parameters.
     pub fn new(omega: f64, max_iter: usize, tolerance: f64) -> Self {
@@ -1076,7 +1052,6 @@ impl PressurePoissonSolver {
     /// Run SOR iterations.
     ///
     /// Returns `(pressures, residual, iterations)`.
-    #[allow(clippy::too_many_arguments)]
     pub fn solve(&self, rhs: &[f64], aij: &[Vec<(usize, f64)>]) -> (Vec<f64>, f64, usize) {
         let n = rhs.len();
         if n == 0 {

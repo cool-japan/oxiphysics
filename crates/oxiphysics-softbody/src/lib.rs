@@ -10,11 +10,9 @@
 //! - Rope / hair chains
 //! - Corotational FEM soft bodies
 #![warn(missing_docs)]
-#![allow(ambiguous_glob_reexports)]
-#![allow(dead_code)]
 
 mod error;
-pub use error::*;
+pub use error::{Error, Result};
 
 pub mod aerodynamics;
 pub mod cloth;

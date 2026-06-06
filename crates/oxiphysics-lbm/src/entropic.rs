@@ -76,7 +76,6 @@ const OPP: [usize; 9] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
 /// Uses the second-order Taylor expansion:
 /// f_eq_i = w_i * ρ * (1 + (c·u)/cs² + (c·u)²/(2cs⁴) − u²/(2cs²))
 /// where cs² = 1/3.
-#[allow(dead_code)]
 pub fn d2q9_equilibrium(rho: f64, u: [f64; 2]) -> [f64; 9] {
     let ux = u[0];
     let uy = u[1];
@@ -97,7 +96,6 @@ pub fn d2q9_equilibrium(rho: f64, u: [f64; 2]) -> [f64; 9] {
 /// H decreases (or stays constant) during collision.
 ///
 /// Returns `f64::INFINITY` if any `f_i ≤ 0` (unphysical state).
-#[allow(dead_code)]
 pub fn h_function(f: &[f64; 9]) -> f64 {
     let mut h = 0.0;
     for i in 0..9 {
@@ -116,7 +114,6 @@ pub fn h_function(f: &[f64; 9]) -> f64 {
 /// ```
 ///
 /// Returns `f64::INFINITY` if any `f_i ≤ 0` or `f_eq_i ≤ 0`.
-#[allow(dead_code)]
 pub fn relative_entropy(f: &[f64; 9], f_eq: &[f64; 9]) -> f64 {
     let mut dkl = 0.0;
     for i in 0..9 {
@@ -129,7 +126,6 @@ pub fn relative_entropy(f: &[f64; 9], f_eq: &[f64; 9]) -> f64 {
 }
 
 /// Compute the Boltzmann entropy: S = -Σ_i f_i * ln(f_i / w_i) = -H.
-#[allow(dead_code)]
 pub fn boltzmann_entropy(f: &[f64; 9]) -> f64 {
     -h_function(f)
 }
@@ -138,7 +134,6 @@ pub fn boltzmann_entropy(f: &[f64; 9]) -> f64 {
 ///
 /// The mirror state is used in the entropic overrelaxation to find the
 /// α value that keeps the post-collision state on the H = H(f) level set.
-#[allow(dead_code)]
 pub fn mirror_state(f: &[f64; 9], f_eq: &[f64; 9]) -> [f64; 9] {
     let mut mirror = [0.0; 9];
     for i in 0..9 {
@@ -160,7 +155,6 @@ pub fn mirror_state(f: &[f64; 9], f_eq: &[f64; 9]) -> [f64; 9] {
 /// * `f`        – pre-collision distribution
 /// * `f_eq`     – local equilibrium distribution
 /// * `max_iter` – maximum bisection iterations (20–50 is typically sufficient)
-#[allow(dead_code)]
 pub fn find_entropic_alpha(f: &[f64; 9], f_eq: &[f64; 9], max_iter: usize) -> f64 {
     let h_f = h_function(f);
 
@@ -215,7 +209,6 @@ pub fn find_entropic_alpha(f: &[f64; 9], f_eq: &[f64; 9], max_iter: usize) -> f6
 ///
 /// Uses the derivative dH/dα to converge quadratically.
 /// Falls back to bisection if Newton step goes out of bounds.
-#[allow(dead_code)]
 pub fn find_entropic_alpha_newton(f: &[f64; 9], f_eq: &[f64; 9], max_iter: usize) -> f64 {
     let h_f = h_function(f);
 
@@ -273,7 +266,6 @@ pub fn find_entropic_alpha_newton(f: &[f64; 9], f_eq: &[f64; 9], max_iter: usize
 ///
 /// Returns the three independent components of the symmetric
 /// non-equilibrium stress tensor in 2D: `(σ_xx, σ_xy, σ_yy)`.
-#[allow(dead_code)]
 pub fn non_equilibrium_stress(f: &[f64; 9], f_eq: &[f64; 9]) -> (f64, f64, f64) {
     let mut s_xx = 0.0;
     let mut s_xy = 0.0;
@@ -375,7 +367,6 @@ impl EntropicD2Q9 {
     }
 
     /// Perform entropic collision using Newton-Raphson alpha optimization.
-    #[allow(dead_code)]
     pub fn collide_newton(&mut self) {
         let n = self.nx * self.ny;
         for k in 0..n {
@@ -425,7 +416,6 @@ impl EntropicD2Q9 {
     }
 
     /// Compute the total H-function (entropy) over the entire domain.
-    #[allow(dead_code)]
     pub fn total_entropy(&self) -> f64 {
         let n = self.nx * self.ny;
         let mut total_h = 0.0;
@@ -436,7 +426,6 @@ impl EntropicD2Q9 {
     }
 
     /// Compute the maximum velocity magnitude in the domain.
-    #[allow(dead_code)]
     pub fn max_velocity(&self) -> f64 {
         let n = self.nx * self.ny;
         let mut max_u = 0.0_f64;
@@ -449,7 +438,6 @@ impl EntropicD2Q9 {
     }
 
     /// Compute the minimum and maximum density in the domain.
-    #[allow(dead_code)]
     pub fn density_range(&self) -> (f64, f64) {
         let n = self.nx * self.ny;
         let mut rho_min = f64::MAX;
@@ -470,7 +458,6 @@ impl EntropicD2Q9 {
 /// Diagnostics for the entropic LBM.
 ///
 /// Tracks entropy evolution, alpha statistics, and stability indicators.
-#[allow(dead_code)]
 pub struct ElbmDiagnostics {
     /// History of total domain entropy (H function).
     pub entropy_history: Vec<f64>,
@@ -482,7 +469,6 @@ pub struct ElbmDiagnostics {
     pub max_velocity_history: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl ElbmDiagnostics {
     /// Create empty diagnostics.
     pub fn new() -> Self {
@@ -576,7 +562,6 @@ impl KbcD2Q9 {
     /// - h_i = f_eq_i − s_i                    (antisymmetric)
     ///
     /// Returns `(s, h)` where `s + h = f_eq`.
-    #[allow(dead_code)]
     pub fn decompose_feq(f_eq: &[f64; 9]) -> ([f64; 9], [f64; 9]) {
         let mut s = [0.0; 9];
         let mut h = [0.0; 9];
@@ -588,7 +573,6 @@ impl KbcD2Q9 {
     }
 
     /// Decompose an arbitrary distribution into symmetric and antisymmetric parts.
-    #[allow(dead_code)]
     pub fn decompose_general(f: &[f64; 9]) -> ([f64; 9], [f64; 9]) {
         let mut s = [0.0; 9];
         let mut h = [0.0; 9];
@@ -612,7 +596,6 @@ impl KbcD2Q9 {
     }
 
     /// Compute macroscopic density and velocity at cell `idx`.
-    #[allow(dead_code)]
     pub fn macros(&self, idx: usize) -> (f64, [f64; 2]) {
         let f = &self.f[idx];
         let rho: f64 = f.iter().sum();
@@ -692,7 +675,6 @@ impl KbcD2Q9 {
     }
 
     /// Perform pull-scheme streaming with periodic boundary conditions.
-    #[allow(dead_code)]
     pub fn stream(&mut self) {
         let nx = self.nx;
         let ny = self.ny;
@@ -713,14 +695,12 @@ impl KbcD2Q9 {
     }
 
     /// One full KBC step: collide then stream.
-    #[allow(dead_code)]
     pub fn step(&mut self) {
         self.collide_kbc();
         self.stream();
     }
 
     /// Set all cells to uniform density and velocity.
-    #[allow(dead_code)]
     pub fn set_uniform(&mut self, rho: f64, u: [f64; 2]) {
         let feq = EntropicD2Q9::equilibrium(rho, u);
         for cell in self.f.iter_mut() {
@@ -729,7 +709,6 @@ impl KbcD2Q9 {
     }
 
     /// Compute total density in the domain.
-    #[allow(dead_code)]
     pub fn total_density(&self) -> f64 {
         let n = self.nx * self.ny;
         (0..n).map(|k| self.macros(k).0).sum()
@@ -1168,7 +1147,6 @@ mod tests {
 ///
 /// This is symmetric: D_sym(f,feq) = D_sym(feq,f).
 /// Returns `f64::INFINITY` if any distribution has non-positive entries.
-#[allow(dead_code)]
 pub fn symmetric_kl_divergence(f: &[f64; 9], feq: &[f64; 9]) -> f64 {
     let mut d = 0.0;
     for i in 0..9 {
@@ -1183,7 +1161,6 @@ pub fn symmetric_kl_divergence(f: &[f64; 9], feq: &[f64; 9]) -> f64 {
 /// Compute the entropy production per step: ΔH = H(f) - H(f*).
 ///
 /// According to the H-theorem this must be ≥ 0.
-#[allow(dead_code)]
 pub fn entropy_production(f_pre: &[f64; 9], f_post: &[f64; 9]) -> f64 {
     h_function(f_pre) - h_function(f_post)
 }
@@ -1200,7 +1177,6 @@ pub fn entropy_production(f_pre: &[f64; 9], f_post: &[f64; 9]) -> f64 {
 ///
 /// This is an enhanced version of the basic solver provided in EntropicD2Q9,
 /// adding safeguards against divergence and bracket enforcement.
-#[allow(dead_code)]
 pub fn solve_alpha_newton_raphson(
     f: &[f64; 9],
     feq: &[f64; 9],
@@ -1336,7 +1312,6 @@ impl EntropyOverRelaxation {
 ///
 /// This provides a local measure of how far the system is from equilibrium
 /// and can be used as a refinement indicator in adaptive LBM.
-#[allow(dead_code)]
 pub fn neq_entropy_indicator(f: &[f64; 9], rho: f64, u: [f64; 2]) -> f64 {
     let feq = d2q9_equilibrium(rho, u);
     let hf = h_function(f);

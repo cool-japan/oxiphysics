@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,9 +7,6 @@
 //! (rotation-minimizing) frames, writhe integrals, and self-contact
 //! repulsion forces for slender elastic rods such as DNA filaments, cables,
 //! and hair strands.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -647,9 +643,9 @@ mod tests {
     fn test_contact_force_newton_third_law() {
         let cl: Vec<Vec3> = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.05, 0.0, 0.0]];
         let forces = rod_contact_force(&cl, 0.1, 500.0);
-        for k in 0..3 {
+        for (k, (&f0k, &f2k)) in forces[0].iter().zip(forces[2].iter()).enumerate() {
             assert!(
-                (forces[0][k] + forces[2][k]).abs() < EPS,
+                (f0k + f2k).abs() < EPS,
                 "Forces must be antisymmetric (Newton III) at component {k}"
             );
         }

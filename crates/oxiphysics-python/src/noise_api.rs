@@ -6,9 +6,6 @@
 //! Exposes procedural 3D value noise and fractal Brownian motion (fBm)
 //! to Python via PyO3.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::noise::{FractalNoise, ValueNoise3D};
 use pyo3::prelude::*;
 

@@ -6,9 +6,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use super::functions::NodeIdx;
-#[allow(unused_imports)]
-use super::functions::*;
+use super::functions::{
+    NodeIdx, aabb_all_pairs_overlap, add3, max3, min3, par_box_box, par_sphere_box,
+    par_sphere_sphere, scale3, sub3,
+};
 
 /// Thread-safe union-find for parallel island detection.
 ///
@@ -259,21 +260,6 @@ impl AabbTreeInner {
                 height: 0,
             });
             idx
-        }
-    }
-    fn free_node(&mut self, idx: NodeIdx) {
-        self.free_list.push(idx);
-    }
-    fn fix_aabb(&mut self, idx: NodeIdx) {
-        let left = self.nodes[idx as usize].left;
-        let right = self.nodes[idx as usize].right;
-        if left != u32::MAX && right != u32::MAX {
-            let la = self.nodes[left as usize].aabb;
-            let ra = self.nodes[right as usize].aabb;
-            self.nodes[idx as usize].aabb = la.merge(&ra);
-            let lh = self.nodes[left as usize].height;
-            let rh = self.nodes[right as usize].height;
-            self.nodes[idx as usize].height = 1 + lh.max(rh);
         }
     }
     /// Insert a leaf with the given AABB and body handle.

@@ -7,9 +7,6 @@
 //! dose rate from kerma, and radioactivation analysis for gamma and neutron
 //! radiation in shielding materials.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::LN_2;
 
 // ─────────────────────────────────────────────────────────────────────────────

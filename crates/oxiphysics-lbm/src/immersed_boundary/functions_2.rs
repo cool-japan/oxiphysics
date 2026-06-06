@@ -2,8 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
+use super::functions::peskin_delta_4pt;
 use std::f64::consts::PI;
 
 use super::types::IbmBody;
@@ -14,8 +13,6 @@ use super::types::IbmBody;
 /// kernel `phi`. Returns the Eulerian body force `f(x)` as a flat Vec.
 ///
 /// Uses a 4-cell stencil (same as `spread_force`).
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn spread_force_uhlmann(
     marker_positions: &[[f64; 2]],
     marker_forces: &[[f64; 2]],
@@ -57,7 +54,6 @@ pub fn spread_force_uhlmann(
 ///
 /// Separate from `interpolate_fluid_velocity` — takes raw position arrays
 /// rather than `IbMarker` slices, for use with `IbmBody`.
-#[allow(dead_code)]
 pub fn interpolate_velocity_at_positions(
     positions: &[[f64; 2]],
     fluid_u: &[[f64; 2]],
@@ -104,7 +100,6 @@ pub fn interpolate_velocity_at_positions(
 /// F_k = (u_b_k - u_f_k) / dt  (per unit volume after spreading)
 ///
 /// Returns a vector of forces, one per marker.
-#[allow(dead_code)]
 pub fn uhlmann_direct_forcing(
     u_boundary: &[[f64; 2]],
     u_fluid_at_boundary: &[[f64; 2]],
@@ -124,7 +119,6 @@ pub fn uhlmann_direct_forcing(
 /// 3. Spread forces back to fluid grid.
 ///
 /// Returns the Eulerian forcing field `f(x)`.
-#[allow(dead_code)]
 pub fn uhlmann_ibm_step(
     body_positions: &[[f64; 2]],
     body_velocities: &[[f64; 2]],
@@ -141,7 +135,6 @@ pub fn uhlmann_ibm_step(
 /// Advance an IbmBody position using its current velocity (explicit Euler).
 ///
 /// Separate from `IbmBody::advance` — does not apply forces, just kinematics.
-#[allow(dead_code)]
 pub fn advance_body_kinematics(body: &mut IbmBody, dt: f64) {
     body.centroid[0] += body.velocity[0] * dt;
     body.centroid[1] += body.velocity[1] * dt;
@@ -150,21 +143,18 @@ pub fn advance_body_kinematics(body: &mut IbmBody, dt: f64) {
 /// Oscillating body position for a sinusoidal motion.
 ///
 /// x(t) = x0 + A * sin(2π f t),  y fixed.
-#[allow(dead_code)]
 pub fn oscillating_body_position(x0: f64, amplitude: f64, freq: f64, t: f64) -> f64 {
     x0 + amplitude * (2.0 * PI * freq * t).sin()
 }
 /// Oscillating body velocity (derivative of `oscillating_body_position`).
 ///
 /// dx/dt = A * 2π f * cos(2π f t)
-#[allow(dead_code)]
 pub fn oscillating_body_velocity(amplitude: f64, freq: f64, t: f64) -> f64 {
     amplitude * 2.0 * PI * freq * (2.0 * PI * freq * t).cos()
 }
 /// Compute force on immersed body by integrating surface forces.
 ///
 /// F_body = -Σ_k F_k * dA_k  (reaction to IBM forcing)
-#[allow(dead_code)]
 pub fn body_force_from_surface(surface_forces: &[[f64; 2]], ds: f64) -> [f64; 2] {
     let mut fx = 0.0_f64;
     let mut fy = 0.0_f64;
@@ -177,7 +167,6 @@ pub fn body_force_from_surface(surface_forces: &[[f64; 2]], ds: f64) -> [f64; 2]
 /// Compute torque on immersed body from surface forces.
 ///
 /// τ = Σ_k (r_k × F_k) * dA_k  (2D cross product z-component)
-#[allow(dead_code)]
 pub fn body_torque_from_surface(
     surface_positions: &[[f64; 2]],
     surface_forces: &[[f64; 2]],
@@ -198,7 +187,6 @@ pub fn body_torque_from_surface(
 ///
 /// Uses the momentum exchange method.
 /// `cos_alpha`, `sin_alpha` define the flow direction.
-#[allow(dead_code)]
 pub fn body_lift_drag_from_pressure(
     surface_pressures: &[f64],
     surface_normals: &[[f64; 2]],
@@ -225,6 +213,7 @@ pub fn body_lift_drag_from_pressure(
 }
 #[cfg(test)]
 mod tests_ibm_body {
+    use super::super::functions::{peskin_delta_2d, peskin_delta_3d, yang_delta_1d};
     use super::*;
     use crate::immersed_boundary::types::*;
     #[test]

@@ -7,8 +7,6 @@
 //! constants, dipole, polarisability, charge transfer, adsorption, catalysis,
 //! radiation shielding.
 
-#![allow(dead_code)]
-
 use super::convenience::{write_f64_dataset, write_vlen_strings};
 use super::file::Hdf5File;
 use super::types::{AttrValue, Hdf5Dtype, Hdf5Result};
@@ -18,7 +16,6 @@ use super::types::{AttrValue, Hdf5Dtype, Hdf5Result};
 /// Write phonon frequencies along a q-path.
 ///
 /// `q_points` shape `[nq, 3]`; `freq_meV` shape `[nq, n_modes]`.
-#[allow(dead_code)]
 pub fn write_phonon_band_structure(
     file: &mut Hdf5File,
     group: &str,
@@ -44,7 +41,6 @@ pub fn write_phonon_band_structure(
 }
 
 /// Write phonon group velocities.
-#[allow(dead_code)]
 pub fn write_phonon_group_velocities(
     file: &mut Hdf5File,
     group: &str,
@@ -67,7 +63,6 @@ pub fn write_phonon_group_velocities(
 // ── Thermal expansion ─────────────────────────────────────────────────────────
 
 /// Write lattice parameters vs temperature.
-#[allow(dead_code)]
 pub fn write_lattice_parameters(
     file: &mut Hdf5File,
     group: &str,
@@ -89,7 +84,6 @@ pub fn write_lattice_parameters(
 // ── Grain orientation ─────────────────────────────────────────────────────────
 
 /// Write Euler angles (φ1, Φ, φ2) for each grain.
-#[allow(dead_code)]
 pub fn write_euler_angles(file: &mut Hdf5File, group: &str, euler: &[[f64; 3]]) -> Hdf5Result<()> {
     let flat: Vec<f64> = euler.iter().flat_map(|e| e.iter().copied()).collect();
     file.create_group(group)?;
@@ -106,7 +100,6 @@ pub fn write_euler_angles(file: &mut Hdf5File, group: &str, euler: &[[f64; 3]]) 
 // ── Electron density ──────────────────────────────────────────────────────────
 
 /// Write electronic charge density.
-#[allow(dead_code)]
 pub fn write_electron_density(
     file: &mut Hdf5File,
     group: &str,
@@ -124,7 +117,6 @@ pub fn write_electron_density(
 // ── Magnetisation ─────────────────────────────────────────────────────────────
 
 /// Write per-site magnetic moments.
-#[allow(dead_code)]
 pub fn write_magnetic_moments(
     file: &mut Hdf5File,
     group: &str,
@@ -145,7 +137,6 @@ pub fn write_magnetic_moments(
 // ── Spin-orbit coupling ───────────────────────────────────────────────────────
 
 /// Write effective SOC matrix elements (2n×2n complex, stored interleaved real/imag).
-#[allow(dead_code)]
 pub fn write_soc_matrix(file: &mut Hdf5File, group: &str, n: usize, mat: &[f64]) -> Hdf5Result<()> {
     assert_eq!(mat.len(), (2 * n) * (2 * n) * 2);
     file.create_group(group)?;
@@ -161,7 +152,6 @@ pub fn write_soc_matrix(file: &mut Hdf5File, group: &str, n: usize, mat: &[f64])
 // ── Fermi surface ─────────────────────────────────────────────────────────────
 
 /// Write Fermi surface k-points and weights.
-#[allow(dead_code)]
 pub fn write_fermi_surface(
     file: &mut Hdf5File,
     group: &str,
@@ -185,7 +175,6 @@ pub fn write_fermi_surface(
 // ── Wannier functions ─────────────────────────────────────────────────────────
 
 /// Write Wannier function centres and spreads.
-#[allow(dead_code)]
 pub fn write_wannier_centres(
     file: &mut Hdf5File,
     group: &str,
@@ -209,7 +198,6 @@ pub fn write_wannier_centres(
 // ── Tight-binding Hamiltonian ─────────────────────────────────────────────────
 
 /// Write a tight-binding Hamiltonian as real and imaginary parts.
-#[allow(dead_code)]
 pub fn write_tight_binding_hamiltonian(
     file: &mut Hdf5File,
     group: &str,
@@ -229,7 +217,6 @@ pub fn write_tight_binding_hamiltonian(
 // ── Nudged elastic band ───────────────────────────────────────────────────────
 
 /// Write NEB path: one image per "image" group.
-#[allow(dead_code)]
 pub fn write_neb_path(
     file: &mut Hdf5File,
     group: &str,
@@ -250,7 +237,6 @@ pub fn write_neb_path(
 }
 
 /// Read energies from a NEB path.
-#[allow(dead_code)]
 pub fn read_neb_energies(file: &Hdf5File, group: &str) -> Hdf5Result<Vec<f64>> {
     let g = file.open_group(group)?;
     let mut images: Vec<(String, f64)> = g
@@ -272,7 +258,6 @@ pub fn read_neb_energies(file: &Hdf5File, group: &str) -> Hdf5Result<Vec<f64>> {
 // ── Transition state theory ───────────────────────────────────────────────────
 
 /// Write transition state data: reactant/TS/product energies.
-#[allow(dead_code)]
 pub fn write_transition_state(
     file: &mut Hdf5File,
     group: &str,
@@ -292,7 +277,6 @@ pub fn write_transition_state(
 // ── G0W0 quasiparticle energies ───────────────────────────────────────────────
 
 /// Write G0W0 quasiparticle corrections.
-#[allow(dead_code)]
 pub fn write_gw_corrections(
     file: &mut Hdf5File,
     group: &str,
@@ -307,7 +291,6 @@ pub fn write_gw_corrections(
 // ── Optical spectrum ──────────────────────────────────────────────────────────
 
 /// Write optical absorption spectrum.
-#[allow(dead_code)]
 pub fn write_optical_spectrum(
     file: &mut Hdf5File,
     group: &str,
@@ -322,7 +305,6 @@ pub fn write_optical_spectrum(
 // ── Thermochemistry ───────────────────────────────────────────────────────────
 
 /// Write thermochemical data: enthalpy, entropy, free energy vs temperature.
-#[allow(dead_code)]
 pub fn write_thermochemistry(
     file: &mut Hdf5File,
     group: &str,
@@ -346,7 +328,6 @@ pub fn write_thermochemistry(
 /// Write interatomic force constants (IFC) matrix.
 ///
 /// `ifc` shape `[n_atoms, n_atoms, 3, 3]` stored flat.
-#[allow(dead_code)]
 pub fn write_force_constants(
     file: &mut Hdf5File,
     group: &str,
@@ -368,7 +349,6 @@ pub fn write_force_constants(
 // ── Dipole moment ─────────────────────────────────────────────────────────────
 
 /// Write dipole moment trajectory.
-#[allow(dead_code)]
 pub fn write_dipole_trajectory(
     file: &mut Hdf5File,
     group: &str,
@@ -389,7 +369,6 @@ pub fn write_dipole_trajectory(
 // ── Polarisability ────────────────────────────────────────────────────────────
 
 /// Write polarisability tensor trajectory (per step: 3×3).
-#[allow(dead_code)]
 pub fn write_polarisability(file: &mut Hdf5File, group: &str, alpha: &[f64]) -> Hdf5Result<()> {
     let n_steps = alpha.len() / 9;
     assert_eq!(n_steps * 9, alpha.len());
@@ -407,7 +386,6 @@ pub fn write_polarisability(file: &mut Hdf5File, group: &str, alpha: &[f64]) -> 
 // ── Charge transfer ───────────────────────────────────────────────────────────
 
 /// Write Bader charge decomposition.
-#[allow(dead_code)]
 pub fn write_bader_charges(file: &mut Hdf5File, group: &str, bader_q: &[f64]) -> Hdf5Result<()> {
     write_f64_dataset(file, group, "bader_charges", bader_q)
 }
@@ -415,7 +393,6 @@ pub fn write_bader_charges(file: &mut Hdf5File, group: &str, bader_q: &[f64]) ->
 // ── Adsorption data ───────────────────────────────────────────────────────────
 
 /// Write adsorption energy data for different configurations.
-#[allow(dead_code)]
 pub fn write_adsorption_energies(
     file: &mut Hdf5File,
     group: &str,
@@ -434,7 +411,6 @@ pub fn write_adsorption_energies(
 // ── Catalysis microkinetics ───────────────────────────────────────────────────
 
 /// Write microkinetic model rate constants.
-#[allow(dead_code)]
 pub fn write_rate_constants(
     file: &mut Hdf5File,
     group: &str,
@@ -452,7 +428,6 @@ pub fn write_rate_constants(
 // ── Coverage profile ──────────────────────────────────────────────────────────
 
 /// Write surface coverage vs time.
-#[allow(dead_code)]
 pub fn write_coverage_profile(
     file: &mut Hdf5File,
     group: &str,
@@ -471,7 +446,6 @@ pub fn write_coverage_profile(
 // ── Radiation shielding data ──────────────────────────────────────────────────
 
 /// Write dose rate profile as a function of depth.
-#[allow(dead_code)]
 pub fn write_dose_rate_profile(
     file: &mut Hdf5File,
     group: &str,
@@ -484,7 +458,6 @@ pub fn write_dose_rate_profile(
 }
 
 /// Write stopping power data (Bethe formula simulation).
-#[allow(dead_code)]
 pub fn write_stopping_power(
     file: &mut Hdf5File,
     group: &str,

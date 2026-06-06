@@ -5,8 +5,6 @@
 //! fragment physics, glass cracking, explosive fragmentation, and forensic
 //! reconstruction fitting.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

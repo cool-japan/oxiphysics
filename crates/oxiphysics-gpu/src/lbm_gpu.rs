@@ -48,9 +48,6 @@
 //!         "mean velocity: ({:.4}, {:.4}, {:.4})", ux, uy, uz);
 //! ```
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use crate::compute::WgpuBufferHandle;
 #[cfg(feature = "wgpu-backend")]
 use {crate::compute::WgpuInitError, crate::compute::wgpu_backend::real::WgpuBackendReal, wgpu};

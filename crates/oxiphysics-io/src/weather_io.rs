@@ -1,4 +1,3 @@
-#![allow(clippy::manual_strip, clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,8 +15,6 @@
 //! - **Pressure altitude**: Barometric altitude calculations.
 //! - **ISA atmosphere model**: International Standard Atmosphere.
 //! - **Humidity/dew point conversion**: Various humidity conversions.
-
-#![allow(dead_code)]
 
 use std::f64::consts::E;
 
@@ -490,11 +487,10 @@ impl MetarReport {
 pub fn parse_metar(raw: &str) -> Option<MetarReport> {
     let raw_trimmed = raw.trim();
     // Remove "METAR" or "SPECI" prefix if present
-    let text = if raw_trimmed.starts_with("METAR ") || raw_trimmed.starts_with("SPECI ") {
-        &raw_trimmed[6..]
-    } else {
-        raw_trimmed
-    };
+    let text = raw_trimmed
+        .strip_prefix("METAR ")
+        .or_else(|| raw_trimmed.strip_prefix("SPECI "))
+        .unwrap_or(raw_trimmed);
 
     let tokens: Vec<&str> = text.split_whitespace().collect();
     if tokens.len() < 3 {
@@ -563,12 +559,12 @@ pub fn parse_metar(raw: &str) -> Option<MetarReport> {
             let mut cloud_type = String::new();
 
             // Check for CB/TCU suffix
-            let height_part = if height_str.ends_with("CB") {
+            let height_part = if let Some(stripped) = height_str.strip_suffix("CB") {
                 cloud_type = "CB".to_string();
-                &height_str[..height_str.len() - 2]
-            } else if height_str.ends_with("TCU") {
+                stripped
+            } else if let Some(stripped) = height_str.strip_suffix("TCU") {
                 cloud_type = "TCU".to_string();
-                &height_str[..height_str.len() - 3]
+                stripped
             } else {
                 height_str
             };
@@ -607,7 +603,7 @@ pub fn parse_metar(raw: &str) -> Option<MetarReport> {
 
         // Altimeter: Annnn
         if token.starts_with('A') && token.len() == 5 {
-            if let Ok(alt) = token[1..].parse::<f64>() {
+            if let Ok(alt) = token.strip_prefix('A').unwrap_or("").parse::<f64>() {
                 report.altimeter = Some(alt / 100.0);
             }
             continue;
@@ -661,8 +657,8 @@ fn parse_metar_wind(token: &str, report: &mut MetarReport) {
 
 /// Parse a METAR temperature string (e.g., "24", "M01" for -1).
 fn parse_metar_temp(s: &str) -> Option<f64> {
-    if s.starts_with('M') {
-        s[1..].parse::<f64>().ok().map(|v| -v)
+    if let Some(rest) = s.strip_prefix('M') {
+        rest.parse::<f64>().ok().map(|v| -v)
     } else {
         s.parse::<f64>().ok()
     }
@@ -834,10 +830,10 @@ impl SoundingProfile {
         let mut profile = SoundingProfile::new("");
         for line in text.lines() {
             let line = line.trim();
-            if line.starts_with("# SOUNDING ") {
-                profile.station = line[11..].trim().to_string();
-            } else if line.starts_with("# TIME ") {
-                profile.observation_time = line[7..].trim().to_string();
+            if let Some(rest) = line.strip_prefix("# SOUNDING ") {
+                profile.station = rest.trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("# TIME ") {
+                profile.observation_time = rest.trim().to_string();
             } else if line.starts_with("# LAT ") {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 6 {
@@ -1130,12 +1126,13 @@ pub fn isa_properties(altitude: f64) -> IsaProperties {
     let alt = altitude.clamp(-2000.0, 86000.0);
 
     // Find the applicable layer
-    let mut layer_idx = 0;
-    for i in 1..layers.len() {
-        if alt >= layers[i].0 {
-            layer_idx = i;
-        }
-    }
+    let layer_idx = layers
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, layer)| alt >= layer.0)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
 
     let (h_base, t_base, lapse, p_base) = layers[layer_idx];
     let dh = alt - h_base;

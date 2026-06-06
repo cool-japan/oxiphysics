@@ -9,7 +9,6 @@ pub(super) const VERSION: u32 = 1;
 /// Encode a UTF-8 string as a length-prefixed byte sequence.
 ///
 /// Format: `[length: u32 LE][UTF-8 bytes]`
-#[allow(dead_code)]
 pub fn encode_string(s: &str) -> Vec<u8> {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(4 + bytes.len());
@@ -20,7 +19,6 @@ pub fn encode_string(s: &str) -> Vec<u8> {
 /// Decode a length-prefixed UTF-8 string from `data` starting at `*offset`.
 ///
 /// Advances `*offset` past the consumed bytes.
-#[allow(dead_code)]
 pub fn decode_string(data: &[u8], offset: &mut usize) -> Result<String, String> {
     let len = read_u32(data, offset)? as usize;
     if *offset + len > data.len() {
@@ -468,7 +466,6 @@ mod tests {
     }
 }
 /// Write an XDMF XML file that points to data in an HDF5/SHDF file.
-#[allow(dead_code)]
 pub fn write_xdmf(path: &str, params: &XdmfParams) -> std::io::Result<()> {
     use std::io::Write;
     let file = std::fs::File::create(path)?;
@@ -632,14 +629,14 @@ mod tests_hdf5_extended {
             topology: XdmfTopologyType::Tetrahedron,
             attributes: vec![("pressure".to_string(), "/fields/pressure".to_string())],
         };
-        let path = "/tmp/test_oxiphysics_xdmf.xdmf";
-        write_xdmf(path, &params).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_oxiphysics_xdmf.xdmf");
+        write_xdmf(path.to_str().unwrap_or(""), &params).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("Xdmf"));
         assert!(content.contains("Tetrahedron"));
         assert!(content.contains("pressure"));
         assert!(content.contains("sim.shdf"));
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_xdmf_topology_type_str() {

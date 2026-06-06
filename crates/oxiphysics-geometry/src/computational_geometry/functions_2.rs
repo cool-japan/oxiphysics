@@ -2,12 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::computational_geometry::HalfEdgeMesh;
     use crate::computational_geometry::Line2D;
     use crate::computational_geometry::LineArrangement;
@@ -16,6 +12,8 @@ mod tests {
     use crate::computational_geometry::Segment2D;
     use crate::computational_geometry::SlabPointLocator;
     use crate::computational_geometry::VisibilityGraph;
+    use crate::computational_geometry::*;
+    use std::ops::{Add, Sub};
     #[test]
     fn test_point2_add_sub() {
         let a = Point2::new(1.0, 2.0);

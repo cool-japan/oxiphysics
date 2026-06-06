@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Auto-generated module
 //
 // 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
@@ -13,24 +12,24 @@ use super::types::{
 /// 2-D point alias.
 pub(super) type Point2 = [f64; 2];
 /// 3-D point alias.
+#[cfg(test)]
 pub(super) type Point3 = [f64; 3];
 /// Euclidean distance in 2-D.
-#[allow(dead_code)]
 pub(super) fn dist2(a: Point2, b: Point2) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
 }
 /// Euclidean distance in 3-D.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn dist3(a: Point3, b: Point3) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 /// Dot product of two slices.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 /// Solve 2x2 linear system A x = b. Returns `None` if singular.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn solve2(a: [[f64; 2]; 2], b: [f64; 2]) -> Option<[f64; 2]> {
     let det = a[0][0] * a[1][1] - a[0][1] * a[1][0];
     if det.abs() < 1e-14 {
@@ -42,7 +41,6 @@ pub(super) fn solve2(a: [[f64; 2]; 2], b: [f64; 2]) -> Option<[f64; 2]> {
     ])
 }
 /// Solve 3x3 linear system A x = b. Returns `None` if singular.
-#[allow(dead_code)]
 pub(super) fn solve3(a: [[f64; 3]; 3], b: [f64; 3]) -> Option<[f64; 3]> {
     let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
         - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
@@ -66,7 +64,6 @@ pub(super) fn solve3(a: [[f64; 3]; 3], b: [f64; 3]) -> Option<[f64; 3]> {
     Some([x0, x1, x2])
 }
 /// Invert a symmetric 3x3 matrix. Returns `None` if singular.
-#[allow(dead_code)]
 pub(super) fn invert3(a: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
     let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
         - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
@@ -94,7 +91,6 @@ pub(super) fn invert3(a: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
     ])
 }
 /// Multiply 3x3 matrix by 3-vector.
-#[allow(dead_code)]
 pub(super) fn mat_vec3(a: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     [
         a[0][0] * v[0] + a[0][1] * v[1] + a[0][2] * v[2],
@@ -103,7 +99,6 @@ pub(super) fn mat_vec3(a: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     ]
 }
 /// Multiply 3x3 matrices C = A * B.
-#[allow(dead_code)]
 pub(super) fn mat_mul3(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut c = [[0.0; 3]; 3];
     for i in 0..3 {
@@ -118,7 +113,6 @@ pub(super) fn mat_mul3(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 /// Evaluate a scalar kernel function at normalised distance `s = r / h`.
 ///
 /// Returns `(w, dw_ds)` — value and derivative with respect to `s`.
-#[allow(dead_code)]
 pub fn kernel_eval(s: f64, ktype: KernelType) -> (f64, f64) {
     if !(0.0..=1.0).contains(&s) {
         return (0.0, 0.0);
@@ -174,7 +168,6 @@ pub fn kernel_eval(s: f64, ktype: KernelType) -> (f64, f64) {
 /// * `ktype` — kernel function type
 ///
 /// Returns `None` if moment matrix is singular.
-#[allow(dead_code)]
 pub fn mls_shape_2d(pt: Point2, domain: &SupportDomain, ktype: KernelType) -> Option<MlsShape> {
     let nbrs = domain.neighbours(pt);
     let n = nbrs.len();
@@ -303,7 +296,6 @@ pub fn mls_shape_2d(pt: Point2, domain: &SupportDomain, ktype: KernelType) -> Op
     })
 }
 /// Evaluate an RBF at distance `r` with shape parameter `c`.
-#[allow(dead_code)]
 pub fn rbf_eval(r: f64, c: f64, rtype: RbfType) -> f64 {
     match rtype {
         RbfType::Multiquadric => (r * r + c * c).sqrt(),
@@ -322,7 +314,6 @@ pub fn rbf_eval(r: f64, c: f64, rtype: RbfType) -> f64 {
 /// Solve a dense linear system (Gaussian elimination with partial pivoting).
 ///
 /// Overwrites `a` (n x n stored row-major in flat vec) and `b`.
-#[allow(dead_code)]
 pub(super) fn dense_solve(a: &mut [f64], b: &mut [f64], n: usize) -> bool {
     for col in 0..n {
         let mut max_val = a[col * n + col].abs();
@@ -371,7 +362,6 @@ pub(super) fn dense_solve(a: &mut [f64], b: &mut [f64], n: usize) -> bool {
 /// * `values` — data point scalar values
 /// * `c` — shape parameter
 /// * `rtype` — RBF type
-#[allow(dead_code)]
 pub fn rbf_interpolant(
     centres: &[Point2],
     values: &[f64],
@@ -401,7 +391,6 @@ pub fn rbf_interpolant(
     })
 }
 /// Plane-stress constitutive matrix D (3x3).
-#[allow(dead_code)]
 pub(super) fn plane_stress_d(young: f64, poisson: f64) -> [[f64; 3]; 3] {
     let c = young / (1.0 - poisson * poisson);
     [
@@ -415,8 +404,6 @@ pub(super) fn plane_stress_d(young: f64, poisson: f64) -> [[f64; 3]; 3] {
 ///
 /// Returns the stiffness matrix as a dense row-major flat vector and the
 /// force vector.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn efg_assemble_2d(
     domain: &SupportDomain,
     cells: &[TriCell],
@@ -471,7 +458,6 @@ pub fn efg_assemble_2d(
 /// The RKPM correction ensures zeroth- and first-order consistency:
 ///   Psi_I(x) = C(x; x-x_I) * Phi_a(x-x_I)
 /// where Phi_a is the kernel and C is a correction polynomial.
-#[allow(dead_code)]
 pub fn rkpm_shape_2d(pt: Point2, domain: &SupportDomain, ktype: KernelType) -> Option<RkpmShape> {
     let nbrs = domain.neighbours(pt);
     let n = nbrs.len();
@@ -543,8 +529,7 @@ pub fn rkpm_shape_2d(pt: Point2, domain: &SupportDomain, ktype: KernelType) -> O
     let mut psi = Vec::with_capacity(n);
     let mut dpsi_dx_v = Vec::with_capacity(n);
     let mut dpsi_dy_v = Vec::with_capacity(n);
-    for k in 0..n {
-        let nd = &ndata[k];
+    for nd in ndata.iter().take(n) {
         let gp: f64 = gamma.iter().zip(nd.p.iter()).map(|(a, b)| a * b).sum();
         psi.push(gp * nd.w);
         let dp_dx = [0.0, 1.0, 0.0];
@@ -583,7 +568,6 @@ pub fn rkpm_shape_2d(pt: Point2, domain: &SupportDomain, ktype: KernelType) -> O
 /// domain `[x0, x1] x [y0, y1]` with `nx` by `ny` divisions.
 ///
 /// Each rectangular sub-cell is split into two triangles.
-#[allow(dead_code)]
 pub fn generate_tri_cells(
     x0: f64,
     y0: f64,
@@ -615,7 +599,6 @@ pub fn generate_tri_cells(
 ///
 /// This is a simplified version that creates a triangulation by connecting
 /// each node to its nearest neighbours. Returns triangle cells.
-#[allow(dead_code)]
 pub fn generate_voronoi_cells(nodes: &[Point2], _max_neighbours: usize) -> Vec<TriCell> {
     let n = nodes.len();
     if n < 3 {
@@ -645,7 +628,6 @@ pub fn generate_voronoi_cells(nodes: &[Point2], _max_neighbours: usize) -> Vec<T
 ///
 /// Adds `alpha * I` to the diagonal and `alpha * g` to the force at
 /// constrained DOFs.
-#[allow(dead_code)]
 pub fn apply_penalty_bc(
     stiffness: &mut [f64],
     force: &mut [f64],
@@ -665,7 +647,6 @@ pub fn apply_penalty_bc(
 ///
 /// Augments the system from (K, f) of size n to size (n + m) where m is
 /// the number of constraints. Returns the augmented system.
-#[allow(dead_code)]
 pub fn apply_lagrange_bc(
     stiffness: &[f64],
     force: &[f64],
@@ -695,8 +676,6 @@ pub fn apply_lagrange_bc(
 /// Apply essential BCs via Nitsche's method.
 ///
 /// Modifies the stiffness matrix and force vector in place.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn apply_nitsche_bc(
     stiffness: &mut [f64],
     force: &mut [f64],
@@ -715,7 +694,6 @@ pub fn apply_nitsche_bc(
 /// Compute stress at a single evaluation point from nodal displacements
 /// using MLS shape function derivatives and a plane-stress constitutive
 /// matrix.
-#[allow(dead_code)]
 pub fn recover_stress_at_point(
     pt: Point2,
     displacements: &[f64],
@@ -744,7 +722,6 @@ pub fn recover_stress_at_point(
 }
 /// Perform nodal stress recovery by averaging stresses from nearby
 /// integration points.
-#[allow(dead_code)]
 pub fn nodal_stress_recovery(
     domain: &SupportDomain,
     cells: &[TriCell],
@@ -782,7 +759,6 @@ pub fn nodal_stress_recovery(
 /// Fits a polynomial to integration point stresses in a patch around each
 /// node, then evaluates at the node position. Uses a linear fit
 /// `sigma = a0 + a1*x + a2*y` within each patch.
-#[allow(dead_code)]
 pub fn spr_stress_recovery(
     domain: &SupportDomain,
     cells: &[TriCell],
@@ -801,7 +777,7 @@ pub fn spr_stress_recovery(
             ip_positions.push(cen);
         }
     }
-    for node_idx in 0..n {
+    for (node_idx, stress_slot) in stresses.iter_mut().enumerate().take(n) {
         let node_pos = domain.nodes[node_idx].pos;
         let h = domain.nodes[node_idx].support_radius * domain.dilation;
         let mut patch_pts = Vec::new();
@@ -816,13 +792,13 @@ pub fn spr_stress_recovery(
             if !patch_stresses.is_empty() {
                 let c = patch_stresses.len() as f64;
                 for ps in &patch_stresses {
-                    stresses[node_idx].sigma_xx += ps.sigma_xx;
-                    stresses[node_idx].sigma_yy += ps.sigma_yy;
-                    stresses[node_idx].tau_xy += ps.tau_xy;
+                    stress_slot.sigma_xx += ps.sigma_xx;
+                    stress_slot.sigma_yy += ps.sigma_yy;
+                    stress_slot.tau_xy += ps.tau_xy;
                 }
-                stresses[node_idx].sigma_xx /= c;
-                stresses[node_idx].sigma_yy /= c;
-                stresses[node_idx].tau_xy /= c;
+                stress_slot.sigma_xx /= c;
+                stress_slot.sigma_yy /= c;
+                stress_slot.tau_xy /= c;
             }
             continue;
         }
@@ -845,13 +821,13 @@ pub fn spr_stress_recovery(
             }
         }
         if let Some(a) = solve3(ptp, pts_xx) {
-            stresses[node_idx].sigma_xx = a[0];
+            stress_slot.sigma_xx = a[0];
         }
         if let Some(a) = solve3(ptp, pts_yy) {
-            stresses[node_idx].sigma_yy = a[0];
+            stress_slot.sigma_yy = a[0];
         }
         if let Some(a) = solve3(ptp, pts_xy) {
-            stresses[node_idx].tau_xy = a[0];
+            stress_slot.tau_xy = a[0];
         }
     }
     stresses
@@ -860,7 +836,6 @@ pub fn spr_stress_recovery(
 ///
 /// Nodes with high stress gradients are candidates for refinement (adding
 /// new particles nearby).
-#[allow(dead_code)]
 pub fn compute_error_indicators(
     domain: &SupportDomain,
     stresses: &[StressState],
@@ -892,7 +867,6 @@ pub fn compute_error_indicators(
 /// between nodes that exceed the error threshold.
 ///
 /// Returns a new set of nodes (original plus inserted).
-#[allow(dead_code)]
 pub fn adaptive_refine(
     domain: &SupportDomain,
     indicators: &[ErrorIndicator],
@@ -924,7 +898,6 @@ pub fn adaptive_refine(
     new_nodes
 }
 /// Compute the density of nodes in a region and flag under-resolved areas.
-#[allow(dead_code)]
 pub fn node_density_map(
     domain: &SupportDomain,
     grid_x: usize,
@@ -950,7 +923,6 @@ pub fn node_density_map(
 /// Set up bridging domain coupling between a meshfree domain and FEM mesh.
 ///
 /// Identifies nodes in the overlap region and assigns blending weights.
-#[allow(dead_code)]
 pub fn setup_bridging_domain(
     meshfree_domain: &SupportDomain,
     fem_nodes: &[Point2],
@@ -960,7 +932,7 @@ pub fn setup_bridging_domain(
     let mut interface = CouplingInterface::new(CouplingMethod::BridgingDomain, 1e6);
     let width = (overlap_x_max - overlap_x_min).max(1e-15);
     for (i, node) in meshfree_domain.nodes.iter().enumerate() {
-        if node.pos[0] >= overlap_x_min && node.pos[0] <= overlap_x_max {
+        if (overlap_x_min..=overlap_x_max).contains(&node.pos[0]) {
             let w = (node.pos[0] - overlap_x_min) / width;
             interface.add_node(CouplingNode {
                 pos: node.pos,
@@ -971,7 +943,7 @@ pub fn setup_bridging_domain(
         }
     }
     for (j, &pos) in fem_nodes.iter().enumerate() {
-        if pos[0] >= overlap_x_min && pos[0] <= overlap_x_max {
+        if (overlap_x_min..=overlap_x_max).contains(&pos[0]) {
             let w = (pos[0] - overlap_x_min) / width;
             interface.add_node(CouplingNode {
                 pos,
@@ -984,7 +956,6 @@ pub fn setup_bridging_domain(
     interface
 }
 /// Solve a dense linear system K u = f with the assembled EFG matrices.
-#[allow(dead_code)]
 pub fn solve_dense(stiffness: &[f64], force: &[f64], ndof: usize) -> Option<Vec<f64>> {
     let mut a = stiffness.to_vec();
     let mut b = force.to_vec();
@@ -1005,8 +976,6 @@ pub fn solve_dense(stiffness: &[f64], force: &[f64], ndof: usize) -> Option<Vec<
 /// * `bcs` — essential boundary conditions
 /// * `bc_method` — boundary condition enforcement method
 /// * `penalty` — penalty parameter (used for Penalty and Nitsche methods)
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn efg_analysis_2d(
     domain: &SupportDomain,
     cells: &[TriCell],
@@ -1049,7 +1018,6 @@ pub fn efg_analysis_2d(
 }
 /// Compute the condition number estimate of a dense matrix (ratio of
 /// max to min diagonal element magnitudes — rough estimate).
-#[allow(dead_code)]
 pub fn condition_estimate(matrix: &[f64], n: usize) -> f64 {
     let mut max_diag = 0.0_f64;
     let mut min_diag = f64::MAX;
@@ -1069,17 +1037,14 @@ pub fn condition_estimate(matrix: &[f64], n: usize) -> f64 {
     }
 }
 /// Compute the L2 norm of a vector.
-#[allow(dead_code)]
 pub fn l2_norm(v: &[f64]) -> f64 {
     v.iter().map(|x| x * x).sum::<f64>().sqrt()
 }
 /// Compute the infinity norm of a vector.
-#[allow(dead_code)]
 pub fn linf_norm(v: &[f64]) -> f64 {
     v.iter().map(|x| x.abs()).fold(0.0_f64, f64::max)
 }
 /// Generate a regular grid of meshfree nodes over `[x0,x1] x [y0,y1]`.
-#[allow(dead_code)]
 pub fn generate_regular_nodes(
     x0: f64,
     y0: f64,
@@ -1106,8 +1071,6 @@ pub fn generate_regular_nodes(
 }
 /// Generate a set of scattered nodes using a random perturbation of a
 /// regular grid.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn generate_scattered_nodes(
     x0: f64,
     y0: f64,
@@ -1188,10 +1151,10 @@ mod tests {
     fn test_invert3_identity() {
         let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let inv = invert3(id).unwrap();
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in inv.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((inv[i][j] - expected).abs() < 1e-12);
+                assert!((val - expected).abs() < 1e-12);
             }
         }
     }
@@ -1548,7 +1511,6 @@ mod tests {
 }
 /// Compute the convergence rate from two convergence points using
 /// the formula: rate = ln(e1/e2) / ln(h1/h2).
-#[allow(dead_code)]
 pub fn compute_convergence_rate(
     coarse: &ConvergencePoint,
     fine: &ConvergencePoint,
@@ -1571,7 +1533,6 @@ pub fn compute_convergence_rate(
 /// Compute convergence rates from a series of refinements.
 ///
 /// Returns a vector of rates (one fewer than the number of points).
-#[allow(dead_code)]
 pub fn compute_convergence_rates(points: &[ConvergencePoint]) -> Vec<ConvergenceRate> {
     if points.len() < 2 {
         return vec![];
@@ -1587,7 +1548,6 @@ pub fn compute_convergence_rates(points: &[ConvergencePoint]) -> Vec<Convergence
 /// Given solutions u_h and u_{h/r} with refinement ratio r and
 /// observed convergence order p, the extrapolated solution is:
 ///   u_exact ≈ (r^p * u_fine - u_coarse) / (r^p - 1)
-#[allow(dead_code)]
 pub fn richardson_extrapolation(
     u_coarse: f64,
     u_fine: f64,
@@ -1600,7 +1560,6 @@ pub fn richardson_extrapolation(
 /// Effectivity index: ratio of estimated error to true error.
 ///
 /// A good error estimator should yield effectivity indices close to 1.0.
-#[allow(dead_code)]
 pub fn effectivity_index(estimated_error: f64, true_error: f64) -> f64 {
     if true_error.abs() < 1e-30 {
         0.0
@@ -1614,7 +1573,6 @@ pub fn effectivity_index(estimated_error: f64, true_error: f64) -> f64 {
 /// `computed` — vector of computed values at each node.
 /// `analytical` — vector of exact values at each node.
 /// `weights` — integration weights (e.g., Voronoi cell areas).
-#[allow(dead_code)]
 pub fn l2_error_norm(computed: &[f64], analytical: &[f64], weights: &[f64]) -> f64 {
     assert_eq!(computed.len(), analytical.len());
     assert_eq!(computed.len(), weights.len());
@@ -1626,7 +1584,6 @@ pub fn l2_error_norm(computed: &[f64], analytical: &[f64], weights: &[f64]) -> f
     sum.sqrt()
 }
 /// Compute the L-infinity (max) error between computed and analytical solutions.
-#[allow(dead_code)]
 pub fn linf_error_norm(computed: &[f64], analytical: &[f64]) -> f64 {
     assert_eq!(computed.len(), analytical.len());
     computed
@@ -1640,7 +1597,6 @@ pub fn linf_error_norm(computed: &[f64], analytical: &[f64]) -> f64 {
 /// `grad_computed` — computed gradients \[du/dx, du/dy\] at each node.
 /// `grad_analytical` — analytical gradients at each node.
 /// `weights` — integration weights.
-#[allow(dead_code)]
 pub fn h1_seminorm_error(
     grad_computed: &[[f64; 2]],
     grad_analytical: &[[f64; 2]],
@@ -1657,7 +1613,6 @@ pub fn h1_seminorm_error(
     sum.sqrt()
 }
 /// Run a convergence study summary from a set of convergence points.
-#[allow(dead_code)]
 pub fn convergence_study_summary(points: Vec<ConvergencePoint>) -> ConvergenceStudySummary {
     let rates = compute_convergence_rates(&points);
     let avg_l2_rate = if rates.is_empty() {
@@ -1678,7 +1633,6 @@ pub fn convergence_study_summary(points: Vec<ConvergencePoint>) -> ConvergenceSt
     }
 }
 /// Format a convergence table as a string for display.
-#[allow(dead_code)]
 pub fn format_convergence_table(summary: &ConvergenceStudySummary) -> String {
     let mut out = String::new();
     out.push_str("h           nodes   L2 error       Linf error     H1 error       Rate(L2)\n");

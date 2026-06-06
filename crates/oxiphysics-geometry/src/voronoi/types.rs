@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{bowyer_watson, is_delaunay};
 use super::functions::{
     circumcircle, circumsphere_3d, clip_polygon_to_bounds, delaunay_to_voronoi,
@@ -299,7 +297,6 @@ impl LegacyVoronoiCell {
     }
 }
 /// A tetrahedron in a 3-D Delaunay tetrahedralisation.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DelaunayTetrahedron {
     /// Vertex indices (into the point array).
@@ -328,7 +325,6 @@ impl DelaunayTetrahedron {
 ///
 /// The power distance from a query point `q` to a weighted site `(s, w)` is
 /// `|q - s|² - w`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct WeightedSite {
     /// 2-D position.

@@ -2,13 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::types::*;
 #[cfg(test)]
 mod tests_extra {
-    use super::*;
+    use crate::heightfield::*;
     #[test]
     fn test_dda_traversal_diagonal_ray() {
         let hf = HeightField::from_fn(6, 6, 1.0, |_, _| 0.0);

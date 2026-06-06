@@ -183,7 +183,6 @@ pub(super) fn gaussian_solve(a: &[f64], b: &[f64], n: usize) -> Option<Vec<f64>>
 /// bar elements of length `le` carrying axial load `p`.
 ///
 /// Returns an (n_nodes x n_nodes) dense matrix stored row-major.
-#[allow(dead_code)]
 pub fn truss_geometric_stiffness(n_elements: usize, le: f64, p: f64) -> Vec<f64> {
     let n_nodes = n_elements + 1;
     let n = n_nodes;
@@ -201,7 +200,6 @@ pub fn truss_geometric_stiffness(n_elements: usize, le: f64, p: f64) -> Vec<f64>
 }
 /// Assemble a simple truss elastic stiffness matrix for `n_elements`
 /// bar elements of length `le` with axial stiffness `ea`.
-#[allow(dead_code)]
 pub fn truss_elastic_stiffness(n_elements: usize, le: f64, ea: f64) -> Vec<f64> {
     let n_nodes = n_elements + 1;
     let n = n_nodes;
@@ -228,7 +226,6 @@ pub fn truss_elastic_stiffness(n_elements: usize, le: f64, ea: f64) -> Vec<f64> 
 /// * `ds` - arc-length increment
 ///
 /// Returns `(new_disp, new_load)`.
-#[allow(dead_code)]
 pub fn arc_length_step_1d(k_tangent: f64, load: f64, disp: f64, ds: f64) -> (f64, f64) {
     if k_tangent.abs() < 1e-15 {
         return (disp + ds, load);
@@ -246,7 +243,6 @@ pub fn arc_length_step_1d(k_tangent: f64, load: f64, disp: f64, ds: f64) -> (f64
 /// * `n_steps` - number of steps to trace
 ///
 /// Returns a vector of `(displacement, load)` pairs.
-#[allow(dead_code)]
 pub fn trace_post_buckling_path(
     k_fn: impl Fn(f64) -> f64,
     initial_load: f64,
@@ -272,7 +268,6 @@ pub fn trace_post_buckling_path(
 /// Uses the Koiter formula: lambda_imp = lambda_perf * (1 - c * sqrt(|delta|))
 ///
 /// Returns a vector of `(amplitude, reduced_load_factor)` pairs.
-#[allow(dead_code)]
 pub fn imperfection_sensitivity_curve(
     perfect_load_factor: f64,
     amplitudes: &[f64],
@@ -289,7 +284,6 @@ pub fn imperfection_sensitivity_curve(
 /// Multi-mode imperfection sensitivity (combined imperfection of first two modes).
 ///
 /// lambda_imp = lambda_perf * (1 - c1*sqrt(|d1|) - c2*sqrt(|d2|))
-#[allow(dead_code)]
 pub fn multimode_imperfection_sensitivity(
     perfect_load_factor: f64,
     d1: f64,
@@ -306,7 +300,6 @@ pub fn multimode_imperfection_sensitivity(
 /// negative (indicating snap-through), or `None` if no snap-through occurs.
 ///
 /// * `stiffness_values` - tangent stiffness at each load step
-#[allow(dead_code)]
 pub fn detect_snap_through(stiffness_values: &[f64]) -> Option<usize> {
     for (i, &k) in stiffness_values.iter().enumerate() {
         if k < 0.0 {
@@ -319,7 +312,6 @@ pub fn detect_snap_through(stiffness_values: &[f64]) -> Option<usize> {
 ///
 /// Returns `Some((snap_load, snap_disp))` at the point where the load
 /// starts decreasing, or `None` if the load is monotonically increasing.
-#[allow(dead_code)]
 pub fn snap_through_from_path(path: &[(f64, f64)]) -> Option<(f64, f64)> {
     if path.len() < 2 {
         return None;
@@ -334,7 +326,6 @@ pub fn snap_through_from_path(path: &[(f64, f64)]) -> Option<(f64, f64)> {
     None
 }
 /// Compute the limit point (maximum load) from a load-displacement path.
-#[allow(dead_code)]
 pub fn find_limit_point(path: &[(f64, f64)]) -> Option<(f64, f64)> {
     path.iter()
         .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
@@ -345,8 +336,6 @@ pub fn find_limit_point(path: &[(f64, f64)]) -> Option<(f64, f64)> {
 ///
 /// Uses Euler-Bernoulli beam theory with consistent geometric stiffness.
 /// Returns a dense `(2*n_nodes) x (2*n_nodes)` matrix.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn beam_geometric_stiffness(n_elements: usize, le: f64, p: f64) -> Vec<f64> {
     let n_nodes = n_elements + 1;
     let total_dof = 2 * n_nodes;
@@ -384,7 +373,6 @@ pub fn beam_geometric_stiffness(n_elements: usize, le: f64, p: f64) -> Vec<f64> 
 ///
 /// Uses FEM with Euler-Bernoulli elements and fixed-free boundary conditions.
 /// The analytical solution is P_cr = pi^2*EI/(4*L^2).
-#[allow(dead_code)]
 pub fn cantilever_fem_buckling(n_elements: usize, e: f64, i_mom: f64, l: f64, p: f64) -> f64 {
     let le = l / n_elements as f64;
     let n_nodes = n_elements + 1;
@@ -466,15 +454,13 @@ pub fn cantilever_fem_buckling(n_elements: usize, e: f64, i_mom: f64, l: f64, p:
 /// * `L` – element length
 ///
 /// Returns a 4×4 matrix (row-major).
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn geometric_stiffness_beam(N: f64, L: f64) -> [[f64; 4]; 4] {
-    let c = N / (30.0 * L);
+pub fn geometric_stiffness_beam(n: f64, l: f64) -> [[f64; 4]; 4] {
+    let c = n / (30.0 * l);
     [
-        [36.0 * c, 3.0 * c * L, -36.0 * c, 3.0 * c * L],
-        [3.0 * c * L, 4.0 * c * L * L, -3.0 * c * L, -c * L * L],
-        [-36.0 * c, -3.0 * c * L, 36.0 * c, -3.0 * c * L],
-        [3.0 * c * L, -c * L * L, -3.0 * c * L, 4.0 * c * L * L],
+        [36.0 * c, 3.0 * c * l, -36.0 * c, 3.0 * c * l],
+        [3.0 * c * l, 4.0 * c * l * l, -3.0 * c * l, -c * l * l],
+        [-36.0 * c, -3.0 * c * l, 36.0 * c, -3.0 * c * l],
+        [3.0 * c * l, -c * l * l, -3.0 * c * l, 4.0 * c * l * l],
     ]
 }
 /// Johnson parabolic formula for short-column buckling.
@@ -484,12 +470,10 @@ pub fn geometric_stiffness_beam(N: f64, L: f64) -> [[f64; 4]; 4] {
 /// Valid when λ < λ_c = π * sqrt(2 E / σ_y).
 ///
 /// * `sigma_y`    – yield stress
-/// * `E`          – Young's modulus
+/// * `e`          – Young's modulus
 /// * `slenderness` – slenderness ratio λ = (K L) / r
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn johnson_parabolic_formula(sigma_y: f64, E: f64, slenderness: f64) -> f64 {
-    (sigma_y - (sigma_y * sigma_y / (4.0 * PI * PI * E)) * slenderness * slenderness).max(0.0)
+pub fn johnson_parabolic_formula(sigma_y: f64, e: f64, slenderness: f64) -> f64 {
+    (sigma_y - (sigma_y * sigma_y / (4.0 * PI * PI * e)) * slenderness * slenderness).max(0.0)
 }
 /// Engesser tangent-modulus theory critical stress.
 ///
@@ -497,15 +481,13 @@ pub fn johnson_parabolic_formula(sigma_y: f64, E: f64, slenderness: f64) -> f64 
 ///
 /// * `_sigma`     – current stress (kept for API; used via E_t externally)
 /// * `_e`         – elastic modulus (kept for API completeness)
-/// * `E_t`        – tangent modulus at the current stress
+/// * `e_t`        – tangent modulus at the current stress
 /// * `slenderness` – slenderness ratio λ
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn tangent_modulus_theory(_sigma: f64, _e: f64, E_t: f64, slenderness: f64) -> f64 {
+pub fn tangent_modulus_theory(_sigma: f64, _e: f64, e_t: f64, slenderness: f64) -> f64 {
     if slenderness.abs() < 1e-15 {
         return f64::INFINITY;
     }
-    PI * PI * E_t / (slenderness * slenderness)
+    PI * PI * e_t / (slenderness * slenderness)
 }
 /// Timoshenko beam buckling – accounts for transverse shear deformation.
 ///
@@ -515,17 +497,15 @@ pub fn tangent_modulus_theory(_sigma: f64, _e: f64, E_t: f64, slenderness: f64) 
 ///
 /// where P_E = π² E I / L² (Euler load) and κ A G is the shear rigidity.
 ///
-/// * `E`  – Young's modulus
-/// * `I`  – second moment of area
-/// * `L`  – effective length
-/// * `A`  – cross-sectional area
-/// * `G`  – shear modulus
+/// * `e`  – Young's modulus
+/// * `i`  – second moment of area
+/// * `l`  – effective length
+/// * `a`  – cross-sectional area
+/// * `g`  – shear modulus
 /// * `kappa` – shear correction factor (≈ 5/6 for rectangular cross-section)
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn timoshenko_critical_load(E: f64, I: f64, L: f64, A: f64, G: f64, kappa: f64) -> f64 {
-    let p_euler = PI * PI * E * I / (L * L);
-    let shear_stiffness = kappa * A * G;
+pub fn timoshenko_critical_load(e: f64, i: f64, l: f64, a: f64, g: f64, kappa: f64) -> f64 {
+    let p_euler = PI * PI * e * i / (l * l);
+    let shear_stiffness = kappa * a * g;
     if shear_stiffness.abs() < 1e-30 {
         return p_euler;
     }
@@ -535,11 +515,9 @@ pub fn timoshenko_critical_load(E: f64, I: f64, L: f64, A: f64, G: f64, kappa: f
 ///
 /// Returns P_cr_T / P_E = 1 / (1 + P_E / (κ A G)).
 /// Indicates how much shear deformation reduces the critical load.
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn timoshenko_to_euler_ratio(E: f64, I: f64, L: f64, A: f64, G: f64, kappa: f64) -> f64 {
-    let p_euler = PI * PI * E * I / (L * L);
-    let shear_stiffness = kappa * A * G;
+pub fn timoshenko_to_euler_ratio(e: f64, i: f64, l: f64, a: f64, g: f64, kappa: f64) -> f64 {
+    let p_euler = PI * PI * e * i / (l * l);
+    let shear_stiffness = kappa * a * g;
     if shear_stiffness.abs() < 1e-30 {
         return 1.0;
     }
@@ -548,10 +526,8 @@ pub fn timoshenko_to_euler_ratio(E: f64, I: f64, L: f64, A: f64, G: f64, kappa: 
 /// Timoshenko beam buckling for a cantilever (fixed-free) column.
 ///
 /// Uses effective length L_eff = 2L for the Euler term.
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn timoshenko_cantilever_buckling(E: f64, I: f64, L: f64, A: f64, G: f64, kappa: f64) -> f64 {
-    timoshenko_critical_load(E, I, 2.0 * L, A, G, kappa)
+pub fn timoshenko_cantilever_buckling(e: f64, i: f64, l: f64, a: f64, g: f64, kappa: f64) -> f64 {
+    timoshenko_critical_load(e, i, 2.0 * l, a, g, kappa)
 }
 /// Timoshenko beam element stiffness matrix (4×4).
 ///
@@ -559,34 +535,32 @@ pub fn timoshenko_cantilever_buckling(E: f64, I: f64, L: f64, A: f64, G: f64, ka
 ///
 /// Includes shear deformation for thick beams.
 ///
-/// * `E`     – Young's modulus
-/// * `I`     – second moment of area
-/// * `G`     – shear modulus
-/// * `A`     – cross-sectional area
+/// * `e`     – Young's modulus
+/// * `i`     – second moment of area
+/// * `g`     – shear modulus
+/// * `a`     – cross-sectional area
 /// * `kappa` – shear correction factor
-/// * `L`     – element length
-#[allow(dead_code)]
-#[allow(non_snake_case)]
+/// * `l`     – element length
 pub fn timoshenko_beam_stiffness(
-    E: f64,
-    I: f64,
-    G: f64,
-    A: f64,
+    e: f64,
+    i: f64,
+    g: f64,
+    a: f64,
     kappa: f64,
-    L: f64,
+    l: f64,
 ) -> [[f64; 4]; 4] {
-    let ei = E * I;
-    let kag = kappa * A * G;
+    let ei = e * i;
+    let kag = kappa * a * g;
     let phi = if kag.abs() > 1e-30 {
-        12.0 * ei / (kag * L * L)
+        12.0 * ei / (kag * l * l)
     } else {
         0.0
     };
     let d = 1.0 + phi;
-    let k11 = 12.0 * ei / (L * L * L * d);
-    let k12 = 6.0 * ei / (L * L * d);
-    let k22 = (4.0 + phi) * ei / (L * d);
-    let k24 = (2.0 - phi) * ei / (L * d);
+    let k11 = 12.0 * ei / (l * l * l * d);
+    let k12 = 6.0 * ei / (l * l * d);
+    let k22 = (4.0 + phi) * ei / (l * d);
+    let k24 = (2.0 - phi) * ei / (l * d);
     [
         [k11, k12, -k11, k12],
         [k12, k22, -k12, k24],
@@ -597,14 +571,12 @@ pub fn timoshenko_beam_stiffness(
 /// Slenderness ratio below which Timoshenko theory significantly differs from Euler.
 ///
 /// Returns the slenderness λ = L/r above which P_T/P_E > 0.99 (shear effect < 1%).
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn timoshenko_slenderness_threshold(E: f64, G: f64, kappa: f64, r_gyration: f64) -> f64 {
+pub fn timoshenko_slenderness_threshold(e: f64, g: f64, kappa: f64, r_gyration: f64) -> f64 {
     let ratio = 0.01 / 0.99;
-    if kappa * G * ratio < 1e-30 {
+    if kappa * g * ratio < 1e-30 {
         return 0.0;
     }
-    (PI * PI * E / (kappa * G * ratio)).sqrt() * r_gyration
+    (PI * PI * e / (kappa * g * ratio)).sqrt() * r_gyration
 }
 /// Critical temperature rise for thermal buckling of a simply-supported plate.
 ///
@@ -615,12 +587,10 @@ pub fn timoshenko_slenderness_threshold(E: f64, G: f64, kappa: f64, r_gyration: 
 /// * `alpha` – thermal expansion coefficient (1/K)
 /// * `nu`    – Poisson's ratio
 /// * `t`     – plate thickness
-/// * `L`     – plate dimension (shorter side)
+/// * `l`     – plate dimension (shorter side)
 /// * `k_plate` – plate buckling coefficient (use k=4 for simply-supported)
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn thermal_buckling_temperature(alpha: f64, nu: f64, t: f64, L: f64, k_plate: f64) -> f64 {
-    k_plate * PI * PI * t * t / (12.0 * (1.0 - nu * nu) * alpha * L * L)
+pub fn thermal_buckling_temperature(alpha: f64, nu: f64, t: f64, l: f64, k_plate: f64) -> f64 {
+    k_plate * PI * PI * t * t / (12.0 * (1.0 - nu * nu) * alpha * l * l)
 }
 /// Thermal buckling load for a column with fixed ends.
 ///
@@ -630,27 +600,23 @@ pub fn thermal_buckling_temperature(alpha: f64, nu: f64, t: f64, L: f64, k_plate
 /// buckling occurs when N_T ≥ P_cr_Euler.
 ///
 /// Returns the critical temperature rise ΔT_cr.
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub fn column_thermal_buckling_delta_t(
-    E: f64,
-    I: f64,
-    L: f64,
-    A: f64,
+    e: f64,
+    i: f64,
+    l: f64,
+    a: f64,
     alpha: f64,
     k_factor: f64,
 ) -> f64 {
-    let p_cr = PI * PI * E * I / (k_factor * L).powi(2);
-    p_cr / (E * A * alpha)
+    let p_cr = PI * PI * e * i / (k_factor * l).powi(2);
+    p_cr / (e * a * alpha)
 }
 /// Critical temperature rise for constrained thermal expansion of a beam.
 ///
 /// When both ends are fully fixed and the beam cannot expand, the thermal
 /// compressive force is N_T = E·A·α·ΔT, and buckling occurs when N_T ≥ P_cr.
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn constrained_beam_thermal_buckling(E: f64, I: f64, L: f64, alpha: f64) -> f64 {
-    column_thermal_buckling_delta_t(E, I, L, 1.0, alpha, 0.5)
+pub fn constrained_beam_thermal_buckling(e: f64, i: f64, l: f64, alpha: f64) -> f64 {
+    column_thermal_buckling_delta_t(e, i, l, 1.0, alpha, 0.5)
 }
 /// Interaction formula for combined axial load and bending moment.
 ///
@@ -659,7 +625,6 @@ pub fn constrained_beam_thermal_buckling(E: f64, I: f64, L: f64, alpha: f64) -> 
 /// P/P_cr + M/M_cr ≤ 1
 ///
 /// Returns the utilization ratio (1.0 = critical, < 1.0 = safe, > 1.0 = failed).
-#[allow(dead_code)]
 pub fn combined_loading_utilization(p: f64, p_cr: f64, m: f64, m_cr: f64) -> f64 {
     p / p_cr.max(1e-30) + m / m_cr.max(1e-30)
 }
@@ -668,7 +633,6 @@ pub fn combined_loading_utilization(p: f64, p_cr: f64, m: f64, m_cr: f64) -> f64
 /// P/P_cr + (M + P·e) / M_cr ≤ 1
 ///
 /// where e is the eccentricity.
-#[allow(dead_code)]
 pub fn eccentric_compression_utilization(p: f64, p_cr: f64, m0: f64, m_cr: f64, e: f64) -> f64 {
     let m_total = m0 + p * e;
     combined_loading_utilization(p, p_cr, m_total, m_cr)
@@ -680,7 +644,6 @@ pub fn eccentric_compression_utilization(p: f64, p_cr: f64, m0: f64, m_cr: f64, 
 /// M_II = M_I / (1 − P/P_cr)
 ///
 /// Returns `None` if P ≥ P_cr (unstable).
-#[allow(dead_code)]
 pub fn moment_amplification_factor(p: f64, p_cr: f64) -> Option<f64> {
     if p >= p_cr {
         return None;
@@ -692,7 +655,6 @@ pub fn moment_amplification_factor(p: f64, p_cr: f64) -> Option<f64> {
 /// Uses Dunkerley's method (lower bound):
 ///
 /// 1/P_cr_combined = 1/P_cr1 + 1/P_cr2
-#[allow(dead_code)]
 pub fn dunkerley_combined_buckling(p_cr1: f64, p_cr2: f64) -> f64 {
     if p_cr1.abs() < 1e-30 || p_cr2.abs() < 1e-30 {
         return 0.0;
@@ -709,7 +671,6 @@ pub fn dunkerley_combined_buckling(p_cr1: f64, p_cr2: f64) -> f64 {
 ///   P_cr = (w2 − w1) / (w2/P2 − w1/P1)
 ///
 /// Returns `None` if the denominator is too small.
-#[allow(dead_code)]
 pub fn southwell_critical_load(p1: f64, w1: f64, p2: f64, w2: f64) -> Option<f64> {
     let denom = w2 / p2 - w1 / p1;
     if denom.abs() < 1e-30 {
@@ -720,7 +681,6 @@ pub fn southwell_critical_load(p1: f64, w1: f64, p2: f64, w2: f64) -> Option<f64
 /// Reserve factor: ratio of critical load to applied load.
 ///
 /// RF > 1.0 means the structure is safe against buckling.
-#[allow(dead_code)]
 pub fn reserve_factor(p_cr: f64, p_applied: f64) -> f64 {
     if p_applied.abs() < 1e-30 {
         return f64::INFINITY;
@@ -730,7 +690,6 @@ pub fn reserve_factor(p_cr: f64, p_applied: f64) -> f64 {
 /// Check if a column satisfies the buckling safety requirement.
 ///
 /// Returns `true` if P_cr / P_applied ≥ safety_factor.
-#[allow(dead_code)]
 pub fn buckling_safety_check(p_cr: f64, p_applied: f64, safety_factor: f64) -> bool {
     reserve_factor(p_cr, p_applied) >= safety_factor
 }
@@ -738,11 +697,9 @@ pub fn buckling_safety_check(p_cr: f64, p_applied: f64, safety_factor: f64) -> b
 ///
 /// * `slenderness` – slenderness ratio λ = K·L / r
 /// * `sigma_y`     – yield stress
-/// * `E`           – Young's modulus
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn classify_slenderness(slenderness: f64, sigma_y: f64, E: f64) -> SlendernessClass {
-    let lambda_e = PI * (2.0 * E / sigma_y).sqrt();
+/// * `e`           – Young's modulus
+pub fn classify_slenderness(slenderness: f64, sigma_y: f64, e: f64) -> SlendernessClass {
+    let lambda_e = PI * (2.0 * e / sigma_y).sqrt();
     if slenderness <= 0.0 {
         SlendernessClass::Short
     } else if slenderness < lambda_e {

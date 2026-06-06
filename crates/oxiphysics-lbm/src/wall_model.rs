@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::should_implement_trait)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -24,7 +23,6 @@
 /// * `y_plus` - non-dimensional wall distance y+
 /// * `kappa`  - von Kármán constant (≈ 0.41)
 /// * `b`      - log-law intercept (≈ 5.2)
-#[allow(dead_code)]
 pub fn law_of_the_wall_velocity(y_plus: f64, kappa: f64, b: f64) -> f64 {
     if y_plus <= 11.6 {
         y_plus
@@ -38,7 +36,6 @@ pub fn law_of_the_wall_velocity(y_plus: f64, kappa: f64, b: f64) -> f64 {
 /// # Arguments
 /// * `tau_wall` - wall shear stress \[Pa\]
 /// * `rho`      - fluid density \[kg/m³\]
-#[allow(dead_code)]
 pub fn friction_velocity(tau_wall: f64, rho: f64) -> f64 {
     (tau_wall / rho).sqrt()
 }
@@ -49,7 +46,6 @@ pub fn friction_velocity(tau_wall: f64, rho: f64) -> f64 {
 /// * `y`     - physical distance from wall \[m\]
 /// * `u_tau` - friction velocity \[m/s\]
 /// * `nu`    - kinematic viscosity \[m²/s\]
-#[allow(dead_code)]
 pub fn y_plus(y: f64, u_tau: f64, nu: f64) -> f64 {
     y * u_tau / nu
 }
@@ -63,7 +59,6 @@ pub fn y_plus(y: f64, u_tau: f64, nu: f64) -> f64 {
 /// # Arguments
 /// * `y_plus` - non-dimensional wall distance
 /// * `a_plus` - Van Driest constant (≈ 26)
-#[allow(dead_code)]
 pub fn van_driest_damping(y_plus: f64, a_plus: f64) -> f64 {
     1.0 - (-y_plus / a_plus).exp()
 }
@@ -78,7 +73,6 @@ pub fn van_driest_damping(y_plus: f64, a_plus: f64) -> f64 {
 /// * `kappa`  - von Kármán constant
 /// * `delta`  - boundary layer thickness \[m\]
 /// * `y_plus` - non-dimensional wall distance
-#[allow(dead_code)]
 pub fn mixing_length(y: f64, kappa: f64, delta: f64, y_plus: f64) -> f64 {
     if y / delta < 0.22 {
         kappa * y * van_driest_damping(y_plus, 26.0)
@@ -92,7 +86,6 @@ pub fn mixing_length(y: f64, kappa: f64, delta: f64, y_plus: f64) -> f64 {
 // ============================================================================
 
 /// Parameters for the Spalart-Allmaras turbulence model.
-#[allow(dead_code)]
 pub struct SaParams {
     /// Production coefficient cb1
     pub cb1: f64,
@@ -106,10 +99,9 @@ pub struct SaParams {
     pub kappa: f64,
 }
 
-impl SaParams {
+impl Default for SaParams {
     /// Standard Spalart-Allmaras constants.
-    #[allow(dead_code)]
-    pub fn default() -> Self {
+    fn default() -> Self {
         SaParams {
             cb1: 0.1355,
             cb2: 0.622,
@@ -129,7 +121,6 @@ impl SaParams {
 /// * `omega`  - vorticity magnitude (|∇×u|) \[1/s\]
 /// * `d`      - distance to nearest wall \[m\]
 /// * `params` - SA model constants
-#[allow(dead_code)]
 pub fn sa_production(nu_t: f64, omega: f64, d: f64, params: &SaParams) -> f64 {
     let chi = nu_t / (nu_t + 1e-15); // simplified, use nu_t/nu normally
     let fv2 = 1.0 - chi / (1.0 + chi * params.cv1.powi(3).cbrt());
@@ -145,7 +136,6 @@ pub fn sa_production(nu_t: f64, omega: f64, d: f64, params: &SaParams) -> f64 {
 /// * `nu_t`   - modified turbulent viscosity ν̃ \[m²/s\]
 /// * `d`      - distance to nearest wall \[m\]
 /// * `params` - SA model constants
-#[allow(dead_code)]
 pub fn sa_destruction(nu_t: f64, d: f64, params: &SaParams) -> f64 {
     let cw1 = params.cb1 / (params.kappa * params.kappa) + (1.0 + params.cb2) / params.sigma;
     cw1 * (nu_t / d).powi(2)
@@ -164,7 +154,6 @@ pub fn sa_destruction(nu_t: f64, d: f64, params: &SaParams) -> f64 {
 /// * `dt`     - time step \[s\]
 /// * `nu`     - molecular kinematic viscosity \[m²/s\] (unused in simplified form)
 /// * `params` - SA model constants
-#[allow(dead_code)]
 pub fn sa_step(nu_t: f64, omega: f64, d: f64, dt: f64, _nu: f64, params: &SaParams) -> f64 {
     let prod = sa_production(nu_t, omega, d, params);
     let dest = sa_destruction(nu_t, d, params);
@@ -185,7 +174,6 @@ pub fn sa_step(nu_t: f64, omega: f64, d: f64, dt: f64, _nu: f64, params: &SaPara
 /// * `nu`  - kinematic viscosity \[m²/s\]
 ///
 /// Returns τ_w / ρ (shear stress per unit density).
-#[allow(dead_code)]
 pub fn wall_shear_stress(u: f64, y: f64, nu: f64) -> f64 {
     nu * u / y
 }
@@ -196,7 +184,6 @@ pub fn wall_shear_stress(u: f64, y: f64, nu: f64) -> f64 {
 /// * `tau_w` - wall shear stress per unit density \[m²/s²\]
 /// * `rho`   - fluid density \[kg/m³\]  (unused in simplified form; included for API clarity)
 /// * `u_inf` - free-stream velocity \[m/s\]
-#[allow(dead_code)]
 pub fn skin_friction_coefficient(tau_w: f64, _rho: f64, u_inf: f64) -> f64 {
     tau_w / (0.5 * u_inf * u_inf)
 }
@@ -207,7 +194,6 @@ pub fn skin_friction_coefficient(tau_w: f64, _rho: f64, u_inf: f64) -> f64 {
 ///
 /// # Arguments
 /// * `rex` - local Reynolds number Re_x = u_inf * x / ν
-#[allow(dead_code)]
 pub fn blasius_cf(rex: f64) -> f64 {
     0.664 / rex.sqrt()
 }
@@ -216,7 +202,6 @@ pub fn blasius_cf(rex: f64) -> f64 {
 ///
 /// # Arguments
 /// * `rex` - local Reynolds number Re_x
-#[allow(dead_code)]
 pub fn turbulent_cf_1_7(rex: f64) -> f64 {
     0.074 / rex.powf(0.2)
 }
@@ -231,7 +216,6 @@ pub fn turbulent_cf_1_7(rex: f64) -> f64 {
 /// * `x`     - streamwise distance from leading edge \[m\]
 /// * `nu`    - kinematic viscosity \[m²/s\]
 /// * `u_inf` - free-stream velocity \[m/s\]
-#[allow(dead_code)]
 pub fn blasius_delta99(x: f64, nu: f64, u_inf: f64) -> f64 {
     let rex = u_inf * x / nu;
     4.91 * x / rex.sqrt()
@@ -243,7 +227,6 @@ pub fn blasius_delta99(x: f64, nu: f64, u_inf: f64) -> f64 {
 /// * `u_profile` - velocity values at wall-normal positions
 /// * `y_profile` - wall-normal positions (must match length of `u_profile`)
 /// * `u_inf`     - free-stream velocity \[m/s\]
-#[allow(dead_code)]
 pub fn displacement_thickness(u_profile: &[f64], y_profile: &[f64], u_inf: f64) -> f64 {
     assert_eq!(u_profile.len(), y_profile.len());
     let n = u_profile.len();
@@ -266,7 +249,6 @@ pub fn displacement_thickness(u_profile: &[f64], y_profile: &[f64], u_inf: f64) 
 /// * `u_profile` - velocity values at wall-normal positions
 /// * `y_profile` - wall-normal positions
 /// * `u_inf`     - free-stream velocity \[m/s\]
-#[allow(dead_code)]
 pub fn momentum_thickness(u_profile: &[f64], y_profile: &[f64], u_inf: f64) -> f64 {
     assert_eq!(u_profile.len(), y_profile.len());
     let n = u_profile.len();
@@ -292,7 +274,6 @@ pub fn momentum_thickness(u_profile: &[f64], y_profile: &[f64], u_inf: f64) -> f
 /// # Arguments
 /// * `delta_star` - displacement thickness \[m\]
 /// * `theta`      - momentum thickness \[m\]
-#[allow(dead_code)]
 pub fn shape_factor(delta_star: f64, theta: f64) -> f64 {
     delta_star / theta
 }
@@ -310,15 +291,14 @@ pub fn shape_factor(delta_star: f64, theta: f64) -> f64 {
 /// * `nx`, `ny` - grid dimensions
 /// * `wall_mask` - flat boolean array (row-major)
 /// * `dx` - grid spacing (assumed equal in x and y)
-#[allow(dead_code)]
 pub fn compute_wall_distance(nx: usize, ny: usize, wall_mask: &[bool], dx: f64) -> Vec<f64> {
     let n = nx * ny;
     let mut dist = vec![f64::MAX; n];
 
     // Collect wall cell positions
     let mut wall_positions: Vec<(f64, f64)> = Vec::new();
-    for k in 0..n {
-        if wall_mask[k] {
+    for (k, &is_wall) in wall_mask.iter().enumerate() {
+        if is_wall {
             let x = (k % nx) as f64 * dx;
             let y = (k / nx) as f64 * dx;
             wall_positions.push((x, y));
@@ -361,7 +341,6 @@ pub fn compute_wall_distance(nx: usize, ny: usize, wall_mask: &[bool], dx: f64) 
 /// * `u2` - velocity at second cell from wall
 /// * `dy` - grid spacing
 /// * `nu` - kinematic viscosity
-#[allow(dead_code)]
 pub fn wall_shear_stress_3pt(u0: f64, u1: f64, u2: f64, dy: f64, nu: f64) -> f64 {
     let du_dy = (-3.0 * u0 + 4.0 * u1 - u2) / (2.0 * dy);
     nu * du_dy
@@ -376,7 +355,6 @@ pub fn wall_shear_stress_3pt(u0: f64, u1: f64, u2: f64, dy: f64, nu: f64) -> f64
 /// `y+ = y * u_tau / nu = y * sqrt(tau_w / rho) / nu`
 ///
 /// where `tau_w_per_rho` = tau_w / rho.
-#[allow(dead_code)]
 pub fn y_plus_from_tau(y: f64, tau_w_per_rho: f64, nu: f64) -> f64 {
     let u_tau = tau_w_per_rho.abs().sqrt();
     y * u_tau / nu
@@ -390,7 +368,6 @@ pub fn y_plus_from_tau(y: f64, tau_w_per_rho: f64, nu: f64) -> f64 {
 /// where f is the law-of-the-wall function.
 ///
 /// Returns u_tau.
-#[allow(dead_code)]
 pub fn u_tau_newton(u: f64, y: f64, nu: f64, kappa: f64, b: f64, max_iter: usize) -> f64 {
     if u.abs() < 1e-30 || y < 1e-30 {
         return 0.0;
@@ -433,7 +410,6 @@ pub fn u_tau_newton(u: f64, y: f64, nu: f64, kappa: f64, b: f64, max_iter: usize
 ///
 /// Provides the effective wall-stress boundary condition for LES
 /// by matching the outer LES solution to a modeled inner layer.
-#[allow(dead_code)]
 pub struct WallModeledLes {
     /// Von Karman constant.
     pub kappa: f64,
@@ -445,7 +421,6 @@ pub struct WallModeledLes {
 
 impl WallModeledLes {
     /// Create a new WMLES model.
-    #[allow(dead_code)]
     pub fn new(nu: f64) -> Self {
         Self {
             kappa: 0.41,
@@ -458,7 +433,6 @@ impl WallModeledLes {
     /// at the matching point.
     ///
     /// Uses the Newton-iteration u_tau solver, then tau_w/rho = u_tau^2.
-    #[allow(dead_code)]
     pub fn wall_stress(&self, u_match: f64, y_match: f64) -> f64 {
         let u_tau = u_tau_newton(u_match, y_match, self.nu, self.kappa, self.b, 50);
         u_tau * u_tau
@@ -469,7 +443,6 @@ impl WallModeledLes {
     /// `nu_t = kappa * y * u_tau * D(y+)`
     ///
     /// where D is the Van Driest damping function.
-    #[allow(dead_code)]
     pub fn eddy_viscosity(&self, y_match: f64, u_match: f64) -> f64 {
         let u_tau = u_tau_newton(u_match, y_match, self.nu, self.kappa, self.b, 50);
         let yp = y_match * u_tau / self.nu;
@@ -478,7 +451,6 @@ impl WallModeledLes {
     }
 
     /// Compute y+ at the matching location.
-    #[allow(dead_code)]
     pub fn y_plus_at_match(&self, y_match: f64, u_match: f64) -> f64 {
         let u_tau = u_tau_newton(u_match, y_match, self.nu, self.kappa, self.b, 50);
         y_match * u_tau / self.nu
@@ -490,7 +462,6 @@ impl WallModeledLes {
 /// `u+ = (1/kappa) * ln(1 + kappa*y+) + C * (1 - exp(-y+/A) - y+/A * exp(-B*y+))`
 ///
 /// Standard constants: C = 7.8, A = 11.0, B = 0.33.
-#[allow(dead_code)]
 pub fn reichardt_velocity(y_plus: f64, kappa: f64) -> f64 {
     const C: f64 = 7.8;
     const A: f64 = 11.0;
@@ -504,7 +475,6 @@ pub fn reichardt_velocity(y_plus: f64, kappa: f64) -> f64 {
 /// `y+ = u+ + exp(-kappa*B) * [exp(kappa*u+) - 1 - kappa*u+ - (kappa*u+)^2/2 - (kappa*u+)^3/6]`
 ///
 /// Given u+, returns y+.
-#[allow(dead_code)]
 pub fn spalding_y_plus(u_plus: f64, kappa: f64, b: f64) -> f64 {
     let ku = kappa * u_plus;
     let exp_minus_kb = (-kappa * b).exp();
@@ -519,7 +489,6 @@ pub fn spalding_y_plus(u_plus: f64, kappa: f64, b: f64) -> f64 {
 ///
 /// Assumes the local boundary layer is in equilibrium (production = dissipation).
 /// Uses the law of the wall to relate the wall stress to the matching-point velocity.
-#[allow(dead_code)]
 pub struct EquilibriumWallModel {
     /// Molecular kinematic viscosity.
     pub nu: f64,
@@ -531,7 +500,6 @@ pub struct EquilibriumWallModel {
 
 impl EquilibriumWallModel {
     /// Create a new equilibrium wall model.
-    #[allow(dead_code)]
     pub fn new(nu: f64) -> Self {
         Self {
             nu,
@@ -541,7 +509,6 @@ impl EquilibriumWallModel {
     }
 
     /// Compute wall shear stress per unit density `tau_w / rho = u_tau^2`.
-    #[allow(dead_code)]
     pub fn wall_stress(&self, u_match: f64, y_match: f64) -> f64 {
         let u_tau = u_tau_newton(u_match, y_match, self.nu, self.kappa, self.b, 50);
         u_tau * u_tau
@@ -550,7 +517,6 @@ impl EquilibriumWallModel {
     /// Effective (eddy + molecular) viscosity at the matching point.
     ///
     /// `nu_eff = nu + kappa * y * u_tau * D(y+)`
-    #[allow(dead_code)]
     pub fn effective_viscosity(&self, u_match: f64, y_match: f64, _delta: f64) -> f64 {
         let u_tau = u_tau_newton(u_match, y_match, self.nu, self.kappa, self.b, 50);
         let yp = y_match * u_tau / self.nu;
@@ -559,7 +525,6 @@ impl EquilibriumWallModel {
     }
 
     /// Predicted velocity at distance `y` using the law of the wall.
-    #[allow(dead_code)]
     pub fn predicted_velocity(&self, u_tau: f64, y: f64) -> f64 {
         let yp = y_plus(y, u_tau, self.nu);
         law_of_the_wall_velocity(yp, self.kappa, self.b) * u_tau
@@ -574,7 +539,6 @@ impl EquilibriumWallModel {
 ///
 /// Accounts for history and pressure-gradient effects in the boundary layer.
 /// Uses a simplified ODE-based inner-layer model to compute the wall stress.
-#[allow(dead_code)]
 pub struct NonEquilibriumWallModel {
     /// Molecular kinematic viscosity.
     pub nu: f64,
@@ -590,7 +554,6 @@ impl NonEquilibriumWallModel {
     /// Create a new non-equilibrium wall model.
     ///
     /// `tau_relax` controls how quickly the wall stress adapts to changes.
-    #[allow(dead_code)]
     pub fn new(nu: f64, tau_relax: f64) -> Self {
         Self {
             nu,
@@ -606,7 +569,6 @@ impl NonEquilibriumWallModel {
     ///   `u_eff = u_match - (dp_ds / rho) * y_match / (u_tau + eps)`
     ///
     /// Returns `tau_w / rho`.
-    #[allow(dead_code)]
     pub fn wall_stress(&self, u_match: f64, y_match: f64, dp_ds: f64) -> f64 {
         // Equilibrium estimate first
         let u_tau_eq = u_tau_newton(u_match, y_match, self.nu, self.kappa, self.b, 20);
@@ -620,7 +582,6 @@ impl NonEquilibriumWallModel {
     /// Relaxation update for wall stress: blends toward equilibrium.
     ///
     /// `tau_new = tau_old + (1/tau_relax) * (tau_eq - tau_old) * dt`
-    #[allow(dead_code)]
     pub fn relax_wall_stress(&self, tau_old: f64, tau_eq: f64, dt: f64) -> f64 {
         if self.tau_relax < 1e-30 {
             return tau_eq;
@@ -637,7 +598,6 @@ impl NonEquilibriumWallModel {
 ///
 /// Below `y_plus_switch` the equilibrium model is used;
 /// above it the non-equilibrium model is applied.
-#[allow(dead_code)]
 pub struct WallModelSwitcher {
     /// Equilibrium wall model.
     pub ewm: EquilibriumWallModel,
@@ -649,7 +609,6 @@ pub struct WallModelSwitcher {
 
 impl WallModelSwitcher {
     /// Create a new wall model switcher.
-    #[allow(dead_code)]
     pub fn new(nu: f64, y_plus_switch: f64) -> Self {
         Self {
             ewm: EquilibriumWallModel::new(nu),
@@ -659,7 +618,6 @@ impl WallModelSwitcher {
     }
 
     /// Compute wall stress using the appropriate model.
-    #[allow(dead_code)]
     pub fn compute_stress(&self, u_match: f64, y_match: f64) -> f64 {
         let tau_eq = self.ewm.wall_stress(u_match, y_match);
         let u_tau_eq = tau_eq.max(0.0).sqrt();
@@ -683,7 +641,6 @@ impl WallModelSwitcher {
 /// * `wall_pts`  - array of wall-node positions \[\[x, y, z\\], ...]
 ///
 /// Returns the minimum Euclidean distance.
-#[allow(dead_code)]
 pub fn min_wall_distance_3d(point: [f64; 3], wall_pts: &[[f64; 3]]) -> f64 {
     let mut min_d = f64::MAX;
     for wp in wall_pts {
@@ -701,7 +658,6 @@ pub fn min_wall_distance_3d(point: [f64; 3], wall_pts: &[[f64; 3]]) -> f64 {
 /// Compute the nearest wall distance and the outward wall-normal vector.
 ///
 /// Returns `(distance, normal)` where `normal` points from the wall toward the point.
-#[allow(dead_code)]
 pub fn nearest_wall_normal(point: [f64; 3], wall_pts: &[[f64; 3]]) -> (f64, [f64; 3]) {
     let mut min_d = f64::MAX;
     let mut best = [0.0f64; 3];
@@ -723,7 +679,6 @@ pub fn nearest_wall_normal(point: [f64; 3], wall_pts: &[[f64; 3]]) -> (f64, [f64
 /// Compute signed distance using a level-set function (1D case).
 ///
 /// Positive = outside the solid, negative = inside.
-#[allow(dead_code)]
 pub fn signed_wall_distance_1d(x: f64, wall_x: f64) -> f64 {
     x - wall_x
 }
@@ -732,7 +687,6 @@ pub fn signed_wall_distance_1d(x: f64, wall_x: f64) -> f64 {
 ///
 /// Interpolates the pre-computed wall distances at four corner nodes
 /// to the interior point (xi, eta) in \[0,1\]^2.
-#[allow(dead_code)]
 pub fn interpolate_wall_distance_bilinear(
     d00: f64,
     d10: f64,
@@ -758,7 +712,6 @@ pub fn interpolate_wall_distance_bilinear(
 ///   `Cf_eff = Cf_0 * sqrt(1 - (dp_ds / (rho * u^2 / y)))`
 ///
 /// Returns the corrected `Cf`.
-#[allow(dead_code)]
 pub fn pressure_gradient_correction_cf(u: f64, y: f64, nu: f64, dp_ds: f64) -> f64 {
     let cf0 = wall_shear_stress(u, y, nu) / (0.5 * u * u + 1e-30);
     let correction = (1.0 - dp_ds * y / (u * u * 0.5 + 1e-30)).abs().sqrt();
@@ -772,7 +725,6 @@ pub fn pressure_gradient_correction_cf(u: f64, y: f64, nu: f64, dp_ds: f64) -> f
 /// Thermal wall model for conjugate heat transfer boundary conditions.
 ///
 /// Uses the thermal law of the wall: `T+ = Pr_t * u+` in the log layer.
-#[allow(dead_code)]
 pub struct ThermalWallModel {
     /// Molecular kinematic viscosity.
     pub nu: f64,
@@ -788,7 +740,6 @@ impl ThermalWallModel {
     /// Create a new thermal wall model.
     ///
     /// `pr_t` is the turbulent Prandtl number (typically 0.85–0.9 for air).
-    #[allow(dead_code)]
     pub fn new(nu: f64, pr_t: f64) -> Self {
         Self {
             nu,
@@ -801,7 +752,6 @@ impl ThermalWallModel {
     /// Compute the wall heat flux `q_w = rho * Cp * u_tau * (T_wall - T_match) / T+`.
     ///
     /// Returns `q_w / (rho * Cp)` (heat flux per unit density × heat capacity).
-    #[allow(dead_code)]
     pub fn wall_heat_flux(&self, t_wall: f64, t_match: f64, y_match: f64, u_match: f64) -> f64 {
         let u_tau = u_tau_newton(u_match, y_match, self.nu, self.kappa, self.b, 50).max(1e-15);
         let yp = y_plus(y_match, u_tau, self.nu);
@@ -813,7 +763,6 @@ impl ThermalWallModel {
     }
 
     /// Non-dimensional temperature: `T+ = (T_wall - T) / (q_w / (rho * Cp * u_tau))`.
-    #[allow(dead_code)]
     pub fn temperature_plus(&self, y_plus_val: f64) -> f64 {
         self.pr_t * law_of_the_wall_velocity(y_plus_val, self.kappa, self.b)
     }
@@ -830,7 +779,6 @@ impl ThermalWallModel {
 ///   - Smooth: `k_s+ < 5`  → `ΔB ≈ 0`
 ///   - Transition: `5 ≤ k_s+ < 70`  → linear interpolation
 ///   - Fully rough: `k_s+ ≥ 70`  → `ΔB = (1/κ) * ln(k_s+) - 3.5`
-#[allow(dead_code)]
 pub fn roughness_function(k_s_plus: f64) -> f64 {
     const KAPPA: f64 = 0.41;
     if k_s_plus < 5.0 {
@@ -845,7 +793,6 @@ pub fn roughness_function(k_s_plus: f64) -> f64 {
 }
 
 /// Rough-wall log-law velocity: `u+ = (1/κ) * ln(y+) + B - ΔB(k_s+)`.
-#[allow(dead_code)]
 pub fn rough_wall_velocity(y_plus: f64, kappa: f64, b: f64, k_s_plus: f64) -> f64 {
     let db = roughness_function(k_s_plus);
     law_of_the_wall_velocity(y_plus, kappa, b) - db
@@ -863,7 +810,6 @@ pub fn rough_wall_velocity(y_plus: f64, kappa: f64, b: f64, k_s_plus: f64) -> f6
 ///   `u+_comp = u+_incomp * sqrt(T_wall / T_aw)`
 ///
 /// where `T_aw` is the adiabatic wall temperature.
-#[allow(dead_code)]
 pub fn van_driest_compressibility(u_plus_incomp: f64, t_wall: f64, t_adiabatic: f64) -> f64 {
     if t_adiabatic < 1e-10 {
         return u_plus_incomp;
@@ -874,13 +820,11 @@ pub fn van_driest_compressibility(u_plus_incomp: f64, t_wall: f64, t_adiabatic: 
 /// Adiabatic wall temperature: `T_aw = T_inf * (1 + r * (gamma-1)/2 * Ma^2)`.
 ///
 /// `r` is the recovery factor (typically sqrt(Pr) for laminar, Pr^(1/3) for turbulent).
-#[allow(dead_code)]
 pub fn adiabatic_wall_temperature(t_inf: f64, mach: f64, gamma: f64, recovery: f64) -> f64 {
     t_inf * (1.0 + recovery * (gamma - 1.0) / 2.0 * mach * mach)
 }
 
 /// Recovery factor for turbulent flow: `r = Pr^(1/3)`.
-#[allow(dead_code)]
 pub fn recovery_factor_turbulent(prandtl: f64) -> f64 {
     prandtl.powf(1.0 / 3.0)
 }
@@ -890,29 +834,25 @@ pub fn recovery_factor_turbulent(prandtl: f64) -> f64 {
 // ============================================================================
 
 /// Struct-based law-of-the-wall model with Newton iteration for wall stress.
-#[allow(dead_code, non_snake_case)]
 pub struct LogLawWallModel {
     /// Von Kármán constant (≈ 0.41).
     pub kappa: f64,
-    /// Log-law intercept B (≈ 5.2).
-    #[allow(non_snake_case)]
-    pub B: f64,
+    /// Log-law intercept b (≈ 5.2).
+    pub b: f64,
     /// Kinematic viscosity (m²/s).
     pub nu: f64,
 }
 
 impl LogLawWallModel {
     /// Create a new `LogLawWallModel`.
-    #[allow(dead_code)]
     pub fn new(kappa: f64, b: f64, nu: f64) -> Self {
-        Self { kappa, B: b, nu }
+        Self { kappa, b, nu }
     }
 
     /// Non-dimensional velocity u+ from the law of the wall.
     ///
     /// - Viscous sublayer (y+ ≤ 11.6): u+ = y+
     /// - Log layer (y+ > 11.6): u+ = (1/kappa) * ln(y+) + B
-    #[allow(dead_code)]
     pub fn u_plus(y_plus: f64, kappa: f64, b: f64) -> f64 {
         law_of_the_wall_velocity(y_plus, kappa, b)
     }
@@ -920,9 +860,8 @@ impl LogLawWallModel {
     /// Wall shear stress via Newton iteration on the law-of-the-wall.
     ///
     /// Returns tau_w / rho (m²/s²).
-    #[allow(dead_code)]
     pub fn wall_shear_stress_newton(&self, u_local: f64, y: f64) -> f64 {
-        let u_tau = u_tau_newton(u_local, y, self.nu, self.kappa, self.B, 50);
+        let u_tau = u_tau_newton(u_local, y, self.nu, self.kappa, self.b, 50);
         u_tau * u_tau
     }
 }
@@ -936,7 +875,6 @@ impl LogLawWallModel {
 /// Uses a two-layer power-law fit:
 ///   - y+ < 11.81: linear (viscous sublayer)
 ///   - y+ ≥ 11.81: 1/7 power law
-#[allow(dead_code)]
 pub struct WernerWengle;
 
 impl WernerWengle {
@@ -946,7 +884,6 @@ impl WernerWengle {
     /// * `u`  - velocity at first cell (m/s)
     /// * `y`  - first cell distance from wall (m)
     /// * `nu` - kinematic viscosity (m²/s)
-    #[allow(dead_code)]
     pub fn wall_shear_stress(u: f64, y: f64, nu: f64) -> f64 {
         // Werner-Wengle explicit formula:
         //   y+ < 11.81: viscous sublayer → tau_w/rho = (nu * u / y)
@@ -974,24 +911,20 @@ impl WernerWengle {
 /// Spalding unified wall profile.
 ///
 /// y+ = u+ + exp(-kappa*B) * \[exp(kappa*u+) - 1 - kappa*u+ - (kappa*u+)^2/2 - (kappa*u+)^3/6\]
-#[allow(dead_code, non_snake_case)]
 pub struct Spalding {
     /// Von Kármán constant.
     pub kappa: f64,
-    /// Log-law intercept B.
-    #[allow(non_snake_case)]
-    pub B: f64,
+    /// Log-law intercept b.
+    pub b: f64,
 }
 
 impl Spalding {
     /// Create a new `Spalding` model.
-    #[allow(dead_code)]
     pub fn new(kappa: f64, b: f64) -> Self {
-        Self { kappa, B: b }
+        Self { kappa, b }
     }
 
     /// Compute y+ given u+ using the Spalding unified profile.
-    #[allow(dead_code)]
     pub fn u_from_y_plus(&self, y_plus: f64) -> f64 {
         // Invert Spalding implicitly via Newton iteration
         // f(u+) = y+(u+) - y_plus = 0
@@ -1002,7 +935,7 @@ impl Spalding {
         let mut u_p = y_plus.min(11.6);
 
         for _ in 0..50 {
-            let yp_of_up = spalding_y_plus(u_p, self.kappa, self.B);
+            let yp_of_up = spalding_y_plus(u_p, self.kappa, self.b);
             let residual = yp_of_up - y_plus;
             if residual.abs() < 1e-8 {
                 break;
@@ -1010,7 +943,7 @@ impl Spalding {
             // Derivative of Spalding's y+ w.r.t. u+:
             // d(y+)/d(u+) = 1 + exp(-kB) * kappa * [exp(ku+) - 1 - ku+ - (ku+)^2/2]
             let ku = self.kappa * u_p;
-            let exp_minus_kb = (-self.kappa * self.B).exp();
+            let exp_minus_kb = (-self.kappa * self.b).exp();
             let d_yp = 1.0 + exp_minus_kb * self.kappa * (ku.exp() - 1.0 - ku - ku * ku / 2.0);
             if d_yp.abs() < 1e-30 {
                 break;
@@ -1028,7 +961,6 @@ impl Spalding {
 
 /// Wall-function boundary condition combining a first-cell distance,
 /// kinematic viscosity, and a `LogLawWallModel`.
-#[allow(dead_code)]
 pub struct WallFunctionBc {
     /// Distance of the first grid cell from the wall (m).
     pub y_first: f64,
@@ -1040,7 +972,6 @@ pub struct WallFunctionBc {
 
 impl WallFunctionBc {
     /// Create a new `WallFunctionBc`.
-    #[allow(dead_code)]
     pub fn new(y_first: f64, nu: f64, model: LogLawWallModel) -> Self {
         Self { y_first, nu, model }
     }
@@ -1049,7 +980,6 @@ impl WallFunctionBc {
     ///
     /// Returns the velocity that the wall should impose at `y_first`
     /// such that the log-law is satisfied for the given outer velocity `u_log`.
-    #[allow(dead_code)]
     pub fn wall_velocity_bc(&self, u_log: f64) -> f64 {
         // Compute u_tau from the outer velocity
         let u_tau = u_tau_newton(
@@ -1057,12 +987,12 @@ impl WallFunctionBc {
             self.y_first,
             self.nu,
             self.model.kappa,
-            self.model.B,
+            self.model.b,
             50,
         );
         // Return the velocity predicted by the log-law at y_first
         let y_plus_val = self.y_first * u_tau / self.nu.max(1e-30);
-        law_of_the_wall_velocity(y_plus_val, self.model.kappa, self.model.B) * u_tau
+        law_of_the_wall_velocity(y_plus_val, self.model.kappa, self.model.b) * u_tau
     }
 }
 
@@ -1075,7 +1005,6 @@ impl WallFunctionBc {
 /// # Arguments
 /// * `u_plus`  - smooth-wall u+ (retained for potential future use)
 /// * `ks_plus` - dimensionless equivalent sand-grain roughness k_s+ = k_s * u_tau / nu
-#[allow(dead_code)]
 pub fn roughness_correction(_u_plus: f64, ks_plus: f64) -> f64 {
     const KAPPA: f64 = 0.41;
     (1.0 / KAPPA) * (1.0 + 0.3 * ks_plus).ln()
@@ -1086,7 +1015,6 @@ pub fn roughness_correction(_u_plus: f64, ks_plus: f64) -> f64 {
 // ============================================================================
 
 /// Returns the von Kármán constant κ ≈ 0.41.
-#[allow(dead_code)]
 pub fn von_karman_constant() -> f64 {
     0.41
 }

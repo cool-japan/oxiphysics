@@ -16,7 +16,6 @@ use oxiphysics_core::math::Vec3;
 /// - Contact radius: `r_c = (3V/π f(θ))^(1/3)`  where `f(θ) = (2−3cosθ+cos³θ)/sin³θ`
 /// - Cap height: `h = r_c (1 − cosθ) / sinθ`
 /// - Sphere radius of curvature: `R = r_c / sinθ`
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SessileDroplet {
     /// Droplet volume V (m³).
@@ -28,7 +27,6 @@ pub struct SessileDroplet {
     /// Static contact angle θ (radians).
     pub contact_angle: f64,
 }
-#[allow(dead_code)]
 impl SessileDroplet {
     /// Create a sessile droplet with the given parameters.
     pub fn new(volume: f64, density: f64, sigma: f64, contact_angle: f64) -> Self {
@@ -102,7 +100,6 @@ impl SessileDroplet {
 /// `n` is an exponent (typically 1/3 for the Tanner law).
 ///
 /// Advancing motion (Ca > 0) increases θ; receding (Ca < 0) decreases θ.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DynamicContactAngle {
     /// Static contact angle θ_s (radians).
@@ -112,7 +109,6 @@ pub struct DynamicContactAngle {
     /// Surface tension coefficient σ (N/m), needed to compute Ca.
     pub sigma: f64,
 }
-#[allow(dead_code)]
 impl DynamicContactAngle {
     /// Create a new dynamic contact angle model.
     pub fn new(theta_static: f64, prefactor_a: f64, sigma: f64) -> Self {
@@ -156,14 +152,12 @@ impl DynamicContactAngle {
 ///
 /// where `L_i` is the first-order consistency (renormalization) matrix.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CsfModel {
     /// Surface tension coefficient σ (N/m).
     pub sigma: f64,
     /// Smoothing length h.
     pub smoothing_length: f64,
 }
-#[allow(dead_code)]
 impl CsfModel {
     /// Create a new `CsfModel`.
     pub fn new(sigma: f64, smoothing_length: f64) -> Self {
@@ -193,7 +187,6 @@ impl CsfModel {
     ///
     /// # Returns
     /// Corrected color gradient vectors.
-    #[allow(clippy::needless_range_loop)]
     pub fn compute_color_gradient_correction(
         &self,
         positions: &[Vec3],
@@ -268,7 +261,6 @@ impl CsfModel {
 /// Computes inter-particle cohesion and curvature minimization forces
 /// without requiring explicit interface tracking.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PairwiseSurfaceTension {
     /// Surface tension coefficient γ (N/m).
     pub gamma: f64,
@@ -277,7 +269,6 @@ pub struct PairwiseSurfaceTension {
 }
 impl PairwiseSurfaceTension {
     /// Create a new pairwise surface tension model.
-    #[allow(dead_code)]
     pub fn new(gamma: f64, smoothing_length: f64) -> Self {
         Self {
             gamma,
@@ -288,7 +279,6 @@ impl PairwiseSurfaceTension {
     ///
     /// `C(r) = (32 / (pi h^9)) * (h-r)^3 * r^3`  for h/2 <= r <= h
     /// `C(r) = (32 / (pi h^9)) * (2*(h-r)^3 * r^3 - h^6/64)` for 0 <= r < h/2
-    #[allow(dead_code)]
     pub(crate) fn cohesion_kernel(&self, r: f64) -> f64 {
         let h = self.smoothing_length;
         if r >= h || r < 0.0 {
@@ -306,7 +296,6 @@ impl PairwiseSurfaceTension {
     /// For each pair (i, j):
     /// `f_ij = -gamma * m_i * m_j * C(|r_ij|) * r_hat_ij / |r_ij|`
     /// plus a curvature-minimization term.
-    #[allow(dead_code, clippy::needless_range_loop)]
     pub fn compute_forces(
         &self,
         positions: &[Vec3],
@@ -366,7 +355,6 @@ impl PairwiseSurfaceTension {
     ///
     /// # Returns
     /// Cohesion force vectors for each particle.
-    #[allow(clippy::needless_range_loop)]
     pub fn compute_cohesion_force(
         &self,
         positions: &[Vec3],
@@ -431,7 +419,6 @@ impl MorrisSurfaceTension {
     /// `f_i = sigma * sum_j (m_j / rho_j) * grad_W(r_ij) * (n_i - n_j)`
     ///
     /// where `n_i` is the (normalized) surface normal.
-    #[allow(clippy::needless_range_loop)]
     pub fn compute_forces(
         &self,
         positions: &[Vec3],
@@ -500,7 +487,6 @@ impl MorrisSurfaceTension {
 /// Surface tension model combining CSF bulk forces with a contact-line
 /// contribution for wetting on solid surfaces.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SurfaceTension {
     /// Surface tension coefficient σ (N/m).
     pub sigma: f64,
@@ -509,7 +495,6 @@ pub struct SurfaceTension {
     /// Equilibrium (static) contact angle θ_e (radians).
     pub contact_angle: f64,
 }
-#[allow(dead_code)]
 impl SurfaceTension {
     /// Create a new `SurfaceTension` model.
     pub fn new(sigma: f64, smoothing_length: f64, contact_angle: f64) -> Self {
@@ -541,7 +526,6 @@ impl SurfaceTension {
     ///
     /// # Returns
     /// Contact-line force vector for each particle (zero for far particles).
-    #[allow(clippy::needless_range_loop)]
     pub fn compute_contact_line_force(
         &self,
         positions: &[Vec3],
@@ -630,7 +614,7 @@ impl CsfSurfaceTension {
         let n = positions.len();
         let h = self.smoothing_length;
         let mut gradients = vec![Vec3::zeros(); n];
-        #[allow(clippy::needless_range_loop)]
+
         for i in 0..n {
             if densities[i] < 1e-14 {
                 continue;
@@ -692,7 +676,7 @@ impl CsfSurfaceTension {
             })
             .collect();
         let mut curvatures = vec![0.0_f64; n];
-        #[allow(clippy::needless_range_loop)]
+
         for i in 0..n {
             if densities[i] < 1e-14 {
                 continue;
@@ -729,7 +713,7 @@ impl CsfSurfaceTension {
         let curvatures = self.compute_curvature(positions, masses, densities, &normals, neighbors);
         let n = positions.len();
         let mut forces = vec![Vec3::zeros(); n];
-        #[allow(clippy::needless_range_loop)]
+
         for i in 0..n {
             forces[i] = self.sigma * curvatures[i] * normals[i];
         }
@@ -740,7 +724,6 @@ impl CsfSurfaceTension {
     /// Only particles with `|n_i| > threshold` are considered surface
     /// particles and receive a surface tension force. This reduces noise
     /// from interior particles with near-zero gradients.
-    #[allow(dead_code)]
     pub fn compute_forces_with_threshold(
         &self,
         positions: &[Vec3],
@@ -753,7 +736,7 @@ impl CsfSurfaceTension {
         let curvatures = self.compute_curvature(positions, masses, densities, &normals, neighbors);
         let n = positions.len();
         let mut forces = vec![Vec3::zeros(); n];
-        #[allow(clippy::needless_range_loop)]
+
         for i in 0..n {
             if normals[i].norm() > threshold {
                 forces[i] = self.sigma * curvatures[i] * normals[i];

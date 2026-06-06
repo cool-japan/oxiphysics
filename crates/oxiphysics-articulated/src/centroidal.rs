@@ -26,7 +26,6 @@ use crate::{
 /// Note: the current implementation projects individual body inertias (not composite
 /// subtree inertias) to the world frame.  A full centroidal shift using the parallel-axis
 /// theorem is planned for v0.2.
-#[allow(clippy::needless_range_loop)]
 pub fn compute_cmm(model: &mut ArticulatedModel, q: &[f64]) -> Vec<Vec<f64>> {
     let n = model.num_bodies();
     let total = model.total_dof();
@@ -56,16 +55,16 @@ pub fn compute_cmm(model: &mut ArticulatedModel, q: &[f64]) -> Vec<Vec<f64>> {
     // Used for future centroidal shift; currently suppressed with `_`.
     let mut total_mass = 0.0_f64;
     let mut com_world = [0.0_f64; 3];
-    for i in 0..n {
+    for (i, x_btw) in x_body_to_world.iter().enumerate() {
         let m_i = model.bodies[i].inertia.mass;
         total_mass += m_i;
         // COM of body i in world frame: apply body-to-world rotation then add translation
         let com_body = model.bodies[i].inertia.com;
-        let com_i_world = mat3_vec(x_body_to_world[i].rot, com_body);
+        let com_i_world = mat3_vec(x_btw.rot, com_body);
         let com_i_world = [
-            com_i_world[0] + x_body_to_world[i].trans[0],
-            com_i_world[1] + x_body_to_world[i].trans[1],
-            com_i_world[2] + x_body_to_world[i].trans[2],
+            com_i_world[0] + x_btw.trans[0],
+            com_i_world[1] + x_btw.trans[1],
+            com_i_world[2] + x_btw.trans[2],
         ];
         com_world[0] += m_i * com_i_world[0];
         com_world[1] += m_i * com_i_world[1];

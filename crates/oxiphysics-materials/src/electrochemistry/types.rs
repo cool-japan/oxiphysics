@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{FARADAY, GAS_CONSTANT};
 
 /// Evans diagram for mixed potential / corrosion potential analysis.
@@ -34,7 +32,6 @@ pub struct EvansDiagram {
 }
 impl EvansDiagram {
     /// Create a new Evans diagram model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         i0_anodic: f64,
         e0_anodic: f64,
@@ -185,7 +182,6 @@ impl DiffusionLayer {
 ///
 /// The actual available capacity at discharge current I is:
 /// `Q_actual = C_nominal * (I_nominal / I)^(k-1)`
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PeukertModel {
     /// Nominal capacity \[Ah\] at the rated discharge rate
@@ -605,7 +601,6 @@ impl BatteryCell {
 /// Galvanic series potential values for common metals in seawater \[V vs SHE\].
 ///
 /// Approximate values; actual values depend on environment and surface condition.
-#[allow(dead_code)]
 pub struct GalvanicSeriesEntry {
     /// Metal name
     pub name: &'static str,
@@ -844,7 +839,6 @@ impl LiIonDegradation {
 ///
 /// The Debye length κ⁻¹ = sqrt(ε·RT / (2·n0·F²))
 /// where n0 is bulk ion concentration \[mol/m³\] and ε is permittivity \[F/m\].
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DoubleLayerCapacitance {
     /// Bulk ion concentration \[mol/m³\] (symmetric 1:1 electrolyte)
@@ -1024,7 +1018,6 @@ pub struct FuelCellStack {
 }
 impl FuelCellStack {
     /// Create a new fuel cell stack model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         e_rev: f64,
         i0: f64,

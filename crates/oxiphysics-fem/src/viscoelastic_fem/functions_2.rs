@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod viscoelastic_extended_tests {
-    use super::*;
+
     use crate::viscoelastic_fem::*;
     #[test]
     fn test_maxwell_relaxation_time_correct() {
@@ -310,7 +307,7 @@ mod viscoelastic_extended_tests {
         let e_inf = mat.e_inf;
         for pt in &result {
             assert!(
-                pt.storage >= e_inf - 1.0 && pt.storage <= e0 + 1.0,
+                (e_inf - 1.0..=e0 + 1.0).contains(&pt.storage),
                 "storage modulus {:.3e} out of bounds [{e_inf:.3e}, {e0:.3e}]",
                 pt.storage
             );

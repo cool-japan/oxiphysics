@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,9 +14,6 @@
 //! - [`TidalSimulation`]: Tidal forcing with bottom friction.
 //! - [`GeostrophicAdjustment`]: Geostrophic balance and adjustment process.
 //! - [`PlanetaryWave`]: Barotropic and baroclinic planetary wave propagation.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -105,14 +101,14 @@ fn guo_force(f_post: &mut [f64; NQ], fx: f64, fy: f64, ux: f64, uy: f64, omega: 
 
 fn stream_periodic(f: &[Vec<[f64; NQ]>], nx: usize, ny: usize) -> Vec<Vec<[f64; NQ]>> {
     let mut f_new = vec![vec![[0.0f64; NQ]; ny]; nx];
-    for ix in 0..nx {
-        for iy in 0..ny {
-            for q in 0..NQ {
+    for (ix, row) in f_new.iter_mut().enumerate() {
+        for (iy, cell) in row.iter_mut().enumerate() {
+            for (q, val) in cell.iter_mut().enumerate() {
                 let cx = CX[q] as isize;
                 let cy = CY[q] as isize;
                 let sx = ((ix as isize - cx).rem_euclid(nx as isize)) as usize;
                 let sy = ((iy as isize - cy).rem_euclid(ny as isize)) as usize;
-                f_new[ix][iy][q] = f[sx][sy][q];
+                *val = f[sx][sy][q];
             }
         }
     }
@@ -199,15 +195,25 @@ impl RotatingFrameLbm {
         // Streaming with periodic BC
         let f_new = stream_periodic(&self.f, self.nx, self.ny);
         // Bounce-back for solid cells
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                if self.solid[ix][iy] {
-                    let old = self.f[ix][iy];
-                    for q in 0..NQ {
-                        self.f[ix][iy][q] = old[OPP[q]];
+        for (ix, (f_row, (solid_row, f_new_row))) in self
+            .f
+            .iter_mut()
+            .zip(self.solid.iter().zip(f_new.iter()))
+            .enumerate()
+        {
+            for (iy, (cell, (is_solid, new_cell))) in f_row
+                .iter_mut()
+                .zip(solid_row.iter().zip(f_new_row.iter()))
+                .enumerate()
+            {
+                let _ = (ix, iy);
+                if *is_solid {
+                    let old = *cell;
+                    for (q, f_q) in cell.iter_mut().enumerate() {
+                        *f_q = old[OPP[q]];
                     }
                 } else {
-                    self.f[ix][iy] = f_new[ix][iy];
+                    *cell = *new_cell;
                 }
             }
         }
@@ -360,8 +366,8 @@ impl ShallowWaterLbm {
                 };
                 let fx = -g * h_mean * bx;
                 let fy = -g * h_mean * by;
-                for q in 0..NQ {
-                    self.f[ix][iy][q] += omega * (feq_arr[q] - self.f[ix][iy][q]);
+                for (f_q, feq_q) in self.f[ix][iy].iter_mut().zip(feq_arr.iter()) {
+                    *f_q += omega * (*feq_q - *f_q);
                 }
                 let mut tmp = self.f[ix][iy];
                 guo_force(&mut tmp, fx, fy, ux, uy, omega);
@@ -475,8 +481,8 @@ impl RossbyWaveSim {
                 let fc = self.coriolis_at(iy);
                 let fx = fc * uy;
                 let fy = -fc * ux;
-                for q in 0..NQ {
-                    self.f[ix][iy][q] += omega * (feq_arr[q] - self.f[ix][iy][q]);
+                for (f_q, feq_q) in self.f[ix][iy].iter_mut().zip(feq_arr.iter()) {
+                    *f_q += omega * (*feq_q - *f_q);
                 }
                 let mut tmp = self.f[ix][iy];
                 guo_force(&mut tmp, fx, fy, ux, uy, omega);
@@ -596,13 +602,14 @@ impl MantelConvection {
         let pr = self.pr;
         // Temperature collision
         let mut g_new = self.g.clone();
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let (t, ux, uy) = macroscopic(&self.g[ix][iy]);
+        for (ix, (g_new_row, g_row)) in g_new.iter_mut().zip(self.g.iter()).enumerate() {
+            for (iy, (g_new_cell, g_cell)) in g_new_row.iter_mut().zip(g_row.iter()).enumerate() {
+                let (t, ux, uy) = macroscopic(g_cell);
                 let geq_arr = Self::geq(t, ux, uy);
-                for q in 0..NQ {
-                    g_new[ix][iy][q] =
-                        self.g[ix][iy][q] + omega_t * (geq_arr[q] - self.g[ix][iy][q]);
+                for (gn_q, (g_q, geq_q)) in
+                    g_new_cell.iter_mut().zip(g_cell.iter().zip(geq_arr.iter()))
+                {
+                    *gn_q = g_q + omega_t * (geq_q - g_q);
                 }
                 self.temp[ix][iy] = t;
                 let _ = (ux, uy, pr);
@@ -610,20 +617,20 @@ impl MantelConvection {
         }
         self.g = stream_periodic(&g_new, self.nx, self.ny);
         // Momentum collision with buoyancy
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let (rho, ux, uy) = macroscopic(&self.f[ix][iy]);
+        for (ix, f_row) in self.f.iter_mut().enumerate() {
+            for (iy, cell) in f_row.iter_mut().enumerate() {
+                let (rho, ux, uy) = macroscopic(cell);
                 let feq_arr = feq(rho, ux, uy);
                 let theta = self.temp[ix][iy] - 0.5;
                 let buoy = ra * pr * theta;
                 let fx = 0.0;
                 let fy = buoy;
-                for q in 0..NQ {
-                    self.f[ix][iy][q] += omega_f * (feq_arr[q] - self.f[ix][iy][q]);
+                for (f_q, feq_q) in cell.iter_mut().zip(feq_arr.iter()) {
+                    *f_q += omega_f * (*feq_q - *f_q);
                 }
-                let mut tmp = self.f[ix][iy];
+                let mut tmp = *cell;
                 guo_force(&mut tmp, fx, fy, ux, uy, omega_f);
-                self.f[ix][iy] = tmp;
+                *cell = tmp;
             }
         }
         self.f = stream_periodic(&self.f, self.nx, self.ny);
@@ -730,42 +737,44 @@ impl ThermohalineCirculation {
             }
         }
         // Temperature collision
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let (t, ux, uy) = macroscopic(&self.g_t[ix][iy]);
+        for g_t_row in self.g_t.iter_mut() {
+            for cell in g_t_row.iter_mut() {
+                let (t, ux, uy) = macroscopic(cell);
                 let geq_arr = feq(t, ux, uy);
-                for q in 0..NQ {
-                    self.g_t[ix][iy][q] += omega_t * (geq_arr[q] - self.g_t[ix][iy][q]);
+                let _ = (ux, uy);
+                for (f_q, geq_q) in cell.iter_mut().zip(geq_arr.iter()) {
+                    *f_q += omega_t * (*geq_q - *f_q);
                 }
             }
         }
         self.g_t = stream_periodic(&self.g_t, self.nx, self.ny);
         // Salinity collision
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let (s, ux, uy) = macroscopic(&self.g_s[ix][iy]);
+        for g_s_row in self.g_s.iter_mut() {
+            for cell in g_s_row.iter_mut() {
+                let (s, ux, uy) = macroscopic(cell);
                 let geq_arr = feq(s, ux, uy);
-                for q in 0..NQ {
-                    self.g_s[ix][iy][q] += omega_s * (geq_arr[q] - self.g_s[ix][iy][q]);
+                let _ = (ux, uy);
+                for (f_q, geq_q) in cell.iter_mut().zip(geq_arr.iter()) {
+                    *f_q += omega_s * (*geq_q - *f_q);
                 }
             }
         }
         self.g_s = stream_periodic(&self.g_s, self.nx, self.ny);
         // Momentum with density buoyancy
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let (rho, ux, uy) = macroscopic(&self.f[ix][iy]);
+        for (ix, f_row) in self.f.iter_mut().enumerate() {
+            for (iy, cell) in f_row.iter_mut().enumerate() {
+                let (rho, ux, uy) = macroscopic(cell);
                 let feq_arr = feq(rho, ux, uy);
                 let t = temp_arr[ix][iy];
                 let s = sal_arr[ix][iy];
                 let rho_prime = -alpha_t * (t - 0.5) + beta_s * (s - 0.5);
                 let fy = -rho_prime * 0.01;
-                for q in 0..NQ {
-                    self.f[ix][iy][q] += omega_f * (feq_arr[q] - self.f[ix][iy][q]);
+                for (f_q, feq_q) in cell.iter_mut().zip(feq_arr.iter()) {
+                    *f_q += omega_f * (*feq_q - *f_q);
                 }
-                let mut tmp = self.f[ix][iy];
+                let mut tmp = *cell;
                 guo_force(&mut tmp, 0.0, fy, ux, uy, omega_f);
-                self.f[ix][iy] = tmp;
+                *cell = tmp;
             }
         }
         self.f = stream_periodic(&self.f, self.nx, self.ny);
@@ -774,11 +783,15 @@ impl ThermohalineCirculation {
     /// Return density anomaly field `ρ' = -αT' + βS'`.
     pub fn density_anomaly(&self) -> Vec<Vec<f64>> {
         let mut out = vec![vec![0.0f64; self.ny]; self.nx];
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let (t, _a, _b) = macroscopic(&self.g_t[ix][iy]);
-                let (s, _c, _d) = macroscopic(&self.g_s[ix][iy]);
-                out[ix][iy] = -self.alpha_t * (t - 0.5) + self.beta_s * (s - 0.5);
+        for (out_row, (g_t_row, g_s_row)) in
+            out.iter_mut().zip(self.g_t.iter().zip(self.g_s.iter()))
+        {
+            for (out_val, (g_t_cell, g_s_cell)) in
+                out_row.iter_mut().zip(g_t_row.iter().zip(g_s_row.iter()))
+            {
+                let (t, _a, _b) = macroscopic(g_t_cell);
+                let (s, _c, _d) = macroscopic(g_s_cell);
+                *out_val = -self.alpha_t * (t - 0.5) + self.beta_s * (s - 0.5);
             }
         }
         out
@@ -887,8 +900,8 @@ impl AtmosphericBoundaryLayer {
                 let omega_eff = clamp(1.0 / (nu_eff / CS2 + 0.5), 0.01, 1.99);
                 let (rho, ux, uy) = macroscopic(&self.f[ix][iy]);
                 let feq_arr = feq(rho, ux, uy);
-                for q in 0..NQ {
-                    self.f[ix][iy][q] += omega_eff * (feq_arr[q] - self.f[ix][iy][q]);
+                for (f_q, feq_q) in self.f[ix][iy].iter_mut().zip(feq_arr.iter()) {
+                    *f_q += omega_eff * (*feq_q - *f_q);
                 }
             }
         }
@@ -896,8 +909,8 @@ impl AtmosphericBoundaryLayer {
         for ix in 0..self.nx {
             let (_rho, ux, _uy) = macroscopic(&self.f[ix][self.ny - 1]);
             let du = u_geo - ux;
-            for q in 0..NQ {
-                self.f[ix][self.ny - 1][q] += 0.01 * du * W[q];
+            for (f_q, w_q) in self.f[ix][self.ny - 1].iter_mut().zip(W.iter()) {
+                *f_q += 0.01 * du * w_q;
             }
         }
         // Log-law wall stress at bottom
@@ -908,8 +921,9 @@ impl AtmosphericBoundaryLayer {
             let u_star = ux * kappa / (z / self.z0 + 1.0).ln().max(1e-6);
             let tau_wall = u_star * u_star;
             let _ = tau_wall;
-            for q in 0..NQ {
-                self.f[ix][0][q] = self.f[ix][0][OPP[q]];
+            let old = self.f[ix][0];
+            for (q, f_q) in self.f[ix][0].iter_mut().enumerate() {
+                *f_q = old[OPP[q]];
             }
         }
         self.f = stream_periodic(&self.f, self.nx, self.ny);
@@ -991,26 +1005,33 @@ impl GravityCurrent {
         let omega = self.omega;
         let g = self.gravity;
         let rho_l = self.rho_light;
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let (rho, ux, uy) = macroscopic(&self.f[ix][iy]);
-                self.rho_field[ix][iy] = rho;
+        for (ix, (f_row, rho_row)) in self.f.iter_mut().zip(self.rho_field.iter_mut()).enumerate() {
+            for (iy, (cell, rho_cell)) in f_row.iter_mut().zip(rho_row.iter_mut()).enumerate() {
+                let _ = iy;
+                let (rho, ux, uy) = macroscopic(cell);
+                *rho_cell = rho;
                 let feq_arr = feq(rho, ux, uy);
                 let delta_rho = rho - rho_l;
                 let fy = -g * delta_rho / rho.max(1e-6);
-                for q in 0..NQ {
-                    self.f[ix][iy][q] += omega * (feq_arr[q] - self.f[ix][iy][q]);
+                for (f_q, feq_q) in cell.iter_mut().zip(feq_arr.iter()) {
+                    *f_q += omega * (*feq_q - *f_q);
                 }
-                let mut tmp = self.f[ix][iy];
+                let mut tmp = *cell;
                 guo_force(&mut tmp, 0.0, fy, ux, uy, omega);
-                self.f[ix][iy] = tmp;
+                *cell = tmp;
             }
+            let _ = ix;
         }
         // Bottom and top bounce-back
-        for ix in 0..self.nx {
-            for q in 0..NQ {
-                self.f[ix][0][q] = self.f[ix][0][OPP[q]];
-                self.f[ix][self.ny - 1][q] = self.f[ix][self.ny - 1][OPP[q]];
+        let ny = self.ny;
+        for f_row in self.f.iter_mut() {
+            let old_bot = f_row[0];
+            for (q, f_q) in f_row[0].iter_mut().enumerate() {
+                *f_q = old_bot[OPP[q]];
+            }
+            let old_top = f_row[ny - 1];
+            for (q, f_q) in f_row[ny - 1].iter_mut().enumerate() {
+                *f_q = old_top[OPP[q]];
             }
         }
         self.f = stream_periodic(&self.f, self.nx, self.ny);
@@ -1114,19 +1135,19 @@ impl TidalSimulation {
         let t = self.time as f64;
         let fx_tidal = a * w * (w * t).cos();
         let cd = self.drag_coeff;
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let (rho, ux, uy) = macroscopic(&self.f[ix][iy]);
+        for f_row in self.f.iter_mut() {
+            for cell in f_row.iter_mut() {
+                let (rho, ux, uy) = macroscopic(cell);
                 let feq_arr = feq(rho, ux, uy);
                 let u_mag = (ux * ux + uy * uy).sqrt();
                 let fx = fx_tidal - cd * u_mag * ux;
                 let fy = -cd * u_mag * uy;
-                for q in 0..NQ {
-                    self.f[ix][iy][q] += omega * (feq_arr[q] - self.f[ix][iy][q]);
+                for (f_q, feq_q) in cell.iter_mut().zip(feq_arr.iter()) {
+                    *f_q += omega * (*feq_q - *f_q);
                 }
-                let mut tmp = self.f[ix][iy];
+                let mut tmp = *cell;
                 guo_force(&mut tmp, fx, fy, ux, uy, omega);
-                self.f[ix][iy] = tmp;
+                *cell = tmp;
             }
         }
         self.f = stream_periodic(&self.f, self.nx, self.ny);
@@ -1234,18 +1255,18 @@ impl GeostrophicAdjustment {
     pub fn step(&mut self) {
         let omega = self.omega;
         let fc = self.f_coriolis;
-        for ix in 0..self.nx {
-            for iy in 0..self.ny {
-                let (rho, ux, uy) = macroscopic(&self.f[ix][iy]);
+        for f_row in self.f.iter_mut() {
+            for cell in f_row.iter_mut() {
+                let (rho, ux, uy) = macroscopic(cell);
                 let feq_arr = feq(rho, ux, uy);
                 let fx = fc * uy;
                 let fy = -fc * ux;
-                for q in 0..NQ {
-                    self.f[ix][iy][q] += omega * (feq_arr[q] - self.f[ix][iy][q]);
+                for (f_q, feq_q) in cell.iter_mut().zip(feq_arr.iter()) {
+                    *f_q += omega * (*feq_q - *f_q);
                 }
-                let mut tmp = self.f[ix][iy];
+                let mut tmp = *cell;
                 guo_force(&mut tmp, fx, fy, ux, uy, omega);
-                self.f[ix][iy] = tmp;
+                *cell = tmp;
             }
         }
         self.f = stream_periodic(&self.f, self.nx, self.ny);
@@ -1342,39 +1363,41 @@ impl PlanetaryWave {
         let nx = self.nx;
         let ny = self.ny;
         // Layer 1
-        for ix in 0..nx {
-            for iy in 0..ny {
+        for (iy_base, f1_row) in self.f1.iter_mut().enumerate() {
+            for (iy, cell) in f1_row.iter_mut().enumerate() {
                 let y = iy as f64;
                 let fc = beta * y;
-                let (h, ux, uy) = macroscopic(&self.f1[ix][iy]);
+                let (h, ux, uy) = macroscopic(cell);
                 let feq_arr = feq(h, ux, uy);
                 let fx = fc * uy;
                 let fy = -fc * ux;
-                for q in 0..NQ {
-                    self.f1[ix][iy][q] += omega1 * (feq_arr[q] - self.f1[ix][iy][q]);
+                for (f_q, feq_q) in cell.iter_mut().zip(feq_arr.iter()) {
+                    *f_q += omega1 * (*feq_q - *f_q);
                 }
-                let mut tmp = self.f1[ix][iy];
+                let mut tmp = *cell;
                 guo_force(&mut tmp, fx, fy, ux, uy, omega1);
-                self.f1[ix][iy] = tmp;
+                *cell = tmp;
             }
+            let _ = iy_base;
         }
         self.f1 = stream_periodic(&self.f1, nx, ny);
         // Layer 2
-        for ix in 0..nx {
-            for iy in 0..ny {
+        for (iy_base, f2_row) in self.f2.iter_mut().enumerate() {
+            for (iy, cell) in f2_row.iter_mut().enumerate() {
                 let y = iy as f64;
                 let fc = beta * y;
-                let (h, ux, uy) = macroscopic(&self.f2[ix][iy]);
+                let (h, ux, uy) = macroscopic(cell);
                 let feq_arr = feq(h, ux, uy);
                 let fx = fc * uy;
                 let fy = -fc * ux;
-                for q in 0..NQ {
-                    self.f2[ix][iy][q] += omega2 * (feq_arr[q] - self.f2[ix][iy][q]);
+                for (f_q, feq_q) in cell.iter_mut().zip(feq_arr.iter()) {
+                    *f_q += omega2 * (*feq_q - *f_q);
                 }
-                let mut tmp = self.f2[ix][iy];
+                let mut tmp = *cell;
                 guo_force(&mut tmp, fx, fy, ux, uy, omega2);
-                self.f2[ix][iy] = tmp;
+                *cell = tmp;
             }
+            let _ = iy_base;
         }
         self.f2 = stream_periodic(&self.f2, nx, ny);
     }

@@ -1,4 +1,3 @@
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,7 +8,6 @@
 //! including Dörfler (bulk) marking.
 
 /// Strategy for adaptive mesh refinement.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum RefineStrategy {
     /// Refine all elements uniformly.
@@ -24,7 +22,6 @@ pub enum RefineStrategy {
 ///
 /// Stores recovered (superconvergent) nodal stress values obtained by
 /// least-squares patch fitting, and element error indicators.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ZzErrorEstimator {
     /// Recovered nodal stress components. Shape: `[n_nodes][n_stress_components]`.
@@ -388,7 +385,7 @@ mod tests {
         // equal indicators, theta=0.5: need 50% of 4 = 2; marking 2 suffices
         let marked = dorflfer_marking(&ind, 0.5);
         let n_marked: usize = marked.iter().filter(|&&m| m).count();
-        assert!(n_marked >= 1 && n_marked <= 4);
+        assert!((1..=4).contains(&n_marked));
     }
 
     #[test]

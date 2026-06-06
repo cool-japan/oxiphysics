@@ -399,7 +399,6 @@ pub struct YawRateObserver {
 }
 impl YawRateObserver {
     /// Create a new observer with given Luenberger gains.
-    #[allow(dead_code)]
     pub fn new(l1: f64, l2: f64) -> Self {
         Self {
             beta_est: 0.0,
@@ -415,7 +414,6 @@ impl YawRateObserver {
     /// `delta`     – front wheel steer angle (rad)
     /// `r_meas`    – measured yaw rate (rad/s)
     /// `dt`        – time step (s)
-    #[allow(dead_code)]
     pub fn update(&mut self, bm: &BicycleModel, speed: f64, delta: f64, r_meas: f64, dt: f64) {
         if speed.abs() < 1e-6 {
             return;
@@ -661,7 +659,6 @@ impl StabilityController {
     /// * `dt`            – time step (s)
     ///
     /// Returns `(actual_drive_torque, brake_pressures, esc_intervention)`.
-    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
         driven_slip: f64,
@@ -817,7 +814,6 @@ pub struct StabilityEnvelopeMonitor {
 }
 impl StabilityEnvelopeMonitor {
     /// Evaluate the stability envelope given current measurements.
-    #[allow(dead_code)]
     pub fn evaluate(&self, ssf: f64, max_slip: f64, sideslip_deg: f64) -> StabilityEnvelopeStatus {
         let slip = max_slip.abs();
         let ss = sideslip_deg.abs();
@@ -830,7 +826,6 @@ impl StabilityEnvelopeMonitor {
         StabilityEnvelopeStatus::Normal
     }
     /// Return a normalised stability score in \[0, 1\] where 1 = perfectly stable.
-    #[allow(dead_code)]
     pub fn stability_score(&self, ssf: f64, max_slip: f64, sideslip_deg: f64) -> f64 {
         let slip = max_slip.abs();
         let ss = sideslip_deg.abs();

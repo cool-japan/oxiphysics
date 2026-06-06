@@ -51,7 +51,6 @@ impl Torus {
     /// Axis of symmetry is Y. Standard formulas:
     ///   I_y  = m*(R² + (3/4)*r²)  (but commonly written as m*(3R²+4r²)/4 – equivalent)
     ///   I_xz = m*((5/8)*r² + R²/2) (= m*(5r²+4R²)/8)
-    #[allow(dead_code)]
     pub fn inertia_tensor_array(&self, mass: Real) -> [[f64; 3]; 3] {
         let r = self.major_radius;
         let a = self.minor_radius;
@@ -67,7 +66,6 @@ impl Torus {
     ///
     /// Substituting P+t*D gives a quartic in t which is solved by Ferrari's method.
     /// Returns `Some((t, normal))` or `None`.
-    #[allow(dead_code)]
     pub fn ray_cast_array(
         &self,
         origin: [f64; 3],
@@ -85,7 +83,6 @@ impl Torus {
     /// Projects `p` onto the nearest point on the ring circle (in XZ), then
     /// moves from that circle point toward `p` (or outward if p is inside tube)
     /// by the minor radius.
-    #[allow(dead_code)]
     pub fn closest_point(&self, p: [f64; 3]) -> [f64; 3] {
         let px = p[0];
         let py = p[1];
@@ -113,7 +110,6 @@ impl Torus {
     }
 
     /// Returns `true` if point `p` is inside (or on the surface of) the torus tube.
-    #[allow(dead_code)]
     pub fn contains_point(&self, p: [f64; 3]) -> bool {
         let px = p[0];
         let py = p[1];
@@ -129,7 +125,6 @@ impl Torus {
     ///   x = (R + r*cos(v)) * cos(u)
     ///   y = r * sin(v)
     ///   z = (R + r*cos(v)) * sin(u)
-    #[allow(dead_code)]
     pub fn sample_surface(&self, u: f64, v: f64) -> [f64; 3] {
         let r_outer = self.major_radius + self.minor_radius * v.cos();
         [
@@ -144,7 +139,6 @@ impl Torus {
     /// Torus SDF (signed distance to torus surface).
     ///
     /// Negative inside the tube, positive outside.
-    #[allow(dead_code)]
     pub fn sdf(&self, p: [f64; 3]) -> f64 {
         let xz = (p[0] * p[0] + p[2] * p[2]).sqrt();
         let dist_to_ring = ((xz - self.major_radius).powi(2) + p[1] * p[1]).sqrt();
@@ -152,7 +146,6 @@ impl Torus {
     }
 
     /// Torus-ray analytic intersection (same as `ray_cast_array` but explicit name).
-    #[allow(dead_code)]
     pub fn ray_torus_analytic(
         &self,
         origin: [f64; 3],
@@ -163,7 +156,6 @@ impl Torus {
     }
 
     /// Torus support function (plain array).
-    #[allow(dead_code)]
     pub fn support_array(&self, direction: [f64; 3]) -> [f64; 3] {
         let d = Vec3::new(direction[0], direction[1], direction[2]);
         let sp = self.support_point(&d);
@@ -175,7 +167,6 @@ impl Torus {
     ///
     /// `u` is the angle around the major circle (XZ plane), `v` is the angle
     /// around the tube (in the plane through the Y axis and the ring point).
-    #[allow(dead_code)]
     pub fn surface_parameters(&self, p: [f64; 3]) -> (f64, f64) {
         let xz = (p[0] * p[0] + p[2] * p[2]).sqrt();
         // u: angle in XZ plane
@@ -203,7 +194,6 @@ impl Torus {
     ///
     /// Uses a deterministic xorshift64 PRNG seeded with `seed`.
     /// Sampling: uniform in `u` and `v`, weighted by area element `(R + r cos v)`.
-    #[allow(dead_code)]
     pub fn random_surface_points(&self, n: usize, seed: u64) -> Vec<[f64; 3]> {
         let mut points = Vec::with_capacity(n);
         let mut state = seed;
@@ -233,19 +223,16 @@ impl Torus {
     }
 
     /// Approximate solid torus inertia tensor from `inertia_tensor_array`.
-    #[allow(dead_code)]
     pub fn inertia_raw(&self, mass: f64) -> [[f64; 3]; 3] {
         self.inertia_tensor_array(mass)
     }
 
     /// Outer radius of the torus (major + minor).
-    #[allow(dead_code)]
     pub fn outer_radius(&self) -> f64 {
         self.major_radius + self.minor_radius
     }
 
     /// Inner radius of the torus (major - minor, clamped to 0).
-    #[allow(dead_code)]
     pub fn inner_radius(&self) -> f64 {
         (self.major_radius - self.minor_radius).max(0.0)
     }
@@ -257,7 +244,6 @@ impl Torus {
     /// Maps a surface point `p` to texture coordinates `(u, v)` in `[0, 1)²`.
     /// `u` corresponds to the major (longitudinal) angle and `v` to the minor
     /// (latitudinal) angle, both normalised to the range `[0, 1)`.
-    #[allow(dead_code)]
     pub fn uv_map(&self, p: [f64; 3]) -> [f64; 2] {
         let (theta, phi) = self.surface_parameters(p);
         // Normalise from (-π, π] to [0, 1)
@@ -271,7 +257,6 @@ impl Torus {
     ///
     /// The flat-torus metric: `d = sqrt((R Δθ)² + (r Δφ)²)` where `Δθ` and
     /// `Δφ` are the wrapped angular differences on the major and minor circles.
-    #[allow(dead_code)]
     pub fn geodesic_distance_flat(&self, a: [f64; 3], b: [f64; 3]) -> f64 {
         let (ua, va) = self.surface_parameters(a);
         let (ub, vb) = self.surface_parameters(b);
@@ -285,7 +270,6 @@ impl Torus {
     /// Area element at angle `v` on the tube: `(R + r cos v) r dv du`.
     ///
     /// Returns the area-weighted factor `R + r*cos(v)` for the given tube angle `v`.
-    #[allow(dead_code)]
     pub fn area_element_factor(&self, v: f64) -> f64 {
         self.major_radius + self.minor_radius * v.cos()
     }
@@ -293,7 +277,6 @@ impl Torus {
     /// Approximate surface area by numerical integration (cross-check of closed form).
     ///
     /// Uses `n_steps` Gauss-Legendre-like sampling along each angular dimension.
-    #[allow(dead_code)]
     pub fn surface_area_numeric(&self, n_steps: usize) -> f64 {
         let n = n_steps.max(4);
         let du = 2.0 * PI / n as f64;
@@ -310,7 +293,6 @@ impl Torus {
     /// Tube cross-section: return a list of `n` points on the tube circle at angle `u`.
     ///
     /// The circle lies in the plane through the ring point at angle `u` and the Y axis.
-    #[allow(dead_code)]
     pub fn tube_cross_section(&self, u: f64, n: usize) -> Vec<[f64; 3]> {
         let n = n.max(3);
         let ring_x = self.major_radius * u.cos();
@@ -333,7 +315,6 @@ impl Torus {
     ///
     /// A `(p, q)`-torus knot winds around the major circle `p` times while
     /// winding around the tube `q` times.  Returns `n_pts` sampled points.
-    #[allow(dead_code)]
     pub fn torus_knot_path(&self, p: i32, q: i32, n_pts: usize) -> Vec<[f64; 3]> {
         let n = n_pts.max(3);
         (0..n)
@@ -352,7 +333,6 @@ impl Torus {
     /// points via `surface_parameters`) winds around the major circle.
     ///
     /// Returns an integer winding count (positive = counter-clockwise).
-    #[allow(dead_code)]
     pub fn winding_number_major(&self, curve: &[[f64; 3]]) -> i32 {
         if curve.len() < 2 {
             return 0;
@@ -373,7 +353,6 @@ impl Torus {
     /// Parametric tangent vector on the torus surface in the `u` direction.
     ///
     /// `dP/du` at `(u, v)`: partial derivative with respect to the major angle.
-    #[allow(dead_code)]
     pub fn tangent_u(&self, u: f64, v: f64) -> [f64; 3] {
         let r_outer = self.major_radius + self.minor_radius * v.cos();
         [-r_outer * u.sin(), 0.0, r_outer * u.cos()]
@@ -382,7 +361,6 @@ impl Torus {
     /// Parametric tangent vector on the torus surface in the `v` direction.
     ///
     /// `dP/dv` at `(u, v)`: partial derivative with respect to the tube angle.
-    #[allow(dead_code)]
     pub fn tangent_v(&self, u: f64, v: f64) -> [f64; 3] {
         let r = self.minor_radius;
         [-r * v.sin() * u.cos(), r * v.cos(), -r * v.sin() * u.sin()]
@@ -391,7 +369,6 @@ impl Torus {
     /// Surface normal via cross product of tangents `dP/du × dP/dv`.
     ///
     /// Should agree with `torus_normal` up to sign conventions.
-    #[allow(dead_code)]
     pub fn normal_from_tangents(&self, u: f64, v: f64) -> [f64; 3] {
         let tu = self.tangent_u(u, v);
         let tv = self.tangent_v(u, v);
@@ -409,7 +386,6 @@ impl Torus {
     /// A finite ray with origin `o`, direction `d`, and parameter `max_toi` can
     /// intersect the torus at 0, 2, or 4 points.  This counts all positive-t
     /// intersections within `[0, max_toi]`.
-    #[allow(dead_code)]
     pub fn ray_intersection_count(
         &self,
         origin: [f64; 3],
@@ -455,7 +431,6 @@ impl Torus {
     ///
     /// Returns `true` if the AABB `[min, max]` overlaps the torus.
     /// Uses the 8 corners of the AABB as sample points.
-    #[allow(dead_code)]
     pub fn intersects_aabb(&self, aabb_min: [f64; 3], aabb_max: [f64; 3]) -> bool {
         let corners = [
             [aabb_min[0], aabb_min[1], aabb_min[2]],
@@ -477,7 +452,6 @@ impl Torus {
     ///
     /// Returns the ratio R/r.  A value close to 1 means the torus is nearly
     /// self-intersecting; large values mean a thin tube.
-    #[allow(dead_code)]
     pub fn aspect_ratio(&self) -> f64 {
         self.major_radius / self.minor_radius.max(1e-30)
     }
@@ -486,7 +460,6 @@ impl Torus {
     ///
     /// Points lie on the spine of the torus (on the ring circle in the XZ plane,
     /// at `y = 0`).
-    #[allow(dead_code)]
     pub fn major_circle_points(&self, n: usize) -> Vec<[f64; 3]> {
         let n = n.max(2);
         (0..n)

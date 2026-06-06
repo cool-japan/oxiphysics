@@ -16,8 +16,6 @@
 //! * [`apply_force_and_wake`] — apply a force to a body and wake it if needed.
 //! * [`BodyActivationEvent`] — enum signalling wake/sleep transitions.
 #![warn(missing_docs)]
-#![allow(ambiguous_glob_reexports)]
-#![allow(dead_code)]
 
 mod error;
 pub use error::*;
@@ -33,7 +31,13 @@ pub use sets::*;
 
 pub mod articulated;
 pub mod sleeping;
-pub use sleeping::*;
+pub use sleeping::{
+    ActivityLevel, AdaptiveSleepThreshold, EnergyDecayTracker, EnergyTracker, FrozenBody,
+    IslandSleepDecision, IslandSleepEvaluator, IslandSleepManager, PseudoSleepBody, SleepConfig,
+    SleepDurationTracker, SleepEventType, SleepHistory, SleepHysteresis, SleepManager,
+    SleepPredictor, SleepState, SleepStats, SleepThresholdAdapter, SleepWakePattern, SleepingBody,
+    SleepingSystem, VelocityDamper, WakePropagator, kinetic_energy_rigid, potential_energy_rigid,
+};
 pub mod ccd;
 pub mod impulse;
 pub mod motors;
@@ -41,10 +45,23 @@ pub mod pipeline;
 pub mod world;
 
 pub mod ragdoll;
-pub use ragdoll::*;
+pub use ragdoll::{
+    ArticulatedPose, BalanceController, BallSocketJoint, BodySegmentInertia, BoneDescriptor,
+    ConeTwistLimit, GroundContactDetector, HingeJoint, HumanoidRagdoll, HumanoidSkeleton,
+    JointLimit, PdJointController, PosePdController, Ragdoll, RagdollBone, RagdollPose,
+    RagdollState, SkeletonJoint, forward_kinematics, ragdoll_inertia_tensor,
+    standard_human_segment_inertias,
+};
 
 pub mod fluid_coupling;
-pub use fluid_coupling::*;
+pub use fluid_coupling::{
+    AddedMass, AddedMassTensor, BuoyancyForce, FloatingBody, FlowRegime, FluidCoupling,
+    FluidProperties, FroudeKrylovForce, FroudeNumber, HullResistance, HydrodynamicDrag,
+    MorisonElement, OrientedBuoyancy, PropellerThrust, ReynoldsUtils, SloshingModel,
+    SphereBuoyancy, SubmergedBodyCoupling, SubmergedVolumeFraction, VivParams,
+    VortexInducedVibration, WaveForce, added_mass_cylinder, added_mass_sphere,
+    drag_coefficient_cylinder, drag_coefficient_sphere, slamming_force,
+};
 
 // ── BodyActivationEvent ───────────────────────────────────────────────────────
 

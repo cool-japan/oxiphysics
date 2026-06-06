@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -41,16 +40,12 @@ const GAS_CONSTANT: f64 = 8.314;
 const FARADAY: f64 = 96_485.332_9;
 
 /// Standard temperature in K.
-#[allow(dead_code)]
+#[cfg(test)]
 const STD_TEMP: f64 = 298.15;
 
 /// Thermal voltage at standard temperature in V.
-#[allow(dead_code)]
+#[cfg(test)]
 const THERMAL_VOLTAGE: f64 = BOLTZMANN * STD_TEMP / ELEMENTARY_CHARGE;
-
-/// Bohr magneton in J/T (used for magnetic force reference).
-#[allow(dead_code)]
-const BOHR_MAGNETON: f64 = 9.2740100783e-24;
 
 /// Marcus reorganisation energy reference in eV.
 const MARCUS_LAMBDA_REF: f64 = 0.5;
@@ -182,7 +177,6 @@ impl IonicSpecies {
 // ---------------------------------------------------------------------------
 
 /// A single ion in an electrochemical MD simulation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElectrochemicalIon {
     /// Position \[x, y, z\] in Angstrom.
@@ -271,7 +265,6 @@ impl ElectrochemicalIon {
 /// Potential profile:
 /// - Stern layer: linear potential drop from electrode to Outer Helmholtz Plane (OHP)
 /// - Diffuse layer: Poisson-Boltzmann exponential decay with Debye length kappa^{-1}
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GouyChapmanSternModel {
     /// Electrode surface potential relative to bulk in V.
@@ -400,7 +393,6 @@ impl GouyChapmanSternModel {
 /// by dynamically updating electrode charges using the Thomas-algorithm
 /// method (Reed, Madden & Corrigan). Electrode atoms fluctuate their
 /// charges to satisfy equipotential constraints.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConstantPotentialMd {
     /// Number of electrode atoms on each electrode.
@@ -537,7 +529,6 @@ impl ConstantPotentialMd {
 ///
 /// where lambda is the reorganisation energy, delta_G is the reaction
 /// free energy, A is the pre-exponential factor, and k_B T is thermal energy.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MarcusElectronTransfer {
     /// Reorganisation energy lambda in eV.
@@ -615,7 +606,6 @@ impl MarcusElectronTransfer {
     /// Reorganisation energy outer-sphere contribution (Born model) in eV.
     ///
     /// lambda_out = e^2/(4pi eps_0) * (1/(2 r_ox) + 1/(2 r_red) - 1/r_12) * (1/n^2 - 1/eps)
-    #[allow(clippy::too_many_arguments)]
     pub fn outer_sphere_lambda(
         r_ox: f64,   // radius of oxidised species in Angstrom
         r_red: f64,  // radius of reduced species in Angstrom
@@ -652,7 +642,6 @@ impl MarcusElectronTransfer {
 ///   J = -D grad(c) - (D z e / k_B T) c grad(phi)
 ///
 /// where D is diffusivity, c is concentration, z is valence, phi is potential.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IonTransport {
     /// Ionic species.
@@ -742,9 +731,9 @@ impl IonTransport {
         self.compute_flux();
         let n = self.concentration.len();
         let mut new_conc = self.concentration.clone();
-        for i in 1..(n - 1) {
-            new_conc[i] -= dt / self.dz * (self.flux[i] - self.flux[i - 1]);
-            new_conc[i] = new_conc[i].max(0.0);
+        for (i, c) in new_conc.iter_mut().enumerate().take(n - 1).skip(1) {
+            *c -= dt / self.dz * (self.flux[i] - self.flux[i - 1]);
+            *c = c.max(0.0);
         }
         self.concentration = new_conc;
     }
@@ -758,7 +747,6 @@ impl IonTransport {
 ///
 /// Analyses the radial distribution function (RDF) and coordination
 /// number as a function of distance from the central ion.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SolvationShell {
     /// Central ionic species.
@@ -876,7 +864,6 @@ impl SolvationShell {
 ///
 /// Tracks the evolution of surface charge under applied potential, ion
 /// adsorption, and charge transfer reactions.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SurfaceChargeDensity {
     /// Surface charge density sigma in C/m^2.
@@ -947,7 +934,6 @@ impl SurfaceChargeDensity {
 /// Uses the charge fluctuation formula:
 ///   C = beta * e^2 * (<Q^2> - `Q`^2) / 2
 /// where beta = 1/(k_B T), and Q is the electrode charge.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CapacitanceFromMd {
     /// Electrode potential in V.
@@ -1013,7 +999,6 @@ impl CapacitanceFromMd {
 ///
 /// Tracks Li insertion/extraction using lattice gas (Bragg-Williams) model
 /// combined with chemical diffusion for both graphite (anode) and LFP/NMC (cathode).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LithiumIntercalation {
     /// Material type.
@@ -1193,7 +1178,6 @@ impl LithiumIntercalation {
 /// High-level driver for electrochemical MD simulations.
 ///
 /// Combines ions, electrode, GCS model, Marcus kinetics, and Li intercalation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElectrochemicalMdSimulation {
     /// Ions in the simulation box.
@@ -1358,7 +1342,6 @@ impl ElectrochemicalMdSimulation {
 /// Compute the Debye length for a 1:1 electrolyte in water at given concentration.
 ///
 /// kappa^{-1} = sqrt(eps * k_B * T / (2 N_A e^2 c))  \[metres\]
-#[allow(dead_code)]
 pub fn debye_length_aqueous(concentration_mol_per_l: f64, temperature: f64) -> f64 {
     let eps = 78.5 * EPSILON_0;
     let c_si = concentration_mol_per_l * 1.0e3; // mol/m^3
@@ -1368,13 +1351,11 @@ pub fn debye_length_aqueous(concentration_mol_per_l: f64, temperature: f64) -> f
 }
 
 /// Convert concentration from mol/L to number density in Angstrom^{-3}.
-#[allow(dead_code)]
 pub fn mol_per_l_to_number_density_aa(concentration: f64) -> f64 {
     concentration * 1.0e3 * AVOGADRO * 1.0e-30 // mol/m^3 * N_A -> m^{-3} -> A^{-3}
 }
 
 /// Thermal voltage at given temperature in V.
-#[allow(dead_code)]
 pub fn thermal_voltage(temperature: f64) -> f64 {
     BOLTZMANN * temperature / ELEMENTARY_CHARGE
 }
@@ -1382,7 +1363,6 @@ pub fn thermal_voltage(temperature: f64) -> f64 {
 /// Born solvation energy for an ion of radius r and charge z in a dielectric medium in eV.
 ///
 /// delta_G_Born = -z^2 e^2 / (8 pi eps_0 eps r) * (1 - 1/eps)
-#[allow(dead_code)]
 pub fn born_solvation_energy_ev(z: i32, radius_angstrom: f64, dielectric: f64) -> f64 {
     let r_m = radius_angstrom * 1.0e-10;
     let ke = 1.0 / (4.0 * PI * EPSILON_0);
@@ -1394,7 +1374,6 @@ pub fn born_solvation_energy_ev(z: i32, radius_angstrom: f64, dielectric: f64) -
 /// Compute the electric field at a point due to a set of point charges.
 ///
 /// E = sum_i k_e * q_i * (r - r_i) / |r - r_i|^3
-#[allow(dead_code)]
 pub fn electric_field_at(
     target: [f64; 3],
     charge_positions: &[[f64; 3]],

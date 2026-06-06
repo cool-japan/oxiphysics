@@ -2,12 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{GAUSS2_ABSCISSAE, GAUSS2_WEIGHTS};
-#[allow(unused_imports)]
-use super::functions_2::*;
 
 /// Parameters for a 1D piezoelectric transducer resonance model.
 pub struct TransducerResonance {
@@ -235,7 +231,6 @@ pub struct PiezoHarvester {
 }
 impl PiezoHarvester {
     /// Create a new piezo energy harvester.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(k_sq: f64, q_m: f64, omega_r: f64, r_opt: f64) -> Self {
         Self {
             k_sq,
@@ -398,8 +393,8 @@ impl PiezoHex8Element {
                     for i in 0..24 {
                         for q in 0..3 {
                             let mut val = 0.0;
-                            for r in 0..6 {
-                                val += b[r][i] * self.material.e_matrix[r][q];
+                            for (r, b_row) in b.iter().enumerate() {
+                                val += b_row[i] * self.material.e_matrix[r][q];
                             }
                             k_ue[i * 3 + q] += factor * val;
                         }
@@ -483,26 +478,26 @@ impl PiezoMaterialDForm {
     pub fn strain(&self, stress: &[f64; 6], e_field: &[f64; 3]) -> [f64; 6] {
         let s_sigma = mat6_vec6_mul(&self.s_matrix, stress);
         let mut dt_e = [0.0_f64; 6];
-        for j in 0..6 {
-            for k in 0..3 {
-                dt_e[j] += self.d_matrix[k][j] * e_field[k];
+        for (j, dte_j) in dt_e.iter_mut().enumerate() {
+            for (k, &ek) in e_field.iter().enumerate() {
+                *dte_j += self.d_matrix[k][j] * ek;
             }
         }
         let mut eps = [0.0_f64; 6];
-        for i in 0..6 {
-            eps[i] = s_sigma[i] + dt_e[i];
+        for (eps_i, (&ss_i, &dte_i)) in eps.iter_mut().zip(s_sigma.iter().zip(dt_e.iter())) {
+            *eps_i = ss_i + dte_i;
         }
         eps
     }
     /// Compute electric displacement: `D = d sigma + epsilon_T E`.
     pub fn electric_displacement_d(&self, stress: &[f64; 6], e_field: &[f64; 3]) -> [f64; 3] {
         let mut d = [0.0_f64; 3];
-        for i in 0..3 {
-            for j in 0..6 {
-                d[i] += self.d_matrix[i][j] * stress[j];
+        for (i, di) in d.iter_mut().enumerate() {
+            for (j, &sj) in stress.iter().enumerate() {
+                *di += self.d_matrix[i][j] * sj;
             }
-            for j in 0..3 {
-                d[i] += self.epsilon_t[i][j] * e_field[j];
+            for (j, &ej) in e_field.iter().enumerate() {
+                *di += self.epsilon_t[i][j] * ej;
             }
         }
         d
@@ -763,14 +758,14 @@ impl PiezoMaterial {
     pub fn mechanical_stress(&self, strain: &[f64; 6], e_field: &[f64; 3]) -> [f64; 6] {
         let c_eps = mat6_vec6_mul(&self.c_matrix, strain);
         let mut et_e = [0.0_f64; 6];
-        for j in 0..6 {
-            for i in 0..3 {
-                et_e[j] += self.e_matrix[j][i] * e_field[i];
+        for (j, ete_j) in et_e.iter_mut().enumerate() {
+            for (i, &ei) in e_field.iter().enumerate() {
+                *ete_j += self.e_matrix[j][i] * ei;
             }
         }
         let mut sigma = [0.0_f64; 6];
-        for k in 0..6 {
-            sigma[k] = c_eps[k] - et_e[k];
+        for (sig_k, (&ceps_k, &ete_k)) in sigma.iter_mut().zip(c_eps.iter().zip(et_e.iter())) {
+            *sig_k = ceps_k - ete_k;
         }
         sigma
     }
@@ -779,8 +774,8 @@ impl PiezoMaterial {
         let e_eps = e_times_strain(&self.e_matrix, strain);
         let eps_e = mat3_vec3_mul(&self.epsilon_matrix, e_field);
         let mut d = [0.0_f64; 3];
-        for i in 0..3 {
-            d[i] = e_eps[i] + eps_e[i];
+        for (di, (&ee_i, &eps_i)) in d.iter_mut().zip(e_eps.iter().zip(eps_e.iter())) {
+            *di = ee_i + eps_i;
         }
         d
     }
@@ -792,9 +787,9 @@ impl PiezoMaterial {
     /// Simplified: returns e^T * volume as a 6x3 matrix.
     pub fn coupling_matrix(&self, volume: f64) -> [[f64; 3]; 6] {
         let mut k_ue = [[0.0; 3]; 6];
-        for j in 0..6 {
-            for i in 0..3 {
-                k_ue[j][i] = self.e_matrix[j][i] * volume;
+        for (j, kue_j) in k_ue.iter_mut().enumerate() {
+            for (i, kue_ji) in kue_j.iter_mut().enumerate() {
+                *kue_ji = self.e_matrix[j][i] * volume;
             }
         }
         k_ue
@@ -806,9 +801,9 @@ impl PiezoMaterial {
     /// Simplified: returns epsilon_s * volume as a 3x3 matrix.
     pub fn dielectric_stiffness(&self, volume: f64) -> [[f64; 3]; 3] {
         let mut k_ee = [[0.0; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                k_ee[i][j] = self.epsilon_matrix[i][j] * volume;
+        for (i, kee_i) in k_ee.iter_mut().enumerate() {
+            for (j, kee_ij) in kee_i.iter_mut().enumerate() {
+                *kee_ij = self.epsilon_matrix[i][j] * volume;
             }
         }
         k_ee

@@ -7,8 +7,6 @@
 //! shapes (convex hull, triangle mesh, compound, height field) with support
 //! point queries, volume/inertia computation, and ray casting.
 #![warn(missing_docs)]
-#![allow(ambiguous_glob_reexports)]
-#![allow(dead_code)]
 
 mod error;
 pub use error::*;
@@ -32,7 +30,18 @@ pub mod cone;
 pub use cone::Cone;
 
 pub mod convex_hull;
-pub use convex_hull::*;
+pub use convex_hull::functions::{
+    approximate_convex_decomposition, box_support, capsule_support, chamfer_build, chamfer_hull,
+    cylinder_support, deduplicate_points, ellipsoid_support, gjk_intersect, hull_aspect_ratio,
+    hull_face_normals, hull_face_offsets, hull_sphericity, icosahedron_vertices, lower_hull_2d,
+    minkowski_difference_hull, minkowski_difference_hulls, minkowski_sum_hull, minkowski_sum_hulls,
+    monotone_chain_hull_2d, octahedron_vertices, point_cloud_aabb, point_cloud_centroid,
+    point_cloud_covariance, simplify_hull_points, sphere_support, tetrahedron_vertices,
+    upper_hull_2d, vertex_decimation,
+};
+pub use convex_hull::types::{
+    ConvexHull, ConvexHull3D, ConvexHullAabb, HullWithQuality, IncrementalConvexHull,
+};
 
 pub mod triangle_mesh;
 pub use triangle_mesh::TriangleMesh;
@@ -67,10 +76,24 @@ pub mod voronoi;
 pub mod decimation;
 
 pub mod offset_surface;
-pub use offset_surface::*;
+pub use offset_surface::{
+    OffsetMesh, Sdf, SdfBox, SdfCapsule, SdfCone, SdfCylinder, SdfDifference, SdfIntersection,
+    SdfOffset, SdfPlane, SdfScaled, SdfSmoothIntersection, SdfSmoothUnion, SdfSphere, SdfTorus,
+    SdfTranslated, SdfUnion, VoxelSdf, approximate_medial_axis, detect_edge_features,
+    extract_zero_crossings_slice, generate_shell, inward_offset, offset_curve_3d,
+    offset_polyhedron, outward_offset, variable_offset,
+};
 
 pub mod point_cloud;
-pub use point_cloud::*;
+pub use point_cloud::functions::{
+    aabb_extent, compute_bounding_box, compute_point_cloud_normals, estimate_normals,
+    farthest_point_sampling, fpfh_feature, icp_align, icp_point_to_point, pca_obb,
+    ransac_fit_plane, statistical_outlier_removal, voxel_downsample,
+};
+pub use point_cloud::types::{
+    IcpRegistration, IcpResult, KdNode3D, KdTree3D, NormalEstimation, PointCloud, PointCloudFilter,
+    RansacPlaneResult,
+};
 
 pub mod mesh_quality;
 

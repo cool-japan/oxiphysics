@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -10,9 +9,6 @@
 //!
 //! The implementation is intentionally self-contained (no nalgebra, only
 //! plain `f64` arrays and `Vec`f64`).
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ---------------------------------------------------------------------------
 // Math helpers
@@ -214,14 +210,16 @@ impl VolumeConstraint {
 
 /// Helper: volume fraction produced by a trial Lagrange multiplier λ.
 fn trial_volume(density: &DensityField, sensitivity: &[f64], lambda: f64, move_limit: f64) -> f64 {
-    let mut sum = 0.0_f64;
     let n = density.num_elements();
-    for e in 0..n {
-        let rho = density.rho[e];
-        let s = (-sensitivity[e] / lambda).sqrt();
-        let rho_new = clamp(s * rho, rho - move_limit, rho + move_limit).clamp(1e-3, 1.0);
-        sum += rho_new;
-    }
+    let sum: f64 = density
+        .rho
+        .iter()
+        .zip(sensitivity.iter())
+        .map(|(&rho, &sens)| {
+            let s = (-sens / lambda).sqrt();
+            clamp(s * rho, rho - move_limit, rho + move_limit).clamp(1e-3, 1.0)
+        })
+        .sum();
     sum / n as f64
 }
 
@@ -541,13 +539,13 @@ impl ManufacturingConstraint {
         }
 
         // Count changes and apply.
-        let mut count = 0;
-        for e in 0..n {
-            let new_val = dilated[e];
-            if (new_val - density.rho[e]).abs() > 0.5 {
-                count += 1;
-            }
-            density.rho[e] = new_val;
+        let count = dilated
+            .iter()
+            .zip(density.rho.iter())
+            .filter(|&(&d, &r)| (d - r).abs() > 0.5)
+            .count();
+        for (rho, &d) in density.rho.iter_mut().zip(dilated.iter()) {
+            *rho = d;
         }
         count
     }

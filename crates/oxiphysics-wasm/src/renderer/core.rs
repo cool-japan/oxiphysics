@@ -4,9 +4,6 @@
 //! Core renderer hint types: AABB, contact points, velocity vectors,
 //! per-body hints, aggregate frame hints, and canvas draw commands.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use crate::engine::WasmPhysicsEngine;
 use crate::types::ContactResult;
 

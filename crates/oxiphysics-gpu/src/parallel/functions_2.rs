@@ -2,13 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::functions::*;
     use crate::parallel::LoadBalanceStrategy;
     use crate::parallel::WorkChunker;
     use crate::parallel::WorkGroupConfig;
@@ -103,11 +99,11 @@ mod tests {
         let positions = vec![[0.0, 0.0, 0.0], [r_eq, 0.0, 0.0]];
         let forces = parallel_lj_forces(&positions, epsilon, sigma, cutoff);
         assert_eq!(forces.len(), 2);
-        for k in 0..3 {
+        for (k, &fk) in forces[0].iter().enumerate() {
             assert!(
-                forces[0][k].abs() < 1e-10,
+                fk.abs() < 1e-10,
                 "force[0][{k}] should be ~0 at equilibrium, got {}",
-                forces[0][k]
+                fk
             );
         }
     }

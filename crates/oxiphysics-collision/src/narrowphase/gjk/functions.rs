@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 use oxiphysics_core::Transform;
 use oxiphysics_core::math::{Real, Vec3};
 use oxiphysics_geometry::Shape;
@@ -168,7 +167,6 @@ pub fn closest_point_triangle(a: &Vec3, b: &Vec3, c: &Vec3) -> (Vec3, Vec<Real>)
     (a + ab * v + ac * w, vec![1.0 - v - w, v, w])
 }
 /// Check if a simplex is degenerate (has near-zero volume/area).
-#[allow(dead_code)]
 pub fn is_simplex_degenerate(simplex: &Simplex) -> bool {
     match simplex.len() {
         0 | 1 => false,
@@ -195,7 +193,6 @@ pub fn is_simplex_degenerate(simplex: &Simplex) -> bool {
 /// Attempt to fix a degenerate simplex by removing problematic points.
 ///
 /// Returns `true` if the simplex was modified.
-#[allow(dead_code)]
 pub fn fix_degenerate_simplex(simplex: &mut Simplex) -> bool {
     if simplex.len() < 2 {
         return false;
@@ -221,7 +218,6 @@ pub fn fix_degenerate_simplex(simplex: &mut Simplex) -> bool {
 ///
 /// Returns the Minkowski difference distance (positive if separated,
 /// negative estimate if overlapping).
-#[allow(dead_code)]
 pub fn gjk_distance(
     shape_a: &dyn Shape,
     transform_a: &Transform,
@@ -235,7 +231,6 @@ pub fn gjk_distance(
 }
 /// Compute the Minkowski difference support in a given direction
 /// and return both the support point and the witness points.
-#[allow(dead_code)]
 pub fn minkowski_support(
     shape_a: &dyn Shape,
     transform_a: &Transform,
@@ -248,7 +243,6 @@ pub fn minkowski_support(
 /// Compute support point for a *uniformly scaled* shape.
 ///
 /// Scaling `s > 1` inflates the shape; `s < 1` shrinks it.
-#[allow(dead_code)]
 pub fn scaled_support(
     shape: &dyn Shape,
     transform: &Transform,
@@ -293,7 +287,6 @@ pub fn scaled_support_minkowski(
 ///
 /// Returns `Some(t)` where `t ∈ [0, max_toi]` is the first time the shapes
 /// touch, or `None` if they do not collide within `[0, max_toi]`.
-#[allow(dead_code)]
 pub fn gjk_time_of_impact(
     shape_a: &dyn Shape,
     transform_a: &Transform,
@@ -347,7 +340,6 @@ pub fn gjk_time_of_impact(
 /// that is closest to the origin and returning its outward normal.
 ///
 /// For a full penetration vector, use the EPA algorithm after GJK.
-#[allow(dead_code)]
 pub fn refine_penetration_direction(simplex: &Simplex) -> Vec3 {
     match simplex.len() {
         0 | 1 => Vec3::new(0.0, 0.0, 1.0),
@@ -406,7 +398,6 @@ pub fn refine_penetration_direction(simplex: &Simplex) -> Vec3 {
 ///
 /// Uses the GJK simplex to approximate the minimum translation distance.
 /// For a precise depth, use EPA.
-#[allow(dead_code)]
 pub fn estimate_penetration_depth(
     shape_a: &dyn Shape,
     transform_a: &Transform,
@@ -445,7 +436,6 @@ pub fn estimate_penetration_depth(
 ///
 /// Unlike the basic `Gjk::query`, this variant accumulates barycentric
 /// weights at each step to reconstruct world-space witness points accurately.
-#[allow(dead_code)]
 pub fn gjk_distance_query(
     shape_a: &dyn Shape,
     transform_a: &Transform,
@@ -502,9 +492,9 @@ pub fn barycentric_witnesses(simplex: &Simplex, bary: &[Real]) -> (Vec3, Vec3) {
     }
     let mut wa = Vec3::zeros();
     let mut wb = Vec3::zeros();
-    for i in 0..n {
-        wa += simplex.points[i].support_a * bary[i];
-        wb += simplex.points[i].support_b * bary[i];
+    for (pt, &b) in simplex.points.iter().zip(bary.iter()).take(n) {
+        wa += pt.support_a * b;
+        wb += pt.support_b * b;
     }
     (wa, wb)
 }
@@ -514,7 +504,6 @@ pub fn barycentric_witnesses(simplex: &Simplex, bary: &[Real]) -> (Vec3, Vec3) {
 /// `max_t` limits the ray length.
 ///
 /// Returns `Some(RayCastResult)` if the ray hits the shape within `[0, max_t]`.
-#[allow(dead_code)]
 pub fn gjk_ray_cast(
     shape: &dyn Shape,
     transform: &Transform,
@@ -605,7 +594,6 @@ pub fn gjk_ray_cast(
 /// Cast a ray against the Minkowski sum of two convex shapes (GJK portal ray-cast).
 ///
 /// Returns the `t` value at which the cast ray first touches the Minkowski difference.
-#[allow(dead_code)]
 pub fn gjk_cast_ray_minkowski(
     shape_a: &dyn Shape,
     transform_a: &Transform,
@@ -648,7 +636,6 @@ pub fn gjk_cast_ray_minkowski(
 ///
 /// Reference: Gary Snethen, "XenoCollide: Complex Collision Made Simple",
 /// Game Programming Gems 7, 2008.
-#[allow(dead_code)]
 pub fn mpr_query(
     shape_a: &dyn Shape,
     transform_a: &Transform,
@@ -778,7 +765,6 @@ pub fn mpr_refine_portal(
 /// Unlike `gjk_time_of_impact` (which uses only conservative advancement), this
 /// function performs a bisection step once an interval `[t_lo, t_hi]` bracketing
 /// the TOI is found, giving sub-millisecond accuracy.
-#[allow(dead_code)]
 pub fn gjk_toi_bisection(
     shape_a: &dyn Shape,
     transform_a: &Transform,
@@ -858,7 +844,6 @@ pub fn gjk_toi_bisection(
 ///
 /// Both bodies may rotate and translate.  The function samples `n_substeps`
 /// intermediate states and returns the smallest TOI found.
-#[allow(dead_code)]
 pub fn gjk_toi_angular_sweep(
     shape_a: &dyn Shape,
     transform_a: &Transform,
@@ -913,7 +898,6 @@ pub fn gjk_toi_angular_sweep(
 /// Perform a linear CCD sweep (conservative advancement) returning contact info.
 ///
 /// This version computes a surface normal at the TOI in addition to the time value.
-#[allow(dead_code)]
 pub fn gjk_ccd_linear(
     shape_a: &dyn Shape,
     transform_a: &Transform,
@@ -954,7 +938,6 @@ pub fn gjk_ccd_linear(
 ///
 /// More accurate than `estimate_penetration_depth` because it samples along
 /// 26 directions (faces + edges + vertices of an octahedron) rather than 6.
-#[allow(dead_code)]
 pub fn estimate_penetration_depth_26(
     shape_a: &dyn Shape,
     transform_a: &Transform,
@@ -1008,7 +991,6 @@ pub fn estimate_penetration_depth_26(
     }
 }
 /// Generate a speculative contact if two shapes are within `threshold` of each other.
-#[allow(dead_code)]
 pub fn gjk_speculative_contact(
     shape_a: &dyn Shape,
     transform_a: &Transform,
@@ -1043,7 +1025,6 @@ pub fn gjk_speculative_contact(
 ///
 /// This is a simplified version that works directly on vertex arrays without
 /// needing `Shape` trait objects.
-#[allow(dead_code)]
 pub fn gjk_hull_distance(verts_a: &[[f64; 3]], verts_b: &[[f64; 3]]) -> f64 {
     if verts_a.is_empty() || verts_b.is_empty() {
         return f64::MAX;
@@ -1109,7 +1090,6 @@ pub fn gjk_hull_distance(verts_a: &[[f64; 3]], verts_b: &[[f64; 3]]) -> f64 {
     0.0
 }
 /// Test whether a point lies inside a convex shape.
-#[allow(dead_code)]
 pub fn gjk_point_inside_convex(point: Vec3, shape: &dyn Shape, transform: &Transform) -> bool {
     use oxiphysics_geometry::Sphere;
     let point_sphere = Sphere::new(1e-6);
@@ -1120,7 +1100,6 @@ pub fn gjk_point_inside_convex(point: Vec3, shape: &dyn Shape, transform: &Trans
     Gjk::intersect(&point_sphere, &point_transform, shape, transform)
 }
 /// Compute the distance from a point to the surface of a convex shape.
-#[allow(dead_code)]
 pub fn gjk_point_to_convex_distance(point: Vec3, shape: &dyn Shape, transform: &Transform) -> f64 {
     let point_sphere = Sphere::new(1e-6);
     let point_transform = Transform {

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,8 +15,6 @@
 //! - **Cable tension propagation**: Propagates tension through multi-segment cables.
 //! - **Multi-segment cables**: Discretized cable as chain of segments.
 //! - **Cable-rigid body attachment**: Attach cables to rigid body anchor points.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -614,9 +611,8 @@ impl CablePulleySystem {
         let mut current_tension = input_tension;
         segment_tensions.push(current_tension);
 
-        for i in 0..n_pulleys {
-            let mu = self.pulleys[i].friction;
-            let theta = wrap_angles[i];
+        for (pulley, theta) in self.pulleys.iter().zip(wrap_angles.iter()) {
+            let mu = pulley.friction;
             // Friction reduces tension as cable passes over pulley
             current_tension *= (-mu * theta).exp();
             segment_tensions.push(current_tension);
@@ -905,7 +901,6 @@ impl MultiSegmentCable {
     /// `mass_per_meter` - Linear mass density.
     /// `stiffness` - Spring stiffness.
     /// `damping` - Damping coefficient.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         start: [f64; 3],
         end: [f64; 3],
@@ -961,10 +956,10 @@ impl MultiSegmentCable {
         let mut forces = vec![[0.0_f64; 3]; n];
 
         // Gravity
-        for i in 0..n {
-            if self.inv_masses[i] > 0.0 {
-                let mass = 1.0 / self.inv_masses[i];
-                forces[i] = vec3_scale(self.gravity, mass);
+        for (force, inv_m) in forces.iter_mut().zip(self.inv_masses.iter()) {
+            if *inv_m > 0.0 {
+                let mass = 1.0 / inv_m;
+                *force = vec3_scale(self.gravity, mass);
             }
         }
 
@@ -997,13 +992,17 @@ impl MultiSegmentCable {
         }
 
         // Symplectic Euler integration
-        for i in 0..n {
-            if self.inv_masses[i] <= 0.0 {
+        for (vel, (pos, (force, inv_m))) in self.velocities.iter_mut().zip(
+            self.positions
+                .iter_mut()
+                .zip(forces.iter().zip(self.inv_masses.iter())),
+        ) {
+            if *inv_m <= 0.0 {
                 continue;
             }
-            let acc = vec3_scale(forces[i], self.inv_masses[i]);
-            self.velocities[i] = vec3_add(self.velocities[i], vec3_scale(acc, dt));
-            self.positions[i] = vec3_add(self.positions[i], vec3_scale(self.velocities[i], dt));
+            let acc = vec3_scale(*force, *inv_m);
+            *vel = vec3_add(*vel, vec3_scale(acc, dt));
+            *pos = vec3_add(*pos, vec3_scale(*vel, dt));
         }
     }
 
@@ -1271,7 +1270,6 @@ pub fn safety_margin(tension: f64, breaking_strength: f64, safety_factor: f64) -
 /// `segment_length` - Cable segment length (m).
 /// `air_density` - Air density (kg/m^3, typically 1.225).
 /// `drag_coefficient` - Drag coefficient (typically 1.0-1.2 for cables).
-#[allow(clippy::too_many_arguments)]
 pub fn cable_drag_force(
     wind_velocity: [f64; 3],
     cable_direction: [f64; 3],
@@ -1452,7 +1450,6 @@ pub fn ice_loading_weight(
 /// `air_density` - Air density (kg/m^3).
 /// `cable_diameter` - Cable diameter (m).
 /// `aerodynamic_coeff` - Combined aero coefficient (dCL/dalpha + CD), negative for galloping.
-#[allow(clippy::too_many_arguments)]
 pub fn galloping_onset_speed(
     mass_per_length: f64,
     natural_freq: f64,

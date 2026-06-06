@@ -2,21 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 use std::f64::consts::PI;
 
 use super::types::{IlSimParams, IonModel, IonState, IonType, PairType, RdfResult, WaldenPoint};
 
 /// Boltzmann constant (J K⁻¹).
 pub(super) const K_B: f64 = 1.380_649e-23;
-/// Elementary charge (C).
-pub(super) const E_CHARGE: f64 = 1.602_176_634e-19;
-/// Permittivity of free space (F m⁻¹).
-pub(super) const EPS_0: f64 = 8.854_187_817e-12;
-/// Coulomb constant 1/(4πε₀) (N m² C⁻²).
-pub(super) const K_COULOMB: f64 = 8.987_551_787e9;
-/// Avogadro's number (mol⁻¹).
-pub(super) const N_A: f64 = 6.022_140_76e23;
 /// Universal gas constant (J mol⁻¹ K⁻¹).
 pub(super) const R_GAS: f64 = 8.314_462_618;
 /// Dot product of two 3-vectors.
@@ -43,15 +34,6 @@ pub(super) fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 #[inline]
 pub(super) fn scale3(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
-}
-/// Cross product of two 3-vectors.
-#[inline]
-pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 /// Minimum image convention for periodic boundaries.
 #[inline]
@@ -258,17 +240,13 @@ pub fn compute_rdf(
     };
     let mut r_vals = Vec::with_capacity(n_bins);
     let mut g_vals = Vec::with_capacity(n_bins);
-    for k in 0..n_bins {
+    for (k, &h_k) in histogram.iter().enumerate() {
         let r_lo = k as f64 * dr;
         let r_hi = r_lo + dr;
         let r_mid = 0.5 * (r_lo + r_hi);
         let shell_vol = (4.0 / 3.0) * PI * (r_hi.powi(3) - r_lo.powi(3));
         let ideal = n_type_i as f64 * density_j * shell_vol;
-        let g = if ideal > 0.0 {
-            histogram[k] / ideal
-        } else {
-            0.0
-        };
+        let g = if ideal > 0.0 { h_k / ideal } else { 0.0 };
         r_vals.push(r_mid);
         g_vals.push(g);
     }
@@ -286,8 +264,7 @@ pub fn compute_rdf(
 pub fn coordination_number(rdf: &RdfResult, density: f64) -> Vec<f64> {
     let mut cn = Vec::with_capacity(rdf.n_bins);
     let mut running = 0.0;
-    for k in 0..rdf.n_bins {
-        let r = rdf.r[k];
+    for (k, &r) in rdf.r.iter().enumerate() {
         running += 4.0 * PI * density * rdf.g_r[k] * r * r * rdf.dr;
         cn.push(running);
     }
@@ -320,13 +297,13 @@ pub fn voronoi_coordination(
     cutoff: f64,
 ) -> Vec<usize> {
     let mut counts = Vec::new();
-    for i in 0..state.n {
-        if state.ion_types[i] != center_type {
+    for (i, &it) in state.ion_types.iter().enumerate() {
+        if it != center_type {
             continue;
         }
         let mut count = 0_usize;
-        for j in 0..state.n {
-            if i == j || state.ion_types[j] != neighbor_type {
+        for (j, &jt) in state.ion_types.iter().enumerate() {
+            if i == j || jt != neighbor_type {
                 continue;
             }
             let dr = min_image(sub3(state.positions[i], state.positions[j]), box_len);
@@ -415,7 +392,7 @@ pub fn ion_pair_lifetime(
                 continue;
             }
             norm += 1.0;
-            for lag in 0..lag_max {
+            for (lag, c_lag) in c_t[..lag_max].iter_mut().enumerate() {
                 let t1 = t0 + lag;
                 if t1 >= n_frames {
                     break;
@@ -423,7 +400,7 @@ pub fn ion_pair_lifetime(
                 let dr1 = min_image(sub3(trajectory[t1][pi], trajectory[t1][pj]), box_len);
                 let r1 = norm3(dr1);
                 let h1 = if r1 < cutoff { 1.0 } else { 0.0 };
-                c_t[lag] += h0 * h1;
+                *c_lag += h0 * h1;
             }
         }
     }
@@ -460,18 +437,18 @@ pub fn current_autocorrelation(current_trajectory: &[[f64; 3]], max_lag: usize) 
     let lag_max = max_lag.min(n);
     let mut cac = vec![0.0; lag_max];
     for t0 in 0..n {
-        for lag in 0..lag_max {
+        for (lag, c_lag) in cac[..lag_max].iter_mut().enumerate() {
             let t1 = t0 + lag;
             if t1 >= n {
                 break;
             }
-            cac[lag] += dot3(current_trajectory[t0], current_trajectory[t1]);
+            *c_lag += dot3(current_trajectory[t0], current_trajectory[t1]);
         }
     }
-    for lag in 0..lag_max {
+    for (lag, c_lag) in cac[..lag_max].iter_mut().enumerate() {
         let count = (n - lag) as f64;
         if count > 0.0 {
-            cac[lag] /= count;
+            *c_lag /= count;
         }
     }
     cac
@@ -514,8 +491,8 @@ pub fn haven_ratio(sigma_ne: f64, sigma_gk: f64) -> f64 {
 /// σ_αβ = (1/V) Σ_i \[ m_i v_iα v_iβ + r_iα f_iβ \]
 pub fn stress_tensor_element(state: &IonState, volume: f64, alpha: usize, beta: usize) -> f64 {
     let mut sigma = 0.0;
-    for i in 0..state.n {
-        sigma += state.masses[i] * state.velocities[i][alpha] * state.velocities[i][beta];
+    for (i, &m) in state.masses.iter().enumerate() {
+        sigma += m * state.velocities[i][alpha] * state.velocities[i][beta];
         sigma += state.positions[i][alpha] * state.forces[i][beta];
     }
     sigma / volume
@@ -526,18 +503,18 @@ pub fn stress_autocorrelation(stress_trajectory: &[f64], max_lag: usize) -> Vec<
     let lag_max = max_lag.min(n);
     let mut sac = vec![0.0; lag_max];
     for t0 in 0..n {
-        for lag in 0..lag_max {
+        for (lag, s_lag) in sac[..lag_max].iter_mut().enumerate() {
             let t1 = t0 + lag;
             if t1 >= n {
                 break;
             }
-            sac[lag] += stress_trajectory[t0] * stress_trajectory[t1];
+            *s_lag += stress_trajectory[t0] * stress_trajectory[t1];
         }
     }
-    for lag in 0..lag_max {
+    for (lag, s_lag) in sac[..lag_max].iter_mut().enumerate() {
         let count = (n - lag) as f64;
         if count > 0.0 {
-            sac[lag] /= count;
+            *s_lag /= count;
         }
     }
     sac
@@ -604,8 +581,8 @@ pub fn cage_radius(state: &IonState, ion_idx: usize, box_len: f64, n_neighbors: 
         IonType::Anion => IonType::Cation,
     };
     let mut distances: Vec<f64> = Vec::new();
-    for j in 0..state.n {
-        if j == ion_idx || state.ion_types[j] != target_type {
+    for (j, &jt) in state.ion_types.iter().enumerate() {
+        if j == ion_idx || jt != target_type {
             continue;
         }
         let dr = min_image(sub3(state.positions[ion_idx], state.positions[j]), box_len);
@@ -627,8 +604,8 @@ pub fn average_cage_dynamics(
 ) -> f64 {
     let mut sum = 0.0;
     let mut count = 0;
-    for i in 0..state.n {
-        if state.ion_types[i] != target_type {
+    for (i, &it) in state.ion_types.iter().enumerate() {
+        if it != target_type {
             continue;
         }
         sum += cage_radius(state, i, box_len, n_neighbors);
@@ -669,8 +646,8 @@ pub fn detect_glass_transition(temperatures: &[f64], densities: &[f64]) -> Optio
         let (a1, b1) = linear_fit(&temperatures[..split], &densities[..split]);
         let (a2, b2) = linear_fit(&temperatures[split..], &densities[split..]);
         let mut error = 0.0;
-        for i in 0..split {
-            let predicted = a1 * temperatures[i] + b1;
+        for (i, &temp) in temperatures[..split].iter().enumerate() {
+            let predicted = a1 * temp + b1;
             error += (predicted - densities[i]).powi(2);
         }
         for i in split..n {
@@ -743,18 +720,18 @@ pub fn init_cubic_lattice(
 pub fn assign_velocities(state: &mut IonState, temperature: f64) {
     use rand::RngExt;
     let mut rng = rand::rng();
-    for i in 0..state.n {
+    for (i, vel) in state.velocities.iter_mut().enumerate() {
         let sigma = (R_GAS * temperature / (state.masses[i] * 1000.0)).sqrt();
-        for d in 0..3 {
+        for v in vel.iter_mut().take(3) {
             let u1: f64 = rng.random_range(1e-10_f64..1.0_f64);
             let u2: f64 = rng.random_range(0.0_f64..2.0 * PI);
-            state.velocities[i][d] = sigma * (-2.0 * u1.ln()).sqrt() * u2.cos();
+            *v = sigma * (-2.0 * u1.ln()).sqrt() * u2.cos();
         }
     }
     let mut v_com = [0.0; 3];
     let mut total_mass = 0.0;
-    for i in 0..state.n {
-        v_com = add3(v_com, scale3(state.velocities[i], state.masses[i]));
+    for (i, &vel) in state.velocities.iter().enumerate() {
+        v_com = add3(v_com, scale3(vel, state.masses[i]));
         total_mass += state.masses[i];
     }
     if total_mass > 0.0 {
@@ -798,8 +775,8 @@ pub fn velocity_autocorrelation(
     let lag_max = max_lag.min(n_frames);
     let mut vac = vec![0.0; lag_max];
     let mut count_per_lag = vec![0_usize; lag_max];
-    for i in 0..ion_types.len() {
-        if ion_types[i] != target_type {
+    for (i, &ion_type) in ion_types.iter().enumerate() {
+        if ion_type != target_type {
             continue;
         }
         for t0 in 0..n_frames {
@@ -887,8 +864,8 @@ pub fn charge_density_profile(
     let dz = box_len / n_bins as f64;
     let mut profile = vec![0.0; n_bins];
     let volume_slice = box_len * box_len * dz;
-    for i in 0..state.n {
-        let z = state.positions[i][axis];
+    for (i, pos) in state.positions.iter().enumerate() {
+        let z = pos[axis];
         let bin = ((z / dz) as usize).min(n_bins - 1);
         profile[bin] += state.charges[i];
     }
@@ -909,8 +886,8 @@ pub fn number_density_profile(
     let dz = box_len / n_bins as f64;
     let mut profile = vec![0.0; n_bins];
     let volume_slice = box_len * box_len * dz;
-    for i in 0..state.n {
-        if state.ion_types[i] != target_type {
+    for (i, &it) in state.ion_types.iter().enumerate() {
+        if it != target_type {
             continue;
         }
         let z = state.positions[i][axis];

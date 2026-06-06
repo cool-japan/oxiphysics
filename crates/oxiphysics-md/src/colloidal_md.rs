@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,9 +14,6 @@
 //! - [`ElectrokineticColloidal`]: Electrophoresis (Henry equation), sedimentation potential.
 //! - [`ColloidalAggregation`]: DLCA/RLCA fractal cluster formation.
 //! - [`ColloidalGel`]: Gel point, percolation, viscoelastic response, aging.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -1303,10 +1299,10 @@ mod tests {
         let diff = DiffusionColloidal::water_25c();
         let r_vec = [1e-7, 2e-7, 3e-7];
         let t = diff.oseen_tensor(r_vec);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in t.iter().enumerate() {
+            for (j, &tij) in row.iter().enumerate() {
                 assert!(
-                    (t[i][j] - t[j][i]).abs() < 1e-30,
+                    (tij - t[j][i]).abs() < 1e-30,
                     "Oseen tensor not symmetric at ({},{}) vs ({},{})",
                     i,
                     j,

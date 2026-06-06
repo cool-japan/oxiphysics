@@ -8,8 +8,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 pub use super::specialized::*;
 
 use super::types::ContactFilter;

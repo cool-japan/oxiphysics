@@ -77,7 +77,6 @@ pub(super) fn morton_part1by2(mut x: u32) -> u32 {
 /// Compute Morton codes for all alive particles in a buffer.
 ///
 /// Particles are sorted into a `[0, grid_cells)^3` grid using their positions.
-#[allow(clippy::too_many_arguments)]
 pub fn compute_morton_codes(
     buffer: &ParticleBuffer,
     origin: [f32; 3],
@@ -258,7 +257,6 @@ pub fn compute_angular_momentum(buffer: &ParticleBuffer) -> [f32; 3] {
 /// Spread magnitude `spread` adds a random offset to velocity.
 /// Returns the number of particles actually emitted (may be less than `count`
 /// if the buffer is full).
-#[allow(clippy::too_many_arguments)]
 pub fn emit_burst(
     buffer: &mut ParticleBuffer,
     origin: [f32; 3],

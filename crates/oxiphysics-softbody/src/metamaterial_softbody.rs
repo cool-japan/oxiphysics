@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,9 +16,6 @@
 //! * [`AcousticMetamaterial`] — Locally resonant cells, band gaps, negative effective mass.
 //! * [`MetamaterialOptimization`] — Topology optimization for metamaterial unit cells.
 //! * [`MetamaterialAnalysis`] — Effective medium theory and homogenization.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -43,11 +39,6 @@ fn vec2_scale(a: [f64; 2], s: f64) -> [f64; 2] {
 #[inline]
 fn vec2_norm(a: [f64; 2]) -> f64 {
     (a[0] * a[0] + a[1] * a[1]).sqrt()
-}
-
-#[inline]
-fn vec2_dot(a: [f64; 2], b: [f64; 2]) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
 }
 
 // ─── Vec3 helpers ─────────────────────────────────────────────────────────────
@@ -1127,12 +1118,12 @@ impl MetamaterialOptimization {
         let mut weight_sum = vec![0.0_f64; n];
 
         for i in 0..n {
-            for j in 0..n {
+            for (j, &rawj) in raw.iter().enumerate().take(n) {
                 let dr = vec2_sub(self.elements[j].pos, self.elements[i].pos);
                 let d = vec2_norm(dr);
                 if d < r {
                     let w = (r - d) * self.elements[j].density;
-                    filtered[i] += w * raw[j];
+                    filtered[i] += w * rawj;
                     weight_sum[i] += w;
                 }
             }

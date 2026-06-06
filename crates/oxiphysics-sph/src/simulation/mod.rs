@@ -8,7 +8,5 @@ pub mod types;
 pub mod types_sim;
 
 // Re-export all types (trait impl modules don't export names, just impl blocks)
-#[allow(unused_imports)]
-pub use functions::*;
 pub use types::*;
 pub use types_sim::*;

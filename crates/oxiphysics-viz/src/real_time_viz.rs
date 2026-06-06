@@ -20,9 +20,6 @@
 //! - HDR tone mapping (Reinhard, ACES, Uncharted2)
 //! - Real-time global illumination approximation (irradiance probes)
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -84,15 +81,7 @@ fn vscale(a: Vec3, s: f64) -> Vec3 {
 fn vdot(a: Vec3, b: Vec3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-/// Cross product.
-#[inline]
-fn vcross(a: Vec3, b: Vec3) -> Vec3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
+
 /// Euclidean norm.
 #[inline]
 fn vnorm(a: Vec3) -> f64 {

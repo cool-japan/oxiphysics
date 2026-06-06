@@ -1,6 +1,6 @@
 # oxiphysics-lbm TODO
 
-Last updated: 2026-05-17 / v0.1.1
+Last updated: 2026-06-01 / v0.1.2
 
 Lattice Boltzmann fluid-dynamics subcrate. All listed items are production code
 with unit tests in-tree. This document enumerates what actually ships; it is not
@@ -192,6 +192,9 @@ Note: D3Q15 is *not* implemented (kept off the list intentionally).
 
 Note: no VTK/Paraview writer is implemented in this crate; visualisation
 currently goes through consumer crates.
+
+## v0.1.2 correctness fixes (2026-06-01)
+- [x] `LbmGrid3D::step(omega: f64)` — implemented real BGK collide-and-stream step (equilibrium collision + pull-scheme periodic streaming + `compute_macroscopic`). Removed dead empty `step_placeholder` (zero call sites). 3 new tests: mass conservation, equilibrium fixed-point, aggressive-omega.
 
 ## Outstanding (v0.2.0)
 

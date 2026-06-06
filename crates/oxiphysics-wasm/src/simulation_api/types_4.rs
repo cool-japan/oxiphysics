@@ -14,15 +14,9 @@ pub(super) struct WasmCollider {
     pub(super) handle: WasmColliderHandle,
     pub(super) body: Option<WasmRigidBodyHandle>,
     pub(super) shape: WasmColliderShape,
-    pub(super) local_offset: [f64; 3],
-    pub(super) local_rotation: [f64; 4],
     pub(super) friction: f64,
     pub(super) restitution: f64,
-    pub(super) density: f64,
     pub(super) is_sensor: bool,
-    pub(super) collision_group: u32,
-    pub(super) collision_mask: u32,
-    pub(super) user_data: u64,
 }
 impl WasmCollider {
     pub(super) fn new(handle: WasmColliderHandle, shape: WasmColliderShape) -> Self {
@@ -30,15 +24,9 @@ impl WasmCollider {
             handle,
             body: None,
             shape,
-            local_offset: [0.0; 3],
-            local_rotation: [0.0, 0.0, 0.0, 1.0],
             friction: 0.5,
             restitution: 0.3,
-            density: 1000.0,
             is_sensor: false,
-            collision_group: 1,
-            collision_mask: u32::MAX,
-            user_data: 0,
         }
     }
 }

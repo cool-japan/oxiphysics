@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,7 +7,6 @@
 //! and geometric race line optimization for motorsport applications.
 
 /// A segment of a racing track.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum TrackSegment {
     /// A straight section with a given length in metres.
@@ -88,7 +86,6 @@ impl Track {
 }
 
 /// Point-mass vehicle dynamics parameters.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VehicleDynamics {
     /// Vehicle mass in kg.
@@ -158,7 +155,6 @@ impl VehicleDynamics {
 }
 
 /// Result of a lap simulation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LapResult {
     /// Total lap time in seconds.
@@ -172,7 +168,6 @@ pub struct LapResult {
 }
 
 /// Point-mass lap time simulator.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LapSimulator {
     track: Track,
@@ -277,7 +272,6 @@ impl LapSimulator {
 }
 
 /// Geometric race line optimizer.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RaceLineOptimizer {
     track: Track,
@@ -359,7 +353,6 @@ impl RaceLineOptimizer {
 /// - `avg_speed_mps`: average speed in m/s
 /// - `specific_consumption_kg_per_mj`: fuel mass per megajoule of energy (kg/MJ)
 /// - `power_kw`: average power output in kilowatts
-#[allow(dead_code)]
 pub fn fuel_consumption(
     distance_m: f64,
     avg_speed_mps: f64,
@@ -382,7 +375,6 @@ pub fn fuel_consumption(
 /// - `lateral_g`: lateral acceleration in g
 /// - `speed`: vehicle speed in m/s
 /// - `tire_compound_factor`: compound durability factor (higher = more wear)
-#[allow(dead_code)]
 pub fn tire_wear_model(lateral_g: f64, speed: f64, tire_compound_factor: f64) -> f64 {
     let lateral_g_sq = lateral_g * lateral_g;
     let speed_factor = speed / 100.0; // normalise to ~100 m/s reference
@@ -394,7 +386,6 @@ pub fn tire_wear_model(lateral_g: f64, speed: f64, tire_compound_factor: f64) ->
 // ---------------------------------------------------------------------------
 
 /// Classification of a track segment by its characteristics.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SegmentClass {
     /// Long straight (> 200 m).
@@ -412,7 +403,6 @@ pub enum SegmentClass {
 }
 
 /// Classify a track segment based on its geometry.
-#[allow(dead_code)]
 pub fn classify_segment(seg: &TrackSegment) -> SegmentClass {
     match seg {
         TrackSegment::Straight { length } => {
@@ -440,7 +430,6 @@ pub fn classify_segment(seg: &TrackSegment) -> SegmentClass {
 }
 
 /// Classify all segments of a track.
-#[allow(dead_code)]
 pub fn classify_track(track: &Track) -> Vec<SegmentClass> {
     track.segments.iter().map(classify_segment).collect()
 }
@@ -450,7 +439,6 @@ pub fn classify_track(track: &Track) -> Vec<SegmentClass> {
 // ---------------------------------------------------------------------------
 
 /// An apex point detected on the racing line.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ApexPoint {
     /// Segment index in the track.
@@ -466,7 +454,6 @@ pub struct ApexPoint {
 /// Detect apex points on the racing line from track geometry.
 ///
 /// Returns one apex per corner segment.
-#[allow(dead_code)]
 pub fn detect_apexes(track: &Track) -> Vec<ApexPoint> {
     let mut apexes = Vec::new();
     let mut x = 0.0_f64;
@@ -517,7 +504,6 @@ pub fn detect_apexes(track: &Track) -> Vec<ApexPoint> {
 // ---------------------------------------------------------------------------
 
 /// A braking point on the track.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BrakingPoint {
     /// Segment index before which braking must begin.
@@ -531,7 +517,6 @@ pub struct BrakingPoint {
 }
 
 /// Calculate braking points for all corners on the track.
-#[allow(dead_code)]
 pub fn compute_braking_points(track: &Track, vehicle: &VehicleDynamics) -> Vec<BrakingPoint> {
     let n = track.segments.len();
     if n == 0 {
@@ -555,11 +540,11 @@ pub fn compute_braking_points(track: &Track, vehicle: &VehicleDynamics) -> Vec<B
 
     let mut braking_points = Vec::new();
 
-    for i in 0..n {
+    for (i, entry_speed) in entry_speeds.iter().enumerate() {
         if let TrackSegment::Corner { radius, .. } = &track.segments[i] {
             let target = vehicle.max_speed_in_corner(*radius);
             // Look backward through preceding straights
-            let approach_speed = if i > 0 { entry_speeds[i] } else { 10.0 };
+            let approach_speed = if i > 0 { *entry_speed } else { 10.0 };
             let bd = vehicle.braking_distance(approach_speed, target);
 
             braking_points.push(BrakingPoint {
@@ -581,7 +566,6 @@ pub fn compute_braking_points(track: &Track, vehicle: &VehicleDynamics) -> Vec<B
 /// Apply Gaussian smoothing to a racing line.
 ///
 /// Uses a 1D Gaussian kernel with the given sigma (in number of points).
-#[allow(dead_code)]
 pub fn gaussian_smooth(waypoints: &[[f64; 2]], sigma: f64) -> Vec<[f64; 2]> {
     if waypoints.len() < 3 || sigma <= 0.0 {
         return waypoints.to_vec();
@@ -599,11 +583,11 @@ pub fn gaussian_smooth(waypoints: &[[f64; 2]], sigma: f64) -> Vec<[f64; 2]> {
         let start = i.saturating_sub(kernel_half);
         let end = (i + kernel_half + 1).min(n);
 
-        for j in start..end {
+        for (j, wp) in waypoints.iter().enumerate().take(end).skip(start) {
             let d = (j as f64) - (i as f64);
             let w = (-0.5 * d * d / (sigma * sigma)).exp();
-            sum_x += w * waypoints[j][0];
-            sum_y += w * waypoints[j][1];
+            sum_x += w * wp[0];
+            sum_y += w * wp[1];
             sum_w += w;
         }
 
@@ -625,7 +609,6 @@ pub fn gaussian_smooth(waypoints: &[[f64; 2]], sigma: f64) -> Vec<[f64; 2]> {
 ///
 /// Uses three-point curvature estimation. Returns curvature for each interior
 /// point (endpoints get zero curvature).
-#[allow(dead_code)]
 pub fn polyline_curvature(points: &[[f64; 2]]) -> Vec<f64> {
     let n = points.len();
     if n < 3 {
@@ -658,13 +641,11 @@ pub fn polyline_curvature(points: &[[f64; 2]]) -> Vec<f64> {
 }
 
 /// Compute the total curvature (sum of absolute curvatures) of a polyline.
-#[allow(dead_code)]
 pub fn total_curvature(points: &[[f64; 2]]) -> f64 {
     polyline_curvature(points).iter().sum()
 }
 
 /// Compute the total path length of a polyline.
-#[allow(dead_code)]
 pub fn path_length(points: &[[f64; 2]]) -> f64 {
     if points.len() < 2 {
         return 0.0;
@@ -682,7 +663,6 @@ pub fn path_length(points: &[[f64; 2]]) -> f64 {
 /// of corners to reduce curvature (gradient descent on curvature).
 ///
 /// `alpha` is the learning rate, `iterations` is the number of passes.
-#[allow(dead_code)]
 pub fn optimize_racing_line(
     waypoints: &[[f64; 2]],
     alpha: f64,
@@ -727,7 +707,6 @@ pub fn optimize_racing_line(
 // ---------------------------------------------------------------------------
 
 /// Count the number of corners in a track.
-#[allow(dead_code)]
 pub fn count_corners(track: &Track) -> usize {
     track
         .segments
@@ -737,7 +716,6 @@ pub fn count_corners(track: &Track) -> usize {
 }
 
 /// Count the number of straights in a track.
-#[allow(dead_code)]
 pub fn count_straights(track: &Track) -> usize {
     track
         .segments
@@ -747,7 +725,6 @@ pub fn count_straights(track: &Track) -> usize {
 }
 
 /// Maximum corner radius on the track.
-#[allow(dead_code)]
 pub fn max_corner_radius(track: &Track) -> f64 {
     track
         .segments
@@ -760,7 +737,6 @@ pub fn max_corner_radius(track: &Track) -> f64 {
 }
 
 /// Average corner radius.
-#[allow(dead_code)]
 pub fn avg_corner_radius(track: &Track) -> f64 {
     let radii: Vec<f64> = track
         .segments
@@ -777,7 +753,6 @@ pub fn avg_corner_radius(track: &Track) -> f64 {
 }
 
 /// Compute the percentage of track length that is corners.
-#[allow(dead_code)]
 pub fn corner_percentage(track: &Track) -> f64 {
     let total = track.total_length();
     if total <= 0.0 {
@@ -795,7 +770,6 @@ pub fn corner_percentage(track: &Track) -> f64 {
 }
 
 /// Compute the estimated top speed on the track.
-#[allow(dead_code)]
 pub fn estimated_top_speed(track: &Track, vehicle: &VehicleDynamics) -> f64 {
     let terminal = (vehicle.max_engine_force / vehicle.aero_drag_coeff).sqrt();
     let longest_straight = track

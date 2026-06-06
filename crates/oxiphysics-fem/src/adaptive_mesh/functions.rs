@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_range_contains)]
 use super::types::{AdaptiveMesh2D, ConformingConstraint, Element2D};
 
 pub(super) fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -26,15 +25,6 @@ pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 pub(super) fn norm3(a: [f64; 3]) -> f64 {
     dot3(a, a).sqrt()
-}
-#[allow(dead_code)]
-pub(super) fn normalize3(a: [f64; 3]) -> [f64; 3] {
-    let n = norm3(a);
-    if n < 1e-15 {
-        [0.0, 0.0, 0.0]
-    } else {
-        scale3(a, 1.0 / n)
-    }
 }
 pub(super) fn midpoint3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     scale3(add3(a, b), 0.5)
@@ -332,7 +322,7 @@ mod tests {
         let mesh = simple_mesh();
         let q = mesh.mean_quality();
         assert!(q.is_finite());
-        assert!(q >= 0.0 && q <= 1.0);
+        assert!((0.0..=1.0).contains(&q));
     }
     #[test]
     fn quality_histogram_bins_count_all_tets() {

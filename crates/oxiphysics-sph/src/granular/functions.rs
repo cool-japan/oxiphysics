@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
 use super::types::{Contact, GranularParams, RollingResistanceModel};
@@ -65,8 +64,8 @@ pub fn granular_eos_pressure_clamped(rho: f64, rho0: f64, params: &GranularParam
     p.max(-params.cohesion)
 }
 /// Convert degrees to radians (re-exported for convenience).
+#[cfg(test)]
 #[inline]
-#[allow(dead_code)]
 pub(super) fn deg_to_rad(deg: f64) -> f64 {
     deg * PI / 180.0
 }
@@ -316,7 +315,6 @@ mod tests {
 /// * `omega_rel` – relative angular velocity (omega_i - omega_j)
 /// * `mu_r` – rolling friction coefficient
 /// * `model` – which rolling resistance model to use
-#[allow(dead_code)]
 pub fn rolling_resistance_torque(
     r_i: f64,
     r_j: f64,
@@ -373,7 +371,6 @@ pub fn rolling_resistance_torque(
 /// # Arguments
 /// * `radii` – radii of all particles
 /// * `domain_volume` – total domain volume (m³)
-#[allow(dead_code)]
 pub fn packing_fraction(radii: &[f64], domain_volume: f64) -> f64 {
     if domain_volume < 1e-30 {
         return 0.0;
@@ -389,7 +386,6 @@ pub fn packing_fraction(radii: &[f64], domain_volume: f64) -> f64 {
 ///
 /// # Arguments
 /// * `velocities` – slice of velocity vectors
-#[allow(dead_code)]
 pub fn granular_temperature(velocities: &[[f64; 3]]) -> f64 {
     let n = velocities.len();
     if n == 0 {
@@ -422,7 +418,6 @@ pub fn granular_temperature(velocities: &[[f64; 3]]) -> f64 {
 /// # Arguments
 /// * `contacts` – slice of detected contacts
 /// * `n_particles` – total number of particles
-#[allow(dead_code)]
 pub fn coordination_numbers(contacts: &[Contact], n_particles: usize) -> Vec<usize> {
     let mut coords = vec![0usize; n_particles];
     for c in contacts {
@@ -436,7 +431,6 @@ pub fn coordination_numbers(contacts: &[Contact], n_particles: usize) -> Vec<usi
     coords
 }
 /// Mean coordination number of the assembly.
-#[allow(dead_code)]
 pub fn mean_coordination_number(contacts: &[Contact], n_particles: usize) -> f64 {
     if n_particles == 0 {
         return 0.0;
@@ -449,7 +443,6 @@ pub fn mean_coordination_number(contacts: &[Contact], n_particles: usize) -> f64
 /// F_ij = (1/N_c) Σ n_i n_j
 ///
 /// where N_c is the total number of contacts.
-#[allow(dead_code)]
 pub fn fabric_tensor(contacts: &[Contact]) -> [[f64; 3]; 3] {
     let n_c = contacts.len();
     if n_c == 0 {
@@ -457,16 +450,16 @@ pub fn fabric_tensor(contacts: &[Contact]) -> [[f64; 3]; 3] {
     }
     let mut fab = [[0.0_f64; 3]; 3];
     for c in contacts {
-        for i in 0..3 {
-            for j in 0..3 {
-                fab[i][j] += c.normal[i] * c.normal[j];
+        for (i, fab_row) in fab.iter_mut().enumerate() {
+            for (j, f) in fab_row.iter_mut().enumerate() {
+                *f += c.normal[i] * c.normal[j];
             }
         }
     }
     let inv = 1.0 / n_c as f64;
-    for i in 0..3 {
-        for j in 0..3 {
-            fab[i][j] *= inv;
+    for row in fab.iter_mut() {
+        for f in row.iter_mut() {
+            *f *= inv;
         }
     }
     fab
@@ -476,7 +469,6 @@ pub fn fabric_tensor(contacts: &[Contact]) -> [[f64; 3]; 3] {
 /// θ_c = arctan(tan(φ) + c / (σ_n))
 ///
 /// For a purely frictional material (c = 0): θ_c = φ.
-#[allow(dead_code)]
 pub fn critical_slope_angle(params: &GranularParams, normal_stress: f64) -> f64 {
     let phi = params.friction_angle_deg.to_radians();
     let tan_phi = phi.tan();
@@ -490,7 +482,6 @@ pub fn critical_slope_angle(params: &GranularParams, normal_stress: f64) -> f64 
 }
 /// Check if a slope at angle `theta_slope` (radians) with the given normal stress
 /// is stable according to Mohr-Coulomb theory.
-#[allow(dead_code)]
 pub fn is_slope_stable(theta_slope: f64, params: &GranularParams, normal_stress: f64) -> bool {
     theta_slope < critical_slope_angle(params, normal_stress)
 }
@@ -498,7 +489,6 @@ pub fn is_slope_stable(theta_slope: f64, params: &GranularParams, normal_stress:
 /// contact force to the mean normal force.
 ///
 /// Returns a vector of normalised force values (one per contact).
-#[allow(dead_code)]
 pub fn force_chain_intensity(normal_forces: &[f64]) -> Vec<f64> {
     if normal_forces.is_empty() {
         return Vec::new();
@@ -682,9 +672,9 @@ mod tests_extended {
     #[test]
     fn fabric_tensor_empty_contacts() {
         let fab = fabric_tensor(&[]);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert_eq!(fab[i][j], 0.0);
+        for row in &fab {
+            for &val in row {
+                assert_eq!(val, 0.0);
             }
         }
     }
@@ -731,11 +721,11 @@ mod tests_extended {
         let fab = fabric_tensor(&contacts);
         let trace = fab[0][0] + fab[1][1] + fab[2][2];
         assert!((trace - 1.0).abs() < 1e-10, "fabric trace = {trace}");
-        for d in 0..3 {
+        for (d, row) in fab.iter().enumerate() {
             assert!(
-                (fab[d][d] - 1.0 / 3.0).abs() < 1e-10,
+                (row[d] - 1.0 / 3.0).abs() < 1e-10,
                 "fab[{d}][{d}] = {}",
-                fab[d][d]
+                row[d]
             );
         }
     }
@@ -1085,9 +1075,9 @@ mod tests_granular_sim {
         let c = HertzContact::from_materials(200e9, 0.3, 200e9, 0.3);
         let expected_e_star = 200e9 / (2.0 * (1.0 - 0.3 * 0.3));
         assert!(
-            (c.E_star - expected_e_star).abs() / expected_e_star < 1e-6,
+            (c.e_star - expected_e_star).abs() / expected_e_star < 1e-6,
             "E* = {}, expected ≈ {expected_e_star}",
-            c.E_star
+            c.e_star
         );
     }
     #[test]
@@ -1239,8 +1229,8 @@ mod tests_granular_sim {
             sim.step(1e-6);
         }
         let mom = sim.total_momentum();
-        for k in 0..3 {
-            assert!(mom[k].is_finite(), "momentum[{k}] not finite: {}", mom[k]);
+        for (k, &m) in mom.iter().enumerate() {
+            assert!(m.is_finite(), "momentum[{k}] not finite: {}", m);
         }
     }
     #[test]
@@ -1279,7 +1269,6 @@ mod tests_granular_sim {
 /// * `friction_angle_deg` – Internal friction angle φ \[degrees\].
 /// * `cohesion`           – Cohesion c \[Pa\].
 /// * `normal_stress`      – Representative normal stress σ_n \[Pa\].
-#[allow(dead_code)]
 pub fn angle_of_repose(friction_angle_deg: f64, cohesion: f64, normal_stress: f64) -> f64 {
     let phi = friction_angle_deg.to_radians();
     let tan_theta = phi.tan()
@@ -1298,7 +1287,6 @@ pub fn angle_of_repose(friction_angle_deg: f64, cohesion: f64, normal_stress: f6
 ///
 /// Simple model: θ_dyn ≈ θ_static * (1 + 0.2 * T_g)
 /// where T_g is the dimensionless granular temperature.
-#[allow(dead_code)]
 pub fn dynamic_angle_of_repose(static_angle_deg: f64, granular_temp: f64) -> f64 {
     static_angle_deg * (1.0 + 0.2 * granular_temp)
 }
@@ -1307,7 +1295,6 @@ pub fn dynamic_angle_of_repose(static_angle_deg: f64, granular_temp: f64) -> f64
 /// # Arguments
 /// * `radii`          – Sphere radii \[m\].
 /// * `domain_volume`  – Total domain volume \[m³\].
-#[allow(dead_code)]
 pub fn void_fraction(radii: &[f64], domain_volume: f64) -> f64 {
     1.0 - packing_fraction(radii, domain_volume)
 }
@@ -1316,14 +1303,12 @@ pub fn void_fraction(radii: &[f64], domain_volume: f64) -> f64 {
 /// For monodisperse spheres in 3D, random close packing ≈ 0.64.
 /// This returns that constant; for polydisperse assemblies a correction
 /// factor can be applied.
-#[allow(dead_code)]
 pub fn random_close_packing_fraction() -> f64 {
     0.64
 }
 /// Check whether the assembly is above the jamming transition threshold.
 ///
 /// Jamming occurs roughly at φ ≈ 0.64 for 3D monodisperse spheres.
-#[allow(dead_code)]
 pub fn is_jammed(packing: f64) -> bool {
     packing >= random_close_packing_fraction()
 }
@@ -1337,7 +1322,6 @@ pub fn is_jammed(packing: f64) -> bool {
 /// * `velocities`     – Particle velocities.
 /// * `domain_height`  – Height of the domain \[m\].
 /// * `n_bins`         – Number of vertical slices.
-#[allow(dead_code)]
 pub fn granular_temperature_profile(
     positions: &[[f64; 3]],
     velocities: &[[f64; 3]],
@@ -1374,8 +1358,6 @@ pub fn granular_temperature_profile(
 /// * `domain_lo`   – Lower-left corner of the domain.
 /// * `domain_hi`   – Upper-right corner of the domain.
 /// * `nx`, `ny`    – Number of grid cells in x and y.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn contact_density_map(
     contacts: &[Contact],
     positions: &[[f64; 3]],

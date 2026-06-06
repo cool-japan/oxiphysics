@@ -1,4 +1,3 @@
-#![allow(clippy::should_implement_trait)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -57,7 +56,13 @@ impl FluentZoneType {
     }
 
     /// Parse a Fluent keyword string into a zone type.
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_keyword(s: &str) -> Self {
+        Self::from(s)
+    }
+}
+
+impl From<&str> for FluentZoneType {
+    fn from(s: &str) -> Self {
         match s.trim() {
             "fluid" => FluentZoneType::Fluid,
             "solid" => FluentZoneType::Solid,
@@ -584,7 +589,7 @@ impl FluentReader {
             if parts.len() >= 2
                 && let Ok(zone_id) = parts[0].parse::<usize>()
             {
-                let zone_type = FluentZoneType::from_str(parts[1]);
+                let zone_type = FluentZoneType::from_keyword(parts[1]);
                 mesh.add_zone(zone_id, zone_type);
             }
         }
@@ -634,7 +639,7 @@ mod tests {
     #[test]
     fn test_zone_type_roundtrip_fluid() {
         let zt = FluentZoneType::Fluid;
-        assert_eq!(FluentZoneType::from_str(zt.as_str()), zt);
+        assert_eq!(FluentZoneType::from_keyword(zt.as_str()), zt);
     }
 
     #[test]
@@ -647,14 +652,14 @@ mod tests {
             FluentZoneType::Interior,
         ];
         for zt in &types {
-            assert_eq!(&FluentZoneType::from_str(zt.as_str()), zt);
+            assert_eq!(&FluentZoneType::from_keyword(zt.as_str()), zt);
         }
     }
 
     #[test]
     fn test_zone_type_unknown_defaults_to_interior() {
         assert_eq!(
-            FluentZoneType::from_str("unknown-zone"),
+            FluentZoneType::from_keyword("unknown-zone"),
             FluentZoneType::Interior
         );
     }
@@ -863,18 +868,19 @@ mod tests {
     #[test]
     fn test_write_read_roundtrip_node_count() {
         let mesh = make_simple_mesh();
-        let path = "/tmp/oxiphysics_fluent_test_roundtrip.msh";
-        mesh.write(path).expect("write failed");
-        let loaded = FluentMesh::read(path).expect("read failed");
+        let path = std::env::temp_dir().join("oxiphysics_fluent_test_roundtrip.msh");
+        mesh.write(path.to_str().unwrap_or(""))
+            .expect("write failed");
+        let loaded = FluentMesh::read(path.to_str().unwrap_or("")).expect("read failed");
         assert_eq!(loaded.node_count(), mesh.node_count());
     }
 
     #[test]
     fn test_write_read_roundtrip_node_coords() {
         let mesh = make_simple_mesh();
-        let path = "/tmp/oxiphysics_fluent_test_coords.msh";
-        mesh.write(path).unwrap();
-        let loaded = FluentMesh::read(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_fluent_test_coords.msh");
+        mesh.write(path.to_str().unwrap_or("")).unwrap();
+        let loaded = FluentMesh::read(path.to_str().unwrap_or("")).unwrap();
         for (orig, loaded_node) in mesh.nodes.iter().zip(loaded.nodes.iter()) {
             for k in 0..3 {
                 let diff = (orig.coordinates[k] - loaded_node.coordinates[k]).abs();
@@ -886,18 +892,18 @@ mod tests {
     #[test]
     fn test_write_read_roundtrip_cell_count() {
         let mesh = make_simple_mesh();
-        let path = "/tmp/oxiphysics_fluent_test_cells.msh";
-        mesh.write(path).unwrap();
-        let loaded = FluentMesh::read(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_fluent_test_cells.msh");
+        mesh.write(path.to_str().unwrap_or("")).unwrap();
+        let loaded = FluentMesh::read(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(loaded.cell_count(), mesh.cell_count());
     }
 
     #[test]
     fn test_write_read_roundtrip_zone() {
         let mesh = make_simple_mesh();
-        let path = "/tmp/oxiphysics_fluent_test_zones.msh";
-        mesh.write(path).unwrap();
-        let loaded = FluentMesh::read(path).unwrap();
+        let path = std::env::temp_dir().join("oxiphysics_fluent_test_zones.msh");
+        mesh.write(path.to_str().unwrap_or("")).unwrap();
+        let loaded = FluentMesh::read(path.to_str().unwrap_or("")).unwrap();
         assert!(!loaded.zones.is_empty());
         assert_eq!(loaded.zones[0].1, FluentZoneType::Fluid);
     }
@@ -905,14 +911,15 @@ mod tests {
     #[test]
     fn test_write_creates_file() {
         let mesh = make_simple_mesh();
-        let path = "/tmp/oxiphysics_fluent_write_check.msh";
-        mesh.write(path).unwrap();
-        assert!(std::path::Path::new(path).exists());
+        let path = std::env::temp_dir().join("oxiphysics_fluent_write_check.msh");
+        mesh.write(path.to_str().unwrap_or("")).unwrap();
+        assert!(path.exists());
     }
 
     #[test]
     fn test_read_nonexistent_file_errors() {
-        let result = FluentMesh::read("/tmp/oxiphysics_does_not_exist.msh");
+        let path = std::env::temp_dir().join("oxiphysics_does_not_exist.msh");
+        let result = FluentMesh::read(path.to_str().unwrap_or(""));
         assert!(result.is_err());
     }
 

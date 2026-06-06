@@ -8,9 +8,6 @@
 //! smooth blending; ambient occlusion; soft shadows; and a simple renderer
 //! that produces depth and normal buffers.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ── Vector helpers ────────────────────────────────────────────────────────────
 
 /// Add two 3-D vectors component-wise.
@@ -66,6 +63,7 @@ fn max3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 /// Component-wise absolute value of a 3-D vector.
+#[cfg(test)]
 #[inline]
 fn abs3(v: [f64; 3]) -> [f64; 3] {
     [v[0].abs(), v[1].abs(), v[2].abs()]

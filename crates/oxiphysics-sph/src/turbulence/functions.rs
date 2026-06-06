@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::DesDetachment;
 
 pub(super) type Mat3 = [[f64; 3]; 3];
@@ -25,7 +24,6 @@ pub(super) fn strain_rate_magnitude(s: &Mat3) -> f64 {
 ///
 /// For each particle `i`, the filtered value is the average of
 /// `values[j]` over all neighbours `j` (including `i` itself).
-#[allow(dead_code)]
 pub fn box_filter_scalar(values: &[f64], neighbors: &[Vec<usize>]) -> Vec<f64> {
     let n = values.len();
     let mut filtered = vec![0.0_f64; n];
@@ -40,7 +38,6 @@ pub fn box_filter_scalar(values: &[f64], neighbors: &[Vec<usize>]) -> Vec<f64> {
     filtered
 }
 /// Apply a box filter to a vector field defined on particles.
-#[allow(dead_code)]
 pub fn box_filter_vector(values: &[[f64; 3]], neighbors: &[Vec<usize>]) -> Vec<[f64; 3]> {
     let n = values.len();
     let mut filtered = vec![[0.0_f64; 3]; n];
@@ -58,7 +55,6 @@ pub fn box_filter_vector(values: &[[f64; 3]], neighbors: &[Vec<usize>]) -> Vec<[
 }
 /// Compute the turbulent kinetic energy from the resolved velocity field
 /// using a box filter: k_sgs ≈ 0.5 * |v - v̄|².
-#[allow(dead_code)]
 pub fn resolved_tke(velocities: &[[f64; 3]], neighbors: &[Vec<usize>]) -> Vec<f64> {
     let filtered = box_filter_vector(velocities, neighbors);
     velocities
@@ -76,7 +72,6 @@ pub fn resolved_tke(velocities: &[[f64; 3]], neighbors: &[Vec<usize>]) -> Vec<f6
 ///
 /// Uses SPH gradient of velocity: ω = ∇ × v.
 /// `all_kernel_grads[i][k]` is ∇W for the k-th neighbour of particle i.
-#[allow(dead_code, clippy::too_many_arguments)]
 pub fn compute_vorticity(
     velocities: &[[f64; 3]],
     masses: &[f64],
@@ -112,7 +107,6 @@ pub fn compute_vorticity(
 ///
 /// where `dW = dW/dr * r_ij/|r_ij|` is the kernel gradient evaluated at the
 /// separation `r_ij = pos_j − pos_i` and scaled by the magnitude `dW`.
-#[allow(dead_code)]
 pub fn compute_strain_rate_tensor(
     vel_i: [f64; 3],
     vel_j: [f64; 3],
@@ -155,7 +149,6 @@ pub fn compute_strain_rate_tensor(
 /// Standalone DES blending function (free function form).
 ///
 /// Returns a blend value in `[0, 1]` where 0 = pure LES, 1 = pure RANS.
-#[allow(dead_code)]
 pub fn rans_les_blend(d_wall: f64, h: f64) -> f64 {
     let des = DesDetachment::new(0.65, h);
     des.rans_les_blend(d_wall, h)
@@ -169,7 +162,6 @@ pub fn rans_les_blend(d_wall: f64, h: f64) -> f64 {
 /// - `density` : fluid density ρ.
 /// - `cs`      : Smagorinsky constant C_s.
 /// - `delta`   : filter width Δ.
-#[allow(dead_code)]
 pub fn sgs_stress_smagorinsky(s: Mat3, density: f64, cs: f64, delta: f64) -> Mat3 {
     let s_mag = strain_rate_magnitude(&s);
     let coeff = -2.0 * density * cs * cs * delta * delta * s_mag;
@@ -184,7 +176,6 @@ pub fn sgs_stress_smagorinsky(s: Mat3, density: f64, cs: f64, delta: f64) -> Mat
 /// Compute the SGS kinetic energy from the trace of the SGS stress.
 ///
 /// k_SGS = -½ τ_ii / ρ
-#[allow(dead_code)]
 pub fn sgs_kinetic_energy(tau: Mat3, density: f64) -> f64 {
     if density < 1e-30 {
         return 0.0;
@@ -193,17 +184,15 @@ pub fn sgs_kinetic_energy(tau: Mat3, density: f64) -> f64 {
     -0.5 * trace / density
 }
 /// Isotropic part of the SGS stress: p_SGS = -τ_ii / 3.
-#[allow(dead_code)]
 pub fn sgs_pressure(tau: Mat3) -> f64 {
     -(tau[0][0] + tau[1][1] + tau[2][2]) / 3.0
 }
 /// Deviatoric part of the SGS stress: τ^dev_ij = τ_ij - (1/3) δ_ij τ_kk.
-#[allow(dead_code)]
 pub fn sgs_stress_deviatoric(tau: Mat3) -> Mat3 {
     let trace = tau[0][0] + tau[1][1] + tau[2][2];
     let mut dev = tau;
-    for i in 0..3 {
-        dev[i][i] -= trace / 3.0;
+    for (i, dev_i) in dev.iter_mut().enumerate() {
+        dev_i[i] -= trace / 3.0;
     }
     dev
 }
@@ -264,12 +253,12 @@ mod tests {
             &all_kernel_grads[0],
         );
         let tau = model.compute_sps_stress(&s, 1000.0);
-        for a in 0..3 {
-            for b in 0..3 {
+        for (a, row) in tau.iter().enumerate() {
+            for (b, &val) in row.iter().enumerate() {
                 assert!(
-                    tau[a][b].abs() < 1e-10,
+                    val.abs() < 1e-10,
                     "Expected ~0 stress for uniform flow; tau[{a}][{b}]={:.3e}",
-                    tau[a][b]
+                    val
                 );
             }
         }
@@ -668,12 +657,12 @@ mod tests {
         let les = LesFilter::new(0.1, 0.15);
         let s: Mat3 = [[1.0, 0.5, 0.3], [0.5, -0.5, 0.2], [0.3, 0.2, -0.5]];
         let tau = les.turbulent_stress(s, 1000.0);
-        for a in 0..3 {
-            for b in 0..3 {
+        for (a, row) in tau.iter().enumerate() {
+            for (b, &val) in row.iter().enumerate() {
                 assert!(
-                    (tau[a][b] - tau[b][a]).abs() < 1e-13,
+                    (val - tau[b][a]).abs() < 1e-13,
                     "Stress not symmetric: τ[{a}][{b}]={:.3e} τ[{b}][{a}]={:.3e}",
-                    tau[a][b],
+                    val,
                     tau[b][a]
                 );
             }
@@ -742,10 +731,10 @@ mod tests {
         let vel_j = [1.0, 0.5, 0.2];
         let r_ij = [0.1, 0.0, 0.0];
         let s = compute_strain_rate_tensor(vel_i, vel_j, r_ij, 0.001, 1000.0, 5.0);
-        for a in 0..3 {
-            for b in 0..3 {
+        for (a, row) in s.iter().enumerate() {
+            for (b, &val) in row.iter().enumerate() {
                 assert!(
-                    (s[a][b] - s[b][a]).abs() < 1e-14,
+                    (val - s[b][a]).abs() < 1e-14,
                     "Strain rate tensor must be symmetric"
                 );
             }
@@ -781,10 +770,10 @@ mod tests {
         let s: Mat3 = [[1.0, 0.3, 0.2], [0.3, -0.5, 0.1], [0.2, 0.1, -0.5]];
         let s_test: Mat3 = [[0.5, 0.15, 0.1], [0.15, -0.25, 0.05], [0.1, 0.05, -0.25]];
         let tau = ds.sgs_stress(s, s_test, 1000.0);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in tau.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (tau[i][j] - tau[j][i]).abs() < 1e-12,
+                    (val - tau[j][i]).abs() < 1e-12,
                     "Dynamic SGS stress must be symmetric"
                 );
             }
@@ -838,10 +827,10 @@ mod tests {
         let s: Mat3 = [[1.0, 0.4, 0.1], [0.4, -0.5, 0.2], [0.1, 0.2, -0.5]];
         let g: Mat3 = [[1.2, 0.3, 0.0], [-0.1, -0.6, 0.0], [0.0, 0.0, -0.6]];
         let tau = wale.sgs_stress(s, g, 1000.0);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in tau.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (tau[i][j] - tau[j][i]).abs() < 1e-12,
+                    (val - tau[j][i]).abs() < 1e-12,
                     "WALE SGS stress must be symmetric"
                 );
             }
@@ -865,17 +854,17 @@ mod tests {
         let zero_s: Mat3 = [[0.0; 3]; 3];
         let tau = ke.sgs_stress(zero_s, 1000.0);
         let expected_diag = (2.0 / 3.0) * 1000.0 * 0.1;
-        for i in 0..3 {
+        for (i, row) in tau.iter().enumerate() {
             assert!(
-                (tau[i][i] - expected_diag).abs() < 1e-10,
+                (row[i] - expected_diag).abs() < 1e-10,
                 "Diagonal τ[{i}][{i}] should be {expected_diag}, got {}",
-                tau[i][i]
+                row[i]
             );
         }
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in tau.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 if i != j {
-                    assert!(tau[i][j].abs() < 1e-14, "Off-diagonal should be zero");
+                    assert!(val.abs() < 1e-14, "Off-diagonal should be zero");
                 }
             }
         }
@@ -900,10 +889,10 @@ mod tests {
     fn test_sgs_stress_smagorinsky_symmetric() {
         let s: Mat3 = [[1.0, 0.5, 0.3], [0.5, -0.5, 0.2], [0.3, 0.2, -0.5]];
         let tau = sgs_stress_smagorinsky(s, 1000.0, 0.12, 0.1);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in tau.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (tau[i][j] - tau[j][i]).abs() < 1e-12,
+                    (val - tau[j][i]).abs() < 1e-12,
                     "Smagorinsky SGS stress must be symmetric"
                 );
             }
@@ -1041,17 +1030,6 @@ mod tests {
         );
     }
 }
-#[allow(dead_code)]
-#[inline]
-pub(super) fn mat3_add(a: Mat3, b: Mat3) -> Mat3 {
-    let mut c = [[0.0_f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            c[i][j] = a[i][j] + b[i][j];
-        }
-    }
-    c
-}
 #[inline]
 pub(super) fn mat3_scale(s: f64, a: Mat3) -> Mat3 {
     let mut b = [[0.0_f64; 3]; 3];
@@ -1101,19 +1079,16 @@ pub(super) fn mat3_antisym(a: &Mat3) -> Mat3 {
 }
 /// Compute the rotation-rate tensor Ω_ij = (∂v_i/∂x_j - ∂v_j/∂x_i) / 2
 /// from the full velocity-gradient tensor.
-#[allow(dead_code)]
 pub fn rotation_rate_tensor(vel_grad: &Mat3) -> Mat3 {
     mat3_antisym(vel_grad)
 }
 /// Compute the strain-rate tensor S_ij = (∂v_i/∂x_j + ∂v_j/∂x_i) / 2.
-#[allow(dead_code)]
 pub fn strain_rate_tensor(vel_grad: &Mat3) -> Mat3 {
     mat3_sym(vel_grad)
 }
 /// Compute the Q-criterion (second invariant of velocity gradient):
 /// Q = 0.5 (|Ω|² - |S|²)
 /// Q > 0 identifies rotation-dominated regions (vortex cores).
-#[allow(dead_code)]
 pub fn q_criterion(vel_grad: &Mat3) -> f64 {
     let omega = rotation_rate_tensor(vel_grad);
     let s = strain_rate_tensor(vel_grad);
@@ -1128,7 +1103,6 @@ pub fn q_criterion(vel_grad: &Mat3) -> f64 {
 ///
 /// Uses the characteristic polynomial of the 3×3 symmetric matrix A = S² + Ω²
 /// and returns the middle eigenvalue.
-#[allow(dead_code)]
 pub fn lambda2_criterion(vel_grad: &Mat3) -> f64 {
     let s = strain_rate_tensor(vel_grad);
     let omega = rotation_rate_tensor(vel_grad);
@@ -1143,9 +1117,9 @@ pub fn lambda2_criterion(vel_grad: &Mat3) -> f64 {
     let tr = mat3_trace(&a);
     let tr_a2 = {
         let mut t = 0.0;
-        for i in 0..3 {
-            for k in 0..3 {
-                t += a[i][k] * a[k][i];
+        for (i, row_i) in a.iter().enumerate() {
+            for (k, &a_ik) in row_i.iter().enumerate() {
+                t += a_ik * a[k][i];
             }
         }
         t
@@ -1223,10 +1197,10 @@ mod tests_turbulence_extended {
         let model = SmagorinskyLes::new(0.17, 0.1);
         let s: Mat3 = [[1.0, 0.3, 0.0], [0.3, -1.0, 0.0], [0.0, 0.0, 0.0]];
         let tau = model.sgs_stress(&s, 1000.0);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in tau.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (tau[i][j] - tau[j][i]).abs() < 1e-12,
+                    (val - tau[j][i]).abs() < 1e-12,
                     "SGS stress must be symmetric: tau[{i}][{j}]≠tau[{j}][{i}]"
                 );
             }
@@ -1280,9 +1254,9 @@ mod tests_turbulence_extended {
         let model = DynamicSmagorinskyLes::default();
         let s: Mat3 = [[3.0, 0.0, 0.0], [0.0, -1.5, 0.0], [0.0, 0.0, -1.5]];
         let tau = model.sgs_stress(&s, &s, 1000.0);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(tau[i][j].is_finite(), "SGS stress should be finite");
+        for row in &tau {
+            for &val in row {
+                assert!(val.is_finite(), "SGS stress should be finite");
             }
         }
     }
@@ -1445,10 +1419,10 @@ mod tests_turbulence_extended {
     fn test_rotation_rate_tensor_antisymmetric() {
         let vel_grad: Mat3 = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
         let omega = rotation_rate_tensor(&vel_grad);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in omega.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (omega[i][j] + omega[j][i]).abs() < 1e-12,
+                    (val + omega[j][i]).abs() < 1e-12,
                     "Rotation rate tensor must be anti-symmetric"
                 );
             }
@@ -1458,10 +1432,10 @@ mod tests_turbulence_extended {
     fn test_strain_rate_tensor_symmetric() {
         let vel_grad: Mat3 = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
         let s = strain_rate_tensor(&vel_grad);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in s.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (s[i][j] - s[j][i]).abs() < 1e-12,
+                    (val - s[j][i]).abs() < 1e-12,
                     "Strain-rate tensor must be symmetric"
                 );
             }

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
 /// A rotational sweep (lathe) — rotate a 2-D profile around the Y axis.
 ///

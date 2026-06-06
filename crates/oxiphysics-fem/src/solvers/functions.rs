@@ -12,16 +12,15 @@ use super::types::{
 ///
 /// `values`, `col_idx`, and `row_ptr` follow the standard CSR layout.
 /// `x` has length `ncols`; the returned vector has length `nrows = row_ptr.len() - 1`.
-#[allow(dead_code)]
 pub fn sparse_matvec(values: &[f64], col_idx: &[usize], row_ptr: &[usize], x: &[f64]) -> Vec<f64> {
     let nrows = row_ptr.len().saturating_sub(1);
     let mut y = vec![0.0; nrows];
-    for i in 0..nrows {
+    for (i, y_i) in y.iter_mut().enumerate() {
         let mut sum = 0.0;
         for k in row_ptr[i]..row_ptr[i + 1] {
             sum += values[k] * x[col_idx[k]];
         }
-        y[i] = sum;
+        *y_i = sum;
     }
     y
 }
@@ -30,7 +29,6 @@ pub fn sparse_matvec(values: &[f64], col_idx: &[usize], row_ptr: &[usize], x: &[
 /// `precond[i] = 1 / A[i,i]` (Jacobi preconditioner).
 ///
 /// Returns `(solution, stats)`.
-#[allow(dead_code)]
 pub fn pcg_solve(
     a: &CsrMatrix,
     b: &[f64],
@@ -71,22 +69,24 @@ pub fn pcg_solve(
             break;
         }
         let alpha = rz_old / p_ap;
-        for i in 0..n {
-            x[i] += alpha * p[i];
-            r[i] -= alpha * ap[i];
+        for ((x_i, r_i), (&p_i, &ap_i)) in
+            x.iter_mut().zip(r.iter_mut()).zip(p.iter().zip(ap.iter()))
+        {
+            *x_i += alpha * p_i;
+            *r_i -= alpha * ap_i;
         }
         let r_norm = dot(&r, &r).sqrt();
         if r_norm / b_norm < tol {
             converged = true;
             break;
         }
-        for i in 0..n {
-            z[i] = r[i] * precond[i];
+        for ((z_i, &r_i), &pre_i) in z.iter_mut().zip(r.iter()).zip(precond.iter()) {
+            *z_i = r_i * pre_i;
         }
         let rz_new = dot(&r, &z);
         let beta = rz_new / rz_old;
-        for i in 0..n {
-            p[i] = z[i] + beta * p[i];
+        for (p_i, &z_i) in p.iter_mut().zip(z.iter()) {
+            *p_i = z_i + beta * *p_i;
         }
         rz_old = rz_new;
     }
@@ -229,7 +229,6 @@ pub(super) fn dense_matvec(a: &[f64], x: &[f64], n: usize) -> Vec<f64> {
 /// Solve a dense square system `A x = b` (row-major, size `n`) using BiCGSTAB.
 ///
 /// Returns `(solution, stats)`. Works for non-symmetric systems.
-#[allow(dead_code)]
 pub fn bicgstab_dense(
     a: &[f64],
     b: &[f64],
@@ -326,7 +325,6 @@ pub fn bicgstab_dense(
 ///
 /// Suitable for indefinite symmetric systems (not just SPD).
 /// Returns `(solution, stats)`.
-#[allow(dead_code)]
 pub fn minres_dense(
     a: &[f64],
     b: &[f64],
@@ -352,8 +350,10 @@ pub fn minres_dense(
     let mut beta_curr = b_norm;
     let mut c_old = 1.0_f64;
     let mut s_old = 0.0_f64;
-    #[allow(unused_assignments)]
-    let (mut c_cur, mut s_cur) = (1.0_f64, 0.0_f64);
+    // c_cur and s_cur are always assigned before being read (first loop body),
+    // so no meaningful initial value is needed.
+    let mut c_cur;
+    let mut s_cur;
     let mut eta = b_norm;
     let mut w = vec![0.0_f64; n];
     let mut w_old = vec![0.0_f64; n];
@@ -380,11 +380,11 @@ pub fn minres_dense(
         let gamma_sq = (delta * delta + beta_next * beta_next).sqrt().max(1e-60);
         c_cur = delta / gamma_sq;
         s_cur = -beta_next / gamma_sq;
-        for i in 0..n {
-            w[i] = (v_curr[i] - eps * w_old[i] - delta * w[i]) / gamma_sq;
+        for (i, w_i) in w.iter_mut().enumerate() {
+            *w_i = (v_curr[i] - eps * w_old[i] - delta * *w_i) / gamma_sq;
         }
-        for i in 0..n {
-            x[i] += c_cur * eta * w[i];
+        for (x_i, &w_i) in x.iter_mut().zip(w.iter()) {
+            *x_i += c_cur * eta * w_i;
         }
         eta *= -s_cur;
         let r_norm = eta.abs();
@@ -403,7 +403,6 @@ pub fn minres_dense(
             converged = true;
             break;
         }
-        let _ = delta;
     }
     let ax = dense_matvec(a, &x, n);
     let r: Vec<f64> = b.iter().zip(ax.iter()).map(|(bi, ai)| bi - ai).collect();
@@ -424,7 +423,6 @@ pub fn minres_dense(
 ///
 /// `m` is the Krylov subspace dimension before restart.
 /// Returns `(solution, stats)`.
-#[allow(dead_code)]
 pub fn gmres_dense(
     a: &[f64],
     b: &[f64],
@@ -537,7 +535,6 @@ pub fn gmres_dense(
 ///
 /// Returns `(L, U)` both as flat row-major vectors of size `n×n`.
 /// L has unit diagonal; the sparsity pattern is preserved (ILU(0) = no fill-in).
-#[allow(dead_code)]
 pub fn ilu0_dense(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     let mut l = vec![0.0_f64; n * n];
     let mut u = a.to_vec();
@@ -560,7 +557,6 @@ pub fn ilu0_dense(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     (l, u)
 }
 /// Apply ILU(0) as a preconditioner: solve L y = b, then U x = y.
-#[allow(dead_code)]
 pub fn ilu0_solve(l: &[f64], u: &[f64], b: &[f64], n: usize) -> Vec<f64> {
     let mut y = vec![0.0_f64; n];
     for i in 0..n {
@@ -588,7 +584,6 @@ pub fn ilu0_solve(l: &[f64], u: &[f64], b: &[f64], n: usize) -> Vec<f64> {
 ///
 /// Returns flat row-major lower-triangular `L` such that `L L^T ≈ A`.
 /// Only entries where `A[i][j] != 0` are computed (ILU(0) pattern).
-#[allow(dead_code)]
 pub fn incomplete_cholesky_dense(a: &[f64], n: usize) -> Vec<f64> {
     let mut l = vec![0.0_f64; n * n];
     for i in 0..n {
@@ -613,7 +608,6 @@ pub fn incomplete_cholesky_dense(a: &[f64], n: usize) -> Vec<f64> {
 ///
 /// `A`, `B`, `C`, `D` are all dense `n×n` row-major matrices.
 /// Returns the Schur complement `S` as a flat `n×n` matrix.
-#[allow(dead_code)]
 pub fn schur_complement_dense(a: &[f64], b: &[f64], c: &[f64], d: &[f64], n: usize) -> Vec<f64> {
     let chol = CholeskyDense::new(n);
     let mut ainv_b = vec![0.0_f64; n * n];
@@ -643,7 +637,6 @@ pub fn schur_complement_dense(a: &[f64], b: &[f64], c: &[f64], d: &[f64], n: usi
 /// Uses Gauss-Seidel as smoother (`pre_smooth` and `post_smooth` iterations).
 /// The coarse-grid operator is the lower-left quarter of `A`.
 /// Returns `(solution, stats)`.
-#[allow(dead_code)]
 pub fn multigrid_vcycle_dense(
     a: &[f64],
     b: &[f64],
@@ -702,7 +695,6 @@ pub fn multigrid_vcycle_dense(
 ///
 /// The ICC preconditioner is computed from `a` automatically.  Returns
 /// `(solution, stats)`.  Suitable for symmetric positive definite systems.
-#[allow(dead_code)]
 pub fn pcg_icc(a: &CsrMatrix, b: &[f64], max_iter: usize, tol: f64) -> (Vec<f64>, SolverStats) {
     use crate::sparse::IccPreconditioner;
     let icc = IccPreconditioner::new(a);
@@ -765,7 +757,6 @@ pub fn pcg_icc(a: &CsrMatrix, b: &[f64], max_iter: usize, tol: f64) -> (Vec<f64>
 /// [`ConvergenceMonitor`].
 ///
 /// Returns `(solution, monitor)`.
-#[allow(dead_code)]
 pub fn pcg_with_monitor(
     a: &CsrMatrix,
     b: &[f64],
@@ -821,7 +812,6 @@ pub fn pcg_with_monitor(
 ///
 /// Suitable for non-symmetric or mildly indefinite systems.
 /// Returns `(solution, stats)`.
-#[allow(dead_code)]
 pub fn bicgstab_sparse(
     a: &CsrMatrix,
     b: &[f64],
@@ -920,7 +910,6 @@ pub fn bicgstab_sparse(
 ///
 /// Suitable for symmetric indefinite systems (SPD and SPSD are also handled).
 /// Returns `(solution, stats)`.
-#[allow(dead_code)]
 pub fn minres_sparse(
     a: &CsrMatrix,
     b: &[f64],
@@ -948,8 +937,9 @@ pub fn minres_sparse(
     let mut beta_curr = b_norm;
     let mut c_old = 1.0f64;
     let mut s_old = 0.0f64;
-    #[allow(unused_assignments)]
-    let (mut c_cur, mut s_cur) = (1.0f64, 0.0f64);
+    // c_cur and s_cur are always assigned before being read (first loop body).
+    let mut c_cur;
+    let mut s_cur;
     let mut eta = b_norm;
     let mut w = vec![0.0f64; n];
     let mut w_old = vec![0.0f64; n];
@@ -976,11 +966,11 @@ pub fn minres_sparse(
         let gamma_sq = (delta * delta + beta_next * beta_next).sqrt().max(1e-60);
         c_cur = delta / gamma_sq;
         s_cur = -beta_next / gamma_sq;
-        for i in 0..n {
-            w[i] = (v_curr[i] - eps * w_old[i] - delta * w[i]) / gamma_sq;
+        for (i, w_i) in w.iter_mut().enumerate() {
+            *w_i = (v_curr[i] - eps * w_old[i] - delta * *w_i) / gamma_sq;
         }
-        for i in 0..n {
-            x[i] += c_cur * eta * w[i];
+        for (x_i, &w_i) in x.iter_mut().zip(w.iter()) {
+            *x_i += c_cur * eta * w_i;
         }
         eta *= -s_cur;
         let r_norm = eta.abs();
@@ -999,7 +989,6 @@ pub fn minres_sparse(
             converged = true;
             break;
         }
-        let _ = delta;
     }
     let ax_final = a.mul_vec(&x);
     let r: Vec<f64> = b
@@ -1024,7 +1013,6 @@ pub fn minres_sparse(
 ///
 /// `m` is the restart dimension (default recommendation: 20).
 /// Returns `(solution, stats)`.
-#[allow(dead_code)]
 pub fn gmres_sparse(
     a: &CsrMatrix,
     b: &[f64],
@@ -1145,7 +1133,6 @@ pub fn gmres_sparse(
 /// with one AMG V-cycle per iteration.
 ///
 /// Returns `(solution, stats)`.
-#[allow(dead_code)]
 pub fn amg_pcg(a: &CsrMatrix, b: &[f64], max_iter: usize, tol: f64) -> (Vec<f64>, SolverStats) {
     use crate::sparse::amg_v_cycle;
     let n = b.len();
@@ -1212,7 +1199,6 @@ pub fn amg_pcg(a: &CsrMatrix, b: &[f64], max_iter: usize, tol: f64) -> (Vec<f64>
 /// initial guess for `fine_iter` iterations of full PCG.
 ///
 /// Returns `(solution, stats)`.
-#[allow(dead_code)]
 pub fn nested_iteration(
     a: &CsrMatrix,
     b: &[f64],
@@ -1333,7 +1319,6 @@ pub(super) fn pcg_solve_from(
 /// Suitable for small systems (up to a few hundred DOFs).  For larger systems
 /// prefer the iterative solvers.  Returns the solution vector, or a zero
 /// vector if the system is singular.
-#[allow(dead_code)]
 pub fn lu_solve(a_in: &[f64], b: &[f64], n: usize) -> Vec<f64> {
     assert_eq!(a_in.len(), n * n);
     assert_eq!(b.len(), n);

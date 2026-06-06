@@ -12,8 +12,6 @@ use crate::atom::AtomSet;
 use oxiphysics_core::math::Vec3;
 
 use super::functions::Thermostat;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::AndersenThermostat;
 
 impl Thermostat for AndersenThermostat {

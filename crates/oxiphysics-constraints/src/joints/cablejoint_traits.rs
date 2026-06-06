@@ -13,10 +13,7 @@ use oxiphysics_core::BodyHandle;
 use oxiphysics_core::math::Vec3;
 use oxiphysics_rigid::RigidBodySet;
 
-use super::functions::JOINT_BAUMGARTE;
-#[allow(unused_imports)]
-use super::functions::*;
-use super::functions::{linear_effective_mass, read_body};
+use super::functions::{JOINT_BAUMGARTE, linear_effective_mass, read_body};
 use super::types::CableJoint;
 
 impl Constraint for CableJoint {

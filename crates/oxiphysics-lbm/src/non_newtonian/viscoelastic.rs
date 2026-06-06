@@ -28,7 +28,6 @@ use super::{CS2, LocalViscosityModel, NonNewtonianFluid};
 ///
 /// In the limit `lambda_2 = 0` it reduces to the Upper-Convected Maxwell (UCM) model.
 /// In the limit `lambda_1 = 0` it reduces to a Newtonian fluid.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct OldroydB {
     /// Total (zero-shear-rate) viscosity eta (polymer + solvent).
@@ -41,7 +40,6 @@ pub struct OldroydB {
     pub eta_s: f64,
 }
 
-#[allow(dead_code)]
 impl OldroydB {
     /// Create a new Oldroyd-B model.
     pub fn new(eta: f64, lambda_1: f64, lambda_2: f64, eta_s: f64) -> Self {
@@ -151,7 +149,6 @@ impl OldroydB {
 ///
 /// giving storage modulus `G'(omega) = eta * omega^2 * lambda^2 / (1 + omega^2 * lambda^2)`
 /// and loss modulus  `G''(omega) = eta * omega / (1 + omega^2 * lambda^2)`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct MaxwellFluid {
     /// Relaxation time lambda (s).
@@ -160,7 +157,6 @@ pub struct MaxwellFluid {
     pub elastic_modulus: f64,
 }
 
-#[allow(dead_code)]
 impl MaxwellFluid {
     /// Create a new Maxwell fluid with relaxation time `lambda` and modulus `G`.
     pub fn new(relaxation_time: f64, elastic_modulus: f64) -> Self {
@@ -299,7 +295,6 @@ impl LocalViscosityModel for MaxwellFluid {
 ///
 /// where for the linear PTT: f(tau) = 1 + epsilon * lambda * tr(tau) / eta_p
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct PhanThienTanner {
     /// Polymeric viscosity eta_p.
     pub eta_p: f64,
@@ -315,7 +310,6 @@ pub struct PhanThienTanner {
 
 impl PhanThienTanner {
     /// Create a new PTT fluid with given parameters.
-    #[allow(dead_code)]
     pub fn new(eta_p: f64, eta_s: f64, lambda: f64, epsilon: f64, xi: f64) -> Self {
         Self {
             eta_p,
@@ -327,31 +321,26 @@ impl PhanThienTanner {
     }
 
     /// Total viscosity eta_0 = eta_p + eta_s.
-    #[allow(dead_code)]
     pub fn total_viscosity(&self) -> f64 {
         self.eta_p + self.eta_s
     }
 
     /// Viscosity ratio beta = eta_s / (eta_p + eta_s).
-    #[allow(dead_code)]
     pub fn viscosity_ratio(&self) -> f64 {
         self.eta_s / self.total_viscosity()
     }
 
     /// Linear PTT stress coefficient f(tr(tau)) = 1 + epsilon * lambda * tr(tau) / eta_p.
-    #[allow(dead_code)]
     pub fn stress_function_linear(&self, trace_stress: f64) -> f64 {
         1.0 + self.epsilon * self.lambda * trace_stress / self.eta_p
     }
 
     /// Exponential PTT stress coefficient f(tr(tau)) = exp(epsilon * lambda * tr(tau) / eta_p).
-    #[allow(dead_code)]
     pub fn stress_function_exp(&self, trace_stress: f64) -> f64 {
         (self.epsilon * self.lambda * trace_stress / self.eta_p).exp()
     }
 
     /// Weissenberg number Wi = lambda * |gamma|.
-    #[allow(dead_code)]
     pub fn weissenberg_number(&self, shear_rate: f64) -> f64 {
         self.lambda * shear_rate.abs()
     }
@@ -359,7 +348,6 @@ impl PhanThienTanner {
     /// Effective shear viscosity at steady simple shear rate gamma (linear PTT).
     ///
     /// eta_eff = eta_p / f(gamma) + eta_s,  f(gamma) = 1 + 2*epsilon*(1-xi)*xi * Wi^2
-    #[allow(dead_code)]
     pub fn steady_shear_viscosity(&self, shear_rate: f64) -> f64 {
         let wi = self.weissenberg_number(shear_rate);
         let f = 1.0 + 2.0 * self.epsilon * (1.0 - self.xi) * self.xi * wi * wi;
@@ -367,7 +355,6 @@ impl PhanThienTanner {
     }
 
     /// Normal stress difference N1 = tau_xx - tau_yy at steady shear.
-    #[allow(dead_code)]
     pub fn normal_stress_difference(&self, shear_rate: f64) -> f64 {
         let wi = self.weissenberg_number(shear_rate);
         let f = 1.0 + 2.0 * self.epsilon * (1.0 - self.xi) * self.xi * wi * wi;
@@ -385,7 +372,6 @@ impl PhanThienTanner {
 ///
 /// tau + lambda * tau^nabla + alpha * lambda / eta_p * tau * tau = 2 eta_p D
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct GiesekusFluid {
     /// Polymeric viscosity.
     pub eta_p: f64,
@@ -397,7 +383,6 @@ pub struct GiesekusFluid {
 
 impl GiesekusFluid {
     /// Create a new Giesekus fluid.
-    #[allow(dead_code)]
     pub fn new(eta_p: f64, lambda: f64, alpha: f64) -> Self {
         Self {
             eta_p,
@@ -407,7 +392,6 @@ impl GiesekusFluid {
     }
 
     /// Weissenberg number.
-    #[allow(dead_code)]
     pub fn weissenberg(&self, shear_rate: f64) -> f64 {
         self.lambda * shear_rate.abs()
     }
@@ -415,7 +399,6 @@ impl GiesekusFluid {
     /// Approximate steady shear viscosity eta(Wi).
     ///
     /// For alpha->0 recovers UCM; for finite alpha gives shear thinning.
-    #[allow(dead_code)]
     pub fn steady_shear_viscosity(&self, shear_rate: f64) -> f64 {
         let wi = self.weissenberg(shear_rate);
         // Approximate closed-form for Giesekus
@@ -424,7 +407,6 @@ impl GiesekusFluid {
     }
 
     /// Relaxation time for the LBM effective viscosity.
-    #[allow(dead_code)]
     pub fn effective_tau(&self, shear_rate: f64, cs2: f64) -> f64 {
         let nu = self.steady_shear_viscosity(shear_rate);
         0.5 + nu / cs2
@@ -439,7 +421,6 @@ impl GiesekusFluid {
 ///
 /// Useful for fluids whose rheology is given by experimental data.
 /// Viscosity is linearly interpolated between table points.
-#[allow(dead_code)]
 pub struct RheologyLookupTable {
     /// Shear rate sample points (must be sorted ascending).
     pub gamma_dot: Vec<f64>,
@@ -451,7 +432,6 @@ impl RheologyLookupTable {
     /// Create a lookup table.
     ///
     /// Panics if `gamma_dot` and `viscosity` have different lengths or are empty.
-    #[allow(dead_code)]
     pub fn new(gamma_dot: Vec<f64>, viscosity: Vec<f64>) -> Self {
         assert_eq!(gamma_dot.len(), viscosity.len(), "lengths must match");
         assert!(!gamma_dot.is_empty(), "table must not be empty");
@@ -462,7 +442,6 @@ impl RheologyLookupTable {
     }
 
     /// Look up viscosity at the given shear rate via linear interpolation.
-    #[allow(dead_code)]
     pub fn viscosity_at(&self, gamma: f64) -> f64 {
         let n = self.gamma_dot.len();
         let g = gamma.abs();
@@ -480,7 +459,6 @@ impl RheologyLookupTable {
     }
 
     /// Compute LBM relaxation time tau from tabulated viscosity.
-    #[allow(dead_code)]
     pub fn tau_at(&self, gamma: f64, cs2: f64) -> f64 {
         0.5 + self.viscosity_at(gamma) / cs2
     }
@@ -491,7 +469,6 @@ impl RheologyLookupTable {
 // ---------------------------------------------------------------------------
 
 /// 2D and 3D yield criteria for viscoplastic fluids.
-#[allow(dead_code)]
 pub struct YieldCriterion {
     /// Yield stress tau_y.
     pub tau_yield: f64,
@@ -499,7 +476,6 @@ pub struct YieldCriterion {
 
 impl YieldCriterion {
     /// Create a yield criterion with given yield stress.
-    #[allow(dead_code)]
     pub fn new(tau_yield: f64) -> Self {
         Self { tau_yield }
     }
@@ -507,21 +483,18 @@ impl YieldCriterion {
     /// Von Mises yield condition in 2D from stress components (sigma_xx, sigma_yy, sigma_xy).
     ///
     /// Returns `true` if the material has yielded.
-    #[allow(dead_code)]
     pub fn is_yielded_2d(&self, s_xx: f64, s_yy: f64, s_xy: f64) -> bool {
         let vm = ((s_xx - s_yy) * (s_xx - s_yy) / 2.0 + s_xy * s_xy).sqrt();
         vm > self.tau_yield
     }
 
     /// Von Mises equivalent stress in 2D.
-    #[allow(dead_code)]
     pub fn von_mises_2d(&self, s_xx: f64, s_yy: f64, s_xy: f64) -> f64 {
         (0.5 * ((s_xx - s_yy) * (s_xx - s_yy) + 2.0 * s_xy * s_xy + (s_xx * s_xx + s_yy * s_yy)))
             .sqrt()
     }
 
     /// Full 3x3 symmetric deviatoric stress von Mises equivalent.
-    #[allow(dead_code)]
     pub fn von_mises_3d(&self, s: [[f64; 3]; 3]) -> f64 {
         let ds = [s[0][0], s[1][1], s[2][2], s[0][1], s[1][2], s[0][2]];
         let vm2 = 0.5
@@ -533,7 +506,6 @@ impl YieldCriterion {
     /// Bingham correction factor: effective viscosity multiplier.
     ///
     /// Returns `(1 - tau_y / |tau|)` clipped to `[0, 1]`.
-    #[allow(dead_code)]
     pub fn bingham_factor(&self, stress_magnitude: f64) -> f64 {
         if stress_magnitude < self.tau_yield {
             0.0
@@ -550,7 +522,6 @@ impl YieldCriterion {
 /// Tracks a spatially varying viscoelastic stress field that relaxes toward zero.
 ///
 /// Useful for LBM coupling with polymer stress: sigma += -sigma/lambda * dt.
-#[allow(dead_code)]
 pub struct ViscoelasticRelaxation {
     /// Number of cells.
     pub n: usize,
@@ -568,7 +539,6 @@ pub struct ViscoelasticRelaxation {
 
 impl ViscoelasticRelaxation {
     /// Create a new viscoelastic relaxation field with `n` cells.
-    #[allow(dead_code)]
     pub fn new(n: usize, lambda: f64, eta_p: f64) -> Self {
         Self {
             n,
@@ -581,7 +551,6 @@ impl ViscoelasticRelaxation {
     }
 
     /// Apply Maxwell relaxation: sigma_new = sigma * exp(-dt/lambda).
-    #[allow(dead_code)]
     pub fn relax(&mut self, dt: f64) {
         let factor = (-dt / self.lambda).exp();
         for i in 0..self.n {
@@ -592,7 +561,6 @@ impl ViscoelasticRelaxation {
     }
 
     /// Add elastic contribution from strain rate: sigma += 2 eta_p D * dt.
-    #[allow(dead_code)]
     pub fn add_strain_rate(&mut self, dxx: &[f64], dyy: &[f64], dxy: &[f64], dt: f64) {
         for i in 0..self.n {
             self.sigma_xx[i] += 2.0 * self.eta_p * dxx[i] * dt;
@@ -602,13 +570,11 @@ impl ViscoelasticRelaxation {
     }
 
     /// Compute the trace of the stress tensor at cell `i`.
-    #[allow(dead_code)]
     pub fn trace(&self, i: usize) -> f64 {
         self.sigma_xx[i] + self.sigma_yy[i]
     }
 
     /// Compute |sigma| = sqrt(sigma_xx^2 + sigma_yy^2 + 2 sigma_xy^2) at cell `i`.
-    #[allow(dead_code)]
     pub fn magnitude(&self, i: usize) -> f64 {
         (self.sigma_xx[i] * self.sigma_xx[i]
             + self.sigma_yy[i] * self.sigma_yy[i]
@@ -617,7 +583,6 @@ impl ViscoelasticRelaxation {
     }
 
     /// Total stress magnitude summed over all cells.
-    #[allow(dead_code)]
     pub fn total_magnitude(&self) -> f64 {
         (0..self.n).map(|i| self.magnitude(i)).sum()
     }
@@ -632,7 +597,6 @@ impl ViscoelasticRelaxation {
 /// The model has a non-monotonic flow curve, leading to banding at intermediate
 /// stresses. Parameterised by eta_1, eta_2, lambda, and slip parameter xi.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct JohnsonSegalman {
     /// First polymeric viscosity component eta_1.
     pub eta_1: f64,
@@ -646,7 +610,6 @@ pub struct JohnsonSegalman {
 
 impl JohnsonSegalman {
     /// Create a Johnson-Segalman fluid.
-    #[allow(dead_code)]
     pub fn new(eta_1: f64, eta_2: f64, lambda: f64, xi: f64) -> Self {
         Self {
             eta_1,
@@ -657,13 +620,11 @@ impl JohnsonSegalman {
     }
 
     /// Total viscosity.
-    #[allow(dead_code)]
     pub fn total_viscosity(&self) -> f64 {
         self.eta_1 + self.eta_2
     }
 
     /// Steady-state shear stress at given shear rate (approximate).
-    #[allow(dead_code)]
     pub fn shear_stress(&self, gamma_dot: f64) -> f64 {
         let wi = self.lambda * gamma_dot.abs();
         let f = 1.0 + (1.0 - self.xi) * self.xi * wi * wi;
@@ -671,7 +632,6 @@ impl JohnsonSegalman {
     }
 
     /// Compute apparent viscosity.
-    #[allow(dead_code)]
     pub fn apparent_viscosity(&self, gamma_dot: f64) -> f64 {
         if gamma_dot.abs() < 1e-30 {
             return self.total_viscosity();
@@ -691,7 +651,6 @@ impl JohnsonSegalman {
 /// where A is the conformation tensor, tau_d the disengagement time and tau_R
 /// the Rouse time.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct RoliePolyModel {
     /// Polymeric viscosity eta_p.
     pub eta_p: f64,
@@ -705,7 +664,6 @@ pub struct RoliePolyModel {
 
 impl RoliePolyModel {
     /// Create a Rolie-Poly model.
-    #[allow(dead_code)]
     pub fn new(eta_p: f64, tau_d: f64, tau_r: f64, beta_ccr: f64) -> Self {
         Self {
             eta_p,
@@ -716,7 +674,6 @@ impl RoliePolyModel {
     }
 
     /// Steady-state effective viscosity approximation.
-    #[allow(dead_code)]
     pub fn steady_viscosity(&self, shear_rate: f64) -> f64 {
         let wi_d = self.tau_d * shear_rate.abs();
         let factor = 1.0 + 3.0 * wi_d * wi_d;
@@ -724,13 +681,11 @@ impl RoliePolyModel {
     }
 
     /// Zero-shear viscosity = eta_p.
-    #[allow(dead_code)]
     pub fn zero_shear_viscosity(&self) -> f64 {
         self.eta_p
     }
 
     /// Weissenberg number for disengagement time.
-    #[allow(dead_code)]
     pub fn weissenberg_d(&self, shear_rate: f64) -> f64 {
         self.tau_d * shear_rate.abs()
     }

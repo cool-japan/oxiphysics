@@ -10,9 +10,6 @@
 //! All positions are represented as `[f64; 3]` (x, y, z) to avoid external
 //! algebra dependencies.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Low-level vector helpers (no external dependencies)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -660,7 +657,6 @@ impl ProximityCache {
     /// Inserts or updates a closest-feature pair in the cache.
     ///
     /// When the cache is full the oldest entry (smallest `stamp`) is evicted.
-    #[allow(clippy::too_many_arguments)]
     pub fn insert(
         &mut self,
         id_a: u32,

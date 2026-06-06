@@ -15,9 +15,6 @@
 //! - Contact caching with LRU
 //! - Contact event system (begin/end events)
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Helper math
 // ---------------------------------------------------------------------------

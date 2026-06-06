@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,9 +6,6 @@
 //! Provides CSR sparse matrix storage, SpMV, dot product, AXPY, conjugate
 //! gradient (CG), and preconditioned CG solvers that mirror GPU dispatch
 //! semantics while executing on the CPU.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ── CSR Sparse Matrix ────────────────────────────────────────────────────────
 
@@ -100,12 +96,12 @@ impl SparseMatrixGpu {
     /// Missing diagonal entries are filled with zero.
     pub fn diagonal(&self) -> Vec<f64> {
         let mut diag = vec![0.0f64; self.n];
-        for row in 0..self.n {
+        for (row, d) in diag.iter_mut().enumerate() {
             let start = self.row_ptr[row];
             let end = self.row_ptr[row + 1];
             for k in start..end {
                 if self.col_idx[k] == row {
-                    diag[row] = self.values[k];
+                    *d = self.values[k];
                 }
             }
         }
@@ -175,14 +171,14 @@ pub fn sparse_diagonal_matrix(diag: &[f64]) -> SparseMatrixGpu {
 pub fn gpu_spmv(mat: &SparseMatrixGpu, x: &[f64]) -> Vec<f64> {
     assert_eq!(x.len(), mat.n, "gpu_spmv: x length mismatch");
     let mut y = vec![0.0f64; mat.n];
-    for row in 0..mat.n {
+    for (row, y_row) in y.iter_mut().enumerate() {
         let start = mat.row_ptr[row];
         let end = mat.row_ptr[row + 1];
         let mut sum = 0.0f64;
         for k in start..end {
             sum += mat.values[k] * x[mat.col_idx[k]];
         }
-        y[row] = sum;
+        *y_row = sum;
     }
     y
 }
@@ -198,7 +194,7 @@ pub fn gpu_dot(a: &[f64], b: &[f64]) -> f64 {
 ///
 /// # Panics
 /// Panics if `x.len() != y.len()`.
-pub fn gpu_axpy(a: f64, x: &[f64], y: &mut Vec<f64>) {
+pub fn gpu_axpy(a: f64, x: &[f64], y: &mut [f64]) {
     assert_eq!(x.len(), y.len(), "gpu_axpy: length mismatch");
     for (yi, &xi) in y.iter_mut().zip(x.iter()) {
         *yi += a * xi;

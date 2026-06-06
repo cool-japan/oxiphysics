@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,17 +13,11 @@
 //! - Stribeck curve and Sommerfeld number
 //! - Full `LubricationSph` system that couples all sub-models
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
 // Physical constants
 // ---------------------------------------------------------------------------
-
-/// Boltzmann constant (J K⁻¹).
-const K_B: f64 = 1.380_649e-23;
 
 /// Hamaker constant for typical hydrocarbon–water system (J).
 const HAMAKER_DEFAULT: f64 = 1.0e-20;
@@ -761,8 +754,8 @@ mod tests {
         let forces = sys.compute_lubrication_forces();
         assert_eq!(forces.len(), 2);
         // Newton's third law: force on p1 + force on p2 = 0
-        for k in 0..3 {
-            assert!((forces[0][k] + forces[1][k]).abs() < 1.0e-20);
+        for (&f0, &f1) in forces[0].iter().zip(forces[1].iter()) {
+            assert!((f0 + f1).abs() < 1.0e-20);
         }
     }
 

@@ -172,8 +172,8 @@ pub fn rotating_body_ccd_candidate(a: &RotatingSweptBody, b: &RotatingSweptBody,
     let dist = norm(sub(mid_a, mid_b));
     dist <= r_a + r_b + half_disp_a + half_disp_b
 }
+#[cfg(test)]
 #[inline]
-#[allow(dead_code)]
 pub(super) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -450,7 +450,6 @@ pub fn gjk_distance<A: ConvexSupport, B: ConvexSupport>(
 ///
 /// Returns the time `t ∈ [0, dt]` when the two shapes first touch, or `None`
 /// if they remain separated throughout.
-#[allow(clippy::too_many_arguments)]
 pub fn gjk_conservative_advancement<A: ConvexSupport + Clone, B: ConvexSupport + Clone>(
     a_shape: &A,
     a_pos: [f64; 3],
@@ -501,7 +500,6 @@ pub fn gjk_conservative_advancement<A: ConvexSupport + Clone, B: ConvexSupport +
 ///
 /// # Returns
 /// The force vector to apply to body A (equal and opposite for B).
-#[allow(clippy::too_many_arguments)]
 pub fn penalty_force_sphere_sphere(
     pos_a: [f64; 3],
     vel_a: [f64; 3],

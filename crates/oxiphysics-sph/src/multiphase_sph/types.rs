@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use std::f64::consts::PI;
 
 use super::functions::*;
@@ -812,10 +811,10 @@ impl MultiphaseSPH {
         let g = self.gravity;
         let dt = self.dt;
         let mut accel = vec![[0.0_f64; 3]; n];
-        for i in 0..n {
-            accel[i][0] += g[0];
-            accel[i][1] += g[1];
-            accel[i][2] += g[2];
+        for (i, acc_i) in accel.iter_mut().enumerate() {
+            acc_i[0] += g[0];
+            acc_i[1] += g[1];
+            acc_i[2] += g[2];
             if self.surface_tension_force == SurfaceTensionForce::Csf {
                 let phase = self.particles[i].phase_id;
                 if phase < self.phases.len() {
@@ -823,34 +822,33 @@ impl MultiphaseSPH {
                     let rho = self.phases[phase].density;
                     let kappa = self.particles[i].curvature;
                     let mut grad_c = [0.0_f64; 3];
-                    for j in 0..n {
+                    for (j, pj) in self.particles.iter().enumerate() {
                         if i == j {
                             continue;
                         }
-                        let dx = self.particles[i].position[0] - self.particles[j].position[0];
-                        let dy = self.particles[i].position[1] - self.particles[j].position[1];
-                        let dz = self.particles[i].position[2] - self.particles[j].position[2];
+                        let dx = self.particles[i].position[0] - pj.position[0];
+                        let dy = self.particles[i].position[1] - pj.position[1];
+                        let dz = self.particles[i].position[2] - pj.position[2];
                         let r = (dx * dx + dy * dy + dz * dz).sqrt();
                         if r < h && r > 1e-14 {
-                            let dc =
-                                self.particles[j].color_function - self.particles[i].color_function;
+                            let dc = pj.color_function - self.particles[i].color_function;
                             let wg = sph_kernel_gradient_magnitude(r, h) / r;
-                            grad_c[0] += self.particles[j].mass * dc * wg * dx;
-                            grad_c[1] += self.particles[j].mass * dc * wg * dy;
-                            grad_c[2] += self.particles[j].mass * dc * wg * dz;
+                            grad_c[0] += pj.mass * dc * wg * dx;
+                            grad_c[1] += pj.mass * dc * wg * dy;
+                            grad_c[2] += pj.mass * dc * wg * dz;
                         }
                     }
                     let factor = sigma * kappa / rho;
-                    accel[i][0] += factor * grad_c[0];
-                    accel[i][1] += factor * grad_c[1];
-                    accel[i][2] += factor * grad_c[2];
+                    acc_i[0] += factor * grad_c[0];
+                    acc_i[1] += factor * grad_c[1];
+                    acc_i[2] += factor * grad_c[2];
                 }
             }
         }
-        for i in 0..n {
-            self.particles[i].velocity[0] += accel[i][0] * dt;
-            self.particles[i].velocity[1] += accel[i][1] * dt;
-            self.particles[i].velocity[2] += accel[i][2] * dt;
+        for (i, acc_i) in accel.iter().enumerate() {
+            self.particles[i].velocity[0] += acc_i[0] * dt;
+            self.particles[i].velocity[1] += acc_i[1] * dt;
+            self.particles[i].velocity[2] += acc_i[2] * dt;
             self.particles[i].position[0] += self.particles[i].velocity[0] * dt;
             self.particles[i].position[1] += self.particles[i].velocity[1] * dt;
             self.particles[i].position[2] += self.particles[i].velocity[2] * dt;
@@ -972,10 +970,14 @@ impl CahnHilliardField {
     pub fn step(&mut self, dt: f64) {
         self.compute_mu();
         let mut new_phi = self.phi.clone();
-        for i in 1..self.n - 1 {
-            let lap_mu = (self.mu[i + 1] - 2.0 * self.mu[i] + self.mu[i - 1]) / (self.h * self.h);
-            new_phi[i] = self.phi[i] + dt * self.mobility * lap_mu;
-            new_phi[i] = new_phi[i].clamp(-1.5, 1.5);
+        let h2 = self.h * self.h;
+        for (window, (phi_mid, new_phi_mid)) in self
+            .mu
+            .windows(3)
+            .zip(self.phi[1..].iter().zip(new_phi[1..].iter_mut()))
+        {
+            let lap_mu = (window[2] - 2.0 * window[1] + window[0]) / h2;
+            *new_phi_mid = (phi_mid + dt * self.mobility * lap_mu).clamp(-1.5, 1.5);
         }
         self.phi = new_phi;
     }
@@ -1520,7 +1522,7 @@ impl MultiphaseDensity {
         color * self.rho0 + (1.0 - color) * self.rho1
     }
     /// Update densities for all particles using the summation formula.
-    pub fn update_all(&self, particles: &mut Vec<MultiphaseSphParticle>) {
+    pub fn update_all(&self, particles: &mut [MultiphaseSphParticle]) {
         let n = particles.len();
         let densities: Vec<f64> = (0..n).map(|i| self.compute_density(particles, i)).collect();
         for (p, &rho) in particles.iter_mut().zip(densities.iter()) {
@@ -1592,7 +1594,7 @@ impl MultiphaseEquationOfState {
         self.rho0_phase0 / self.rho0_phase1.max(1e-30)
     }
     /// Update pressures of all particles.
-    pub fn update_pressures(&self, particles: &mut Vec<MultiphaseSphParticle>) {
+    pub fn update_pressures(&self, particles: &mut [MultiphaseSphParticle]) {
         for p in particles.iter_mut() {
             p.pressure = self.pressure(p.density, p.phase_label);
         }

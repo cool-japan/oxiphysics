@@ -13,8 +13,6 @@
 //!   20×4×4 (fine) grids and asserts the fine-mesh relative error is
 //!   strictly smaller than the coarse-mesh error (monotone h-convergence).
 
-#![allow(missing_docs)]
-
 #[path = "regression_harness.rs"]
 mod harness;
 

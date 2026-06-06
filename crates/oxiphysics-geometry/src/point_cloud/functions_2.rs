@@ -2,17 +2,13 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::IcpRegistration;
     use crate::KdTree3D;
     use crate::PointCloud;
     use crate::PointCloudFilter;
+    use crate::point_cloud::*;
     /// Helper: build a grid cloud and return it.
     fn flat_grid(nx: usize, ny: usize, dx: f64) -> PointCloud {
         PointCloud::from_grid(nx, ny, |_x, _y| 0.0, dx)
@@ -263,13 +259,13 @@ mod tests {
             .flat_map(|i| (0..5).map(move |j| [i as f64, j as f64, 0.0]))
             .collect();
         let transform = icp_point_to_point(&pts, &pts, 20);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row_i) in transform.iter().enumerate().take(3) {
+            for (j, &val_ij) in row_i.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (transform[i][j] - expected).abs() < 1e-4,
+                    (val_ij - expected).abs() < 1e-4,
                     "rotation[{i}][{j}] = {} expected {expected}",
-                    transform[i][j]
+                    val_ij
                 );
             }
         }
@@ -516,8 +512,8 @@ mod tests {
         let cloud = PointCloud::from_points(pts.clone());
         assert_eq!(cloud.len(), 2);
         for (i, &p) in pts.iter().enumerate() {
-            for k in 0..3 {
-                assert!((cloud.points[i][k] - p[k]).abs() < 1e-12);
+            for (k, &pk) in p.iter().enumerate() {
+                assert!((cloud.points[i][k] - pk).abs() < 1e-12);
             }
         }
     }

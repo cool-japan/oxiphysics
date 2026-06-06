@@ -11,8 +11,6 @@
 use crate::types::ContactManifold;
 use oxiphysics_geometry::{BoxShape, Capsule, Shape, Sphere};
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{gjk_fallback_dispatch, sphere_capsule_dispatch};
 use super::types::{NarrowPhaseDispatcher, NarrowPhaseResult, ShapeType};
 use crate::narrowphase::specialized;

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::too_many_arguments)]
 use super::types::{
     ConstraintParams, DeformBvh, DeformCcdResult, DeformCollisionConfig, DeformConstraint,
     DeformContact, DeformContactType, DeformManifold, DeformableMesh, PenaltyParams, RigidBox,
@@ -78,12 +77,6 @@ pub(super) fn v3_neg(a: [f64; 3]) -> [f64; 3] {
 pub(super) fn v3_lerp(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     v3_add(v3_scale(a, 1.0 - t), v3_scale(b, t))
 }
-/// Distance between two points.
-#[inline]
-#[allow(dead_code)]
-pub(super) fn v3_dist(a: [f64; 3], b: [f64; 3]) -> f64 {
-    v3_len(v3_sub(b, a))
-}
 /// Distance squared between two points.
 #[inline]
 pub(super) fn v3_dist_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -91,9 +84,6 @@ pub(super) fn v3_dist_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 /// Default tolerance for geometric tests.
 pub(super) const EPSILON: f64 = 1e-10;
-/// Default margin for broadphase expansion.
-#[allow(dead_code)]
-pub(super) const DEFAULT_MARGIN: f64 = 0.01;
 /// Maximum iterations for CCD bisection.
 pub(super) const CCD_MAX_ITER: usize = 64;
 /// Default spatial hash cell size.

@@ -7,9 +7,6 @@
 //! - `Default`
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::Mat4;
 
 impl Default for Mat4 {

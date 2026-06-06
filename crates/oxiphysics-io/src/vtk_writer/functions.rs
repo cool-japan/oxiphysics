@@ -355,7 +355,6 @@ mod tests {
     }
 }
 /// Write a parallel VTK XML (PVTU) master file referencing multiple piece VTU files.
-#[allow(dead_code)]
 pub fn write_pvtu(
     path: &str,
     pieces: &[PvtuPiece],
@@ -542,13 +541,21 @@ mod tests_vtk_writer_extended {
         let points = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         let cells = vec![vec![0_usize, 1, 2]];
         let cell_types = vec![VtkCellTypeW::Triangle];
-        let path = "/tmp/test_vtu_xml_basic.vtu";
-        VtuXmlWriter::write(path, &points, &cells, &cell_types, &[], &[]).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_vtu_xml_basic.vtu");
+        VtuXmlWriter::write(
+            path.to_str().unwrap_or(""),
+            &points,
+            &cells,
+            &cell_types,
+            &[],
+            &[],
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("UnstructuredGrid"));
         assert!(content.contains("NumberOfPoints=\"3\""));
         assert!(content.contains("NumberOfCells=\"1\""));
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_vtu_xml_writer_with_point_data() {
@@ -556,9 +563,9 @@ mod tests_vtk_writer_extended {
         let cells = vec![vec![0_usize, 1, 2]];
         let cell_types = vec![VtkCellTypeW::Triangle];
         let pressure = vec![1.0, 2.0, 3.0];
-        let path = "/tmp/test_vtu_xml_pdata.vtu";
+        let path = std::env::temp_dir().join("test_vtu_xml_pdata.vtu");
         VtuXmlWriter::write(
-            path,
+            path.to_str().unwrap_or(""),
             &points,
             &cells,
             &cell_types,
@@ -566,10 +573,10 @@ mod tests_vtk_writer_extended {
             &[],
         )
         .unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("PointData"));
         assert!(content.contains("pressure"));
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_vtu_xml_writer_with_cell_data() {
@@ -577,9 +584,9 @@ mod tests_vtk_writer_extended {
         let cells = vec![vec![0_usize, 1, 2]];
         let cell_types = vec![VtkCellTypeW::Triangle];
         let stress = vec![5.0];
-        let path = "/tmp/test_vtu_xml_cdata.vtu";
+        let path = std::env::temp_dir().join("test_vtu_xml_cdata.vtu");
         VtuXmlWriter::write(
-            path,
+            path.to_str().unwrap_or(""),
             &points,
             &cells,
             &cell_types,
@@ -587,9 +594,9 @@ mod tests_vtk_writer_extended {
             &[("stress", &stress)],
         )
         .unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("CellData"));
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_pvtu_basic() {
@@ -597,21 +604,27 @@ mod tests_vtk_writer_extended {
             PvtuPiece::new("sim_p0_000000.vtu"),
             PvtuPiece::new("sim_p1_000000.vtu"),
         ];
-        let path = "/tmp/test_pvtu.pvtu";
-        write_pvtu(path, &pieces, &["velocity", "pressure"], &[]).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_pvtu.pvtu");
+        write_pvtu(
+            path.to_str().unwrap_or(""),
+            &pieces,
+            &["velocity", "pressure"],
+            &[],
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("PUnstructuredGrid"));
         assert!(content.contains("sim_p0_000000.vtu"));
         assert!(content.contains("velocity"));
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_pvtu_empty_pieces() {
-        let path = "/tmp/test_pvtu_empty.pvtu";
-        write_pvtu(path, &[], &[], &[]).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_pvtu_empty.pvtu");
+        write_pvtu(path.to_str().unwrap_or(""), &[], &[], &[]).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("PUnstructuredGrid"));
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_base64_encode_empty() {
@@ -665,39 +678,51 @@ mod tests_vtk_writer_extended {
     }
     #[test]
     fn test_timestep_writer_filenames() {
-        let w = TimeStepWriter::new("/tmp/sim", "flow");
+        let tmpdir = std::env::temp_dir();
+        let w = TimeStepWriter::new(tmpdir.join("sim").to_str().unwrap_or(""), "flow");
         assert_eq!(w.vtu_filename(0), "flow_000000.vtu");
         assert_eq!(w.vtu_filename(42), "flow_000042.vtu");
     }
     #[test]
     fn test_timestep_writer_register() {
-        let mut w = TimeStepWriter::new("/tmp", "sim");
+        let tmpdir = std::env::temp_dir();
+        let mut w = TimeStepWriter::new(tmpdir.to_str().unwrap_or(""), "sim");
         w.register_step(0.0, 0);
         w.register_step(0.01, 1);
         assert_eq!(w.n_steps(), 2);
     }
     #[test]
     fn test_timestep_writer_pvd() {
-        let mut w = TimeStepWriter::new("/tmp", "flow");
+        let tmpdir = std::env::temp_dir();
+        let mut w = TimeStepWriter::new(tmpdir.to_str().unwrap_or(""), "flow");
         w.register_step(0.0, 0);
         w.register_step(0.01, 1);
         w.write_pvd("test_ts.pvd").unwrap();
-        let content = std::fs::read_to_string("/tmp/test_ts.pvd").unwrap();
+        let pvd_path = tmpdir.join("test_ts.pvd");
+        let content = std::fs::read_to_string(&pvd_path).unwrap();
         assert!(content.contains("flow_000000.vtu"));
         assert!(content.contains("flow_000001.vtu"));
-        std::fs::remove_file("/tmp/test_ts.pvd").ok();
+        std::fs::remove_file(&pvd_path).ok();
     }
     #[test]
     fn test_validate_vtu_xml_valid() {
         let pts = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         let cells = vec![vec![0_usize, 1, 2]];
         let cell_types = vec![VtkCellTypeW::Triangle];
-        let path = "/tmp/test_validate_vtu.vtu";
-        VtuXmlWriter::write(path, &pts, &cells, &cell_types, &[], &[]).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_validate_vtu.vtu");
+        VtuXmlWriter::write(
+            path.to_str().unwrap_or(""),
+            &pts,
+            &cells,
+            &cell_types,
+            &[],
+            &[],
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         let result = validate_vtu_xml(&content);
         assert!(result.is_valid, "Issues: {:?}", result.issues);
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_validate_vtu_xml_missing_root() {
@@ -734,32 +759,54 @@ mod tests_vtk_writer_new {
     fn test_write_vector_field_creates_file() {
         let (pts, cells, ct) = triangle_mesh();
         let vecs = vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let path = "/tmp/test_vtk_vec_field.vtu";
-        VtkWriter::write_unstructured_vector_field(path, &pts, &cells, &ct, "velocity", &vecs)
-            .unwrap();
-        assert!(std::path::Path::new(path).exists());
-        std::fs::remove_file(path).ok();
+        let path = std::env::temp_dir().join("test_vtk_vec_field.vtu");
+        VtkWriter::write_unstructured_vector_field(
+            path.to_str().unwrap_or(""),
+            &pts,
+            &cells,
+            &ct,
+            "velocity",
+            &vecs,
+        )
+        .unwrap();
+        assert!(path.exists());
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_vector_field_contains_field_name() {
         let (pts, cells, ct) = triangle_mesh();
         let vecs = vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let path = "/tmp/test_vtk_vec_name.vtu";
-        VtkWriter::write_unstructured_vector_field(path, &pts, &cells, &ct, "myVelocity", &vecs)
-            .unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_vtk_vec_name.vtu");
+        VtkWriter::write_unstructured_vector_field(
+            path.to_str().unwrap_or(""),
+            &pts,
+            &cells,
+            &ct,
+            "myVelocity",
+            &vecs,
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("myVelocity"), "Field name not in file");
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_vector_field_correct_point_count() {
         let (pts, cells, ct) = triangle_mesh();
         let vecs = vec![[0.0, 0.0, 0.0]; 3];
-        let path = "/tmp/test_vtk_vec_pts.vtu";
-        VtkWriter::write_unstructured_vector_field(path, &pts, &cells, &ct, "v", &vecs).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_vtk_vec_pts.vtu");
+        VtkWriter::write_unstructured_vector_field(
+            path.to_str().unwrap_or(""),
+            &pts,
+            &cells,
+            &ct,
+            "v",
+            &vecs,
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("NumberOfPoints=\"3\""));
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_streamlines_creates_file() {
@@ -767,19 +814,19 @@ mod tests_vtk_writer_new {
             vec![[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 2.0, 0.0]],
             vec![[0.0, 1.0, 0.0], [1.0, 2.0, 0.0]],
         ];
-        let path = "/tmp/test_streamlines.vtk";
-        VtkWriter::write_streamlines(path, &sl).unwrap();
-        assert!(std::path::Path::new(path).exists());
-        std::fs::remove_file(path).ok();
+        let path = std::env::temp_dir().join("test_streamlines.vtk");
+        VtkWriter::write_streamlines(path.to_str().unwrap_or(""), &sl).unwrap();
+        assert!(path.exists());
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_streamlines_contains_polydata() {
         let sl = vec![vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]];
-        let path = "/tmp/test_streamlines_pd.vtk";
-        VtkWriter::write_streamlines(path, &sl).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_streamlines_pd.vtk");
+        VtkWriter::write_streamlines(path.to_str().unwrap_or(""), &sl).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("POLYDATA"), "Expected POLYDATA keyword");
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_streamlines_correct_point_count() {
@@ -787,35 +834,37 @@ mod tests_vtk_writer_new {
             vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
             vec![[0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
         ];
-        let path = "/tmp/test_streamlines_npts.vtk";
-        VtkWriter::write_streamlines(path, &sl).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_streamlines_npts.vtk");
+        VtkWriter::write_streamlines(path.to_str().unwrap_or(""), &sl).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("POINTS 5 double"), "Expected 5 points");
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_rectilinear_grid_creates_file() {
         let xs: Vec<f64> = (0..4).map(|i| i as f64).collect();
         let ys: Vec<f64> = (0..3).map(|i| i as f64).collect();
         let zs = vec![0.0_f64];
-        let path = "/tmp/test_rect_grid.vtk";
-        VtkWriter::write_rectilinear_grid(path, &xs, &ys, &zs, None, &[]).unwrap();
-        assert!(std::path::Path::new(path).exists());
-        std::fs::remove_file(path).ok();
+        let path = std::env::temp_dir().join("test_rect_grid.vtk");
+        VtkWriter::write_rectilinear_grid(path.to_str().unwrap_or(""), &xs, &ys, &zs, None, &[])
+            .unwrap();
+        assert!(path.exists());
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_rectilinear_grid_dimensions_in_file() {
         let xs = vec![0.0, 1.0, 2.0];
         let ys = vec![0.0, 1.0];
         let zs = vec![0.0];
-        let path = "/tmp/test_rect_grid_dim.vtk";
-        VtkWriter::write_rectilinear_grid(path, &xs, &ys, &zs, None, &[]).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_rect_grid_dim.vtk");
+        VtkWriter::write_rectilinear_grid(path.to_str().unwrap_or(""), &xs, &ys, &zs, None, &[])
+            .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(
             content.contains("DIMENSIONS 3 2 1"),
             "Dimensions not correct"
         );
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_rectilinear_grid_with_scalars() {
@@ -823,25 +872,34 @@ mod tests_vtk_writer_new {
         let ys = vec![0.0, 1.0];
         let zs = vec![0.0];
         let scalars = vec![1.0_f64, 2.0, 3.0, 4.0];
-        let path = "/tmp/test_rect_grid_scalar.vtk";
-        VtkWriter::write_rectilinear_grid(path, &xs, &ys, &zs, Some("pressure"), &scalars).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_rect_grid_scalar.vtk");
+        VtkWriter::write_rectilinear_grid(
+            path.to_str().unwrap_or(""),
+            &xs,
+            &ys,
+            &zs,
+            Some("pressure"),
+            &scalars,
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("pressure"), "Scalar field name missing");
         assert!(content.contains("POINT_DATA 4"), "POINT_DATA count wrong");
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
     #[test]
     fn test_write_rectilinear_grid_rectilinear_keyword() {
         let xs = vec![0.0_f64; 2];
         let ys = vec![0.0_f64; 2];
         let zs = vec![0.0_f64; 1];
-        let path = "/tmp/test_rect_grid_kw.vtk";
-        VtkWriter::write_rectilinear_grid(path, &xs, &ys, &zs, None, &[]).unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
+        let path = std::env::temp_dir().join("test_rect_grid_kw.vtk");
+        VtkWriter::write_rectilinear_grid(path.to_str().unwrap_or(""), &xs, &ys, &zs, None, &[])
+            .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(
             content.contains("RECTILINEAR_GRID"),
             "Missing RECTILINEAR_GRID keyword"
         );
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(&path).ok();
     }
 }

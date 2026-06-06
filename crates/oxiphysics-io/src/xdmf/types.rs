@@ -2,15 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_div_ceil, clippy::too_many_arguments)]
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::io::Write;
 
 /// Topology types supported for unstructured mesh output.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum XdmfTopologyType {
     /// Linear triangle (3 nodes).
@@ -48,7 +42,6 @@ impl XdmfTopologyType {
 }
 /// A single time step in an XDMF time series.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct XdmfStep {
     /// Simulation time.
     pub time: f64,
@@ -61,7 +54,6 @@ pub struct XdmfStep {
 }
 /// Parameters for a structured uniform 3-D grid.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct XdmfUniformGrid {
     /// Grid name.
     pub name: String,
@@ -75,13 +67,11 @@ pub struct XdmfUniformGrid {
 /// Build an XDMF multi-block (spatial collection) document containing
 /// multiple uniform grids sharing the same domain.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct XdmfMultiBlock {
     /// Named blocks (each block is a complete XDMF Uniform grid XML fragment,
     /// without the outer `<?xml …>`, `<Xdmf …>`, or ``Domain` wrappers).
     pub(super) blocks: Vec<(String, String)>,
 }
-#[allow(dead_code)]
 impl XdmfMultiBlock {
     /// Create an empty multi-block container.
     pub fn new() -> Self {
@@ -123,7 +113,6 @@ impl XdmfMultiBlock {
 }
 /// A time series referencing HDF5 datasets by path.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct XdmfTimeSeriesHdf5 {
     /// Time values for each step.
     pub timesteps: Vec<f64>,
@@ -132,7 +121,6 @@ pub struct XdmfTimeSeriesHdf5 {
     /// Attribute names to reference in HDF5.
     pub attribute_names: Vec<String>,
 }
-#[allow(dead_code)]
 impl XdmfTimeSeriesHdf5 {
     /// Create a new empty HDF5-backed time series.
     pub fn new() -> Self {
@@ -210,7 +198,6 @@ impl XdmfTimeSeriesHdf5 {
 ///
 /// This is the primary building block for CFD output on structured meshes.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct XdmfStructuredGrid {
     /// Grid name shown in post-processors.
     pub name: String,
@@ -235,7 +222,6 @@ pub struct XdmfStructuredGrid {
     /// Cell-centered scalar fields `(name, flat values, len = (ni-1)*(nj-1)*(nk-1))`.
     pub cell_scalars: Vec<(String, Vec<f64>)>,
 }
-#[allow(dead_code)]
 impl XdmfStructuredGrid {
     /// Create a new structured grid with no fields.
     pub fn new(
@@ -364,12 +350,10 @@ impl XdmfStructuredGrid {
 ///
 /// Supports opening/closing domains, grids, topology, geometry, and attributes
 /// incrementally, allowing complex documents to be built programmatically.
-#[allow(dead_code)]
 pub struct XdmfWriter {
     pub(super) buf: String,
     pub(super) indent: usize,
 }
-#[allow(dead_code)]
 impl XdmfWriter {
     /// Create a new writer and emit the XML declaration and root ``Xdmf` element.
     pub fn new() -> Self {
@@ -570,12 +554,10 @@ impl XdmfWriter {
 /// Builds a canonical HDF5 dataset path for use in XDMF ``DataItem` elements.
 ///
 /// A path looks like `file.h5:/group/dataset`.
-#[allow(dead_code)]
 pub struct Hdf5DataItemBuilder {
     pub(super) filename: String,
     pub(super) group: String,
 }
-#[allow(dead_code)]
 impl Hdf5DataItemBuilder {
     /// Create a builder targeting `filename`.
     pub fn new(filename: &str) -> Self {
@@ -605,7 +587,6 @@ impl Hdf5DataItemBuilder {
 }
 /// A named grid inside a domain collection.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct XdmfGridEntry {
     /// Grid name.
     pub name: String,
@@ -620,13 +601,11 @@ pub struct XdmfGridEntry {
 }
 impl XdmfGridEntry {
     /// Number of nodes in this grid.
-    #[allow(dead_code)]
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
     /// Compute the axis-aligned bounding box of all nodes.
     /// Returns `([min_x, min_y, min_z], [max_x, max_y, max_z])`.
-    #[allow(dead_code)]
     pub fn bounding_box(&self) -> ([f64; 3], [f64; 3]) {
         let mut lo = [f64::INFINITY; 3];
         let mut hi = [f64::NEG_INFINITY; 3];
@@ -643,7 +622,6 @@ impl XdmfGridEntry {
         (lo, hi)
     }
     /// Compute the centroid of all nodes.
-    #[allow(dead_code)]
     pub fn centroid(&self) -> [f64; 3] {
         if self.nodes.is_empty() {
             return [0.0; 3];
@@ -660,7 +638,6 @@ impl XdmfGridEntry {
 }
 /// Describes an XDMF attribute (field) referencing HDF5 data.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct XdmfAttribute {
     /// Attribute name.
     pub name: String,
@@ -672,7 +649,6 @@ pub struct XdmfAttribute {
     pub hdf5_path: String,
 }
 /// A single time step for an unstructured mesh time series.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct XdmfMeshStep {
     /// Simulation time.
@@ -697,34 +673,28 @@ impl XdmfMeshStep {
 }
 /// A collection of grids forming an XDMF domain.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct XdmfDomainCollection {
     /// All grids in this collection.
     pub grids: Vec<XdmfGridEntry>,
 }
 impl XdmfDomainCollection {
     /// Create an empty domain collection.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         XdmfDomainCollection { grids: Vec::new() }
     }
     /// Add a grid entry to this collection.
-    #[allow(dead_code)]
     pub fn add_grid(&mut self, grid: XdmfGridEntry) {
         self.grids.push(grid);
     }
     /// Total number of nodes across all grids.
-    #[allow(dead_code)]
     pub fn total_node_count(&self) -> usize {
         self.grids.iter().map(|g| g.node_count()).sum()
     }
     /// Find a grid by name.
-    #[allow(dead_code)]
     pub fn find_grid(&self, name: &str) -> Option<&XdmfGridEntry> {
         self.grids.iter().find(|g| g.name == name)
     }
     /// Write the full XDMF XML for this domain collection.
-    #[allow(dead_code)]
     pub fn write_xml<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
         writeln!(writer, "<?xml version=\"1.0\"?>")?;
         writeln!(writer, "<Xdmf Version=\"3.0\">")?;
@@ -765,7 +735,6 @@ impl XdmfDomainCollection {
         Ok(())
     }
     /// Time range: (min_time, max_time).  Returns (0.0, 0.0) if no grids.
-    #[allow(dead_code)]
     pub fn time_range(&self) -> (f64, f64) {
         if self.grids.is_empty() {
             return (0.0, 0.0);
@@ -785,7 +754,6 @@ impl XdmfDomainCollection {
 }
 /// Describes a single data field to embed inline in XDMF XML.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct XdmfFieldDescriptor {
     /// Name of the field (e.g. `"pressure"`, `"velocity"`).
     pub name: String,
@@ -800,7 +768,6 @@ pub struct XdmfFieldDescriptor {
 }
 impl XdmfFieldDescriptor {
     /// Create a new scalar field descriptor.
-    #[allow(dead_code)]
     pub fn scalar(name: &str, data: Vec<f64>) -> Self {
         XdmfFieldDescriptor {
             name: name.to_string(),
@@ -811,7 +778,6 @@ impl XdmfFieldDescriptor {
         }
     }
     /// Create a new vector field descriptor (3 components per node).
-    #[allow(dead_code)]
     pub fn vector(name: &str, data: Vec<f64>) -> Self {
         XdmfFieldDescriptor {
             name: name.to_string(),
@@ -822,12 +788,10 @@ impl XdmfFieldDescriptor {
         }
     }
     /// Number of logical entries (nodes/cells) this field covers.
-    #[allow(dead_code)]
     pub fn entry_count(&self) -> usize {
         self.data.len().checked_div(self.n_components).unwrap_or(0)
     }
     /// Compute the Lp-norm of all data values.
-    #[allow(dead_code)]
     pub fn data_lp_norm(&self, p: f64) -> f64 {
         if p <= 0.0 || self.data.is_empty() {
             return 0.0;
@@ -836,7 +800,6 @@ impl XdmfFieldDescriptor {
         sum.powf(1.0 / p)
     }
     /// Return the maximum absolute value in the field data.
-    #[allow(dead_code)]
     pub fn max_abs(&self) -> f64 {
         self.data
             .iter()
@@ -844,25 +807,21 @@ impl XdmfFieldDescriptor {
             .fold(0.0_f64, |acc, v| acc.max(v.abs()))
     }
     /// Return the minimum value in the field data (or 0 if empty).
-    #[allow(dead_code)]
     pub fn min_value(&self) -> f64 {
         self.data.iter().cloned().fold(f64::INFINITY, f64::min)
     }
     /// Return the maximum value in the field data (or 0 if empty).
-    #[allow(dead_code)]
     pub fn max_value(&self) -> f64 {
         self.data.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
     }
 }
 /// A time-varying unstructured mesh collection (multi-topology supported across
 /// steps, though a single topology per step is assumed).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct XdmfMeshTimeSeries {
     /// Ordered list of mesh steps.
     pub steps: Vec<XdmfMeshStep>,
 }
-#[allow(dead_code)]
 impl XdmfMeshTimeSeries {
     /// Create an empty mesh time series.
     pub fn new() -> Self {
@@ -969,12 +928,10 @@ impl XdmfMeshTimeSeries {
 }
 /// An XDMF time series collection.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct XdmfTimeSeries {
     /// Time steps.
     pub steps: Vec<XdmfStep>,
 }
-#[allow(dead_code)]
 impl XdmfTimeSeries {
     /// Create a new empty time series.
     pub fn new() -> Self {
@@ -1054,7 +1011,6 @@ impl XdmfTimeSeries {
     ///
     /// `vectors` is a list of `(name, data)` pairs where each data entry is
     /// a `[f64; 3]` per node.
-    #[allow(dead_code)]
     pub fn add_step_with_vectors(
         &mut self,
         time: f64,
@@ -1085,12 +1041,10 @@ impl XdmfTimeSeries {
         });
     }
     /// Return the time values of all steps.
-    #[allow(dead_code)]
     pub fn times(&self) -> Vec<f64> {
         self.steps.iter().map(|s| s.time).collect()
     }
     /// Return the total number of particles across all steps (sum).
-    #[allow(dead_code)]
     pub fn total_particle_count(&self) -> usize {
         self.steps.iter().map(|s| s.n_points).sum()
     }
@@ -1100,12 +1054,10 @@ impl XdmfTimeSeries {
     ///
     /// This is a convenience alias for [`add_step`](XdmfTimeSeries::add_step)
     /// that uses the common `add_frame` naming convention.
-    #[allow(dead_code)]
     pub fn add_frame(&mut self, time: f64, positions: Vec<[f64; 3]>) {
         self.add_step(time, positions, vec![]);
     }
     /// Add a frame with positions and named scalar attributes.
-    #[allow(dead_code)]
     pub fn add_frame_with_scalars(
         &mut self,
         time: f64,
@@ -1118,13 +1070,11 @@ impl XdmfTimeSeries {
     ///
     /// This is the `write_xml` variant of [`to_xml`](XdmfTimeSeries::to_xml)
     /// that streams output rather than building a full string first.
-    #[allow(dead_code)]
     pub fn write_xml<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
         let xml = self.to_xml();
         writer.write_all(xml.as_bytes())
     }
     /// Write the time series to a file at `path`.
-    #[allow(dead_code)]
     pub fn write_xml_to_file(&self, path: &str) -> std::io::Result<()> {
         let mut f = std::fs::File::create(path)?;
         self.write_xml(&mut f)
@@ -1132,7 +1082,6 @@ impl XdmfTimeSeries {
 }
 /// A named patch/region inside a larger mesh, identified by element indices.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct XdmfMeshPatch {
     /// Patch name (e.g. `"inlet"`, `"wall"`).
     pub name: String,
@@ -1143,7 +1092,6 @@ pub struct XdmfMeshPatch {
 }
 impl XdmfMeshPatch {
     /// Create a new patch with a name and element list.
-    #[allow(dead_code)]
     pub fn new(name: &str, element_ids: Vec<usize>) -> Self {
         XdmfMeshPatch {
             name: name.to_string(),
@@ -1152,17 +1100,14 @@ impl XdmfMeshPatch {
         }
     }
     /// Number of elements in this patch.
-    #[allow(dead_code)]
     pub fn element_count(&self) -> usize {
         self.element_ids.len()
     }
     /// Check if a given element index belongs to this patch.
-    #[allow(dead_code)]
     pub fn contains_element(&self, idx: usize) -> bool {
         self.element_ids.contains(&idx)
     }
     /// Merge another patch's elements into this one (duplicates removed).
-    #[allow(dead_code)]
     pub fn merge(&mut self, other: &XdmfMeshPatch) {
         for &id in &other.element_ids {
             if !self.element_ids.contains(&id) {
@@ -1171,7 +1116,6 @@ impl XdmfMeshPatch {
         }
     }
     /// Generate a CDL-like string representation for debugging.
-    #[allow(dead_code)]
     pub fn to_debug_string(&self) -> String {
         format!(
             "patch \"{}\" [{} elements] tag={:?}",
@@ -1182,9 +1126,7 @@ impl XdmfMeshPatch {
     }
 }
 /// Basic XDMF XML reader.
-#[allow(dead_code)]
 pub struct XdmfReader;
-#[allow(dead_code)]
 impl XdmfReader {
     /// Parse XDMF XML data into a list of time steps.
     ///
@@ -1231,7 +1173,6 @@ impl XdmfReader {
     }
 }
 /// A simple XDMF schema descriptor: expected topology type and attribute names.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct XdmfSchema {
     /// Expected topology type string (e.g., `"Polyvertex"`, `"Triangle"`).

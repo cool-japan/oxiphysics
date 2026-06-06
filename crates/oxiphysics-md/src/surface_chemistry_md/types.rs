@@ -4,8 +4,6 @@
 
 use std::f64::consts::PI;
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{KB, NA};
 
 /// Isotherm type selection for [`AdsorptionModel`].
@@ -61,7 +59,6 @@ pub struct Tribochemistry {
 }
 impl Tribochemistry {
     /// Create a new `Tribochemistry` simulation.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         normal_load: f64,
         sliding_velocity: f64,
@@ -452,7 +449,6 @@ impl AdsorptionModel {
     /// * `p_sat`        — BET saturation pressure (Pa)
     /// * `v_m`          — BET monolayer capacity
     /// * `temperature`  — system temperature (K)
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         k_langmuir: f64,
         q_max: f64,

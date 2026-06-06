@@ -314,7 +314,6 @@ mod tests {
     }
 }
 /// Approximate complementary error function erfc(x) for x ≥ 0.
-#[allow(dead_code)]
 pub(super) fn erfc_approx(x: f64) -> f64 {
     if x < 0.0 {
         return 2.0 - erfc_approx(-x);

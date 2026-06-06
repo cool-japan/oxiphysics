@@ -5,9 +5,9 @@ pub mod coordinationnumbercv_traits;
 pub mod dihedralcv_traits;
 pub mod distancecv_traits;
 pub mod endtoenddistancecv_traits;
-pub mod functions;
+mod functions;
 pub mod radiusofgyrationcv_traits;
-pub mod types;
+mod types;
 
 // Re-export all types
 pub use functions::*;

@@ -174,14 +174,13 @@ impl PyLbmGrid {
         for y in 0..h {
             for x in 0..w {
                 let dst_idx = (y * w + x) * 9;
-                #[allow(clippy::manual_memcpy)]
-                for q in 0..9 {
+                for (q, fi) in self.f[dst_idx..dst_idx + 9].iter_mut().enumerate() {
                     let src_x =
                         ((x as isize - D2Q9_EX[q] as isize).rem_euclid(w as isize)) as usize;
                     let src_y =
                         ((y as isize - D2Q9_EY[q] as isize).rem_euclid(h as isize)) as usize;
                     let src_idx = (src_y * w + src_x) * 9;
-                    self.f[dst_idx + q] = f_src[src_idx + q];
+                    *fi = f_src[src_idx + q];
                 }
             }
         }

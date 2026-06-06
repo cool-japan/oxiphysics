@@ -3,10 +3,7 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::ImplicitSurface;
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 
 /// An infinite plane: `dot(p, normal) - d = 0`.
 pub struct SdfPlane {

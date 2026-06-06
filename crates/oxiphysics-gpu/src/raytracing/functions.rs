@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 use std::f64::consts::PI;
 
 use super::types::{
@@ -195,9 +194,9 @@ pub fn soft_shadow_factor(
     }
     let actual_samples = num_samples.min(samples.len());
     let mut unblocked = 0u32;
-    for i in 0..actual_samples {
-        let su = samples[i][0] * 2.0 - 1.0;
-        let sv = samples[i][1] * 2.0 - 1.0;
+    for sample in &samples[..actual_samples] {
+        let su = sample[0] * 2.0 - 1.0;
+        let sv = sample[1] * 2.0 - 1.0;
         let light_point = light.sample_point(su, sv);
         let to_light = sub3(light_point, hit_pos);
         let dist = length3(to_light);
@@ -466,9 +465,7 @@ pub fn temporal_accumulate(
 ) -> Vec<[f64; 3]> {
     let n = current.len().min(history.len());
     let mut result = Vec::with_capacity(n);
-    for i in 0..n {
-        let c = current[i];
-        let h = history[i];
+    for (&c, &h) in current[..n].iter().zip(&history[..n]) {
         result.push([
             alpha * c[0] + (1.0 - alpha) * h[0],
             alpha * c[1] + (1.0 - alpha) * h[1],

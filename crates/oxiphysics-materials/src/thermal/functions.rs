@@ -2,12 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-/// Boltzmann constant (J/K).
-#[allow(dead_code)]
-pub(super) const KB: f64 = 1.380_649e-23;
-#[allow(dead_code)]
-/// Avogadro's number (1/mol).
-pub(super) const NA: f64 = 6.022_140_76e23;
 /// Gas constant R (J/(mol*K)).
 pub(super) const R_GAS: f64 = 8.314;
 /// Fourier number: Fo = alpha * t / L^2.
@@ -194,7 +188,6 @@ mod tests {
         assert!((dt_back - delta_t).abs() < 1e-10);
     }
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_heat_conduction_1d_steady() {
         let mat = ThermalMaterial::steel();
         let mut solver = HeatConduction1D::new(21, 1.0, 300.0, mat);
@@ -205,12 +198,10 @@ mod tests {
             solver.set_temperature_bc(300.0, 500.0);
         }
         let ss = solver.steady_state_temperature(300.0, 500.0);
-        for i in 0..solver.n_nodes {
+        for (i, (&t_actual, &t_expected)) in solver.temperature.iter().zip(ss.iter()).enumerate() {
             assert!(
-                (solver.temperature[i] - ss[i]).abs() < 0.5,
-                "node {i}: T={}, expected ~{}",
-                solver.temperature[i],
-                ss[i]
+                (t_actual - t_expected).abs() < 0.5,
+                "node {i}: T={t_actual}, expected ~{t_expected}"
             );
         }
     }

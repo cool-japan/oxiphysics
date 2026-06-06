@@ -1,5 +1,3 @@
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,8 +14,6 @@
 //! - [`histogram_u32`] – parallel histogram.
 //! - [`argsort`] – sorted index array for `f64` slice.
 //! - [`nth_element`] – quickselect O(n) kth smallest element.
-
-#![allow(dead_code)]
 
 use rayon::prelude::*;
 
@@ -217,7 +213,7 @@ pub fn bitonic_sort(data: &mut Vec<f64>) {
 ///
 /// Splits the input in half recursively, sorts each half in parallel, then
 /// merges sequentially.  Falls back to `sort_unstable_by` at small sizes.
-pub fn merge_sort_parallel(data: &mut Vec<f64>) {
+pub fn merge_sort_parallel(data: &mut [f64]) {
     let n = data.len();
     if n <= 1 {
         return;
@@ -325,7 +321,7 @@ pub fn argsort(data: &[f64]) -> Vec<usize> {
 ///
 /// # Panics
 /// Panics if `data` is empty or `k >= data.len()`.
-pub fn nth_element(data: &mut Vec<f64>, k: usize) -> f64 {
+pub fn nth_element(data: &mut [f64], k: usize) -> f64 {
     assert!(!data.is_empty(), "nth_element: data must not be empty");
     assert!(
         k < data.len(),
@@ -568,8 +564,8 @@ mod tests {
     fn test_radix_sort_random_u32() {
         let mut v: Vec<u32> = (0..1000u32).rev().collect();
         radix_sort_u32(&mut v);
-        for i in 0..1000usize {
-            assert_eq!(v[i], i as u32, "mismatch at index {i}");
+        for (i, &val) in v.iter().enumerate() {
+            assert_eq!(val, i as u32, "mismatch at index {i}");
         }
     }
 
@@ -711,8 +707,8 @@ mod tests {
     fn test_merge_sort_large() {
         let mut v: Vec<f64> = (0..500u32).rev().map(|x| x as f64).collect();
         merge_sort_parallel(&mut v);
-        for i in 0..500usize {
-            assert!((v[i] - i as f64).abs() < 1e-12, "mismatch at {i}");
+        for (i, &val) in v.iter().enumerate() {
+            assert!((val - i as f64).abs() < 1e-12, "mismatch at {i}");
         }
     }
 
@@ -1147,7 +1143,7 @@ pub fn counting_sort_by_key<T: Clone>(data: &[(u32, T)], max_key: u32) -> Vec<(u
 ///
 /// Divides \[min, max\] into `n_buckets` buckets, sorts each bucket
 /// individually, then concatenates.
-pub fn histogram_bucket_sort(data: &mut Vec<f64>, n_buckets: usize) {
+pub fn histogram_bucket_sort(data: &mut [f64], n_buckets: usize) {
     let n = data.len();
     if n <= 1 || n_buckets == 0 {
         data.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -1199,7 +1195,7 @@ pub fn histogram_bucket_sort(data: &mut Vec<f64>, n_buckets: usize) {
 ///
 /// Builds a histogram first, then assigns multiple histogram bins to each
 /// bucket to balance load.
-pub fn adaptive_bucket_sort(data: &mut Vec<f64>, n_buckets: usize) {
+pub fn adaptive_bucket_sort(data: &mut [f64], n_buckets: usize) {
     histogram_bucket_sort(data, n_buckets.max(1));
 }
 
@@ -1317,7 +1313,7 @@ pub fn k_way_merge(slices: &[Vec<f64>]) -> Vec<f64> {
 ///
 /// Uses rayon to parallelise the merge at each recursive level when
 /// the sub-array exceeds `parallel_threshold`.
-pub fn merge_sort_parallel_threshold(data: &mut Vec<f64>, parallel_threshold: usize) {
+pub fn merge_sort_parallel_threshold(data: &mut [f64], parallel_threshold: usize) {
     let n = data.len();
     if n <= 1 {
         return;

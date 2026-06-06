@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,7 +15,6 @@ use super::config::{KB_REDUCED, MdState};
 /// Apply the minimum image convention for a single orthorhombic box.
 ///
 /// Returns the displacement vector mapped to the principal image \[-L/2, L/2).
-#[allow(dead_code)]
 pub fn apply_minimum_image(r: [f64; 3], box_len: f64) -> [f64; 3] {
     [
         r[0] - box_len * (r[0] / box_len).round(),
@@ -26,7 +24,6 @@ pub fn apply_minimum_image(r: [f64; 3], box_len: f64) -> [f64; 3] {
 }
 
 /// Squared distance between two positions (no PBC).
-#[allow(dead_code)]
 pub fn pair_distance_sq(ri: [f64; 3], rj: [f64; 3]) -> f64 {
     let dx = rj[0] - ri[0];
     let dy = rj[1] - ri[1];
@@ -46,7 +43,6 @@ pub fn pair_distance_sq(ri: [f64; 3], rj: [f64; 3]) -> f64 {
 /// Force magnitudes are in kJ mol⁻¹ Å⁻¹ (if masses are amu and distances Å).
 /// epsilon: well depth (kJ mol⁻¹), sigma: finite distance (Å),
 /// cutoff: pair cutoff (Å), box_len: cubic box side (Å).
-#[allow(dead_code)]
 pub fn compute_lj_forces(state: &mut MdState, epsilon: f64, sigma: f64, cutoff: f64, box_len: f64) {
     let n = state.n_atoms();
     // Zero forces first
@@ -80,10 +76,11 @@ pub fn compute_lj_forces(state: &mut MdState, epsilon: f64, sigma: f64, cutoff: 
             // (positive at r > r_min = repulsive for atom i toward j)
             let f_over_r = 24.0 * epsilon * (sr6 - 2.0 * sr12) / r2;
 
-            for a in 0..3 {
-                let f_a = f_over_r * dr[a];
-                state.forces[i][a] += f_a;
-                state.forces[j][a] -= f_a;
+            let (top, bot) = state.forces.split_at_mut(j);
+            for ((&dra, fi), fj) in dr.iter().zip(top[i].iter_mut()).zip(bot[0].iter_mut()) {
+                let f_a = f_over_r * dra;
+                *fi += f_a;
+                *fj -= f_a;
             }
         }
     }
@@ -97,7 +94,6 @@ pub fn compute_lj_forces(state: &mut MdState, epsilon: f64, sigma: f64, cutoff: 
 ///
 /// Uses velocity-Verlet integration and optional velocity-rescaling thermostat.
 /// No dependencies on external crates.
-#[allow(dead_code)]
 pub struct MdDriver {
     /// Dynamical state.
     pub state: MdState,
@@ -109,7 +105,6 @@ pub struct MdDriver {
     pub thermostat_freq: usize,
 }
 
-#[allow(dead_code)]
 impl MdDriver {
     /// Create a new [`MdDriver`].
     pub fn new(state: MdState, dt: f64) -> Self {
@@ -200,20 +195,25 @@ impl MdDriver {
         }
         let mut total_mass = 0.0f64;
         let mut com_v = [0.0f64; 3];
-        for i in 0..n {
-            let m = self.state.masses[i];
+        for (&m, vel) in self
+            .state
+            .masses
+            .iter()
+            .zip(self.state.velocities.iter())
+            .take(n)
+        {
             total_mass += m;
-            for a in 0..3 {
-                com_v[a] += m * self.state.velocities[i][a];
+            for (cv, &v) in com_v.iter_mut().zip(vel.iter()) {
+                *cv += m * v;
             }
         }
         if total_mass > 1e-20 {
-            for a in 0..3 {
-                com_v[a] /= total_mass;
+            for v in &mut com_v {
+                *v /= total_mass;
             }
-            for i in 0..n {
-                for a in 0..3 {
-                    self.state.velocities[i][a] -= com_v[a];
+            for vel in self.state.velocities[..n].iter_mut() {
+                for (v, &cv) in vel.iter_mut().zip(com_v.iter()) {
+                    *v -= cv;
                 }
             }
         }
@@ -226,7 +226,6 @@ impl MdDriver {
 
 /// Thermostat algorithm for NVT / NPT self-contained simulations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum ThermostatType {
     /// Berendsen velocity-rescaling thermostat.
     Berendsen,
@@ -238,7 +237,6 @@ pub enum ThermostatType {
 
 /// Barostat algorithm for NPT self-contained simulations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum BarostatType {
     /// Berendsen isotropic pressure coupling.
     Berendsen,
@@ -256,7 +254,6 @@ pub enum BarostatType {
 ///
 /// Uses plain `[f64;3]` arrays for all vector quantities.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Atom {
     /// Position (Å).
     pub position: [f64; 3],
@@ -272,7 +269,6 @@ pub struct Atom {
 
 impl Atom {
     /// Create a new atom.
-    #[allow(dead_code)]
     pub fn new(position: [f64; 3], velocity: [f64; 3], mass: f64, charge: f64) -> Self {
         Self {
             position,
@@ -284,7 +280,6 @@ impl Atom {
     }
 
     /// Kinetic energy of this atom (kJ mol⁻¹): ½ m v².
-    #[allow(dead_code)]
     pub fn kinetic_energy(&self) -> f64 {
         let v2 = self.velocity[0] * self.velocity[0]
             + self.velocity[1] * self.velocity[1]

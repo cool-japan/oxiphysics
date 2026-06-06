@@ -12,8 +12,6 @@
 //! - [`J2Plasticity`] — von Mises (J2) elastoplasticity with isotropic hardening
 //! - [`ConstitutiveModel`] trait — common interface for stress and tangent stiffness
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // Voigt notation: [σ11, σ22, σ33, σ12, σ23, σ13]  (indices 0..5)
 // ---------------------------------------------------------------------------
@@ -287,15 +285,14 @@ impl MooneyRivlin {
     }
 
     /// Compute I₁ = tr(C) and I₂ = (tr²(C) − tr(C²))/2 from deformation gradient F.
-    #[allow(clippy::needless_range_loop)]
     pub fn invariants(f: [[f64; 3]; 3]) -> (f64, f64) {
         let c = ftf(f);
         let i1 = c[0][0] + c[1][1] + c[2][2];
         // tr(C²) = Σ_ij C_ij²
         let mut tr_c2 = 0.0;
-        for i in 0..3 {
-            for j in 0..3 {
-                tr_c2 += c[i][j] * c[j][i];
+        for (i, c_row) in c.iter().enumerate() {
+            for (j, &c_ij) in c_row.iter().enumerate() {
+                tr_c2 += c_ij * c[j][i];
             }
         }
         let i2 = (i1 * i1 - tr_c2) / 2.0;
@@ -460,13 +457,12 @@ fn det3(m: [[f64; 3]; 3]) -> f64 {
 
 /// C = Fᵀ · F
 #[inline]
-#[allow(clippy::needless_range_loop)]
 fn ftf(f: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut c = [[0.0f64; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
-            for k in 0..3 {
-                c[i][j] += f[k][i] * f[k][j];
+            for f_k in &f {
+                c[i][j] += f_k[i] * f_k[j];
             }
         }
     }
@@ -531,7 +527,6 @@ mod tests {
     // ---- LinearElasticMaterial (original) ----
 
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_constitutive_matrix_steel() {
         let mat = LinearElasticMaterial::new(200.0e9, 0.3);
         let d = mat.constitutive_matrix();
@@ -558,12 +553,9 @@ mod tests {
         );
 
         // D should be symmetric
-        for i in 0..6 {
-            for j in 0..6 {
-                assert!(
-                    (d[i][j] - d[j][i]).abs() < 1e-6,
-                    "D not symmetric at ({i},{j})"
-                );
+        for (i, row) in d.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
+                assert!((v - d[j][i]).abs() < 1e-6, "D not symmetric at ({i},{j})");
             }
         }
 
@@ -640,19 +632,17 @@ mod tests {
 
     // ---- NeoHookean ----
 
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_neohookean_undeformed_zero_pk2() {
         let mat = NeoHookean::new(1.0e6, 3.0e6);
         // F = I → S = μ(I − I) + κ/2·(1−1)·I = 0
         let f_identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let s = mat.pk2_stress(f_identity);
-        for i in 0..3 {
-            for k in 0..3 {
+        for (i, row) in s.iter().enumerate() {
+            for (k, &v) in row.iter().enumerate() {
                 assert!(
-                    s[i][k].abs() < 1e-6,
-                    "PK2 at identity should be zero, S[{i}][{k}] = {}",
-                    s[i][k]
+                    v.abs() < 1e-6,
+                    "PK2 at identity should be zero, S[{i}][{k}] = {v}"
                 );
             }
         }
@@ -780,7 +770,6 @@ mod tests {
 ///
 /// where α is the coefficient of thermal expansion and ΔT = T - T_ref.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ThermoElastic {
     /// Young's modulus E (Pa).
     pub youngs_modulus: f64,
@@ -792,7 +781,6 @@ pub struct ThermoElastic {
     pub t_ref: f64,
 }
 
-#[allow(dead_code)]
 impl ThermoElastic {
     /// Create a new thermoelastic material.
     pub fn new(youngs_modulus: f64, poisson_ratio: f64, alpha: f64, t_ref: f64) -> Self {
@@ -856,7 +844,6 @@ impl ThermoElastic {
 /// nu12, nu13, nu23 (Poisson's ratios)
 /// G12, G13, G23 (shear moduli)
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct OrthotropicElastic {
     /// Young's moduli \[E1, E2, E3\] (Pa).
     pub e: [f64; 3],
@@ -866,7 +853,6 @@ pub struct OrthotropicElastic {
     pub g: [f64; 3],
 }
 
-#[allow(dead_code)]
 impl OrthotropicElastic {
     /// Create a new orthotropic material.
     pub fn new(e: [f64; 3], nu: [f64; 3], g: [f64; 3]) -> Self {
@@ -965,7 +951,6 @@ impl OrthotropicElastic {
 /// where `x` = max(0, x), f = von Mises yield function,
 /// η = viscosity, N = rate exponent.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PerzynaViscoplasticity {
     /// Young's modulus E (Pa).
     pub e: f64,
@@ -981,7 +966,6 @@ pub struct PerzynaViscoplasticity {
     pub exponent: f64,
 }
 
-#[allow(dead_code)]
 impl PerzynaViscoplasticity {
     /// Create a new Perzyna viscoplastic material.
     pub fn new(
@@ -1065,7 +1049,6 @@ impl PerzynaViscoplasticity {
 /// dε_cr/dt = A * σ_eq^n
 ///
 /// where A is the creep coefficient and n is the creep exponent.
-#[allow(dead_code)]
 pub fn norton_creep_rate(stress_voigt: Stress6, a_coeff: f64, n_exp: f64) -> f64 {
     let s_eq = von_mises_stress(stress_voigt);
     a_coeff * s_eq.powf(n_exp)
@@ -1074,7 +1057,6 @@ pub fn norton_creep_rate(stress_voigt: Stress6, a_coeff: f64, n_exp: f64) -> f64
 /// Integrate Norton creep over a time step dt.
 ///
 /// Returns the incremental equivalent creep strain Δε_cr.
-#[allow(dead_code)]
 pub fn norton_creep_increment(stress_voigt: Stress6, a_coeff: f64, n_exp: f64, dt: f64) -> f64 {
     norton_creep_rate(stress_voigt, a_coeff, n_exp) * dt
 }
@@ -1085,7 +1067,6 @@ pub fn norton_creep_increment(stress_voigt: Stress6, a_coeff: f64, n_exp: f64, d
 
 /// Identifier for registered constitutive models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum ModelId {
     /// Standard isotropic linear elastic.
     LinearElasticModel,
@@ -1101,7 +1082,6 @@ pub enum ModelId {
 
 /// Model descriptor used in the constitutive model registry.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ModelDescriptor {
     /// Model identifier.
     pub id: ModelId,
@@ -1111,7 +1091,6 @@ pub struct ModelDescriptor {
     pub n_state_vars: usize,
 }
 
-#[allow(dead_code)]
 impl ModelDescriptor {
     /// Descriptor for linear elastic model.
     pub fn linear_elastic() -> Self {
@@ -1146,7 +1125,6 @@ impl ModelDescriptor {
 // ---------------------------------------------------------------------------
 
 /// Compute elastic strain energy density: W = 0.5 * σ : ε
-#[allow(dead_code)]
 pub fn strain_energy_density(stress: Stress6, strain: Stress6) -> f64 {
     // Engineering shear convention: σ12 * γ12 (factor 2 already in γ12)
     0.5 * (stress[0] * strain[0]
@@ -1162,7 +1140,6 @@ pub fn strain_energy_density(stress: Stress6, strain: Stress6) -> f64 {
 /// E_eff = Δσ11 / Δε11
 ///
 /// Uses two (strain, stress) data points.
-#[allow(dead_code)]
 pub fn effective_modulus_uniaxial(strain1: f64, stress1: f64, strain2: f64, stress2: f64) -> f64 {
     let d_strain = strain2 - strain1;
     if d_strain.abs() < f64::EPSILON {
@@ -1174,7 +1151,6 @@ pub fn effective_modulus_uniaxial(strain1: f64, stress1: f64, strain2: f64, stre
 /// Compute the second invariant of the deviatoric stress J2.
 ///
 /// J2 = 0.5 * s:s  where s is the deviatoric stress.
-#[allow(dead_code)]
 pub fn stress_j2_invariant(s: Stress6) -> f64 {
     let dev = deviatoric_voigt(s);
     0.5 * (dev[0] * dev[0]
@@ -1190,7 +1166,6 @@ pub fn stress_j2_invariant(s: Stress6) -> f64 {
 /// cos(3θ) = (3√3 / 2) * J3 / J2^(3/2)
 ///
 /// Returns the angle in radians in the range \[0, π/3\].
-#[allow(dead_code)]
 pub fn lode_angle(s: Stress6) -> f64 {
     let j2 = stress_j2_invariant(s);
     if j2 < f64::EPSILON {
@@ -1493,7 +1468,7 @@ mod tests_extended {
         let theta = lode_angle(s);
         let pi_over_3 = std::f64::consts::PI / 3.0;
         assert!(
-            theta >= 0.0 && theta <= pi_over_3 + 1e-10,
+            (0.0..=pi_over_3 + 1e-10).contains(&theta),
             "Lode angle out of range: {theta}"
         );
     }

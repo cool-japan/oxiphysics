@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -102,10 +101,9 @@ impl Vec3Batch {
     /// Returns an error if internal dimensions are inconsistent.
     pub fn to_aos(&self) -> Result<Vec<[f64; 3]>, SimdMathError> {
         self.validate()?;
-        let n = self.x.len();
-        let mut result = Vec::with_capacity(n);
-        for i in 0..n {
-            result.push([self.x[i], self.y[i], self.z[i]]);
+        let mut result = Vec::with_capacity(self.x.len());
+        for ((x, y), z) in self.x.iter().zip(self.y.iter()).zip(self.z.iter()) {
+            result.push([*x, *y, *z]);
         }
         Ok(result)
     }
@@ -158,14 +156,14 @@ impl Vec3Batch {
         let mut rz = vec![0.0_f64; n];
 
         // Written as simple loops to encourage auto-vectorization
-        for i in 0..n {
-            rx[i] = self.x[i] + other.x[i];
+        for (dst, (a, b)) in rx.iter_mut().zip(self.x.iter().zip(other.x.iter())) {
+            *dst = *a + *b;
         }
-        for i in 0..n {
-            ry[i] = self.y[i] + other.y[i];
+        for (dst, (a, b)) in ry.iter_mut().zip(self.y.iter().zip(other.y.iter())) {
+            *dst = *a + *b;
         }
-        for i in 0..n {
-            rz[i] = self.z[i] + other.z[i];
+        for (dst, (a, b)) in rz.iter_mut().zip(self.z.iter().zip(other.z.iter())) {
+            *dst = *a + *b;
         }
 
         Ok(Vec3Batch {
@@ -186,14 +184,14 @@ impl Vec3Batch {
         let mut ry = vec![0.0_f64; n];
         let mut rz = vec![0.0_f64; n];
 
-        for i in 0..n {
-            rx[i] = self.x[i] - other.x[i];
+        for (dst, (a, b)) in rx.iter_mut().zip(self.x.iter().zip(other.x.iter())) {
+            *dst = *a - *b;
         }
-        for i in 0..n {
-            ry[i] = self.y[i] - other.y[i];
+        for (dst, (a, b)) in ry.iter_mut().zip(self.y.iter().zip(other.y.iter())) {
+            *dst = *a - *b;
         }
-        for i in 0..n {
-            rz[i] = self.z[i] - other.z[i];
+        for (dst, (a, b)) in rz.iter_mut().zip(self.z.iter().zip(other.z.iter())) {
+            *dst = *a - *b;
         }
 
         Ok(Vec3Batch {
@@ -211,14 +209,14 @@ impl Vec3Batch {
         let mut ry = vec![0.0_f64; n];
         let mut rz = vec![0.0_f64; n];
 
-        for i in 0..n {
-            rx[i] = self.x[i] * s;
+        for (dst, a) in rx.iter_mut().zip(self.x.iter()) {
+            *dst = *a * s;
         }
-        for i in 0..n {
-            ry[i] = self.y[i] * s;
+        for (dst, a) in ry.iter_mut().zip(self.y.iter()) {
+            *dst = *a * s;
         }
-        for i in 0..n {
-            rz[i] = self.z[i] * s;
+        for (dst, a) in rz.iter_mut().zip(self.z.iter()) {
+            *dst = *a * s;
         }
 
         Vec3Batch {
@@ -239,14 +237,14 @@ impl Vec3Batch {
         let mut result = vec![0.0_f64; n];
 
         // Accumulate component-wise to allow vectorization of each loop
-        for i in 0..n {
-            result[i] = self.x[i] * other.x[i];
+        for (dst, (a, b)) in result.iter_mut().zip(self.x.iter().zip(other.x.iter())) {
+            *dst = *a * *b;
         }
-        for i in 0..n {
-            result[i] += self.y[i] * other.y[i];
+        for (dst, (a, b)) in result.iter_mut().zip(self.y.iter().zip(other.y.iter())) {
+            *dst += *a * *b;
         }
-        for i in 0..n {
-            result[i] += self.z[i] * other.z[i];
+        for (dst, (a, b)) in result.iter_mut().zip(self.z.iter().zip(other.z.iter())) {
+            *dst += *a * *b;
         }
 
         Ok(result)
@@ -266,16 +264,31 @@ impl Vec3Batch {
         let mut rz = vec![0.0_f64; n];
 
         // cross.x = self.y * other.z - self.z * other.y
-        for i in 0..n {
-            rx[i] = self.y[i] * other.z[i] - self.z[i] * other.y[i];
+        for (dst, ((sy, sz), (oz, oy))) in rx.iter_mut().zip(
+            self.y
+                .iter()
+                .zip(self.z.iter())
+                .zip(other.z.iter().zip(other.y.iter())),
+        ) {
+            *dst = *sy * *oz - *sz * *oy;
         }
         // cross.y = self.z * other.x - self.x * other.z
-        for i in 0..n {
-            ry[i] = self.z[i] * other.x[i] - self.x[i] * other.z[i];
+        for (dst, ((sz, sx), (ox, oz))) in ry.iter_mut().zip(
+            self.z
+                .iter()
+                .zip(self.x.iter())
+                .zip(other.x.iter().zip(other.z.iter())),
+        ) {
+            *dst = *sz * *ox - *sx * *oz;
         }
         // cross.z = self.x * other.y - self.y * other.x
-        for i in 0..n {
-            rz[i] = self.x[i] * other.y[i] - self.y[i] * other.x[i];
+        for (dst, ((sx, sy), (oy, ox))) in rz.iter_mut().zip(
+            self.x
+                .iter()
+                .zip(self.y.iter())
+                .zip(other.y.iter().zip(other.x.iter())),
+        ) {
+            *dst = *sx * *oy - *sy * *ox;
         }
 
         Ok(Vec3Batch {
@@ -291,14 +304,14 @@ impl Vec3Batch {
         let n = self.len();
         let mut result = vec![0.0_f64; n];
 
-        for i in 0..n {
-            result[i] = self.x[i] * self.x[i];
+        for (dst, x) in result.iter_mut().zip(self.x.iter()) {
+            *dst = *x * *x;
         }
-        for i in 0..n {
-            result[i] += self.y[i] * self.y[i];
+        for (dst, y) in result.iter_mut().zip(self.y.iter()) {
+            *dst += *y * *y;
         }
-        for i in 0..n {
-            result[i] += self.z[i] * self.z[i];
+        for (dst, z) in result.iter_mut().zip(self.z.iter()) {
+            *dst += *z * *z;
         }
 
         result
@@ -321,7 +334,6 @@ impl Vec3Batch {
     /// Returns `SimdMathError::ZeroLengthVector` for the first zero-length vector found.
     pub fn normalize(&mut self) -> Result<(), SimdMathError> {
         let lengths = self.length();
-        let n = self.len();
 
         // First pass: check for zero-length vectors
         for (i, &len) in lengths.iter().enumerate() {
@@ -331,19 +343,16 @@ impl Vec3Batch {
         }
 
         // Second pass: compute reciprocals and scale (vectorization-friendly)
-        let mut inv_lengths = vec![0.0_f64; n];
-        for i in 0..n {
-            inv_lengths[i] = 1.0 / lengths[i];
-        }
+        let inv_lengths: Vec<f64> = lengths.iter().map(|&l| 1.0 / l).collect();
 
-        for i in 0..n {
-            self.x[i] *= inv_lengths[i];
+        for (x, inv) in self.x.iter_mut().zip(inv_lengths.iter()) {
+            *x *= *inv;
         }
-        for i in 0..n {
-            self.y[i] *= inv_lengths[i];
+        for (y, inv) in self.y.iter_mut().zip(inv_lengths.iter()) {
+            *y *= *inv;
         }
-        for i in 0..n {
-            self.z[i] *= inv_lengths[i];
+        for (z, inv) in self.z.iter_mut().zip(inv_lengths.iter()) {
+            *z *= *inv;
         }
 
         Ok(())
@@ -359,19 +368,19 @@ impl Vec3Batch {
         let mut result = vec![0.0_f64; n];
 
         // dx^2
-        for i in 0..n {
-            let dx = a.x[i] - b.x[i];
-            result[i] = dx * dx;
+        for (dst, (ax, bx)) in result.iter_mut().zip(a.x.iter().zip(b.x.iter())) {
+            let dx = *ax - *bx;
+            *dst = dx * dx;
         }
         // dy^2
-        for i in 0..n {
-            let dy = a.y[i] - b.y[i];
-            result[i] += dy * dy;
+        for (dst, (ay, by)) in result.iter_mut().zip(a.y.iter().zip(b.y.iter())) {
+            let dy = *ay - *by;
+            *dst += dy * dy;
         }
         // dz^2
-        for i in 0..n {
-            let dz = a.z[i] - b.z[i];
-            result[i] += dz * dz;
+        for (dst, (az, bz)) in result.iter_mut().zip(a.z.iter().zip(b.z.iter())) {
+            let dz = *az - *bz;
+            *dst += dz * dz;
         }
 
         Ok(result)
@@ -391,19 +400,19 @@ pub fn compute_distances_batch(positions: &Vec3Batch, ref_pos: [f64; 3]) -> Vec<
     let mut result = vec![0.0_f64; n];
 
     // dx^2
-    for i in 0..n {
-        let dx = positions.x[i] - ref_pos[0];
-        result[i] = dx * dx;
+    for (dst, px) in result.iter_mut().zip(positions.x.iter()) {
+        let dx = *px - ref_pos[0];
+        *dst = dx * dx;
     }
     // dy^2
-    for i in 0..n {
-        let dy = positions.y[i] - ref_pos[1];
-        result[i] += dy * dy;
+    for (dst, py) in result.iter_mut().zip(positions.y.iter()) {
+        let dy = *py - ref_pos[1];
+        *dst += dy * dy;
     }
     // dz^2
-    for i in 0..n {
-        let dz = positions.z[i] - ref_pos[2];
-        result[i] += dz * dz;
+    for (dst, pz) in result.iter_mut().zip(positions.z.iter()) {
+        let dz = *pz - ref_pos[2];
+        *dst += dz * dz;
     }
 
     // sqrt
@@ -443,14 +452,29 @@ pub fn accumulate_forces_batch(
         });
     }
 
-    for i in 0..n {
-        forces.x[i] += directions.x[i] * magnitudes[i];
+    for ((fx, dx), mag) in forces
+        .x
+        .iter_mut()
+        .zip(directions.x.iter())
+        .zip(magnitudes.iter())
+    {
+        *fx += *dx * *mag;
     }
-    for i in 0..n {
-        forces.y[i] += directions.y[i] * magnitudes[i];
+    for ((fy, dy), mag) in forces
+        .y
+        .iter_mut()
+        .zip(directions.y.iter())
+        .zip(magnitudes.iter())
+    {
+        *fy += *dy * *mag;
     }
-    for i in 0..n {
-        forces.z[i] += directions.z[i] * magnitudes[i];
+    for ((fz, dz), mag) in forces
+        .z
+        .iter_mut()
+        .zip(directions.z.iter())
+        .zip(magnitudes.iter())
+    {
+        *fz += *dz * *mag;
     }
 
     Ok(())
@@ -486,37 +510,31 @@ pub fn cubic_spline_kernel_batch(r: &[f64], h: f64) -> Vec<f64> {
     let sigma = 1.0 / (4.0 * f64::consts::PI * h * h * h);
 
     let mut result = vec![0.0_f64; n];
-    let mut q = vec![0.0_f64; n];
-
-    // Compute q = r/h (vectorizable)
-    for i in 0..n {
-        q[i] = r[i] * inv_h;
-    }
+    let q: Vec<f64> = r.iter().map(|&ri| ri * inv_h).collect();
 
     // Evaluate kernel piecewise
-    for i in 0..n {
-        let qi = q[i];
+    for (dst, &qi) in result.iter_mut().zip(q.iter()) {
         if qi >= 2.0 {
-            result[i] = 0.0;
+            *dst = 0.0;
         } else if qi >= 1.0 {
             let t = 2.0 - qi;
-            result[i] = sigma * t * t * t;
+            *dst = sigma * t * t * t;
         } else if qi >= 0.0 {
             let t2 = 2.0 - qi;
             let t1 = 1.0 - qi;
-            result[i] = sigma * (t2 * t2 * t2 - 4.0 * t1 * t1 * t1);
+            *dst = sigma * (t2 * t2 * t2 - 4.0 * t1 * t1 * t1);
         } else {
             // Negative distance: treat as absolute value
             let qi_abs = qi.abs();
             if qi_abs >= 2.0 {
-                result[i] = 0.0;
+                *dst = 0.0;
             } else if qi_abs >= 1.0 {
                 let t = 2.0 - qi_abs;
-                result[i] = sigma * t * t * t;
+                *dst = sigma * t * t * t;
             } else {
                 let t2 = 2.0 - qi_abs;
                 let t1 = 1.0 - qi_abs;
-                result[i] = sigma * (t2 * t2 * t2 - 4.0 * t1 * t1 * t1);
+                *dst = sigma * (t2 * t2 * t2 - 4.0 * t1 * t1 * t1);
             }
         }
     }

@@ -21,7 +21,6 @@ use crate::{
 /// 2. **Composite-inertia backward pass**: accumulate `I^c_i = I_i + Σ_children X_c^T · I^c_c · X_c`.
 /// 3. **Mass-matrix assembly**: for each body `i` and DOF `k`, propagate the force column
 ///    `F_k = I^c_i · S_k` upward through the kinematic chain.
-#[allow(clippy::needless_range_loop)]
 pub fn compute_mass_matrix_crba(model: &mut ArticulatedModel, q: &[f64]) -> Vec<Vec<f64>> {
     let n = model.num_bodies();
     let total = model.total_dof();
@@ -29,10 +28,10 @@ pub fn compute_mass_matrix_crba(model: &mut ArticulatedModel, q: &[f64]) -> Vec<
     // ── Pass 1: joint transforms ─────────────────────────────────────────────
     // Index i required to access model.bodies[i], model.joints[i], and x_full[i] together.
     let mut x_full = vec![SpatialTransform::IDENTITY; n];
-    for i in 0..n {
+    for (i, x_full_i) in x_full.iter_mut().enumerate() {
         let qi = model.q_slice(q, i);
         let x_j = model.joints[i].transform(qi);
-        x_full[i] = model.bodies[i].parent_transform.compose(&x_j);
+        *x_full_i = model.bodies[i].parent_transform.compose(&x_j);
     }
 
     // ── Pass 2: composite-inertia backward pass ───────────────────────────────
@@ -53,7 +52,7 @@ pub fn compute_mass_matrix_crba(model: &mut ArticulatedModel, q: &[f64]) -> Vec<
     // Index i required to access model.bodies[i], model.joints[i], i_c[i] together.
     let mut m = vec![vec![0.0f64; total]; total];
 
-    for i in 0..n {
+    for (i, i_c_i) in i_c.iter().enumerate() {
         let qi = model.q_slice(q, i);
         let s_i = model.joints[i].motion_subspace_at(qi);
         if s_i.is_empty() {
@@ -62,7 +61,7 @@ pub fn compute_mass_matrix_crba(model: &mut ArticulatedModel, q: &[f64]) -> Vec<
 
         // For each DOF k of body i, propagate force F_k upward
         for (k, s_ik) in s_i.iter().enumerate() {
-            let mut f_k = i_c[i].mul_vec6(s_ik);
+            let mut f_k = i_c_i.mul_vec6(s_ik);
             let row = model.dof_start(i) + k;
 
             // Diagonal block: M[row][row] = S_i[k]^T · F_k

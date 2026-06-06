@@ -2,13 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::types::*;
 #[cfg(test)]
 mod tests_new {
-    use super::*;
+    use crate::acoustics::functions::*;
+    use crate::acoustics::types::*;
     use std::f64::consts::PI;
     #[test]
     fn test_sound_speed_ideal_gas_air() {

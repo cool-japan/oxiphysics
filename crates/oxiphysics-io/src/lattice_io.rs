@@ -12,7 +12,6 @@ use std::io::{Read, Write};
 // ── Lattice type ──────────────────────────────────────────────────────────────
 
 /// Lattice connectivity / velocity-set type.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum LatticeType {
     /// 2-D, 9-velocity lattice (LBM standard).
@@ -90,7 +89,6 @@ impl LatticeType {
 // ── LatticeGrid ───────────────────────────────────────────────────────────────
 
 /// A 3-D labelled lattice field.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LatticeGrid {
     /// Connectivity / velocity-set type.
@@ -272,7 +270,6 @@ pub fn lattice_to_xyz(grid: &LatticeGrid, path: &str) -> Result<(), String> {
 // ── Crystal lattice ───────────────────────────────────────────────────────────
 
 /// A crystal structure defined by basis atoms and lattice vectors.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CrystalLattice {
     /// Fractional or Cartesian coordinates of basis atoms.
@@ -538,9 +535,9 @@ mod tests {
     fn test_write_read_binary_roundtrip() {
         let mut g = LatticeGrid::new(LatticeType::D3Q19, 2, 2, 2, 0.5, 2);
         g.set_node(0, 1, 1, &[3.125, 2.72]);
-        let path = "/tmp/lattice_test_roundtrip.bin";
-        write_lattice_binary(&g, path).expect("write failed");
-        let g2 = read_lattice_binary(path).expect("read failed");
+        let path = std::env::temp_dir().join("lattice_test_roundtrip.bin");
+        write_lattice_binary(&g, path.to_str().unwrap_or("")).expect("write failed");
+        let g2 = read_lattice_binary(path.to_str().unwrap_or("")).expect("read failed");
         assert_eq!(g2.nx, 2);
         assert_eq!(g2.ny, 2);
         assert_eq!(g2.nz, 2);
@@ -553,26 +550,27 @@ mod tests {
     #[test]
     fn test_write_binary_creates_file() {
         let g = LatticeGrid::new(LatticeType::D2Q9, 2, 2, 1, 1.0, 1);
-        write_lattice_binary(&g, "/tmp/lattice_create_test.bin").expect("write failed");
-        assert!(std::path::Path::new("/tmp/lattice_create_test.bin").exists());
+        let path = std::env::temp_dir().join("lattice_create_test.bin");
+        write_lattice_binary(&g, path.to_str().unwrap_or("")).expect("write failed");
+        assert!(path.exists());
     }
 
     #[test]
     fn test_read_binary_invalid_magic() {
         use std::io::Write;
-        let path = "/tmp/lattice_bad_magic.bin";
-        let mut f = File::create(path).unwrap();
+        let path = std::env::temp_dir().join("lattice_bad_magic.bin");
+        let mut f = File::create(&path).unwrap();
         f.write_all(b"XXXX").unwrap();
-        let res = read_lattice_binary(path);
+        let res = read_lattice_binary(path.to_str().unwrap_or(""));
         assert!(res.is_err());
     }
 
     #[test]
     fn test_binary_roundtrip_node_count() {
         let g = LatticeGrid::new(LatticeType::D2Q9, 3, 4, 5, 1.0, 1);
-        let path = "/tmp/lattice_nc_roundtrip.bin";
-        write_lattice_binary(&g, path).expect("write failed");
-        let g2 = read_lattice_binary(path).expect("read failed");
+        let path = std::env::temp_dir().join("lattice_nc_roundtrip.bin");
+        write_lattice_binary(&g, path.to_str().unwrap_or("")).expect("write failed");
+        let g2 = read_lattice_binary(path.to_str().unwrap_or("")).expect("read failed");
         assert_eq!(g2.node_count(), 60);
     }
 
@@ -581,8 +579,9 @@ mod tests {
     #[test]
     fn test_write_lattice_vtk_creates_file() {
         let g = LatticeGrid::new(LatticeType::D3Q19, 3, 3, 3, 1.0, 1);
-        write_lattice_vtk(&g, "/tmp/lattice_test.vtk", "density").expect("vtk failed");
-        assert!(std::path::Path::new("/tmp/lattice_test.vtk").exists());
+        let path = std::env::temp_dir().join("lattice_test.vtk");
+        write_lattice_vtk(&g, path.to_str().unwrap_or(""), "density").expect("vtk failed");
+        assert!(path.exists());
     }
 
     // ── XYZ export tests ──────────────────────────────────────────────────
@@ -590,8 +589,9 @@ mod tests {
     #[test]
     fn test_lattice_to_xyz_creates_file() {
         let g = LatticeGrid::new(LatticeType::SC, 2, 2, 2, 1.0, 1);
-        lattice_to_xyz(&g, "/tmp/lattice_test.xyz").expect("xyz failed");
-        assert!(std::path::Path::new("/tmp/lattice_test.xyz").exists());
+        let path = std::env::temp_dir().join("lattice_test.xyz");
+        lattice_to_xyz(&g, path.to_str().unwrap_or("")).expect("xyz failed");
+        assert!(path.exists());
     }
 
     // ── CrystalLattice tests ──────────────────────────────────────────────
@@ -656,15 +656,17 @@ mod tests {
     #[test]
     fn test_write_poscar_creates_file() {
         let c = CrystalLattice::fcc(4.05);
-        write_poscar(&c, 1, "/tmp/lattice_test.poscar").expect("poscar failed");
-        assert!(std::path::Path::new("/tmp/lattice_test.poscar").exists());
+        let path = std::env::temp_dir().join("lattice_test.poscar");
+        write_poscar(&c, 1, path.to_str().unwrap_or("")).expect("poscar failed");
+        assert!(path.exists());
     }
 
     #[test]
     fn test_write_cif_creates_file() {
         let c = CrystalLattice::bcc(3.3);
-        write_cif_minimal(&c, "/tmp/lattice_test.cif").expect("cif failed");
-        assert!(std::path::Path::new("/tmp/lattice_test.cif").exists());
+        let path = std::env::temp_dir().join("lattice_test.cif");
+        write_cif_minimal(&c, path.to_str().unwrap_or("")).expect("cif failed");
+        assert!(path.exists());
     }
 
     #[test]

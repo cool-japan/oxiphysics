@@ -12,7 +12,6 @@
 /// The SEA torque model: `τ = k_s * (θ_motor - θ_output)`.
 /// An impedance controller tracks a reference trajectory:
 /// `τ = k * (θ_ref - θ) + b * (dθ_ref - dθ)`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ExoskeletonJoint {
     /// Spring stiffness of the series elastic element \[N·m/rad\].
@@ -39,7 +38,6 @@ pub struct ExoskeletonJoint {
 
 impl ExoskeletonJoint {
     /// Create a new `ExoskeletonJoint` with given SEA stiffness and impedance parameters.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         spring_stiffness: f64,
         impedance_k: f64,
@@ -88,7 +86,6 @@ impl ExoskeletonJoint {
 // ── Assistance Torque / Gait-Phase Profile ────────────────────────────────────
 
 /// Gait phase \[0, 1\] and stance/swing detection from foot pressure.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GaitPhaseState {
     /// Foot is in contact with the ground (stance phase).
@@ -101,7 +98,6 @@ pub enum GaitPhaseState {
 ///
 /// Torque is defined by four control points over the normalized gait cycle `[0, 1]`.
 /// Between points the torque is interpolated with a cubic Hermite curve.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AssistanceTorque {
     /// Foot pressure threshold for stance detection \[N\].
@@ -167,7 +163,6 @@ fn cubic_hermite(a: f64, b: f64, u: f64) -> f64 {
 // ── Gait Analysis ─────────────────────────────────────────────────────────────
 
 /// Gait analysis: step detection, phase estimation, cadence, walking speed.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GaitAnalysis {
     /// Stride time (time for a full cycle) \[s\].
@@ -232,7 +227,6 @@ impl GaitAnalysis {
 // ── Human Motion Model / Musculoskeletal ─────────────────────────────────────
 
 /// Simplified musculoskeletal joint constraint: ROM limits, torque limits, metabolic cost.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HumanMotionModel {
     /// Joint name/label.
@@ -289,7 +283,6 @@ impl HumanMotionModel {
 ///
 /// The capstan equation: `T_out = T_in * exp(μ * θ_wrap)`.
 /// Backlash introduces a dead-zone before force transmission.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CableActuator {
     /// Cable stiffness \[N/m\].
@@ -337,7 +330,6 @@ impl CableActuator {
 /// Under-actuated prosthetic hand: 1 motor drives N compliant finger joints.
 ///
 /// Adaptive grasping through joint compliance allows passive shape-matching.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ProstheticHand {
     /// Number of finger joints.
@@ -396,7 +388,6 @@ impl ProstheticHand {
 ///
 /// Triggers if angular velocity magnitude exceeds `omega_threshold` or
 /// linear acceleration magnitude exceeds `accel_threshold`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FallDetection {
     /// Angular velocity threshold \[rad/s\].
@@ -472,7 +463,6 @@ impl FallDetection {
 /// The controller applies assistive torque only when the patient's tracking
 /// error exceeds a deadband (the "patient effort zone"). This encourages
 /// active participation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RehabilitationController {
     /// Error deadband width (half-width, symmetric) \[rad\].

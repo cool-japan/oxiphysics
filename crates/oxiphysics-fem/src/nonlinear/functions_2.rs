@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use crate::solvers::conjugate_gradient;
 use crate::sparse::CsrMatrix;
@@ -16,7 +14,6 @@ use super::types::{ConvergenceCriteria, EnergyConvergenceCriteria, NrResult, Rik
 /// using Newton-Raphson at each step with warm-starting from previous solution.
 ///
 /// Returns a vector of `(lambda, displacement)` pairs for each completed step.
-#[allow(dead_code)]
 pub fn incremental_load_stepping<F>(
     n_dof: usize,
     n_steps: usize,
@@ -53,7 +50,6 @@ where
 /// - `k_g` = geometric stiffness scaled by a reference load
 ///
 /// For a 2×2 system the characteristic equation is solved directly.
-#[allow(dead_code)]
 pub fn buckling_load_factor_2x2(k_e: &[[f64; 2]; 2], k_g: &[[f64; 2]; 2]) -> Option<f64> {
     let a = k_g[0][0] * k_g[1][1] - k_g[0][1] * k_g[1][0];
     let b = k_e[0][0] * k_g[1][1] + k_g[0][0] * k_e[1][1] - 2.0 * k_e[0][1] * k_g[0][1];
@@ -84,7 +80,6 @@ pub fn buckling_load_factor_2x2(k_e: &[[f64; 2]; 2], k_g: &[[f64; 2]; 2]) -> Opt
 ///
 /// K_geo = (N / L) * \[\[1, -1\\], \[-1, 1\]]
 /// where N is the axial force and L is the element length.
-#[allow(dead_code)]
 pub fn geometric_stiffness_bar_2d(axial_force: f64, length: f64) -> [[f64; 2]; 2] {
     let scale = axial_force / length.max(1e-30);
     [[scale, -scale], [-scale, scale]]
@@ -92,7 +87,6 @@ pub fn geometric_stiffness_bar_2d(axial_force: f64, length: f64) -> [[f64; 2]; 2
 /// Elastic stiffness matrix for a 1D bar element.
 ///
 /// K_el = (E * A / L) * \[\[1, -1\\], \[-1, 1\]]
-#[allow(dead_code)]
 pub fn elastic_stiffness_bar_1d(e_mod: f64, area: f64, length: f64) -> [[f64; 2]; 2] {
     let scale = e_mod * area / length.max(1e-30);
     [[scale, -scale], [-scale, scale]]
@@ -100,7 +94,6 @@ pub fn elastic_stiffness_bar_1d(e_mod: f64, area: f64, length: f64) -> [[f64; 2]
 /// One Riks predictor step: advance along the tangent direction.
 ///
 /// Returns updated `(u_new, lambda_new)`.
-#[allow(dead_code)]
 pub fn riks_predictor<F>(
     state: &mut RiksState,
     tangent_and_residual: F,
@@ -129,7 +122,6 @@ where
     (u_new, lambda_new)
 }
 /// Newton-Raphson with energy-based convergence criterion.
-#[allow(dead_code)]
 pub fn newton_raphson_energy<F>(
     n_dof: usize,
     u0: Option<Vec<f64>>,
@@ -181,7 +173,6 @@ where
 /// using the St. Venant-Kirchhoff constitutive law.
 ///
 /// S = lambda * tr(E) * I + 2*mu * E
-#[allow(dead_code)]
 pub fn svk_stress(e: &[[f64; 3]; 3], mu: f64, lambda: f64) -> [[f64; 3]; 3] {
     let tr_e = e[0][0] + e[1][1] + e[2][2];
     let mut s = [[0.0f64; 3]; 3];
@@ -196,7 +187,6 @@ pub fn svk_stress(e: &[[f64; 3]; 3], mu: f64, lambda: f64) -> [[f64; 3]; 3] {
 /// Compute the Cauchy stress from the second Piola-Kirchhoff stress.
 ///
 /// sigma = (1/J) * F * S * F^T
-#[allow(dead_code)]
 pub fn cauchy_from_pk2(f: &[[f64; 3]; 3], s: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let j = mat3_det(f);
     let fs = mat3_mul(f, s);
@@ -214,14 +204,13 @@ pub fn cauchy_from_pk2(f: &[[f64; 3]; 3], s: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
 /// Volumetric-deviatoric split of the deformation gradient.
 ///
 /// Returns `(F_vol, F_dev)` where `F_vol = J^{1/3} * I` and `F_dev = J^{-1/3} * F`.
-#[allow(dead_code)]
 pub fn vol_dev_split(f: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], [[f64; 3]; 3]) {
     let j = mat3_det(f);
     let j13 = j.abs().powf(1.0 / 3.0);
     let inv_j13 = if j13 > 1e-30 { 1.0 / j13 } else { 0.0 };
     let mut f_vol = [[0.0f64; 3]; 3];
-    for i in 0..3 {
-        f_vol[i][i] = j13;
+    for (i, row) in f_vol.iter_mut().enumerate() {
+        row[i] = j13;
     }
     let mut f_dev = [[0.0f64; 3]; 3];
     for i in 0..3 {
@@ -235,7 +224,6 @@ pub fn vol_dev_split(f: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], [[f64; 3]; 3]) {
 ///
 /// W_iso = (mu/2) * (I1_bar - 3)
 /// where I1_bar = J^{-2/3} * tr(C)
-#[allow(dead_code)]
 pub fn neo_hookean_isochoric_energy(f: &[[f64; 3]; 3], mu: f64) -> f64 {
     let j = mat3_det(f);
     let c = right_cauchy_green(f);
@@ -246,14 +234,12 @@ pub fn neo_hookean_isochoric_energy(f: &[[f64; 3]; 3], mu: f64) -> f64 {
 /// Volumetric strain energy density (penalty/bulk).
 ///
 /// W_vol = (kappa/4) * (J² - 1 - 2*ln(J))
-#[allow(dead_code)]
 pub fn volumetric_energy(f: &[[f64; 3]; 3], kappa: f64) -> f64 {
     let j = mat3_det(f);
     let ln_j = j.max(1e-30).ln();
     (kappa / 4.0) * (j * j - 1.0 - 2.0 * ln_j)
 }
 /// Total Neo-Hookean energy = isochoric + volumetric.
-#[allow(dead_code)]
 pub fn neo_hookean_total_energy(f: &[[f64; 3]; 3], mu: f64, kappa: f64) -> f64 {
     neo_hookean_isochoric_energy(f, mu) + volumetric_energy(f, kappa)
 }
@@ -277,9 +263,9 @@ mod nonlinear_extended_tests {
     fn test_svk_stress_zero_strain() {
         let e = [[0.0; 3]; 3];
         let s = svk_stress(&e, 1.0, 1.0);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(s[i][j].abs() < 1e-15, "S[{i}][{j}] = {}", s[i][j]);
+        for (i, row) in s.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!(val.abs() < 1e-15, "S[{i}][{j}] = {}", val);
             }
         }
     }
@@ -288,12 +274,12 @@ mod nonlinear_extended_tests {
     fn test_svk_stress_symmetry() {
         let e = [[0.1, 0.05, 0.02], [0.05, 0.2, 0.03], [0.02, 0.03, 0.15]];
         let s = svk_stress(&e, 1.0e9, 2.0e9);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in s.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (s[i][j] - s[j][i]).abs() < 1e-6,
+                    (val - s[j][i]).abs() < 1e-6,
                     "S not symmetric at ({i},{j}): {} vs {}",
-                    s[i][j],
+                    val,
                     s[j][i]
                 );
             }
@@ -306,10 +292,10 @@ mod nonlinear_extended_tests {
         let e = green_lagrange_strain(&f);
         let s = svk_stress(&e, 1.0, 1.0);
         let sigma = cauchy_from_pk2(&f, &s);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in sigma.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (sigma[i][j] - sigma[j][i]).abs() < 1e-10,
+                    (val - sigma[j][i]).abs() < 1e-10,
                     "sigma not symmetric: ({i},{j})"
                 );
             }
@@ -519,19 +505,19 @@ mod nonlinear_extended_tests {
         let c01 = 0.25;
         let p = mooney_rivlin_stress(&f, c10, c01);
         let expected_diag = 2.0 * c10 + 4.0 * c01;
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in p.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 if i != j {
                     assert!(
-                        p[i][j].abs() < 1e-13,
+                        val.abs() < 1e-13,
                         "MR stress off-diagonal at F=I: P[{i}][{j}] = {}",
-                        p[i][j]
+                        val
                     );
                 } else {
                     assert!(
-                        (p[i][j] - expected_diag).abs() < 1e-13,
+                        (val - expected_diag).abs() < 1e-13,
                         "MR stress diagonal at F=I: P[{i}][{j}] = {}, expected {expected_diag}",
-                        p[i][j]
+                        val
                     );
                 }
             }
@@ -591,13 +577,13 @@ mod nonlinear_extended_tests {
         let m = [[2.0, 1.0, 0.0], [1.0, 3.0, 0.0], [0.0, 0.0, 4.0]];
         let mi = mat3_inv(&m);
         let prod = mat3_mul(&m, &mi);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in prod.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let exp = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (prod[i][j] - exp).abs() < 1e-10,
+                    (val - exp).abs() < 1e-10,
                     "prod[{i}][{j}] = {} expected {exp}",
-                    prod[i][j]
+                    val
                 );
             }
         }
@@ -607,9 +593,9 @@ mod nonlinear_extended_tests {
     fn test_mat3_double_transpose() {
         let m = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
         let tt = mat3_transpose(&mat3_transpose(&m));
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((tt[i][j] - m[i][j]).abs() < 1e-15);
+        for (i, row) in tt.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - m[i][j]).abs() < 1e-15);
             }
         }
     }
@@ -631,8 +617,8 @@ mod nonlinear_extended_tests {
             }
         }
         let f = deformation_gradient(&x, &x0);
-        for i in 0..3 {
-            assert!((f[i][i] - 0.8).abs() < 1e-12, "F[{i}][{i}] = {}", f[i][i]);
+        for (i, row) in f.iter().enumerate() {
+            assert!((row[i] - 0.8).abs() < 1e-12, "F[{i}][{i}] = {}", row[i]);
         }
     }
     /// Right Cauchy-Green at identity is identity.
@@ -640,10 +626,10 @@ mod nonlinear_extended_tests {
     fn test_right_cauchy_green_identity() {
         let f = mat3_identity();
         let c = right_cauchy_green(&f);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in c.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let exp = if i == j { 1.0 } else { 0.0 };
-                assert!((c[i][j] - exp).abs() < 1e-15);
+                assert!((val - exp).abs() < 1e-15);
             }
         }
     }
@@ -652,10 +638,10 @@ mod nonlinear_extended_tests {
     fn test_left_cauchy_green_identity() {
         let f = mat3_identity();
         let b = left_cauchy_green(&f);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in b.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let exp = if i == j { 1.0 } else { 0.0 };
-                assert!((b[i][j] - exp).abs() < 1e-15);
+                assert!((val - exp).abs() < 1e-15);
             }
         }
     }

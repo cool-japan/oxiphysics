@@ -2,9 +2,9 @@
 
 **[Alpha]** Geometric shapes, mesh processing, and spatial algorithms for the OxiPhysics engine.
 
-[![Tests](https://img.shields.io/badge/tests-3089-brightgreen)](https://github.com/cool-japan/oxiphysics)
+[![Tests](https://img.shields.io/badge/tests-3120-brightgreen)](https://github.com/cool-japan/oxiphysics)
 [![docs.rs](https://img.shields.io/docsrs/oxiphysics-geometry)](https://docs.rs/oxiphysics_geometry)
-[![version](https://img.shields.io/badge/version-0.1.0-blue)](https://crates.io/crates/oxiphysics-geometry)
+[![version](https://img.shields.io/badge/version-0.1.2-blue)](https://crates.io/crates/oxiphysics-geometry)
 
 Part of the [OxiPhysics](https://github.com/cool-japan/oxiphysics) project.
 
@@ -12,7 +12,7 @@ Part of the [OxiPhysics](https://github.com/cool-japan/oxiphysics) project.
 
 `oxiphysics-geometry` delivers a comprehensive geometry library covering primitive shapes,
 advanced mesh processing, parametric curves and surfaces, computational geometry, and
-procedural generation. 57+ modules, 3,245 public items, 3,089 passing tests, 0 stubs.
+procedural generation. 57+ modules, 3,245 public items, 3,120 passing tests, 0 stubs.
 
 ## Features
 

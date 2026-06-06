@@ -1,6 +1,6 @@
 # oxiphysics-materials TODO
 
-Last updated: 2026-05-17 / v0.1.1
+Last updated: 2026-06-06 / v0.1.2
 
 ## Phase 1: Foundation
 - [x] Define core types and traits
@@ -9,7 +9,7 @@ Last updated: 2026-05-17 / v0.1.1
 
 ## Phase 2: Core Implementation
 - [x] Implement primary algorithms (75+ modules, 6,241 public items)
-- [x] Add integration tests (4,486 tests total, 0 stubs)
+- [x] Add integration tests (4,506 tests total, 0 stubs)
 - [x] Elastic, plasticity, hyperelastic, viscoelastic, creep, fatigue, fracture, damage
 - [x] Composite / fiber / nanocomposite modules
 - [x] Geological, geomechanics, geomaterial_models, porous_media

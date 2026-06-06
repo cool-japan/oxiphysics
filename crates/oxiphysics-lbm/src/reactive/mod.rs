@@ -15,8 +15,6 @@
 //! - **ReactionFrontTracker**: tracks reaction front position in a domain.
 //! - **HeatRelease**: coupling between reaction rate and temperature field.
 
-#![allow(dead_code)]
-
 pub mod catalytic;
 pub mod combustion;
 pub mod concentration;

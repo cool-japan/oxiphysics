@@ -2,11 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use oxiphysics_core::math::Vec3;
-
-#[allow(unused_imports)]
+#[cfg(test)]
 use crate::particle::types::*;
+#[cfg(test)]
+use oxiphysics_core::math::Vec3;
 
 /// Public re-export of the cubic-spline gradient for use in other modules.
 #[doc(hidden)]

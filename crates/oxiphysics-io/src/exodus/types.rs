@@ -2,13 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_div_ceil)]
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// The primary mesh data structure for Exodus II format.
-#[allow(dead_code)]
 pub struct ExodusMesh {
     /// Node coordinates as (x, y, z) triples.
     pub coordinates: Vec<[f64; 3]>,
@@ -86,7 +80,6 @@ impl ExodusMesh {
     }
 }
 /// A complete Exodus result combining mesh topology with time-dependent data.
-#[allow(dead_code)]
 pub struct ExodusResult {
     /// The mesh topology.
     pub mesh: ExodusMesh,
@@ -116,7 +109,6 @@ impl ExodusResult {
     }
 }
 /// An element block containing elements of the same type.
-#[allow(dead_code)]
 pub struct ExodusBlock {
     /// Unique identifier for this block.
     pub id: u32,
@@ -130,7 +122,6 @@ pub struct ExodusBlock {
     pub connectivity: Vec<usize>,
 }
 /// Quality metric result for a single element.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElementQuality {
     /// Block id the element belongs to.
@@ -147,7 +138,6 @@ pub struct ElementQuality {
     pub max_edge: f64,
 }
 /// Partition result: a list of sub-meshes and their owning partition ids.
-#[allow(dead_code)]
 pub struct MeshPartition {
     /// Partition index (0-based).
     pub partition_id: usize,
@@ -155,7 +145,6 @@ pub struct MeshPartition {
     pub mesh: ExodusMesh,
 }
 /// Result of mesh validation.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct MeshValidationReport {
     /// True if no errors were found.
@@ -175,7 +164,6 @@ impl MeshValidationReport {
     }
 }
 /// A named set of nodes (boundary condition set).
-#[allow(dead_code)]
 pub struct ExodusNodeSet {
     /// Unique identifier for this node set.
     pub id: u32,
@@ -185,7 +173,6 @@ pub struct ExodusNodeSet {
     pub node_ids: Vec<usize>,
 }
 /// Statistics over a scalar field defined on nodes or elements.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FieldStats {
     /// Minimum value.
@@ -200,7 +187,6 @@ pub struct FieldStats {
     pub count: usize,
 }
 /// A time step containing variable data.
-#[allow(dead_code)]
 pub struct ExodusTimeStep {
     /// Simulation time for this step.
     pub time: f64,
@@ -208,7 +194,6 @@ pub struct ExodusTimeStep {
     pub variables: Vec<ExodusVariable>,
 }
 /// A named set of element sides (face boundary conditions).
-#[allow(dead_code)]
 pub struct ExodusSideSet {
     /// Unique identifier for this side set.
     pub id: u32,
@@ -220,7 +205,6 @@ pub struct ExodusSideSet {
     pub side_ids: Vec<usize>,
 }
 /// A global simulation variable (scalar value valid for the whole domain).
-#[allow(dead_code)]
 pub struct ExodusGlobalVariable {
     /// Variable name.
     pub name: String,
@@ -230,7 +214,6 @@ pub struct ExodusGlobalVariable {
     pub value: f64,
 }
 /// A single scalar/vector variable attached to an entity (node or element).
-#[allow(dead_code)]
 pub struct ExodusVariable {
     /// Variable name.
     pub name: String,
@@ -241,7 +224,6 @@ pub struct ExodusVariable {
 }
 /// Represents a boundary side set with element/side ID pairs and an optional
 /// distance field (e.g. wall-normal distance).
-#[allow(dead_code)]
 pub struct ExodusSideSetData {
     /// Side-set identifier.
     pub id: u32,
@@ -255,9 +237,7 @@ pub struct ExodusSideSetData {
     pub dist_factors: Vec<f64>,
 }
 /// Higher-level writing helpers for Exodus-II results.
-#[allow(dead_code)]
 pub struct ExodusWriter;
-#[allow(dead_code)]
 impl ExodusWriter {
     /// Append a time-step nodal variable record to a text buffer.
     ///

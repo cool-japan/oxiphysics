@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,8 +13,6 @@
 //!   transient viscoelastic free surface flows"
 //! - Müller et al. (2004) "Particle-based fluid simulation for interactive applications"
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -28,17 +25,6 @@ pub fn matrix3_add(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     for i in 0..3 {
         for j in 0..3 {
             c[i][j] = a[i][j] + b[i][j];
-        }
-    }
-    c
-}
-
-/// Subtract two 3×3 matrices: a - b.
-fn matrix3_sub(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
-    let mut c = [[0.0_f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            c[i][j] = a[i][j] - b[i][j];
         }
     }
     c
@@ -85,6 +71,7 @@ pub fn matrix3_transpose(a: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
 }
 
 /// Identity 3×3 matrix.
+#[cfg(test)]
 fn matrix3_identity() -> [[f64; 3]; 3] {
     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 }
@@ -95,6 +82,7 @@ fn matrix3_zero() -> [[f64; 3]; 3] {
 }
 
 /// Frobenius inner product: A : B = Σ_{ij} A_ij B_ij.
+#[cfg(test)]
 fn matrix3_frobenius(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> f64 {
     let mut s = 0.0;
     for i in 0..3 {
@@ -130,6 +118,7 @@ fn norm3(a: [f64; 3]) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Cubic spline kernel W(r, h) in 3D.
+#[cfg(test)]
 fn kernel_w(r: f64, h: f64) -> f64 {
     let q = r / h;
     let sigma = 1.0 / (PI * h * h * h);
@@ -463,9 +452,9 @@ pub fn viscoelastic_force(
     let rho_i2 = p_i.rho * p_i.rho;
     let rho_j2 = p_j.rho * p_j.rho;
     let mut tau_sum = matrix3_zero();
-    for a in 0..3 {
-        for b in 0..3 {
-            tau_sum[a][b] = p_i.stress[a][b] / rho_i2 + p_j.stress[a][b] / rho_j2;
+    for (a, tau_row) in tau_sum.iter_mut().enumerate() {
+        for (b, tau_ab) in tau_row.iter_mut().enumerate() {
+            *tau_ab = p_i.stress[a][b] / rho_i2 + p_j.stress[a][b] / rho_j2;
         }
     }
 
@@ -501,7 +490,7 @@ pub fn viscoelastic_force(
 /// * `dt` – time step (s).
 pub fn integrate_stress_explicit(
     model: &OldroydBModel,
-    particles: &mut Vec<ViscoelasticParticle>,
+    particles: &mut [ViscoelasticParticle],
     neighbors: &[Vec<usize>],
     h: f64,
     dt: f64,
@@ -594,8 +583,8 @@ mod tests {
 
     fn identity_stress(s: f64) -> [[f64; 3]; 3] {
         let mut m = matrix3_zero();
-        for i in 0..3 {
-            m[i][i] = s;
+        for (i, row) in m.iter_mut().enumerate() {
+            row[i] = s;
         }
         m
     }
@@ -650,9 +639,9 @@ mod tests {
         let id = matrix3_identity();
         let z = matrix3_zero();
         let b = matrix3_mul(&id, &z);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert_eq!(b[i][j], 0.0);
+        for row in &b {
+            for &val in row {
+                assert_eq!(val, 0.0);
             }
         }
     }
@@ -661,9 +650,9 @@ mod tests {
     fn matrix3_transpose_involution() {
         let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
         let att = matrix3_transpose(&matrix3_transpose(&a));
-        for i in 0..3 {
-            for j in 0..3 {
-                assert_eq!(att[i][j], a[i][j]);
+        for (arow, attrow) in a.iter().zip(att.iter()) {
+            for (&av, &attv) in arow.iter().zip(attrow.iter()) {
+                assert_eq!(attv, av);
             }
         }
     }
@@ -704,9 +693,9 @@ mod tests {
         let tau = zero_stress();
         let l = matrix3_zero();
         let rate = model.stress_rate(&tau, &l);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(rate[i][j].abs() < 1e-12, "rate[{i}][{j}] = {}", rate[i][j]);
+        for (i, row) in rate.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!(val.abs() < 1e-12, "rate[{i}][{j}] = {}", val);
             }
         }
     }
@@ -736,8 +725,8 @@ mod tests {
         let l = matrix3_zero();
         let rate = model.stress_rate(&tau, &l);
         // With zero L and eta_p=0, rate = -tau/lambda < 0
-        for i in 0..3 {
-            assert!(rate[i][i] < 0.0, "diagonal should decrease: {}", rate[i][i]);
+        for (i, row) in rate.iter().enumerate() {
+            assert!(row[i] < 0.0, "diagonal should decrease: {}", row[i]);
         }
     }
 
@@ -746,9 +735,9 @@ mod tests {
         let tau = zero_stress();
         let l = simple_vel_grad(5.0);
         let uct = upper_convected_derivative(&tau, &l);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert_eq!(uct[i][j], 0.0);
+        for row in &uct {
+            for &val in row {
+                assert_eq!(val, 0.0);
             }
         }
     }
@@ -759,10 +748,10 @@ mod tests {
         let tau = [[1.0, 0.5, 0.0], [0.5, 2.0, 0.0], [0.0, 0.0, 0.5]];
         let l = simple_vel_grad(1.0);
         let uct = upper_convected_derivative(&tau, &l);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in uct.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (uct[i][j] - uct[j][i]).abs() < 1e-12,
+                    (val - uct[j][i]).abs() < 1e-12,
                     "UCT not symmetric at [{i}][{j}]"
                 );
             }
@@ -893,9 +882,9 @@ mod tests {
         let p = ViscoelasticParticle::new([0.0, 0.0, 0.0], 1e-3, 1000.0);
         let particles = vec![p];
         let grad = velocity_gradient_sph(&particles, 0, &[], 0.1);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert_eq!(grad[i][j], 0.0);
+        for row in &grad {
+            for &val in row {
+                assert_eq!(val, 0.0);
             }
         }
     }

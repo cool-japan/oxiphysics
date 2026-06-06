@@ -2,14 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(
-    clippy::needless_range_loop,
-    clippy::ptr_arg,
-    clippy::too_many_arguments
-)]
 use super::functions::GAS_CONSTANT;
-#[allow(unused_imports)]
-use super::functions::*;
 
 /// Acoustic pressure loading on a structural surface.
 ///
@@ -233,20 +226,20 @@ impl MonolithicBlock2x2 {
     pub fn full_matrix(&self) -> Vec<Vec<f64>> {
         let n = self.n_u + self.n_p;
         let mut mat = vec![vec![0.0; n]; n];
-        for i in 0..self.n_u {
-            for j in 0..self.n_u {
-                mat[i][j] = self.k_uu[i][j];
+        for (i, mat_i) in mat.iter_mut().enumerate().take(self.n_u) {
+            for (j, mat_ij) in mat_i.iter_mut().enumerate().take(self.n_u) {
+                *mat_ij = self.k_uu[i][j];
             }
-            for j in 0..self.n_p {
-                mat[i][self.n_u + j] = self.k_up[i][j];
+            for (j, mat_ij) in mat_i[self.n_u..].iter_mut().enumerate().take(self.n_p) {
+                *mat_ij = self.k_up[i][j];
             }
         }
-        for i in 0..self.n_p {
-            for j in 0..self.n_u {
-                mat[self.n_u + i][j] = self.k_pu[i][j];
+        for (i, mat_row) in mat[self.n_u..].iter_mut().enumerate().take(self.n_p) {
+            for (j, mat_rj) in mat_row.iter_mut().enumerate().take(self.n_u) {
+                *mat_rj = self.k_pu[i][j];
             }
-            for j in 0..self.n_p {
-                mat[self.n_u + i][self.n_u + j] = self.k_pp[i][j];
+            for (j, mat_rj) in mat_row[self.n_u..].iter_mut().enumerate().take(self.n_p) {
+                *mat_rj = self.k_pp[i][j];
             }
         }
         mat
@@ -332,18 +325,18 @@ impl TempDependentStiffness {
         let c12 = c * nu;
         let c44 = e / (2.0 * (1.0 + nu));
         let mut d = [[0.0f64; 6]; 6];
-        for i in 0..3 {
-            d[i][i] = c11;
+        for (i, d_row) in d.iter_mut().enumerate().take(3) {
+            d_row[i] = c11;
         }
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, d_row) in d.iter_mut().enumerate().take(3) {
+            for (j, d_ij) in d_row.iter_mut().enumerate().take(3) {
                 if i != j {
-                    d[i][j] = c12;
+                    *d_ij = c12;
                 }
             }
         }
-        for i in 3..6 {
-            d[i][i] = c44;
+        for (i, d_row) in d.iter_mut().enumerate().skip(3).take(3) {
+            d_row[i] = c44;
         }
         d
     }
@@ -822,12 +815,12 @@ impl PiezoelectricCoupling {
     /// σ = C · ε − eᵀ · E
     pub fn compute_stress(&self, strain: [f64; 3], e_field: [f64; 2]) -> [f64; 3] {
         let mut sigma = [0.0f64; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                sigma[i] += self.c_mat[i][j] * strain[j];
+        for (i, sigma_i) in sigma.iter_mut().enumerate() {
+            for (j, &s_j) in strain.iter().enumerate() {
+                *sigma_i += self.c_mat[i][j] * s_j;
             }
-            for k in 0..2 {
-                sigma[i] -= self.e_mat[k][i] * e_field[k];
+            for (k, &e_k) in e_field.iter().enumerate() {
+                *sigma_i -= self.e_mat[k][i] * e_k;
             }
         }
         sigma
@@ -837,11 +830,11 @@ impl PiezoelectricCoupling {
     /// D = e · ε + ε_r · E
     pub fn compute_electric_displacement(&self, strain: [f64; 3], e_field: [f64; 2]) -> [f64; 2] {
         let mut d = [0.0f64; 2];
-        for k in 0..2 {
-            for j in 0..3 {
-                d[k] += self.e_mat[k][j] * strain[j];
+        for (k, d_k) in d.iter_mut().enumerate() {
+            for (j, &s_j) in strain.iter().enumerate() {
+                *d_k += self.e_mat[k][j] * s_j;
             }
-            d[k] += self.epsilon[k] * e_field[k];
+            *d_k += self.epsilon[k] * e_field[k];
         }
         d
     }
@@ -1094,7 +1087,7 @@ impl AleInterface {
         }
     }
     /// Enforce no-penetration condition: set mesh velocity to match structural velocity.
-    pub fn enforce_kinematic_bc(&self, nodes: &mut Vec<AleNode>, struct_vel: &[[f64; 2]]) {
+    pub fn enforce_kinematic_bc(&self, nodes: &mut [AleNode], struct_vel: &[[f64; 2]]) {
         for (k, &idx) in self.node_indices.iter().enumerate() {
             nodes[idx].mesh_velocity = struct_vel[k];
             nodes[idx].fluid_velocity = struct_vel[k];
@@ -1324,8 +1317,8 @@ impl ChemoMechanicalProblem {
         let mut new_c = self.concentration.clone();
         new_c[0] = c_left;
         new_c[self.n_nodes - 1] = c_right;
-        for i in 1..self.n_nodes - 1 {
-            new_c[i] = self.concentration[i]
+        for (i, new_c_i) in new_c.iter_mut().enumerate().skip(1).take(self.n_nodes - 2) {
+            *new_c_i = self.concentration[i]
                 + fo * (self.concentration[i + 1] - 2.0 * self.concentration[i]
                     + self.concentration[i - 1]);
         }
@@ -1464,8 +1457,8 @@ impl PodRom {
                 .sum::<f64>()
                 .sqrt()
                 .max(1e-30);
-            for i in 0..n_full {
-                basis[m][i] /= norm;
+            for val in basis[m].iter_mut() {
+                *val /= norm;
             }
         }
         let k_rom = vec![vec![0.0; n_modes]; n_modes];
@@ -1491,9 +1484,9 @@ impl PodRom {
     /// Reconstruct the full-order vector from reduced coordinates.
     pub fn reconstruct(&self, q: &[f64]) -> Vec<f64> {
         let mut v = vec![0.0; self.n_full];
-        for m in 0..self.n_modes {
-            for i in 0..self.n_full {
-                v[i] += self.basis[m][i] * q[m];
+        for (m, &q_m) in q.iter().enumerate().take(self.n_modes) {
+            for (i, v_i) in v.iter_mut().enumerate().take(self.n_full) {
+                *v_i += self.basis[m][i] * q_m;
             }
         }
         v
@@ -1504,16 +1497,16 @@ impl PodRom {
     pub fn project_matrix(&self, k_full: &[Vec<f64>]) -> Vec<Vec<f64>> {
         let n = self.n_modes;
         let mut k_r = vec![vec![0.0; n]; n];
-        for i in 0..n {
-            for j in 0..n {
+        for (i, k_r_row) in k_r.iter_mut().enumerate() {
+            for (j, k_r_ij) in k_r_row.iter_mut().enumerate() {
                 let mut val = 0.0f64;
-                for row in 0..self.n_full {
+                for (row, k_full_row) in k_full.iter().enumerate().take(self.n_full) {
                     let kphi_j: f64 = (0..self.n_full)
-                        .map(|col| k_full[row][col] * self.basis[j][col])
+                        .map(|col| k_full_row[col] * self.basis[j][col])
                         .sum();
                     val += self.basis[i][row] * kphi_j;
                 }
-                k_r[i][j] = val;
+                *k_r_ij = val;
             }
         }
         k_r

@@ -173,7 +173,6 @@ impl RaycastVehicle {
     /// * `ground_query` - Function to query ground intersection
     /// * `suspension_model` - Suspension force model
     /// * `tire_model` - Tire force model
-    #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
     pub fn update<S: SuspensionModel, T: TireModel>(
         &mut self,
         dt: Real,
@@ -195,8 +194,12 @@ impl RaycastVehicle {
         let mut total_force = Vec3::zeros();
         let mut total_torque = Vec3::zeros();
         let mut wheel_spin_speeds = [0.0_f64; 4];
-        for i in 0..num_wheels.min(4) {
-            wheel_spin_speeds[i] = self.wheel_states[i].spin_velocity;
+        for (wss, ws) in wheel_spin_speeds
+            .iter_mut()
+            .zip(self.wheel_states.iter())
+            .take(num_wheels.min(4))
+        {
+            *wss = ws.spin_velocity;
         }
 
         // 5. Compute drivetrain torques
@@ -206,10 +209,13 @@ impl RaycastVehicle {
             &wheel_spin_speeds,
         );
 
-        for i in 0..num_wheels {
-            let wheel = &self.wheels[i];
-            let ws = &mut self.wheel_states[i];
-
+        for (i, (wheel, ws)) in self
+            .wheels
+            .iter()
+            .zip(self.wheel_states.iter_mut())
+            .enumerate()
+            .take(num_wheels)
+        {
             // Transform wheel mount point to world space
             let world_mount = chassis.transform.transform_point(&wheel.connection_point);
             let world_down = chassis
@@ -542,7 +548,6 @@ impl std::fmt::Display for VehicleValidationError {
 }
 
 /// Validate vehicle parameters and return a list of errors (empty if valid).
-#[allow(dead_code)]
 pub fn validate_vehicle(
     vehicle: &RaycastVehicle,
     chassis_mass: Real,
@@ -610,7 +615,6 @@ impl Default for AeroDownforce {
 impl AeroDownforce {
     /// Compute aerodynamic downforce magnitude given speed.
     /// Returns a positive force value when cl_area is negative (downforce).
-    #[allow(dead_code)]
     pub fn force(&self, speed: Real) -> Real {
         -0.5 * self.air_density * self.cl_area * speed * speed
     }
@@ -621,7 +625,6 @@ impl AeroDownforce {
 // ---------------------------------------------------------------------------
 
 /// Weight transfer result for a vehicle under longitudinal and lateral acceleration.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct WeightTransfer {
     /// Normal load on front-left wheel (N).
@@ -636,31 +639,26 @@ pub struct WeightTransfer {
 
 impl WeightTransfer {
     /// Total load across all four wheels.
-    #[allow(dead_code)]
     pub fn total_load(&self) -> Real {
         self.front_left + self.front_right + self.rear_left + self.rear_right
     }
 
     /// Front axle load.
-    #[allow(dead_code)]
     pub fn front_axle_load(&self) -> Real {
         self.front_left + self.front_right
     }
 
     /// Rear axle load.
-    #[allow(dead_code)]
     pub fn rear_axle_load(&self) -> Real {
         self.rear_left + self.rear_right
     }
 
     /// Left-side load.
-    #[allow(dead_code)]
     pub fn left_load(&self) -> Real {
         self.front_left + self.rear_left
     }
 
     /// Right-side load.
-    #[allow(dead_code)]
     pub fn right_load(&self) -> Real {
         self.front_right + self.rear_right
     }
@@ -676,7 +674,6 @@ impl WeightTransfer {
 /// * `front_weight_ratio` - Static front weight distribution (0..1)
 /// * `long_accel` - Longitudinal acceleration (m/s^2, positive = accelerating)
 /// * `lat_accel` - Lateral acceleration (m/s^2, positive = turning right)
-#[allow(dead_code, clippy::too_many_arguments)]
 pub fn compute_weight_transfer(
     mass: Real,
     wheelbase: Real,
@@ -726,7 +723,6 @@ pub fn compute_weight_transfer(
 
 /// Simplified weight transfer: returns \[front, rear\] axle loads under longitudinal
 /// acceleration only.
-#[allow(dead_code)]
 pub fn longitudinal_weight_transfer(
     mass: Real,
     wheelbase: Real,
@@ -756,7 +752,6 @@ pub fn longitudinal_weight_transfer(
 /// `brake_force` - braking force (N, positive = retarding)
 /// `drag_force` - aerodynamic drag (N, always positive)
 /// `rolling_resistance` - rolling resistance force (N, always positive)
-#[allow(dead_code)]
 pub fn net_longitudinal_force(
     engine_force: Real,
     brake_force: Real,
@@ -770,7 +765,6 @@ pub fn net_longitudinal_force(
 ///
 /// `normal_load` - total normal load on driven wheels (N)
 /// `crr` - coefficient of rolling resistance (dimensionless, typically 0.01-0.02)
-#[allow(dead_code)]
 pub fn rolling_resistance_force(normal_load: Real, crr: Real) -> Real {
     normal_load * crr
 }
@@ -780,7 +774,6 @@ pub fn rolling_resistance_force(normal_load: Real, crr: Real) -> Real {
 /// `radius` - corner radius (m)
 /// `mu` - lateral friction coefficient
 /// `downforce_coeff` - additional downforce as a fraction of weight (e.g., 0.5 = 50% more)
-#[allow(dead_code)]
 pub fn max_cornering_speed(radius: Real, mu: Real, downforce_coeff: Real) -> Real {
     let g = 9.81;
     // v^2 = mu * g * R * (1 + downforce_coeff)
@@ -796,7 +789,6 @@ pub fn max_cornering_speed(radius: Real, mu: Real, downforce_coeff: Real) -> Rea
 // ---------------------------------------------------------------------------
 
 /// Anti-roll bar parameters for one axle.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AntiRollBar {
     /// Anti-roll bar stiffness (N/m).
@@ -809,7 +801,6 @@ impl Default for AntiRollBar {
     }
 }
 
-#[allow(dead_code)]
 impl AntiRollBar {
     /// Create with a given stiffness.
     pub fn new(stiffness: Real) -> Self {
@@ -832,7 +823,6 @@ impl AntiRollBar {
 /// Apply anti-roll bar forces to a set of wheel suspension forces for one axle.
 ///
 /// `left_idx` and `right_idx` index into `suspension_forces`.
-#[allow(dead_code)]
 pub fn apply_anti_roll_bar(
     bar: &AntiRollBar,
     left_compression: Real,
@@ -855,7 +845,6 @@ pub fn apply_anti_roll_bar(
 // ---------------------------------------------------------------------------
 
 /// Full aerodynamic model including lift/drag and centre-of-pressure offset.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AeroModel {
     /// Drag coefficient × frontal area (m²).
@@ -880,7 +869,6 @@ impl Default for AeroModel {
     }
 }
 
-#[allow(dead_code)]
 impl AeroModel {
     /// Aerodynamic drag force (N) for a given airspeed.
     pub fn drag_force(&self, airspeed: Real) -> Real {
@@ -915,7 +903,6 @@ impl AeroModel {
 // ---------------------------------------------------------------------------
 
 /// Models chassis torsional flexibility as a spring-damper between front and rear sub-frames.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ChassisFlex {
     /// Torsional stiffness (N·m/rad).
@@ -939,7 +926,6 @@ impl Default for ChassisFlex {
     }
 }
 
-#[allow(dead_code)]
 impl ChassisFlex {
     /// Create a new chassis flex model.
     pub fn new(stiffness: Real, damping: Real) -> Self {
@@ -989,8 +975,6 @@ impl ChassisFlex {
 
 /// Combined wheel load (N) for a 4-wheel vehicle including static weight,
 /// mechanical weight transfer, and aerodynamic downforce distribution.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn full_wheel_loads(
     mass: Real,
     wheelbase: Real,
@@ -1033,7 +1017,6 @@ pub fn full_wheel_loads(
 ///
 /// `f_net(speed)` returns the net longitudinal force (N) at a given speed.
 /// Returns the new speed after `dt` seconds.
-#[allow(dead_code)]
 pub fn integrate_speed_rk4(
     speed: Real,
     mass: Real,
@@ -1055,7 +1038,6 @@ pub fn integrate_speed_rk4(
 /// Stopping distance under constant braking deceleration (m).
 ///
 /// `mu_brake` × g is the deceleration; returns metres to stop from `initial_speed` (m/s).
-#[allow(dead_code)]
 pub fn braking_distance(initial_speed: Real, mu_brake: Real) -> Real {
     let g = 9.81;
     let decel = mu_brake * g;
@@ -1068,7 +1050,6 @@ pub fn braking_distance(initial_speed: Real, mu_brake: Real) -> Real {
 /// Compute the traction-limited acceleration for a given wheel load and friction coefficient.
 ///
 /// Returns the maximum achievable longitudinal acceleration (m/s²).
-#[allow(dead_code)]
 pub fn traction_limited_acceleration(wheel_loads: &[Real], friction: Real, mass: Real) -> Real {
     if mass < 1e-12 {
         return 0.0;
@@ -1078,7 +1059,6 @@ pub fn traction_limited_acceleration(wheel_loads: &[Real], friction: Real, mass:
 }
 
 /// Simple vehicle state for 1D longitudinal simulation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SimpleVehicleState {
     /// Position along track (m).
@@ -1101,7 +1081,6 @@ impl Default for SimpleVehicleState {
 
 impl SimpleVehicleState {
     /// Integrate one time step using Euler method.
-    #[allow(dead_code)]
     pub fn integrate(&mut self, dt: Real) {
         self.speed += self.acceleration * dt;
         if self.speed < 0.0 {
@@ -1111,7 +1090,6 @@ impl SimpleVehicleState {
     }
 
     /// Apply a net force to compute acceleration (F = ma).
-    #[allow(dead_code)]
     pub fn apply_force(&mut self, force: Real, mass: Real) {
         if mass > 1e-10 {
             self.acceleration = force / mass;
@@ -1119,7 +1097,6 @@ impl SimpleVehicleState {
     }
 
     /// Kinetic energy (J).
-    #[allow(dead_code)]
     pub fn kinetic_energy(&self, mass: Real) -> Real {
         0.5 * mass * self.speed * self.speed
     }

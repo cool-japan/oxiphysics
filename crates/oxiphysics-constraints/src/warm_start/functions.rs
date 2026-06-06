@@ -9,7 +9,6 @@ use super::types::{BlendMode, CacheSelectionPolicy, WarmStartCache, WarmStartCan
 /// Updates `vel` and `ang_vel` in-place:
 /// - `vel += impulse * inv_mass`
 /// - `ang_vel += inv_inertia * (r × impulse)`
-#[allow(dead_code)]
 pub fn apply_impulse(
     vel: &mut [f64; 3],
     ang_vel: &mut [f64; 3],
@@ -36,7 +35,6 @@ pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 pub(super) fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-#[allow(dead_code)]
 pub(super) fn dist_sq_3(a: [f64; 3], b: [f64; 3]) -> f64 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
@@ -54,6 +52,7 @@ mod tests {
 
     use crate::warm_start::ContactVelocitySolver;
     use crate::warm_start::ImpulseAging;
+    use crate::warm_start::NormalImpulseParams;
 
     use crate::warm_start::WarmStartMap;
 
@@ -365,16 +364,18 @@ mod tests {
         let warm = WarmStartCache::default();
         let rel_vel_n = 2.0;
         let (delta_lambda, updated) = ContactVelocitySolver::solve_normal_impulse(
-            rel_vel_n,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0],
-            0.0,
-            1.0 / 60.0,
+            NormalImpulseParams {
+                rel_vel_n,
+                inv_mass_a: 1.0,
+                inv_mass_b: 1.0,
+                inv_inertia_a: 1.0,
+                inv_inertia_b: 1.0,
+                jacobian_n: [0.0, 1.0, 0.0],
+                r_a: [0.0, 0.0, 0.0],
+                r_b: [0.0, 0.0, 0.0],
+                penetration: 0.0,
+                dt: 1.0 / 60.0,
+            },
             &warm,
         );
         assert!(
@@ -391,16 +392,18 @@ mod tests {
     fn test_solve_normal_impulse_penetrating() {
         let warm = WarmStartCache::default();
         let (delta_lambda, updated) = ContactVelocitySolver::solve_normal_impulse(
-            -1.0,
-            1.0,
-            1.0,
-            0.0,
-            0.0,
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0],
-            0.01,
-            1.0 / 60.0,
+            NormalImpulseParams {
+                rel_vel_n: -1.0,
+                inv_mass_a: 1.0,
+                inv_mass_b: 1.0,
+                inv_inertia_a: 0.0,
+                inv_inertia_b: 0.0,
+                jacobian_n: [0.0, 1.0, 0.0],
+                r_a: [0.0, 0.0, 0.0],
+                r_b: [0.0, 0.0, 0.0],
+                penetration: 0.01,
+                dt: 1.0 / 60.0,
+            },
             &warm,
         );
         assert!(
@@ -414,16 +417,18 @@ mod tests {
     fn test_solve_normal_impulse_accumulation() {
         let warm = WarmStartCache::with_impulses(5.0, 0.0, 0.0);
         let (delta, updated) = ContactVelocitySolver::solve_normal_impulse(
-            -1.0,
-            1.0,
-            1.0,
-            0.0,
-            0.0,
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0],
-            0.01,
-            1.0 / 60.0,
+            NormalImpulseParams {
+                rel_vel_n: -1.0,
+                inv_mass_a: 1.0,
+                inv_mass_b: 1.0,
+                inv_inertia_a: 0.0,
+                inv_inertia_b: 0.0,
+                jacobian_n: [0.0, 1.0, 0.0],
+                r_a: [0.0, 0.0, 0.0],
+                r_b: [0.0, 0.0, 0.0],
+                penetration: 0.01,
+                dt: 1.0 / 60.0,
+            },
             &warm,
         );
         assert!(
@@ -925,7 +930,6 @@ mod tests_warm_start_new {
 /// Select the best warm-start candidate from a slice according to a policy.
 ///
 /// Returns `None` if the slice is empty.
-#[allow(dead_code)]
 pub fn select_best_candidate(
     candidates: &[WarmStartCandidate],
     policy: CacheSelectionPolicy,
@@ -955,7 +959,6 @@ pub fn select_best_candidate(
     }
 }
 /// Blend two `WarmStartCache` entries according to `mode`.
-#[allow(dead_code)]
 pub fn blend_caches(
     prev: &WarmStartCache,
     current: &WarmStartCache,

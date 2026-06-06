@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,9 +15,6 @@
 //! - `MisorientationViz` — misorientation angle display
 //! - [`PhaseFractionPie`] — pie-chart data for phase fractions
 //! - [`ConvergenceMonitor`] — phase-field convergence tracking
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use crate::colormap::{Colormap, map_scalar};
 use crate::primitives::Color;
@@ -664,9 +660,9 @@ impl ThermalPhaseOverlay {
         let alpha = self.thermal_alpha as f64;
         let mut buf = Vec::with_capacity(self.nx * self.ny * 4);
 
-        for i in 0..self.nx * self.ny {
-            let tp = clamp((phase_field.data[i] - p_min) / p_range, 0.0, 1.0);
-            let tt = clamp((thermal_field[i] - t_min) / t_range, 0.0, 1.0);
+        for (pval, tval) in phase_field.data.iter().zip(thermal_field.iter()) {
+            let tp = clamp((pval - p_min) / p_range, 0.0, 1.0);
+            let tt = clamp((tval - t_min) / t_range, 0.0, 1.0);
             let cp = cmap(tp, self.phase_colormap);
             let ct = cmap(tt, self.thermal_colormap);
             let r = lerp(cp.r as f64, ct.r as f64, alpha);

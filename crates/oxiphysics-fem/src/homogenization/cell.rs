@@ -3,8 +3,6 @@
 
 //! HomogenizationCell: effective thermal and mechanical property computation.
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // HomogenizationCell: effective thermal and mechanical properties
 // ---------------------------------------------------------------------------
@@ -13,7 +11,6 @@
 ///
 /// Contains multiple phases with known volume fractions, thermal conductivities,
 /// and elastic moduli. Used to compute effective properties of composite materials.
-#[allow(dead_code)]
 pub struct HomogenizationCell {
     /// Young's moduli of each phase (Pa).
     pub youngs_moduli: Vec<f64>,
@@ -133,7 +130,6 @@ impl HomogenizationCell {
     /// - Hill average (E_V + E_R)/2, (G_V + G_R)/2, (K_V + K_R)/2
     ///
     /// Returns `(e_voigt, e_reuss, e_hill, g_voigt, g_reuss, g_hill, k_voigt, k_reuss, k_hill)`.
-    #[allow(clippy::type_complexity)]
     pub fn compute_hill_bounds(&self) -> (f64, f64, f64, f64, f64, f64, f64, f64, f64) {
         let shear_moduli: Vec<f64> = self
             .youngs_moduli
@@ -297,7 +293,7 @@ mod tests_homogenization_cell {
         let cell = two_phase_cell();
         let (k_v, k_r, k_h) = cell.compute_effective_thermal_conductivity();
         assert!(
-            k_h >= k_r && k_h <= k_v,
+            (k_r..=k_v).contains(&k_h),
             "Hill average must be between Reuss and Voigt: k_R={}, k_H={}, k_V={}",
             k_r,
             k_h,
@@ -346,7 +342,7 @@ mod tests_homogenization_cell {
         let cell = two_phase_cell();
         let (k_v, k_r, k_h) = cell.compute_effective_bulk_modulus();
         assert!(
-            k_h >= k_r && k_h <= k_v,
+            (k_r..=k_v).contains(&k_h),
             "Hill K must be between bounds: K_R={:.3e}, K_H={:.3e}, K_V={:.3e}",
             k_r,
             k_h,
@@ -395,7 +391,7 @@ mod tests_homogenization_cell {
         let cell = two_phase_cell();
         let (e_v, e_r, e_h, _gv, _gr, _gh, _kv, _kr, _kh) = cell.compute_hill_bounds();
         assert!(
-            e_h >= e_r && e_h <= e_v,
+            (e_r..=e_v).contains(&e_h),
             "E_Hill={} must be between E_R={} and E_V={}",
             e_h,
             e_r,

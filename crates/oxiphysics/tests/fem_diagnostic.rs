@@ -7,9 +7,6 @@
 // They do NOT assert pass/fail; they print numbers that distinguish pure
 // CST shear locking from solver/mesh bugs.
 
-#![allow(missing_docs)]
-#![allow(clippy::too_many_arguments)]
-
 use oxiphysics_core::math::Vec3;
 use oxiphysics_fem::analysis::LinearStaticAnalysis;
 use oxiphysics_fem::boundary::{DirichletBc, NeumannBc};

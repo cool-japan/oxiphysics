@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +7,19 @@
 //! operators, proximal maps, dual decomposition with subgradient updates,
 //! ADMM, Frank-Wolfe / conditional gradient, and the ellipsoid method.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
+// ─── Type aliases ────────────────────────────────────────────────────────────
+
+/// Solver closure taking current iterate and dual variable, returning updated iterate.
+pub type SolverFn = dyn Fn(&[f64], &[f64]) -> Vec<f64>;
+
+/// ADMM update closure: takes iterate, auxiliary, and penalty rho, returns updated value.
+pub type AdmmUpdateFn = dyn Fn(&[f64], &[f64], f64) -> Vec<f64>;
+
+/// A convex constraint as `(g, subgradient)` pair.
+pub type ConstraintPair = (Box<dyn Fn(&[f64]) -> f64>, Box<dyn Fn(&[f64]) -> Vec<f64>>);
+
+/// A projection operator for a convex set.
+pub type ProjectionFn = dyn Fn(&[f64]) -> Vec<f64>;
 
 // ─── Convexity Check ─────────────────────────────────────────────────────────
 
@@ -23,8 +33,8 @@ pub fn is_convex_1d(f: &[f64], tol: f64) -> bool {
     if f.len() < 3 {
         return true;
     }
-    for i in 1..f.len() - 1 {
-        let second_diff = f[i + 1] - 2.0 * f[i] + f[i - 1];
+    for w in f.windows(3) {
+        let second_diff = w[2] - 2.0 * w[1] + w[0];
         if second_diff < -tol {
             return false;
         }
@@ -331,13 +341,13 @@ impl DualDecomposition {
         x_init: Vec<f64>,
         z_init: Vec<f64>,
         y_init: Vec<f64>,
-        x_solve: &dyn Fn(&[f64], &[f64]) -> Vec<f64>,
-        z_solve: &dyn Fn(&[f64], &[f64]) -> Vec<f64>,
+        x_solve: &SolverFn,
+        z_solve: &SolverFn,
         mat_a: &[Vec<f64>],
         mat_b: &[Vec<f64>],
         c: &[f64],
     ) -> (Vec<f64>, Vec<f64>, Vec<f64>, usize) {
-        let m = c.len();
+        let _m = c.len();
         let mut x = x_init;
         let mut z = z_init;
         let mut y = y_init;
@@ -354,10 +364,12 @@ impl DualDecomposition {
             let ax = matvec(mat_a, &x);
             let bz = matvec(mat_b, &z);
             let mut gap = 0.0_f64;
-            for i in 0..m {
-                let subgrad = ax[i] + bz[i] - c[i];
+            for ((yi, &axi), (&bzi, &ci)) in
+                y.iter_mut().zip(ax.iter()).zip(bz.iter().zip(c.iter()))
+            {
+                let subgrad = axi + bzi - ci;
                 gap += subgrad * subgrad;
-                y[i] += self.step_size * subgrad;
+                *yi += self.step_size * subgrad;
             }
             gap = gap.sqrt();
             if gap < best_gap {
@@ -428,8 +440,8 @@ impl AdmmSolver {
     pub fn solve(
         &self,
         x_init: Vec<f64>,
-        x_update: &dyn Fn(&[f64], &[f64], f64) -> Vec<f64>,
-        z_update: &dyn Fn(&[f64], &[f64], f64) -> Vec<f64>,
+        x_update: &AdmmUpdateFn,
+        z_update: &AdmmUpdateFn,
     ) -> AdmmResult {
         let n = x_init.len();
         let mut x = x_init;
@@ -448,10 +460,12 @@ impl AdmmSolver {
             // Dual update
             let mut primal_res = 0.0_f64;
             let mut dual_res = 0.0_f64;
-            for i in 0..n {
-                u[i] += x[i] - z_new[i];
-                primal_res += (x[i] - z_new[i]).powi(2);
-                dual_res += self.rho * (z_new[i] - z[i]).powi(2);
+            for (((ui, &xi), &zni), &zi) in
+                u.iter_mut().zip(x.iter()).zip(z_new.iter()).zip(z.iter())
+            {
+                *ui += xi - zni;
+                primal_res += (xi - zni).powi(2);
+                dual_res += self.rho * (zni - zi).powi(2);
             }
             primal_res = primal_res.sqrt();
             dual_res = dual_res.sqrt();
@@ -531,7 +545,7 @@ impl FrankWolfeOptimizer {
         lmo: &dyn Fn(&[f64]) -> Vec<f64>,
         f_val: &dyn Fn(&[f64]) -> f64,
     ) -> FrankWolfeResult {
-        let n = x_init.len();
+        let _n = x_init.len();
         let mut x = x_init;
 
         for iter in 0..self.max_iter {
@@ -556,8 +570,8 @@ impl FrankWolfeOptimizer {
 
             // Step size: 2 / (iter + 2)
             let step = 2.0_f64 / (iter as f64 + 2.0);
-            for i in 0..n {
-                x[i] = (1.0 - step) * x[i] + step * s[i];
+            for (xi, &si) in x.iter_mut().zip(s.iter()) {
+                *xi = (1.0 - step) * *xi + step * si;
             }
         }
 
@@ -611,11 +625,7 @@ impl EllipsoidMethod {
     ///
     /// Each element of `constraints` is a pair `(g, subgrad)` where `g(x)`
     /// returns the constraint value and `subgrad(x)` returns a subgradient.
-    pub fn find_feasible(
-        &self,
-        x0: Vec<f64>,
-        constraints: &[(Box<dyn Fn(&[f64]) -> f64>, Box<dyn Fn(&[f64]) -> Vec<f64>>)],
-    ) -> EllipsoidResult {
+    pub fn find_feasible(&self, x0: Vec<f64>, constraints: &[ConstraintPair]) -> EllipsoidResult {
         let n = x0.len();
         let mut xc = x0;
         // Represent ellipsoid as E = { x : (x-xc)^T P^{-1} (x-xc) ≤ 1 }
@@ -662,15 +672,15 @@ impl EllipsoidMethod {
 
             let nf = n as f64;
             // Update centre: xc_new = xc - (1/(n+1)) * g_hat
-            for i in 0..n {
-                xc[i] -= g_hat[i] / (nf + 1.0);
+            for (xci, &gi) in xc.iter_mut().zip(g_hat.iter()) {
+                *xci -= gi / (nf + 1.0);
             }
             // Update P: P_new = (n²/(n²-1)) * (P - (2/(n+1)) * g_hat * g_hat^T)
             let scale = nf * nf / (nf * nf - 1.0);
             let rank1_scale = 2.0 / (nf + 1.0);
-            for i in 0..n {
-                for j in 0..n {
-                    p[i][j] = scale * (p[i][j] - rank1_scale * g_hat[i] * g_hat[j]);
+            for (i, pi) in p.iter_mut().enumerate() {
+                for (j, pij) in pi.iter_mut().enumerate() {
+                    *pij = scale * (*pij - rank1_scale * g_hat[i] * g_hat[j]);
                 }
             }
         }
@@ -738,11 +748,7 @@ impl SupportFunction {
 ///
 /// Each element of `sets` is a projection operator `π_i: ℝⁿ → ℝⁿ`.
 /// Runs `iters` passes over all sets.
-pub fn dykstra_projection(
-    x: &[f64],
-    sets: &[&dyn Fn(&[f64]) -> Vec<f64>],
-    iters: usize,
-) -> Vec<f64> {
+pub fn dykstra_projection(x: &[f64], sets: &[&ProjectionFn], iters: usize) -> Vec<f64> {
     let n = x.len();
     if sets.is_empty() {
         return x.to_vec();
@@ -759,8 +765,8 @@ pub fn dykstra_projection(
                 .map(|(&yi, &ii)| yi + ii)
                 .collect();
             let p = proj(&z);
-            for k in 0..n {
-                increments[i][k] = z[k] - p[k];
+            for (inc, (&zk, &pk)) in increments[i].iter_mut().zip(z.iter().zip(p.iter())) {
+                *inc = zk - pk;
             }
             y = p;
         }
@@ -1133,13 +1139,13 @@ mod tests {
         let result = admm.solve(x_init, &x_upd, &z_upd);
         // Closed-form solution: soft_threshold(v, lambda)
         let expected: Vec<f64> = v.iter().map(|&vi| prox_l1(vi, lambda)).collect();
-        for i in 0..2 {
+        for (i, (&res_xi, &exp_i)) in result.x.iter().zip(expected.iter()).enumerate() {
             assert!(
-                (result.x[i] - expected[i]).abs() < 0.1,
+                (res_xi - exp_i).abs() < 0.1,
                 "x[{}] = {}, expected {}",
                 i,
-                result.x[i],
-                expected[i]
+                res_xi,
+                exp_i
             );
         }
     }
@@ -1211,12 +1217,12 @@ mod tests {
     #[test]
     fn test_ellipsoid_ball_feasibility() {
         // Find x ∈ ℝ² with ||x - (1,1)||² ≤ 0.5 and x[0] ≥ 0
-        let constraint1: Box<dyn Fn(&[f64]) -> f64> =
-            Box::new(|x: &[f64]| (x[0] - 1.0).powi(2) + (x[1] - 1.0).powi(2) - 0.5);
-        let sg1: Box<dyn Fn(&[f64]) -> Vec<f64>> =
-            Box::new(|x: &[f64]| vec![2.0 * (x[0] - 1.0), 2.0 * (x[1] - 1.0)]);
-        let constraint2: Box<dyn Fn(&[f64]) -> f64> = Box::new(|x: &[f64]| -x[0]);
-        let sg2: Box<dyn Fn(&[f64]) -> Vec<f64>> = Box::new(|_x: &[f64]| vec![-1.0, 0.0]);
+        let constraint1 = Box::new(|x: &[f64]| (x[0] - 1.0).powi(2) + (x[1] - 1.0).powi(2) - 0.5)
+            as Box<dyn Fn(&[f64]) -> f64>;
+        let sg1 = Box::new(|x: &[f64]| vec![2.0 * (x[0] - 1.0), 2.0 * (x[1] - 1.0)])
+            as Box<dyn Fn(&[f64]) -> Vec<f64>>;
+        let constraint2 = Box::new(|x: &[f64]| -x[0]) as Box<dyn Fn(&[f64]) -> f64>;
+        let sg2 = Box::new(|_x: &[f64]| vec![-1.0, 0.0]) as Box<dyn Fn(&[f64]) -> Vec<f64>>;
         let ellipsoid = EllipsoidMethod::new(200, 5.0, 1e-4);
         let result =
             ellipsoid.find_feasible(vec![0.0, 0.0], &[(constraint1, sg1), (constraint2, sg2)]);
@@ -1228,8 +1234,8 @@ mod tests {
 
     #[test]
     fn test_ellipsoid_result_fields() {
-        let c: Box<dyn Fn(&[f64]) -> f64> = Box::new(|x: &[f64]| x[0] - 1.0);
-        let sg: Box<dyn Fn(&[f64]) -> Vec<f64>> = Box::new(|_x: &[f64]| vec![1.0]);
+        let c = Box::new(|x: &[f64]| x[0] - 1.0) as Box<dyn Fn(&[f64]) -> f64>;
+        let sg = Box::new(|_x: &[f64]| vec![1.0]) as Box<dyn Fn(&[f64]) -> Vec<f64>>;
         let em = EllipsoidMethod::new(50, 10.0, 1e-4);
         let result = em.find_feasible(vec![0.5], &[(c, sg)]);
         assert!(result.iterations > 0 || result.feasible);
@@ -1343,7 +1349,7 @@ mod tests {
         let x = vec![-0.5, 1.5];
         let proj_box_fn =
             |z: &[f64]| -> Vec<f64> { z.iter().map(|&xi| xi.clamp(0.0, 1.0)).collect() };
-        let sets: Vec<&dyn Fn(&[f64]) -> Vec<f64>> = vec![&proj_box_fn];
+        let sets = vec![&proj_box_fn as &dyn Fn(&[f64]) -> Vec<f64>];
         let result = dykstra_projection(&x, &sets, 5);
         assert!((result[0] - 0.0).abs() < 1e-10);
         assert!((result[1] - 1.0).abs() < 1e-10);

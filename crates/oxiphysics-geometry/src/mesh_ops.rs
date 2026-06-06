@@ -576,7 +576,6 @@ pub fn quadric_decimate(
     // Build per-vertex quadric matrices (4×4 symmetric, stored as upper triangle).
     // Quadric Q_v = sum of (n·p=0) plane equations for all adjacent faces.
     // We store Q as a flat [10] array for 4×4 symmetric: indices (0,0)(0,1)(0,2)(0,3)(1,1)(1,2)(1,3)(2,2)(2,3)(3,3)
-    #[allow(non_snake_case)]
     let mut q_mat: Vec<[f64; 10]> = vec![[0.0; 10]; n];
 
     for tri in tris {

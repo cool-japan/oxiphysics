@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{compute_normal, normalize3_f32, triangle_area};
 use super::types::{StlMesh, StlQualityMetrics, TriangleMesh, WeldedMesh};
@@ -163,7 +162,6 @@ mod tests_ext {
 ///
 /// Returns a [`WeldedMesh`] where vertices closer than `tolerance` are merged
 /// into a single canonical vertex.
-#[allow(dead_code)]
 pub fn weld_vertices(mesh: &StlMesh, tolerance: f32) -> WeldedMesh {
     let mut unique: Vec<[f32; 3]> = Vec::new();
     let mut remap: Vec<usize> = Vec::new();
@@ -195,12 +193,10 @@ pub fn weld_vertices(mesh: &StlMesh, tolerance: f32) -> WeldedMesh {
     }
 }
 /// Count the number of unique vertices in an STL mesh within `tolerance`.
-#[allow(dead_code)]
 pub fn count_unique_vertices(mesh: &StlMesh, tolerance: f32) -> usize {
     weld_vertices(mesh, tolerance).vertices.len()
 }
 /// Compute quality metrics for an STL mesh.
-#[allow(dead_code)]
 pub fn compute_quality_metrics(mesh: &StlMesh) -> StlQualityMetrics {
     let n = mesh.triangles.len();
     if n == 0 {
@@ -267,7 +263,6 @@ pub(super) fn edge_len(a: [f32; 3], b: [f32; 3]) -> f32 {
 ///
 /// Each vertex is moved toward the average of its neighbours.
 /// `factor` ∈ (0, 1] controls the strength (0.5 is typical).
-#[allow(dead_code)]
 pub fn laplacian_smooth(mesh: &mut WeldedMesh, iterations: usize, factor: f32) {
     let nv = mesh.vertices.len();
     if nv == 0 {
@@ -306,7 +301,6 @@ pub fn laplacian_smooth(mesh: &mut WeldedMesh, iterations: usize, factor: f32) {
 ///
 /// Each input triangle produces 4 output triangles.  This is the simplest
 /// possible 1-to-4 refinement scheme.
-#[allow(dead_code)]
 pub fn subdivide_midpoint(mesh: &StlMesh) -> StlMesh {
     let mut out = StlMesh::new(&format!("{}_subdivided", mesh.name));
     for tri in &mesh.triangles {
@@ -331,7 +325,6 @@ pub(super) fn midpoint(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 ///
 /// Vertices are welded within `tolerance`; normals are averaged over all
 /// triangles that share a vertex.
-#[allow(dead_code)]
 pub fn stl_to_triangle_mesh(mesh: &StlMesh, tolerance: f32) -> TriangleMesh {
     let welded = weld_vertices(mesh, tolerance);
     let nv = welded.vertices.len();
@@ -366,7 +359,6 @@ pub fn stl_to_triangle_mesh(mesh: &StlMesh, tolerance: f32) -> TriangleMesh {
     }
 }
 /// Merge two STL meshes and weld shared vertices within `tolerance`.
-#[allow(dead_code)]
 pub fn merge_and_weld(a: &StlMesh, b: &StlMesh, tolerance: f32) -> WeldedMesh {
     let combined = merge_meshes(a, b);
     weld_vertices(&combined, tolerance)

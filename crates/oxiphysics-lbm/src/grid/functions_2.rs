@@ -2,10 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use crate::grid::types::*;
 #[cfg(test)]
 mod extended_grid_tests {
 
@@ -375,10 +371,11 @@ mod extended_grid_tests {
         for z in 0..nz {
             for y in 0..ny {
                 let base = g.cell_idx(0, y, z) * 19;
-                let mut mx = 0.0_f64;
-                for a in 0..19 {
-                    mx += g.f[base + a] * D3Q19_VELOCITIES[a][0] as f64;
-                }
+                let mx: f64 = g.f[base..base + 19]
+                    .iter()
+                    .zip(D3Q19_VELOCITIES.iter())
+                    .map(|(&fa, vel)| fa * vel[0] as f64)
+                    .sum();
                 assert!(
                     mx.abs() < 1e-6,
                     "wall node (0,{y},{z}) net x-momentum = {mx}, expected ~0"

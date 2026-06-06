@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     ReactionFn, cubic_kernel, cubic_kernel_grad, dot3, heat_exchange_rate, len3, scale3, sub3,
 };
@@ -33,11 +30,10 @@ impl AdvectionScheme {
     pub fn compute_rate_i(&self, particles: &[TransportParticle], i: usize) -> f64 {
         let pi = &particles[i];
         let mut rate = 0.0f64;
-        for j in 0..particles.len() {
+        for (j, pj) in particles.iter().enumerate() {
             if i == j {
                 continue;
             }
-            let pj = &particles[j];
             let r_ij = sub3(pi.position, pj.position);
             let r = len3(r_ij);
             if r < 1e-12 {
@@ -83,7 +79,7 @@ impl AdvectionScheme {
             .collect()
     }
     /// Apply one explicit Euler step.
-    pub fn step(&self, particles: &mut Vec<TransportParticle>, dt: f64) {
+    pub fn step(&self, particles: &mut [TransportParticle], dt: f64) {
         let rates = self.compute_all_rates(particles);
         for (p, &rate) in particles.iter_mut().zip(rates.iter()) {
             if let Some(c) = p.concentration.first_mut() {
@@ -172,17 +168,17 @@ impl SoluteTransport {
             .collect()
     }
     /// Apply one explicit Euler step for all species.
-    pub fn step(&self, particles: &mut Vec<TransportParticle>, dt: f64) {
+    pub fn step(&self, particles: &mut [TransportParticle], dt: f64) {
         let rates = self.compute_all_rates(particles);
         for p in particles.iter_mut() {
             while p.concentration.len() < self.n_species {
                 p.concentration.push(0.0);
             }
         }
-        for s in 0..self.n_species {
+        for (s, rate_s) in rates.iter().enumerate().take(self.n_species) {
             for (i, p) in particles.iter_mut().enumerate() {
-                if i < rates[s].len() {
-                    p.concentration[s] += rates[s][i] * dt;
+                if i < rate_s.len() {
+                    p.concentration[s] += rate_s[i] * dt;
                 }
             }
         }
@@ -595,7 +591,7 @@ impl BoundaryFlux {
     /// Apply the boundary flux to particle concentrations.
     ///
     /// dφ_i/dt += g * A_i / V_i  (for each boundary particle i)
-    pub fn apply(&self, particles: &mut Vec<TransportParticle>, dt: f64, diffusivity: f64) {
+    pub fn apply(&self, particles: &mut [TransportParticle], dt: f64, diffusivity: f64) {
         for (idx, &pid) in self.particle_ids.iter().enumerate() {
             if pid >= particles.len() {
                 continue;
@@ -789,7 +785,7 @@ impl ScalarTransport {
     /// Advect particles: update positions by x += v * dt.
     ///
     /// Concentrations are carried passively (Lagrangian frame).
-    pub fn advect(&self, particles: &mut Vec<TransportParticle>) {
+    pub fn advect(&self, particles: &mut [TransportParticle]) {
         for p in particles.iter_mut() {
             p.position[0] += p.velocity[0] * self.dt;
             p.position[1] += p.velocity[1] * self.dt;
@@ -841,11 +837,10 @@ impl DiffusionSph {
         let mut dphidt = vec![0.0f64; n];
         for i in 0..n {
             let pi = &particles[i];
-            for j in 0..n {
+            for (j, pj) in particles.iter().enumerate().take(n) {
                 if i == j {
                     continue;
                 }
-                let pj = &particles[j];
                 let r_ij = sub3(pi.position, pj.position);
                 let r = len3(r_ij);
                 if r < 1e-12 {
@@ -863,7 +858,7 @@ impl DiffusionSph {
         dphidt
     }
     /// Apply one explicit Euler diffusion step in-place.
-    pub fn step(&self, particles: &mut Vec<TransportParticle>, dt: f64) {
+    pub fn step(&self, particles: &mut [TransportParticle], dt: f64) {
         let dphidt = self.compute_dphidt(particles);
         for (p, &rate) in particles.iter_mut().zip(dphidt.iter()) {
             if let Some(c) = p.concentration.first_mut() {
@@ -1151,7 +1146,7 @@ impl ReactionDiffusion {
         dphidt
     }
     /// One explicit Euler step with Fisher-KPP reaction.
-    pub fn step_fisher(&self, particles: &mut Vec<TransportParticle>, dt: f64) {
+    pub fn step_fisher(&self, particles: &mut [TransportParticle], dt: f64) {
         let dphidt = self.compute_dphidt_fisher(particles);
         for (p, &rate) in particles.iter_mut().zip(dphidt.iter()) {
             if let Some(c) = p.concentration.first_mut() {
@@ -1160,12 +1155,7 @@ impl ReactionDiffusion {
         }
     }
     /// One explicit Euler step with a custom reaction function.
-    pub fn step_custom(
-        &self,
-        particles: &mut Vec<TransportParticle>,
-        dt: f64,
-        reaction: ReactionFn,
-    ) {
+    pub fn step_custom(&self, particles: &mut [TransportParticle], dt: f64, reaction: ReactionFn) {
         let mut dphidt = self.diffusion.compute_dphidt(particles);
         for (i, p) in particles.iter().enumerate() {
             dphidt[i] += reaction(p.conc());
@@ -1210,11 +1200,10 @@ impl ThermalConduction {
         let mut dtdt = vec![0.0f64; n];
         for i in 0..n {
             let pi = &particles[i];
-            for j in 0..n {
+            for (j, pj) in particles.iter().enumerate().take(n) {
                 if i == j {
                     continue;
                 }
-                let pj = &particles[j];
                 let r_ij = sub3(pi.position, pj.position);
                 let r = len3(r_ij);
                 if r < 1e-12 {
@@ -1232,7 +1221,7 @@ impl ThermalConduction {
         dtdt
     }
     /// Apply one explicit Euler thermal conduction step in-place.
-    pub fn step(&self, particles: &mut Vec<TransportParticle>, dt: f64) {
+    pub fn step(&self, particles: &mut [TransportParticle], dt: f64) {
         let dtdt = self.compute_dtdt(particles);
         for (p, &rate) in particles.iter_mut().zip(dtdt.iter()) {
             p.temperature += rate * dt;
@@ -1507,7 +1496,7 @@ impl GrayScottSph {
         Self { du, dv, feed, kill }
     }
     /// Ensure all particles have two concentration slots.
-    pub fn init_particles(particles: &mut Vec<TransportParticle>) {
+    pub fn init_particles(particles: &mut [TransportParticle]) {
         for p in particles.iter_mut() {
             while p.concentration.len() < 2 {
                 p.concentration.push(0.0);
@@ -1550,7 +1539,7 @@ impl GrayScottSph {
         (du_dt, dv_dt)
     }
     /// One explicit Euler step.
-    pub fn step(&self, particles: &mut Vec<TransportParticle>, dt: f64) {
+    pub fn step(&self, particles: &mut [TransportParticle], dt: f64) {
         let (du_dt, dv_dt) = self.compute_rates(particles);
         for (i, p) in particles.iter_mut().enumerate() {
             while p.concentration.len() < 2 {

@@ -5,13 +5,11 @@
 use super::functions::*;
 
 /// Coulomb electrostatic interaction between partial charges.
-#[allow(dead_code)]
 pub struct CoulombInteraction {
     /// Coulomb constant (kJ mol^-1 nm e^-2).
     /// In AMBER units: 138.935485 kJ mol^-1 nm e^-2.
     pub coulomb_k: f64,
 }
-#[allow(dead_code)]
 impl CoulombInteraction {
     /// Create with AMBER default Coulomb constant.
     pub fn new() -> Self {
@@ -113,7 +111,6 @@ impl NonBondedExclusions {
     }
 }
 /// Representative bond parameter for AMBER99SB.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct Amber99sbBondParam {
     /// First atom type.
@@ -140,7 +137,6 @@ pub struct DihedralTerm {
     pub gamma: f64,
 }
 /// Parameters for a single atom in a Generalized Born (GB) calculation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GbAtom {
     /// Partial charge (elementary charge units, e).
@@ -151,7 +147,6 @@ pub struct GbAtom {
     pub vdw_radius: f64,
 }
 /// GAFF atom type categories.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GaffType {
     /// sp3 carbon (gaff: c3)
@@ -193,7 +188,6 @@ pub enum GaffType {
 ///
 /// This wrapper extends the standard [`AmberForceField`] with implicit solvent
 /// energy terms used in the GB/SA model.
-#[allow(dead_code)]
 #[derive(Default)]
 pub struct AmberFF {
     /// The underlying explicit-topology AMBER force field.
@@ -203,7 +197,6 @@ pub struct AmberFF {
 }
 impl AmberFF {
     /// Create a new AmberFF with default GB parameters.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -226,7 +219,6 @@ impl AmberFF {
     /// * `positions` — Cartesian positions in nm, one per atom
     ///
     /// Returns the GB electrostatic solvation energy in kJ mol⁻¹.
-    #[allow(dead_code)]
     pub fn compute_generalized_born(&self, atoms: &[GbAtom], positions: &[[f64; 3]]) -> f64 {
         let n = atoms.len().min(positions.len());
         if n == 0 {
@@ -271,7 +263,6 @@ impl AmberFF {
     /// * `atoms` — slice of GB atoms (only `vdw_radius` is used here)
     ///
     /// Returns the SA energy contribution in kJ mol⁻¹.
-    #[allow(dead_code)]
     pub fn compute_sa_term(&self, atoms: &[GbAtom]) -> f64 {
         const R_PROBE: f64 = 0.14;
         use std::f64::consts::PI;
@@ -310,7 +301,6 @@ impl AmberFF {
     /// * `positions` — atom positions (nm)
     ///
     /// Returns the neck correction energy in kJ mol⁻¹.
-    #[allow(dead_code)]
     pub fn compute_neck_correction(&self, atoms: &[GbAtom], positions: &[[f64; 3]]) -> f64 {
         let n = atoms.len().min(positions.len());
         if n < 2 {
@@ -342,7 +332,6 @@ impl AmberFF {
     }
 }
 /// Partial charge record for a single atom in a residue.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct ResidueChargeRecord {
     /// Residue name (e.g., "ALA", "GLY").
@@ -355,9 +344,7 @@ pub struct ResidueChargeRecord {
     pub amber_type: &'static str,
 }
 /// Lorentz-Berthelot combination rules for LJ cross-interactions.
-#[allow(dead_code)]
 pub struct LorentzBerthelot;
-#[allow(dead_code)]
 impl LorentzBerthelot {
     /// Combined sigma: sigma_ij = (sigma_i + sigma_j) / 2.
     pub fn sigma(sigma_i: f64, sigma_j: f64) -> f64 {
@@ -383,7 +370,6 @@ impl LorentzBerthelot {
     }
 }
 /// Generalised Born (Still) parameters shared for the whole system.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GbParams {
     /// Solvent dielectric constant (typically 78.5 for water).
@@ -443,7 +429,6 @@ impl HarmonicBond {
 ///
 /// Sources: parm99.dat / ff99SB AMBER parameter file (Cornell et al. 1995,
 /// Hornak et al. 2006).
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct Amber99sbType {
     /// AMBER atom-type symbol.
@@ -542,7 +527,6 @@ impl ProperDihedral {
     }
 }
 /// Representative angle parameter for AMBER99SB.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct Amber99sbAngleParam {
     /// First atom type i.
@@ -563,7 +547,6 @@ pub struct Amber99sbAngleParam {
 ///
 /// Typically n = 2, γ = π (phase = 180°) in AMBER, which penalises
 /// deviation from planarity.
-#[allow(dead_code)]
 pub struct ImproperTorsion {
     /// Barrier height (kJ mol⁻¹).
     pub vn: f64,
@@ -572,7 +555,6 @@ pub struct ImproperTorsion {
     /// Phase offset (radians).
     pub gamma: f64,
 }
-#[allow(dead_code)]
 impl ImproperTorsion {
     /// Create a new improper torsion.
     pub fn new(vn: f64, n: u32, gamma_deg: f64) -> Self {
@@ -593,14 +575,12 @@ impl ImproperTorsion {
     }
 }
 /// Dihedral scan results: energy as a function of dihedral angle.
-#[allow(dead_code)]
 pub struct DihedralScan {
     /// Scanned angles (radians).
     pub angles: Vec<f64>,
     /// Corresponding energies.
     pub energies: Vec<f64>,
 }
-#[allow(dead_code)]
 impl DihedralScan {
     /// Scan the dihedral energy profile from -pi to +pi with `n_points` steps.
     ///
@@ -658,7 +638,6 @@ impl DihedralScan {
     }
 }
 /// Simple AMBER energy evaluator for a set of bonded interactions.
-#[allow(dead_code)]
 pub struct AmberEnergyEvaluator {
     /// Bond list: (atom_i, atom_j, HarmonicBond).
     pub bond_list: Vec<(usize, usize, HarmonicBond)>,
@@ -667,7 +646,6 @@ pub struct AmberEnergyEvaluator {
     /// Dihedral list: (atom_i, atom_j, atom_k, atom_l, ProperDihedral).
     pub dihedral_list: Vec<(usize, usize, usize, usize, ProperDihedral)>,
 }
-#[allow(dead_code)]
 impl AmberEnergyEvaluator {
     /// Create an empty evaluator.
     pub fn new() -> Self {
@@ -806,7 +784,6 @@ impl HarmonicAngle {
         (fi, fj, fk)
     }
 }
-#[allow(dead_code)]
 /// An AMBER atom type with Lennard-Jones parameters.
 #[derive(Clone, Debug)]
 pub struct AmberAtomType {
@@ -821,7 +798,6 @@ pub struct AmberAtomType {
     /// Partial charge (elementary charge units).
     pub charge: f64,
 }
-#[allow(dead_code)]
 impl AmberAtomType {
     /// Create a new atom type.
     pub fn new(name: &str, mass: f64, epsilon: f64, sigma: f64, charge: f64) -> Self {
@@ -857,7 +833,6 @@ impl AmberAtomType {
     }
 }
 /// A collection of AMBER force-field parameters.
-#[allow(dead_code)]
 pub struct AmberForceField {
     /// Atom types.
     pub atom_types: Vec<AmberAtomType>,
@@ -868,7 +843,6 @@ pub struct AmberForceField {
     /// Dihedral parameters: (type_i, type_j, type_k, type_l) -> ProperDihedral.
     pub dihedrals: Vec<(String, String, String, String, ProperDihedral)>,
 }
-#[allow(dead_code)]
 impl AmberForceField {
     /// Create an empty force field.
     pub fn new() -> Self {

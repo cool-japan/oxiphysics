@@ -5,9 +5,6 @@
 //!
 //! Exposes renderer-agnostic debug draw command buffer to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 #[cfg(feature = "numpy-bridge")]
 use oxiphysics::debug_draw::{DebugDrawSession, DrawCommand, DrawDuration, DrawList};
 #[cfg(not(feature = "numpy-bridge"))]

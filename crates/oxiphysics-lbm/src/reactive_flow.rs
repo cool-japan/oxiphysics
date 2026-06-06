@@ -1,5 +1,3 @@
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +5,6 @@
 //!
 //! Implements one-step chemistry, species transport, flame properties,
 //! ignition models, and a 2D reactive flow grid.
-
-#![allow(dead_code)]
 
 /// Universal gas constant (J/mol/K).
 const R_U: f64 = 8.314;
@@ -522,7 +518,6 @@ pub struct ElementaryReaction {
 
 impl ElementaryReaction {
     /// Create a new elementary reaction.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         reactant_stoich: Vec<f64>,
         product_stoich: Vec<f64>,
@@ -584,7 +579,7 @@ impl ReactionMechanism {
         let mut rates = vec![0.0; n_species];
         for rxn in &self.reactions {
             let w = rxn.forward_rate(concentrations, temperature);
-            for k in 0..n_species {
+            for (k, rate_k) in rates.iter_mut().enumerate() {
                 let nu_prod = if k < rxn.product_stoich.len() {
                     rxn.product_stoich[k]
                 } else {
@@ -595,7 +590,7 @@ impl ReactionMechanism {
                 } else {
                     0.0
                 };
-                rates[k] += (nu_prod - nu_react) * w;
+                *rate_k += (nu_prod - nu_react) * w;
             }
         }
         rates
@@ -1115,7 +1110,10 @@ mod tests {
     #[test]
     fn test_rate_limiter_apply_all() {
         let r = ReactionRateLimiter::apply_all(1e10, 0.05, 0.2, 2000.0, 1e-3, 500.0, 1e8);
-        assert!(r >= 0.0 && r <= 1e8, "Rate should be in valid range: {r}");
+        assert!(
+            (0.0..=1e8).contains(&r),
+            "Rate should be in valid range: {r}"
+        );
     }
 
     // ─── Species diffusion tests ───
@@ -1237,7 +1235,6 @@ mod tests {
 /// Da = τ_flow / τ_chem.
 /// - Da >> 1 → fast chemistry (well-stirred reactor / equilibrium)
 /// - Da << 1 → slow chemistry (frozen flow)
-#[allow(dead_code)]
 pub fn damkohler_number(tau_flow: f64, tau_chem: f64) -> f64 {
     tau_flow / tau_chem
 }
@@ -1245,7 +1242,6 @@ pub fn damkohler_number(tau_flow: f64, tau_chem: f64) -> f64 {
 /// Zeldovich number Ze = Eₐ(T_ad - T_0) / (Rᵤ T_ad²).
 ///
 /// Measures the activation energy non-dimensionally; large Ze means thin flames.
-#[allow(dead_code)]
 pub fn zeldovich_number(activation_energy: f64, t_ad: f64, t_0: f64) -> f64 {
     activation_energy * (t_ad - t_0) / (R_U * t_ad * t_ad)
 }
@@ -1255,7 +1251,6 @@ pub fn zeldovich_number(activation_energy: f64, t_ad: f64, t_0: f64) -> f64 {
 /// S_L ≈ √(2 α_th ω̄ / (ρ Y_fuel_0))
 ///
 /// where α_th = λ/(ρ cp) is thermal diffusivity and ω̄ is the mean reaction rate.
-#[allow(dead_code)]
 pub fn laminar_flame_speed(
     thermal_diffusivity: f64,
     mean_reaction_rate: f64,
@@ -1278,14 +1273,12 @@ pub fn laminar_flame_speed(
 ///
 /// where c_0 = √(γ·p₀/ρ₀) is the ambient sound speed,
 /// Q is the heat release per unit mass, and γ is the specific heat ratio.
-#[allow(dead_code)]
 pub fn cj_detonation_velocity(gamma: f64, pressure: f64, density: f64, heat_release: f64) -> f64 {
     let c0 = (gamma * pressure / density).sqrt();
     c0 + (heat_release * (gamma * gamma - 1.0) / (2.0 * gamma)).sqrt()
 }
 
 /// CJ Mach number: M_CJ = D_CJ / c_0.
-#[allow(dead_code)]
 pub fn cj_mach_number(gamma: f64, pressure: f64, density: f64, heat_release: f64) -> f64 {
     let c0 = (gamma * pressure / density).sqrt();
     cj_detonation_velocity(gamma, pressure, density, heat_release) / c0
@@ -1300,7 +1293,6 @@ pub fn cj_mach_number(gamma: f64, pressure: f64, density: f64, heat_release: f64
 /// Z = (Y_fuel - Y_ox / s + Y_ox_inf / s) / (Y_fuel_inf + Y_ox_inf / s)
 ///
 /// where s = stoichiometric oxidizer-to-fuel ratio.
-#[allow(dead_code)]
 pub fn bilger_mixture_fraction(
     y_fuel: f64,
     y_ox: f64,
@@ -1321,7 +1313,6 @@ pub fn bilger_mixture_fraction(
 /// χ = 2 D |∇Z|²
 ///
 /// where D is the mass diffusivity.
-#[allow(dead_code)]
 pub fn scalar_dissipation_rate(diffusivity: f64, grad_z: [f64; 2]) -> f64 {
     2.0 * diffusivity * (grad_z[0] * grad_z[0] + grad_z[1] * grad_z[1])
 }
@@ -1334,7 +1325,6 @@ pub fn scalar_dissipation_rate(diffusivity: f64, grad_z: [f64; 2]) -> f64 {
 ///
 /// A flame is active when reaction rate exceeds a threshold fraction
 /// of the theoretical maximum rate.
-#[allow(dead_code)]
 pub fn is_flame_front(reaction_rate: f64, max_rate: f64, threshold_fraction: f64) -> bool {
     if max_rate <= 0.0 {
         return false;
@@ -1343,7 +1333,6 @@ pub fn is_flame_front(reaction_rate: f64, max_rate: f64, threshold_fraction: f64
 }
 
 /// Estimate the local flame thickness δ_L ≈ α_th / S_L.
-#[allow(dead_code)]
 pub fn flame_thickness(thermal_diffusivity: f64, flame_speed: f64) -> f64 {
     if flame_speed <= 0.0 {
         return f64::INFINITY;

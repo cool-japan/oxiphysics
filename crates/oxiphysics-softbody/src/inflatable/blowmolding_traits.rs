@@ -1,5 +1,3 @@
-#[allow(unused_imports)]
-use super::functions::*;
 // # BlowMolding - Trait Implementations
 //
 // This module contains trait implementations for `BlowMolding`.

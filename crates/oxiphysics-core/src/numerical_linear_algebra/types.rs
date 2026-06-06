@@ -2,16 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(
-    clippy::if_same_then_else,
-    clippy::needless_range_loop,
-    clippy::ptr_arg,
-    clippy::too_many_arguments
-)]
 use std::f64::consts::PI;
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     axpy, dot, gram, matmul_rect, matmul_rect_t, matvec_block, matvec_block_t, norm2, qr_thin,
     svd_small, vec_add, vec_scale, vec_sub,
@@ -227,7 +219,7 @@ impl EigenSolver {
             converged: false,
         }
     }
-    fn orthonormalise(vecs: &mut Vec<Vec<f64>>) {
+    fn orthonormalise(vecs: &mut [Vec<f64>]) {
         let k = vecs.len();
         for i in 0..k {
             for j in 0..i {
@@ -559,7 +551,7 @@ impl IterativeSolver {
                     break;
                 }
             }
-            let jj = if inner_converged { j_end } else { j_end };
+            let jj = j_end;
             let mut y = vec![0.0f64; jj + 1];
             for i in (0..=jj).rev() {
                 y[i] = e1[i];
@@ -684,8 +676,7 @@ impl IterativeSolver {
         let mut rho = dot(&r_tilde, &r0);
         let mut tau = norm2(&r0);
         let mut theta = 0.0f64;
-        #[allow(unused_assignments)]
-        let mut eta = 0.0f64;
+        let mut eta: f64;
         let mut sigma;
         let mut alpha_t;
         for iter in 0..max_iter {
@@ -695,11 +686,9 @@ impl IterativeSolver {
             }
             alpha_t = rho / sigma;
             for m in 0..2usize {
+                w = vec_sub(&w, &vec_scale(alpha_t, &v_tfq));
                 if m == 1 {
-                    w = vec_sub(&w, &vec_scale(alpha_t, &v_tfq));
                     u = vec_sub(&u, &vec_scale(alpha_t, &v_tfq));
-                } else {
-                    w = vec_sub(&w, &vec_scale(alpha_t, &v_tfq));
                 }
                 let w_norm = norm2(&w);
                 let theta_new = w_norm / tau;
@@ -834,11 +823,10 @@ impl SparseCSR {
         let mut col_idx = vec![0usize; nnz];
         let mut values = vec![0.0f64; nnz];
         let mut pos = row_ptr.clone();
-        for k in 0..nnz {
-            let r = rows[k];
+        for (&r, (&c, &v)) in rows.iter().zip(cols.iter().zip(vals.iter())).take(nnz) {
             let p = pos[r];
-            col_idx[p] = cols[k];
-            values[p] = vals[k];
+            col_idx[p] = c;
+            values[p] = v;
             pos[r] += 1;
         }
         for i in 0..nrows {
@@ -870,9 +858,9 @@ impl SparseCSR {
     /// Sparse matrix-vector product y = A * x.
     pub fn matvec(&self, x: &[f64]) -> Vec<f64> {
         let mut y = vec![0.0f64; self.nrows];
-        for i in 0..self.nrows {
+        for (i, yi) in y.iter_mut().enumerate().take(self.nrows) {
             for k in self.row_ptr[i]..self.row_ptr[i + 1] {
-                y[i] += self.values[k] * x[self.col_idx[k]];
+                *yi += self.values[k] * x[self.col_idx[k]];
             }
         }
         y
@@ -880,10 +868,11 @@ impl SparseCSR {
     /// Return the diagonal as a vector.
     pub fn diagonal(&self) -> Vec<f64> {
         let mut d = vec![0.0f64; self.nrows.min(self.ncols)];
-        for i in 0..self.nrows.min(self.ncols) {
+        let diag_len = self.nrows.min(self.ncols);
+        for (i, di) in d.iter_mut().enumerate().take(diag_len) {
             for k in self.row_ptr[i]..self.row_ptr[i + 1] {
                 if self.col_idx[k] == i {
-                    d[i] = self.values[k];
+                    *di = self.values[k];
                     break;
                 }
             }
@@ -1285,6 +1274,27 @@ impl MatrixFunctions {
         result
     }
 }
+/// Parameters for the Matricised Tensor Times Khatri-Rao Product (MTTKRP) kernel.
+///
+/// Groups the six integer scalars that describe the tensor shape and contraction
+/// mode so that `TensorDecomposition::mttkrp` stays within the argument-count
+/// limit.
+#[derive(Debug, Clone, Copy)]
+pub struct MttkrpParams {
+    /// Number of output rows (mode-specific leading dimension).
+    pub m_rows: usize,
+    /// CP rank.
+    pub r: usize,
+    /// Unfolding mode (0, 1, or 2).
+    pub mode: usize,
+    /// Size of tensor dimension I.
+    pub i_dim: usize,
+    /// Size of tensor dimension J.
+    pub j_dim: usize,
+    /// Size of tensor dimension K.
+    pub k_dim: usize,
+}
+
 /// Tensor decomposition methods.
 pub struct TensorDecomposition;
 impl TensorDecomposition {
@@ -1396,19 +1406,26 @@ impl TensorDecomposition {
     ) {
         let btb = gram(b, if mode == 0 { j_dim } else { i_dim }, r);
         let ctc = gram(c, if mode <= 1 { k_dim } else { j_dim }, r);
-        let mut v: Vec<f64> = (0..r * r)
-            .map(|i| btb[i] * ctc[i % r + (i / r) * r])
-            .collect();
-        for idx in 0..r * r {
-            v[idx] = btb[idx] * ctc[idx];
-        }
+        let v: Vec<f64> = btb.iter().zip(ctc.iter()).map(|(a, b)| a * b).collect();
         let v_inv = MatrixFunctions::inv_dense(&v, r);
-        let (m_rows, n1, n2) = match mode {
-            0 => (i_dim, j_dim, k_dim),
-            1 => (j_dim, i_dim, k_dim),
-            _ => (k_dim, i_dim, j_dim),
+        let m_rows = match mode {
+            0 => i_dim,
+            1 => j_dim,
+            _ => k_dim,
         };
-        let mttkrp = Self::mttkrp(x, b, c, m_rows, n1, n2, r, mode, i_dim, j_dim, k_dim);
+        let mttkrp = Self::mttkrp(
+            x,
+            b,
+            c,
+            MttkrpParams {
+                m_rows,
+                r,
+                mode,
+                i_dim,
+                j_dim,
+                k_dim,
+            },
+        );
         let new_a = matmul_rect(&mttkrp, m_rows, r, &v_inv, r, r);
         for rc in 0..r {
             let nrm = (0..m_rows)
@@ -1425,19 +1442,15 @@ impl TensorDecomposition {
             }
         }
     }
-    fn mttkrp(
-        x: &[f64],
-        b: &[f64],
-        c: &[f64],
-        m_rows: usize,
-        _n1: usize,
-        _n2: usize,
-        r: usize,
-        mode: usize,
-        i_dim: usize,
-        j_dim: usize,
-        k_dim: usize,
-    ) -> Vec<f64> {
+    fn mttkrp(x: &[f64], b: &[f64], c: &[f64], p: MttkrpParams) -> Vec<f64> {
+        let MttkrpParams {
+            m_rows,
+            r,
+            mode,
+            i_dim,
+            j_dim,
+            k_dim,
+        } = p;
         let mut out = vec![0.0f64; m_rows * r];
         match mode {
             0 => {
@@ -1680,10 +1693,11 @@ impl ILU0Preconditioner {
                 if kk >= i {
                     break;
                 }
-                let mut diag_pos = row_ptr[kk];
-                for p in row_ptr[kk]..row_ptr[kk + 1] {
-                    if col_idx[p] == kk {
-                        diag_pos = p;
+                let start_kk = row_ptr[kk];
+                let mut diag_pos = start_kk;
+                for (offset, &c) in col_idx[start_kk..row_ptr[kk + 1]].iter().enumerate() {
+                    if c == kk {
+                        diag_pos = start_kk + offset;
                         break;
                     }
                 }

@@ -11,8 +11,6 @@
 //!
 //! No GPU library dependencies — all structures are pure data.
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // Math helpers
 // ---------------------------------------------------------------------------
@@ -33,23 +31,8 @@ fn v3_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 #[inline]
-fn v3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-#[inline]
 fn v3_scale(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
-}
-
-#[inline]
-fn v3_normalise(a: [f64; 3]) -> [f64; 3] {
-    let n = v3_norm(a);
-    if n > 1e-12 {
-        v3_scale(a, 1.0 / n)
-    } else {
-        [0.0; 3]
-    }
 }
 
 #[inline]

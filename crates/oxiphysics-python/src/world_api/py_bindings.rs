@@ -55,7 +55,6 @@ impl PyMdBinding {
     /// Add an atom at `[x, y, z]` with optional velocity `[vx, vy, vz]`.
     ///
     /// Returns the index of the newly added atom.
-    #[allow(clippy::too_many_arguments)]
     pub fn add_atom(
         &mut self,
         x: f64,
@@ -311,7 +310,6 @@ impl PyFemBinding {
     }
 
     /// Add a CST triangular element with explicit material and thickness.
-    #[allow(clippy::too_many_arguments)]
     pub fn add_tri_element_with_material(
         &mut self,
         n0: usize,

@@ -30,8 +30,6 @@
 //! assert!(pos[1] < 10.0); // body fell due to gravity
 //! ```
 
-#![allow(missing_docs)]
-
 // Sub-modules
 mod bindings;
 mod constraint;
@@ -108,9 +106,6 @@ struct BodyEntry {
     is_static: bool,
     /// Whether this body is kinematic.
     is_kinematic: bool,
-    /// Whether this body is a sensor.
-    #[allow(dead_code)]
-    is_sensor: bool,
     /// Whether the body is currently sleeping.
     sleeping: bool,
     /// Time the body has been below sleep thresholds (seconds).
@@ -139,7 +134,6 @@ impl BodyEntry {
             active: true,
             is_static: cfg.is_static(),
             is_kinematic: cfg.is_kinematic,
-            is_sensor: cfg.is_sensor,
             sleeping: false,
             sleep_timer: 0.0,
             generation,
@@ -408,7 +402,6 @@ impl WasmPhysicsEngine {
     }
 
     /// Apply an impulse at a point relative to the body center (generates torque).
-    #[allow(clippy::too_many_arguments)]
     pub fn apply_impulse_at_point(
         &mut self,
         handle: u32,
@@ -661,7 +654,6 @@ impl WasmPhysicsEngine {
     // -----------------------------------------------------------------------
 
     /// Cast a ray from `origin` in `direction` and return the closest hit.
-    #[allow(clippy::too_many_arguments)]
     pub fn raycast(
         &self,
         ox: f64,
@@ -1462,7 +1454,6 @@ impl WasmPhysicsEngine {
     ///   const distance = hit[1];
     /// }
     /// ```
-    #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = "raycast")]
     pub fn raycast_js(
         &self,

@@ -4,7 +4,6 @@
 
 use std::f64::consts::PI;
 
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{Tensor3, Vec3f};
 
@@ -512,7 +511,6 @@ impl TensorGlyphBuilder {
         tensors.iter().map(|(t, p)| self.build(t, *p)).collect()
     }
     /// Build a glyph for every point in a regular 3-D grid.
-    #[allow(clippy::too_many_arguments)]
     pub fn build_grid(
         &self,
         field: &[Tensor3],

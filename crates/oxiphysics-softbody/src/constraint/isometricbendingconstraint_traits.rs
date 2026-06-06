@@ -8,13 +8,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use crate::particle::SoftParticle;
 use oxiphysics_core::math::{Real, Vec3};
 
 use super::functions::SoftConstraint;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::IsometricBendingConstraint;
 
 impl SoftConstraint for IsometricBendingConstraint {
@@ -38,15 +35,15 @@ impl SoftConstraint for IsometricBendingConstraint {
             return;
         }
         let mut grads = [Vec3::zeros(); 4];
-        for a in 0..4 {
-            for b in 0..4 {
-                grads[a] += self.q_matrix[a * 4 + b] * positions[b];
+        for (a, grad) in grads.iter_mut().enumerate() {
+            for (b, pos) in positions.iter().enumerate() {
+                *grad += self.q_matrix[a * 4 + b] * pos;
             }
-            grads[a] *= 2.0 * self.stiffness;
+            *grad *= 2.0 * self.stiffness;
         }
         let mut w_sum = 0.0_f64;
-        for a in 0..4 {
-            w_sum += particles[indices[a]].inverse_mass * grads[a].norm_squared();
+        for (a, grad) in grads.iter().enumerate() {
+            w_sum += particles[indices[a]].inverse_mass * grad.norm_squared();
         }
         if w_sum < 1e-14 {
             return;

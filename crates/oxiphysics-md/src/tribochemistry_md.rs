@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,9 +15,6 @@
 //! - Wear particle formation and ejection
 //! - Chemical potential under mechanical stress
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -28,29 +24,17 @@ use std::f64::consts::PI;
 /// Boltzmann constant (J K⁻¹).
 const K_B: f64 = 1.380_649e-23;
 
-/// Planck constant (J s).
-const H_PLANCK: f64 = 6.626_070_15e-34;
-
 /// Avogadro's number (mol⁻¹).
 const N_AV: f64 = 6.022_140_76e23;
 
 /// Universal gas constant (J mol⁻¹ K⁻¹).
 const R_GAS: f64 = 8.314_462_618;
 
-/// Elementary charge (C).
-const E_CHARGE: f64 = 1.602_176_634e-19;
-
 /// Atomic mass unit (kg).
 const AMU: f64 = 1.660_539_066_6e-27;
 
-/// Angstrom in meters.
-const ANGSTROM: f64 = 1.0e-10;
-
 /// Typical covalent bond length for C-C (m).
 const BOND_CC: f64 = 1.54e-10;
-
-/// Typical thermal velocity prefactor.
-const K_TST: f64 = K_B / H_PLANCK;
 
 // ---------------------------------------------------------------------------
 // Vector helpers
@@ -1094,12 +1078,12 @@ impl TriboBox {
             v[0] -= self.shear_rate * lz;
         }
         // Wrap x, y
-        for k in 0..2 {
-            while p[k] < 0.0 {
-                p[k] += self.lengths[k];
+        for (pk, &len) in p[..2].iter_mut().zip(self.lengths[..2].iter()) {
+            while *pk < 0.0 {
+                *pk += len;
             }
-            while p[k] >= self.lengths[k] {
-                p[k] -= self.lengths[k];
+            while *pk >= len {
+                *pk -= len;
             }
         }
         (p, v)

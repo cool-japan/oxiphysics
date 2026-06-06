@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -46,7 +45,6 @@ const CS2: f64 = 1.0 / 3.0;
 ///
 /// Supports explicit Fickian diffusion for each species and first-order reactions
 /// with Arrhenius temperature dependence.
-#[allow(dead_code)]
 pub struct MultiComponentField {
     /// Domain width.
     pub nx: usize,
@@ -66,7 +64,6 @@ pub struct MultiComponentField {
 
 impl MultiComponentField {
     /// Create a field with uniform initial concentrations and temperature.
-    #[allow(dead_code)]
     pub fn new(
         nx: usize,
         ny: usize,
@@ -91,13 +88,11 @@ impl MultiComponentField {
 
     /// Linear index for cell `(i, j)`.
     #[inline]
-    #[allow(dead_code)]
     pub fn idx(&self, i: usize, j: usize) -> usize {
         j * self.nx + i
     }
 
     /// Diffuse all species for one step with periodic BC.
-    #[allow(dead_code)]
     pub fn diffuse_species(&mut self, dt: f64, dx: f64) {
         let nx = self.nx;
         let ny = self.ny;
@@ -121,7 +116,6 @@ impl MultiComponentField {
     }
 
     /// Diffuse temperature for one step with periodic BC.
-    #[allow(dead_code)]
     pub fn diffuse_temperature(&mut self, dt: f64, dx: f64) {
         let nx = self.nx;
         let ny = self.ny;
@@ -144,8 +138,6 @@ impl MultiComponentField {
     /// Apply Arrhenius first-order consumption of species `s_reactant` at each cell.
     ///
     /// Rate = A * exp(-Ea / (R * T)) * C_s
-    #[allow(clippy::too_many_arguments)]
-    #[allow(dead_code)]
     pub fn apply_arrhenius_reaction(
         &mut self,
         s_reactant: usize,
@@ -168,7 +160,6 @@ impl MultiComponentField {
     /// Apply bimolecular reaction A + B → products.
     ///
     /// dA/dt = -k * A * B,  dB/dt = -k * A * B
-    #[allow(dead_code)]
     pub fn apply_bimolecular_reaction(&mut self, s_a: usize, s_b: usize, rate_k: f64, dt: f64) {
         let n = self.nx * self.ny;
         for idx in 0..n {
@@ -181,8 +172,6 @@ impl MultiComponentField {
     }
 
     /// Apply heat release from reaction: T += Q_rxn * k * C_A * C_B * dt.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(dead_code)]
     pub fn apply_heat_release_bimolecular(
         &mut self,
         s_a: usize,
@@ -200,19 +189,16 @@ impl MultiComponentField {
     }
 
     /// Compute total amount of species `s`.
-    #[allow(dead_code)]
     pub fn total_concentration(&self, s: usize) -> f64 {
         self.conc[s].iter().sum()
     }
 
     /// Compute mean temperature.
-    #[allow(dead_code)]
     pub fn mean_temperature(&self) -> f64 {
         self.temp.iter().sum::<f64>() / self.temp.len() as f64
     }
 
     /// Find cell index with maximum temperature.
-    #[allow(dead_code)]
     pub fn hotspot_index(&self) -> usize {
         self.temp
             .iter()
@@ -228,7 +214,6 @@ impl MultiComponentField {
 // ---------------------------------------------------------------------------
 
 /// Arrhenius kinetics with optional Lindemann pressure fall-off correction.
-#[allow(dead_code)]
 pub struct ArrheniusKinetics {
     /// Pre-exponential factor A \[1/s or m³/mol/s for bimolecular\].
     pub pre_exp: f64,
@@ -242,7 +227,6 @@ pub struct ArrheniusKinetics {
 
 impl ArrheniusKinetics {
     /// Create a new Arrhenius kinetics descriptor.
-    #[allow(dead_code)]
     pub fn new(pre_exp: f64, ea: f64, r_gas: f64, beta: f64) -> Self {
         Self {
             pre_exp,
@@ -253,7 +237,6 @@ impl ArrheniusKinetics {
     }
 
     /// Compute rate constant k(T) = A * T^β * exp(-Ea / (R T)).
-    #[allow(dead_code)]
     pub fn rate(&self, temperature: f64) -> f64 {
         if temperature <= 0.0 {
             return 0.0;
@@ -262,7 +245,6 @@ impl ArrheniusKinetics {
     }
 
     /// Sensitivity ∂k/∂T = k(T) * (β/T + Ea/(R*T²)).
-    #[allow(dead_code)]
     pub fn d_rate_d_temp(&self, temperature: f64) -> f64 {
         if temperature <= 0.0 {
             return 0.0;
@@ -272,7 +254,6 @@ impl ArrheniusKinetics {
     }
 
     /// Activation temperature (Ea / R).
-    #[allow(dead_code)]
     pub fn activation_temperature(&self) -> f64 {
         self.ea / self.r_gas
     }
@@ -286,7 +267,6 @@ impl ArrheniusKinetics {
 ///
 /// The species concentration is carried by a set of distribution functions `g`.
 /// The equilibrium is `g_i^eq = w_i * C * (1 + e_i·u / cs²)`.
-#[allow(dead_code)]
 pub struct SpeciesLbm2D {
     /// Domain width.
     pub nx: usize,
@@ -300,7 +280,6 @@ pub struct SpeciesLbm2D {
 
 impl SpeciesLbm2D {
     /// Create a new species LBM solver with zero initial concentration.
-    #[allow(dead_code)]
     pub fn new(nx: usize, ny: usize, omega_d: f64) -> Self {
         Self {
             nx,
@@ -312,38 +291,33 @@ impl SpeciesLbm2D {
 
     /// Linear index for cell `(i, j)`.
     #[inline]
-    #[allow(dead_code)]
     pub fn idx(&self, i: usize, j: usize) -> usize {
         j * self.nx + i
     }
 
     /// Equilibrium distribution for species: g_i^eq = w_i * C * (1 + e·u/cs²).
-    #[allow(dead_code)]
     pub fn equilibrium(c: f64, ux: f64, uy: f64) -> [f64; 9] {
         let mut geq = [0.0f64; 9];
-        for q in 0..9 {
-            let cx = C[q].0 as f64;
-            let cy = C[q].1 as f64;
+        for (geq_q, (&c_vel, &w)) in geq.iter_mut().zip(C.iter().zip(W.iter())) {
+            let cx = c_vel.0 as f64;
+            let cy = c_vel.1 as f64;
             let eu = cx * ux + cy * uy;
-            geq[q] = W[q] * c * (1.0 + eu / CS2);
+            *geq_q = w * c * (1.0 + eu / CS2);
         }
         geq
     }
 
     /// Compute local concentration from distributions.
-    #[allow(dead_code)]
     pub fn concentration_at(&self, i: usize, j: usize) -> f64 {
         self.g[self.idx(i, j)].iter().sum()
     }
 
     /// Total concentration across all cells.
-    #[allow(dead_code)]
     pub fn total_concentration(&self) -> f64 {
         self.g.iter().flat_map(|n| n.iter()).sum()
     }
 
     /// Initialize uniform concentration.
-    #[allow(dead_code)]
     pub fn initialize_uniform(&mut self, c: f64, ux: f64, uy: f64) {
         let geq = Self::equilibrium(c, ux, uy);
         for node in self.g.iter_mut() {
@@ -352,20 +326,17 @@ impl SpeciesLbm2D {
     }
 
     /// BGK collision step.
-    #[allow(dead_code)]
     pub fn collide(&mut self, ux: &[f64], uy: &[f64]) {
-        let n = self.nx * self.ny;
-        for idx in 0..n {
-            let c: f64 = self.g[idx].iter().sum();
-            let geq = Self::equilibrium(c, ux[idx], uy[idx]);
-            for q in 0..9 {
-                self.g[idx][q] += self.omega_d * (geq[q] - self.g[idx][q]);
+        for (g_idx, (&ux_idx, &uy_idx)) in self.g.iter_mut().zip(ux.iter().zip(uy.iter())) {
+            let c: f64 = g_idx.iter().sum();
+            let geq = Self::equilibrium(c, ux_idx, uy_idx);
+            for (g_q, &geq_q) in g_idx.iter_mut().zip(geq.iter()) {
+                *g_q += self.omega_d * (geq_q - *g_q);
             }
         }
     }
 
     /// Periodic streaming step.
-    #[allow(dead_code)]
     pub fn stream(&mut self) {
         let nx = self.nx;
         let ny = self.ny;
@@ -384,17 +355,15 @@ impl SpeciesLbm2D {
     /// Add a source term (e.g., reaction source) S(x,y) to distributions.
     ///
     /// Distributes equally: g_i += w_i * S * dt.
-    #[allow(dead_code)]
     pub fn add_source(&mut self, source: &[f64], dt: f64) {
         for (idx, &s) in source.iter().enumerate() {
-            for q in 0..9 {
-                self.g[idx][q] += W[q] * s * dt;
+            for (q, g_idxq) in self.g[idx].iter_mut().enumerate() {
+                *g_idxq += W[q] * s * dt;
             }
         }
     }
 
     /// Execute one advection-diffusion step.
-    #[allow(dead_code)]
     pub fn step(&mut self, ux: &[f64], uy: &[f64]) {
         self.collide(ux, uy);
         self.stream();
@@ -409,7 +378,6 @@ impl SpeciesLbm2D {
 ///
 /// Uses separate `SpeciesLbm2D` instances for A and B, plus explicit
 /// Arrhenius reaction sourcing.
-#[allow(dead_code)]
 pub struct TwoSpeciesReaction {
     /// Domain width.
     pub nx: usize,
@@ -427,7 +395,6 @@ pub struct TwoSpeciesReaction {
 
 impl TwoSpeciesReaction {
     /// Create a two-species reactive solver.
-    #[allow(dead_code)]
     pub fn new(
         nx: usize,
         ny: usize,
@@ -448,7 +415,6 @@ impl TwoSpeciesReaction {
     /// Apply reaction A + B → P for one time step.
     ///
     /// Returns the total reaction source (integrated rate).
-    #[allow(dead_code)]
     pub fn react(&mut self, dt: f64) -> f64 {
         let mut total_rate = 0.0f64;
         let n = self.nx * self.ny;
@@ -470,7 +436,6 @@ impl TwoSpeciesReaction {
     }
 
     /// Execute one full step: react then advect-diffuse.
-    #[allow(dead_code)]
     pub fn step(&mut self, ux: &[f64], uy: &[f64], dt: f64) -> f64 {
         let consumed = self.react(dt);
         self.species_a.step(ux, uy);
@@ -479,13 +444,11 @@ impl TwoSpeciesReaction {
     }
 
     /// Total concentration of species A.
-    #[allow(dead_code)]
     pub fn total_a(&self) -> f64 {
         self.species_a.total_concentration()
     }
 
     /// Total concentration of species B.
-    #[allow(dead_code)]
     pub fn total_b(&self) -> f64 {
         self.species_b.total_concentration()
     }
@@ -501,7 +464,6 @@ impl TwoSpeciesReaction {
 /// dv/dt = Dv * ∇²v + u*v² − (f+k)*v
 ///
 /// Generates Turing-pattern-like structures.
-#[allow(dead_code)]
 pub struct GrayScott {
     /// Domain width.
     pub nx: usize,
@@ -523,7 +485,6 @@ pub struct GrayScott {
 
 impl GrayScott {
     /// Create a new Gray-Scott system (U=1, V=0 everywhere).
-    #[allow(dead_code)]
     pub fn new(nx: usize, ny: usize, du: f64, dv: f64, feed: f64, kill: f64) -> Self {
         Self {
             nx,
@@ -538,7 +499,6 @@ impl GrayScott {
     }
 
     /// Seed a square patch of V at the centre.
-    #[allow(dead_code)]
     pub fn seed_centre(&mut self, half_size: usize, v_init: f64) {
         let cx = self.nx / 2;
         let cy = self.ny / 2;
@@ -569,7 +529,6 @@ impl GrayScott {
     }
 
     /// Advance by one explicit Euler step with `dt` (assumes `dx = 1`).
-    #[allow(dead_code)]
     pub fn step(&mut self, dt: f64) {
         let nx = self.nx;
         let ny = self.ny;
@@ -588,19 +547,16 @@ impl GrayScott {
     }
 
     /// Total U concentration.
-    #[allow(dead_code)]
     pub fn total_u(&self) -> f64 {
         self.u.iter().sum()
     }
 
     /// Total V concentration.
-    #[allow(dead_code)]
     pub fn total_v(&self) -> f64 {
         self.v.iter().sum()
     }
 
     /// Mean U.
-    #[allow(dead_code)]
     pub fn mean_u(&self) -> f64 {
         self.total_u() / (self.nx * self.ny) as f64
     }
@@ -613,7 +569,6 @@ impl GrayScott {
 /// A simplified coupled solver: LBM flow (BGK D2Q9) + passive scalar species transport.
 ///
 /// Species are advected by the flow and react according to a first-order rate.
-#[allow(dead_code)]
 pub struct ReactiveFlowSolver {
     /// Domain width.
     pub nx: usize,
@@ -631,7 +586,6 @@ pub struct ReactiveFlowSolver {
 
 impl ReactiveFlowSolver {
     /// Create a new reactive flow solver.
-    #[allow(dead_code)]
     pub fn new(
         nx: usize,
         ny: usize,
@@ -654,7 +608,6 @@ impl ReactiveFlowSolver {
     }
 
     /// Perform one coupled step: flow collide → stream → species step with reactions.
-    #[allow(dead_code)]
     pub fn step(&mut self, dt: f64) {
         use crate::lattice::{bgk_d2q9, macros_from_d2q9, stream_d2q9_periodic};
         let n = self.nx * self.ny;
@@ -687,7 +640,6 @@ impl ReactiveFlowSolver {
     }
 
     /// Total concentration of species `s`.
-    #[allow(dead_code)]
     pub fn total_species(&self, s: usize) -> f64 {
         self.species[s].total_concentration()
     }
@@ -698,13 +650,11 @@ impl ReactiveFlowSolver {
 // ---------------------------------------------------------------------------
 
 /// Compute the Zeldovich number: Ze = Ea * (T_ad - T_0) / (R * T_ad²).
-#[allow(dead_code)]
 pub fn zeldovich_number(ea: f64, t_ad: f64, t_0: f64, r_gas: f64) -> f64 {
     ea * (t_ad - t_0) / (r_gas * t_ad * t_ad)
 }
 
 /// Compute the Lewis number: Le = α / D.
-#[allow(dead_code)]
 pub fn lewis_number(alpha_thermal: f64, diffusivity: f64) -> f64 {
     if diffusivity < 1e-30 {
         f64::INFINITY
@@ -714,7 +664,6 @@ pub fn lewis_number(alpha_thermal: f64, diffusivity: f64) -> f64 {
 }
 
 /// Compute the Schmidt number: Sc = ν / D.
-#[allow(dead_code)]
 pub fn schmidt_number(nu: f64, diffusivity: f64) -> f64 {
     if diffusivity < 1e-30 {
         f64::INFINITY
@@ -724,7 +673,6 @@ pub fn schmidt_number(nu: f64, diffusivity: f64) -> f64 {
 }
 
 /// Compute the reaction progress variable χ = (Y - Y_0) / (Y_eq - Y_0).
-#[allow(dead_code)]
 pub fn progress_variable(y: f64, y_0: f64, y_eq: f64) -> f64 {
     let denom = y_eq - y_0;
     if denom.abs() < 1e-30 {
@@ -735,13 +683,11 @@ pub fn progress_variable(y: f64, y_0: f64, y_eq: f64) -> f64 {
 }
 
 /// Compute mixture fraction Z from fuel and oxidiser mass fractions.
-#[allow(dead_code)]
 pub fn mixture_fraction(y_f: f64, y_ox: f64, nu_ox: f64, y_f0: f64, y_ox0: f64) -> f64 {
     (y_f / y_f0 - y_ox / (nu_ox * y_ox0) + 1.0) / (1.0 + 1.0)
 }
 
 /// Equivalence ratio Φ = (F/O)_actual / (F/O)_stoichiometric.
-#[allow(dead_code)]
 pub fn equivalence_ratio(y_f: f64, y_ox: f64, stoich_ratio: f64) -> f64 {
     if y_ox < 1e-30 {
         return f64::INFINITY;

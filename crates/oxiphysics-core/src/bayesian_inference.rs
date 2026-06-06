@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //!
 //! All distributions work with real-valued parameters; conjugate update
 //! formulas are provided where analytic posteriors exist.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -526,7 +523,6 @@ impl MarkovChainMonteCarlo {
     /// Gibbs sampler for a bivariate Gaussian with known full conditionals.
     ///
     /// Samples from N(\[μ1, μ2\], \[\[σ1², ρσ1σ2\],\[ρσ1σ2, σ2²\]\]).
-    #[allow(clippy::too_many_arguments)]
     pub fn gibbs_bivariate_gaussian(
         mu1: f64,
         mu2: f64,
@@ -537,8 +533,7 @@ impl MarkovChainMonteCarlo {
         seed: u64,
     ) -> Vec<[f64; 2]> {
         let mut rng = BiRng::new(seed);
-        #[allow(unused_assignments)]
-        let mut x1 = mu1;
+        let mut x1;
         let mut x2 = mu2;
         let mut samples = Vec::with_capacity(n_samples);
         for _ in 0..n_samples {
@@ -717,9 +712,9 @@ impl BayesianLinearRegression {
         }
         let d = x_new.len();
         let mut s_x = vec![0.0_f64; d];
-        for i in 0..d {
-            for j in 0..d {
-                s_x[i] += self.posterior_cov[i][j] * x_new[j];
+        for (i, s) in s_x.iter_mut().enumerate() {
+            for (j, &xj) in x_new.iter().enumerate() {
+                *s += self.posterior_cov[i][j] * xj;
             }
         }
         let xtsx: f64 = x_new.iter().zip(s_x.iter()).map(|(&x, &sx)| x * sx).sum();
@@ -870,11 +865,13 @@ impl GaussianProcess {
         self.y_train = y_train.clone();
         // Build kernel matrix K + σ_n² I
         let mut k = vec![vec![0.0_f64; n]; n];
-        for i in 0..n {
-            for j in 0..n {
-                k[i][j] = self.kernel.eval(self.x_train[i], self.x_train[j]);
+        for (i, row) in k.iter_mut().enumerate() {
+            for (j, cell) in row.iter_mut().enumerate() {
+                *cell = self.kernel.eval(self.x_train[i], self.x_train[j]);
             }
-            k[i][i] += self.noise_variance;
+        }
+        for (i, row) in k.iter_mut().enumerate() {
+            row[i] += self.noise_variance;
         }
         // Cholesky decomposition
         self.chol = cholesky(&k);
@@ -1227,15 +1224,15 @@ fn mat_inverse(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
         if pivot.abs() < 1e-30 {
             continue;
         }
-        for j in 0..2 * n {
-            aug[col][j] /= pivot;
+        for cell in &mut aug[col] {
+            *cell /= pivot;
         }
         for row in 0..n {
             if row != col {
                 let factor = aug[row][col];
-                for j in 0..2 * n {
-                    let v = factor * aug[col][j];
-                    aug[row][j] -= v;
+                let col_row: Vec<f64> = aug[col].clone();
+                for (cell, &cv) in aug[row].iter_mut().zip(col_row.iter()) {
+                    *cell -= factor * cv;
                 }
             }
         }

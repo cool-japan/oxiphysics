@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use std::f64::consts::PI;
 
 use super::types::{IbMarker, IbMarker3D};
@@ -208,7 +207,7 @@ pub fn spread_force_peskin(markers: &[IbMarker], nx: usize, ny: usize, dx: f64) 
     grid_force
 }
 /// Move markers by their current velocity over time step `dt`.
-pub fn update_marker_positions(markers: &mut Vec<IbMarker>, dt: f64) {
+pub fn update_marker_positions(markers: &mut [IbMarker], dt: f64) {
     for marker in markers.iter_mut() {
         marker.position[0] += marker.velocity[0] * dt;
         marker.position[1] += marker.velocity[1] * dt;
@@ -218,7 +217,7 @@ pub fn update_marker_positions(markers: &mut Vec<IbMarker>, dt: f64) {
 ///
 /// `F = -stiffness * (x - x_rest)` for each component.
 pub fn compute_elastic_forces(
-    markers: &mut Vec<IbMarker>,
+    markers: &mut [IbMarker],
     rest_positions: &[[f64; 2]],
     stiffness: f64,
 ) {
@@ -240,7 +239,7 @@ pub fn compute_elastic_forces(
 /// * `tension_stiffness` – spring constant for tension
 /// * `bending_stiffness` – spring constant for bending resistance
 pub fn compute_membrane_forces(
-    markers: &mut Vec<IbMarker>,
+    markers: &mut [IbMarker],
     rest_lengths: &[f64],
     tension_stiffness: f64,
     bending_stiffness: f64,
@@ -291,7 +290,7 @@ pub fn compute_membrane_forces(
 ///
 /// This is used for rigid-body IB where the boundary velocity is known.
 pub fn compute_penalty_forces(
-    markers: &mut Vec<IbMarker>,
+    markers: &mut [IbMarker],
     desired_velocity: &[[f64; 2]],
     interpolated_velocity: &[[f64; 2]],
     rho: f64,
@@ -319,7 +318,6 @@ pub fn ib_forcing_term(_grid_force: &[[f64; 2]], f_eq: f64, dt: f64) -> f64 {
 /// 3D delta function (tensor product of 1D functions).
 ///
 /// δ³(r) = δ(rx) * δ(ry) * δ(rz) where δ is the 1D Roma kernel.
-#[allow(dead_code)]
 pub fn delta_function_3d(r: [f64; 3]) -> f64 {
     delta_function(r[0]) * delta_function(r[1]) * delta_function(r[2])
 }
@@ -327,8 +325,6 @@ pub fn delta_function_3d(r: [f64; 3]) -> f64 {
 ///
 /// Returns a flat `Vec<[f64; 3]>` of length `nx * ny * nz`, indexed as
 /// `k = z * ny * nx + y * nx + x`.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn spread_force_3d(
     markers: &[IbMarker3D],
     nx: usize,
@@ -358,8 +354,8 @@ pub fn spread_force_3d(
                     let rz = (m.position[2] - iz as f64 * dx) / dx;
                     let d = delta_function_3d([rx, ry, rz]);
                     let idx = iz as usize * ny * nx + iy as usize * nx + ix as usize;
-                    for dim in 0..3 {
-                        grid_force[idx][dim] += m.force[dim] * d / (dx * dx * dx);
+                    for (gf, mf) in grid_force[idx].iter_mut().zip(m.force.iter()) {
+                        *gf += mf * d / (dx * dx * dx);
                     }
                 }
             }
@@ -368,7 +364,6 @@ pub fn spread_force_3d(
     grid_force
 }
 /// Interpolate 3D fluid velocity to marker positions.
-#[allow(dead_code)]
 pub fn interpolate_fluid_velocity_3d(
     markers: &[IbMarker3D],
     fluid_u: &[[f64; 3]],
@@ -412,7 +407,6 @@ pub fn interpolate_fluid_velocity_3d(
 ///
 /// Uses a Fibonacci lattice for approximately uniform coverage.
 /// Returns `n` markers on a sphere of radius `r` centred at `(cx, cy, cz)`.
-#[allow(dead_code)]
 pub fn sphere_markers_3d(cx: f64, cy: f64, cz: f64, r: f64, n: usize) -> Vec<IbMarker3D> {
     let golden_ratio = (1.0 + 5.0_f64.sqrt()) / 2.0;
     (0..n)
@@ -429,7 +423,6 @@ pub fn sphere_markers_3d(cx: f64, cy: f64, cz: f64, r: f64, n: usize) -> Vec<IbM
 /// Compute the area element ds for a set of markers on a sphere of radius r.
 ///
 /// ds = 4π r² / n (uniform approximation).
-#[allow(dead_code)]
 pub fn sphere_marker_area(r: f64, n: usize) -> f64 {
     if n == 0 {
         return 0.0;
@@ -440,7 +433,6 @@ pub fn sphere_marker_area(r: f64, n: usize) -> f64 {
 ///
 /// Returns `n_theta * n_z` markers uniformly distributed on the cylinder
 /// surface from z=z0 to z=z1, radius r, centred at (cx, cy).
-#[allow(dead_code)]
 pub fn cylinder_markers_3d(
     cx: f64,
     cy: f64,
@@ -469,7 +461,6 @@ pub fn cylinder_markers_3d(
 /// Given the Eulerian body force field `f_grid` (length nx*ny, units force/volume)
 /// and a reference velocity direction `(cos_alpha, sin_alpha)`, returns
 /// `(drag, lift)` in physical units (force density summed over all cells * dx²).
-#[allow(dead_code)]
 pub fn compute_lift_drag(
     f_grid: &[[f64; 2]],
     cos_alpha: f64,
@@ -486,7 +477,6 @@ pub fn compute_lift_drag(
     (drag, lift)
 }
 /// Compute lift coefficient: CL = 2 * L / (ρ * U² * A).
-#[allow(dead_code)]
 pub fn lift_coefficient(lift: f64, rho: f64, u_inf: f64, area: f64) -> f64 {
     if rho.abs() < 1e-30 || u_inf.abs() < 1e-30 || area.abs() < 1e-30 {
         return 0.0;
@@ -494,7 +484,6 @@ pub fn lift_coefficient(lift: f64, rho: f64, u_inf: f64, area: f64) -> f64 {
     2.0 * lift / (rho * u_inf * u_inf * area)
 }
 /// Compute drag coefficient: CD = 2 * D / (ρ * U² * A).
-#[allow(dead_code)]
 pub fn drag_coefficient(drag: f64, rho: f64, u_inf: f64, area: f64) -> f64 {
     if rho.abs() < 1e-30 || u_inf.abs() < 1e-30 || area.abs() < 1e-30 {
         return 0.0;
@@ -1018,12 +1007,10 @@ mod tests_extended_ibm {
 /// 2D Peskin regularized delta function (product of 1D Peskin kernels).
 ///
 /// δ₂(r) = δ_1D(rx) * δ_1D(ry) using the 4-point Roma kernel.
-#[allow(dead_code)]
 pub fn peskin_delta_2d(rx: f64, ry: f64) -> f64 {
     peskin_delta_4pt(rx) * peskin_delta_4pt(ry)
 }
 /// 3D Peskin regularized delta function (product of 1D Peskin kernels).
-#[allow(dead_code)]
 pub fn peskin_delta_3d(rx: f64, ry: f64, rz: f64) -> f64 {
     peskin_delta_4pt(rx) * peskin_delta_4pt(ry) * peskin_delta_4pt(rz)
 }
@@ -1031,7 +1018,6 @@ pub fn peskin_delta_3d(rx: f64, ry: f64, rz: f64) -> f64 {
 ///
 /// Slightly different from delta_3pt; uses a cos-based kernel:
 /// φ(r) = (1 + cos(π|r|/1.5)) / 3  for |r| ≤ 1.5, else 0.
-#[allow(dead_code)]
 pub fn yang_delta_1d(r: f64) -> f64 {
     let abs_r = r.abs();
     if abs_r >= 1.5 {

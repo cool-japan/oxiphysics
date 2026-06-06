@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
-#![allow(clippy::items_after_test_module)]
-#![allow(clippy::manual_range_contains)]
 use super::types::{CrankNicolsonResult, ThermalMesh1D};
 
 /// Solve a tridiagonal system using the Thomas algorithm.
@@ -62,10 +59,11 @@ pub fn transient_theta_method(
             if i < n - 1 {
                 cv[i] = theta * k[i][i + 1];
             }
-            let mut kt_i = 0.0;
-            for j in 0..n {
-                kt_i += k[i][j] * mesh.temperatures[j];
-            }
+            let kt_i: f64 = k[i]
+                .iter()
+                .zip(mesh.temperatures.iter())
+                .map(|(&kij, &tj)| kij * tj)
+                .sum();
             rhs[i] = c[i] / dt * mesh.temperatures[i] - (1.0 - theta) * kt_i + heat_sources[i];
         }
         for &(node, temp) in &mesh.bc {
@@ -165,7 +163,7 @@ pub fn effective_specific_heat_melting(
 ) -> f64 {
     let t_solidus = t_melt - width;
     let t_liquidus = t_melt + width;
-    if temperature >= t_solidus && temperature <= t_liquidus {
+    if (t_solidus..=t_liquidus).contains(&temperature) {
         cp + latent_heat / (2.0 * width)
     } else {
         cp
@@ -343,6 +341,204 @@ pub fn log_mean_temperature_difference(
         return (dt1.abs() + dt2.abs()) / 2.0;
     }
     (dt1 - dt2) / (dt1 / dt2).ln()
+}
+/// Compute the Biot number for a body with convection.
+///
+/// Bi = h * L_c / k
+///
+/// If Bi << 0.1, the lumped capacitance method is valid.
+///
+/// # Arguments
+/// * `h`        - convection coefficient (W/(m^2 K))
+/// * `l_c`      - characteristic length = V / A_s (m)
+/// * `k`        - thermal conductivity (W/(m K))
+pub fn biot_number(h: f64, l_c: f64, k: f64) -> f64 {
+    if k.abs() < 1e-30 {
+        return f64::INFINITY;
+    }
+    h * l_c / k
+}
+/// Check whether the lumped capacitance assumption is valid.
+///
+/// Returns `true` if Bi < 0.1 (standard criterion).
+pub fn lumped_capacitance_valid(h: f64, l_c: f64, k: f64) -> bool {
+    biot_number(h, l_c, k) < 0.1
+}
+/// Lumped capacitance transient solution: T(t) = T_inf + (T_0 - T_inf) * exp(-t / tau)
+///
+/// where tau = rho * c_p * V / (h * A_s) = m * c_p / (h * A_s)
+///
+/// # Arguments
+/// * `t`        - time (s)
+/// * `t_0`      - initial temperature (K)
+/// * `t_inf`    - ambient temperature (K)
+/// * `tau`      - thermal time constant (s)
+pub fn lumped_capacitance_temperature(t: f64, t_0: f64, t_inf: f64, tau: f64) -> f64 {
+    if tau.abs() < 1e-30 {
+        return t_inf;
+    }
+    t_inf + (t_0 - t_inf) * (-t / tau).exp()
+}
+/// Thermal time constant for lumped capacitance: tau = rho * cp * V / (h * As).
+pub fn thermal_time_constant(rho: f64, cp: f64, volume: f64, h: f64, area_surface: f64) -> f64 {
+    let denom = h * area_surface;
+    if denom.abs() < 1e-30 {
+        return f64::INFINITY;
+    }
+    rho * cp * volume / denom
+}
+/// Thermal strain vector (Voigt notation) for isotropic material.
+///
+/// epsilon_th = alpha * (T - T_ref) * \[1, 1, 1, 0, 0, 0\]^T
+///
+/// # Arguments
+/// * `alpha`  - coefficient of thermal expansion (1/K)
+/// * `t`      - current temperature (K)
+/// * `t_ref`  - reference (stress-free) temperature (K)
+pub fn thermal_strain_isotropic(alpha: f64, t: f64, t_ref: f64) -> [f64; 6] {
+    let eps_th = alpha * (t - t_ref);
+    [eps_th, eps_th, eps_th, 0.0, 0.0, 0.0]
+}
+/// Thermal stress for isotropic material: sigma_th = -C * epsilon_th.
+///
+/// For isotropic material (plane-stress simplification for diagonal terms):
+/// sigma_th = -E * alpha * (T - T_ref) / (1 - 2*nu)  (hydrostatic)
+///
+/// Returns the equivalent thermal pressure (negative = compressive under heating).
+pub fn thermal_stress_isotropic(e_modulus: f64, nu: f64, alpha: f64, t: f64, t_ref: f64) -> f64 {
+    let factor = e_modulus * alpha * (t - t_ref) / (1.0 - 2.0 * nu);
+    -factor
+}
+/// Thermal load vector for a 1-D rod element due to temperature change.
+///
+/// f_th = E * A * alpha * delta_T * \[-1, 1\]
+///
+/// # Arguments
+/// * `e_modulus` - Young's modulus (Pa)
+/// * `area`      - cross-section area (m^2)
+/// * `alpha`     - CTE (1/K)
+/// * `delta_t`   - temperature change (K)
+pub fn thermal_load_vector_1d(e_modulus: f64, area: f64, alpha: f64, delta_t: f64) -> [f64; 2] {
+    let f = e_modulus * area * alpha * delta_t;
+    [-f, f]
+}
+/// Solve the transient heat equation C*dT/dt + K*T = f using Crank-Nicolson (theta=0.5).
+///
+/// System:
+/// (C/dt + 0.5*K) T_{n+1} = (C/dt - 0.5*K) T_n + f
+///
+/// # Arguments
+/// * `k_global`     - global conductance matrix n×n (dense)
+/// * `c_lumped`     - lumped capacitance vector of length n
+/// * `t_init`       - initial temperature vector
+/// * `heat_sources` - constant heat source vector
+/// * `dirichlet`    - Dirichlet BCs: (node, temperature)
+/// * `dt`           - time step (s)
+/// * `n_steps`      - number of time steps
+pub fn crank_nicolson_transient(
+    k_global: &[Vec<f64>],
+    c_lumped: &[f64],
+    t_init: &[f64],
+    heat_sources: &[f64],
+    dirichlet: &[(usize, f64)],
+    dt: f64,
+    n_steps: usize,
+) -> CrankNicolsonResult {
+    let n = t_init.len();
+    assert_eq!(k_global.len(), n);
+    assert_eq!(c_lumped.len(), n);
+    assert_eq!(heat_sources.len(), n);
+    let mut temperatures = t_init.to_vec();
+    let mut history = Vec::with_capacity(n_steps + 1);
+    history.push(temperatures.clone());
+    for _step in 0..n_steps {
+        let mut a_vec = vec![0.0_f64; n];
+        let mut b_vec = vec![0.0_f64; n];
+        let mut c_vec = vec![0.0_f64; n];
+        let mut rhs = vec![0.0_f64; n];
+        for i in 0..n {
+            b_vec[i] = c_lumped[i] / dt + 0.5 * k_global[i][i];
+            if i > 0 {
+                a_vec[i] = 0.5 * k_global[i][i - 1];
+            }
+            if i < n - 1 {
+                c_vec[i] = 0.5 * k_global[i][i + 1];
+            }
+            let mut kt_i = 0.0;
+            for j in 0..n {
+                kt_i += k_global[i][j] * temperatures[j];
+            }
+            rhs[i] = c_lumped[i] / dt * temperatures[i] - 0.5 * kt_i + heat_sources[i];
+        }
+        for &(node, temp) in dirichlet {
+            a_vec[node] = 0.0;
+            b_vec[node] = 1.0;
+            c_vec[node] = 0.0;
+            rhs[node] = temp;
+        }
+        temperatures = thomas_algorithm(&a_vec, &b_vec, &c_vec, &rhs);
+        history.push(temperatures.clone());
+    }
+    CrankNicolsonResult {
+        final_temperatures: temperatures,
+        history,
+    }
+}
+/// Enthalpy-method update for phase change in a single node.
+///
+/// Converts temperature to enthalpy, advances by one explicit step, converts back.
+///
+/// H(T) = rho * (cp * T + L * f_l(T))
+///
+/// # Arguments
+/// * `temperature`  - current nodal temperature (K)
+/// * `q_net`        - net heat supply rate (W)
+/// * `rho`          - density (kg/m^3)
+/// * `cp`           - specific heat (J/(kg K))
+/// * `latent_heat`  - latent heat L (J/kg)
+/// * `t_melt`       - melting temperature (K)
+/// * `mush_width`   - mushy zone half-width (K)
+/// * `dt`           - time step (s)
+/// * `volume`       - node volume (m^3)
+pub fn enthalpy_update(
+    temperature: f64,
+    q_net: f64,
+    rho: f64,
+    cp: f64,
+    latent_heat: f64,
+    t_melt: f64,
+    mush_width: f64,
+    dt: f64,
+    volume: f64,
+) -> f64 {
+    let f_l = |t: f64| -> f64 {
+        let t_sol = t_melt - mush_width;
+        let t_liq = t_melt + mush_width;
+        ((t - t_sol) / (t_liq - t_sol)).clamp(0.0, 1.0)
+    };
+    let h = rho * (cp * temperature + latent_heat * f_l(temperature));
+    let mass = rho * volume;
+    let h_new = h + q_net * dt / (mass.max(1e-30));
+    let h_new_per_rho = h_new / rho;
+    let mut t_new = h_new_per_rho / (cp.max(1e-30));
+    for _ in 0..30 {
+        let fl = f_l(t_new);
+        let h_guess = cp * t_new + latent_heat * fl;
+        let residual = h_guess - h_new_per_rho;
+        let t_sol = t_melt - mush_width;
+        let t_liq = t_melt + mush_width;
+        let dfl_dt = if (t_sol..=t_liq).contains(&t_new) {
+            1.0 / (t_liq - t_sol)
+        } else {
+            0.0
+        };
+        let deriv = cp + latent_heat * dfl_dt;
+        if deriv.abs() < 1e-30 {
+            break;
+        }
+        t_new -= residual / deriv;
+    }
+    t_new
 }
 #[cfg(test)]
 mod tests {
@@ -649,7 +845,10 @@ mod tests {
     #[test]
     fn test_solidification_fraction_range() {
         let fl = solidification_fraction(280.0, 273.15, 3.0);
-        assert!(fl >= 0.0 && fl <= 1.0, "Fraction should be in [0,1]: {fl}");
+        assert!(
+            (0.0..=1.0).contains(&fl),
+            "Fraction should be in [0,1]: {fl}"
+        );
     }
     #[test]
     fn test_solidification_fraction_below_solidus() {
@@ -744,202 +943,4 @@ mod tests {
             "Equal ΔT LMTD = {lmtd}, expected 50"
         );
     }
-}
-/// Compute the Biot number for a body with convection.
-///
-/// Bi = h * L_c / k
-///
-/// If Bi << 0.1, the lumped capacitance method is valid.
-///
-/// # Arguments
-/// * `h`        - convection coefficient (W/(m^2 K))
-/// * `l_c`      - characteristic length = V / A_s (m)
-/// * `k`        - thermal conductivity (W/(m K))
-pub fn biot_number(h: f64, l_c: f64, k: f64) -> f64 {
-    if k.abs() < 1e-30 {
-        return f64::INFINITY;
-    }
-    h * l_c / k
-}
-/// Check whether the lumped capacitance assumption is valid.
-///
-/// Returns `true` if Bi < 0.1 (standard criterion).
-pub fn lumped_capacitance_valid(h: f64, l_c: f64, k: f64) -> bool {
-    biot_number(h, l_c, k) < 0.1
-}
-/// Lumped capacitance transient solution: T(t) = T_inf + (T_0 - T_inf) * exp(-t / tau)
-///
-/// where tau = rho * c_p * V / (h * A_s) = m * c_p / (h * A_s)
-///
-/// # Arguments
-/// * `t`        - time (s)
-/// * `t_0`      - initial temperature (K)
-/// * `t_inf`    - ambient temperature (K)
-/// * `tau`      - thermal time constant (s)
-pub fn lumped_capacitance_temperature(t: f64, t_0: f64, t_inf: f64, tau: f64) -> f64 {
-    if tau.abs() < 1e-30 {
-        return t_inf;
-    }
-    t_inf + (t_0 - t_inf) * (-t / tau).exp()
-}
-/// Thermal time constant for lumped capacitance: tau = rho * cp * V / (h * As).
-pub fn thermal_time_constant(rho: f64, cp: f64, volume: f64, h: f64, area_surface: f64) -> f64 {
-    let denom = h * area_surface;
-    if denom.abs() < 1e-30 {
-        return f64::INFINITY;
-    }
-    rho * cp * volume / denom
-}
-/// Thermal strain vector (Voigt notation) for isotropic material.
-///
-/// epsilon_th = alpha * (T - T_ref) * \[1, 1, 1, 0, 0, 0\]^T
-///
-/// # Arguments
-/// * `alpha`  - coefficient of thermal expansion (1/K)
-/// * `t`      - current temperature (K)
-/// * `t_ref`  - reference (stress-free) temperature (K)
-pub fn thermal_strain_isotropic(alpha: f64, t: f64, t_ref: f64) -> [f64; 6] {
-    let eps_th = alpha * (t - t_ref);
-    [eps_th, eps_th, eps_th, 0.0, 0.0, 0.0]
-}
-/// Thermal stress for isotropic material: sigma_th = -C * epsilon_th.
-///
-/// For isotropic material (plane-stress simplification for diagonal terms):
-/// sigma_th = -E * alpha * (T - T_ref) / (1 - 2*nu)  (hydrostatic)
-///
-/// Returns the equivalent thermal pressure (negative = compressive under heating).
-pub fn thermal_stress_isotropic(e_modulus: f64, nu: f64, alpha: f64, t: f64, t_ref: f64) -> f64 {
-    let factor = e_modulus * alpha * (t - t_ref) / (1.0 - 2.0 * nu);
-    -factor
-}
-/// Thermal load vector for a 1-D rod element due to temperature change.
-///
-/// f_th = E * A * alpha * delta_T * \[-1, 1\]
-///
-/// # Arguments
-/// * `e_modulus` - Young's modulus (Pa)
-/// * `area`      - cross-section area (m^2)
-/// * `alpha`     - CTE (1/K)
-/// * `delta_t`   - temperature change (K)
-pub fn thermal_load_vector_1d(e_modulus: f64, area: f64, alpha: f64, delta_t: f64) -> [f64; 2] {
-    let f = e_modulus * area * alpha * delta_t;
-    [-f, f]
-}
-/// Solve the transient heat equation C*dT/dt + K*T = f using Crank-Nicolson (theta=0.5).
-///
-/// System:
-/// (C/dt + 0.5*K) T_{n+1} = (C/dt - 0.5*K) T_n + f
-///
-/// # Arguments
-/// * `k_global`     - global conductance matrix n×n (dense)
-/// * `c_lumped`     - lumped capacitance vector of length n
-/// * `t_init`       - initial temperature vector
-/// * `heat_sources` - constant heat source vector
-/// * `dirichlet`    - Dirichlet BCs: (node, temperature)
-/// * `dt`           - time step (s)
-/// * `n_steps`      - number of time steps
-pub fn crank_nicolson_transient(
-    k_global: &[Vec<f64>],
-    c_lumped: &[f64],
-    t_init: &[f64],
-    heat_sources: &[f64],
-    dirichlet: &[(usize, f64)],
-    dt: f64,
-    n_steps: usize,
-) -> CrankNicolsonResult {
-    let n = t_init.len();
-    assert_eq!(k_global.len(), n);
-    assert_eq!(c_lumped.len(), n);
-    assert_eq!(heat_sources.len(), n);
-    let mut temperatures = t_init.to_vec();
-    let mut history = Vec::with_capacity(n_steps + 1);
-    history.push(temperatures.clone());
-    for _step in 0..n_steps {
-        let mut a_vec = vec![0.0_f64; n];
-        let mut b_vec = vec![0.0_f64; n];
-        let mut c_vec = vec![0.0_f64; n];
-        let mut rhs = vec![0.0_f64; n];
-        for i in 0..n {
-            b_vec[i] = c_lumped[i] / dt + 0.5 * k_global[i][i];
-            if i > 0 {
-                a_vec[i] = 0.5 * k_global[i][i - 1];
-            }
-            if i < n - 1 {
-                c_vec[i] = 0.5 * k_global[i][i + 1];
-            }
-            let mut kt_i = 0.0;
-            for j in 0..n {
-                kt_i += k_global[i][j] * temperatures[j];
-            }
-            rhs[i] = c_lumped[i] / dt * temperatures[i] - 0.5 * kt_i + heat_sources[i];
-        }
-        for &(node, temp) in dirichlet {
-            a_vec[node] = 0.0;
-            b_vec[node] = 1.0;
-            c_vec[node] = 0.0;
-            rhs[node] = temp;
-        }
-        temperatures = thomas_algorithm(&a_vec, &b_vec, &c_vec, &rhs);
-        history.push(temperatures.clone());
-    }
-    CrankNicolsonResult {
-        final_temperatures: temperatures,
-        history,
-    }
-}
-/// Enthalpy-method update for phase change in a single node.
-///
-/// Converts temperature to enthalpy, advances by one explicit step, converts back.
-///
-/// H(T) = rho * (cp * T + L * f_l(T))
-///
-/// # Arguments
-/// * `temperature`  - current nodal temperature (K)
-/// * `q_net`        - net heat supply rate (W)
-/// * `rho`          - density (kg/m^3)
-/// * `cp`           - specific heat (J/(kg K))
-/// * `latent_heat`  - latent heat L (J/kg)
-/// * `t_melt`       - melting temperature (K)
-/// * `mush_width`   - mushy zone half-width (K)
-/// * `dt`           - time step (s)
-/// * `volume`       - node volume (m^3)
-pub fn enthalpy_update(
-    temperature: f64,
-    q_net: f64,
-    rho: f64,
-    cp: f64,
-    latent_heat: f64,
-    t_melt: f64,
-    mush_width: f64,
-    dt: f64,
-    volume: f64,
-) -> f64 {
-    let f_l = |t: f64| -> f64 {
-        let t_sol = t_melt - mush_width;
-        let t_liq = t_melt + mush_width;
-        ((t - t_sol) / (t_liq - t_sol)).clamp(0.0, 1.0)
-    };
-    let h = rho * (cp * temperature + latent_heat * f_l(temperature));
-    let mass = rho * volume;
-    let h_new = h + q_net * dt / (mass.max(1e-30));
-    let h_new_per_rho = h_new / rho;
-    let mut t_new = h_new_per_rho / (cp.max(1e-30));
-    for _ in 0..30 {
-        let fl = f_l(t_new);
-        let h_guess = cp * t_new + latent_heat * fl;
-        let residual = h_guess - h_new_per_rho;
-        let t_sol = t_melt - mush_width;
-        let t_liq = t_melt + mush_width;
-        let dfl_dt = if t_new >= t_sol && t_new <= t_liq {
-            1.0 / (t_liq - t_sol)
-        } else {
-            0.0
-        };
-        let deriv = cp + latent_heat * dfl_dt;
-        if deriv.abs() < 1e-30 {
-            break;
-        }
-        t_new -= residual / deriv;
-    }
-    t_new
 }

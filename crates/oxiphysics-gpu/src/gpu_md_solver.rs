@@ -7,8 +7,6 @@
 //! a CPU fallback. Periodic boundary conditions (minimum image convention)
 //! are applied. The API mirrors a GPU kernel dispatch for easy substitution.
 
-#![allow(dead_code)]
-
 // ── Data structures ──────────────────────────────────────────────────────────
 
 /// A single MD atom stored in the GPU buffer.

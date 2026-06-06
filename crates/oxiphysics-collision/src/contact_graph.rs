@@ -40,7 +40,6 @@ impl ContactKey {
 // ── PersistedContact ─────────────────────────────────────────────────────────
 
 /// A contact that persists across simulation frames for warm-starting.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PersistedContact {
     /// The pair of bodies involved.
@@ -147,7 +146,6 @@ impl ContactGraph {
 // ── SpeculativeContact ────────────────────────────────────────────────────────
 
 /// A predicted contact used for speculative collision response.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SpeculativeContact {
     /// Index of body A.
@@ -166,7 +164,6 @@ pub struct SpeculativeContact {
 ///
 /// Returns `Some` if the bodies will touch or are already penetrating,
 /// or if they are approaching fast enough to close the gap within `dt`.
-#[allow(dead_code)]
 pub fn speculative_contact(
     pos_a: [f64; 3],
     vel_a: [f64; 3],
@@ -217,7 +214,6 @@ pub fn speculative_contact(
 /// Compute the speculative impulse magnitude needed to prevent interpenetration.
 ///
 /// Returns the scalar impulse along the contact normal.
-#[allow(dead_code)]
 pub fn speculative_impulse(
     contact: &SpeculativeContact,
     inv_mass_a: f64,
@@ -239,7 +235,6 @@ pub fn speculative_impulse(
 ///
 /// Stores `(ContactKey, cached_normal_impulse)` pairs in insertion order.
 /// When full, the oldest entry (front) is evicted.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ContactCache {
     entries: Vec<(ContactKey, f64)>,
@@ -603,7 +598,6 @@ mod tests {
 // ── ContactManifold (up to 4 contact points) ─────────────────────────────────
 
 /// A single contact point within a manifold.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ContactPoint {
     /// World-space position of the contact point.
@@ -632,7 +626,6 @@ impl ContactPoint {
 ///
 /// The manifold is associated with a body pair and stores the contact
 /// normal and up to 4 contact points for stable simulation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ContactManifold {
     /// Unique key for the body pair.
@@ -755,13 +748,11 @@ fn triangle_area(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
 // ── ManifoldStore ──────────────────────────────────────────────────────────────
 
 /// Stores all persistent contact manifolds.
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct ManifoldStore {
     manifolds: HashMap<ContactKey, ContactManifold>,
 }
 
-#[allow(dead_code)]
 impl ManifoldStore {
     /// Create an empty store.
     pub fn new() -> Self {
@@ -818,7 +809,6 @@ impl ManifoldStore {
 // ── Contact normal/tangent frame ──────────────────────────────────────────────
 
 /// An orthogonal contact frame: normal + two tangents.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ContactFrame {
     /// Contact normal (from B toward A).
@@ -829,7 +819,6 @@ pub struct ContactFrame {
     pub tangent2: [f64; 3],
 }
 
-#[allow(dead_code)]
 impl ContactFrame {
     /// Build a contact frame from a normal vector.
     ///
@@ -902,7 +891,6 @@ impl ContactFrame {
 ///
 /// When a body moves by more than `threshold * contact_radius`, cached contacts
 /// for that body are invalidated.
-#[allow(dead_code)]
 pub struct ContactCacheInvalidator {
     /// Previous positions of each body.
     pub prev_positions: Vec<[f64; 3]>,
@@ -910,7 +898,6 @@ pub struct ContactCacheInvalidator {
     pub threshold: f64,
 }
 
-#[allow(dead_code)]
 impl ContactCacheInvalidator {
     /// Create a new invalidator.
     pub fn new(n_bodies: usize, threshold: f64) -> Self {
@@ -963,7 +950,6 @@ impl ContactCacheInvalidator {
 ///
 /// Islands are used to split the constraint solver into independent groups,
 /// enabling sleeping and parallel solving.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ContactIsland {
     /// Indices of bodies belonging to this island.
@@ -976,20 +962,17 @@ pub struct ContactIsland {
 
 impl ContactIsland {
     /// Number of bodies in the island.
-    #[allow(dead_code)]
     pub fn body_count(&self) -> usize {
         self.bodies.len()
     }
 
     /// Number of contact edges in the island.
-    #[allow(dead_code)]
     pub fn edge_count(&self) -> usize {
         self.edges.len()
     }
 }
 
 /// Statistics about the current island decomposition.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct IslandStats {
     /// Total number of islands.
@@ -1006,7 +989,6 @@ pub struct IslandStats {
 
 impl IslandStats {
     /// Compute statistics from a slice of islands.
-    #[allow(dead_code)]
     pub fn from_islands(islands: &[ContactIsland]) -> Self {
         if islands.is_empty() {
             return Self::default();
@@ -1031,7 +1013,6 @@ impl IslandStats {
 ///
 /// `n_bodies` is the total number of bodies; body indices must be in
 /// `0..n_bodies`.
-#[allow(dead_code)]
 pub fn detect_islands(graph: &ContactGraph, n_bodies: usize) -> Vec<ContactIsland> {
     // Build adjacency: body → list of (neighbour, key)
     let mut adj: Vec<Vec<(usize, ContactKey)>> = vec![Vec::new(); n_bodies];
@@ -1088,7 +1069,6 @@ pub fn detect_islands(graph: &ContactGraph, n_bodies: usize) -> Vec<ContactIslan
 /// `sleep_counters[i]` tracks how many frames body `i` has been slow.
 ///
 /// Returns a list of body indices that should be put to sleep this frame.
-#[allow(dead_code)]
 pub fn propagate_sleep(
     islands: &mut [ContactIsland],
     velocities_sq: &[f64],
@@ -1137,7 +1117,6 @@ pub fn propagate_sleep(
 // ── Contact frequency tracking ────────────────────────────────────────────────
 
 /// Category of a contact based on how long it has been active.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContactFrequency {
     /// Contact exists for only 1 frame (just started).
@@ -1150,7 +1129,6 @@ pub enum ContactFrequency {
 
 impl ContactFrequency {
     /// Classify a contact by its `age` field.
-    #[allow(dead_code)]
     pub fn classify(age: u32) -> Self {
         match age {
             0..=1 => ContactFrequency::Transient,
@@ -1164,7 +1142,6 @@ impl ContactGraph {
     /// Classify every active contact by frequency and return counts.
     ///
     /// Returns `(transient, short_lived, persistent)`.
-    #[allow(dead_code)]
     pub fn frequency_counts(&self) -> (usize, usize, usize) {
         let mut t = 0usize;
         let mut s = 0usize;
@@ -1180,7 +1157,6 @@ impl ContactGraph {
     }
 
     /// Return all active contacts classified as persistent (age ≥ 5).
-    #[allow(dead_code)]
     pub fn persistent_contacts(&self) -> Vec<&PersistedContact> {
         self.active_contacts()
             .into_iter()
@@ -1199,7 +1175,6 @@ impl ContactGraph {
 /// A quality score for a contact manifold in `[0.0, 1.0]`.
 ///
 /// Higher is better.  The score is based on the depth and age of the contact.
-#[allow(dead_code)]
 pub fn manifold_quality_score(contact: &PersistedContact) -> f64 {
     // Depth contribution: clamp to [0, 1] (deeper = better, up to 0.5 units)
     let depth_score = (contact.depth / 0.5).clamp(0.0, 1.0);
@@ -1225,7 +1200,6 @@ pub fn manifold_quality_score(contact: &PersistedContact) -> f64 {
 /// `is_static[i]` is `true` when body `i` is a static (infinite mass) body.
 ///
 /// Returns `true` if no static–static edge exists.
-#[allow(dead_code)]
 pub fn is_static_dynamic_bipartite(graph: &ContactGraph, is_static: &[bool]) -> bool {
     for c in graph.active_contacts() {
         let a_static = is_static.get(c.key.body_a).copied().unwrap_or(false);

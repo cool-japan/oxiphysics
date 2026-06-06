@@ -6,9 +6,6 @@
 //! Wraps per-step physics statistics and a rolling window session with
 //! a JSON-oriented surface suitable for use across the WASM boundary.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use wasm_bindgen::prelude::*;
@@ -368,35 +365,13 @@ impl WasmTelemetrySession {
         self.push(stats);
     }
 
-    /// Append a stats record built from primitive fields.
+    /// Append a stats record from a `WasmPhysicsStats` object.
     ///
-    /// `step` is `f64` because `u64` is unsupported by wasm-bindgen.
+    /// Aliased as `push_record` on the JS side; prefer constructing a
+    /// `WasmPhysicsStats` directly rather than passing ten scalar arguments.
     #[wasm_bindgen(js_name = "push_record")]
-    pub fn push_record_js(
-        &mut self,
-        step: f64,
-        dt: f64,
-        body_count: u32,
-        sleeping_count: u32,
-        contact_count: u32,
-        island_count: u32,
-        solve_iterations: u32,
-        broad_phase_pairs: u32,
-        kinetic_energy: f64,
-        elapsed_ms: f64,
-    ) {
-        self.push(WasmPhysicsStats {
-            step: step as u64,
-            dt,
-            body_count: body_count as usize,
-            sleeping_count: sleeping_count as usize,
-            contact_count: contact_count as usize,
-            island_count: island_count as usize,
-            solve_iterations: solve_iterations as usize,
-            broad_phase_pairs: broad_phase_pairs as usize,
-            kinetic_energy,
-            elapsed_ms,
-        });
+    pub fn push_record_js(&mut self, stats: WasmPhysicsStats) {
+        self.push(stats);
     }
 
     /// Drop all retained samples.

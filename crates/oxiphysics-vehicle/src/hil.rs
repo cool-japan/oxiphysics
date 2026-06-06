@@ -25,7 +25,7 @@
 //! ## Usage
 //!
 //! ```
-//! use oxiphysics_vehicle::hil::{HilBridge, HilChannel, HilConfig, SimHilBridge};
+//! use oxiphysics_vehicle::hil::{HilChannel, HilConfig, HilInterface, SimHilBridge};
 //!
 //! let cfg = HilConfig::default();
 //! let mut bridge = SimHilBridge::new(cfg);
@@ -38,10 +38,8 @@
 //!
 //! // Read back the wheel speed output
 //! let omega = bridge.get_output(HilChannel::WheelSpeedFl);
-//! assert!(omega >= 0.0);
+//! assert!(omega.unwrap_or(0.0) >= 0.0);
 //! ```
-
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 

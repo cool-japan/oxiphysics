@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,9 +7,6 @@
 //! All structures here simulate GPU buffer management and dispatch via
 //! in-memory `Vec`f64` buffers so that the logic can be unit-tested without
 //! a real GPU device.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ── FluidGpuBuffer ────────────────────────────────────────────────────────────
 
@@ -512,8 +508,7 @@ impl LBMGpuKernels {
                     }
 
                     // BGK relaxation toward equilibrium
-                    for i in 0..q {
-                        let w = D3Q19_WEIGHTS[i];
+                    for (i, &w) in D3Q19_WEIGHTS.iter().enumerate().take(q) {
                         let u_sq = ux * ux + uy * uy + uz * uz;
                         let feq = rho
                             * w
@@ -670,12 +665,12 @@ impl SPHGpuKernels {
         let mass = self.mass;
         let mut new_densities = vec![0.0_f64; n];
 
-        for i in 0..n {
+        for (i, &pos_i) in self.positions.iter().enumerate() {
             let mut rho = 0.0;
-            for j in 0..n {
-                let dx = self.positions[i][0] - self.positions[j][0];
-                let dy = self.positions[i][1] - self.positions[j][1];
-                let dz = self.positions[i][2] - self.positions[j][2];
+            for &pos_j in self.positions.iter() {
+                let dx = pos_i[0] - pos_j[0];
+                let dy = pos_i[1] - pos_j[1];
+                let dz = pos_i[2] - pos_j[2];
                 let r = (dx * dx + dy * dy + dz * dz).sqrt();
                 rho += mass * self.kernel_w(r);
             }
@@ -686,8 +681,8 @@ impl SPHGpuKernels {
 
     /// Pressure kernel: compute per-particle pressure (equation of state).
     pub fn compute_pressure(&mut self) {
-        for i in 0..self.n_particles() {
-            self.pressures[i] = self.stiffness * (self.densities[i] - self.rest_density).max(0.0);
+        for (pr, &rho) in self.pressures.iter_mut().zip(self.densities.iter()) {
+            *pr = self.stiffness * (rho - self.rest_density).max(0.0);
         }
     }
 
@@ -699,7 +694,7 @@ impl SPHGpuKernels {
         let mut forces = vec![[0.0_f64; 3]; n];
         let mass = self.mass;
 
-        for i in 0..n {
+        for (i, &pos_i) in self.positions.iter().enumerate() {
             let mut fx = 0.0;
             let mut fy = 0.0;
             let mut fz = 0.0;
@@ -707,9 +702,9 @@ impl SPHGpuKernels {
                 if i == j {
                     continue;
                 }
-                let dx = self.positions[i][0] - self.positions[j][0];
-                let dy = self.positions[i][1] - self.positions[j][1];
-                let dz = self.positions[i][2] - self.positions[j][2];
+                let dx = pos_i[0] - self.positions[j][0];
+                let dy = pos_i[1] - self.positions[j][1];
+                let dz = pos_i[2] - self.positions[j][2];
                 let r = (dx * dx + dy * dy + dz * dz).sqrt();
                 if r < 1e-12 {
                     continue;
@@ -738,7 +733,7 @@ impl SPHGpuKernels {
         let mass = self.mass;
         let mu = self.viscosity;
 
-        for i in 0..n {
+        for (i, &pos_i) in self.positions.iter().enumerate() {
             let mut fx = 0.0;
             let mut fy = 0.0;
             let mut fz = 0.0;
@@ -746,9 +741,9 @@ impl SPHGpuKernels {
                 if i == j {
                     continue;
                 }
-                let dx = self.positions[i][0] - self.positions[j][0];
-                let dy = self.positions[i][1] - self.positions[j][1];
-                let dz = self.positions[i][2] - self.positions[j][2];
+                let dx = pos_i[0] - self.positions[j][0];
+                let dy = pos_i[1] - self.positions[j][1];
+                let dz = pos_i[2] - self.positions[j][2];
                 let r = (dx * dx + dy * dy + dz * dz).sqrt();
                 if r < 1e-12 {
                     continue;

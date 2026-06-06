@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -10,9 +9,6 @@
 //! contact angle (Young-Laplace), immiscible fluid mixing, phase inversion,
 //! droplet impact, capillary rise, thin film dynamics, bubble dynamics
 //! (Rayleigh-Plesset), and multi-component SPH with diffusion.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -236,7 +232,7 @@ pub fn color_advection_rate(
 /// Compute color function gradients for all particles via SPH interpolation.
 ///
 /// ∇Cᵢ = Σⱼ (mⱼ/ρⱼ) (Cⱼ − Cᵢ) ∇W_ij
-pub fn compute_color_gradients_3d(particles: &mut Vec<ColorParticleExt>, h: f64) {
+pub fn compute_color_gradients_3d(particles: &mut [ColorParticleExt], h: f64) {
     let n = particles.len();
     let pos: Vec<[f64; 3]> = particles.iter().map(|p| p.pos).collect();
     let colors: Vec<f64> = particles.iter().map(|p| p.color).collect();

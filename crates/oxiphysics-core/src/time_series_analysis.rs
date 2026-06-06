@@ -1,11 +1,8 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! Time-series analysis utilities: statistics, filtering, autocorrelation,
 //! trend decomposition, spectral analysis, change-point detection, and AR models.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -137,12 +134,12 @@ pub fn moving_average(data: &[f64], window: usize) -> Vec<f64> {
     }
     let half = window / 2;
     let mut out = vec![0.0_f64; n];
-    for i in 0..n {
+    for (i, o) in out.iter_mut().enumerate() {
         let lo = i.saturating_sub(half);
         let hi = (i + half + 1).min(n);
         let count = hi - lo;
         let sum: f64 = data[lo..hi].iter().copied().sum();
-        out[i] = sum / count as f64;
+        *o = sum / count as f64;
     }
     out
 }
@@ -859,15 +856,15 @@ pub fn interpolate_linear(data: &[f64]) -> Vec<f64> {
                 }
                 (None, Some(q)) => {
                     let fill = out[q];
-                    for j in 0..q {
-                        out[j] = fill;
+                    for o in out.iter_mut().take(q) {
+                        *o = fill;
                     }
                     i = q;
                 }
                 (Some(_p), None) => {
                     let fill = out[_p];
-                    for j in _p + 1..n {
-                        out[j] = fill;
+                    for o in out.iter_mut().skip(_p + 1) {
+                        *o = fill;
                     }
                     break;
                 }
@@ -892,18 +889,17 @@ pub fn interpolate_spline(data: &[f64]) -> Vec<f64> {
     if knots.is_empty() {
         return data.to_vec();
     }
-    let n = data.len();
     let mut out = data.to_vec();
-    for i in 0..n {
-        if !out[i].is_nan() {
+    for (i, o) in out.iter_mut().enumerate() {
+        if !o.is_nan() {
             continue;
         }
         // Find surrounding knots.
         let right = knots.partition_point(|&(ki, _)| ki <= i);
         if right == 0 {
-            out[i] = knots[0].1;
+            *o = knots[0].1;
         } else if right >= knots.len() {
-            out[i] = knots[knots.len() - 1].1;
+            *o = knots[knots.len() - 1].1;
         } else {
             let (x0, y0) = knots[right - 1];
             let (x1, y1) = knots[right];
@@ -927,7 +923,7 @@ pub fn interpolate_spline(data: &[f64]) -> Vec<f64> {
             let h01 = -2.0 * t.powi(3) + 3.0 * t.powi(2);
             let h11 = t.powi(3) - t.powi(2);
             let span = (x1 - x0) as f64;
-            out[i] = h00 * y0 + h10 * span * m0 + h01 * y1 + h11 * span * m1;
+            *o = h00 * y0 + h10 * span * m0 + h01 * y1 + h11 * span * m1;
         }
     }
     out

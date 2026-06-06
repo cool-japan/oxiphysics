@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{HBAR, KB};
 
@@ -71,9 +69,14 @@ impl PimdState {
         let mut virial = 0.0f64;
         for atom in &self.atoms {
             let c = atom.centroid();
-            for i in 0..self.n_beads {
+            for (rep, frc) in atom
+                .replicas
+                .iter()
+                .zip(atom.forces.iter())
+                .take(self.n_beads)
+            {
                 for d in 0..3 {
-                    virial += (atom.replicas[i][d] - c[d]) * atom.forces[i][d];
+                    virial += (rep[d] - c[d]) * frc[d];
                 }
             }
         }
@@ -196,11 +199,11 @@ impl PimdAtom {
         let omega_p = p as f64 * KB * t / HBAR;
         let k = mass * omega_p * omega_p;
         let mut fs = vec![[0.0f64; 3]; p];
-        for i in 0..p {
+        for (i, fs_i) in fs.iter_mut().enumerate() {
             let prev = (i + p - 1) % p;
             let next = (i + 1) % p;
-            for d in 0..3 {
-                fs[i][d] = k
+            for (d, fsd) in fs_i.iter_mut().enumerate() {
+                *fsd = k
                     * (self.replicas[prev][d] + self.replicas[next][d] - 2.0 * self.replicas[i][d]);
             }
         }
@@ -263,10 +266,9 @@ impl PileLThermostat {
     ///
     /// Performs the stochastic velocity update for each mode k.
     pub fn apply(&self, mode_vel: &mut [[f64; 3]], mass: f64, dt: f64) {
-        for k in 0..self.n_beads {
-            for d in 0..3 {
-                mode_vel[k][d] =
-                    Self::ou_step(self.gamma[k], self.temperature, mass, mode_vel[k][d], dt);
+        for (k, mv) in mode_vel.iter_mut().enumerate() {
+            for v in mv.iter_mut() {
+                *v = Self::ou_step(self.gamma[k], self.temperature, mass, *v, dt);
             }
         }
     }
@@ -288,13 +290,13 @@ impl CentroidMD {
     pub fn step(ring: &mut RingPolymer, per_bead_forces: &[[f64; 3]], dt: f64) {
         let p = ring.n_beads as f64;
         let mut f_c = [0.0_f64; 3];
-        for i in 0..ring.n_beads {
+        for pbf in per_bead_forces.iter().take(ring.n_beads) {
             for d in 0..3 {
-                f_c[d] += per_bead_forces[i][d];
+                f_c[d] += pbf[d];
             }
         }
-        for d in 0..3 {
-            f_c[d] /= p;
+        for v in &mut f_c {
+            *v /= p;
         }
         let inv_m = 1.0 / ring.mass;
         let mut cv = ring.centroid_velocity();
@@ -374,22 +376,34 @@ impl PimdStep {
         let n = ring.n_beads;
         let inv_m = 1.0 / ring.bead_mass;
         let f_spring = ring.spring_forces(temperature);
-        for i in 0..n {
+        for (i, (vel, fs)) in ring
+            .velocities
+            .iter_mut()
+            .zip(f_spring.iter())
+            .enumerate()
+            .take(n)
+        {
             for d in 0..3 {
-                let f_total = f_spring[i][d] + external_force[d];
-                ring.velocities[i][d] += f_total * inv_m * 0.5 * dt;
+                let f_total = fs[d] + external_force[d];
+                vel[d] += f_total * inv_m * 0.5 * dt;
             }
+            let _ = i;
         }
-        for i in 0..n {
+        for (pos, vel) in ring
+            .positions
+            .iter_mut()
+            .zip(ring.velocities.iter())
+            .take(n)
+        {
             for d in 0..3 {
-                ring.positions[i][d] += ring.velocities[i][d] * dt;
+                pos[d] += vel[d] * dt;
             }
         }
         let f_spring_new = ring.spring_forces(temperature);
-        for i in 0..n {
+        for (vel, fs) in ring.velocities.iter_mut().zip(f_spring_new.iter()).take(n) {
             for d in 0..3 {
-                let f_total = f_spring_new[i][d] + external_force[d];
-                ring.velocities[i][d] += f_total * inv_m * 0.5 * dt;
+                let f_total = fs[d] + external_force[d];
+                vel[d] += f_total * inv_m * 0.5 * dt;
             }
         }
     }
@@ -543,11 +557,11 @@ impl RingPolymer {
         let omega_p = p * KB * temperature / HBAR;
         let k = self.mass * omega_p * omega_p;
         let mut forces = vec![[0.0_f64; 3]; self.n_beads];
-        for i in 0..self.n_beads {
+        for (i, f_i) in forces.iter_mut().enumerate() {
             let prev = (i + self.n_beads - 1) % self.n_beads;
             let next = (i + 1) % self.n_beads;
-            for d in 0..3 {
-                forces[i][d] = -k
+            for (d, fid) in f_i.iter_mut().enumerate() {
+                *fid = -k
                     * (2.0 * self.positions[i][d]
                         - self.positions[prev][d]
                         - self.positions[next][d]);
@@ -611,9 +625,9 @@ impl RingPolymer {
     pub fn to_staging(&self) -> Vec<[f64; 3]> {
         let mut staging = vec![[0.0_f64; 3]; self.n_beads];
         staging[0] = self.centroid();
-        for k in 1..self.n_beads {
-            for d in 0..3 {
-                staging[k][d] = self.positions[k][d] - self.positions[k - 1][d];
+        for (k, s_k) in staging.iter_mut().enumerate().skip(1) {
+            for (d, skd) in s_k.iter_mut().enumerate() {
+                *skd = self.positions[k][d] - self.positions[k - 1][d];
             }
         }
         staging
@@ -660,13 +674,11 @@ impl RingPolymer {
         let p = self.n_beads;
         let t_matrix = build_normal_mode_matrix(p);
         let mut modes = vec![[0.0_f64; 3]; p];
-        for k in 0..p {
-            for d in 0..3 {
-                let mut sum = 0.0;
-                for n in 0..p {
-                    sum += t_matrix[k * p + n] * self.positions[n][d];
-                }
-                modes[k][d] = sum;
+        for (k, mode_k) in modes.iter_mut().enumerate() {
+            for (d, mkd) in mode_k.iter_mut().enumerate() {
+                *mkd = (0..p)
+                    .map(|n| t_matrix[k * p + n] * self.positions[n][d])
+                    .sum();
             }
         }
         modes
@@ -675,13 +687,13 @@ impl RingPolymer {
     pub fn from_normal_modes(modes: &[[f64; 3]], n_beads: usize) -> Vec<[f64; 3]> {
         let t_matrix = build_normal_mode_matrix(n_beads);
         let mut positions = vec![[0.0_f64; 3]; n_beads];
-        for n in 0..n_beads {
+        for (n, pos_n) in positions.iter_mut().enumerate() {
             for d in 0..3 {
                 let mut sum = 0.0;
                 for k in 0..n_beads {
                     sum += t_matrix[k * n_beads + n] * modes[k][d];
                 }
-                positions[n][d] = sum;
+                pos_n[d] = sum;
             }
         }
         positions
@@ -713,9 +725,14 @@ impl RingPolymer {
         let c = self.centroid();
         let p = self.n_beads as f64;
         let mut virial_sum = 0.0_f64;
-        for i in 0..self.n_beads {
+        for (pos, ef) in self
+            .positions
+            .iter()
+            .zip(external_forces.iter())
+            .take(self.n_beads)
+        {
             for d in 0..3 {
-                virial_sum += (self.positions[i][d] - c[d]) * external_forces[i][d];
+                virial_sum += (pos[d] - c[d]) * ef[d];
             }
         }
         1.5 * KB * temperature + virial_sum / (2.0 * p)
@@ -733,8 +750,8 @@ impl RingPolymer {
     pub fn classical_kinetic_energy(&self) -> f64 {
         let mut ke = 0.0_f64;
         for vel in &self.velocities {
-            for d in 0..3 {
-                ke += 0.5 * self.bead_mass * vel[d] * vel[d];
+            for v in vel {
+                ke += 0.5 * self.bead_mass * v * v;
             }
         }
         ke
@@ -969,8 +986,8 @@ impl StagingTransform {
     /// m_k = (k+1)/k * m  for k = 1..P-1
     pub fn fictitious_masses(n_beads: usize, mass: f64) -> Vec<f64> {
         let mut masses = vec![mass; n_beads];
-        for k in 1..n_beads {
-            masses[k] = mass * (k as f64 + 1.0) / (k as f64);
+        for (k, m) in masses.iter_mut().enumerate().skip(1) {
+            *m = mass * (k as f64 + 1.0) / (k as f64);
         }
         masses
     }
@@ -1011,9 +1028,9 @@ impl StagingTransform {
         let p = n_beads as f64;
         let omega_p = p * KB * temperature / HBAR;
         let mut freqs = vec![0.0_f64; n_beads];
-        for k in 1..n_beads {
+        for (k, f) in freqs.iter_mut().enumerate().skip(1) {
             let kf = k as f64;
-            freqs[k] = (kf * (kf + 1.0)).sqrt() * omega_p;
+            *f = (kf * (kf + 1.0)).sqrt() * omega_p;
         }
         freqs
     }

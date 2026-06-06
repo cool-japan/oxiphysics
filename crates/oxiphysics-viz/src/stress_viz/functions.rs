@@ -320,7 +320,6 @@ pub fn principal_stress_glyphs(
 /// Advances `steps` times by `step_size` in the direction of the
 /// `principal_index`-th principal eigenvector at each point. Uses nearest-node
 /// lookup in the field.
-#[allow(dead_code)]
 pub fn trace_stress_trajectory(
     field: &StressField,
     node_positions: &[[f64; 3]],
@@ -366,7 +365,6 @@ pub fn trace_stress_trajectory(
         principal_index,
     }
 }
-#[allow(dead_code)]
 pub(super) fn vec3_sq_dist(a: [f64; 3], b: [f64; 3]) -> f64 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
@@ -375,7 +373,6 @@ pub(super) fn vec3_sq_dist(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 /// Compute the three principal eigenvectors of a symmetric Voigt tensor
 /// using the power iteration approximation (3 axes of the rotation-free frame).
-#[allow(dead_code)]
 pub fn principal_eigenvectors(voigt: [f64; 6]) -> [[f64; 3]; 3] {
     let ps = principal_stresses(voigt);
     let _ = ps;
@@ -385,7 +382,6 @@ pub fn principal_eigenvectors(voigt: [f64; 6]) -> [[f64; 3]; 3] {
 ///
 /// Kt = local_von_mises / nominal_stress.
 /// Nodes where nominal_stress ≈ 0 are skipped (Kt = 0).
-#[allow(dead_code)]
 pub fn stress_concentration_factors(field: &StressField, nominal_stress: f64) -> Vec<f64> {
     if nominal_stress.abs() < 1e-14 {
         return vec![0.0; field.stresses.len()];
@@ -397,7 +393,6 @@ pub fn stress_concentration_factors(field: &StressField, nominal_stress: f64) ->
         .collect()
 }
 /// Colour map for stress concentration factors using the Jet colormap.
-#[allow(dead_code)]
 pub fn stress_concentration_colors(
     field: &StressField,
     nominal_stress: f64,
@@ -411,7 +406,6 @@ pub fn stress_concentration_colors(
 }
 /// Safety factor at each node: SF = yield_stress / von_mises_stress.
 /// Regions with SF < 1 are yielded.
-#[allow(dead_code)]
 pub fn safety_factor_map(field: &StressField, yield_stress: f64) -> Vec<f64> {
     field
         .stresses
@@ -427,7 +421,6 @@ pub fn safety_factor_map(field: &StressField, yield_stress: f64) -> Vec<f64> {
         .collect()
 }
 /// Colour map for safety factors: red = yielded (SF < 1), green = safe.
-#[allow(dead_code)]
 pub fn safety_factor_colors(field: &StressField, yield_stress: f64) -> Vec<Color> {
     let sfs = safety_factor_map(field, yield_stress);
     sfs.iter()
@@ -448,7 +441,6 @@ pub fn safety_factor_colors(field: &StressField, yield_stress: f64) -> Vec<Color
 /// - < 0 → inside yield surface (elastic)
 /// - ≥ 0 → on or outside yield surface (yielded)
 /// - = 0 → exactly on the yield surface
-#[allow(dead_code)]
 pub fn yield_surface_distance(
     stress: [f64; 6],
     yield_stress: f64,
@@ -482,7 +474,6 @@ pub fn yield_surface_distance(
 }
 /// Colour map for yield surface proximity.
 /// Red = yielded, blue = elastic, white = near surface.
-#[allow(dead_code)]
 pub fn yield_surface_colors(
     field: &StressField,
     yield_stress: f64,
@@ -507,7 +498,6 @@ pub fn yield_surface_colors(
 /// Map a cycle-to-failure count to a colour using a logarithmic scale.
 ///
 /// Low life (many cycles used) → red; high life (few cycles used) → blue.
-#[allow(dead_code)]
 pub fn fatigue_life_color(
     cycles_to_failure: f64,
     min_cycles: f64,
@@ -526,7 +516,6 @@ pub fn fatigue_life_color(
 /// Uses Basquin's law: N = (sigma_a / sigma_f)^(-1/b).
 /// Returns colours from `colormap` with the log scale from `min_cycles` to
 /// `max_cycles`.
-#[allow(dead_code)]
 pub fn fatigue_life_colormap(
     field: &StressField,
     sigma_f: f64,

@@ -17,9 +17,6 @@
 //! - Lagrange points L1–L5
 //! - Orbital debris collision probability (cube method)
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -1007,7 +1004,6 @@ pub fn lagrange_points(mass_ratio: f64) -> [[f64; 3]; 5] {
 }
 
 /// Identify which collinear Lagrange point to solve for.
-#[allow(dead_code)]
 enum LagrangeCollinearPoint {
     /// L1: between the two primaries.
     L1,

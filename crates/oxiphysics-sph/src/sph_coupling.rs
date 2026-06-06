@@ -12,9 +12,6 @@
 //! - [`sph_to_rigid_force`]: Compute net pressure and viscous force on the rigid body.
 //! - [`penalty_coupling`]: Penalty-based weak coupling force between SPH and FEM/rigid.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Helper math
 // ---------------------------------------------------------------------------

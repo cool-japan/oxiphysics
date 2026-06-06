@@ -6,8 +6,6 @@
 //! Provides PID controllers, impedance control, cascade control, feedforward
 //! compensation, adaptive auto-tuning, and full multi-axis servo actuators.
 
-#![allow(dead_code)]
-
 // ── Servo mode ────────────────────────────────────────────────────────────────
 
 /// Operating mode of a servo axis.
@@ -523,7 +521,6 @@ pub struct ServoActuator {
 
 impl ServoActuator {
     /// Create a new `ServoActuator`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: impl Into<String>,
         mass: f64,

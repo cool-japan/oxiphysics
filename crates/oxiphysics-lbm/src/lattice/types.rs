@@ -2,28 +2,21 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     CS2, D2Q9_OPPOSITES, D2Q9_VELOCITIES, D2Q9_WEIGHTS, D3Q19_OPPOSITES, D3Q19_VELOCITIES,
     D3Q19_WEIGHTS, D3Q27_OPPOSITES, D3Q27_VELOCITIES, D3Q27_WEIGHTS, MRT_M, bgk_collision,
     compute_rho, compute_velocity,
 };
-#[allow(unused_imports)]
-use super::functions_2::*;
 
 /// Guo body-force scheme for LBM.
 ///
 /// Adds a body force `[gx, gy]` (acceleration) to the LBM collision step.
 /// The modified distribution: f_i^* = f_i - omega * (f_i - feq) + (1 - omega/2) * F_i * dt
 /// where `F_i = w_i * (c_i - u)/cs^2 * g`.
-#[allow(dead_code)]
 pub struct GuoBodyForce {
     /// Body force acceleration \[gx, gy\] (lattice units/step^2).
     pub g: [f64; 2],
 }
-#[allow(dead_code)]
 impl GuoBodyForce {
     /// Create a new Guo body force scheme.
     pub fn new(gx: f64, gy: f64) -> Self {
@@ -40,7 +33,7 @@ impl GuoBodyForce {
         w * (cidotg / CS2 + cdotu * cidotg / (CS2 * CS2) - udotg / CS2)
     }
     /// Apply BGK collision with Guo body force to a D2Q9 grid.
-    pub fn collide_with_force(&self, f: &mut Vec<f64>, n: usize, omega: f64) {
+    pub fn collide_with_force(&self, f: &mut [f64], n: usize, omega: f64) {
         for idx in 0..n {
             let base = idx * 9;
             let mut rho = 0.0_f64;
@@ -69,9 +62,7 @@ impl GuoBodyForce {
 ///
 /// Provides the weights and velocity vectors as associated constants,
 /// and convenience methods for equilibrium, BGK collision, and streaming.
-#[allow(dead_code)]
 pub struct D2Q9;
-#[allow(dead_code)]
 impl D2Q9 {
     /// D2Q9 weights.
     pub const W: [f64; 9] = D2Q9_WEIGHTS;
@@ -83,19 +74,19 @@ impl D2Q9 {
     pub fn equilibrium(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
         let mut feq = [0.0_f64; 9];
         let u_sq = ux * ux + uy * uy;
-        for i in 0..9 {
+        for (i, fi) in feq.iter_mut().enumerate() {
             let cx = Self::C[i][0] as f64;
             let cy = Self::C[i][1] as f64;
             let eu = cx * ux + cy * uy;
-            feq[i] = Self::W[i]
+            *fi = Self::W[i]
                 * rho
                 * (1.0 + eu / CS2 + eu * eu / (2.0 * CS2 * CS2) - u_sq / (2.0 * CS2));
         }
         feq
     }
     /// Pull-scheme periodic streaming on a flat `Vec<[f64; 9]>` of `nx * ny` cells.
-    pub fn stream(f: &mut Vec<[f64; 9]>, nx: usize, ny: usize) {
-        let f_old = f.clone();
+    pub fn stream(f: &mut [[f64; 9]], nx: usize, ny: usize) {
+        let f_old = f.to_vec();
         for y in 0..ny {
             for x in 0..nx {
                 let dst = y * nx + x;
@@ -112,9 +103,7 @@ impl D2Q9 {
 ///
 /// Provides the 27-velocity set for 3D simulations with higher accuracy
 /// than D3Q19 for flows with large velocity gradients.
-#[allow(dead_code)]
 pub struct D3Q27;
-#[allow(dead_code)]
 impl D3Q27 {
     /// D3Q27 weights.
     pub const W: [f64; 27] = D3Q27_WEIGHTS;
@@ -126,12 +115,12 @@ impl D3Q27 {
     pub fn equilibrium(rho: f64, u: [f64; 3]) -> [f64; 27] {
         let mut feq = [0.0_f64; 27];
         let u_sq = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
-        for i in 0..27 {
+        for (i, fi) in feq.iter_mut().enumerate() {
             let cx = Self::C[i][0] as f64;
             let cy = Self::C[i][1] as f64;
             let cz = Self::C[i][2] as f64;
             let eu = cx * u[0] + cy * u[1] + cz * u[2];
-            feq[i] = Self::W[i]
+            *fi = Self::W[i]
                 * rho
                 * (1.0 + eu / CS2 + eu * eu / (2.0 * CS2 * CS2) - u_sq / (2.0 * CS2));
         }
@@ -146,10 +135,10 @@ impl D3Q27 {
         let mut mx = 0.0_f64;
         let mut my = 0.0_f64;
         let mut mz = 0.0_f64;
-        for i in 0..27 {
-            mx += f[i] * Self::C[i][0] as f64;
-            my += f[i] * Self::C[i][1] as f64;
-            mz += f[i] * Self::C[i][2] as f64;
+        for (i, &fi) in f.iter().enumerate() {
+            mx += fi * Self::C[i][0] as f64;
+            my += fi * Self::C[i][1] as f64;
+            mz += fi * Self::C[i][2] as f64;
         }
         if rho.abs() > 1e-15 {
             [mx / rho, my / rho, mz / rho]
@@ -158,8 +147,8 @@ impl D3Q27 {
         }
     }
     /// Pull-scheme periodic streaming on a flat `Vec<[f64; 27]>`.
-    pub fn stream(f: &mut Vec<[f64; 27]>, nx: usize, ny: usize, nz: usize) {
-        let f_old = f.clone();
+    pub fn stream(f: &mut [[f64; 27]], nx: usize, ny: usize, nz: usize) {
+        let f_old = f.to_vec();
         for z in 0..nz {
             for y in 0..ny {
                 for x in 0..nx {
@@ -197,7 +186,6 @@ impl D3Q27 {
 ///
 /// Uses two relaxation times: omega_plus (symmetric) and omega_minus (anti-symmetric).
 /// TRT is known to have better wall-distance independence than BGK.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TrtCollision {
     /// Relaxation rate for symmetric part (related to viscosity).
@@ -205,7 +193,6 @@ pub struct TrtCollision {
     /// Relaxation rate for anti-symmetric part.
     pub omega_minus: f64,
 }
-#[allow(dead_code)]
 impl TrtCollision {
     /// Create a TRT collision operator.
     ///
@@ -230,7 +217,7 @@ impl TrtCollision {
     /// Apply TRT collision to all cells of a D2Q9 grid.
     ///
     /// Modifies `f` in-place. `n = nx * ny`.
-    pub fn collide(&self, f: &mut Vec<f64>, n: usize) {
+    pub fn collide(&self, f: &mut [f64], n: usize) {
         for idx in 0..n {
             let base = idx * 9;
             let mut rho = 0.0_f64;
@@ -267,13 +254,11 @@ impl TrtCollision {
 /// MRT (Multiple-Relaxation-Time) collision operator for D2Q9.
 ///
 /// Allows independent control of all relaxation rates.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MrtCollision {
     /// Diagonal relaxation matrix S: 9 relaxation rates for the 9 moments.
     pub s: [f64; 9],
 }
-#[allow(dead_code)]
 impl MrtCollision {
     /// Create an MRT collision operator with given relaxation rates.
     ///
@@ -329,7 +314,7 @@ impl MrtCollision {
         Self::from_moment_space(&m_out)
     }
     /// Apply MRT collision to all cells in a D2Q9 grid.
-    pub fn collide(&self, f: &mut Vec<f64>, n: usize) {
+    pub fn collide(&self, f: &mut [f64], n: usize) {
         for idx in 0..n {
             let base = idx * 9;
             let mut rho = 0.0_f64;
@@ -440,7 +425,6 @@ impl Lattice {
 ///
 /// Storage layout: `f\[idx * 9 + alpha\]` where `idx = y * nx + x` and
 /// `alpha` is the direction index `0..9`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct D2Q9Grid {
     /// Number of cells in x-direction.
@@ -450,7 +434,6 @@ pub struct D2Q9Grid {
     /// Distribution functions stored as `f\[idx * 9 + alpha\]`.
     pub f: Vec<f64>,
 }
-#[allow(dead_code)]
 impl D2Q9Grid {
     /// Create a new D2Q9 grid initialised to equilibrium at rest with
     /// uniform density `rho0`.
@@ -463,11 +446,6 @@ impl D2Q9Grid {
             }
         }
         Self { nx, ny, f }
-    }
-    /// Linear cell index for position (x, y).
-    #[inline]
-    fn cell_idx(&self, x: usize, y: usize) -> usize {
-        y * self.nx + x
     }
     /// Compute the equilibrium distribution value for a single direction.
     ///
@@ -495,9 +473,9 @@ impl D2Q9Grid {
         for y in 0..ny {
             for x in 0..nx {
                 let dst = (y * nx + x) * 9;
-                for alpha in 0..9 {
-                    let cx = D2Q9_VELOCITIES[alpha][0];
-                    let cy = D2Q9_VELOCITIES[alpha][1];
+                for (alpha, vel) in D2Q9_VELOCITIES.iter().enumerate() {
+                    let cx = vel[0];
+                    let cy = vel[1];
                     let sx = (x as isize - cx as isize).rem_euclid(nx as isize) as usize;
                     let sy = (y as isize - cy as isize).rem_euclid(ny as isize) as usize;
                     let src = (sy * nx + sx) * 9 + alpha;
@@ -516,11 +494,11 @@ impl D2Q9Grid {
             let mut rho = 0.0;
             let mut mx = 0.0;
             let mut my = 0.0;
-            for alpha in 0..9 {
+            for (alpha, vel) in D2Q9_VELOCITIES.iter().enumerate() {
                 let fi = self.f[base + alpha];
                 rho += fi;
-                mx += fi * D2Q9_VELOCITIES[alpha][0] as f64;
-                my += fi * D2Q9_VELOCITIES[alpha][1] as f64;
+                mx += fi * vel[0] as f64;
+                my += fi * vel[1] as f64;
             }
             let ux = if rho.abs() > 1e-15 { mx / rho } else { 0.0 };
             let uy = if rho.abs() > 1e-15 { my / rho } else { 0.0 };
@@ -534,13 +512,9 @@ impl D2Q9Grid {
     pub fn density_field(&self) -> Vec<f64> {
         let n = self.nx * self.ny;
         let mut rho = vec![0.0; n];
-        for idx in 0..n {
+        for (idx, r) in rho.iter_mut().enumerate() {
             let base = idx * 9;
-            let mut r = 0.0;
-            for alpha in 0..9 {
-                r += self.f[base + alpha];
-            }
-            rho[idx] = r;
+            *r = self.f[base..base + 9].iter().sum();
         }
         rho
     }
@@ -548,19 +522,19 @@ impl D2Q9Grid {
     pub fn velocity_field(&self) -> Vec<[f64; 2]> {
         let n = self.nx * self.ny;
         let mut vel = vec![[0.0; 2]; n];
-        for idx in 0..n {
+        for (idx, v) in vel.iter_mut().enumerate() {
             let base = idx * 9;
             let mut rho = 0.0;
             let mut mx = 0.0;
             let mut my = 0.0;
-            for alpha in 0..9 {
+            for (alpha, cv) in D2Q9_VELOCITIES.iter().enumerate() {
                 let fi = self.f[base + alpha];
                 rho += fi;
-                mx += fi * D2Q9_VELOCITIES[alpha][0] as f64;
-                my += fi * D2Q9_VELOCITIES[alpha][1] as f64;
+                mx += fi * cv[0] as f64;
+                my += fi * cv[1] as f64;
             }
             if rho.abs() > 1e-15 {
-                vel[idx] = [mx / rho, my / rho];
+                *v = [mx / rho, my / rho];
             }
         }
         vel
@@ -573,7 +547,6 @@ impl D2Q9Grid {
 /// Dimensions of a lattice domain (nx, ny, nz).
 ///
 /// Provides index-conversion helpers for 3D row-major storage.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LatticeDimensions {
     /// Number of cells in x-direction.
@@ -583,7 +556,6 @@ pub struct LatticeDimensions {
     /// Number of cells in z-direction.
     pub nz: usize,
 }
-#[allow(dead_code)]
 impl LatticeDimensions {
     /// Create a new set of lattice dimensions.
     pub fn new(nx: usize, ny: usize, nz: usize) -> Self {
@@ -612,7 +584,6 @@ impl LatticeDimensions {
 ///
 /// Adjusts the local relaxation rate omega based on the local strain rate,
 /// using an effective viscosity: nu_eff = nu + (C_s * Delta)^2 * |S|.
-#[allow(dead_code)]
 pub struct SmagorinskyModel {
     /// Smagorinsky constant (typical: 0.1–0.2).
     pub cs: f64,
@@ -621,7 +592,6 @@ pub struct SmagorinskyModel {
     /// Base (molecular) kinematic viscosity.
     pub nu0: f64,
 }
-#[allow(dead_code)]
 impl SmagorinskyModel {
     /// Create a new Smagorinsky model.
     pub fn new(cs: f64, delta: f64, nu0: f64) -> Self {
@@ -695,9 +665,7 @@ impl LatticeType {
     }
 }
 /// Typed D3Q19 velocity-set struct.
-#[allow(dead_code)]
 pub struct D3Q19;
-#[allow(dead_code)]
 impl D3Q19 {
     /// D3Q19 weights.
     pub const W: [f64; 19] = D3Q19_WEIGHTS;
@@ -707,12 +675,12 @@ impl D3Q19 {
     pub fn equilibrium(rho: f64, u: [f64; 3]) -> [f64; 19] {
         let mut feq = [0.0_f64; 19];
         let u_sq = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
-        for i in 0..19 {
+        for (i, fi) in feq.iter_mut().enumerate() {
             let cx = Self::C[i][0] as f64;
             let cy = Self::C[i][1] as f64;
             let cz = Self::C[i][2] as f64;
             let eu = cx * u[0] + cy * u[1] + cz * u[2];
-            feq[i] = Self::W[i]
+            *fi = Self::W[i]
                 * rho
                 * (1.0 + eu / CS2 + eu * eu / (2.0 * CS2 * CS2) - u_sq / (2.0 * CS2));
         }
@@ -722,7 +690,6 @@ impl D3Q19 {
 /// A simple D2Q9 LBM grid storing distributions as `Vec<[f64; 9]>`.
 ///
 /// Each element of `f` corresponds to one cell (row-major: `idx = y * nx + x`).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LatticeD2Q9Grid {
     /// Number of cells in x-direction.
@@ -732,7 +699,6 @@ pub struct LatticeD2Q9Grid {
     /// Distribution functions: `f[y * nx + x]` is a `[f64; 9]` array.
     pub f: Vec<[f64; 9]>,
 }
-#[allow(dead_code)]
 impl LatticeD2Q9Grid {
     /// Create a new grid initialised to equilibrium at rest with uniform density `rho0`.
     pub fn new(nx: usize, ny: usize) -> Self {

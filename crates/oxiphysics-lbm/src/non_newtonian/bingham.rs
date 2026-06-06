@@ -75,7 +75,6 @@ impl super::LocalViscosityModel for BinghamFluid {
 ///
 /// This is an alias-like struct for ergonomic API usage alongside the
 /// existing `BinghamFluid`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct BinghamPlastic {
     /// Yield stress.
@@ -84,7 +83,6 @@ pub struct BinghamPlastic {
     pub mu_p: f64,
 }
 
-#[allow(dead_code)]
 impl BinghamPlastic {
     /// Create a new Bingham plastic.
     pub fn new(tau_y: f64, mu_p: f64) -> Self {
@@ -127,7 +125,6 @@ impl NonNewtonianModel for BinghamPlastic {
 /// where `m` is the regularization parameter (large m -> sharp transition).
 /// This avoids the discontinuity at the yield point, making the model
 /// suitable for iterative LBM solvers.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct RegularizedBingham {
     /// Yield stress tau_y.
@@ -138,7 +135,6 @@ pub struct RegularizedBingham {
     pub m: f64,
 }
 
-#[allow(dead_code)]
 impl RegularizedBingham {
     /// Create a new regularized Bingham model.
     pub fn new(tau_y: f64, mu_p: f64, m: f64) -> Self {
@@ -179,7 +175,6 @@ impl RegularizedBingham {
 /// ```
 ///
 /// (for the yielded regime where dP / (2L) > tau_y / R).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct BinghamPipeFlow {
     /// Yield stress tau_y (Pa).
@@ -192,7 +187,6 @@ pub struct BinghamPipeFlow {
     pub length: f64,
 }
 
-#[allow(dead_code)]
 impl BinghamPipeFlow {
     /// Create a new Bingham pipe flow instance.
     pub fn new(tau_y: f64, mu_p: f64, radius: f64, length: f64) -> Self {
@@ -231,7 +225,6 @@ impl BinghamPipeFlow {
     /// ```text
     /// u(r) = 1/(2 mu_p) * (tau_wall - tau_y) * (R - r) - tau_y/(2 mu_p) * (r - r_p)
     /// ```
-    #[allow(clippy::too_many_arguments)]
     pub fn velocity_profile(&self, r: f64, delta_p: f64) -> Option<f64> {
         if r > self.radius {
             return None;
@@ -320,7 +313,6 @@ impl BinghamPipeFlow {
 ///
 /// # Returns
 /// `true` if the material is yielded (flowing), `false` if rigid.
-#[allow(dead_code)]
 pub fn is_yielded_2d(s_xx: f64, s_yy: f64, s_xy: f64, tau_y: f64) -> bool {
     let vm = (s_xx * s_xx + s_yy * s_yy + 2.0 * s_xy * s_xy).sqrt();
     vm >= tau_y
@@ -329,7 +321,6 @@ pub fn is_yielded_2d(s_xx: f64, s_yy: f64, s_xy: f64, tau_y: f64) -> bool {
 /// Compute the von-Mises stress invariant for a symmetric 2-D stress tensor.
 ///
 /// `sigma_vm = sqrt(s_xx^2 + s_yy^2 + 2*s_xy^2)`
-#[allow(dead_code)]
 pub fn von_mises_stress_2d(s_xx: f64, s_yy: f64, s_xy: f64) -> f64 {
     (s_xx * s_xx + s_yy * s_yy + 2.0 * s_xy * s_xy).sqrt()
 }
@@ -342,7 +333,6 @@ pub fn von_mises_stress_2d(s_xx: f64, s_yy: f64, s_xy: f64) -> f64 {
 ///
 /// This scalar version applies to the magnitude `|s|` of the tensor, returning
 /// the corrected magnitude.
-#[allow(dead_code)]
 pub fn bingham_yield_correction(stress_magnitude: f64, tau_y: f64) -> f64 {
     if stress_magnitude >= tau_y {
         stress_magnitude

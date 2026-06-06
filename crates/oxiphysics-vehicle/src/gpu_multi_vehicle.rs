@@ -69,9 +69,6 @@
 //! println!("Average speed after 1 s: {:.2} m/s", avg_speed);
 //! ```
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ── VehicleParams ─────────────────────────────────────────────────────────────
 
 /// Physical parameters shared by all vehicles in the batch.

@@ -18,9 +18,6 @@
 //! - **Scan strategy effects**: [`ScanStrategyEffect`].
 //! - **Surface roughness**: [`AmSurfaceRoughness`].
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -143,7 +142,7 @@ pub fn assemble_force_vector(n_nodes: usize, nodal_forces: &[(usize, Vec3)]) -> 
 /// - Row `i` is replaced by an identity row: `K[i, i] = 1`, `K[i, j] = 0` for `j ≠ i`.
 /// - Column `i` is zeroed: `K[j, i] = 0` for `j ≠ i`.
 /// - `f[i] = 0`.
-pub fn apply_dirichlet_bc(k: &mut CsrMatrix, f: &mut Vec<f64>, fixed_dofs: &[usize]) {
+pub fn apply_dirichlet_bc(k: &mut CsrMatrix, f: &mut [f64], fixed_dofs: &[usize]) {
     for &dof in fixed_dofs {
         assert!(
             dof < k.nrows,
@@ -274,7 +273,6 @@ pub fn conjugate_gradient(
 ///
 /// Uses the standard LL^T Cholesky decomposition followed by forward and back
 /// substitution.
-#[allow(clippy::needless_range_loop)]
 pub fn cholesky_solve(k: &[Vec<f64>], f: &[f64]) -> Vec<f64> {
     let n = f.len();
     assert_eq!(k.len(), n, "K must be n×n");
@@ -287,8 +285,8 @@ pub fn cholesky_solve(k: &[Vec<f64>], f: &[f64]) -> Vec<f64> {
     for i in 0..n {
         for j in 0..=i {
             let mut s: f64 = k[i][j];
-            for p in 0..j {
-                s -= l[i][p] * l[j][p];
+            for (li_p, lj_p) in l[i][..j].iter().zip(l[j][..j].iter()) {
+                s -= li_p * lj_p;
             }
             if i == j {
                 assert!(
@@ -433,7 +431,7 @@ impl<'a> LinearElasticAssembler<'a> {
 
     /// Apply Dirichlet (zero-displacement) boundary conditions to the given
     /// stiffness matrix and load vector in-place.
-    pub fn apply_dirichlet(&self, k: &mut CsrMatrix, f: &mut Vec<f64>, fixed_dofs: &[usize]) {
+    pub fn apply_dirichlet(&self, k: &mut CsrMatrix, f: &mut [f64], fixed_dofs: &[usize]) {
         apply_dirichlet_bc(k, f, fixed_dofs);
     }
 }
@@ -553,14 +551,12 @@ pub fn build_dof_connectivity_graph(nodes: &[Vec3], elements: &[[usize; 4]]) -> 
 /// - `f[dof] = val`.
 ///
 /// This is the symmetric "penalty-free" approach that preserves matrix symmetry.
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::needless_range_loop)]
-pub fn apply_dirichlet_bc_values(k: &mut CsrMatrix, f: &mut Vec<f64>, fixed_dofs: &[(usize, f64)]) {
+pub fn apply_dirichlet_bc_values(k: &mut CsrMatrix, f: &mut [f64], fixed_dofs: &[(usize, f64)]) {
     for &(dof, val) in fixed_dofs {
         assert!(dof < k.nrows, "fixed DOF {dof} out of range");
 
         // Transfer column contributions to RHS: f[j] -= K[j, dof] * val
-        for row in 0..k.nrows {
+        for (row, f_row) in f.iter_mut().enumerate().take(k.nrows) {
             if row == dof {
                 continue;
             }
@@ -568,7 +564,7 @@ pub fn apply_dirichlet_bc_values(k: &mut CsrMatrix, f: &mut Vec<f64>, fixed_dofs
             let re = k.row_ptr[row + 1];
             for idx in rs..re {
                 if k.col_indices[idx] == dof {
-                    f[row] -= k.values[idx] * val;
+                    *f_row -= k.values[idx] * val;
                     k.values[idx] = 0.0;
                 }
             }
@@ -846,7 +842,6 @@ pub fn compute_element_stresses(
 /// Compute von Mises stress from a Voigt stress tensor \[sxx, syy, szz, sxy, syz, sxz\].
 ///
 /// `σ_vm = sqrt(0.5 * [(sxx-syy)² + (syy-szz)² + (szz-sxx)² + 6*(sxy² + syz² + sxz²)])`
-#[allow(non_snake_case)]
 pub fn von_mises_stress(sigma: &StressTensor) -> f64 {
     let (sxx, syy, szz) = (sigma[0], sigma[1], sigma[2]);
     let (sxy, syz, sxz) = (sigma[3], sigma[4], sigma[5]);
@@ -928,7 +923,6 @@ mod tests {
     // ── Single-tet assembly ───────────────────────────────────────────────────
 
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_assemble_single_tet() {
         // One unit tetrahedron → 12×12 system.
         // K must be positive semi-definite (all eigenvalues ≥ 0).
@@ -1614,20 +1608,17 @@ mod tests {
 
     // ── Element stress recovery ────────────────────────────────────────────
 
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_recover_nodal_stresses_average_single_element() {
         // Single element: all 4 nodes should get the element's stress.
         let elements = vec![[0usize, 1, 2, 3]];
         let stress = [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]];
         let nodal = recover_nodal_stresses_average(4, &elements, &stress);
-        for node in 0..4 {
-            for k in 0..6 {
+        for (node, nodal_row) in nodal.iter().enumerate() {
+            for (k, (&nv, &sv)) in nodal_row.iter().zip(stress[0].iter()).enumerate() {
                 assert!(
-                    (nodal[node][k] - stress[0][k]).abs() < 1e-12,
-                    "node {node} component {k}: got {}, expected {}",
-                    nodal[node][k],
-                    stress[0][k]
+                    (nv - sv).abs() < 1e-12,
+                    "node {node} component {k}: got {nv}, expected {sv}"
                 );
             }
         }
@@ -1662,7 +1653,6 @@ mod tests {
         );
     }
 
-    #[allow(clippy::needless_range_loop)]
     #[test]
     fn test_compute_element_stresses_zero_displacement() {
         // Zero displacement should give zero stress.
@@ -1677,11 +1667,10 @@ mod tests {
         let d = crate::constitutive::LinearElasticMaterial::new(200.0e9, 0.3).constitutive_matrix();
         let stresses = compute_element_stresses(&nodes, &elements, &displacements, &d);
         assert_eq!(stresses.len(), 1);
-        for k in 0..6 {
+        for (k, &sv) in stresses[0].iter().enumerate() {
             assert!(
-                stresses[0][k].abs() < 1e-20,
-                "zero displacement should give zero stress, got {}",
-                stresses[0][k]
+                sv.abs() < 1e-20,
+                "zero displacement should give zero stress, got {sv} at component {k}"
             );
         }
     }

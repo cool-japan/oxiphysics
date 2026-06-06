@@ -2,13 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use std::collections::HashMap;
 use std::f64::consts::PI as PI_F64;
 
 use super::functions::scaled_dot_product_attention;
-#[allow(unused_imports)]
-use super::functions::*;
 
 /// Batch normalization layer (inference mode).
 ///
@@ -46,13 +43,13 @@ impl BatchNormLayer {
     /// output\[i\] = gamma\[i\] * (input\[i\] - mean\[i\]) / sqrt(var\[i\] + eps) + beta\[i\]
     pub fn forward(&self, input: &[f32]) -> Vec<f32> {
         assert_eq!(input.len(), self.n_features);
-        let mut output = Vec::with_capacity(self.n_features);
-        for i in 0..self.n_features {
-            let normalized =
-                (input[i] - self.running_mean[i]) / (self.running_var[i] + self.epsilon).sqrt();
-            output.push(self.gamma[i] * normalized + self.beta[i]);
-        }
-        output
+        (0..self.n_features)
+            .map(|i| {
+                let normalized =
+                    (input[i] - self.running_mean[i]) / (self.running_var[i] + self.epsilon).sqrt();
+                self.gamma[i] * normalized + self.beta[i]
+            })
+            .collect()
     }
     /// Set the running statistics.
     pub fn set_stats(&mut self, mean: &[f32], var: &[f32]) {
@@ -112,7 +109,6 @@ impl BatchNormLayer {
 }
 /// A single-step Elman RNN cell:
 /// `h_t = activation(W_x * x_t + W_h * h_{t-1} + b)`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RnnCell {
     /// Input-to-hidden weight matrix `[hidden_size × input_size]`.
@@ -146,18 +142,18 @@ impl RnnCell {
     pub fn step(&self, x: &[f64], h_prev: &[f64]) -> Vec<f64> {
         assert_eq!(x.len(), self.input_size);
         assert_eq!(h_prev.len(), self.hidden_size);
-        let mut h = Vec::with_capacity(self.hidden_size);
-        for o in 0..self.hidden_size {
-            let mut acc = self.b[o];
-            for i in 0..self.input_size {
-                acc += self.w_x[o * self.input_size + i] * x[i];
-            }
-            for i in 0..self.hidden_size {
-                acc += self.w_h[o * self.hidden_size + i] * h_prev[i];
-            }
-            h.push(self.activation.apply(acc));
-        }
-        h
+        (0..self.hidden_size)
+            .map(|o| {
+                let mut acc = self.b[o];
+                for (i, &xi) in x.iter().enumerate() {
+                    acc += self.w_x[o * self.input_size + i] * xi;
+                }
+                for (i, &hi) in h_prev.iter().enumerate() {
+                    acc += self.w_h[o * self.hidden_size + i] * hi;
+                }
+                self.activation.apply(acc)
+            })
+            .collect()
     }
     /// Run the RNN over a full sequence `[seq_len][input_size]`.
     ///
@@ -239,7 +235,6 @@ impl NetworkBuilder {
 /// FFN(x) = max(0, x W1 + b1) W2 + b2
 ///
 /// Applied identically to each position in the sequence.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TransformerFfn {
     /// Input / output dimensionality.
@@ -274,19 +269,19 @@ impl TransformerFfn {
         let mut out = vec![0.0_f64; seq_len * dm];
         for t in 0..seq_len {
             let mut hidden = vec![0.0_f64; df];
-            for j in 0..df {
+            for (j, h_j) in hidden.iter_mut().enumerate() {
                 let mut acc = self.b1[j];
-                for i in 0..dm {
-                    acc += x[t * dm + i] * self.w1[j * dm + i];
+                for (i, &xi) in x[t * dm..t * dm + dm].iter().enumerate() {
+                    acc += xi * self.w1[j * dm + i];
                 }
-                hidden[j] = acc.max(0.0);
+                *h_j = acc.max(0.0);
             }
-            for j in 0..dm {
+            for (j, out_j) in out[t * dm..t * dm + dm].iter_mut().enumerate() {
                 let mut acc = self.b2[j];
-                for i in 0..df {
-                    acc += hidden[i] * self.w2[j * df + i];
+                for (i, &hi) in hidden.iter().enumerate() {
+                    acc += hi * self.w2[j * df + i];
                 }
-                out[t * dm + j] = acc;
+                *out_j = acc;
             }
         }
         out
@@ -302,7 +297,6 @@ impl TransformerFfn {
 /// - `weights[o][k][c]` = weight for output channel `o`, kernel position `k`,
 ///   input channel `c`.
 /// - `biases[o]` = bias for output channel `o`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Conv1DLayer {
     /// Number of input channels per time step.
@@ -344,8 +338,8 @@ impl Conv1DLayer {
     pub fn forward(&self, input: &[Vec<f64>]) -> Vec<Vec<f64>> {
         let seq_len = input.len();
         let mut output = vec![vec![0.0_f64; self.out_channels]; seq_len];
-        for t in 0..seq_len {
-            for o in 0..self.out_channels {
+        for (t, out_t) in output.iter_mut().enumerate() {
+            for (o, out_to) in out_t.iter_mut().enumerate() {
                 let mut acc = self.biases[o];
                 for k in 0..self.kernel_size {
                     let src_t = t as isize - k as isize;
@@ -353,11 +347,11 @@ impl Conv1DLayer {
                         continue;
                     }
                     let src_t = src_t as usize;
-                    for c in 0..self.in_channels {
-                        acc += self.weights[o][k][c] * input[src_t][c];
+                    for (c, &inp) in input[src_t].iter().enumerate() {
+                        acc += self.weights[o][k][c] * inp;
                     }
                 }
-                output[t][o] = self.activation.apply(acc);
+                *out_to = self.activation.apply(acc);
             }
         }
         output
@@ -453,7 +447,6 @@ impl AdamOptimizer {
 /// h_i^(l+1) = σ(W_self * h_i^(l) + W_neigh * Σ_{j ∈ N(i)} h_j^(l) + b)
 ///
 /// All nodes share the same weight matrices.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GnnLayer {
     /// Input feature dimension.
@@ -519,7 +512,6 @@ impl GnnLayer {
     }
 }
 /// A multi-layer message passing neural network stacking `GnnLayer`s.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MessagePassingNet {
     /// Ordered list of GNN layers.
@@ -613,7 +605,6 @@ impl GradAccumulator {
 /// parallel attention heads, then concatenates and projects the output.
 ///
 /// All weight matrices are stored flat row-major.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MultiHeadAttention {
     /// Model dimensionality.
@@ -777,7 +768,6 @@ impl NeuralLayer {
 ///
 /// For each node i, computes a scalar attention score a_i = sigmoid(w · h_i + b),
 /// then returns Σ_i a_i * h_i.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AttentionReadout {
     /// Feature dimensionality.
@@ -825,7 +815,6 @@ impl AttentionReadout {
 }
 /// A single transformer encoder block:
 /// x → MHA(LayerNorm(x)) + x → FFN(LayerNorm(·)) + ·
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TransformerBlock {
     /// Multi-head self-attention module.
@@ -989,7 +978,6 @@ impl LayerNormLayer {
     /// Compute gradient of the layer norm output with respect to the input.
     ///
     /// Returns `(d_input, d_gamma, d_beta)` given upstream gradient `d_output`.
-    #[allow(non_snake_case)]
     pub fn backward(&self, input: &[f64], d_output: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         assert_eq!(input.len(), self.n_features);
         assert_eq!(d_output.len(), self.n_features);
@@ -1105,7 +1093,7 @@ impl ActivationFn64 {
         }
     }
     /// Apply the activation in-place to every element of a vector.
-    pub fn apply_batch(&self, v: &mut Vec<f64>) {
+    pub fn apply_batch(&self, v: &mut [f64]) {
         for x in v.iter_mut() {
             *x = self.apply(*x);
         }
@@ -1211,7 +1199,7 @@ impl FeedForwardNet {
     }
     /// Clip per-layer gradient vectors in-place so their combined norm ≤ `max_norm`.
     /// Returns the pre-clip norm.
-    pub fn clip_gradients(&self, layer_grads: &mut Vec<Vec<f32>>, max_norm: f32) -> f32 {
+    pub fn clip_gradients(&self, layer_grads: &mut [Vec<f32>], max_norm: f32) -> f32 {
         let norm = self.compute_gradient_norm(layer_grads);
         if norm > max_norm && norm > 0.0 {
             let scale = max_norm / norm;
@@ -1228,7 +1216,6 @@ impl FeedForwardNet {
 ///
 /// Normalises a feature vector of length `n_features` to zero mean and unit
 /// variance, then applies learnable scale (gamma) and bias (beta).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LayerNorm {
     /// Number of features.
@@ -1313,7 +1300,6 @@ impl GpuNeuralBuffer {
 /// embedding space:
 ///   PE\[pos, 2i\]   = sin(pos / 10000^(2i/d_model))
 ///   PE\[pos, 2i+1\] = cos(pos / 10000^(2i/d_model))
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PositionalEncoding {
     /// Embedding dimensionality.
@@ -1327,12 +1313,12 @@ impl PositionalEncoding {
     /// Build the positional encoding table up to `max_len` positions.
     pub fn new(d_model: usize, max_len: usize) -> Self {
         let mut table = vec![vec![0.0_f64; d_model]; max_len];
-        for pos in 0..max_len {
+        for (pos, row) in table.iter_mut().enumerate() {
             for i in 0..(d_model / 2) {
                 let angle = (pos as f64) / (10000.0_f64).powf(2.0 * i as f64 / d_model as f64);
-                table[pos][2 * i] = angle.sin();
+                row[2 * i] = angle.sin();
                 if 2 * i + 1 < d_model {
-                    table[pos][2 * i + 1] = angle.cos();
+                    row[2 * i + 1] = angle.cos();
                 }
             }
         }
@@ -1345,7 +1331,7 @@ impl PositionalEncoding {
     /// Add positional encoding to a sequence of embeddings in-place.
     ///
     /// `embeddings[t]` is a feature vector of length `d_model`.
-    pub fn add_to_sequence(&self, embeddings: &mut Vec<Vec<f64>>) {
+    pub fn add_to_sequence(&self, embeddings: &mut [Vec<f64>]) {
         for (t, emb) in embeddings.iter_mut().enumerate() {
             if t >= self.max_len {
                 break;
@@ -1404,15 +1390,16 @@ impl DenseLayer64 {
             "DenseLayer64::forward: input size mismatch"
         );
         self.last_input = input.to_vec();
-        let mut pre_act = Vec::with_capacity(self.out_features);
-        for o in 0..self.out_features {
-            let row = o * self.in_features;
-            let mut acc = self.biases[o];
-            for i in 0..self.in_features {
-                acc += self.weights[row + i] * input[i];
-            }
-            pre_act.push(acc);
-        }
+        let pre_act: Vec<f64> = (0..self.out_features)
+            .map(|o| {
+                let row = o * self.in_features;
+                let mut acc = self.biases[o];
+                for (i, &inp) in input.iter().enumerate() {
+                    acc += self.weights[row + i] * inp;
+                }
+                acc
+            })
+            .collect();
         let output: Vec<f64> = pre_act.iter().map(|&z| self.activation.apply(z)).collect();
         self.last_pre_act = pre_act;
         self.last_output = output.clone();
@@ -1425,7 +1412,6 @@ impl DenseLayer64 {
     ///
     /// Returns `(grad_weights, grad_biases, delta_in)` where `delta_in` is the
     /// gradient passed to the previous layer.
-    #[allow(clippy::too_many_arguments)]
     pub fn backward(&self, delta_out: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         assert_eq!(
             delta_out.len(),
@@ -1438,18 +1424,18 @@ impl DenseLayer64 {
             .map(|(&d, &z)| d * self.activation.derivative(z))
             .collect();
         let mut grad_weights = vec![0.0_f64; self.out_features * self.in_features];
-        for o in 0..self.out_features {
+        for (o, &dp_o) in delta_pre.iter().enumerate() {
             let row = o * self.in_features;
-            for i in 0..self.in_features {
-                grad_weights[row + i] = delta_pre[o] * self.last_input[i];
+            for (i, &li) in self.last_input.iter().enumerate() {
+                grad_weights[row + i] = dp_o * li;
             }
         }
         let grad_biases = delta_pre.clone();
         let mut delta_in = vec![0.0_f64; self.in_features];
-        for o in 0..self.out_features {
+        for (o, &dp_o) in delta_pre.iter().enumerate() {
             let row = o * self.in_features;
-            for i in 0..self.in_features {
-                delta_in[i] += self.weights[row + i] * delta_pre[o];
+            for (i, di) in delta_in.iter_mut().enumerate() {
+                *di += self.weights[row + i] * dp_o;
             }
         }
         (grad_weights, grad_biases, delta_in)
@@ -1559,16 +1545,16 @@ impl DenseLayer {
             input.len(),
             self.in_features
         );
-        let mut output = Vec::with_capacity(self.out_features);
-        for o in 0..self.out_features {
-            let row_offset = o * self.in_features;
-            let mut acc = self.biases[o];
-            for i in 0..self.in_features {
-                acc += self.weights[row_offset + i] * input[i];
-            }
-            output.push(self.activation.apply(acc));
-        }
-        output
+        (0..self.out_features)
+            .map(|o| {
+                let row_offset = o * self.in_features;
+                let mut acc = self.biases[o];
+                for (i, &inp) in input.iter().enumerate() {
+                    acc += self.weights[row_offset + i] * inp;
+                }
+                self.activation.apply(acc)
+            })
+            .collect()
     }
     /// Replace the weight matrix (must have length `out_features * in_features`).
     ///
@@ -1711,7 +1697,6 @@ impl BehlerParrinelloDescriptor {
     /// G4 angular symmetry function (two-body factor for a triplet i-j-k).
     ///
     /// G4 = 2^(1-ζ) * (1 + λ cos θ)^ζ * exp(-η (r_ij² + r_ik² + r_jk²)) * f_c(r_ij) f_c(r_ik) f_c(r_jk)
-    #[allow(clippy::too_many_arguments)]
     pub fn angular_g4(
         r_ij: f64,
         r_ik: f64,
@@ -1750,8 +1735,8 @@ impl BehlerParrinelloDescriptor {
             if r >= self.cutoff {
                 continue;
             }
-            for k in 0..n_descriptors {
-                desc[k] += Self::radial_g2(r, self.eta[k], self.rs[k], self.cutoff);
+            for (dk, (&eta_k, &rs_k)) in desc.iter_mut().zip(self.eta.iter().zip(self.rs.iter())) {
+                *dk += Self::radial_g2(r, eta_k, rs_k, self.cutoff);
             }
         }
         desc

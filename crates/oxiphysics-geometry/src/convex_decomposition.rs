@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::should_implement_trait)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 //! Convex decomposition of concave meshes for collision detection.
@@ -12,11 +11,6 @@
 //! - SAT-based convex polyhedra intersection
 //! - Inertia tensor from convex hull (divergence theorem)
 //! - Hull erosion (inner hull / offset by margin)
-
-#![allow(dead_code)]
-
-#[allow(unused_imports)]
-use std::f64::consts::PI;
 
 // ─── Vec3 helpers (plain f64 arrays, no nalgebra) ──────────────────────────
 
@@ -285,9 +279,9 @@ fn build_half_edge_structure(
     for (fi, tri) in tris.iter().enumerate() {
         let base = half_edges.len();
         // 3 half-edges per triangle
-        for k in 0..3_usize {
+        for (k, &orig) in tri.iter().enumerate().take(3_usize) {
             half_edges.push(HalfEdge {
-                origin: tri[k],
+                origin: orig,
                 twin: usize::MAX, // filled below
                 next: base + (k + 1) % 3,
                 face: fi,
@@ -335,14 +329,20 @@ pub struct AcdConfig {
     pub min_volume_fraction: f64,
 }
 
-impl AcdConfig {
-    /// Default ACD configuration.
-    pub fn default() -> Self {
+impl Default for AcdConfig {
+    fn default() -> Self {
         Self {
             max_concavity: 0.01,
             max_parts: 16,
             min_volume_fraction: 0.001,
         }
+    }
+}
+
+impl AcdConfig {
+    /// Construct an AcdConfig with default values.
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -664,6 +664,15 @@ pub struct GjkDistance {
     pub tolerance: f64,
 }
 
+impl Default for GjkDistance {
+    fn default() -> Self {
+        Self {
+            max_iter: 64,
+            tolerance: 1e-10,
+        }
+    }
+}
+
 impl GjkDistance {
     /// Create a GjkDistance instance.
     pub fn new(max_iter: usize, tolerance: f64) -> Self {
@@ -671,11 +680,6 @@ impl GjkDistance {
             max_iter,
             tolerance,
         }
-    }
-
-    /// Default GJK settings.
-    pub fn default() -> Self {
-        Self::new(64, 1e-10)
     }
 
     /// Compute the minimum distance between two convex shapes given their support functions.
@@ -952,8 +956,8 @@ impl InertiaFromHull {
             }
         }
         // Ensure diagonal is positive
-        for i in 0..3 {
-            inertia[i][i] = inertia[i][i].abs();
+        for (i, row) in inertia.iter_mut().enumerate() {
+            row[i] = row[i].abs();
         }
         let _ = mass;
         inertia
@@ -1317,13 +1321,13 @@ mod tests {
         let pts = cube_points(1.0);
         let hull = ConvexHull3d::build(&pts);
         let inertia = InertiaFromHull::compute(&hull, 1000.0);
-        for i in 0..3 {
+        for (i, row) in inertia.iter().enumerate() {
             assert!(
-                inertia[i][i] > 0.0,
+                row[i] > 0.0,
                 "diagonal inertia[{}][{}] should be positive: {:.6}",
                 i,
                 i,
-                inertia[i][i]
+                row[i]
             );
         }
     }
@@ -1333,14 +1337,14 @@ mod tests {
         let pts = octahedron_points();
         let hull = ConvexHull3d::build(&pts);
         let inertia = InertiaFromHull::compute(&hull, 1000.0);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row_i) in inertia.iter().enumerate() {
+            for (j, &val_ij) in row_i.iter().enumerate() {
                 assert!(
-                    approx_eq(inertia[i][j], inertia[j][i], 1e-9),
+                    approx_eq(val_ij, inertia[j][i], 1e-9),
                     "inertia tensor should be symmetric at ({},{}): {:.6} vs {:.6}",
                     i,
                     j,
-                    inertia[i][j],
+                    val_ij,
                     inertia[j][i]
                 );
             }

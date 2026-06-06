@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::functions::*;
     use crate::grid::LbmGrid2D;
     use crate::lattice::LatticeType;
     use crate::turbulence::types::*;

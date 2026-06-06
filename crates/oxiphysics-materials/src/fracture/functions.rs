@@ -10,7 +10,6 @@ use super::types::{GtnParams, PhaseFieldParams};
 ///
 /// In the AT2 model the history variable H stores the maximum tensile strain
 /// energy density ever reached, ensuring irreversibility of crack growth.
-#[allow(dead_code)]
 pub fn crack_driving_force(strain_energy_density: f64, h_prev: f64) -> f64 {
     strain_energy_density.max(h_prev)
 }
@@ -18,7 +17,6 @@ pub fn crack_driving_force(strain_energy_density: f64, h_prev: f64) -> f64 {
 ///
 /// Multiplies the elastic stiffness to model loss of load-carrying capacity.
 /// The small residual k_res prevents numerical singularity at d=1.
-#[allow(dead_code)]
 pub fn degradation_function(d: f64) -> f64 {
     pub(super) const K_RES: f64 = 1.0e-6;
     (1.0 - d).powi(2) + K_RES
@@ -28,7 +26,6 @@ pub fn degradation_function(d: f64) -> f64 {
 /// R(d) = (Gc/l0) * d − 2*(1−d)*H
 ///
 /// Solving R=0 gives the equilibrium phase field value at a given history H.
-#[allow(dead_code)]
 pub fn phase_field_residual(d: f64, h: f64, params: &PhaseFieldParams) -> f64 {
     (params.gc / params.l0) * d - 2.0 * (1.0 - d) * h
 }
@@ -39,14 +36,12 @@ pub fn phase_field_residual(d: f64, h: f64, params: &PhaseFieldParams) -> f64 {
 ///
 /// The result is clamped to \[0, 1\] and irreversibility is enforced (d only
 /// increases).
-#[allow(dead_code)]
 pub fn update_phase_field(d_prev: f64, h: f64, params: &PhaseFieldParams) -> f64 {
     let alpha = params.gc / params.l0;
     let d_new = 2.0 * h / (alpha + 2.0 * h);
     d_new.clamp(d_prev, 1.0)
 }
 /// Effective (degraded) Young's modulus: E_eff = g(d) * E0.
-#[allow(dead_code)]
 pub fn effective_modulus(d: f64, e0: f64) -> f64 {
     degradation_function(d) * e0
 }
@@ -56,7 +51,6 @@ pub fn effective_modulus(d: f64, e0: f64) -> f64 {
 ///
 /// Uses central differences for interior nodes and one-sided differences at
 /// boundaries.
-#[allow(dead_code)]
 pub fn crack_length_from_field(d_field: &[f64], dx: f64, l0: f64) -> f64 {
     let n = d_field.len();
     if n == 0 {
@@ -82,7 +76,6 @@ pub fn crack_length_from_field(d_field: &[f64], dx: f64, l0: f64) -> f64 {
 /// K_I = σ * √(π * a)
 ///
 /// where σ is the applied stress and a is the half-crack length.
-#[allow(dead_code)]
 pub fn sif_center_crack_infinite(stress: f64, half_crack_length: f64) -> f64 {
     stress * (PI * half_crack_length).sqrt()
 }
@@ -93,7 +86,6 @@ pub fn sif_center_crack_infinite(stress: f64, half_crack_length: f64) -> f64 {
 /// where W is the half-width and F(a/W) is the finite-width correction factor:
 /// F(a/W) ≈ (1 - 0.025*(a/W)^2 + 0.06*(a/W)^4) / cos(π*a/(2W))^(1/2)
 /// (Feddersen/Isida approximation)
-#[allow(dead_code)]
 pub fn sif_center_crack_finite_width(stress: f64, half_crack: f64, half_width: f64) -> f64 {
     let ratio = half_crack / half_width;
     let correction =
@@ -103,7 +95,6 @@ pub fn sif_center_crack_finite_width(stress: f64, half_crack: f64, half_width: f
 /// Mode I SIF for a single edge crack in a semi-infinite plate.
 ///
 /// K_I = 1.12 * σ * √(π * a)
-#[allow(dead_code)]
 pub fn sif_single_edge_crack(stress: f64, crack_length: f64) -> f64 {
     1.12 * stress * (PI * crack_length).sqrt()
 }
@@ -113,7 +104,6 @@ pub fn sif_single_edge_crack(stress: f64, crack_length: f64) -> f64 {
 ///
 /// F(a/W) = 1.12 - 0.231*(a/W) + 10.55*(a/W)^2 - 21.71*(a/W)^3 + 30.38*(a/W)^4
 /// (Brown and Srawley polynomial fit for a/W < 0.6)
-#[allow(dead_code)]
 pub fn sif_edge_crack_finite_width(stress: f64, crack_length: f64, width: f64) -> f64 {
     let r = crack_length / width;
     let f = 1.12 - 0.231 * r + 10.55 * r.powi(2) - 21.71 * r.powi(3) + 30.38 * r.powi(4);
@@ -125,7 +115,6 @@ pub fn sif_edge_crack_finite_width(stress: f64, crack_length: f64, width: f64) -
 ///
 /// F(a/W) = 1.12 + 0.203*(a/W) - 1.197*(a/W)^2 + 1.93*(a/W)^3
 /// (Tada, Paris and Irwin approximation)
-#[allow(dead_code)]
 pub fn sif_double_edge_crack(stress: f64, crack_length: f64, half_width: f64) -> f64 {
     let r = crack_length / half_width;
     let f = 1.12 + 0.203 * r - 1.197 * r.powi(2) + 1.93 * r.powi(3);
@@ -136,7 +125,6 @@ pub fn sif_double_edge_crack(stress: f64, crack_length: f64, half_width: f64) ->
 /// K_I = (2/π) * σ * √(π * a)
 ///
 /// where a is the crack radius.
-#[allow(dead_code)]
 pub fn sif_penny_shaped_crack(stress: f64, crack_radius: f64) -> f64 {
     (2.0 / PI) * stress * (PI * crack_radius).sqrt()
 }
@@ -146,8 +134,6 @@ pub fn sif_penny_shaped_crack(stress: f64, crack_radius: f64) -> f64 {
 ///
 /// f(a/W) = (2 + α) * (0.886 + 4.64*α - 13.32*α^2 + 14.72*α^3 - 5.6*α^4) / (1-α)^(3/2)
 /// where α = a/W.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn sif_compact_tension(load: f64, thickness: f64, width: f64, crack_length: f64) -> f64 {
     let alpha = crack_length / width;
     let f = (2.0 + alpha)
@@ -162,7 +148,6 @@ pub fn sif_compact_tension(load: f64, thickness: f64, width: f64, crack_length: 
 ///
 /// where M1, M2, M3 are geometry-dependent coefficients.
 /// For a standard edge crack: M1 ≈ 0.6147, M2 ≈ -0.1244, M3 ≈ 0.0
-#[allow(dead_code)]
 pub fn weight_function_edge_crack(x: f64, a: f64, m1: f64, m2: f64, m3: f64) -> f64 {
     if x >= a {
         return 0.0;
@@ -176,7 +161,6 @@ pub fn weight_function_edge_crack(x: f64, a: f64, m1: f64, m2: f64, m3: f64) -> 
 /// K = ∫₀ᵃ σ(x) * m(x, a) dx
 ///
 /// Uses the trapezoidal rule with `n_points` integration points.
-#[allow(dead_code)]
 pub fn sif_weight_function(
     stress_profile: &dyn Fn(f64) -> f64,
     crack_length: f64,
@@ -210,7 +194,6 @@ pub fn sif_weight_function(
 /// Plane strain: r_p = (1/(6π)) * (K_I / σ_ys)²
 ///
 /// Returns the plastic zone radius r_p.
-#[allow(dead_code)]
 pub fn irwin_plastic_zone(k_i: f64, sigma_ys: f64, plane_strain: bool) -> f64 {
     let factor = if plane_strain {
         1.0 / (6.0 * PI)
@@ -225,7 +208,6 @@ pub fn irwin_plastic_zone(k_i: f64, sigma_ys: f64, plane_strain: bool) -> f64 {
 ///
 /// The effective crack length gives a corrected SIF:
 /// K_eff = σ * √(π * a_eff)
-#[allow(dead_code)]
 pub fn irwin_effective_crack_length(
     crack_length: f64,
     k_i: f64,
@@ -238,7 +220,6 @@ pub fn irwin_effective_crack_length(
 ///
 /// Iterates: a_eff = a + r_p(K(a_eff)) until convergence.
 /// Returns the converged effective SIF.
-#[allow(dead_code)]
 pub fn irwin_corrected_sif(
     stress: f64,
     crack_length: f64,
@@ -263,7 +244,6 @@ pub fn irwin_corrected_sif(
 /// c = a * sec(π*σ/(2*σ_ys)) - a
 ///
 /// where c is the plastic zone extent, a is the half-crack length.
-#[allow(dead_code)]
 pub fn dugdale_plastic_zone(half_crack: f64, stress: f64, sigma_ys: f64) -> f64 {
     let sec_val = 1.0 / (PI * stress / (2.0 * sigma_ys)).cos();
     half_crack * (sec_val - 1.0)
@@ -271,7 +251,6 @@ pub fn dugdale_plastic_zone(half_crack: f64, stress: f64, sigma_ys: f64) -> f64 
 /// Dugdale CTOD (crack-tip opening displacement) for a center crack.
 ///
 /// δ = (8 * σ_ys * a) / (π * E) * ln(sec(π*σ/(2*σ_ys)))
-#[allow(dead_code)]
 pub fn dugdale_ctod(half_crack: f64, stress: f64, sigma_ys: f64, e_modulus: f64) -> f64 {
     let sec_val = 1.0 / (PI * stress / (2.0 * sigma_ys)).cos();
     (8.0 * sigma_ys * half_crack) / (PI * e_modulus) * sec_val.ln()
@@ -282,7 +261,6 @@ pub fn dugdale_ctod(half_crack: f64, stress: f64, sigma_ys: f64, e_modulus: f64)
 /// Plane strain: δ = K² / (E * σ_ys) * (1 - ν²)
 ///
 /// The factor m ≈ 1 for plane stress, m ≈ 1-ν² for plane strain is absorbed.
-#[allow(dead_code)]
 pub fn ctod_from_k(k_i: f64, e_modulus: f64, sigma_ys: f64, nu: f64, plane_strain: bool) -> f64 {
     let factor = if plane_strain { 1.0 - nu * nu } else { 1.0 };
     factor * k_i.powi(2) / (e_modulus * sigma_ys)
@@ -290,7 +268,6 @@ pub fn ctod_from_k(k_i: f64, e_modulus: f64, sigma_ys: f64, nu: f64, plane_strai
 /// Check CTOD fracture criterion.
 ///
 /// Fracture occurs when CTOD >= CTOD_critical.
-#[allow(dead_code)]
 pub fn ctod_criterion(ctod: f64, ctod_critical: f64) -> bool {
     ctod >= ctod_critical
 }
@@ -300,7 +277,6 @@ pub fn ctod_criterion(ctod: f64, ctod_critical: f64) -> bool {
 ///
 /// where δ is the CTOD and d is the distance behind the crack tip
 /// at which the opening is measured.
-#[allow(dead_code)]
 pub fn ctoa_from_ctod(ctod: f64, distance_behind_tip: f64) -> f64 {
     2.0 * (ctod / (2.0 * distance_behind_tip)).atan()
 }
@@ -308,7 +284,6 @@ pub fn ctoa_from_ctod(ctod: f64, distance_behind_tip: f64) -> f64 {
 ///
 /// Stable tearing occurs while CTOA > CTOA_critical.
 /// When CTOA drops below the critical value, fracture instability is reached.
-#[allow(dead_code)]
 pub fn ctoa_criterion(ctoa: f64, ctoa_critical: f64) -> bool {
     ctoa >= ctoa_critical
 }
@@ -317,7 +292,6 @@ pub fn ctoa_criterion(ctoa: f64, ctoa_critical: f64) -> bool {
 /// Φ = (σ_eq/σ_y)² + 2·q1·f*·cosh(3·q2·σ_m / (2·σ_y)) − (1 + q3·f*²)
 ///
 /// Φ < 0: elastic; Φ = 0: yielding.
-#[allow(dead_code)]
 pub fn gtn_yield_function(
     sigma_eq: f64,
     sigma_m: f64,
@@ -333,7 +307,6 @@ pub fn gtn_yield_function(
 /// Void nucleation rate via a Gaussian plastic-strain-controlled model.
 ///
 /// df_n = (fn_void / (sn·√(2π))) · exp(−½·((ε_p − ε_n)/s_n)²) · dε_p
-#[allow(dead_code)]
 pub fn nucleation_rate(eps_p: f64, deps_p: f64, fn_void: f64, en: f64, sn: f64) -> f64 {
     let exponent = -0.5 * ((eps_p - en) / sn).powi(2);
     (fn_void / (sn * (2.0 * PI).sqrt())) * exponent.exp() * deps_p
@@ -341,7 +314,6 @@ pub fn nucleation_rate(eps_p: f64, deps_p: f64, fn_void: f64, en: f64, sn: f64) 
 /// Void growth rate from plastic volumetric strain increment.
 ///
 /// df_growth = (1 − f) · dε_vol_p
-#[allow(dead_code)]
 pub fn void_growth_rate(f: f64, deps_vol_p: f64) -> f64 {
     (1.0 - f) * deps_vol_p
 }
@@ -349,7 +321,6 @@ pub fn void_growth_rate(f: f64, deps_vol_p: f64) -> f64 {
 ///
 /// f*(f) = f                               if f ≤ fc
 ///        = fc + (1/q1 − fc)/(ff−fc)*(f−fc) if f > fc
-#[allow(dead_code)]
 pub fn effective_void_fraction(f: f64, params: &GtnParams) -> f64 {
     if f <= params.fc {
         f
@@ -361,7 +332,6 @@ pub fn effective_void_fraction(f: f64, params: &GtnParams) -> f64 {
 /// Perform a single GTN time step: update void fraction.
 ///
 /// Combines growth and nucleation contributions.
-#[allow(dead_code)]
 pub fn gtn_step(f: f64, eps_p: f64, deps_p: f64, deps_vol_p: f64, params: &GtnParams) -> f64 {
     let df_growth = void_growth_rate(f, deps_vol_p);
     let df_nucleation = nucleation_rate(eps_p, deps_p, params.fn_void, params.en, params.sn);
@@ -371,7 +341,6 @@ pub fn gtn_step(f: f64, eps_p: f64, deps_p: f64, deps_vol_p: f64, params: &GtnPa
 ///
 /// Plane stress: G = K² / E
 /// Plane strain: G = K² * (1 - ν²) / E
-#[allow(dead_code)]
 pub fn k_to_g(k_i: f64, e_modulus: f64, nu: f64, plane_strain: bool) -> f64 {
     let factor = if plane_strain { 1.0 - nu * nu } else { 1.0 };
     factor * k_i.powi(2) / e_modulus
@@ -379,7 +348,6 @@ pub fn k_to_g(k_i: f64, e_modulus: f64, nu: f64, plane_strain: bool) -> f64 {
 /// Convert from energy release rate G to K_I.
 ///
 /// K_I = √(G * E / factor)
-#[allow(dead_code)]
 pub fn g_to_k(g: f64, e_modulus: f64, nu: f64, plane_strain: bool) -> f64 {
     let factor = if plane_strain { 1.0 - nu * nu } else { 1.0 };
     (g * e_modulus / factor).sqrt()
@@ -389,7 +357,6 @@ pub fn g_to_k(g: f64, e_modulus: f64, nu: f64, plane_strain: bool) -> f64 {
 /// da/dN = C * (ΔK)^m
 ///
 /// where C and m are material constants.
-#[allow(dead_code)]
 pub fn paris_law_growth_rate(delta_k: f64, c: f64, m: f64) -> f64 {
     if delta_k <= 0.0 {
         return 0.0;
@@ -401,8 +368,6 @@ pub fn paris_law_growth_rate(delta_k: f64, c: f64, m: f64) -> f64 {
 /// da/dN = C * (ΔK)^m * (1 - ΔK_th/ΔK)^p / (1 - K_max/K_Ic)^q
 ///
 /// (Forman/Mettu NASGRO equation simplified form)
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn paris_forman_growth_rate(
     delta_k: f64,
     k_max: f64,
@@ -433,7 +398,6 @@ pub fn paris_forman_growth_rate(
 ///         / (2*(1+2*α)*(1-α)^1.5)
 ///
 /// Valid for α = a/W in \[0.0, 1.0\].
-#[allow(dead_code)]
 pub fn sif_three_point_bend(
     force: f64,
     span: f64,
@@ -451,7 +415,6 @@ pub fn sif_three_point_bend(
 ///
 /// Solves K_I(a) = K_Ic for a given stress state using bisection.
 /// Returns None if no valid root is found in \[a_min, a_max\].
-#[allow(dead_code)]
 pub fn senb_critical_crack_length(
     force: f64,
     span: f64,
@@ -490,7 +453,6 @@ pub fn senb_critical_crack_length(
 /// K_II = σ * √(π*a) * sin(β) * cos(β)
 ///
 /// Returns (K_I, K_II).
-#[allow(dead_code)]
 pub fn sif_mixed_mode_inclined_crack(stress: f64, half_crack: f64, angle_rad: f64) -> (f64, f64) {
     let k_base = stress * (PI * half_crack).sqrt();
     let k_i = k_base * angle_rad.cos().powi(2);
@@ -500,7 +462,6 @@ pub fn sif_mixed_mode_inclined_crack(stress: f64, half_crack: f64, angle_rad: f6
 /// Mode III (anti-plane shear) SIF for an edge crack.
 ///
 /// K_III = τ * √(π * a) where τ is the shear stress.
-#[allow(dead_code)]
 pub fn sif_mode_iii_edge_crack(shear_stress: f64, crack_length: f64) -> f64 {
     shear_stress * (PI * crack_length).sqrt()
 }
@@ -510,14 +471,12 @@ pub fn sif_mode_iii_edge_crack(shear_stress: f64, crack_length: f64) -> f64 {
 ///
 /// A common approximation for the effective driving force for crack propagation
 /// in mixed-mode loading.
-#[allow(dead_code)]
 pub fn sif_effective_mixed_mode(k_i: f64, k_ii: f64) -> f64 {
     (k_i.powi(2) + k_ii.powi(2)).sqrt()
 }
 /// Effective SIF including mode III under plane strain.
 ///
 /// K_eff = sqrt(K_I² + K_II² + K_III²/(1-ν))
-#[allow(dead_code)]
 pub fn sif_effective_mixed_mode_iii(k_i: f64, k_ii: f64, k_iii: f64, nu: f64) -> f64 {
     (k_i.powi(2) + k_ii.powi(2) + k_iii.powi(2) / (1.0 - nu)).sqrt()
 }
@@ -527,7 +486,6 @@ pub fn sif_effective_mixed_mode_iii(k_i: f64, k_ii: f64, k_iii: f64, nu: f64) ->
 /// θ_c = 2 * arctan(K_I/(4*K_II) - sqrt((K_I/(4*K_II))² + 0.5))
 ///
 /// Returns angle in radians (θ = 0 for pure mode I).
-#[allow(dead_code)]
 pub fn mixed_mode_propagation_angle(k_i: f64, k_ii: f64) -> f64 {
     if k_ii.abs() < 1e-30 {
         return 0.0;
@@ -544,7 +502,6 @@ pub fn mixed_mode_propagation_angle(k_i: f64, k_ii: f64) -> f64 {
 ///
 /// where γ is the Walker exponent (0 < γ < 1, typically 0.5 for metals).
 /// At R = 0 and γ = 0.5 this reduces to ΔK_eff = ΔK / √(1-R) = √(ΔK * K_max).
-#[allow(dead_code)]
 pub fn walker_delta_k_eff(delta_k: f64, r_ratio: f64, gamma: f64) -> f64 {
     let denom = (1.0 - r_ratio).powf(1.0 - gamma);
     if denom <= 0.0 {
@@ -555,7 +512,6 @@ pub fn walker_delta_k_eff(delta_k: f64, r_ratio: f64, gamma: f64) -> f64 {
 /// Paris law crack growth rate with Walker R-ratio correction.
 ///
 /// da/dN = C * (ΔK_eff)^m = C * (ΔK / (1-R)^(1-γ))^m
-#[allow(dead_code)]
 pub fn paris_walker_rate(delta_k: f64, r_ratio: f64, c: f64, m: f64, gamma: f64) -> f64 {
     if delta_k <= 0.0 {
         return 0.0;
@@ -568,7 +524,6 @@ pub fn paris_walker_rate(delta_k: f64, r_ratio: f64, c: f64, m: f64, gamma: f64)
 /// da/dN = C * (ΔK)^m / ((1-R) * K_c - ΔK)
 ///
 /// Accounts for both mean stress ratio effects and fracture instability.
-#[allow(dead_code)]
 pub fn forman_crack_growth_rate(delta_k: f64, r_ratio: f64, c: f64, m: f64, k_c: f64) -> f64 {
     if delta_k <= 0.0 {
         return 0.0;
@@ -586,7 +541,6 @@ pub fn forman_crack_growth_rate(delta_k: f64, r_ratio: f64, c: f64, m: f64, k_c:
 ///
 /// (Same as the existing `irwin_plastic_zone` — provided here for symmetry with
 /// the second-order version below and to allow standalone use.)
-#[allow(dead_code)]
 pub fn plastic_zone_size_first_order(k_i: f64, sigma_ys: f64, plane_strain: bool) -> f64 {
     let factor = if plane_strain {
         1.0 / (6.0 * PI)
@@ -600,7 +554,6 @@ pub fn plastic_zone_size_first_order(k_i: f64, sigma_ys: f64, plane_strain: bool
 /// Iterates: r_p^(n+1) = (1/(2π)) * (K_I(a + r_p^(n)) / σ_ys)²
 ///
 /// until convergence, accounting for the increase in SIF due to the plastic zone.
-#[allow(dead_code)]
 pub fn plastic_zone_size_iterative(
     stress: f64,
     crack_length: f64,
@@ -633,8 +586,6 @@ pub fn plastic_zone_size_iterative(
 /// σ_ys_eff = σ_ys / √(1 - λ + λ²)  (von Mises)
 ///
 /// The biaxiality-corrected plastic zone is r_p = K_I²/(2π σ_ys_eff²).
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub fn plastic_zone_biaxial(k_i: f64, sigma_ys: f64, lambda: f64, plane_strain: bool) -> f64 {
     let vm_factor = (1.0 - lambda + lambda * lambda).sqrt();
     let sigma_ys_eff = sigma_ys / vm_factor;
@@ -648,7 +599,6 @@ pub fn plastic_zone_biaxial(k_i: f64, sigma_ys: f64, lambda: f64, plane_strain: 
 /// Irwin CTOD formula: δ = K_I² / (σ_ys * E')
 ///
 /// where E' = E (plane stress) or E' = E / (1 - ν²) (plane strain).
-#[allow(dead_code)]
 pub fn ctod_irwin(k_i: f64, sigma_ys: f64, e: f64, nu: f64, plane_strain: bool) -> f64 {
     let e_prime = if plane_strain { e / (1.0 - nu * nu) } else { e };
     k_i.powi(2) / (sigma_ys * e_prime)
@@ -656,7 +606,6 @@ pub fn ctod_irwin(k_i: f64, sigma_ys: f64, e: f64, nu: f64, plane_strain: bool) 
 /// Wells CTOD formula with Irwin plastic zone correction.
 ///
 /// δ = (4/π) * (K_I² / (E * σ_ys))  (plane stress approximation)
-#[allow(dead_code)]
 pub fn ctod_wells(k_i: f64, e: f64, sigma_ys: f64) -> f64 {
     (4.0 / PI) * k_i.powi(2) / (e * sigma_ys)
 }
@@ -665,7 +614,6 @@ pub fn ctod_wells(k_i: f64, e: f64, sigma_ys: f64) -> f64 {
 /// δ = J / (m * σ_ys)
 ///
 /// where m ≈ 1 (plane stress) or m ≈ 2 (plane strain).
-#[allow(dead_code)]
 pub fn ctod_from_j(j_integral: f64, sigma_ys: f64, plane_strain: bool) -> f64 {
     let m = if plane_strain { 2.0 } else { 1.0 };
     j_integral / (m * sigma_ys)
@@ -673,7 +621,6 @@ pub fn ctod_from_j(j_integral: f64, sigma_ys: f64, plane_strain: bool) -> f64 {
 /// J-integral from CTOD.
 ///
 /// J = m * σ_ys * δ
-#[allow(dead_code)]
 pub fn j_from_ctod(ctod: f64, sigma_ys: f64, plane_strain: bool) -> f64 {
     let m = if plane_strain { 2.0 } else { 1.0 };
     m * sigma_ys * ctod
@@ -681,14 +628,12 @@ pub fn j_from_ctod(ctod: f64, sigma_ys: f64, plane_strain: bool) -> f64 {
 /// Minimum specimen thickness for valid plane-strain fracture toughness test.
 ///
 /// Per ASTM E399: B_min = 2.5 * (K_Ic / σ_ys)²
-#[allow(dead_code)]
 pub fn minimum_thickness_plane_strain(k_ic: f64, sigma_ys: f64) -> f64 {
     2.5 * (k_ic / sigma_ys).powi(2)
 }
 /// Check whether the test satisfies plane-strain validity per ASTM E399.
 ///
 /// Valid if: B ≥ B_min AND a ≥ B_min AND (W - a) ≥ B_min
-#[allow(dead_code)]
 pub fn is_plane_strain_valid(
     thickness: f64,
     crack_length: f64,
@@ -702,14 +647,12 @@ pub fn is_plane_strain_valid(
 /// Convert K_Ic to critical J (Jc) using the plane-strain formula.
 ///
 /// J_c = K_Ic² * (1 - ν²) / E
-#[allow(dead_code)]
 pub fn k_to_j(k_ic: f64, e: f64, nu: f64) -> f64 {
     k_ic.powi(2) * (1.0 - nu * nu) / e
 }
 /// Convert critical J to K_Ic.
 ///
 /// K_Ic = sqrt(J_c * E / (1 - ν²))
-#[allow(dead_code)]
 pub fn j_to_k(j_c: f64, e: f64, nu: f64) -> f64 {
     (j_c * e / (1.0 - nu * nu)).sqrt()
 }
@@ -719,7 +662,6 @@ pub fn j_to_k(j_c: f64, e: f64, nu: f64) -> f64 {
 ///
 /// where v is the crack velocity and c_R is the Rayleigh wave speed.
 /// At v = 0, K_dyn = K_static. At v = c_R, K_dyn = 0 (terminal velocity).
-#[allow(dead_code)]
 pub fn sif_dynamic_freund(k_static: f64, crack_velocity: f64, rayleigh_speed: f64) -> f64 {
     if rayleigh_speed <= 0.0 || crack_velocity >= rayleigh_speed {
         return 0.0;
@@ -732,7 +674,6 @@ pub fn sif_dynamic_freund(k_static: f64, crack_velocity: f64, rayleigh_speed: f6
 /// c_R ≈ c_s * (0.862 + 1.14*ν) / (1 + ν)
 ///
 /// where c_s = sqrt(G/ρ) is the shear wave speed.
-#[allow(dead_code)]
 pub fn rayleigh_wave_speed(shear_modulus: f64, density: f64, nu: f64) -> f64 {
     let c_s = (shear_modulus / density).sqrt();
     c_s * (0.862 + 1.14 * nu) / (1.0 + nu)
@@ -740,26 +681,22 @@ pub fn rayleigh_wave_speed(shear_modulus: f64, density: f64, nu: f64) -> f64 {
 /// Crack arrest condition: K_static ≤ K_Ia (arrest toughness).
 ///
 /// Returns true if the crack will arrest (K_static < K_Ia).
-#[allow(dead_code)]
 pub fn will_crack_arrest(k_static: f64, k_ia: f64) -> bool {
     k_static < k_ia
 }
 /// Mode mixity ratio ψ = arctan(K_II / K_I) in radians.
 ///
 /// ψ = 0 → pure mode I; ψ = π/2 → pure mode II.
-#[allow(dead_code)]
 pub fn mode_mixity_angle(k_i: f64, k_ii: f64) -> f64 {
     k_ii.atan2(k_i)
 }
 /// Mode mixity phase angle (degrees).
-#[allow(dead_code)]
 pub fn mode_mixity_angle_degrees(k_i: f64, k_ii: f64) -> f64 {
     mode_mixity_angle(k_i, k_ii).to_degrees()
 }
 /// Fracture mode I fraction from K_I, K_II, K_III.
 ///
 /// η_I = K_I² / (K_I² + K_II² + K_III²)
-#[allow(dead_code)]
 pub fn mode_i_fraction(k_i: f64, k_ii: f64, k_iii: f64) -> f64 {
     let total = k_i * k_i + k_ii * k_ii + k_iii * k_iii;
     if total <= 0.0 {
@@ -771,7 +708,6 @@ pub fn mode_i_fraction(k_i: f64, k_ii: f64, k_iii: f64) -> f64 {
 ///
 /// Used in ductile fracture models (GTN, Rice-Tracey, etc.).
 /// High triaxiality accelerates void growth and ductile fracture.
-#[allow(dead_code)]
 pub fn stress_triaxiality(sigma_m: f64, sigma_eq: f64) -> f64 {
     if sigma_eq.abs() < 1e-30 {
         return 0.0;
@@ -783,7 +719,6 @@ pub fn stress_triaxiality(sigma_m: f64, sigma_eq: f64) -> f64 {
 /// R_dot/R = C * exp(3*σ_m / (2*σ_0)) * eps_dot_eq
 ///
 /// C ≈ 0.283 (original R-T value).
-#[allow(dead_code)]
 pub fn rice_tracey_void_growth(sigma_m: f64, sigma_0: f64, eps_dot_eq: f64) -> f64 {
     let c = 0.283;
     c * (1.5 * sigma_m / sigma_0).exp() * eps_dot_eq
@@ -793,7 +728,6 @@ pub fn rice_tracey_void_growth(sigma_m: f64, sigma_0: f64, eps_dot_eq: f64) -> f
 /// T* = T_stress / σ_ys
 ///
 /// Accounts for in-plane constraint effects on fracture toughness.
-#[allow(dead_code)]
 pub fn t_stress_constraint(t_stress: f64, sigma_ys: f64) -> f64 {
     if sigma_ys.abs() < 1e-30 {
         return 0.0;
@@ -806,7 +740,6 @@ pub fn t_stress_constraint(t_stress: f64, sigma_ys: f64) -> f64 {
 ///
 /// where Δεp is the plastic strain range, εf' is the fatigue ductility
 /// coefficient, and c is the fatigue ductility exponent (typically -0.5 to -0.7).
-#[allow(dead_code)]
 pub fn coffin_manson_strain_amplitude(n_f: f64, eps_f_prime: f64, c: f64) -> f64 {
     eps_f_prime * (2.0 * n_f).powf(c)
 }
@@ -816,14 +749,12 @@ pub fn coffin_manson_strain_amplitude(n_f: f64, eps_f_prime: f64, c: f64) -> f64
 ///
 /// where σf' is the fatigue strength coefficient, b is the fatigue strength
 /// exponent (typically -0.05 to -0.12).
-#[allow(dead_code)]
 pub fn basquin_stress_amplitude(n_f: f64, sigma_f_prime: f64, b: f64) -> f64 {
     sigma_f_prime * (2.0 * n_f).powf(b)
 }
 /// Total strain amplitude from combined Coffin-Manson + Basquin (Morrow).
 ///
 /// Δε/2 = σf'/E * (2*Nf)^b + εf' * (2*Nf)^c
-#[allow(dead_code)]
 pub fn morrow_total_strain_amplitude(
     n_f: f64,
     sigma_f_prime: f64,
@@ -837,7 +768,6 @@ pub fn morrow_total_strain_amplitude(
 /// Fatigue life (cycles to failure) from stress amplitude using Basquin.
 ///
 /// Nf = (1/2) * (Δσ/(2*σf'))^(1/b)
-#[allow(dead_code)]
 pub fn basquin_fatigue_life(delta_sigma_over_2: f64, sigma_f_prime: f64, b: f64) -> f64 {
     if sigma_f_prime <= 0.0 || b >= 0.0 {
         return f64::INFINITY;
@@ -849,7 +779,6 @@ pub fn basquin_fatigue_life(delta_sigma_over_2: f64, sigma_f_prime: f64, b: f64)
 /// P_SWT = σ_max * Δε/2
 ///
 /// For mean-stress corrected fatigue life.
-#[allow(dead_code)]
 pub fn swt_parameter(sigma_max: f64, strain_amplitude: f64) -> f64 {
     sigma_max * strain_amplitude
 }
@@ -858,7 +787,6 @@ pub fn swt_parameter(sigma_max: f64, strain_amplitude: f64) -> f64 {
 /// K_I = σ * √(π*a) * F(λ)
 ///
 /// where λ = a/R (crack length to hole radius ratio), and F(λ) ≈ 1 + 0.1215*λ − 0.0598*λ² (approximate).
-#[allow(dead_code)]
 pub fn sif_hole_edge_crack(stress: f64, crack_length: f64, hole_radius: f64) -> f64 {
     let lambda = crack_length / hole_radius;
     let f = 1.0 + 0.1215 * lambda - 0.0598 * lambda * lambda;
@@ -870,7 +798,6 @@ pub fn sif_hole_edge_crack(stress: f64, crack_length: f64, hole_radius: f64) -> 
 ///
 /// where Q is the shape factor (Q ≈ φ² - 0.212*(σ/σ_ys)², φ = elliptic integral).
 /// Simplified: Q ≈ (1 + 4.593*(a/c)^1.65) for a/c ≤ 1.
-#[allow(dead_code)]
 pub fn sif_surface_crack(stress: f64, depth: f64, half_length: f64) -> f64 {
     let ratio = depth / half_length;
     let phi2 = if ratio <= 1.0 {
@@ -887,7 +814,6 @@ pub fn sif_surface_crack(stress: f64, depth: f64, half_length: f64) -> f64 {
 /// σ_rθ = K_I / √(2π*r) * sin(θ/2) * cos(θ/2) * cos(3θ/2)
 ///
 /// Returns (sigma_rr, sigma_theta_theta, sigma_r_theta).
-#[allow(dead_code)]
 pub fn near_tip_stress_mode_i(k_i: f64, r: f64, theta: f64) -> (f64, f64, f64) {
     if r <= 0.0 {
         return (f64::INFINITY, f64::INFINITY, f64::INFINITY);
@@ -903,7 +829,6 @@ pub fn near_tip_stress_mode_i(k_i: f64, r: f64, theta: f64) -> (f64, f64, f64) {
 ///
 /// Integrates from initial crack length a0 to final af (or until K_max ≥ K_Ic).
 /// Returns total number of cycles.
-#[allow(dead_code)]
 pub fn paris_law_cycles(
     a0: f64,
     a_f: f64,
@@ -937,8 +862,6 @@ pub fn paris_law_cycles(
 /// Forman equation fatigue life integration.
 ///
 /// Integrates da/dN = C*(ΔK)^m / ((1-R)*K_c - ΔK).
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn forman_law_cycles(
     a0: f64,
     a_f: f64,

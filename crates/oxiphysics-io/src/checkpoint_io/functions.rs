@@ -301,13 +301,15 @@ mod tests {
     }
     #[test]
     fn should_checkpoint_zero_interval() {
-        let mgr = CheckpointManager::new("/tmp", 5, 0);
+        let tmpdir = std::env::temp_dir();
+        let mgr = CheckpointManager::new(&tmpdir, 5, 0);
         assert!(!mgr.should_checkpoint(0));
         assert!(!mgr.should_checkpoint(100));
     }
     #[test]
     fn checkpoint_path_format() {
-        let mgr = CheckpointManager::new("/tmp/sim", 3, 50);
+        let tmpdir = std::env::temp_dir();
+        let mgr = CheckpointManager::new(tmpdir.join("sim"), 3, 50);
         let p = mgr.checkpoint_path(42);
         assert!(p.to_string_lossy().contains("checkpoint_0000000042.bin"));
     }
@@ -386,7 +388,8 @@ mod tests {
     }
     #[test]
     fn writer_with_compress_flag() {
-        let w = CheckpointWriter::new("/tmp/x.bin").with_compress(true);
+        let path = std::env::temp_dir().join("x.bin");
+        let w = CheckpointWriter::new(path.to_str().unwrap_or("")).with_compress(true);
         assert!(w.compress);
     }
     #[test]

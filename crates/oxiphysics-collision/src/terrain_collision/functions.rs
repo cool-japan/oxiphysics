@@ -66,15 +66,7 @@ pub(super) fn scale3(a: [f64; 3], s: f64) -> [f64; 3] {
 pub(super) fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-#[inline]
-#[allow(dead_code)]
-pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
+
 #[inline]
 pub(super) fn len3(a: [f64; 3]) -> f64 {
     dot3(a, a).sqrt()
@@ -132,10 +124,6 @@ mod tests {
     use crate::terrain_collision::WaterSurface;
     fn flat_hf(nx: usize, nz: usize, h: f64) -> HeightfieldShape {
         HeightfieldShape::new(nx, nz, 1.0, 1.0, vec![h; nx * nz])
-    }
-    fn slope_hf(nx: usize, nz: usize) -> HeightfieldShape {
-        let heights: Vec<f64> = (0..nx * nz).map(|i| (i % nx) as f64 * 0.1).collect();
-        HeightfieldShape::new(nx, nz, 1.0, 1.0, heights)
     }
     #[test]
     fn bilinear_corners() {

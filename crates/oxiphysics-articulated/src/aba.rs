@@ -1,6 +1,5 @@
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
-#![allow(clippy::needless_range_loop)]
 
 //! Articulated Body Algorithm (ABA) for forward dynamics.
 //!
@@ -281,8 +280,8 @@ pub fn aba(model: &ArticulatedModel, q: &[f64], q_dot: &[f64], tau: &[f64]) -> V
             let start = model.dof_start(i);
             let mut q_ddot_i = vec![0.0f64; dof];
             for k in 0..dof {
-                for l in 0..dof {
-                    q_ddot_i[k] += wb[i].d_inv[k * dof + l] * rhs[l];
+                for (l, rhs_l) in rhs.iter().enumerate() {
+                    q_ddot_i[k] += wb[i].d_inv[k * dof + l] * rhs_l;
                 }
                 q_ddot[start + k] = q_ddot_i[k];
             }

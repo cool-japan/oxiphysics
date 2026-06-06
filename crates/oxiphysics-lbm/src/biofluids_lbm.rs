@@ -6,8 +6,6 @@
 //! including pulsatile blood flow, Womersley profiles, vascular branching,
 //! cerebrospinal fluid dynamics, and respiratory-tree flows.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 /// Fluid type for biofluid simulations.

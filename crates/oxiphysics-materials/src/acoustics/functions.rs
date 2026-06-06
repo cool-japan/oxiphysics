@@ -9,14 +9,12 @@ use super::types::WeightingFilter;
 /// Pressure reflection coefficient at a normal-incidence interface.
 ///
 /// R = (z2 - z1) / (z2 + z1)
-#[allow(dead_code)]
 pub fn reflection_coefficient(z1: f64, z2: f64) -> f64 {
     (z2 - z1) / (z2 + z1)
 }
 /// Pressure transmission coefficient at a normal-incidence interface.
 ///
 /// T = 2·z2 / (z2 + z1)
-#[allow(dead_code)]
 pub fn transmission_coefficient(z1: f64, z2: f64) -> f64 {
     2.0 * z2 / (z2 + z1)
 }
@@ -24,7 +22,6 @@ pub fn transmission_coefficient(z1: f64, z2: f64) -> f64 {
 ///
 /// The intensity (power) transmission coefficient is τ = 4·z1·z2 / (z1+z2)².
 /// TL = −10·log10(τ).
-#[allow(dead_code)]
 pub fn transmission_loss_db(z1: f64, z2: f64) -> f64 {
     let tau = 4.0 * z1 * z2 / ((z1 + z2) * (z1 + z2));
     -10.0 * tau.log10()
@@ -35,7 +32,6 @@ pub fn transmission_loss_db(z1: f64, z2: f64) -> f64 {
 /// `thicknesses` has length N−2 (one per interior layer).
 /// `freq` in Hz.
 /// Returns the power transmission coefficient |T|².
-#[allow(dead_code)]
 pub fn multilayer_transmission(impedances: &[f64], thicknesses: &[f64], freq: f64) -> f64 {
     let n = impedances.len();
     if n < 2 {
@@ -76,7 +72,6 @@ pub fn multilayer_transmission(impedances: &[f64], thicknesses: &[f64], freq: f6
 /// Classical viscous attenuation coefficient (Stokes/Kirchhoff).
 ///
 /// alpha = 2·mu·omega² / (3·rho·c³)  \[Np/m\]
-#[allow(dead_code)]
 pub fn viscous_attenuation(freq: f64, viscosity: f64, density: f64, c: f64) -> f64 {
     let omega = 2.0 * PI * freq;
     2.0 * viscosity * omega * omega / (3.0 * density * c * c * c)
@@ -85,7 +80,6 @@ pub fn viscous_attenuation(freq: f64, viscosity: f64, density: f64, c: f64) -> f
 ///
 /// Includes O₂ and N₂ vibrational relaxation.
 /// `temp_c` in °C, `humidity` as fraction 0–1.
-#[allow(dead_code)]
 pub fn atmospheric_attenuation_db_per_m(freq: f64, temp_c: f64, humidity: f64) -> f64 {
     let t_kelvin = temp_c + 273.15;
     let t_ref = 293.15_f64;
@@ -101,33 +95,28 @@ pub fn atmospheric_attenuation_db_per_m(freq: f64, temp_c: f64, humidity: f64) -
     (alpha_classic + alpha_o2 + alpha_n2) * 8.686
 }
 /// Convert attenuation coefficient (dB/m or Np/m) over a distance to total dB loss.
-#[allow(dead_code)]
 pub fn attenuation_db(alpha_per_m: f64, distance: f64) -> f64 {
     alpha_per_m * distance
 }
 /// Sabine reverberation time: T60 = 0.161·V / (A·alpha).
 ///
 /// `volume` in m³, `surface_area` in m², `absorption_coeff` in \[0,1\].
-#[allow(dead_code)]
 pub fn sabine_reverberation_time(volume: f64, surface_area: f64, absorption_coeff: f64) -> f64 {
     0.161 * volume / (surface_area * absorption_coeff)
 }
 /// Eyring reverberation time: T60 = 0.161·V / (−A·ln(1 − alpha)).
 ///
 /// More accurate than Sabine for highly absorptive rooms.
-#[allow(dead_code)]
 pub fn eyring_reverberation_time(volume: f64, surface_area: f64, absorption_coeff: f64) -> f64 {
     0.161 * volume / (-surface_area * (1.0 - absorption_coeff).ln())
 }
 /// Critical distance (reverberant field = direct field): r_c = 0.057·sqrt(V / T60).
-#[allow(dead_code)]
 pub fn critical_distance(volume: f64, t60: f64) -> f64 {
     0.057 * (volume / t60).sqrt()
 }
 /// Noise reduction between two rooms.
 ///
 /// NR = NRC_sender − NRC_receiver + 10·log10(area / (0.161·V_receiver / T60))
-#[allow(dead_code)]
 pub fn noise_reduction(
     nrc_sender: f64,
     nrc_receiver: f64,
@@ -139,17 +128,14 @@ pub fn noise_reduction(
     nrc_sender - nrc_receiver + 10.0 * (area / absorption_receiver).log10()
 }
 /// Wave number: k = 2·pi·f / c  \[rad/m\].
-#[allow(dead_code)]
 pub fn wave_number(freq: f64, c: f64) -> f64 {
     2.0 * PI * freq / c
 }
 /// Instantaneous pressure of a plane wave: p(x,t) = A·cos(k·x − omega·t).
-#[allow(dead_code)]
 pub fn plane_wave_pressure(amplitude: f64, k: f64, x: f64, omega: f64, t: f64) -> f64 {
     amplitude * (k * x - omega * t).cos()
 }
 /// Sound pressure level in dB re 20 µPa.
-#[allow(dead_code)]
 pub fn spl_db(pressure_pa: f64) -> f64 {
     let p_ref = 20.0e-6;
     20.0 * (pressure_pa.abs() / p_ref).log10()
@@ -158,7 +144,6 @@ pub fn spl_db(pressure_pa: f64) -> f64 {
 ///
 /// Returns 2^((spl_db - 40) / 10).  `freq_hz` is accepted for API
 /// compatibility with future equal-loudness corrections.
-#[allow(dead_code)]
 pub fn loudness_sone(spl_db: f64, _freq_hz: f64) -> f64 {
     2.0_f64.powf((spl_db - 40.0) / 10.0)
 }
@@ -169,7 +154,6 @@ pub fn loudness_sone(spl_db: f64, _freq_hz: f64) -> f64 {
 /// # Arguments
 /// * `surface_mass_kg_m2` — surface mass density \[kg/m²\]
 /// * `freq_hz`            — frequency \[Hz\]
-#[allow(dead_code)]
 pub fn mass_law_tl(surface_mass_kg_m2: f64, freq_hz: f64) -> f64 {
     20.0 * (surface_mass_kg_m2 * freq_hz).log10() - 47.5
 }
@@ -182,14 +166,12 @@ pub fn mass_law_tl(surface_mass_kg_m2: f64, freq_hz: f64) -> f64 {
 /// * `c_air` — speed of sound in air \[m/s\]
 /// * `c_l`   — longitudinal wave speed in panel \[m/s\]
 /// * `h`     — panel thickness \[m\]
-#[allow(dead_code)]
 pub fn coincidence_frequency(c_air: f64, c_l: f64, h: f64) -> f64 {
     c_air * c_air / (1.8 * c_l * h)
 }
 /// A-weighting correction \[dB\] at frequency `f` \[Hz\].
 ///
 /// Uses the IEC 61672 analytical formula.
-#[allow(dead_code)]
 pub fn a_weighting_db(f: f64) -> f64 {
     if f <= 0.0 {
         return f64::NEG_INFINITY;
@@ -207,7 +189,6 @@ pub fn a_weighting_db(f: f64) -> f64 {
     20.0 * ra.log10() + 2.0
 }
 /// C-weighting correction \[dB\] at frequency `f` \[Hz\].
-#[allow(dead_code)]
 pub fn c_weighting_db(f: f64) -> f64 {
     if f <= 0.0 {
         return f64::NEG_INFINITY;
@@ -222,7 +203,6 @@ pub fn c_weighting_db(f: f64) -> f64 {
     20.0 * rc.log10() + 0.06
 }
 /// Octave-band centre frequencies (Hz) from 31.5 Hz to 16 kHz (10 bands).
-#[allow(dead_code)]
 pub const OCTAVE_BAND_CENTRES: [f64; 10] = [
     31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16_000.0,
 ];
@@ -230,7 +210,6 @@ pub const OCTAVE_BAND_CENTRES: [f64; 10] = [
 ///
 /// Combines `n` octave-band SPL values using the energy summation rule:
 /// `L_total = 10·log10(Σ 10^(L_i / 10))`.
-#[allow(dead_code)]
 pub fn overall_spl_from_octave_bands(band_spl: &[f64]) -> f64 {
     let sum: f64 = band_spl.iter().map(|&l| 10.0_f64.powf(l / 10.0)).sum();
     10.0 * sum.log10()
@@ -241,7 +220,6 @@ pub fn overall_spl_from_octave_bands(band_spl: &[f64]) -> f64 {
 /// * `band_spl`   — unweighted octave-band SPL values \[dB\]
 /// * `band_freqs` — corresponding centre frequencies \[Hz\]
 /// * `filter`     — weighting filter variant
-#[allow(dead_code)]
 pub fn apply_weighting(band_spl: &[f64], band_freqs: &[f64], filter: WeightingFilter) -> Vec<f64> {
     band_spl
         .iter()
@@ -262,7 +240,6 @@ pub fn apply_weighting(band_spl: &[f64], band_freqs: &[f64], filter: WeightingFi
 /// Z_match = sqrt(z1 * z2)
 ///
 /// At f_0 such that layer thickness d = λ/4, the reflection coefficient is zero.
-#[allow(dead_code)]
 pub fn impedance_matching_layer(z1: f64, z2: f64) -> f64 {
     (z1 * z2).sqrt()
 }
@@ -277,7 +254,6 @@ pub fn impedance_matching_layer(z1: f64, z2: f64) -> f64 {
 /// R(f/f0) = (z1·z2 - z_m²·cos²(π/2 · f/f0)) / (...)
 ///
 /// Simplified formula: at f/f0 = 1, R = 0.
-#[allow(dead_code)]
 pub fn matching_layer_reflection(z1: f64, z_m: f64, z2: f64, f_over_f0: f64) -> f64 {
     let phi = 0.5 * PI * f_over_f0;
     let cos_phi = phi.cos();
@@ -295,7 +271,6 @@ pub fn matching_layer_reflection(z1: f64, z_m: f64, z2: f64, f_over_f0: f64) -> 
 /// Compute the bandwidth over which a matching layer keeps |R| below a threshold.
 ///
 /// Scans f/f0 from 0.1 to 2.0 and returns the range of f/f0 where |R| < threshold.
-#[allow(dead_code)]
 pub fn matching_layer_bandwidth(z1: f64, z_m: f64, z2: f64, threshold: f64) -> (f64, f64) {
     let n = 1000;
     let mut f_low = 2.0_f64;
@@ -325,7 +300,6 @@ pub fn matching_layer_bandwidth(z1: f64, z_m: f64, z2: f64, threshold: f64) -> (
 /// * `theta_i`  – angle of incidence (radians)
 ///
 /// Returns `None` for total internal reflection.
-#[allow(dead_code)]
 pub fn angle_dependent_transmission(
     z1: f64,
     z2: f64,
@@ -346,7 +320,6 @@ pub fn angle_dependent_transmission(
 /// Critical angle (in radians) for total internal reflection.
 ///
 /// θ_c = arcsin(c1 / c2), only defined if c2 > c1.
-#[allow(dead_code)]
 pub fn critical_angle(c1: f64, c2: f64) -> Option<f64> {
     if c2 <= c1 {
         return None;
@@ -366,7 +339,6 @@ pub fn critical_angle(c1: f64, c2: f64) -> Option<f64> {
 /// `f = (c/2) * sqrt((nx/Lx)² + (ny/Ly)² + (nz/Lz)²)`
 ///
 /// where c is the speed of sound \[m/s\] and n_i are non-negative integers.
-#[allow(dead_code)]
 pub fn room_resonance_frequency(
     lx: f64,
     ly: f64,
@@ -391,7 +363,6 @@ pub fn room_resonance_frequency(
 /// * `c`               — speed of sound \[m/s\]
 /// * `max_order`       — maximum mode index per axis (inclusive)
 /// * `n_modes`         — number of modes to return
-#[allow(dead_code)]
 pub fn room_modes(lx: f64, ly: f64, lz: f64, c: f64, max_order: u32, n_modes: usize) -> Vec<f64> {
     let mut freqs: Vec<f64> = Vec::new();
     for nx in 0..=max_order {
@@ -413,7 +384,6 @@ pub fn room_modes(lx: f64, ly: f64, lz: f64, c: f64, max_order: u32, n_modes: us
 /// Lowest axial resonance frequency (Schroeder criterion helper).
 ///
 /// The lowest mode in a rectangular room: f_1 = c / (2 * L_max).
-#[allow(dead_code)]
 pub fn room_lowest_mode(lx: f64, ly: f64, lz: f64, c: f64) -> f64 {
     let l_max = lx.max(ly).max(lz);
     c / (2.0 * l_max)
@@ -426,7 +396,6 @@ pub fn room_lowest_mode(lx: f64, ly: f64, lz: f64, c: f64) -> f64 {
 /// # Arguments
 /// * `t60`    — reverberation time \[s\]
 /// * `volume` — room volume \[m³\]
-#[allow(dead_code)]
 pub fn schroeder_frequency(t60: f64, volume: f64) -> f64 {
     2000.0 * (t60 / volume).sqrt()
 }
@@ -444,7 +413,6 @@ pub fn schroeder_frequency(t60: f64, volume: f64) -> f64 {
 /// * `m2_kg_m2`  — surface mass of panel 2 \[kg/m²\]
 /// * `gap_m`     — air gap thickness \[m\]
 /// * `freq_hz`   — frequency \[Hz\]
-#[allow(dead_code)]
 pub fn double_leaf_tl(m1_kg_m2: f64, m2_kg_m2: f64, gap_m: f64, freq_hz: f64) -> f64 {
     let tl1 = mass_law_tl(m1_kg_m2, freq_hz);
     let tl2 = mass_law_tl(m2_kg_m2, freq_hz);
@@ -461,7 +429,6 @@ pub fn double_leaf_tl(m1_kg_m2: f64, m2_kg_m2: f64, gap_m: f64, freq_hz: f64) ->
 /// # Arguments
 /// * `tl_values` — transmission loss values at standard 1/3-octave bands
 ///   (16 values from 100 Hz to 3150 Hz)
-#[allow(dead_code)]
 pub fn weighted_sound_reduction_index(tl_values: &[f64]) -> f64 {
     let reference: [f64; 16] = [
         33.0, 36.0, 39.0, 42.0, 45.0, 48.0, 51.0, 52.0, 53.0, 54.0, 55.0, 56.0, 56.0, 56.0, 56.0,
@@ -478,7 +445,6 @@ pub fn weighted_sound_reduction_index(tl_values: &[f64]) -> f64 {
 /// Sound intensity \[W/m²\] from pressure amplitude and acoustic impedance.
 ///
 /// `I = p_rms² / Z`  where `p_rms = p_peak / sqrt(2)` for a sinusoidal wave.
-#[allow(dead_code)]
 pub fn sound_intensity(pressure_pa_peak: f64, impedance: f64) -> f64 {
     let p_rms = pressure_pa_peak / 2.0_f64.sqrt();
     p_rms * p_rms / impedance
@@ -486,20 +452,17 @@ pub fn sound_intensity(pressure_pa_peak: f64, impedance: f64) -> f64 {
 /// Sound intensity level \[dB re 1 pW/m²\].
 ///
 /// `SIL = 10·log10(I / I_ref)` where `I_ref = 1e-12 W/m²`.
-#[allow(dead_code)]
 pub fn sound_intensity_level_db(intensity_w_m2: f64) -> f64 {
     let i_ref = 1.0e-12;
     10.0 * (intensity_w_m2 / i_ref).log10()
 }
 /// Acoustic power \[W\] radiated by a source with intensity I over area A.
-#[allow(dead_code)]
 pub fn acoustic_power(intensity: f64, area: f64) -> f64 {
     intensity * area
 }
 /// Sound power level \[dB re 1 pW\].
 ///
 /// `PWL = 10·log10(W / W_ref)` where `W_ref = 1e-12 W`.
-#[allow(dead_code)]
 pub fn sound_power_level_db(power_w: f64) -> f64 {
     let w_ref = 1.0e-12;
     10.0 * (power_w / w_ref).log10()
@@ -518,7 +481,6 @@ pub fn sound_power_level_db(power_w: f64) -> f64 {
 /// * `c`           — speed of sound \[m/s\]
 /// * `v_source`    — source velocity toward observer \[m/s\]
 /// * `v_observer`  — observer velocity toward source \[m/s\]
-#[allow(dead_code)]
 pub fn doppler_frequency(f0: f64, c: f64, v_source: f64, v_observer: f64) -> f64 {
     if (c - v_source).abs() < 1e-10 {
         return f64::INFINITY;
@@ -526,7 +488,6 @@ pub fn doppler_frequency(f0: f64, c: f64, v_source: f64, v_observer: f64) -> f64
     f0 * (c + v_observer) / (c - v_source)
 }
 /// Mach number for a body moving at speed v in a medium with sound speed c.
-#[allow(dead_code)]
 pub fn mach_number(v: f64, c: f64) -> f64 {
     v / c
 }
@@ -539,14 +500,12 @@ pub fn mach_number(v: f64, c: f64) -> f64 {
 /// * `delta` — path length difference (m): (SA + AB) - SB where S = source, B = barrier top
 /// * `freq`  — frequency \[Hz\]
 /// * `c`     — speed of sound \[m/s\]
-#[allow(dead_code)]
 pub fn barrier_insertion_loss_maekawa(delta: f64, freq: f64, c: f64) -> f64 {
     let lambda = c / freq;
     let n_fresnel = 2.0 * delta / lambda;
     (10.0 * (3.0 + 20.0 * n_fresnel).log10()).max(0.0)
 }
 /// Fresnel number for a barrier with path length difference delta \[m\] at frequency f \[Hz\].
-#[allow(dead_code)]
 pub fn fresnel_number(delta: f64, freq: f64, c: f64) -> f64 {
     2.0 * delta * freq / c
 }
@@ -559,7 +518,6 @@ pub fn fresnel_number(delta: f64, freq: f64, c: f64) -> f64 {
 /// * `V`     — cavity volume \[m³\]
 /// * `L_eff` — effective neck length \[m\] (actual length + end corrections)
 /// * `c`     — speed of sound \[m/s\]
-#[allow(dead_code)]
 pub fn helmholtz_resonator_frequency(area_m2: f64, volume_m3: f64, l_eff_m: f64, c: f64) -> f64 {
     (c / (2.0 * PI)) * (area_m2 / (volume_m3 * l_eff_m)).sqrt()
 }
@@ -571,7 +529,6 @@ pub fn helmholtz_resonator_frequency(area_m2: f64, volume_m3: f64, l_eff_m: f64,
 /// * `length` — tube length \[m\]
 /// * `c`      — speed of sound \[m/s\]
 /// * `n`      — harmonic number (1 = fundamental)
-#[allow(dead_code)]
 pub fn quarter_wave_resonator_frequency(length: f64, c: f64, n: u32) -> f64 {
     let n_f = (2 * n - 1) as f64;
     n_f * c / (4.0 * length)
@@ -579,7 +536,6 @@ pub fn quarter_wave_resonator_frequency(length: f64, c: f64, n: u32) -> f64 {
 /// Half-wave tube resonator frequency \[Hz\].
 ///
 /// Open-open (or closed-closed) tube: `f_n = n * c / (2 * L)`.
-#[allow(dead_code)]
 pub fn half_wave_resonator_frequency(length: f64, c: f64, n: u32) -> f64 {
     (n as f64) * c / (2.0 * length)
 }
@@ -590,7 +546,6 @@ pub fn half_wave_resonator_frequency(length: f64, c: f64, n: u32) -> f64 {
 /// # Arguments
 /// * `volume`       — room volume \[m³\]
 /// * `surface_area` — total surface area \[m²\]
-#[allow(dead_code)]
 pub fn mean_free_path(volume: f64, surface_area: f64) -> f64 {
     4.0 * volume / surface_area
 }
@@ -599,7 +554,6 @@ pub fn mean_free_path(volume: f64, surface_area: f64) -> f64 {
 /// `R = S·alpha / (1 - alpha)`
 ///
 /// Used in the classical room acoustic formula for SPL from a source.
-#[allow(dead_code)]
 pub fn room_constant(surface_area: f64, absorption_coeff: f64) -> f64 {
     surface_area * absorption_coeff / (1.0 - absorption_coeff.min(0.9999))
 }
@@ -610,7 +564,6 @@ pub fn room_constant(surface_area: f64, absorption_coeff: f64) -> f64 {
 /// # Arguments
 /// * `power_w`     — source acoustic power \[W\]
 /// * `room_const`  — room constant R \[m²·sabin\]
-#[allow(dead_code)]
 pub fn diffuse_field_spl(power_w: f64, room_const: f64) -> f64 {
     let pwl = sound_power_level_db(power_w);
     pwl + 10.0 * (4.0 / room_const).log10()
@@ -624,7 +577,6 @@ pub fn diffuse_field_spl(power_w: f64, room_const: f64) -> f64 {
 /// * `room_const`     — room constant R \[m²·sabin\]
 /// * `distance_m`     — distance from source \[m\]
 /// * `directivity_q`  — directivity factor (Q = 1 for omnidirectional)
-#[allow(dead_code)]
 pub fn total_spl_in_room(
     power_w: f64,
     room_const: f64,
@@ -644,7 +596,6 @@ pub fn total_spl_in_room(
 /// * `gamma`      — heat capacity ratio (Cp/Cv), ~1.4 for air
 /// * `r_specific` — specific gas constant \[J/(kg·K)\], ~287 for air
 /// * `temp_k`     — temperature \[K\]
-#[allow(dead_code)]
 pub fn sound_speed_ideal_gas(gamma: f64, r_specific: f64, temp_k: f64) -> f64 {
     (gamma * r_specific * temp_k).sqrt()
 }
@@ -653,14 +604,12 @@ pub fn sound_speed_ideal_gas(gamma: f64, r_specific: f64, temp_k: f64) -> f64 {
 /// `c = sqrt(B / rho)`
 ///
 /// where B is the adiabatic bulk modulus \[Pa\] and rho is density \[kg/m³\].
-#[allow(dead_code)]
 pub fn sound_speed_liquid(bulk_modulus_pa: f64, density_kg_m3: f64) -> f64 {
     (bulk_modulus_pa / density_kg_m3).sqrt()
 }
 /// Temperature dependence of sound speed in air (Cramer, 1993 simplified).
 ///
 /// `c(T) ≈ 331.3 * sqrt(1 + T_celsius / 273.15)` \[m/s\]
-#[allow(dead_code)]
 pub fn sound_speed_air_temperature(temp_celsius: f64) -> f64 {
     331.3 * (1.0 + temp_celsius / 273.15).sqrt()
 }
@@ -673,7 +622,6 @@ pub fn sound_speed_air_temperature(temp_celsius: f64) -> f64 {
 /// * `k`  — wave number \[rad/m\] at which to evaluate group velocity
 /// * `dk` — finite-difference step \[rad/m\]
 /// * `omega_fn` — dispersion relation returning ω for a given k
-#[allow(dead_code)]
 pub fn group_velocity<F>(k: f64, dk: f64, omega_fn: F) -> f64
 where
     F: Fn(f64) -> f64,
@@ -685,21 +633,18 @@ where
 /// `p_peak = sqrt(2 * I * Z)`
 ///
 /// where I is sound intensity \[W/m²\] and Z is acoustic impedance \[Pa·s/m\].
-#[allow(dead_code)]
 pub fn pressure_from_intensity(intensity_w_m2: f64, impedance: f64) -> f64 {
     (2.0 * intensity_w_m2 * impedance).sqrt()
 }
 /// RMS acoustic pressure \[Pa\] from peak pressure.
 ///
 /// `p_rms = p_peak / sqrt(2)` for a sinusoidal wave.
-#[allow(dead_code)]
 pub fn rms_pressure(p_peak: f64) -> f64 {
     p_peak / 2.0_f64.sqrt()
 }
 /// Particle velocity amplitude \[m/s\] in a plane wave.
 ///
 /// `u = p / Z` where p is pressure amplitude and Z is impedance.
-#[allow(dead_code)]
 pub fn particle_velocity(pressure_pa: f64, impedance: f64) -> f64 {
     if impedance.abs() < f64::EPSILON {
         return 0.0;
@@ -711,7 +656,6 @@ pub fn particle_velocity(pressure_pa: f64, impedance: f64) -> f64 {
 /// `p(x, t) = 2A * cos(k*x) * cos(ω*t)`
 ///
 /// Returns the spatial factor `2A * cos(k*x)`.
-#[allow(dead_code)]
 pub fn standing_wave_pressure_closed_closed(amplitude: f64, k: f64, x: f64) -> f64 {
     2.0 * amplitude * (k * x).cos()
 }
@@ -719,7 +663,6 @@ pub fn standing_wave_pressure_closed_closed(amplitude: f64, k: f64, x: f64) -> f
 ///
 /// Pressure has an anti-node at the closed end and a node at the open end.
 /// `p(x, t) = 2A * sin(k*x) * cos(ω*t)` (x measured from open end)
-#[allow(dead_code)]
 pub fn standing_wave_pressure_open_closed(amplitude: f64, k: f64, x: f64) -> f64 {
     2.0 * amplitude * (k * x).sin()
 }
@@ -731,14 +674,12 @@ pub fn standing_wave_pressure_open_closed(amplitude: f64, k: f64, x: f64) -> f64
 /// * `length` — pipe length \[m\]
 /// * `c`      — speed of sound \[m/s\]
 /// * `n`      — mode number (1 = fundamental)
-#[allow(dead_code)]
 pub fn closed_closed_resonance(length: f64, c: f64, n: u32) -> f64 {
     (n as f64) * c / (2.0 * length)
 }
 /// Q-factor of a resonator from bandwidth.
 ///
 /// `Q = f_0 / Δf`  where Δf is the -3 dB bandwidth.
-#[allow(dead_code)]
 pub fn resonator_q_factor(f0: f64, bandwidth_hz: f64) -> f64 {
     if bandwidth_hz < f64::EPSILON {
         return f64::INFINITY;
@@ -748,7 +689,6 @@ pub fn resonator_q_factor(f0: f64, bandwidth_hz: f64) -> f64 {
 /// Resonance decay time constant τ from Q-factor.
 ///
 /// `τ = Q / (π * f_0)`
-#[allow(dead_code)]
 pub fn resonance_decay_time(q: f64, f0: f64) -> f64 {
     if f0 < f64::EPSILON {
         return f64::INFINITY;
@@ -758,7 +698,6 @@ pub fn resonance_decay_time(q: f64, f0: f64) -> f64 {
 /// Energy density of an acoustic wave \[J/m³\].
 ///
 /// `w = p_rms² / (rho * c²)`  (time-averaged)
-#[allow(dead_code)]
 pub fn acoustic_energy_density(p_rms: f64, density: f64, c: f64) -> f64 {
     let denom = density * c * c;
     if denom < f64::EPSILON {
@@ -772,7 +711,6 @@ pub fn acoustic_energy_density(p_rms: f64, density: f64, c: f64) -> f64 {
 /// Returns the normalised power pattern at angle `theta` \[rad\]:
 /// `AF = |sin(N*ψ/2) / (N * sin(ψ/2))|²`
 /// where `ψ = k*d*(cos(θ) - cos(θ_steer))`.
-#[allow(dead_code)]
 pub fn ula_array_factor(n: u32, d: f64, freq: f64, c: f64, theta: f64, theta_steer: f64) -> f64 {
     let k = 2.0 * PI * freq / c;
     let psi = k * d * (theta.cos() - theta_steer.cos());
@@ -791,7 +729,6 @@ pub fn ula_array_factor(n: u32, d: f64, freq: f64, c: f64, theta: f64, theta_ste
 ///
 /// Returns the imaginary part only (real part ≈ 0 for lossless tube).
 /// Sign convention: positive = inductive (reactive), negative = capacitive.
-#[allow(dead_code)]
 pub fn tube_input_impedance_open_end_imag(z0: f64, freq: f64, c: f64, length: f64) -> f64 {
     let k = 2.0 * PI * freq / c;
     let kl = k * length;
@@ -806,7 +743,6 @@ pub fn tube_input_impedance_open_end_imag(z0: f64, freq: f64, c: f64, length: f6
 /// `Z_in = -j * Z_0 * cot(k*L)` (imaginary part)
 ///
 /// Returns the imaginary part.
-#[allow(dead_code)]
 pub fn tube_input_impedance_closed_end_imag(z0: f64, freq: f64, c: f64, length: f64) -> f64 {
     let k = 2.0 * PI * freq / c;
     let kl = k * length;
@@ -827,14 +763,12 @@ pub fn tube_input_impedance_closed_end_imag(z0: f64, freq: f64, c: f64, length: 
 /// * `alpha_0` — attenuation coefficient \[dB/(cm·MHz^b)\]
 /// * `freq_mhz` — frequency \[MHz\]
 /// * `b`        — power exponent
-#[allow(dead_code)]
 pub fn power_law_attenuation(alpha_0: f64, freq_mhz: f64, b: f64) -> f64 {
     alpha_0 * freq_mhz.powf(b)
 }
 /// Total attenuation \[dB\] for a round-trip path (pulse-echo) in tissue.
 ///
 /// `att_total = 2 * α(f) * depth_cm`
-#[allow(dead_code)]
 pub fn pulse_echo_attenuation_db(alpha_0: f64, freq_mhz: f64, b: f64, depth_cm: f64) -> f64 {
     2.0 * power_law_attenuation(alpha_0, freq_mhz, b) * depth_cm
 }
@@ -849,7 +783,6 @@ pub fn pulse_echo_attenuation_db(alpha_0: f64, freq_mhz: f64, b: f64, depth_cm: 
 /// For ka >> 1: `R_rad ≈ ρ * c * A`
 ///
 /// Returns the normalised radiation resistance R1(ka).
-#[allow(dead_code)]
 pub fn piston_radiation_resistance_normalised(freq: f64, radius: f64, c: f64) -> f64 {
     let ka = 2.0 * PI * freq * radius / c;
     if ka < 0.1 {
@@ -863,7 +796,6 @@ pub fn piston_radiation_resistance_normalised(freq: f64, radius: f64, c: f64) ->
 /// Directivity index \[dB\] for a circular piston in a baffle.
 ///
 /// Simplified: DI ≈ 10·log10(2·(ka)²) for ka > 1.
-#[allow(dead_code)]
 pub fn piston_directivity_index_db(freq: f64, radius: f64, c: f64) -> f64 {
     let ka = 2.0 * PI * freq * radius / c;
     if ka < f64::EPSILON {

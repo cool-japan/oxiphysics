@@ -2,9 +2,9 @@
 
 **[Alpha]** Core types, mathematics, and simulation infrastructure for the OxiPhysics engine.
 
-[![Tests](https://img.shields.io/badge/tests-5348-brightgreen)](https://github.com/cool-japan/oxiphysics)
+[![Tests](https://img.shields.io/badge/tests-5378-brightgreen)](https://github.com/cool-japan/oxiphysics)
 [![docs.rs](https://img.shields.io/docsrs/oxiphysics-core)](https://docs.rs/oxiphysics_core)
-[![version](https://img.shields.io/badge/version-0.1.0-blue)](https://crates.io/crates/oxiphysics-core)
+[![version](https://img.shields.io/badge/version-0.1.2-blue)](https://crates.io/crates/oxiphysics-core)
 
 Part of the [OxiPhysics](https://github.com/cool-japan/oxiphysics) project.
 
@@ -13,7 +13,7 @@ Part of the [OxiPhysics](https://github.com/cool-japan/oxiphysics) project.
 `oxiphysics-core` provides the foundational layer for the entire OxiPhysics ecosystem:
 primitive types, linear algebra, ODE/PDE solvers, stochastic methods, optimization,
 signal processing, SIMD math, and high-level world/body management. All 80+ modules
-are fully implemented with 5,876 public items and 5,348 passing tests; no stubs remain.
+are fully implemented with 5,876 public items and 5,378 passing tests; no stubs remain.
 
 ## Features
 

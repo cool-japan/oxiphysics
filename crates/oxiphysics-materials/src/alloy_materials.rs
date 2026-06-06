@@ -4,9 +4,6 @@
 //! Metallic alloy material models: composition, mechanical properties,
 //! strengthening mechanisms, phase diagrams, thermal and corrosion properties.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ─── AlloyComposition ────────────────────────────────────────────────────────
 
 /// Chemical composition of a metallic alloy.

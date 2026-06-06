@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -144,7 +143,7 @@ impl ShakeConstraints {
     /// Apply SHAKE constraints to positions given unconstrained new positions.
     ///
     /// Iterates until all bond lengths satisfy |r_{i+1} - r_i| = d₀ ± tol.
-    pub fn apply(&self, positions: &mut Vec<[f64; 3]>, old_positions: &[[f64; 3]]) -> usize {
+    pub fn apply(&self, positions: &mut [[f64; 3]], old_positions: &[[f64; 3]]) -> usize {
         let n = self.n_beads;
         let mut iter = 0usize;
         for _k in 0..self.max_iter {

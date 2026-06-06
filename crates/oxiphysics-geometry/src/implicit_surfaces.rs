@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -18,8 +17,6 @@
 //! assert!(sphere.eval([0.0, 0.0, 0.0]) < 0.0); // inside
 //! assert!(sphere.eval([2.0, 0.0, 0.0]) > 0.0); // outside
 //! ```
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Math helpers (private)
@@ -49,11 +46,6 @@ fn scale3(v: [f64; 3], s: f64) -> [f64; 3] {
 fn normalize3(v: [f64; 3]) -> [f64; 3] {
     let l = len3(v).max(1e-300);
     [v[0] / l, v[1] / l, v[2] / l]
-}
-
-#[inline]
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// Clamp `v` to `[lo, hi]`.
@@ -512,8 +504,8 @@ pub fn marching_cubes(
 
                 // Compute cube index
                 let mut cube_idx: usize = 0;
-                for c in 0..8 {
-                    if vals[c] < 0.0 {
+                for (c, &val) in vals.iter().enumerate() {
+                    if val < 0.0 {
                         cube_idx |= 1 << c;
                     }
                 }

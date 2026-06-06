@@ -2,16 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{BrepSolid, TriangleMesh};
 
-/// Dot product of two 3-vectors.
-#[allow(dead_code)]
-pub(super) fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
 /// Cross product of two 3-vectors.
-#[allow(dead_code)]
 pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -20,12 +13,10 @@ pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 /// Length of a 3-vector.
-#[allow(dead_code)]
 pub(super) fn len3(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 /// Normalize a 3-vector.
-#[allow(dead_code)]
 pub(super) fn normalize3(v: [f64; 3]) -> [f64; 3] {
     let l = len3(v);
     if l < 1e-15 {
@@ -35,22 +26,18 @@ pub(super) fn normalize3(v: [f64; 3]) -> [f64; 3] {
     }
 }
 /// Subtract two 3-vectors.
-#[allow(dead_code)]
 pub(super) fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 /// Add two 3-vectors.
-#[allow(dead_code)]
 pub(super) fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 /// Scale a 3-vector.
-#[allow(dead_code)]
 pub(super) fn scale3(v: [f64; 3], s: f64) -> [f64; 3] {
     [v[0] * s, v[1] * s, v[2] * s]
 }
 /// Linearly interpolate between two points.
-#[allow(dead_code)]
 pub(super) fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     [
         a[0] + (b[0] - a[0]) * t,
@@ -61,7 +48,6 @@ pub(super) fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
 /// Tessellate a BREP solid into a triangle mesh.
 ///
 /// Uses simple fan triangulation for planar faces with straight edges.
-#[allow(dead_code)]
 pub fn tessellate_brep(solid: &BrepSolid, _segments_per_edge: usize) -> TriangleMesh {
     let mut mesh = TriangleMesh::new();
     let mut vert_map: Vec<usize> = Vec::with_capacity(solid.vertices.len());
@@ -386,8 +372,8 @@ ENDSEC;
         let inv = t.inverse();
         let p = t.apply([0.0; 3]);
         let p_back = inv.apply(p);
-        for i in 0..3 {
-            assert!(p_back[i].abs() < 1e-10, "p_back[{i}]={}", p_back[i]);
+        for (i, &v) in p_back.iter().enumerate() {
+            assert!(v.abs() < 1e-10, "p_back[{i}]={v}");
         }
     }
     #[test]

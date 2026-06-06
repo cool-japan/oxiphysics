@@ -12,7 +12,6 @@ use super::types::{
 };
 
 /// Compute an incremental update between two snapshots.
-#[allow(dead_code)]
 pub fn compute_incremental_update(
     old: &SimulationSnapshot,
     new: &SimulationSnapshot,
@@ -45,7 +44,6 @@ pub fn compute_incremental_update(
     }
 }
 /// Apply an incremental update to a snapshot.
-#[allow(dead_code)]
 pub fn apply_incremental_update(snap: &mut SimulationSnapshot, update: &IncrementalUpdate) {
     snap.bodies
         .retain(|b| !update.removed_handles.contains(&b.handle));
@@ -59,7 +57,6 @@ pub fn apply_incremental_update(snap: &mut SimulationSnapshot, update: &Incremen
     snap.time = update.time;
 }
 /// Validate a deserialized snapshot for consistency.
-#[allow(dead_code)]
 pub fn validate_snapshot(snap: &SimulationSnapshot) -> ValidationResult {
     let mut issues = Vec::new();
     if snap.version != SimulationSnapshot::FORMAT_VERSION {
@@ -210,7 +207,6 @@ pub(super) const PICKLE_MAGIC: &[u8; 4] = b"OXPK";
 pub(super) const PICKLE_VERSION: u8 = 2;
 /// Compute pairwise distances between all body pairs from a snapshot.
 /// Returns a flat upper-triangular distance array.
-#[allow(dead_code)]
 pub fn compute_pairwise_distances(snap: &SimulationSnapshot) -> Vec<f64> {
     let n = snap.bodies.len();
     let mut dists = Vec::new();
@@ -234,7 +230,6 @@ pub fn compute_pairwise_distances(snap: &SimulationSnapshot) -> Vec<f64> {
 /// - `bodies` is an array
 /// - All body entries have `handle`, `position`, `velocity` fields
 /// - `time` and `gravity` are finite numbers / arrays
-#[allow(dead_code)]
 pub fn validate_snapshot_json(json: &str) -> SchemaValidationResult {
     let value: serde_json::Value = match serde_json::from_str(json) {
         Ok(v) => v,
@@ -300,7 +295,6 @@ pub fn validate_snapshot_json(json: &str) -> SchemaValidationResult {
     }
 }
 /// Stream-export a snapshot as a series of `ExportBatch` objects.
-#[allow(dead_code)]
 pub fn export_snapshot_incremental(
     snap: &SimulationSnapshot,
     config: &IncrementalExportConfig,
@@ -330,7 +324,6 @@ pub fn export_snapshot_incremental(
         .collect()
 }
 /// Reconstruct a snapshot by merging export batches (in order).
-#[allow(dead_code)]
 pub fn merge_export_batches(batches: &[ExportBatch]) -> SimulationSnapshot {
     let time = batches.first().map(|b| b.time).unwrap_or(0.0);
     let bodies: Vec<SimBodyState> = batches.iter().flat_map(|b| b.bodies.clone()).collect();

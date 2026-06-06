@@ -1,4 +1,3 @@
-#![allow(clippy::manual_strip)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -12,8 +11,6 @@
 //! - `GltfExporter`: glTF 2.0 JSON + binary buffer.
 //! - `MeshImporter`: parse OBJ, binary/ASCII STL, and PLY.
 //! - `MeshSimplification`: quadric error metric edge-collapse simplification.
-
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
@@ -620,32 +617,32 @@ impl MeshImporter {
 
         for line in src.lines() {
             let line = line.trim();
-            if line.starts_with("v ") {
-                let vals: Vec<f64> = line[2..]
+            if let Some(rest) = line.strip_prefix("v ") {
+                let vals: Vec<f64> = rest
                     .split_whitespace()
                     .filter_map(|s| s.parse().ok())
                     .collect();
                 if vals.len() >= 3 {
                     mesh.add_vertex([vals[0], vals[1], vals[2]]);
                 }
-            } else if line.starts_with("vn ") {
-                let vals: Vec<f64> = line[3..]
+            } else if let Some(rest) = line.strip_prefix("vn ") {
+                let vals: Vec<f64> = rest
                     .split_whitespace()
                     .filter_map(|s| s.parse().ok())
                     .collect();
                 if vals.len() >= 3 {
                     obj_normals.push([vals[0], vals[1], vals[2]]);
                 }
-            } else if line.starts_with("vt ") {
-                let vals: Vec<f64> = line[3..]
+            } else if let Some(rest) = line.strip_prefix("vt ") {
+                let vals: Vec<f64> = rest
                     .split_whitespace()
                     .filter_map(|s| s.parse().ok())
                     .collect();
                 if vals.len() >= 2 {
                     obj_uvs.push([vals[0], vals[1]]);
                 }
-            } else if line.starts_with("f ") {
-                let parts: Vec<&str> = line[2..].split_whitespace().collect();
+            } else if let Some(rest) = line.strip_prefix("f ") {
+                let parts: Vec<&str> = rest.split_whitespace().collect();
                 if parts.len() >= 3 {
                     // Parse each token as vi/vt/vn (1-based)
                     let parse_index = |tok: &str| -> usize {

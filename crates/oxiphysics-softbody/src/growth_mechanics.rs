@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,9 +7,6 @@
 //! Implements the continuum theory of finite growth (Rodriguez–Hoger–McCulloch,
 //! 1994) using the multiplicative decomposition F = Fe · Fg, where Fg is the
 //! inelastic growth tensor and Fe is the elastic accommodation tensor.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -397,9 +393,9 @@ mod tests {
         let f = [1.2, 0.1, 0.0, 0.0, 1.1, 0.05, 0.0, 0.0, 0.9_f64];
         let gt = GrowthTensor::identity();
         let result = multiplicative_decomposition(f, &gt);
-        for i in 0..9 {
+        for (i, (&fe_val, &f_val)) in result.fe.iter().zip(f.iter()).enumerate() {
             assert!(
-                (result.fe[i] - f[i]).abs() < EPS,
+                (fe_val - f_val).abs() < EPS,
                 "Fe should equal F when Fg = I, mismatch at index {i}"
             );
         }
@@ -648,11 +644,11 @@ mod tests {
         let gt = GrowthTensor { fg: fg_mat };
         let result = multiplicative_decomposition(f, &gt);
         let identity = mat3_identity();
-        for i in 0..9 {
+        for (i, (&fe_val, &id_val)) in result.fe.iter().zip(identity.iter()).enumerate() {
             assert!(
-                (result.fe[i] - identity[i]).abs() < 1e-10,
+                (fe_val - id_val).abs() < 1e-10,
                 "Fe must be identity when F = Fg, mismatch at {i}: {}",
-                result.fe[i]
+                fe_val
             );
         }
     }

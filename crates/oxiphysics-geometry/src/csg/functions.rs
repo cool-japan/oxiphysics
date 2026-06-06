@@ -2,8 +2,14 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::type_complexity)]
 use super::types::{CsgOp, CsgTree, MarchingCell, PlaneSide};
+
+/// Type alias for a mesh returned as (vertices, triangle-index-lists).
+type VertsTris = (Vec<[f64; 3]>, Vec<[usize; 3]>);
+/// Type alias for a list of (point, normal) pairs.
+type PointNormals = Vec<([f64; 3], [f64; 3])>;
+/// Type alias for an AABB of an implicit surface: (min, max) corner pair.
+type SurfaceAabb = ([f64; 3], [f64; 3]);
 
 #[inline]
 pub(super) fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -34,14 +40,7 @@ pub(super) fn normalize(a: [f64; 3]) -> [f64; 3] {
         [0.0, 0.0, 0.0]
     }
 }
-#[inline]
-pub(super) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
+
 #[inline]
 pub(super) fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
     x.max(lo).min(hi)
@@ -244,7 +243,7 @@ pub fn extract_mesh_simple(
     bounds_min: [f64; 3],
     bounds_max: [f64; 3],
     resolution: usize,
-) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+) -> VertsTris {
     let n = resolution.max(2);
     let step = [
         (bounds_max[0] - bounds_min[0]) / n as f64,
@@ -332,7 +331,7 @@ pub fn sample_surface_points_with_normals(
     bounds_min: [f64; 3],
     bounds_max: [f64; 3],
     resolution: usize,
-) -> Vec<([f64; 3], [f64; 3])> {
+) -> PointNormals {
     let points = sample_surface_points(surface, bounds_min, bounds_max, resolution);
     points
         .into_iter()
@@ -897,10 +896,10 @@ mod tests_csg_tree {
 /// - **Union**: union of child bounding boxes.
 /// - **Intersection**: intersection of child bounding boxes (may be empty).
 /// - **Difference**: use the left child's bounding box (conservative).
-pub fn csg_tree_aabb(
-    node: &CsgTree,
-    bounds: &dyn Fn(&dyn ImplicitSurface) -> ([f64; 3], [f64; 3]),
-) -> ([f64; 3], [f64; 3]) {
+pub fn csg_tree_aabb<F>(node: &CsgTree, bounds: &F) -> ([f64; 3], [f64; 3])
+where
+    F: Fn(&dyn ImplicitSurface) -> SurfaceAabb,
+{
     match node {
         CsgTree::Leaf(s) => bounds(s.as_ref()),
         CsgTree::Node { op, left, right } => {

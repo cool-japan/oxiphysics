@@ -2,12 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use std::f64::consts::PI;
 
-#[allow(unused_imports)]
+#[cfg(test)]
 use crate::thermal_sph::types::*;
-#[allow(unused_imports)]
 use crate::thermal_sph::types_ext::*;
 
 pub fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -25,7 +23,6 @@ pub fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 pub fn scale3(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
 }
-#[allow(dead_code)]
 pub fn cubic_kernel(r: f64, h: f64) -> f64 {
     if h < 1e-300 {
         return 0.0;
@@ -324,9 +321,9 @@ mod tests {
         assert_eq!(w, 0.0);
     }
     #[test]
-    #[allow(clippy::assertions_on_constants)]
     fn test_pi_imported() {
-        assert!(PI > 3.0);
+        // PI is used in computation; verify the import is accessible by using it
+        let _ = PI;
     }
     #[test]
     fn test_math_helpers() {
@@ -820,7 +817,7 @@ pub fn sph_heat_flux(particles: &[ThermalParticle], i: usize, h: f64) -> [f64; 3
 /// Each particle inside the sphere receives `rate * dt` added to its
 /// temperature (the caller provides the `rate` in K/s).
 pub fn apply_thermal_forcing(
-    particles: &mut Vec<ThermalParticle>,
+    particles: &mut [ThermalParticle],
     source: [f64; 3],
     radius: f64,
     rate: f64,
@@ -876,13 +873,13 @@ pub fn temperature_dependent_viscosity(temp: f64, mu0: f64, temp_ref: f64, exp_:
 /// 2. Update temperature: T += α * dT/dt * dt  (α = λ/(ρ c_p)).
 /// 3. Update pressure via Tait EOS: p = k (ρ/ρ₀)^γ − k  (ρ₀ = 1000 kg/m³).
 /// 4. Advect position.
-pub fn thermal_sph_step(particles: &mut Vec<ThermalParticle>, params: &ThermalSPHParams, dt: f64) {
+pub fn thermal_sph_step(particles: &mut [ThermalParticle], params: &ThermalSPHParams, dt: f64) {
     pub(super) const RHO0: f64 = 1000.0;
     let h = params.kernel_radius;
     let n = particles.len();
     let mut dt_rates = vec![0.0f64; n];
-    for i in 0..n {
-        dt_rates[i] = sph_thermal_diffusion(particles, i, h);
+    for (i, rate) in dt_rates.iter_mut().enumerate().take(n) {
+        *rate = sph_thermal_diffusion(particles, i, h);
     }
     for (i, p) in particles.iter_mut().enumerate() {
         let alpha = if p.density > 1e-300 && p.specific_heat > 1e-300 {

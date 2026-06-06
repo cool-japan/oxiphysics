@@ -4,6 +4,7 @@
 
 use super::types::*;
 use rand::RngExt;
+use std::ops::{Add, Sub};
 
 /// Synthesise a synthetic LiDAR scan by ray-casting against axis-aligned boxes.
 ///
@@ -172,22 +173,6 @@ pub fn astar_plan(
 ) -> Option<AStarResult> {
     use std::collections::BinaryHeap;
     use std::collections::HashMap;
-    #[derive(PartialEq)]
-    pub(super) struct State {
-        f: ordered_float::NotNanF64,
-        cell: (usize, usize),
-    }
-    impl Eq for State {}
-    impl PartialOrd for State {
-        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-    impl Ord for State {
-        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-            other.f.cmp(&self.f)
-        }
-    }
     let heuristic = |(c, r): (usize, usize)| {
         let dc = (c as isize - goal.0 as isize).abs() as f64;
         let dr = (r as isize - goal.1 as isize).abs() as f64;
@@ -251,24 +236,6 @@ pub fn astar_plan(
         }
     }
     None
-}
-mod ordered_float {
-    /// A newtype for `f64` that implements `Ord` via total ordering.
-    #[derive(PartialEq, Clone, Copy, Debug)]
-    pub struct NotNanF64(pub f64);
-    impl Eq for NotNanF64 {}
-    impl PartialOrd for NotNanF64 {
-        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-    impl Ord for NotNanF64 {
-        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-            self.0
-                .partial_cmp(&other.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }
-    }
 }
 pub(super) fn mat5x5_mul(a: &[f64; 25], b: &[f64; 25]) -> [f64; 25] {
     let mut c = [0.0f64; 25];

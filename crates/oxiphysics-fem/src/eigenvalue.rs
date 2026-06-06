@@ -24,19 +24,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Dot product of two slices.
-#[allow(dead_code)]
 fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
 /// 2-norm of a slice.
-#[allow(dead_code)]
 fn norm2(v: &[f64]) -> f64 {
     dot(v, v).sqrt()
 }
 
 /// Normalize a vector in-place; returns the previous norm.
-#[allow(dead_code)]
 fn normalize(v: &mut [f64]) -> f64 {
     let n = norm2(v);
     if n > 1e-300 {
@@ -48,7 +45,6 @@ fn normalize(v: &mut [f64]) -> f64 {
 }
 
 /// Dense matrix-vector product y = A x  where A is stored row-major (n×n).
-#[allow(dead_code)]
 fn dense_matvec(a: &[f64], x: &[f64], n: usize) -> Vec<f64> {
     let mut y = vec![0.0_f64; n];
     for i in 0..n {
@@ -64,7 +60,6 @@ fn dense_matvec(a: &[f64], x: &[f64], n: usize) -> Vec<f64> {
 /// matrix with diagonal `diag` (length n) and sub-diagonal `off` (length n-1).
 ///
 /// Adapted from the standard Numerical Recipes / LAPACK `dstev` approach.
-#[allow(dead_code)]
 fn tridiagonal_eigenvalues(diag: &[f64], off: &[f64]) -> Vec<f64> {
     let n = diag.len();
     if n == 0 {
@@ -146,7 +141,6 @@ fn tridiagonal_eigenvalues(diag: &[f64], off: &[f64]) -> Vec<f64> {
 
 /// In-place dense LU factorization (no pivoting) for an n×n row-major matrix.
 /// Returns `Err(())` if a zero pivot is encountered.
-#[allow(dead_code)]
 fn lu_factor(a: &mut [f64], n: usize) -> Result<(), ()> {
     for k in 0..n {
         let pivot = a[k * n + k];
@@ -165,7 +159,6 @@ fn lu_factor(a: &mut [f64], n: usize) -> Result<(), ()> {
 }
 
 /// Solve L·U·x = b in-place.  `lu` contains the factored matrix.
-#[allow(dead_code)]
 fn lu_solve(lu: &[f64], b: &[f64], n: usize) -> Vec<f64> {
     let mut x = b.to_vec();
     // Forward substitution L·y = b
@@ -220,7 +213,6 @@ impl Default for EigensolverConfig {
 ///
 /// Deflation is used to extract subsequent eigenvalues after the dominant one.
 /// Storage: the matrix `a` is row-major, size n×n (flat `Vec`f64`).
-#[allow(dead_code)]
 pub struct PowerIteration {
     /// Row-major n×n matrix.
     pub a: Vec<f64>,
@@ -297,7 +289,6 @@ impl PowerIteration {
 /// Inverse iteration for the smallest (or nearest-to-shift) eigenvalue.
 ///
 /// Uses LU factorization of (A − σ·I) and iterates with back-substitution.
-#[allow(dead_code)]
 pub struct InverseIteration {
     /// Row-major n×n stiffness matrix.
     pub a: Vec<f64>,
@@ -363,7 +354,6 @@ impl InverseIteration {
 ///
 /// Builds a Krylov basis and extracts eigenvalues from the resulting
 /// tridiagonal matrix.  Suitable for large sparse problems.
-#[allow(dead_code)]
 pub struct LanczosMethod {
     /// Row-major n×n symmetric matrix.
     pub a: Vec<f64>,
@@ -449,7 +439,6 @@ impl LanczosMethod {
 ///
 /// Uses Cholesky factorization of M to convert to a standard eigenvalue problem:
 /// `L⁻¹ K L⁻ᵀ ỹ = λ ỹ`, where M = L Lᵀ.
-#[allow(dead_code)]
 pub struct GeneralizedEigenvalue {
     /// Row-major n×n stiffness matrix K.
     pub k_mat: Vec<f64>,
@@ -587,7 +576,6 @@ impl GeneralizedEigenvalue {
 /// Rayleigh quotient: upper bound on the fundamental natural frequency squared.
 ///
 /// ρ(x) = xᵀ K x / xᵀ M x ≥ ω₁²
-#[allow(dead_code)]
 pub struct RayleighQuotient {
     /// Row-major n×n stiffness matrix K.
     pub k_mat: Vec<f64>,
@@ -679,7 +667,6 @@ pub struct ModalAnalysisResult {
 ///
 /// Extracts natural frequencies and mode shapes from the generalized eigenvalue
 /// problem K·φ = ω²·M·φ and computes derived modal quantities.
-#[allow(dead_code)]
 pub struct ModalAnalysis {
     /// Row-major n×n stiffness matrix.
     pub k_mat: Vec<f64>,
@@ -761,7 +748,6 @@ impl ModalAnalysis {
 ///
 /// Computes the displacement amplitude u(ω) = (K − ω²M)⁻¹ F for a harmonic
 /// load F at angular frequency ω, using direct factorization.
-#[allow(dead_code)]
 pub struct FrequencyResponse {
     /// Row-major n×n stiffness matrix K.
     pub k_mat: Vec<f64>,
@@ -828,7 +814,6 @@ impl FrequencyResponse {
 
 /// Computes the spectral norm (largest singular value) of a dense matrix
 /// via power iteration on AᵀA.
-#[allow(dead_code)]
 pub struct SpectralNorm {
     /// Row-major n×n matrix.
     pub a: Vec<f64>,
@@ -879,7 +864,6 @@ impl SpectralNorm {
 ///
 /// Projects the system onto the subspace spanned by the first `n_modes`
 /// retained mode shapes, then reconstructs the physical response.
-#[allow(dead_code)]
 pub struct ModalTruncation {
     /// Retained mode shapes (each of length n_dof).
     pub mode_shapes: Vec<Vec<f64>>,

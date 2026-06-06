@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! This module provides tools for studying the geometry of families of
 //! probability distributions, including Fisher information, geodesics,
 //! natural gradients, and divergence measures.
-
-#![allow(dead_code)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // StatisticalManifold
@@ -469,8 +466,8 @@ impl AlphaGeometry {
                         let term2 = dgamma[j][l][i][k];
                         let mut term3 = 0.0f64;
                         let mut term4 = 0.0f64;
-                        for mm in 0..n {
-                            term3 += gamma[l][i][mm] * gamma[mm][j][k];
+                        for (mm, &g_lim) in gamma[l][i].iter().enumerate() {
+                            term3 += g_lim * gamma[mm][j][k];
                             term4 += gamma[l][j][mm] * gamma[mm][i][k];
                         }
                         r[l][k][i][j] = term1 - term2 + term3 - term4;
@@ -614,9 +611,9 @@ fn invert_matrix(m: &[Vec<f64>]) -> Vec<Vec<f64>> {
         // Find pivot.
         let mut max_row = col;
         let mut max_val = aug[col][col].abs();
-        for row in (col + 1)..n {
-            if aug[row][col].abs() > max_val {
-                max_val = aug[row][col].abs();
+        for (row, aug_row) in aug.iter().enumerate().skip(col + 1) {
+            if aug_row[col].abs() > max_val {
+                max_val = aug_row[col].abs();
                 max_row = row;
             }
         }
@@ -636,9 +633,9 @@ fn invert_matrix(m: &[Vec<f64>]) -> Vec<Vec<f64>> {
                 continue;
             }
             let factor = aug[row][col];
-            for c in 0..(2 * n) {
-                let val = factor * aug[col][c];
-                aug[row][c] -= val;
+            let col_vals: Vec<f64> = aug[col][..2 * n].to_vec();
+            for (cell, &cv) in aug[row][..2 * n].iter_mut().zip(col_vals.iter()) {
+                *cell -= factor * cv;
             }
         }
     }
@@ -653,20 +650,6 @@ fn mat_vec_mul(m: &[Vec<f64>], v: &[f64]) -> Vec<f64> {
         .collect()
 }
 
-/// Multiply two square matrices.
-fn mat_mul(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
-    let n = a.len();
-    let mut c = vec![vec![0.0f64; n]; n];
-    for i in 0..n {
-        for j in 0..n {
-            for k in 0..n {
-                c[i][j] += a[i][k] * b[k][j];
-            }
-        }
-    }
-    c
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -674,6 +657,20 @@ fn mat_mul(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Multiply two square matrices (test helper only).
+    fn mat_mul(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
+        let n = a.len();
+        let mut c = vec![vec![0.0f64; n]; n];
+        for i in 0..n {
+            for j in 0..n {
+                for k in 0..n {
+                    c[i][j] += a[i][k] * b[k][j];
+                }
+            }
+        }
+        c
+    }
 
     // ── StatisticalManifold ────────────────────────────────────────────────
 

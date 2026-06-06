@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,8 +14,6 @@
 //! - [`MooringLine`] — seabed-contact mooring cable for offshore applications
 //! - [`wire_sag_midpoint`] — quick parabolic sag formula
 //! - [`cable_eigenfrequency`] — natural frequencies of taut cables
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Physical constants
@@ -54,6 +51,7 @@ fn vec3_len(a: [f64; 3]) -> f64 {
     vec3_dot(a, a).sqrt()
 }
 
+#[cfg(test)]
 #[inline]
 fn vec3_norm(a: [f64; 3]) -> [f64; 3] {
     let len = vec3_len(a);
@@ -370,12 +368,12 @@ impl CableSimulation {
         let mut forces: Vec<[f64; 3]> = vec![[0.0; 3]; n];
 
         // Accumulate elastic forces
-        for i in 0..n {
-            forces[i] = self.elastic_force(i);
+        for (i, force) in forces.iter_mut().enumerate() {
+            *force = self.elastic_force(i);
         }
 
         // Update velocities (semi-implicit Euler)
-        for i in 0..n {
+        for (i, _) in forces.iter().enumerate() {
             if self.nodes[i].fixed {
                 continue;
             }
@@ -553,7 +551,7 @@ impl MooringLine {
         }
 
         // Integrate
-        for i in 0..n {
+        for (i, _) in forces.iter().enumerate() {
             if self.nodes[i].fixed {
                 continue;
             }
@@ -885,7 +883,7 @@ impl CableWind {
     /// weighted by half from each side.
     pub fn apply_to_simulation(&self, sim: &mut CableSimulation, forces: &mut [[f64; 3]]) {
         let n = sim.nodes.len();
-        for i in 0..n {
+        for (i, force) in forces.iter_mut().enumerate() {
             if sim.nodes[i].fixed {
                 continue;
             }
@@ -901,7 +899,7 @@ impl CableWind {
                 s
             };
             let f = self.force_on_element(sim.nodes[i].vel, seg_len);
-            forces[i] = vec3_add(forces[i], f);
+            *force = vec3_add(*force, f);
         }
     }
 }
@@ -1004,7 +1002,6 @@ impl CableBundle {
     /// - `damping`            – viscous damping \[N·s/m\]
     /// - `coupling_stiffness` – lateral coupling stiffness \[N/m\]
     /// - `separation`         – inter-cable spacing \[m\]
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         n_cables: usize,
         n_nodes: usize,

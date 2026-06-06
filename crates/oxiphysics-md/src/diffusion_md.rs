@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -23,7 +22,6 @@
 ///
 /// Frames are stored as Cartesian positions with periodic boundary corrections
 /// (unwrapped coordinates) applied between consecutive frames.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MsdCalculator {
     /// Stored frames of unwrapped positions: `positions[frame][atom] = [x,y,z]`.
@@ -40,7 +38,6 @@ impl MsdCalculator {
     /// # Arguments
     /// - `dt`: time between frames
     /// - `box_size`: periodic box dimensions `[Lx, Ly, Lz]`
-    #[allow(dead_code)]
     pub fn new(dt: f64, box_size: [f64; 3]) -> Self {
         Self {
             positions: Vec::new(),
@@ -53,7 +50,6 @@ impl MsdCalculator {
     ///
     /// If a previous frame exists, periodic boundary corrections are applied
     /// to produce continuous (unwrapped) trajectories.
-    #[allow(dead_code)]
     pub fn add_frame(&mut self, mut new_pos: Vec<[f64; 3]>) {
         if let Some(prev) = self.positions.last() {
             let box_size = self.box_size;
@@ -65,7 +61,6 @@ impl MsdCalculator {
     }
 
     /// Number of stored frames.
-    #[allow(dead_code)]
     pub fn frame_count(&self) -> usize {
         self.positions.len()
     }
@@ -73,7 +68,6 @@ impl MsdCalculator {
     /// Compute MSD for a given lag (in frames).
     ///
     /// `MSD(τ) = < |r(t+τ) - r(t)|² >` averaged over all atoms and time origins.
-    #[allow(dead_code)]
     pub fn mean_squared_displacement(&self, lag: usize) -> f64 {
         let n_frames = self.positions.len();
         if lag == 0 || lag >= n_frames {
@@ -100,7 +94,6 @@ impl MsdCalculator {
     }
 
     /// Return `(time, MSD)` pairs for all available lags.
-    #[allow(dead_code)]
     pub fn msd_vs_time(&self) -> Vec<(f64, f64)> {
         let n_frames = self.positions.len();
         (1..n_frames)
@@ -116,7 +109,6 @@ impl MsdCalculator {
     ///
     /// Uses frames from `t_start` to `t_end` (inclusive, as lag indices).
     /// `D = slope / 6` (Einstein relation in 3D).
-    #[allow(dead_code)]
     pub fn diffusion_coefficient_from_msd(&self, t_start: usize, t_end: usize) -> f64 {
         let t_end = t_end.min(self.positions.len().saturating_sub(1));
         if t_start >= t_end {
@@ -131,7 +123,6 @@ impl MsdCalculator {
     }
 
     /// Periodic boundary unwrap: adjust `r_new` so it is nearest image of `r_old`.
-    #[allow(dead_code)]
     pub fn unwrap_pbc(r_new: [f64; 3], r_old: [f64; 3], box_size: [f64; 3]) -> [f64; 3] {
         Self::unwrap_pbc_static(r_new, r_old, box_size)
     }
@@ -158,7 +149,6 @@ impl MsdCalculator {
 ///
 /// Green-Kubo relation: `D = (1/3) ∫₀^∞ C_v(t) dt`
 /// where `C_v(τ) = <v(t)·v(t+τ)>`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VelocityAutocorrelation {
     /// Stored velocity frames: `velocities[frame][atom] = [vx,vy,vz]`.
@@ -172,7 +162,6 @@ impl VelocityAutocorrelation {
     ///
     /// # Arguments
     /// - `dt`: time between frames
-    #[allow(dead_code)]
     pub fn new(dt: f64) -> Self {
         Self {
             velocities: Vec::new(),
@@ -181,7 +170,6 @@ impl VelocityAutocorrelation {
     }
 
     /// Add a frame of atomic velocities.
-    #[allow(dead_code)]
     pub fn add_frame(&mut self, vels: Vec<[f64; 3]>) {
         self.velocities.push(vels);
     }
@@ -190,7 +178,6 @@ impl VelocityAutocorrelation {
     ///
     /// Returns a `Vec`f64` where index `τ` = lag in frames.
     /// Normalized by C_v(0).
-    #[allow(dead_code)]
     pub fn compute_vacf(&self) -> Vec<f64> {
         let n_frames = self.velocities.len();
         if n_frames == 0 {
@@ -199,18 +186,16 @@ impl VelocityAutocorrelation {
         let n_atoms = self.velocities[0].len();
         let mut vacf = vec![0.0f64; n_frames];
 
-        for lag in 0..n_frames {
+        for (lag, vacf_val) in vacf.iter_mut().enumerate() {
             let n_origins = n_frames - lag;
             let mut sum = 0.0f64;
             for t0 in 0..n_origins {
                 let t1 = t0 + lag;
-                for a in 0..n_atoms {
-                    let v0 = self.velocities[t0][a];
-                    let v1 = self.velocities[t1][a];
+                for (v0, v1) in self.velocities[t0].iter().zip(self.velocities[t1].iter()) {
                     sum += v0[0] * v1[0] + v0[1] * v1[1] + v0[2] * v1[2];
                 }
             }
-            vacf[lag] = sum / (n_origins as f64 * n_atoms as f64);
+            *vacf_val = sum / (n_origins as f64 * n_atoms as f64);
         }
         vacf
     }
@@ -218,7 +203,6 @@ impl VelocityAutocorrelation {
     /// Compute diffusion coefficient via Green-Kubo integration of VACF.
     ///
     /// Uses trapezoidal integration: `D = (1/3) ∫ C_v(t) dt`.
-    #[allow(dead_code)]
     pub fn diffusion_from_vacf(&self) -> f64 {
         let vacf = self.compute_vacf();
         if vacf.len() < 2 {
@@ -237,7 +221,6 @@ impl VelocityAutocorrelation {
 /// Compute a linear least-squares fit y = slope·x + intercept.
 ///
 /// Returns `(slope, intercept)`.
-#[allow(dead_code)]
 pub fn linear_fit(x: &[f64], y: &[f64]) -> (f64, f64) {
     let n = x.len().min(y.len());
     if n < 2 {
@@ -264,7 +247,6 @@ pub fn linear_fit(x: &[f64], y: &[f64]) -> (f64, f64) {
 /// Compute the coefficient of determination R² for a linear fit.
 ///
 /// `R² = 1 - SS_res / SS_tot`
-#[allow(dead_code)]
 pub fn r_squared(x: &[f64], y: &[f64], slope: f64, intercept: f64) -> f64 {
     let n = x.len().min(y.len());
     if n == 0 {
@@ -294,7 +276,6 @@ pub fn r_squared(x: &[f64], y: &[f64], slope: f64, intercept: f64) -> f64 {
 ///
 /// α₂ = 0 for a Gaussian (diffusive) process;
 /// α₂ > 0 indicates dynamic heterogeneity.
-#[allow(dead_code)]
 pub struct NgambaAnalysis {
     /// MSD values over time.
     pub msd: Vec<f64>,
@@ -307,7 +288,6 @@ pub struct NgambaAnalysis {
 /// `α₂ = 3·<r⁴> / (5·`r²`²) - 1`
 ///
 /// Returns 0 if the mean-squared displacement is zero.
-#[allow(dead_code)]
 pub fn non_gaussian_parameter(positions: &[Vec<[f64; 3]>], lag: usize) -> f64 {
     let n_frames = positions.len();
     if lag == 0 || lag >= n_frames {
@@ -324,9 +304,7 @@ pub fn non_gaussian_parameter(positions: &[Vec<[f64; 3]>], lag: usize) -> f64 {
 
     for t0 in 0..n_origins {
         let t1 = t0 + lag;
-        for a in 0..n_atoms {
-            let r0 = positions[t0][a];
-            let r1 = positions[t1][a];
+        for (r0, r1) in positions[t0].iter().zip(positions[t1].iter()) {
             let dx = r1[0] - r0[0];
             let dy = r1[1] - r0[1];
             let dz = r1[2] - r0[2];
@@ -356,7 +334,6 @@ pub fn non_gaussian_parameter(positions: &[Vec<[f64; 3]>], lag: usize) -> f64 {
 /// `G_s(r, τ) = (1/N) Σ_i δ(r - |r_i(τ) - r_i(0)|)`
 ///
 /// Returns `(r, G_s(r, τ))` histogram with `n_bins` bins from 0 to `r_max`.
-#[allow(dead_code)]
 pub fn van_hove_self(
     positions: &[Vec<[f64; 3]>],
     lag: usize,
@@ -374,9 +351,7 @@ pub fn van_hove_self(
 
     for t0 in 0..n_origins {
         let t1 = t0 + lag;
-        for a in 0..n_atoms {
-            let r0 = positions[t0][a];
-            let r1 = positions[t1][a];
+        for (r0, r1) in positions[t0].iter().zip(positions[t1].iter()) {
             let dx = r1[0] - r0[0];
             let dy = r1[1] - r0[1];
             let dz = r1[2] - r0[2];

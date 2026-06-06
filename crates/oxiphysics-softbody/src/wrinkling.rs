@@ -9,9 +9,6 @@
 //!
 //! All quantities are in SI units (Pa, m, N/m …) unless otherwise stated.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

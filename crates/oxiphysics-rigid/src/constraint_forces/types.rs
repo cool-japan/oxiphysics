@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::functions::*;
 use std::f64::consts::PI;
 
@@ -510,8 +509,8 @@ impl KinematicChain {
             let mut chain_tmp = self.clone();
             chain_tmp.q[col] += eps;
             let p1 = chain_tmp.end_effector_position();
-            for row in 0..3 {
-                jac[row][col] = (p1[row] - p0[row]) / eps;
+            for (jac_row, (p1_r, p0_r)) in jac.iter_mut().zip(p1.iter().zip(p0.iter())) {
+                jac_row[col] = (p1_r - p0_r) / eps;
             }
         }
         jac
@@ -534,11 +533,14 @@ impl KinematicChain {
         let n = self.n_links;
         // J is 3×n, compute J·J^T (3×3)
         let mut jjt = [[0.0f64; 3]; 3];
-        for r in 0..3 {
-            for c in 0..3 {
-                for k in 0..n {
-                    jjt[r][c] += jm[r][k] * jm[c][k];
-                }
+        for (r, jjt_row) in jjt.iter_mut().enumerate() {
+            for (c, jjt_rc) in jjt_row.iter_mut().enumerate() {
+                *jjt_rc = jm[r]
+                    .iter()
+                    .take(n)
+                    .zip(jm[c].iter().take(n))
+                    .map(|(a, b)| a * b)
+                    .sum();
             }
         }
         let det = jjt[0][0] * (jjt[1][1] * jjt[2][2] - jjt[1][2] * jjt[2][1])
@@ -928,14 +930,22 @@ impl ImpedanceController {
     pub fn desired_acceleration(&self, x_current: &[f64], vel: &[f64], f_ext: &[f64]) -> Vec<f64> {
         let n = self.mass_desired.len();
         let mut accel = vec![0.0f64; n];
-        for i in 0..n {
+        for (i, (acc_i, (m, (d, k)))) in accel
+            .iter_mut()
+            .zip(
+                self.mass_desired.iter().zip(
+                    self.damping_desired
+                        .iter()
+                        .zip(self.stiffness_desired.iter()),
+                ),
+            )
+            .enumerate()
+        {
             let pos_err = x_current.get(i).copied().unwrap_or(0.0) - self.x_desired[i];
             let v = vel.get(i).copied().unwrap_or(0.0);
             let f = f_ext.get(i).copied().unwrap_or(0.0);
-            let m = self.mass_desired[i];
             if m.abs() > 1e-14 {
-                accel[i] =
-                    (f - self.damping_desired[i] * v - self.stiffness_desired[i] * pos_err) / m;
+                *acc_i = (f - d * v - k * pos_err) / m;
             }
         }
         accel
@@ -1406,7 +1416,7 @@ impl HybridController {
     pub fn update(&mut self, x_current: &[f64], f_current: &[f64], dt: f64) -> Vec<f64> {
         let n = self.selection.len();
         let mut output = vec![0.0f64; n];
-        for i in 0..n {
+        for (i, out_i) in output.iter_mut().enumerate() {
             let s = self.selection[i];
             let fe = self.f_desired[i] - f_current.get(i).copied().unwrap_or(0.0);
             self.force_integral[i] += fe * dt;
@@ -1422,7 +1432,7 @@ impl HybridController {
                 + self.position_gains[1] * self.pos_integral[i]
                 + self.position_gains[2] * pd;
             self.prev_pos_error[i] = pe;
-            output[i] = s * f_out + (1.0 - s) * p_out;
+            *out_i = s * f_out + (1.0 - s) * p_out;
         }
         output
     }
@@ -1716,14 +1726,14 @@ impl PseudoinverseSolver {
                 }
             }
         }
-        for i in 0..3 {
-            jjt[i][i] += lambda * lambda;
+        for (i, jjt_row) in jjt.iter_mut().enumerate() {
+            jjt_row[i] += lambda * lambda;
         }
         let y = solve3x3(jjt, e);
         let mut dq = vec![0.0f64; n];
-        for i in 0..n {
-            for row in 0..3 {
-                dq[i] += j[row * n + i] * y[row];
+        for (i, dq_i) in dq.iter_mut().enumerate() {
+            for (row, y_row) in y.iter().enumerate() {
+                *dq_i += j[row * n + i] * y_row;
             }
         }
         dq

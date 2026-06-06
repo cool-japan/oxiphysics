@@ -8,13 +8,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use crate::particle::SoftParticle;
 use oxiphysics_core::math::{Real, Vec3};
 
 use super::functions::SoftConstraint;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::IsometricBendingConstraintV2;
 
 impl SoftConstraint for IsometricBendingConstraintV2 {
@@ -38,21 +35,21 @@ impl SoftConstraint for IsometricBendingConstraintV2 {
             return;
         }
         let mut grads = [Vec3::zeros(); 4];
-        for k in 0..4 {
+        for (k, grad_k) in grads.iter_mut().enumerate() {
             for axis in 0..3 {
                 let mut g_k = 0.0;
-                for j in 0..4 {
+                for (j, p_j) in ps.iter().enumerate() {
                     let pj_coord = match axis {
-                        0 => ps[j].x,
-                        1 => ps[j].y,
-                        _ => ps[j].z,
+                        0 => p_j.x,
+                        1 => p_j.y,
+                        _ => p_j.z,
                     };
                     g_k += 2.0 * self.q_matrix[k * 4 + j] * pj_coord;
                 }
                 match axis {
-                    0 => grads[k].x += g_k,
-                    1 => grads[k].y += g_k,
-                    _ => grads[k].z += g_k,
+                    0 => grad_k.x += g_k,
+                    1 => grad_k.y += g_k,
+                    _ => grad_k.z += g_k,
                 }
             }
         }

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -10,9 +9,6 @@
 //! section property computation, hatch pattern fill, cross-section animation,
 //! boolean operations on cross-sections, stress/strain display, color mapping,
 //! and SVG path data export.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -236,9 +232,9 @@ pub fn clip_triangle_plane(tri: &Triangle3D, plane: &CuttingPlane) -> Option<Int
     }
 
     // Also add vertices exactly on the plane
-    for i in 0..3 {
-        if d[i].abs() < 1e-12 {
-            pts.push(tri.vertices[i]);
+    for (di, vi) in d.iter().zip(tri.vertices.iter()) {
+        if di.abs() < 1e-12 {
+            pts.push(*vi);
         }
     }
 

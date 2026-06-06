@@ -4,8 +4,6 @@
 //! Electric motor modelling: torque-speed curves, efficiency maps,
 //! regenerative braking, thermal model, battery SoC, and regen limits.
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // Efficiency map helpers
 // ---------------------------------------------------------------------------

@@ -1,13 +1,9 @@
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! Advanced homogenization methods: strain concentration tensors, thermal
 //! conductivity, anisotropy indices, thermo-elastic coupling, composite
 //! failure criteria, Halpin-Tsai, three-phase composites, and damage models.
-
-#![allow(dead_code)]
 
 use super::bounds::*;
 use super::matrix_utils::*;
@@ -23,7 +19,6 @@ use super::matrix_utils::*;
 ///
 /// For a spherical inclusion in an isotropic matrix the Eshelby tensor is
 /// expressed using the Poisson's ratio of the matrix alone.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StrainConcentrationTensor {
     /// 6×6 concentration tensor in Voigt notation.
@@ -45,16 +40,16 @@ impl StrainConcentrationTensor {
 
         // Build full 6×6 Eshelby tensor (diagonal blocks for isotropic sphere)
         let mut s = [[0.0f64; 6]; 6];
-        for i in 0..3 {
-            s[i][i] = s11;
-            for j in 0..3 {
+        for (i, row) in s.iter_mut().enumerate().take(3) {
+            row[i] = s11;
+            for (j, val) in row.iter_mut().enumerate().take(3) {
                 if i != j {
-                    s[i][j] = s12;
+                    *val = s12;
                 }
             }
         }
-        for i in 3..6 {
-            s[i][i] = 2.0 * s44;
+        for (i, row) in s.iter_mut().enumerate().skip(3) {
+            row[i] = 2.0 * s44;
         } // factor 2 for Voigt shear
 
         // Compliance of matrix and inclusion
@@ -101,7 +96,6 @@ impl StrainConcentrationTensor {
 /// λ_eff = λ_m * (λ_i + 2λ_m + 2f(λ_i - λ_m)) / (λ_i + 2λ_m - f(λ_i - λ_m))
 ///
 /// where f is the inclusion volume fraction.
-#[allow(dead_code)]
 pub fn maxwell_effective_thermal_conductivity(lambda_m: f64, lambda_i: f64, f: f64) -> f64 {
     let num = lambda_i + 2.0 * lambda_m + 2.0 * f * (lambda_i - lambda_m);
     let den = lambda_i + 2.0 * lambda_m - f * (lambda_i - lambda_m);
@@ -114,7 +108,6 @@ pub fn maxwell_effective_thermal_conductivity(lambda_m: f64, lambda_i: f64, f: f
 /// Hashin-Shtrikman lower bound on thermal conductivity.
 ///
 /// Assumes λ_1 < λ_2 and phase 1 is the matrix with volume fraction (1 - f).
-#[allow(dead_code)]
 pub fn hs_thermal_lower_bound(lambda_1: f64, lambda_2: f64, f: f64) -> f64 {
     // HS lower: phase 1 acts as matrix
     let phi1 = 1.0 - f;
@@ -126,7 +119,6 @@ pub fn hs_thermal_lower_bound(lambda_1: f64, lambda_2: f64, f: f64) -> f64 {
 }
 
 /// Hashin-Shtrikman upper bound on thermal conductivity.
-#[allow(dead_code)]
 pub fn hs_thermal_upper_bound(lambda_1: f64, lambda_2: f64, f: f64) -> f64 {
     // HS upper: phase 2 acts as matrix
     let phi2 = f;
@@ -146,7 +138,6 @@ pub fn hs_thermal_upper_bound(lambda_1: f64, lambda_2: f64, f: f64) -> f64 {
 /// A_z = 2 C_44 / (C_11 - C_12)
 ///
 /// A_z = 1 for isotropic materials; A_z ≠ 1 indicates elastic anisotropy.
-#[allow(dead_code)]
 pub fn zener_anisotropy_index(c11: f64, c12: f64, c44: f64) -> f64 {
     let denom = c11 - c12;
     if denom.abs() < 1e-30 {
@@ -159,7 +150,6 @@ pub fn zener_anisotropy_index(c11: f64, c12: f64, c44: f64) -> f64 {
 ///
 /// A_u = 5 G_V/G_R + K_V/K_R - 6  ≥ 0
 /// A_u = 0 for isotropic materials.
-#[allow(dead_code)]
 pub fn universal_anisotropy_index(k_v: f64, k_r: f64, g_v: f64, g_r: f64) -> f64 {
     if k_r < 1e-30 || g_r < 1e-30 {
         return 0.0;
@@ -172,7 +162,6 @@ pub fn universal_anisotropy_index(k_v: f64, k_r: f64, g_v: f64, g_r: f64) -> f64
 // ---------------------------------------------------------------------------
 
 /// Thermo-elastic coupling for a linearly elastic, isotropic material.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ThermoElasticCoupling {
     /// Coefficient of thermal expansion \[1/K\].
@@ -219,7 +208,6 @@ impl ThermoElasticCoupling {
 // ---------------------------------------------------------------------------
 
 /// Aggregated upper and lower bounds on homogenized Young's modulus.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HomogenizedStiffnessBounds {
     /// Voigt (upper) bound \[Pa\].
@@ -277,7 +265,6 @@ impl HomogenizedStiffnessBounds {
 /// Tsai-Wu failure criterion for unidirectional fiber composites.
 ///
 /// F_1 σ_1 + F_2 σ_2 + F_11 σ_1² + F_22 σ_2² + F_66 τ_12² + 2 F_12 σ_1 σ_2 = 1
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TsaiWuCriterion {
     /// Longitudinal tensile strength \[Pa\].
@@ -336,7 +323,6 @@ impl TsaiWuCriterion {
 // ---------------------------------------------------------------------------
 
 /// Voigt upper bound and Reuss lower bound for a two-phase composite.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HillBounds {
     /// Voigt (upper) bound on effective Young's modulus.
@@ -345,7 +331,6 @@ pub struct HillBounds {
     pub reuss: f64,
 }
 
-#[allow(dead_code)]
 impl HillBounds {
     /// Compute Hill bounds for a two-phase composite.
     ///
@@ -372,7 +357,6 @@ impl HillBounds {
 // ---------------------------------------------------------------------------
 
 /// Voigt (upper) bound: rule of mixtures — volume-weighted average.
-#[allow(dead_code)]
 pub fn effective_elastic_modulus_voigt(e: &[f64], fractions: &[f64]) -> f64 {
     assert_eq!(e.len(), fractions.len());
     e.iter()
@@ -382,7 +366,6 @@ pub fn effective_elastic_modulus_voigt(e: &[f64], fractions: &[f64]) -> f64 {
 }
 
 /// Reuss (lower) bound: inverse rule of mixtures.
-#[allow(dead_code)]
 pub fn effective_elastic_modulus_reuss(e: &[f64], fractions: &[f64]) -> f64 {
     assert_eq!(e.len(), fractions.len());
     let inv_sum: f64 = e
@@ -402,7 +385,6 @@ pub fn effective_elastic_modulus_reuss(e: &[f64], fractions: &[f64]) -> f64 {
 /// Matrix: (K_m, G_m).  Inclusion: K_i, volume fraction f_i.
 ///
 /// Standard form: K* = K_m + f_i*(K_i-K_m) / (1 + (1-f_i)*(K_i-K_m)/(K_m + 4G_m/3))
-#[allow(dead_code)]
 pub fn mori_tanaka_bulk_modulus(k_m: f64, g_m: f64, k_i: f64, f_i: f64) -> f64 {
     let alpha = k_m + (4.0 / 3.0) * g_m; // Eshelby-Willis factor denominator
     if alpha.abs() < 1e-30 {
@@ -419,7 +401,6 @@ pub fn mori_tanaka_bulk_modulus(k_m: f64, g_m: f64, k_i: f64, f_i: f64) -> f64 {
 /// Mori-Tanaka estimate of effective shear modulus.
 ///
 /// Matrix: (K_m, G_m).  Inclusion: G_i, volume fraction f_i.
-#[allow(dead_code)]
 pub fn mori_tanaka_shear_modulus(k_m: f64, g_m: f64, g_i: f64, f_i: f64) -> f64 {
     // β = G_m * (9 K_m + 8 G_m) / (6 * (K_m + 2 G_m))
     let beta_num = g_m * (9.0 * k_m + 8.0 * g_m);
@@ -447,7 +428,6 @@ pub fn mori_tanaka_shear_modulus(k_m: f64, g_m: f64, g_i: f64, f_i: f64) -> f64 
 /// where η = (E_f/E_m - 1) / (E_f/E_m + ξ)
 ///
 /// `xi` is the reinforcement factor (shape parameter).
-#[allow(dead_code)]
 pub fn halpin_tsai_modulus(e_m: f64, e_f: f64, vf: f64, xi: f64) -> f64 {
     if e_m.abs() < 1e-30 {
         return 0.0;
@@ -472,7 +452,6 @@ pub fn halpin_tsai_modulus(e_m: f64, e_f: f64, vf: f64, xi: f64) -> f64 {
 /// Composite coefficient of thermal expansion (Turner's model).
 ///
 /// CTE_c = (alpha1 * E1 * phi1 + alpha2 * E2 * phi2) / (E1 * phi1 + E2 * phi2)
-#[allow(dead_code)]
 pub fn composite_thermal_expansion(alpha1: f64, e1: f64, phi1: f64, alpha2: f64, e2: f64) -> f64 {
     let phi2 = 1.0 - phi1;
     let num = alpha1 * e1 * phi1 + alpha2 * e2 * phi2;
@@ -488,7 +467,6 @@ pub fn composite_thermal_expansion(alpha1: f64, e1: f64, phi1: f64, alpha2: f64,
 // ---------------------------------------------------------------------------
 
 /// A simple 2-D representative volume element (RVE) with a phase map.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RveCell {
     /// Number of voxels in x direction.
@@ -499,7 +477,6 @@ pub struct RveCell {
     pub phase_map: Vec<u8>,
 }
 
-#[allow(dead_code)]
 impl RveCell {
     /// Create a new RveCell with all voxels in phase 0.
     pub fn new(n_x: usize, n_y: usize) -> Self {
@@ -540,7 +517,6 @@ impl RveCell {
 /// Returns a list of `(left_dof, right_dof)` and `(bottom_dof, top_dof)` pairs
 /// where left/right share the same y-index and bottom/top share the same x-index.
 /// Each voxel has 2 DOFs: `2*(row*n_x + col)` and `2*(row*n_x + col) + 1`.
-#[allow(dead_code)]
 pub fn periodic_boundary_conditions_2d(rve: &RveCell) -> Vec<(usize, usize)> {
     let mut pairs = Vec::new();
     let nx = rve.n_x;
@@ -577,7 +553,6 @@ pub fn periodic_boundary_conditions_2d(rve: &RveCell) -> Vec<(usize, usize)> {
 /// Halpin-Tsai longitudinal modulus E_11 for unidirectional fiber composite.
 ///
 /// E_11 = (E_f * v_f + E_m * (1 - v_f))   (rule of mixtures for longitudinal)
-#[allow(dead_code)]
 pub fn halpin_tsai_longitudinal(e_f: f64, e_m: f64, vf: f64) -> f64 {
     e_f * vf + e_m * (1.0 - vf)
 }
@@ -586,7 +561,6 @@ pub fn halpin_tsai_longitudinal(e_f: f64, e_m: f64, vf: f64) -> f64 {
 ///
 /// Uses the Halpin-Tsai equation with reinforcement factor xi = 2 * (aspect_ratio).
 /// For circular fibers in a plate, xi ≈ 2.
-#[allow(dead_code)]
 pub fn halpin_tsai_transverse(e_f: f64, e_m: f64, vf: f64, xi: f64) -> f64 {
     halpin_tsai_modulus(e_m, e_f, vf, xi)
 }
@@ -594,13 +568,11 @@ pub fn halpin_tsai_transverse(e_f: f64, e_m: f64, vf: f64, xi: f64) -> f64 {
 /// Halpin-Tsai in-plane shear modulus G_12.
 ///
 /// xi = 1 for circular fibers.
-#[allow(dead_code)]
 pub fn halpin_tsai_shear_12(g_f: f64, g_m: f64, vf: f64) -> f64 {
     halpin_tsai_modulus(g_m, g_f, vf, 1.0)
 }
 
 /// Halpin-Tsai major Poisson's ratio ν_12 (rule of mixtures).
-#[allow(dead_code)]
 pub fn halpin_tsai_poisson_12(nu_f: f64, nu_m: f64, vf: f64) -> f64 {
     nu_f * vf + nu_m * (1.0 - vf)
 }
@@ -610,7 +582,6 @@ pub fn halpin_tsai_poisson_12(nu_f: f64, nu_m: f64, vf: f64) -> f64 {
 /// G_HS+ = G_1 + f2 / (1/(G_2-G_1) + 6(K_1+2G_1)/(5G_1(3K_1+4G_1)))
 ///
 /// Assumes G_1 ≥ G_2 (phase 1 is the stiffer phase).
-#[allow(dead_code)]
 pub fn hashin_shtrikman_shear_upper(k1: f64, g1: f64, g2: f64, f2: f64) -> f64 {
     let alpha = 6.0 * (k1 + 2.0 * g1) / (5.0 * g1 * (3.0 * k1 + 4.0 * g1));
     if (g2 - g1).abs() < 1e-30 {
@@ -628,7 +599,6 @@ pub fn hashin_shtrikman_shear_upper(k1: f64, g1: f64, g2: f64, f2: f64) -> f64 {
 /// G_HS- = G_2 + f1 / (1/(G_1-G_2) + 6(K_2+2G_2)/(5G_2(3K_2+4G_2)))
 ///
 /// Assumes G_2 ≤ G_1.
-#[allow(dead_code)]
 pub fn hashin_shtrikman_shear_lower(k2: f64, g2: f64, g1: f64, f1: f64) -> f64 {
     let alpha = 6.0 * (k2 + 2.0 * g2) / (5.0 * g2 * (3.0 * k2 + 4.0 * g2));
     if (g1 - g2).abs() < 1e-30 {
@@ -646,7 +616,6 @@ pub fn hashin_shtrikman_shear_lower(k2: f64, g2: f64, g1: f64, f1: f64) -> f64 {
 /// K_HS+ = K_1 + f2 / (1/(K_2-K_1) + 3f1/(3K_1+4G_1))
 ///
 /// Assumes K_1 ≥ K_2.
-#[allow(dead_code)]
 pub fn hashin_shtrikman_bulk_upper(k1: f64, g1: f64, k2: f64, f2: f64) -> f64 {
     let f1 = 1.0 - f2;
     let alpha = 3.0 * f1 / (3.0 * k1 + 4.0 * g1);
@@ -665,7 +634,6 @@ pub fn hashin_shtrikman_bulk_upper(k1: f64, g1: f64, k2: f64, f2: f64) -> f64 {
 /// K_HS- = K_2 + f1 / (1/(K_1-K_2) + 3f2/(3K_2+4G_2))
 ///
 /// Assumes K_2 ≤ K_1.
-#[allow(dead_code)]
 pub fn hashin_shtrikman_bulk_lower(k2: f64, g2: f64, k1: f64, f1: f64) -> f64 {
     let f2 = 1.0 - f1;
     let alpha = 3.0 * f2 / (3.0 * k2 + 4.0 * g2);
@@ -684,7 +652,6 @@ pub fn hashin_shtrikman_bulk_lower(k2: f64, g2: f64, k1: f64, f1: f64) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Configuration for a 2D periodic unit cell.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PeriodicUnitCell {
     /// Cell dimensions [lx, ly].
@@ -699,7 +666,6 @@ pub struct PeriodicUnitCell {
 
 impl PeriodicUnitCell {
     /// Create a new periodic unit cell.
-    #[allow(dead_code)]
     pub fn new(lx: f64, ly: f64, matrix: Phase, inclusion: Phase, radius: f64) -> Self {
         Self {
             dimensions: [lx, ly],
@@ -710,7 +676,6 @@ impl PeriodicUnitCell {
     }
 
     /// Volume fraction of the inclusion.
-    #[allow(dead_code)]
     pub fn inclusion_volume_fraction(&self) -> f64 {
         let area_incl = std::f64::consts::PI * self.inclusion_radius * self.inclusion_radius;
         let area_cell = self.dimensions[0] * self.dimensions[1];
@@ -718,7 +683,6 @@ impl PeriodicUnitCell {
     }
 
     /// Effective bulk modulus via Mori-Tanaka for spherical inclusions.
-    #[allow(dead_code)]
     pub fn effective_bulk_modulus_mt(&self) -> f64 {
         let k_m = self.matrix.bulk_modulus();
         let g_m = self.matrix.shear_modulus();
@@ -728,7 +692,6 @@ impl PeriodicUnitCell {
     }
 
     /// Effective shear modulus via Mori-Tanaka.
-    #[allow(dead_code)]
     pub fn effective_shear_modulus_mt(&self) -> f64 {
         let k_m = self.matrix.bulk_modulus();
         let g_m = self.matrix.shear_modulus();
@@ -738,7 +701,6 @@ impl PeriodicUnitCell {
     }
 
     /// Effective Young's modulus from effective K and G.
-    #[allow(dead_code)]
     pub fn effective_youngs_modulus_mt(&self) -> f64 {
         let k_eff = self.effective_bulk_modulus_mt();
         let g_eff = self.effective_shear_modulus_mt();
@@ -746,7 +708,6 @@ impl PeriodicUnitCell {
     }
 
     /// Effective Poisson's ratio from effective K and G.
-    #[allow(dead_code)]
     pub fn effective_poisson_ratio_mt(&self) -> f64 {
         let k_eff = self.effective_bulk_modulus_mt();
         let g_eff = self.effective_shear_modulus_mt();
@@ -758,7 +719,6 @@ impl PeriodicUnitCell {
     }
 
     /// Effective 6×6 isotropic stiffness tensor (Voigt notation) via MT.
-    #[allow(dead_code)]
     pub fn effective_stiffness_tensor_mt(&self) -> [[f64; 6]; 6] {
         let e_eff = self.effective_youngs_modulus_mt();
         let nu_eff = self.effective_poisson_ratio_mt();
@@ -780,7 +740,6 @@ impl PeriodicUnitCell {
 /// For isotropic phases the Levin relation gives:
 ///
 ///   α_eff = α_m + f_i * (α_i - α_m) * (1/K_m - 1/K_eff) / (1/K_m - 1/K_i)
-#[allow(dead_code)]
 pub fn levin_thermal_expansion(
     alpha_m: f64,
     k_m: f64,
@@ -803,7 +762,6 @@ pub fn levin_thermal_expansion(
 /// Multi-phase thermal expansion coefficient via Turner model.
 ///
 /// CTE_c = Σ(α_i * E_i * φ_i) / Σ(E_i * φ_i)
-#[allow(dead_code)]
 pub fn multi_phase_cte_turner(alphas: &[f64], moduli: &[f64], fractions: &[f64]) -> f64 {
     assert_eq!(alphas.len(), moduli.len());
     assert_eq!(moduli.len(), fractions.len());
@@ -827,7 +785,6 @@ pub fn multi_phase_cte_turner(alphas: &[f64], moduli: &[f64], fractions: &[f64])
 /// Thermal mismatch stress in the matrix of a two-phase composite.
 ///
 /// σ_m = E_m * (α_eff - α_m) * ΔT / (1 - ν_m)  (plane-strain approximation)
-#[allow(dead_code)]
 pub fn thermal_mismatch_stress(
     e_m: f64,
     nu_m: f64,
@@ -839,7 +796,6 @@ pub fn thermal_mismatch_stress(
 }
 
 /// Volumetric thermal strain: ε_v = 3 * α * ΔT.
-#[allow(dead_code)]
 pub fn volumetric_thermal_strain(alpha: f64, delta_t: f64) -> f64 {
     3.0 * alpha * delta_t
 }
@@ -850,11 +806,9 @@ pub fn volumetric_thermal_strain(alpha: f64, delta_t: f64) -> f64 {
 
 /// Build the 6×6 Voigt-notation elastic tensor C for an isotropic material
 /// from Young's modulus E and Poisson's ratio ν.
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn isotropic_stiffness_tensor(E: f64, nu: f64) -> [[f64; 6]; 6] {
-    let lam = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
-    let mu = E / (2.0 * (1.0 + nu));
+pub fn isotropic_stiffness_tensor(e: f64, nu: f64) -> [[f64; 6]; 6] {
+    let lam = e * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
+    let mu = e / (2.0 * (1.0 + nu));
     let c11 = lam + 2.0 * mu;
     let c12 = lam;
     let c44 = mu;
@@ -875,17 +829,14 @@ pub fn isotropic_stiffness_tensor(E: f64, nu: f64) -> [[f64; 6]; 6] {
 }
 
 /// Build the 6×6 compliance tensor S = C^{-1} for an isotropic material.
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn isotropic_compliance_tensor(E: f64, nu: f64) -> Option<[[f64; 6]; 6]> {
-    let c = isotropic_stiffness_tensor(E, nu);
+pub fn isotropic_compliance_tensor(e: f64, nu: f64) -> Option<[[f64; 6]; 6]> {
+    let c = isotropic_stiffness_tensor(e, nu);
     mat6_inv(&c)
 }
 
 /// Effective elastic tensor from volume-averaged stiffnesses (Voigt bound).
 ///
 /// C_eff = Σ f_i * C_i
-#[allow(dead_code)]
 pub fn voigt_effective_tensor(stiffnesses: &[[[f64; 6]; 6]], fractions: &[f64]) -> [[f64; 6]; 6] {
     assert_eq!(stiffnesses.len(), fractions.len());
     let mut c_eff = [[0.0f64; 6]; 6];
@@ -902,7 +853,6 @@ pub fn voigt_effective_tensor(stiffnesses: &[[[f64; 6]; 6]], fractions: &[f64]) 
 /// Effective elastic tensor from Reuss bound (average of compliances).
 ///
 /// S_eff = Σ f_i * S_i  then C_eff = S_eff^{-1}
-#[allow(dead_code)]
 pub fn reuss_effective_tensor(
     compliances: &[[[f64; 6]; 6]],
     fractions: &[f64],
@@ -922,7 +872,6 @@ pub fn reuss_effective_tensor(
 /// Hill average of Voigt and Reuss effective tensors.
 ///
 /// C_Hill = (C_Voigt + C_Reuss) / 2
-#[allow(dead_code)]
 pub fn hill_average_tensor(
     stiffnesses: &[[[f64; 6]; 6]],
     compliances: &[[[f64; 6]; 6]],
@@ -943,8 +892,6 @@ pub fn hill_average_tensor(
 /// assuming cubic/isotropic symmetry.
 ///
 /// Returns `(E_eff, nu_eff)`.
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub fn effective_isotropic_constants(c: &[[f64; 6]; 6]) -> (f64, f64) {
     // For isotropic: C_11 = λ + 2μ, C_12 = λ, C_44 = μ
     let c11 = c[0][0];
@@ -953,7 +900,7 @@ pub fn effective_isotropic_constants(c: &[[f64; 6]; 6]) -> (f64, f64) {
     let lam = c12;
     // E = mu * (3λ + 2μ) / (λ + μ)
     let denom_nu = lam + mu;
-    let E = if denom_nu.abs() > 1e-30 {
+    let e = if denom_nu.abs() > 1e-30 {
         mu * (3.0 * lam + 2.0 * mu) / denom_nu
     } else {
         0.0
@@ -964,7 +911,7 @@ pub fn effective_isotropic_constants(c: &[[f64; 6]; 6]) -> (f64, f64) {
         0.0
     };
     let _ = c11;
-    (E, nu)
+    (e, nu)
 }
 
 // ---------------------------------------------------------------------------
@@ -980,7 +927,6 @@ pub fn effective_isotropic_constants(c: &[[f64; 6]; 6]) -> (f64, f64) {
 ///
 /// `stresses` and `strains` are lists of Gauss-point values,
 /// `weights` are integration weights summing to 1.
-#[allow(dead_code)]
 pub fn hill_mandel_error(stresses: &[[f64; 6]], strains: &[[f64; 6]], weights: &[f64]) -> f64 {
     assert_eq!(stresses.len(), strains.len());
     assert_eq!(strains.len(), weights.len());
@@ -1021,7 +967,6 @@ pub fn hill_mandel_error(stresses: &[[f64; 6]], strains: &[[f64; 6]], weights: &
 /// shell (phase 1) embedded in matrix (phase 0).
 ///
 /// Uses the Christensen-Lo generalized self-consistent model estimate.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ThreePhaseComposite {
     /// Matrix phase.
@@ -1038,20 +983,17 @@ pub struct ThreePhaseComposite {
 
 impl ThreePhaseComposite {
     /// Volume fraction of core in the total composite.
-    #[allow(dead_code)]
     pub fn core_global_fraction(&self) -> f64 {
         self.inclusion_fraction * self.core_fraction_in_inclusion
     }
 
     /// Volume fraction of shell in the total composite.
-    #[allow(dead_code)]
     pub fn shell_global_fraction(&self) -> f64 {
         self.inclusion_fraction * (1.0 - self.core_fraction_in_inclusion)
     }
 
     /// Effective bulk modulus via sequential Mori-Tanaka:
     /// First homogenize core+shell, then embed in matrix.
-    #[allow(dead_code)]
     pub fn effective_bulk_modulus(&self) -> f64 {
         // Step 1: homogenize core in shell
         let k_shell = self.shell.bulk_modulus();
@@ -1070,7 +1012,6 @@ impl ThreePhaseComposite {
     }
 
     /// Effective shear modulus via sequential Mori-Tanaka.
-    #[allow(dead_code)]
     pub fn effective_shear_modulus(&self) -> f64 {
         let k_shell = self.shell.bulk_modulus();
         let g_shell = self.shell.shear_modulus();
@@ -1084,7 +1025,6 @@ impl ThreePhaseComposite {
     }
 
     /// Effective Young's modulus from K and G.
-    #[allow(dead_code)]
     pub fn effective_youngs_modulus(&self) -> f64 {
         let k = self.effective_bulk_modulus();
         let g = self.effective_shear_modulus();
@@ -1100,7 +1040,6 @@ impl ThreePhaseComposite {
 ///
 /// The effective stiffness of phase i with damage D_i:
 /// C_i_eff = (1 - D_i) * C_i_intact
-#[allow(dead_code)]
 pub fn damage_degraded_voigt_tensor(
     stiffnesses: &[[[f64; 6]; 6]],
     fractions: &[f64],
@@ -1168,7 +1107,7 @@ mod tests_homogenization_new {
         let k_voigt = phi1 * k_m + f_i * k_i;
         let k_reuss = 1.0 / (phi1 / k_m + f_i / k_i);
         assert!(
-            k_mt >= k_reuss * (1.0 - 1e-6) && k_mt <= k_voigt * (1.0 + 1e-6),
+            (k_reuss * (1.0 - 1e-6)..=k_voigt * (1.0 + 1e-6)).contains(&k_mt),
             "MT K={k_mt:.3e} should be between Reuss={k_reuss:.3e} and Voigt={k_voigt:.3e}"
         );
     }
@@ -1190,7 +1129,7 @@ mod tests_homogenization_new {
         let reuss = 1.0 / ((1.0 - vf) / e_m + vf / e_f);
         let voigt = (1.0 - vf) * e_m + vf * e_f;
         assert!(
-            e_ht >= reuss * 0.9999 && e_ht <= voigt * 1.0001,
+            (reuss * 0.9999..=voigt * 1.0001).contains(&e_ht),
             "HT={e_ht:.3e} Reuss={reuss:.3e} Voigt={voigt:.3e}"
         );
     }
@@ -1211,7 +1150,7 @@ mod tests_homogenization_new {
         let alpha2 = 23e-6_f64;
         let cte = composite_thermal_expansion(alpha1, 200e9, 0.5, alpha2, 70e9);
         assert!(
-            cte >= alpha1.min(alpha2) && cte <= alpha1.max(alpha2),
+            (alpha1.min(alpha2)..=alpha1.max(alpha2)).contains(&cte),
             "CTE={cte:.3e} should be between components"
         );
     }
@@ -1534,7 +1473,7 @@ mod tests_homogenization_new {
         let cte = multi_phase_cte_turner(&alphas, &moduli, &fracs);
         // Should be between min and max alpha
         assert!(
-            cte >= 8e-6 && cte <= 23e-6,
+            (8e-6..=23e-6).contains(&cte),
             "Turner CTE out of range: {cte:.3e}"
         );
     }

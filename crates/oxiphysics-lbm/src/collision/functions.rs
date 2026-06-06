@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_range_contains)]
 use crate::grid::{LbmGrid2D, LbmGrid3D, equilibrium_2d, equilibrium_3d};
 use crate::lattice::{CS2, D3Q19_OPPOSITES, D3Q19_VELOCITIES, D3Q19_WEIGHTS};
 
@@ -15,18 +13,17 @@ use super::types::EntropicCollision;
 /// `feq_i = w_i * rho * (1 + (e·u)/cs² + (e·u)²/(2cs⁴) − u²/(2cs²))`
 ///
 /// The returned array sums to `rho` and its first momentum equals `rho * u`.
-#[allow(dead_code)]
 pub fn compute_equilibrium_d3q19(rho: f64, u: [f64; 3]) -> [f64; 19] {
     let mut feq = [0.0f64; 19];
     let u_sq = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
-    for i in 0..19 {
+    for (i, feq_i) in feq.iter_mut().enumerate() {
         let w = D3Q19_WEIGHTS[i];
         let c = D3Q19_VELOCITIES[i];
         let cx = c[0] as f64;
         let cy = c[1] as f64;
         let cz = c[2] as f64;
         let eu = cx * u[0] + cy * u[1] + cz * u[2];
-        feq[i] = w * rho * (1.0 + eu / CS2 + eu * eu / (2.0 * CS2 * CS2) - u_sq / (2.0 * CS2));
+        *feq_i = w * rho * (1.0 + eu / CS2 + eu * eu / (2.0 * CS2 * CS2) - u_sq / (2.0 * CS2));
     }
     feq
 }
@@ -35,18 +32,17 @@ pub fn compute_equilibrium_d3q19(rho: f64, u: [f64; 3]) -> [f64; 19] {
 /// Returns `(rho, [ux, uy, uz])` where:
 /// - `rho = sum_i f_i`
 /// - `u_alpha = sum_i f_i * c_i_alpha / rho`
-#[allow(dead_code)]
 pub fn compute_macroscopic(f: &[f64; 19]) -> (f64, [f64; 3]) {
     let mut rho = 0.0f64;
     let mut mx = 0.0f64;
     let mut my = 0.0f64;
     let mut mz = 0.0f64;
-    for i in 0..19 {
-        rho += f[i];
+    for (i, &fi) in f.iter().enumerate() {
+        rho += fi;
         let c = D3Q19_VELOCITIES[i];
-        mx += f[i] * c[0] as f64;
-        my += f[i] * c[1] as f64;
-        mz += f[i] * c[2] as f64;
+        mx += fi * c[0] as f64;
+        my += fi * c[1] as f64;
+        mz += fi * c[2] as f64;
     }
     let inv_rho = if rho.abs() > 1e-15 { 1.0 / rho } else { 0.0 };
     (rho, [mx * inv_rho, my * inv_rho, mz * inv_rho])
@@ -56,12 +52,11 @@ pub fn compute_macroscopic(f: &[f64; 19]) -> (f64, [f64; 3]) {
 /// `f*_i = f_i - omega * (f_i - feq_i)`
 ///
 /// The macroscopic fields `rho` and `u` must already be computed from `f`.
-#[allow(dead_code)]
 pub fn collide_bgk(f: &[f64; 19], rho: f64, u: [f64; 3], omega: f64) -> [f64; 19] {
     let feq = compute_equilibrium_d3q19(rho, u);
     let mut f_out = [0.0f64; 19];
-    for i in 0..19 {
-        f_out[i] = f[i] - omega * (f[i] - feq[i]);
+    for (i, f_out_i) in f_out.iter_mut().enumerate() {
+        *f_out_i = f[i] - omega * (f[i] - feq[i]);
     }
     f_out
 }
@@ -76,7 +71,6 @@ pub const TRT_MAGIC: f64 = 3.0 / 16.0;
 ///      - omega_minus * (f_i^-  - feq_i^-)
 /// ```
 /// where `f^+ = (f_i + f_ī)/2` and `f^- = (f_i - f_ī)/2`.
-#[allow(dead_code)]
 pub fn collide_trt(
     f: &[f64; 19],
     rho: f64,
@@ -86,13 +80,13 @@ pub fn collide_trt(
 ) -> [f64; 19] {
     let feq = compute_equilibrium_d3q19(rho, u);
     let mut f_out = [0.0f64; 19];
-    for i in 0..19 {
+    for (i, f_out_i) in f_out.iter_mut().enumerate() {
         let ibar = D3Q19_OPPOSITES[i];
         let fi_plus = 0.5 * (f[i] + f[ibar]);
         let fi_minus = 0.5 * (f[i] - f[ibar]);
         let feqi_plus = 0.5 * (feq[i] + feq[ibar]);
         let feqi_minus = 0.5 * (feq[i] - feq[ibar]);
-        f_out[i] =
+        *f_out_i =
             f[i] - omega_plus * (fi_plus - feqi_plus) - omega_minus * (fi_minus - feqi_minus);
     }
     f_out
@@ -100,12 +94,11 @@ pub fn collide_trt(
 /// Compute the non-equilibrium stress tensor from a distribution.
 ///
 /// `Pi_ab^neq = sum_i (f_i - feq_i) * c_ia * c_ib`
-#[allow(dead_code)]
 pub fn non_equilibrium_stress(f: &[f64; 19], feq: &[f64; 19]) -> [[f64; 3]; 3] {
     let mut pi = [[0.0f64; 3]; 3];
-    for i in 0..19 {
+    for (i, (&fi, &feqi)) in f.iter().zip(feq.iter()).enumerate() {
         let c = D3Q19_VELOCITIES[i];
-        let f_neq = f[i] - feq[i];
+        let f_neq = fi - feqi;
         for a in 0..3 {
             for b in 0..3 {
                 pi[a][b] += f_neq * c[a] as f64 * c[b] as f64;
@@ -117,55 +110,45 @@ pub fn non_equilibrium_stress(f: &[f64; 19], feq: &[f64; 19]) -> [[f64; 3]; 3] {
 /// Compute the Frobenius norm of the non-equilibrium stress tensor.
 ///
 /// `||Pi^neq|| = sqrt(sum_ab (Pi_ab^neq)^2)`
-#[allow(dead_code)]
 pub fn non_equilibrium_stress_magnitude(f: &[f64; 19], feq: &[f64; 19]) -> f64 {
     let pi = non_equilibrium_stress(f, feq);
-    let mut sum = 0.0;
-    for a in 0..3 {
-        for b in 0..3 {
-            sum += pi[a][b] * pi[a][b];
-        }
-    }
+    let sum: f64 = pi.iter().flat_map(|row| row.iter()).map(|&v| v * v).sum();
     sum.sqrt()
 }
 /// Check if a distribution is positive (all f_i > 0).
 ///
 /// Negative distributions indicate numerical instability.
-#[allow(dead_code)]
 pub fn distribution_is_positive(f: &[f64; 19]) -> bool {
     f.iter().all(|&fi| fi > 0.0)
 }
 /// Compute the deviation from equilibrium (L2 norm of f - feq).
 ///
 /// `||f - feq|| = sqrt(sum_i (f_i - feq_i)^2)`
-#[allow(dead_code)]
 pub fn equilibrium_deviation(f: &[f64; 19], rho: f64, u: [f64; 3]) -> f64 {
     let feq = compute_equilibrium_d3q19(rho, u);
-    let mut sum = 0.0;
-    for i in 0..19 {
-        let d = f[i] - feq[i];
-        sum += d * d;
-    }
+    let sum: f64 = f
+        .iter()
+        .zip(feq.iter())
+        .map(|(&fi, &feqi)| (fi - feqi) * (fi - feqi))
+        .sum();
     sum.sqrt()
 }
 /// Compute the entropy of a distribution (Boltzmann H-function).
 ///
 /// `H = sum_i f_i * ln(f_i / w_i)`
-#[allow(dead_code)]
 pub fn boltzmann_entropy(f: &[f64; 19]) -> f64 {
-    let mut h = 0.0f64;
-    for i in 0..19 {
-        let fi = f[i].max(1e-30);
-        let wi = D3Q19_WEIGHTS[i];
-        h += fi * (fi / wi).ln();
-    }
-    h
+    f.iter()
+        .zip(D3Q19_WEIGHTS.iter())
+        .map(|(&fi_raw, &wi)| {
+            let fi = fi_raw.max(1e-30);
+            fi * (fi / wi).ln()
+        })
+        .sum()
 }
 /// Compute the effective relaxation rate for stability monitoring.
 ///
 /// Returns the ratio `max_i |f_i - feq_i| / max_i |feq_i|`
 /// which should remain O(Ma^2) for stability.
-#[allow(dead_code)]
 pub fn non_equilibrium_ratio(f: &[f64; 19], rho: f64, u: [f64; 3]) -> f64 {
     let feq = compute_equilibrium_d3q19(rho, u);
     let max_neq: f64 = (0..19)
@@ -182,7 +165,6 @@ pub fn non_equilibrium_ratio(f: &[f64; 19], rho: f64, u: [f64; 3]) -> f64 {
 ///
 /// In LBM, the strain rate is related to the non-equilibrium stress:
 /// `S_ab = -omega / (2 * rho * cs^2) * Pi_ab^neq`
-#[allow(dead_code)]
 pub fn strain_rate_from_neq(f: &[f64; 19], rho: f64, u: [f64; 3], omega: f64) -> [[f64; 3]; 3] {
     let feq = compute_equilibrium_d3q19(rho, u);
     let pi = non_equilibrium_stress(f, &feq);
@@ -197,25 +179,23 @@ pub fn strain_rate_from_neq(f: &[f64; 19], rho: f64, u: [f64; 3], omega: f64) ->
 }
 /// Compute the H-function (Boltzmann entropy) for a distribution.
 pub(super) fn entropy_h(f: &[f64; 19]) -> f64 {
-    let mut h = 0.0f64;
-    for i in 0..19 {
-        let fi = f[i].max(1e-30);
-        let wi = D3Q19_WEIGHTS[i];
-        h += fi * (fi / wi).ln();
-    }
-    h
+    f.iter()
+        .zip(D3Q19_WEIGHTS.iter())
+        .map(|(&fi_raw, &wi)| {
+            let fi = fi_raw.max(1e-30);
+            fi * (fi / wi).ln()
+        })
+        .sum()
 }
 /// Compute the entropy production rate: ΔH = H(f_out) - H(f_in).
 ///
 /// Should be ≤ 0 for physically consistent collisions (H-theorem).
-#[allow(dead_code)]
 pub fn entropy_production(f_in: &[f64; 19], f_out: &[f64; 19]) -> f64 {
     entropy_h(f_out) - entropy_h(f_in)
 }
 /// Compute the minimum entropy margin across an array of distributions.
 ///
 /// Returns `min_k (H(f_k^post) - H(f_k^pre))`.  Should be ≤ 0 for stability.
-#[allow(dead_code)]
 pub fn min_entropy_margin(pre: &[[f64; 19]], post: &[[f64; 19]]) -> f64 {
     pre.iter()
         .zip(post.iter())
@@ -227,12 +207,11 @@ pub fn min_entropy_margin(pre: &[[f64; 19]], post: &[[f64; 19]]) -> f64 {
 /// Uses the velocity-shifted moments: `κ_{abc} = Σ_i f_i (c_x - u_x)^a (c_y - u_y)^b (c_z - u_z)^c`.
 pub(super) fn compute_central_moments(f: &[f64; 19], u: [f64; 3], _inv_rho: f64) -> [f64; 19] {
     let mut cm = [0.0f64; 19];
-    for i in 0..19 {
+    for (i, &fi) in f.iter().enumerate() {
         let c = D3Q19_VELOCITIES[i];
         let dx = c[0] as f64 - u[0];
         let dy = c[1] as f64 - u[1];
         let dz = c[2] as f64 - u[2];
-        let fi = f[i];
         cm[0] += fi;
         cm[1] += fi * dx;
         cm[2] += fi * dy;
@@ -260,7 +239,6 @@ pub(super) fn compute_central_moments(f: &[f64; 19], u: [f64; 3], _inv_rho: f64)
 /// `f* = alpha * f*_BGK + (1 - alpha) * f*_ELBM`
 ///
 /// where alpha is derived from the local Mach number.
-#[allow(dead_code)]
 pub fn collide_blended(
     f: &[f64; 19],
     rho: f64,
@@ -278,7 +256,6 @@ pub fn collide_blended(
 /// relaxation rate.
 ///
 /// `ζ = cs² * (2 - s_e) / (3 * s_e)` (bulk viscosity from energy mode).
-#[allow(dead_code)]
 pub fn mrt_bulk_viscosity(s_energy: f64) -> f64 {
     if s_energy <= 0.0 || s_energy >= 2.0 {
         return 0.0;
@@ -289,7 +266,6 @@ pub fn mrt_bulk_viscosity(s_energy: f64) -> f64 {
 /// numerical diffusion artifacts:
 ///
 /// `s_minus = 8 * (2 - s_plus) / (8 - s_plus)` (Ginzburg magic parameter).
-#[allow(dead_code)]
 pub fn optimal_antisymmetric_rate(s_plus: f64) -> f64 {
     if s_plus.abs() < 1e-30 {
         return 1.0;
@@ -314,7 +290,8 @@ pub fn bgk_collide_2d(grid: &mut LbmGrid2D, omega: f64) {
             let w = grid.lattice.weight(i);
             let c = grid.lattice.velocity_2d(i);
             let feq = equilibrium_2d(w, rho_k, ux_k, uy_k, c[0] as f64, c[1] as f64);
-            grid.f[i][k] -= omega * (grid.f[i][k] - feq);
+            let fi_k = &mut grid.f[i][k];
+            *fi_k -= omega * (*fi_k - feq);
         }
     }
 }
@@ -343,7 +320,8 @@ pub fn bgk_collide_3d(grid: &mut LbmGrid3D, omega: f64) {
                 c[1] as f64,
                 c[2] as f64,
             );
-            grid.f[i][k] -= omega * (grid.f[i][k] - feq);
+            let fi_k = &mut grid.f[i][k];
+            *fi_k -= omega * (*fi_k - feq);
         }
     }
 }
@@ -385,11 +363,11 @@ mod tests {
         let mut mx = 0.0f64;
         let mut my = 0.0f64;
         let mut mz = 0.0f64;
-        for i in 0..19 {
+        for (i, &feqi) in feq.iter().enumerate() {
             let c = D3Q19_VELOCITIES[i];
-            mx += feq[i] * c[0] as f64;
-            my += feq[i] * c[1] as f64;
-            mz += feq[i] * c[2] as f64;
+            mx += feqi * c[0] as f64;
+            my += feqi * c[1] as f64;
+            mz += feqi * c[2] as f64;
         }
         assert!(mx.abs() < 1e-14, "mx = {mx}");
         assert!(my.abs() < 1e-14, "my = {my}");
@@ -422,14 +400,14 @@ mod tests {
         let mut mx_in = 0.0f64;
         let mut my_in = 0.0f64;
         let mut mz_in = 0.0f64;
-        for i in 0..19 {
+        for (i, (&f_in_i, &f_out_i)) in f_in.iter().zip(f_out.iter()).enumerate() {
             let c = D3Q19_VELOCITIES[i];
-            mx_in += f_in[i] * c[0] as f64;
-            my_in += f_in[i] * c[1] as f64;
-            mz_in += f_in[i] * c[2] as f64;
-            mx_out += f_out[i] * c[0] as f64;
-            my_out += f_out[i] * c[1] as f64;
-            mz_out += f_out[i] * c[2] as f64;
+            mx_in += f_in_i * c[0] as f64;
+            my_in += f_in_i * c[1] as f64;
+            mz_in += f_in_i * c[2] as f64;
+            mx_out += f_out_i * c[0] as f64;
+            my_out += f_out_i * c[1] as f64;
+            mz_out += f_out_i * c[2] as f64;
         }
         assert!((mx_out - mx_in).abs() < 1e-14, "BGK mx not conserved");
         assert!((my_out - my_in).abs() < 1e-14, "BGK my not conserved");
@@ -455,11 +433,11 @@ mod tests {
         let f_out = trt.collide(&f_in, rho, u);
         let momentum = |arr: &[f64; 19]| -> [f64; 3] {
             let mut m = [0.0f64; 3];
-            for i in 0..19 {
+            for (i, &arr_i) in arr.iter().enumerate() {
                 let c = D3Q19_VELOCITIES[i];
-                m[0] += arr[i] * c[0] as f64;
-                m[1] += arr[i] * c[1] as f64;
-                m[2] += arr[i] * c[2] as f64;
+                m[0] += arr_i * c[0] as f64;
+                m[1] += arr_i * c[1] as f64;
+                m[2] += arr_i * c[2] as f64;
             }
             m
         };
@@ -508,9 +486,9 @@ mod tests {
         let u = [0.02, 0.01, -0.01];
         let feq = compute_equilibrium_d3q19(rho, u);
         let f_out = collide_bgk(&feq, rho, u, OMEGA);
-        for i in 0..19 {
+        for (i, (&f_out_i, &feq_i)) in f_out.iter().zip(feq.iter()).enumerate() {
             assert!(
-                (f_out[i] - feq[i]).abs() < 1e-14,
+                (f_out_i - feq_i).abs() < 1e-14,
                 "BGK modified equilibrium at i={i}"
             );
         }
@@ -574,12 +552,10 @@ mod tests {
         let feq = compute_equilibrium_d3q19(rho, u);
         let reg = RegularizedCollision::new(1.0);
         let f_out = reg.collide(&feq, rho, u);
-        for i in 0..19 {
+        for (i, (&f_out_i, &feq_i)) in f_out.iter().zip(feq.iter()).enumerate() {
             assert!(
-                (f_out[i] - feq[i]).abs() < 1e-13,
-                "Regularized modified equilibrium at i={i}: {} vs {}",
-                f_out[i],
-                feq[i]
+                (f_out_i - feq_i).abs() < 1e-13,
+                "Regularized modified equilibrium at i={i}: {f_out_i} vs {feq_i}"
             );
         }
     }
@@ -601,9 +577,9 @@ mod tests {
         let u = [0.02, 0.01, -0.01];
         let feq = compute_equilibrium_d3q19(rho, u);
         let pi = non_equilibrium_stress(&feq, &feq);
-        for a in 0..3 {
-            for b in 0..3 {
-                assert!(pi[a][b].abs() < 1e-14, "Pi[{a}][{b}] should be zero at eq");
+        for (a, row) in pi.iter().enumerate() {
+            for (b, &val) in row.iter().enumerate() {
+                assert!(val.abs() < 1e-14, "Pi[{a}][{b}] should be zero at eq");
             }
         }
     }
@@ -659,13 +635,9 @@ mod tests {
         let u = [0.02, 0.01, -0.01];
         let feq = compute_equilibrium_d3q19(rho, u);
         let s = strain_rate_from_neq(&feq, rho, u, 1.0);
-        for a in 0..3 {
-            for b in 0..3 {
-                assert!(
-                    s[a][b].abs() < 1e-14,
-                    "S[{a}][{b}] should be zero at eq: {}",
-                    s[a][b]
-                );
+        for (a, row) in s.iter().enumerate() {
+            for (b, &val) in row.iter().enumerate() {
+                assert!(val.abs() < 1e-14, "S[{a}][{b}] should be zero at eq: {val}",);
             }
         }
     }
@@ -702,12 +674,10 @@ mod tests {
         let feq = compute_equilibrium_d3q19(rho, u);
         let kbc = KbcCollision::new(1.0 / 6.0);
         let f_out = kbc.collide(&feq, rho, u);
-        for i in 0..19 {
+        for (i, (&f_out_i, &feq_i)) in f_out.iter().zip(feq.iter()).enumerate() {
             assert!(
-                (f_out[i] - feq[i]).abs() < 1e-12,
-                "KBC modified equilibrium at i={i}: {} vs {}",
-                f_out[i],
-                feq[i]
+                (f_out_i - feq_i).abs() < 1e-12,
+                "KBC modified equilibrium at i={i}: {f_out_i} vs {feq_i}"
             );
         }
     }
@@ -816,9 +786,9 @@ mod tests {
         let omega = 1.0;
         let f_bgk = collide_bgk(&f, rho, u, omega);
         let f_blend = collide_blended(&f, rho, u, omega, 1.0);
-        for i in 0..19 {
+        for (i, (&f_blend_i, &f_bgk_i)) in f_blend.iter().zip(f_bgk.iter()).enumerate() {
             assert!(
-                (f_blend[i] - f_bgk[i]).abs() < 1e-12,
+                (f_blend_i - f_bgk_i).abs() < 1e-12,
                 "alpha=1 blend should equal BGK at i={i}"
             );
         }
@@ -850,12 +820,10 @@ mod tests {
         let feq = compute_equilibrium_d3q19(rho, u);
         let mrt = MrtCollision::from_viscosity(1.0 / 6.0);
         let f_out = mrt.collide(&feq, rho, u);
-        for i in 0..19 {
+        for (i, (&f_out_i, &feq_i)) in f_out.iter().zip(feq.iter()).enumerate() {
             assert!(
-                (f_out[i] - feq[i]).abs() < 1e-13,
-                "MRT modified equilibrium at i={i}: {} vs {}",
-                f_out[i],
-                feq[i]
+                (f_out_i - feq_i).abs() < 1e-13,
+                "MRT modified equilibrium at i={i}: {f_out_i} vs {feq_i}"
             );
         }
     }
@@ -881,14 +849,14 @@ mod tests {
         let mut my_out = 0.0f64;
         let mut mz_in = 0.0f64;
         let mut mz_out = 0.0f64;
-        for i in 0..19 {
+        for (i, (&fi, &f_out_i)) in f.iter().zip(f_out.iter()).enumerate() {
             let c = D3Q19_VELOCITIES[i];
-            mx_in += f[i] * c[0] as f64;
-            mx_out += f_out[i] * c[0] as f64;
-            my_in += f[i] * c[1] as f64;
-            my_out += f_out[i] * c[1] as f64;
-            mz_in += f[i] * c[2] as f64;
-            mz_out += f_out[i] * c[2] as f64;
+            mx_in += fi * c[0] as f64;
+            mx_out += f_out_i * c[0] as f64;
+            my_in += fi * c[1] as f64;
+            my_out += f_out_i * c[1] as f64;
+            mz_in += fi * c[2] as f64;
+            mz_out += f_out_i * c[2] as f64;
         }
         assert!((mx_out - mx_in).abs() < 1e-12, "MRT mx not conserved");
         assert!((my_out - my_in).abs() < 1e-12, "MRT my not conserved");
@@ -916,7 +884,7 @@ mod tests {
         for s_plus in [0.5, 1.0, 1.5, 1.9] {
             let s_minus = optimal_antisymmetric_rate(s_plus);
             assert!(
-                s_minus >= 0.0 && s_minus <= 2.0,
+                (0.0..=2.0).contains(&s_minus),
                 "s_minus={s_minus} out of [0,2] for s_plus={s_plus}"
             );
         }
@@ -935,7 +903,6 @@ mod tests {
 /// * `u`     – macroscopic velocity
 /// * `omega` – standard relaxation rate
 /// * `sigma` – overrelaxation factor (1.0 = standard BGK)
-#[allow(dead_code)]
 pub fn collide_bgk_overrelaxation(
     f: &[f64; 19],
     rho: f64,
@@ -945,23 +912,22 @@ pub fn collide_bgk_overrelaxation(
 ) -> [f64; 19] {
     let feq = compute_equilibrium_d3q19(rho, u);
     let mut f_out = *f;
-    for i in 0..19 {
-        f_out[i] = f[i] - sigma * omega * (f[i] - feq[i]);
+    for (f_out_i, (&fi, &feqi)) in f_out.iter_mut().zip(f.iter().zip(feq.iter())) {
+        *f_out_i = fi - sigma * omega * (fi - feqi);
     }
     f_out
 }
 /// Compute the non-equilibrium stress tensor Π^(1)_{αβ} from f − feq.
 ///
 /// Returns a 6-component symmetric tensor \[xx, yy, zz, xy, xz, yz\].
-#[allow(dead_code)]
 pub fn compute_pi1_tensor(f: &[f64; 19], feq: &[f64; 19]) -> [f64; 6] {
     let mut pi = [0.0f64; 6];
-    for i in 0..19 {
+    for (i, (&fi, &feqi)) in f.iter().zip(feq.iter()).enumerate() {
         let c = D3Q19_VELOCITIES[i];
         let cx = c[0] as f64;
         let cy = c[1] as f64;
         let cz = c[2] as f64;
-        let fneq = f[i] - feq[i];
+        let fneq = fi - feqi;
         pi[0] += fneq * cx * cx;
         pi[1] += fneq * cy * cy;
         pi[2] += fneq * cz * cz;
@@ -975,11 +941,10 @@ pub fn compute_pi1_tensor(f: &[f64; 19], feq: &[f64; 19]) -> [f64; 6] {
 ///
 /// Uses the D3Q19 second-order Hermite expansion:
 /// `f^(1)_i = w_i / (2 cs⁴) * c_{iα} c_{iβ} Π^(1)_{αβ}`
-#[allow(dead_code)]
 pub fn regularized_f1_d3q19(pi1: &[f64; 6], _rho: f64) -> [f64; 19] {
     let cs4 = (1.0 / 3.0_f64).powi(2);
     let mut f1 = [0.0f64; 19];
-    for i in 0..19 {
+    for (i, f1_i) in f1.iter_mut().enumerate() {
         let w = D3Q19_WEIGHTS[i];
         let c = D3Q19_VELOCITIES[i];
         let cx = c[0] as f64;
@@ -991,14 +956,13 @@ pub fn regularized_f1_d3q19(pi1: &[f64; 6], _rho: f64) -> [f64; 19] {
             + 2.0 * cx * cy * pi1[3]
             + 2.0 * cx * cz * pi1[4]
             + 2.0 * cy * cz * pi1[5];
-        f1[i] = w / (2.0 * cs4) * q;
+        *f1_i = w / (2.0 * cs4) * q;
     }
     f1
 }
 /// Compute the recursive correction tensor Q^(1) from Π^(1) and u.
 ///
 /// This is a simplified 6-component approximation of the third-rank tensor.
-#[allow(dead_code)]
 pub fn compute_q1_recursive(pi1: &[f64; 6], u: [f64; 3], tau_minus_half: f64) -> [f64; 6] {
     let inv_cs2 = 3.0;
     let factor = -tau_minus_half * inv_cs2;
@@ -1015,11 +979,10 @@ pub fn compute_q1_recursive(pi1: &[f64; 6], u: [f64; 3], tau_minus_half: f64) ->
     ]
 }
 /// Reconstruct f^(1) with both Π^(1) and Q^(1) corrections.
-#[allow(dead_code)]
 pub fn regularized_f1_with_q_d3q19(pi1: &[f64; 6], q1: &[f64; 6]) -> [f64; 19] {
     let cs4 = (1.0 / 3.0_f64).powi(2);
     let mut f1 = [0.0f64; 19];
-    for i in 0..19 {
+    for (i, f1_i) in f1.iter_mut().enumerate() {
         let w = D3Q19_WEIGHTS[i];
         let c = D3Q19_VELOCITIES[i];
         let cx = c[0] as f64;
@@ -1037,45 +1000,43 @@ pub fn regularized_f1_with_q_d3q19(pi1: &[f64; 6], q1: &[f64; 6]) -> [f64; 19] {
             + 2.0 * cx * cy * q1[3]
             + 2.0 * cx * cz * q1[4]
             + 2.0 * cy * cz * q1[5];
-        f1[i] = w / (2.0 * cs4) * q_pi + w / (6.0 * cs4 * (1.0 / 3.0)) * q_q;
+        *f1_i = w / (2.0 * cs4) * q_pi + w / (6.0 * cs4 * (1.0 / 3.0)) * q_q;
     }
     f1
 }
 /// Compute the 19 raw moments of a D3Q19 distribution.
 ///
 /// Ordering: m_0 = ρ, m_1..3 = ρu, m_4..9 = second-order, m_10..18 = higher.
-#[allow(dead_code)]
 pub fn compute_raw_moments_d3q19(f: &[f64; 19]) -> [f64; 19] {
     let mut m = [0.0f64; 19];
-    for i in 0..19 {
+    for (i, &fi) in f.iter().enumerate() {
         let c = D3Q19_VELOCITIES[i];
         let cx = c[0] as f64;
         let cy = c[1] as f64;
         let cz = c[2] as f64;
-        m[0] += f[i];
-        m[1] += f[i] * cx;
-        m[2] += f[i] * cy;
-        m[3] += f[i] * cz;
-        m[4] += f[i] * cx * cx;
-        m[5] += f[i] * cy * cy;
-        m[6] += f[i] * cz * cz;
-        m[7] += f[i] * cx * cy;
-        m[8] += f[i] * cx * cz;
-        m[9] += f[i] * cy * cz;
-        m[10] += f[i] * cx * cx * cy;
-        m[11] += f[i] * cx * cx * cz;
-        m[12] += f[i] * cy * cy * cx;
-        m[13] += f[i] * cy * cy * cz;
-        m[14] += f[i] * cz * cz * cx;
-        m[15] += f[i] * cz * cz * cy;
-        m[16] += f[i] * cx * cx * cy * cy;
-        m[17] += f[i] * cx * cx * cz * cz;
-        m[18] += f[i] * cy * cy * cz * cz;
+        m[0] += fi;
+        m[1] += fi * cx;
+        m[2] += fi * cy;
+        m[3] += fi * cz;
+        m[4] += fi * cx * cx;
+        m[5] += fi * cy * cy;
+        m[6] += fi * cz * cz;
+        m[7] += fi * cx * cy;
+        m[8] += fi * cx * cz;
+        m[9] += fi * cy * cz;
+        m[10] += fi * cx * cx * cy;
+        m[11] += fi * cx * cx * cz;
+        m[12] += fi * cy * cy * cx;
+        m[13] += fi * cy * cy * cz;
+        m[14] += fi * cz * cz * cx;
+        m[15] += fi * cz * cz * cy;
+        m[16] += fi * cx * cx * cy * cy;
+        m[17] += fi * cx * cx * cz * cz;
+        m[18] += fi * cy * cy * cz * cz;
     }
     m
 }
 /// Return relaxation rate for the i-th raw moment group.
-#[allow(dead_code)]
 pub(super) fn raw_moment_rate(i: usize, omega_v: f64, omega_b: f64, omega_g: f64) -> f64 {
     match i {
         0..=3 => 1.0,
@@ -1087,7 +1048,6 @@ pub(super) fn raw_moment_rate(i: usize, omega_v: f64, omega_b: f64, omega_g: f64
 /// Reconstruct a distribution from its raw moments (least-squares projection).
 ///
 /// Uses the pseudo-inverse via the D3Q19 velocity basis.
-#[allow(dead_code)]
 pub fn raw_moments_to_f_d3q19(m: &[f64; 19]) -> [f64; 19] {
     let rho = m[0];
     let jx = m[1];
@@ -1105,7 +1065,7 @@ pub fn raw_moments_to_f_d3q19(m: &[f64; 19]) -> [f64; 19] {
     let dxy = m[7] - feq_m[7];
     let dxz = m[8] - feq_m[8];
     let dyz = m[9] - feq_m[9];
-    for i in 0..19 {
+    for (i, f_out_i) in f_out.iter_mut().enumerate() {
         let w = D3Q19_WEIGHTS[i];
         let c = D3Q19_VELOCITIES[i];
         let cx = c[0] as f64;
@@ -1118,7 +1078,7 @@ pub fn raw_moments_to_f_d3q19(m: &[f64; 19]) -> [f64; 19] {
                 + 2.0 * cx * cy * dxy
                 + 2.0 * cx * cz * dxz
                 + 2.0 * cy * cz * dyz);
-        f_out[i] += correction;
+        *f_out_i += correction;
     }
     f_out
 }
@@ -1126,36 +1086,35 @@ pub fn raw_moments_to_f_d3q19(m: &[f64; 19]) -> [f64; 19] {
 ///
 /// Returns 19 moments in the ordering: κ_000, κ_100, κ_010, κ_001,
 /// κ_200, κ_020, κ_002, κ_110, κ_101, κ_011, then higher order.
-#[allow(dead_code)]
 pub fn compute_central_moments_cumulant(f: &[f64; 19], u: [f64; 3]) -> [f64; 19] {
     let mut cm = [0.0f64; 19];
     let ux = u[0];
     let uy = u[1];
     let uz = u[2];
-    for i in 0..19 {
+    for (i, &fi) in f.iter().enumerate() {
         let c = D3Q19_VELOCITIES[i];
         let xi = c[0] as f64 - ux;
         let yi = c[1] as f64 - uy;
         let zi = c[2] as f64 - uz;
-        cm[0] += f[i];
-        cm[1] += f[i] * xi;
-        cm[2] += f[i] * yi;
-        cm[3] += f[i] * zi;
-        cm[4] += f[i] * xi * xi;
-        cm[5] += f[i] * yi * yi;
-        cm[6] += f[i] * zi * zi;
-        cm[7] += f[i] * xi * yi;
-        cm[8] += f[i] * xi * zi;
-        cm[9] += f[i] * yi * zi;
-        cm[10] += f[i] * xi * xi * yi;
-        cm[11] += f[i] * xi * xi * zi;
-        cm[12] += f[i] * yi * yi * xi;
-        cm[13] += f[i] * yi * yi * zi;
-        cm[14] += f[i] * zi * zi * xi;
-        cm[15] += f[i] * zi * zi * yi;
-        cm[16] += f[i] * xi * xi * yi * yi;
-        cm[17] += f[i] * xi * xi * zi * zi;
-        cm[18] += f[i] * yi * yi * zi * zi;
+        cm[0] += fi;
+        cm[1] += fi * xi;
+        cm[2] += fi * yi;
+        cm[3] += fi * zi;
+        cm[4] += fi * xi * xi;
+        cm[5] += fi * yi * yi;
+        cm[6] += fi * zi * zi;
+        cm[7] += fi * xi * yi;
+        cm[8] += fi * xi * zi;
+        cm[9] += fi * yi * zi;
+        cm[10] += fi * xi * xi * yi;
+        cm[11] += fi * xi * xi * zi;
+        cm[12] += fi * yi * yi * xi;
+        cm[13] += fi * yi * yi * zi;
+        cm[14] += fi * zi * zi * xi;
+        cm[15] += fi * zi * zi * yi;
+        cm[16] += fi * xi * xi * yi * yi;
+        cm[17] += fi * xi * xi * zi * zi;
+        cm[18] += fi * yi * yi * zi * zi;
     }
     cm
 }
@@ -1163,24 +1122,23 @@ pub fn compute_central_moments_cumulant(f: &[f64; 19], u: [f64; 3]) -> [f64; 19]
 ///
 /// Uses the regularized equilibrium approach: constructs feq at (rho, u),
 /// then adds the non-equilibrium correction from the second-order central moments.
-#[allow(dead_code)]
 pub fn central_moments_to_f_cumulant(cm: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
     let feq = compute_equilibrium_d3q19(rho, u);
     let cm_eq = compute_central_moments_cumulant(&feq, u);
     let cs4 = (1.0 / 3.0_f64).powi(2);
+    let dxx = cm[4] - cm_eq[4];
+    let dyy = cm[5] - cm_eq[5];
+    let dzz = cm[6] - cm_eq[6];
+    let dxy = cm[7] - cm_eq[7];
+    let dxz = cm[8] - cm_eq[8];
+    let dyz = cm[9] - cm_eq[9];
     let mut f_out = feq;
-    for i in 0..19 {
+    for (i, f_out_i) in f_out.iter_mut().enumerate() {
         let c = D3Q19_VELOCITIES[i];
         let cx = c[0] as f64 - u[0];
         let cy = c[1] as f64 - u[1];
         let cz = c[2] as f64 - u[2];
         let w = D3Q19_WEIGHTS[i];
-        let dxx = cm[4] - cm_eq[4];
-        let dyy = cm[5] - cm_eq[5];
-        let dzz = cm[6] - cm_eq[6];
-        let dxy = cm[7] - cm_eq[7];
-        let dxz = cm[8] - cm_eq[8];
-        let dyz = cm[9] - cm_eq[9];
         let correction = w / (2.0 * cs4)
             * (cx * cx * dxx
                 + cy * cy * dyy
@@ -1188,7 +1146,7 @@ pub fn central_moments_to_f_cumulant(cm: &[f64; 19], rho: f64, u: [f64; 3]) -> [
                 + 2.0 * cx * cy * dxy
                 + 2.0 * cx * cz * dxz
                 + 2.0 * cy * cz * dyz);
-        f_out[i] += correction;
+        *f_out_i += correction;
     }
     f_out
 }
@@ -1203,10 +1161,9 @@ pub fn central_moments_to_f_cumulant(cm: &[f64; 19], rho: f64, u: [f64; 3]) -> [
 /// `feq_i = w_i ρ Π_α ( 2 − √(1+3u_α²) ) ((2u_α + √(1+3u_α²)) / (1−u_α))^{c_iα}`
 ///
 /// Reference: Ansumali & Karlin, Phys. Rev. E 65, 056312 (2002).
-#[allow(dead_code)]
 pub fn entropic_equilibrium_d3q19(rho: f64, u: [f64; 3]) -> [f64; 19] {
     let mut feq = [0.0f64; 19];
-    for i in 0..19 {
+    for (i, feq_i) in feq.iter_mut().enumerate() {
         let w = D3Q19_WEIGHTS[i];
         let c = D3Q19_VELOCITIES[i];
         let mut prod = rho * w;
@@ -1219,7 +1176,7 @@ pub fn entropic_equilibrium_d3q19(rho: f64, u: [f64; 3]) -> [f64; 19] {
             let b = (2.0 * ua + (1.0 + 3.0 * ua2).sqrt()) / denom;
             prod *= a * b.powf(ca);
         }
-        feq[i] = prod;
+        *feq_i = prod;
     }
     feq
 }
@@ -1229,19 +1186,21 @@ pub fn entropic_equilibrium_d3q19(rho: f64, u: [f64; 3]) -> [f64; 19] {
 /// `f^{mirr} = f + α(feq − f)`.  Uses a bisection root-finder.
 ///
 /// Returns α ∈ (0, 2].
-#[allow(dead_code)]
 pub fn entropic_alpha_d3q19(f: &[f64; 19], feq: &[f64; 19]) -> f64 {
     let df: [f64; 19] = std::array::from_fn(|i| feq[i] - f[i]);
     let h_eval = |alpha: f64| -> f64 {
-        let mut h = 0.0;
-        for i in 0..19 {
-            let fi = f[i] + alpha * df[i];
-            let wi = D3Q19_WEIGHTS[i];
-            if fi > 1e-300 && wi > 0.0 {
-                h += fi * (fi / wi).ln();
-            }
-        }
-        h
+        f.iter()
+            .zip(df.iter())
+            .zip(D3Q19_WEIGHTS.iter())
+            .map(|((&fi_raw, &dfi), &wi)| {
+                let fi = fi_raw + alpha * dfi;
+                if fi > 1e-300 && wi > 0.0 {
+                    fi * (fi / wi).ln()
+                } else {
+                    0.0
+                }
+            })
+            .sum()
     };
     let h0 = h_eval(0.0);
     if h_eval(2.0) <= h0 {
@@ -1262,33 +1221,31 @@ pub fn entropic_alpha_d3q19(f: &[f64; 19], feq: &[f64; 19]) -> f64 {
 /// Entropic stabilized BGK (ELBM) collision with exact α from entropic condition.
 ///
 /// Uses the entropic equilibrium and computes α to ensure H(f_out) ≤ H(f_in).
-#[allow(dead_code)]
 pub fn collide_entropic_stabilized(f: &[f64; 19], rho: f64, u: [f64; 3]) -> [f64; 19] {
     let feq = entropic_equilibrium_d3q19(rho, u);
     let alpha = entropic_alpha_d3q19(f, &feq);
     let mut f_out = *f;
-    for i in 0..19 {
-        f_out[i] += alpha * (feq[i] - f[i]);
+    for (f_out_i, (&fi, &feqi)) in f_out.iter_mut().zip(f.iter().zip(feq.iter())) {
+        *f_out_i += alpha * (feqi - fi);
     }
     f_out
 }
 /// Compute the D3Q19 discrete H-function: H = Σ_i f_i ln(f_i / w_i).
-#[allow(dead_code)]
 pub fn discrete_h_function(f: &[f64; 19]) -> f64 {
-    let mut h = 0.0;
-    for i in 0..19 {
-        let fi = f[i];
-        let wi = D3Q19_WEIGHTS[i];
-        if fi > 1e-300 && wi > 0.0 {
-            h += fi * (fi / wi).ln();
-        }
-    }
-    h
+    f.iter()
+        .zip(D3Q19_WEIGHTS.iter())
+        .map(|(&fi, &wi)| {
+            if fi > 1e-300 && wi > 0.0 {
+                fi * (fi / wi).ln()
+            } else {
+                0.0
+            }
+        })
+        .sum()
 }
 /// Compute the spectral radius of the linearized BGK operator.
 ///
 /// For BGK: all eigenvalues equal (1 − ω).  Returns |1 − ω| (scalar).
-#[allow(dead_code)]
 pub fn bgk_spectral_radius(omega: f64) -> f64 {
     (1.0 - omega).abs()
 }
@@ -1296,13 +1253,11 @@ pub fn bgk_spectral_radius(omega: f64) -> f64 {
 ///
 /// Based on the von Neumann stability analysis: ω_max = 2/(1 + 3u²·Δt/Δx²).
 /// For the lattice (Δt = Δx = 1): ω_max ≈ 2 / (1 + u²·some_factor).
-#[allow(dead_code)]
 pub fn max_stable_omega(u_max: f64) -> f64 {
     let u2 = u_max * u_max;
     2.0 / (1.0 + 6.0 * u2).max(1.0)
 }
 /// Compute the maximum non-equilibrium norm (∞-norm) across a distribution.
-#[allow(dead_code)]
 pub fn max_neq_norm(f: &[f64; 19], feq: &[f64; 19]) -> f64 {
     f.iter()
         .zip(feq.iter())
@@ -1312,7 +1267,6 @@ pub fn max_neq_norm(f: &[f64; 19], feq: &[f64; 19]) -> f64 {
 /// Compute the relative entropy production in one collision step.
 ///
 /// Returns (H_before − H_after) / |H_before|.
-#[allow(dead_code)]
 pub fn relative_entropy_production(f_in: &[f64; 19], f_out: &[f64; 19]) -> f64 {
     let h_in = discrete_h_function(f_in);
     let h_out = discrete_h_function(f_out);
@@ -1323,14 +1277,12 @@ pub fn relative_entropy_production(f_in: &[f64; 19], f_out: &[f64; 19]) -> f64 {
     }
 }
 /// Check whether a distribution satisfies the H-theorem (H non-increasing).
-#[allow(dead_code)]
 pub fn satisfies_h_theorem(f_in: &[f64; 19], f_out: &[f64; 19]) -> bool {
     discrete_h_function(f_out) <= discrete_h_function(f_in) + 1e-12
 }
 /// Compute the Chapman-Enskog expansion parameter ε = Kn (Knudsen number proxy).
 ///
 /// ε ≈ |f − feq|₁ / |feq|₁  (non-equilibrium fraction).
-#[allow(dead_code)]
 pub fn chapman_enskog_epsilon(f: &[f64; 19], feq: &[f64; 19]) -> f64 {
     let neq: f64 = f.iter().zip(feq.iter()).map(|(a, b)| (a - b).abs()).sum();
     let eq: f64 = feq.iter().map(|v| v.abs()).sum();
@@ -1339,14 +1291,12 @@ pub fn chapman_enskog_epsilon(f: &[f64; 19], feq: &[f64; 19]) -> f64 {
 /// Compute kinematic viscosity from omega using the standard LBM relation.
 ///
 /// ν = cs² (1/ω − 0.5) = (1/3)(1/ω − 0.5)
-#[allow(dead_code)]
 pub fn omega_to_nu(omega: f64) -> f64 {
     (1.0 / 3.0) * (1.0 / omega - 0.5)
 }
 /// Compute omega from kinematic viscosity.
 ///
 /// ω = 1 / (ν/cs² + 0.5) = 1 / (3ν + 0.5)
-#[allow(dead_code)]
 pub fn nu_to_omega(nu: f64) -> f64 {
     1.0 / (3.0 * nu + 0.5)
 }
@@ -1360,7 +1310,6 @@ pub fn nu_to_omega(nu: f64) -> f64 {
 /// * `cs_sgs` – Smagorinsky constant C_s
 /// * `delta`  – filter width Δ
 /// * `s_mag`  – strain-rate magnitude |S|
-#[allow(dead_code)]
 pub fn smagorinsky_tau_eff(tau0: f64, cs_sgs: f64, delta: f64, s_mag: f64) -> f64 {
     let discriminant = tau0 * tau0 + 18.0 * cs_sgs * cs_sgs * delta * delta * s_mag;
     0.5 * (tau0 + discriminant.sqrt())
@@ -1372,9 +1321,9 @@ mod tests_advanced_collision {
     fn make_perturbed(rho: f64, u: [f64; 3], amp: f64) -> [f64; 19] {
         let feq = compute_equilibrium_d3q19(rho, u);
         let mut f = feq;
-        for i in 0..19 {
+        for (i, (f_i, &feq_i)) in f.iter_mut().zip(feq.iter()).enumerate() {
             let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
-            f[i] += sign * amp * feq[i];
+            *f_i += sign * amp * feq_i;
         }
         f
     }
@@ -1385,9 +1334,9 @@ mod tests_advanced_collision {
         let omega = 1.2;
         let f_bgk = collide_bgk(&f, rho, u, omega);
         let f_or = collide_bgk_overrelaxation(&f, rho, u, omega, 1.0);
-        for i in 0..19 {
+        for (i, (&f_or_i, &f_bgk_i)) in f_or.iter().zip(f_bgk.iter()).enumerate() {
             assert!(
-                (f_or[i] - f_bgk[i]).abs() < 1e-13,
+                (f_or_i - f_bgk_i).abs() < 1e-13,
                 "sigma=1 overrelax != BGK at i={i}"
             );
         }
@@ -1434,9 +1383,9 @@ mod tests_advanced_collision {
         let u = [0.01, 0.02, -0.01];
         let feq = compute_equilibrium_d3q19(rho, u);
         let f_out = collide_bgk_overrelaxation(&feq, rho, u, 1.5, 1.0);
-        for i in 0..19 {
+        for (i, (&f_out_i, &feq_i)) in f_out.iter().zip(feq.iter()).enumerate() {
             assert!(
-                (f_out[i] - feq[i]).abs() < 1e-13,
+                (f_out_i - feq_i).abs() < 1e-13,
                 "Overrelax should fix equilibrium at i={i}"
             );
         }
@@ -1460,9 +1409,9 @@ mod tests_advanced_collision {
         let feq = compute_equilibrium_d3q19(rho, u);
         let coll = RegularizedCollisionFull::from_viscosity(1.0 / 6.0);
         let f_out = coll.collide(&feq, rho, u);
-        for i in 0..19 {
+        for (i, (&f_out_i, &feq_i)) in f_out.iter().zip(feq.iter()).enumerate() {
             assert!(
-                (f_out[i] - feq[i]).abs() < 1e-12,
+                (f_out_i - feq_i).abs() < 1e-12,
                 "Regularized full modified equilibrium at i={i}"
             );
         }
@@ -1506,16 +1455,25 @@ mod tests_advanced_collision {
         let (rho, u) = compute_macroscopic(&f);
         let coll = RegularizedCollisionFull::from_viscosity(0.1);
         let f_out = coll.collide(&f, rho, u);
-        for alpha in 0..3 {
+        let vel_components: [[i32; 19]; 3] = {
+            let mut c = [[0i32; 19]; 3];
+            for (i, vel) in D3Q19_VELOCITIES.iter().enumerate() {
+                c[0][i] = vel[0];
+                c[1][i] = vel[1];
+                c[2][i] = vel[2];
+            }
+            c
+        };
+        for (alpha, comp) in vel_components.iter().enumerate() {
             let p_in: f64 = f
                 .iter()
-                .enumerate()
-                .map(|(i, fi)| fi * D3Q19_VELOCITIES[i][alpha] as f64)
+                .zip(comp.iter())
+                .map(|(fi, &ci)| fi * ci as f64)
                 .sum();
             let p_out: f64 = f_out
                 .iter()
-                .enumerate()
-                .map(|(i, fi)| fi * D3Q19_VELOCITIES[i][alpha] as f64)
+                .zip(comp.iter())
+                .map(|(fi, &ci)| fi * ci as f64)
                 .sum();
             assert!(
                 (p_out - p_in).abs() < 1e-11,
@@ -1784,7 +1742,7 @@ mod tests_advanced_collision {
         let feq = compute_equilibrium_d3q19(rho, u);
         let alpha = entropic_alpha_d3q19(&f, &feq);
         assert!(
-            alpha >= 0.0 && alpha <= 2.0 + 1e-10,
+            (0.0..=(2.0 + 1e-10)).contains(&alpha),
             "Alpha out of [0,2]: {alpha}"
         );
     }
@@ -1916,16 +1874,25 @@ mod tests_advanced_collision {
         let (rho, u) = compute_macroscopic(&f);
         let coll = CumulantCollision::from_viscosity(0.1);
         let f_out = coll.collide(&f, rho, u);
-        for alpha in 0..3 {
+        let vel_components_c: [[i32; 19]; 3] = {
+            let mut c = [[0i32; 19]; 3];
+            for (i, vel) in D3Q19_VELOCITIES.iter().enumerate() {
+                c[0][i] = vel[0];
+                c[1][i] = vel[1];
+                c[2][i] = vel[2];
+            }
+            c
+        };
+        for (alpha, comp) in vel_components_c.iter().enumerate() {
             let p_in: f64 = f
                 .iter()
-                .enumerate()
-                .map(|(i, fi)| fi * D3Q19_VELOCITIES[i][alpha] as f64)
+                .zip(comp.iter())
+                .map(|(fi, &ci)| fi * ci as f64)
                 .sum();
             let p_out: f64 = f_out
                 .iter()
-                .enumerate()
-                .map(|(i, fi)| fi * D3Q19_VELOCITIES[i][alpha] as f64)
+                .zip(comp.iter())
+                .map(|(fi, &ci)| fi * ci as f64)
                 .sum();
             assert!(
                 (p_out - p_in).abs() < 1e-3,

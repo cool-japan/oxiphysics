@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,9 +10,6 @@
 //!
 //! Structured types: [`VietorisRips`], [`SimplexTree`], [`PersistenceDiagram`],
 //! [`BarcodeSummary`], and [`MapperGraph`].
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Primitive types
@@ -850,9 +846,9 @@ impl MapperGraph {
             // Group by cluster root
             let mut cluster_map: std::collections::HashMap<usize, Vec<usize>> =
                 std::collections::HashMap::new();
-            for a in 0..m {
+            for (a, &idx) in indices_in.iter().enumerate().take(m) {
                 let root = uf.find(a);
-                cluster_map.entry(root).or_default().push(indices_in[a]);
+                cluster_map.entry(root).or_default().push(idx);
             }
 
             // Add one node per cluster

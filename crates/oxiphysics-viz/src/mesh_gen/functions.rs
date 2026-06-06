@@ -2,12 +2,13 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::type_complexity)]
-#![allow(clippy::needless_range_loop)]
 use crate::primitives::{Color, RenderMesh, Vertex};
 use oxiphysics_core::math::Vec3;
 
 use super::types::MeshData;
+
+/// Raw mesh tuple: `(vertices, triangle_indices, normals)`.
+pub(crate) type RawMesh = (Vec<[f64; 3]>, Vec<[usize; 3]>, Vec<[f64; 3]>);
 
 /// Convert a `Vec3` (f64) to an `[f32; 3]` array.
 pub(super) fn v3_to_f32(v: Vec3) -> [f32; 3] {
@@ -152,7 +153,6 @@ pub fn plane_mesh(center: Vec3, normal: Vec3, half_size: f64, color: Color) -> R
     RenderMesh { vertices, indices }
 }
 /// Normalize a 3-element f64 vector in place. Returns the magnitude.
-#[allow(dead_code)]
 pub(super) fn normalize3_f64(v: &mut [f64; 3]) -> f64 {
     let m = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if m > 1e-30 {
@@ -165,13 +165,7 @@ pub(super) fn normalize3_f64(v: &mut [f64; 3]) -> f64 {
 /// Generate a UV sphere mesh.
 ///
 /// Returns `(vertices, triangles, normals)` where normals are per-vertex.
-#[allow(dead_code)]
-pub fn generate_uv_sphere(
-    center: [f64; 3],
-    radius: f64,
-    rings: usize,
-    sectors: usize,
-) -> (Vec<[f64; 3]>, Vec<[usize; 3]>, Vec<[f64; 3]>) {
+pub fn generate_uv_sphere(center: [f64; 3], radius: f64, rings: usize, sectors: usize) -> RawMesh {
     let r = rings.max(2);
     let s = sectors.max(3);
     let mut verts = Vec::new();
@@ -205,13 +199,7 @@ pub fn generate_uv_sphere(
     (verts, tris, normals)
 }
 /// Generate a cylinder mesh.
-#[allow(dead_code)]
-pub fn generate_cylinder(
-    center: [f64; 3],
-    radius: f64,
-    height: f64,
-    sectors: usize,
-) -> (Vec<[f64; 3]>, Vec<[usize; 3]>, Vec<[f64; 3]>) {
+pub fn generate_cylinder(center: [f64; 3], radius: f64, height: f64, sectors: usize) -> RawMesh {
     let s = sectors.max(3);
     let half_h = height / 2.0;
     let mut verts = Vec::new();
@@ -249,13 +237,7 @@ pub fn generate_cylinder(
     (verts, tris, normals)
 }
 /// Generate a cone mesh.
-#[allow(dead_code)]
-pub fn generate_cone(
-    center: [f64; 3],
-    radius: f64,
-    height: f64,
-    sectors: usize,
-) -> (Vec<[f64; 3]>, Vec<[usize; 3]>, Vec<[f64; 3]>) {
+pub fn generate_cone(center: [f64; 3], radius: f64, height: f64, sectors: usize) -> RawMesh {
     let s = sectors.max(3);
     let mut verts = Vec::new();
     let mut normals = Vec::new();
@@ -283,14 +265,13 @@ pub fn generate_cone(
     (verts, tris, normals)
 }
 /// Generate a torus mesh.
-#[allow(dead_code)]
 pub fn generate_torus(
     center: [f64; 3],
     major_r: f64,
     minor_r: f64,
     major_segs: usize,
     minor_segs: usize,
-) -> (Vec<[f64; 3]>, Vec<[usize; 3]>, Vec<[f64; 3]>) {
+) -> RawMesh {
     let ms = major_segs.max(3);
     let ns = minor_segs.max(3);
     let mut verts = Vec::new();
@@ -322,13 +303,12 @@ pub fn generate_torus(
     (verts, tris, normals)
 }
 /// Generate a subdivided plane mesh.
-#[allow(dead_code)]
 pub fn generate_plane(
     center: [f64; 3],
     normal: [f64; 3],
     size: f64,
     subdivisions: usize,
-) -> (Vec<[f64; 3]>, Vec<[usize; 3]>, Vec<[f64; 3]>) {
+) -> RawMesh {
     let n_div = subdivisions.max(1);
     let mut n = normal;
     normalize3_f64(&mut n);
@@ -376,14 +356,13 @@ pub fn generate_plane(
     (verts, tris, normals_out)
 }
 /// Generate a capsule mesh (hemisphere + cylinder + hemisphere).
-#[allow(dead_code)]
 pub fn generate_capsule(
     p0: [f64; 3],
     p1: [f64; 3],
     radius: f64,
     rings: usize,
     sectors: usize,
-) -> (Vec<[f64; 3]>, Vec<[usize; 3]>, Vec<[f64; 3]>) {
+) -> RawMesh {
     let r = rings.max(2);
     let s = sectors.max(3);
     let mut verts = Vec::new();
@@ -615,13 +594,12 @@ mod tests {
 ///
 /// `inner_radius` may be 0.0 for a solid disc, or positive for an annulus.
 /// Returns `(vertices, triangles, normals)` where all normals point along +Y.
-#[allow(dead_code)]
 pub fn generate_disc(
     center: [f64; 3],
     inner_radius: f64,
     outer_radius: f64,
     sectors: usize,
-) -> (Vec<[f64; 3]>, Vec<[usize; 3]>, Vec<[f64; 3]>) {
+) -> RawMesh {
     let s = sectors.max(3);
     let r_inner = inner_radius.max(0.0);
     let r_outer = outer_radius.max(r_inner + 1e-9);
@@ -682,7 +660,6 @@ pub fn generate_disc(
 /// The terrain spans `[x_min..x_max] × [z_min..z_max]` with `nx` × `nz` cells.
 /// Normals are computed from central differences.
 /// Returns `(vertices, triangles, normals)`.
-#[allow(dead_code)]
 pub fn generate_terrain<F>(
     x_min: f64,
     x_max: f64,
@@ -691,7 +668,7 @@ pub fn generate_terrain<F>(
     nx: usize,
     nz: usize,
     height_fn: F,
-) -> (Vec<[f64; 3]>, Vec<[usize; 3]>, Vec<[f64; 3]>)
+) -> RawMesh
 where
     F: Fn(f64, f64) -> f64,
 {
@@ -762,14 +739,13 @@ where
 ///
 /// The arrow is an octagonal prism shaft plus a cone tip.
 /// Returns `(vertices, triangles, normals)`.
-#[allow(dead_code)]
 pub fn generate_arrow_glyph(
     origin: [f64; 3],
     direction: [f64; 3],
     shaft_radius: f64,
     tip_radius: f64,
     sectors: usize,
-) -> (Vec<[f64; 3]>, Vec<[usize; 3]>, Vec<[f64; 3]>) {
+) -> RawMesh {
     let s = sectors.max(3);
     let len =
         (direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2])
@@ -895,24 +871,14 @@ pub fn generate_arrow_glyph(
 ///
 /// This is an alias to `generate_geodesic_sphere` using a more descriptive name.
 /// Returns `(vertices, triangles, normals)`.
-#[allow(dead_code)]
 #[inline]
-pub fn generate_icosphere(
-    center: [f64; 3],
-    radius: f64,
-    subdivisions: usize,
-) -> (Vec<[f64; 3]>, Vec<[usize; 3]>, Vec<[f64; 3]>) {
+pub fn generate_icosphere(center: [f64; 3], radius: f64, subdivisions: usize) -> RawMesh {
     generate_geodesic_sphere(center, radius, subdivisions)
 }
 /// Generate a geodesic sphere by subdividing an icosahedron `subdivisions` times.
 ///
 /// Returns `(vertices, triangles, normals)`.
-#[allow(dead_code)]
-pub fn generate_geodesic_sphere(
-    center: [f64; 3],
-    radius: f64,
-    subdivisions: usize,
-) -> (Vec<[f64; 3]>, Vec<[usize; 3]>, Vec<[f64; 3]>) {
+pub fn generate_geodesic_sphere(center: [f64; 3], radius: f64, subdivisions: usize) -> RawMesh {
     let phi = (1.0 + 5.0_f64.sqrt()) / 2.0;
     let raw: [[f64; 3]; 12] = [
         [-1.0, phi, 0.0],
@@ -1015,14 +981,13 @@ pub fn generate_geodesic_sphere(
 /// Generate a frustum (truncated cone) mesh.
 ///
 /// `r_bottom` and `r_top` are the bottom and top radii, `height` is the height.
-#[allow(dead_code)]
 pub fn generate_frustum(
     center: [f64; 3],
     r_bottom: f64,
     r_top: f64,
     height: f64,
     sectors: usize,
-) -> (Vec<[f64; 3]>, Vec<[usize; 3]>, Vec<[f64; 3]>) {
+) -> RawMesh {
     let s = sectors.max(3);
     let half_h = height / 2.0;
     let mut verts = Vec::new();
@@ -1085,12 +1050,7 @@ pub(super) fn bernstein3(i: usize, t: f64) -> f64 {
 ///
 /// `control_pts[4][4]` are 16 control points in 3D.
 /// `u_div` and `v_div` are tessellation subdivisions.
-#[allow(dead_code)]
-pub fn generate_bicubic_patch(
-    control_pts: &[[f64; 3]; 16],
-    u_div: usize,
-    v_div: usize,
-) -> (Vec<[f64; 3]>, Vec<[usize; 3]>, Vec<[f64; 3]>) {
+pub fn generate_bicubic_patch(control_pts: &[[f64; 3]; 16], u_div: usize, v_div: usize) -> RawMesh {
     let u_n = u_div.max(1);
     let v_n = v_div.max(1);
     let mut verts = Vec::new();
@@ -1126,16 +1086,18 @@ pub fn generate_bicubic_patch(
     }
     (verts, tris, normals)
 }
+/// Mesh geometry: vertex positions and triangle index triples.
+pub type AxisMesh = (Vec<[f64; 3]>, Vec<[usize; 3]>);
+
 /// Generate a 3-axis gizmo mesh (RGB arrows for X, Y, Z).
 ///
 /// Returns three meshes for X (red), Y (green), Z (blue) axes.
-#[allow(dead_code)]
 pub fn generate_axes_gizmo(
     origin: [f64; 3],
     length: f64,
     shaft_radius: f64,
     _sectors: usize,
-) -> [(Vec<[f64; 3]>, Vec<[usize; 3]>); 3] {
+) -> [AxisMesh; 3] {
     use crate::primitives::Color;
     let colors = [Color::red(), Color::green(), Color::blue()];
     let directions: [[f64; 3]; 3] = [[length, 0.0, 0.0], [0.0, length, 0.0], [0.0, 0.0, length]];
@@ -1330,8 +1292,7 @@ mod new_mesh_tests {
         let sectors = 8;
         let center = [0.0; 3];
         let (verts, _, _) = generate_disc(center, r_inner, r_outer, sectors);
-        for i in 0..sectors {
-            let v = verts[i];
+        for (i, v) in verts[..sectors].iter().enumerate() {
             let dx = v[0] - center[0];
             let dz = v[2] - center[2];
             let d = (dx * dx + dz * dz).sqrt();
@@ -1348,8 +1309,8 @@ mod new_mesh_tests {
         let sectors = 8;
         let center = [0.0; 3];
         let (verts, _, _) = generate_disc(center, r_inner, r_outer, sectors);
-        for i in sectors..2 * sectors {
-            let v = verts[i];
+        for (offset, v) in verts[sectors..2 * sectors].iter().enumerate() {
+            let i = sectors + offset;
             let dx = v[0] - center[0];
             let dz = v[2] - center[2];
             let d = (dx * dx + dz * dz).sqrt();
@@ -1527,7 +1488,6 @@ mod new_mesh_tests {
 /// Generate a UV sphere as a `MeshData` with UV coordinates.
 ///
 /// `stacks` and `slices` control latitude/longitude subdivisions.
-#[allow(dead_code)]
 pub fn generate_sphere(center: [f64; 3], radius: f64, stacks: usize, slices: usize) -> MeshData {
     let st = stacks.max(2);
     let sl = slices.max(3);
@@ -1569,12 +1529,14 @@ pub fn generate_sphere(center: [f64; 3], radius: f64, stacks: usize, slices: usi
         indices,
     }
 }
+/// Face data tuple: (normal, 4 corner positions, 4 UV coords).
+type BoxFace = ([f64; 3], [[f64; 3]; 4], [[f64; 2]; 4]);
+
 /// Generate a box mesh as a `MeshData` with per-face normals and UV coordinates.
-#[allow(dead_code)]
 pub fn generate_box(center: [f64; 3], half_extents: [f64; 3]) -> MeshData {
     let [cx, cy, cz] = center;
     let [hx, hy, hz] = half_extents;
-    let face_data: [([f64; 3], [[f64; 3]; 4], [[f64; 2]; 4]); 6] = [
+    let face_data: [BoxFace; 6] = [
         (
             [1.0, 0.0, 0.0],
             [[hx, -hy, -hz], [hx, hy, -hz], [hx, hy, hz], [hx, -hy, hz]],
@@ -1643,7 +1605,6 @@ pub fn generate_box(center: [f64; 3], half_extents: [f64; 3]) -> MeshData {
     }
 }
 /// Generate a cylinder as a `MeshData` with caps and UV coordinates.
-#[allow(dead_code)]
 pub fn generate_cylinder_mesh(
     center: [f64; 3],
     radius: f64,
@@ -1715,7 +1676,6 @@ pub fn generate_cylinder_mesh(
     }
 }
 /// Generate a cone as a `MeshData` with a flat base cap.
-#[allow(dead_code)]
 pub fn generate_cone_mesh(center: [f64; 3], radius: f64, height: f64, sectors: usize) -> MeshData {
     let s = sectors.max(3);
     let [cx, cy, cz] = center;
@@ -1761,7 +1721,6 @@ pub fn generate_cone_mesh(center: [f64; 3], radius: f64, height: f64, sectors: u
     }
 }
 /// Generate a torus as a `MeshData` with UV coordinates.
-#[allow(dead_code)]
 pub fn generate_torus_mesh(
     center: [f64; 3],
     major_r: f64,
@@ -1808,7 +1767,6 @@ pub fn generate_torus_mesh(
     }
 }
 /// Generate a subdivided plane as a `MeshData` with UV coordinates.
-#[allow(dead_code)]
 pub fn generate_plane_mesh(
     center: [f64; 3],
     normal: [f64; 3],
@@ -1871,7 +1829,6 @@ pub fn generate_plane_mesh(
 /// Generate an arrow for vector field visualization as a `MeshData`.
 ///
 /// The arrow consists of a cylindrical shaft (75% of length) and a cone tip.
-#[allow(dead_code)]
 pub fn generate_arrow(
     origin: [f64; 3],
     direction: [f64; 3],

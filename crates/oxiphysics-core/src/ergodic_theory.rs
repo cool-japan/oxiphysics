@@ -8,9 +8,6 @@
 //! recurrence-plot analysis, mixing-rate estimation, Birkhoff ergodic averages,
 //! invariant measure estimation, Kolmogorov–Sinai entropy, and topological entropy.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ─── Invariant Measure / Ergodic Measure ─────────────────────────────────────
 
 /// Empirical approximation of an invariant measure for a dynamical system.
@@ -305,10 +302,10 @@ pub fn lyapunov_exponents(trajectory: &[Vec<f64>], dt: f64) -> Vec<f64> {
     for t in 0..steps {
         let prev = &trajectory[t];
         let next = &trajectory[t + 1];
-        for k in 0..n.min(prev.len()).min(next.len()) {
-            let delta = (next[k] - prev[k]).abs();
+        for ((s, nxt), prv) in sums.iter_mut().zip(next.iter()).zip(prev.iter()) {
+            let delta = (nxt - prv).abs();
             if delta > 1e-300 {
-                sums[k] += delta.ln();
+                *s += delta.ln();
             }
         }
     }

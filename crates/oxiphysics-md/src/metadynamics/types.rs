@@ -76,7 +76,6 @@ impl MetadynamicsState {
 /// p(s) of the CV and computes a bias V(s) = (1 - 1/gamma) * k_B*T * log(p(s)/p_0).
 ///
 /// Reference: Invernizzi & Parrinello, J. Phys. Chem. Lett. 11, 2731 (2020).
-#[allow(dead_code)]
 pub struct OpesState {
     /// Gaussian kernels forming the density estimate.
     pub kernels: Vec<GaussianHill>,
@@ -95,7 +94,6 @@ pub struct OpesState {
 }
 impl OpesState {
     /// Create a new OPES state.
-    #[allow(dead_code)]
     pub fn new(gamma: f64, temperature: f64, stride: usize, bandwidth: Vec<f64>) -> Self {
         Self {
             kernels: Vec::new(),
@@ -108,7 +106,6 @@ impl OpesState {
         }
     }
     /// Evaluate the (un-normalised) kernel density estimate at `cv`.
-    #[allow(dead_code)]
     pub fn kernel_density(&self, cv: &[f64]) -> f64 {
         self.kernels.iter().map(|k| k.evaluate(cv)).sum()
     }
@@ -116,7 +113,6 @@ impl OpesState {
     ///
     /// V(s) = (1 - 1/gamma) * k_B*T * ln(p_hat(s) / Z + epsilon)
     /// where epsilon prevents log(0).
-    #[allow(dead_code)]
     pub fn bias_potential(&self, cv: &[f64]) -> f64 {
         if self.z < 1e-30 || self.gamma <= 1.0 {
             return 0.0;
@@ -129,7 +125,6 @@ impl OpesState {
     /// Update the OPES state at the current CV value.
     ///
     /// Adds a new kernel every `stride` steps and updates the normalisation Z.
-    #[allow(dead_code)]
     pub fn update(&mut self, cv: &[f64]) {
         if self.step.is_multiple_of(self.stride) {
             let kernel = GaussianHill::new(cv.to_vec(), 1.0, self.bandwidth.clone());
@@ -144,7 +139,6 @@ impl OpesState {
 /// sigma(r) = (1 - (r/r_0)^n) / (1 - (r/r_0)^m)
 ///
 /// This is the standard PLUMED-style coordination number.
-#[allow(dead_code)]
 pub struct CoordinationNumberCV {
     /// Reference atom index.
     pub atom_ref: usize,
@@ -161,7 +155,6 @@ pub struct CoordinationNumberCV {
 }
 impl CoordinationNumberCV {
     /// Create a new coordination number CV.
-    #[allow(dead_code)]
     pub fn new(
         atom_ref: usize,
         neighbours: Vec<usize>,
@@ -180,7 +173,6 @@ impl CoordinationNumberCV {
         }
     }
     /// Evaluate the switching function sigma(r).
-    #[allow(dead_code)]
     pub fn switching_function(&self, r: f64) -> f64 {
         let x = r / self.r_0;
         let xn = x.powi(self.n as i32);
@@ -194,7 +186,6 @@ impl CoordinationNumberCV {
 /// CV measuring the end-to-end distance of a polymer chain.
 ///
 /// Defined as the distance between the first and last atoms in the chain.
-#[allow(dead_code)]
 pub struct EndToEndDistanceCV {
     /// Index of the first atom.
     pub first: usize,
@@ -203,7 +194,6 @@ pub struct EndToEndDistanceCV {
     /// Name.
     pub name: String,
 }
-#[allow(dead_code)]
 impl EndToEndDistanceCV {
     /// Create a new end-to-end distance CV.
     pub fn new(first: usize, last: usize, name: impl Into<String>) -> Self {
@@ -216,7 +206,6 @@ impl EndToEndDistanceCV {
 }
 /// Parallel tempering metadynamics: multiple replicas at different temperatures,
 /// each running well-tempered metadynamics with exchange attempts between replicas.
-#[allow(dead_code)]
 pub struct PtMetaD {
     /// Replica states (one per temperature).
     pub replicas: Vec<MetadynamicsState>,
@@ -227,7 +216,6 @@ pub struct PtMetaD {
     /// Total exchange attempts.
     pub n_attempts: usize,
 }
-#[allow(dead_code)]
 impl PtMetaD {
     /// Create a PTMetaD simulation with given temperatures.
     ///
@@ -311,7 +299,6 @@ impl PtMetaD {
 /// energy landscape around known local minima.
 ///
 /// Reference: Huber, Torda, van Gunsteren, J. Comput.-Aided Mol. Des. 8, 695 (1994).
-#[allow(dead_code)]
 pub struct LocalElevation {
     /// Deposited Gaussian repulsors (same structure as metadynamics hills).
     pub repulsors: Vec<GaussianHill>,
@@ -322,7 +309,6 @@ pub struct LocalElevation {
 }
 impl LocalElevation {
     /// Create a new local elevation state.
-    #[allow(dead_code)]
     pub fn new(max_height: f64, decay_rate: f64) -> Self {
         Self {
             repulsors: Vec::new(),
@@ -331,14 +317,12 @@ impl LocalElevation {
         }
     }
     /// Deposit a new repulsor at `cv_values` with `height` (clamped to max_height).
-    #[allow(dead_code)]
     pub fn deposit(&mut self, cv_values: &[f64], height: f64, widths: Vec<f64>) {
         let h = height.min(self.max_height);
         self.repulsors
             .push(GaussianHill::new(cv_values.to_vec(), h, widths));
     }
     /// Decay all repulsor heights by factor (1 - decay_rate).
-    #[allow(dead_code)]
     pub fn decay(&mut self) {
         let factor = 1.0 - self.decay_rate;
         for r in &mut self.repulsors {
@@ -347,7 +331,6 @@ impl LocalElevation {
         self.repulsors.retain(|r| r.height > 1e-10);
     }
     /// Total flooding potential at `cv_values`.
-    #[allow(dead_code)]
     pub fn flooding_potential(&self, cv_values: &[f64]) -> f64 {
         self.repulsors.iter().map(|r| r.evaluate(cv_values)).sum()
     }
@@ -548,7 +531,6 @@ impl SteeredMD {
 ///
 /// Each replica carries an independent metadynamics state for its own CV.
 /// Exchanges are attempted between adjacent replicas using Metropolis criterion.
-#[allow(dead_code)]
 pub struct BiasExchangeMetadynamics {
     /// Per-replica metadynamics states.
     pub replicas: Vec<MetadynamicsState>,
@@ -561,7 +543,6 @@ pub struct BiasExchangeMetadynamics {
 }
 impl BiasExchangeMetadynamics {
     /// Create `n_replicas` replicas with given parameters.
-    #[allow(dead_code)]
     pub fn new(
         n_replicas: usize,
         temperature: f64,
@@ -583,7 +564,6 @@ impl BiasExchangeMetadynamics {
     /// Δ = β * (V_bias_j(cv_i) - V_bias_j(cv_j) + V_bias_i(cv_j) - V_bias_i(cv_i))
     ///
     /// Returns `true` if the exchange was accepted.
-    #[allow(dead_code)]
     pub fn try_exchange(&mut self, i: usize, j: usize, cv_i: &[f64], cv_j: &[f64]) -> bool {
         self.n_attempts += 1;
         let beta = 1.0 / (KB * self.temperature);
@@ -603,7 +583,6 @@ impl BiasExchangeMetadynamics {
         accept
     }
     /// Overall acceptance rate.
-    #[allow(dead_code)]
     pub fn acceptance_rate(&self) -> f64 {
         if self.n_attempts == 0 {
             return 0.0;
@@ -616,7 +595,6 @@ impl BiasExchangeMetadynamics {
 /// The width adapts so that hills are deposited with widths proportional to
 /// the short-time diffusion coefficient of the CV, preventing over-filling of
 /// visited regions.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AdaptiveGaussianHill {
     /// Hill center in CV space.
@@ -630,7 +608,6 @@ pub struct AdaptiveGaussianHill {
 }
 impl AdaptiveGaussianHill {
     /// Create a new adaptive hill.
-    #[allow(dead_code)]
     pub fn new(center: Vec<f64>, height: f64, widths: Vec<f64>, step: usize) -> Self {
         Self {
             center,
@@ -640,7 +617,6 @@ impl AdaptiveGaussianHill {
         }
     }
     /// Evaluate the Gaussian at `cv_values`.
-    #[allow(dead_code)]
     pub fn evaluate(&self, cv_values: &[f64]) -> f64 {
         let exponent: f64 = cv_values
             .iter()
@@ -698,7 +674,6 @@ impl AngleCV {
 }
 /// Funnel metadynamics configurator: builds a `FunnelMetadynamics` from
 /// standard binding/unbinding simulation parameters.
-#[allow(dead_code)]
 pub struct FunnelConfig {
     /// Radius of the funnel entrance (Å or nm, consistent with CV units).
     pub entrance_radius: f64,
@@ -709,7 +684,6 @@ pub struct FunnelConfig {
     /// Harmonic wall constant k (kJ/mol/unit²).
     pub wall_constant: f64,
 }
-#[allow(dead_code)]
 impl FunnelConfig {
     /// Create a funnel configuration.
     pub fn new(entrance_radius: f64, half_angle: f64, height: f64, wall_constant: f64) -> Self {
@@ -783,7 +757,6 @@ impl FunnelMetadynamics {
     }
 }
 /// CV time-series monitor that tracks values and computes running statistics.
-#[allow(dead_code)]
 pub struct CvMonitor {
     /// Name of the CV being monitored.
     pub name: String,
@@ -794,7 +767,6 @@ pub struct CvMonitor {
 }
 impl CvMonitor {
     /// Create a new CV monitor.
-    #[allow(dead_code)]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -803,13 +775,11 @@ impl CvMonitor {
         }
     }
     /// Record a CV value at a given time.
-    #[allow(dead_code)]
     pub fn record(&mut self, time: f64, value: f64) {
         self.times.push(time);
         self.values.push(value);
     }
     /// Running mean of the CV.
-    #[allow(dead_code)]
     pub fn mean(&self) -> f64 {
         if self.values.is_empty() {
             return 0.0;
@@ -817,7 +787,6 @@ impl CvMonitor {
         self.values.iter().sum::<f64>() / self.values.len() as f64
     }
     /// Running standard deviation of the CV.
-    #[allow(dead_code)]
     pub fn std_dev(&self) -> f64 {
         let n = self.values.len();
         if n < 2 {
@@ -828,7 +797,6 @@ impl CvMonitor {
         var.sqrt()
     }
     /// Returns the minimum and maximum CV values observed.
-    #[allow(dead_code)]
     pub fn range(&self) -> (f64, f64) {
         if self.values.is_empty() {
             return (0.0, 0.0);
@@ -842,12 +810,10 @@ impl CvMonitor {
         (lo, hi)
     }
     /// Number of recorded data points.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.values.len()
     }
     /// Returns true if no data has been recorded.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }

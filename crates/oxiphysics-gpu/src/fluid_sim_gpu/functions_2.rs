@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::functions::*;
     use crate::fluid_sim_gpu::FlipParticle;
     use crate::fluid_sim_gpu::FluidSimConfig;
     use crate::fluid_sim_gpu::FluidSimulation;

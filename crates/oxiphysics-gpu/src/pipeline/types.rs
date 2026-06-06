@@ -1,8 +1,6 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
 use super::functions::*;
 use std::time::Instant;
 
@@ -11,7 +9,6 @@ use std::time::Instant;
 /// Classifies dispatches as either "latency-critical" (must finish before the
 /// next frame) or "background" (can run async on a secondary queue).
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct ComputeOverlapScheduler {
     /// Number of latency-critical dispatches submitted this frame.
     pub critical_count: usize,
@@ -434,7 +431,6 @@ impl AsyncComputeQueue {
 }
 /// A dispatched batch annotated with its target queue.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct MultiQueueBatch {
     /// The dispatch batch.
     pub batch: DispatchBatch,
@@ -546,7 +542,6 @@ impl StageTimer {
 /// Mirrors the statistics provided by `VkQueryPool` with
 /// `VK_QUERY_TYPE_PIPELINE_STATISTICS` or Metal/D3D equivalents.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct PipelineStatistics {
     /// Number of invocations of the compute shader.
     pub cs_invocations: u64,
@@ -928,7 +923,6 @@ impl BarrierSet {
 /// start and end of a render/compute pass.  Here we store wall-clock
 /// `f64` timestamps in milliseconds.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TimestampQuery {
     /// Human-readable label for this pass.
     pub label: String,

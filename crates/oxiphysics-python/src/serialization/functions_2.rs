@@ -1,10 +1,6 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
-
 use super::types::{SimulationCheckpoint, SimulationSnapshot};
 
 /// Serialize a complete simulation checkpoint from a snapshot.
@@ -21,6 +17,7 @@ pub fn serialize_simulation_checkpoint(
 }
 #[cfg(test)]
 mod json_checkpoint_tests {
+    use super::super::functions::{deserialize_body_state_json, serialize_body_state_json};
     use super::*;
     use crate::serialization::BodyStateJson;
     use crate::serialization::SimBodyState;

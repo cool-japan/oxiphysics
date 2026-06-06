@@ -331,7 +331,6 @@ pub fn compute_radius_of_gyration(positions: &[[f64; 3]], masses: &[f64]) -> f64
 ///
 /// # Returns
 /// Diffusion coefficient in length² / time.
-#[allow(dead_code)]
 pub fn compute_diffusion_coefficient_green_kubo(velocities: &[Vec<[f64; 3]>], dt: f64) -> f64 {
     if velocities.is_empty() {
         return 0.0;
@@ -377,7 +376,6 @@ pub fn compute_diffusion_coefficient_green_kubo(velocities: &[Vec<[f64; 3]>], dt
 ///
 /// # Returns
 /// Viscosity in units consistent with stress × time × volume / (kB T).
-#[allow(dead_code)]
 pub fn compute_viscosity_green_kubo(
     stress_acf: &[f64],
     dt: f64,
@@ -411,7 +409,6 @@ pub fn compute_viscosity_green_kubo(
 ///
 /// # Returns
 /// Pressure tensor P_αβ in bar (using 1 kJ/mol/Å³ = 16605.4 bar).
-#[allow(dead_code)]
 pub fn compute_pressure_tensor(
     velocities: &[[f64; 3]],
     masses: &[f64],
@@ -442,7 +439,6 @@ pub fn compute_pressure_tensor(
     pt
 }
 /// Compute the scalar pressure from the pressure tensor (trace / 3).
-#[allow(dead_code)]
 pub fn pressure_from_tensor(pt: &[[f64; 3]; 3]) -> f64 {
     (pt[0][0] + pt[1][1] + pt[2][2]) / 3.0
 }
@@ -454,7 +450,6 @@ pub fn pressure_from_tensor(pt: &[[f64; 3]; 3]) -> f64 {
 ///
 /// # Returns
 /// A [`HeatFluxAcf`] normalised so that ACF(0) = 1.
-#[allow(dead_code)]
 pub fn compute_heat_flux_acf(heat_flux: &[[f64; 3]], dt: f64) -> HeatFluxAcf {
     let n = heat_flux.len();
     if n == 0 {
@@ -586,7 +581,6 @@ pub(super) fn yl_real_components(theta: f64, phi: f64, l: usize) -> Vec<f64> {
 ///
 /// # Returns
 /// `(Q4, Q6)` — both lie in \[0, 1\].
-#[allow(dead_code)]
 pub fn compute_bond_order_params(positions: &[[f64; 3]], cutoff: f64) -> (f64, f64) {
     let n = positions.len();
     if n < 2 {
@@ -640,7 +634,6 @@ pub fn compute_bond_order_params(positions: &[[f64; 3]], cutoff: f64) -> (f64, f
 ///
 /// # Returns
 /// A vector of length `rdf.n_bins()` with the running coordination number.
-#[allow(dead_code)]
 pub fn running_coordination_number(
     rdf: &RadialDistributionFunction,
     n_atoms: usize,
@@ -669,7 +662,6 @@ pub fn running_coordination_number(
 /// D = slope / 6  (3D Einstein relation: MSD = 6 D t)
 ///
 /// Uses the second half of the MSD curve to avoid ballistic regime.
-#[allow(dead_code)]
 pub fn diffusion_from_msd_slope(msd: &MeanSquaredDisplacement) -> f64 {
     msd.diffusion_coefficient()
 }
@@ -691,7 +683,6 @@ pub fn diffusion_from_msd_slope(msd: &MeanSquaredDisplacement) -> f64 {
 /// # Returns
 /// `(frequencies, spectrum)` where `frequencies[k]` is in THz (= 1/ps) and
 /// `spectrum[k]` is the (real, positive) spectral amplitude.
-#[allow(dead_code)]
 pub fn power_spectrum_from_vacf(vacf: &VelocityAutocorrelation, dt: f64) -> (Vec<f64>, Vec<f64>) {
     let n = vacf.vacf.len();
     if n == 0 || dt <= 0.0 {
@@ -722,7 +713,6 @@ pub fn power_spectrum_from_vacf(vacf: &VelocityAutocorrelation, dt: f64) -> (Vec
 ///
 /// # Returns
 /// `(bin_edges, counts)` — bin_edges has length `n_bins`, counts same length.
-#[allow(dead_code)]
 pub fn pair_distance_histogram(
     positions: &[[f64; 3]],
     cutoff: f64,
@@ -765,7 +755,6 @@ pub fn pair_distance_histogram(
 ///
 /// # Returns
 /// Lindemann parameter (dimensionless).
-#[allow(dead_code)]
 pub fn lindemann_parameter(
     positions_t0: &[[f64; 3]],
     positions_t: &[[f64; 3]],
@@ -821,7 +810,6 @@ pub fn lindemann_parameter(
 ///
 /// # Returns
 /// A vector of length `n_atoms` with cluster labels (0-based, consecutive integers).
-#[allow(dead_code)]
 pub fn cluster_analysis(positions: &[[f64; 3]], cutoff: f64) -> Vec<usize> {
     let n = positions.len();
     if n == 0 {
@@ -867,7 +855,6 @@ pub fn cluster_analysis(positions: &[[f64; 3]], cutoff: f64) -> Vec<usize> {
     labels
 }
 /// Count the number of distinct clusters.
-#[allow(dead_code)]
 pub fn count_clusters(positions: &[[f64; 3]], cutoff: f64) -> usize {
     let labels = cluster_analysis(positions, cutoff);
     labels
@@ -877,7 +864,6 @@ pub fn count_clusters(positions: &[[f64; 3]], cutoff: f64) -> usize {
         .len()
 }
 /// Return the size of the largest cluster.
-#[allow(dead_code)]
 pub fn largest_cluster_size(positions: &[[f64; 3]], cutoff: f64) -> usize {
     let labels = cluster_analysis(positions, cutoff);
     let mut counts = std::collections::HashMap::<usize, usize>::new();

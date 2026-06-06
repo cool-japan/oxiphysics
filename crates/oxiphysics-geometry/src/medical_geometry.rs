@@ -9,9 +9,6 @@
 //!
 //! All computations use plain `f64` / `[f64; 3]` — no nalgebra dependency.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

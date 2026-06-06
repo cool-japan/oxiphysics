@@ -9,7 +9,6 @@ use oxiphysics_core::math::Vec3;
 use super::types::WcsphParams;
 
 /// Compute density for all particles using SPH summation.
-#[allow(clippy::needless_range_loop)]
 pub fn compute_density(
     particles: &mut ParticleSet,
     neighbors: &[Vec<usize>],
@@ -17,9 +16,9 @@ pub fn compute_density(
     h: f64,
 ) {
     let n = particles.len();
-    for i in 0..n {
+    for (i, nbrs) in neighbors.iter().enumerate().take(n) {
         let mut rho = particles.masses[i] * kernel.w(0.0, h);
-        for &j in &neighbors[i] {
+        for &j in nbrs {
             let r = (particles.positions[i] - particles.positions[j]).norm();
             rho += particles.masses[j] * kernel.w(r, h);
         }
@@ -33,7 +32,6 @@ pub fn compute_density(
 /// `rho_i = sum_j m_j W_ij / (sum_j (m_j / rho_j^(old)) W_ij)`
 ///
 /// This requires an initial density estimate (e.g. from [`compute_density`]).
-#[allow(dead_code, clippy::needless_range_loop)]
 pub fn compute_density_shepard(
     particles: &mut ParticleSet,
     neighbors: &[Vec<usize>],
@@ -72,7 +70,6 @@ pub fn compute_pressure_tait(particles: &mut ParticleSet, params: &WcsphParams) 
     }
 }
 /// Compute pressure forces and accumulate into `particles.forces`.
-#[allow(clippy::needless_range_loop)]
 pub fn compute_pressure_force(
     particles: &mut ParticleSet,
     neighbors: &[Vec<usize>],
@@ -104,12 +101,11 @@ pub fn compute_pressure_force(
             pressure_forces[i] += factor * rhat;
         }
     }
-    for i in 0..n {
-        particles.forces[i] += pressure_forces[i] * particles.densities[i];
+    for (i, &pf) in pressure_forces.iter().enumerate().take(n) {
+        particles.forces[i] += pf * particles.densities[i];
     }
 }
 /// Compute viscosity forces and accumulate into `particles.forces`.
-#[allow(clippy::needless_range_loop)]
 pub fn compute_viscosity_force(
     particles: &mut ParticleSet,
     neighbors: &[Vec<usize>],
@@ -136,8 +132,8 @@ pub fn compute_viscosity_force(
             visc_forces[i] += particles.masses[j] * (-vij) / rhoj * lap;
         }
     }
-    for i in 0..n {
-        particles.forces[i] += visc_forces[i] * viscosity;
+    for (i, &vf) in visc_forces.iter().enumerate().take(n) {
+        particles.forces[i] += vf * viscosity;
     }
 }
 /// Compute artificial viscosity (Monaghan style) and accumulate into `particles.forces`.
@@ -149,7 +145,6 @@ pub fn compute_viscosity_force(
 /// * `alpha` — linear artificial viscosity coefficient (typically 0.1–1.0)
 /// * `beta`  — quadratic artificial viscosity coefficient (typically 0–2.0)
 /// * `speed_of_sound` — reference speed of sound
-#[allow(dead_code, clippy::needless_range_loop, clippy::too_many_arguments)]
 pub fn compute_artificial_viscosity(
     particles: &mut ParticleSet,
     neighbors: &[Vec<usize>],
@@ -191,8 +186,8 @@ pub fn compute_artificial_viscosity(
             art_visc_forces[i] -= particles.masses[j] * pi_ij * grad * rhat;
         }
     }
-    for i in 0..n {
-        particles.forces[i] += art_visc_forces[i] * particles.densities[i];
+    for (i, &avf) in art_visc_forces.iter().enumerate().take(n) {
+        particles.forces[i] += avf * particles.densities[i];
     }
 }
 /// Compute laminar viscosity using the Morris et al. (1997) formulation.
@@ -201,7 +196,6 @@ pub fn compute_artificial_viscosity(
 ///             * r_ij . grad_W_ij`
 ///
 /// * `mu` — dynamic viscosity coefficient (Pa·s)
-#[allow(dead_code, clippy::needless_range_loop)]
 pub fn compute_laminar_viscosity(
     particles: &mut ParticleSet,
     neighbors: &[Vec<usize>],
@@ -236,8 +230,8 @@ pub fn compute_laminar_viscosity(
             visc_forces[i] += factor * vij;
         }
     }
-    for i in 0..n {
-        particles.forces[i] += visc_forces[i] * particles.densities[i];
+    for (i, &vf) in visc_forces.iter().enumerate().take(n) {
+        particles.forces[i] += vf * particles.densities[i];
     }
 }
 /// Apply XSPH velocity correction to smooth the velocity field.
@@ -247,7 +241,6 @@ pub fn compute_laminar_viscosity(
 /// * `epsilon` — XSPH coefficient (typically 0.0–1.0; 0.5 is common)
 ///
 /// Returns the corrected velocities (does not modify `particles` in-place).
-#[allow(dead_code, clippy::needless_range_loop)]
 pub fn compute_xsph_correction(
     particles: &ParticleSet,
     neighbors: &[Vec<usize>],
@@ -282,7 +275,6 @@ pub fn compute_xsph_correction(
 ///
 /// Same as [`compute_xsph_correction`] but modifies the particle velocities
 /// directly.
-#[allow(dead_code)]
 pub fn apply_xsph_correction(
     particles: &mut ParticleSet,
     neighbors: &[Vec<usize>],
@@ -304,7 +296,6 @@ pub fn apply_xsph_correction(
 /// * `tensile_exp` — exponent for the kernel ratio (typically 4)
 ///
 /// Returns per-particle tensile correction forces.
-#[allow(dead_code, clippy::needless_range_loop, clippy::too_many_arguments)]
 pub fn compute_tensile_instability_correction(
     particles: &ParticleSet,
     neighbors: &[Vec<usize>],
@@ -366,7 +357,6 @@ pub fn compute_tensile_instability_correction(
 /// where `d = 3` (dimension) and `rho_ref` is the rest density.
 ///
 /// Returns the per-particle smoothing lengths clamped to `[h_min, h_max]`.
-#[allow(dead_code)]
 pub fn compute_adaptive_smoothing_length(
     densities: &[f64],
     h_ref: f64,
@@ -390,13 +380,11 @@ pub fn compute_adaptive_smoothing_length(
 /// Compute the speed of sound for the Tait equation of state.
 ///
 /// `c = sqrt(gamma * stiffness * (rho / rho0)^(gamma - 1) / rho0)`
-#[allow(dead_code)]
 pub fn speed_of_sound_tait(rho: f64, params: &WcsphParams) -> f64 {
     let ratio = rho / params.rest_density;
     (params.gamma * params.stiffness * ratio.powf(params.gamma - 1.0) / params.rest_density).sqrt()
 }
 /// Compute the maximum speed of sound across all particles.
-#[allow(dead_code)]
 pub fn max_speed_of_sound(particles: &ParticleSet, params: &WcsphParams) -> f64 {
     particles
         .densities
@@ -405,7 +393,6 @@ pub fn max_speed_of_sound(particles: &ParticleSet, params: &WcsphParams) -> f64 
         .fold(0.0_f64, f64::max)
 }
 /// Perform a single WCSPH time step using symplectic Euler integration.
-#[allow(clippy::too_many_arguments)]
 pub fn step(
     particles: &mut ParticleSet,
     neighbors: &[Vec<usize>],
@@ -427,7 +414,6 @@ pub fn step(
     }
 }
 /// Perform a WCSPH step with XSPH velocity correction and optional tensile fix.
-#[allow(dead_code, clippy::too_many_arguments, clippy::needless_range_loop)]
 pub fn step_with_corrections(
     particles: &mut ParticleSet,
     neighbors: &[Vec<usize>],
@@ -456,8 +442,8 @@ pub fn step_with_corrections(
             tensile_coeff,
             tensile_exp,
         );
-        for i in 0..particles.len() {
-            particles.forces[i] += tensile_forces[i] * particles.densities[i];
+        for (i, &tf) in tensile_forces.iter().enumerate().take(particles.len()) {
+            particles.forces[i] += tf * particles.densities[i];
         }
     }
     for i in 0..particles.len() {
@@ -470,7 +456,6 @@ pub fn step_with_corrections(
     }
 }
 /// Compute total kinetic energy of the particle system.
-#[allow(dead_code)]
 pub fn kinetic_energy(particles: &ParticleSet) -> f64 {
     particles
         .velocities
@@ -480,7 +465,6 @@ pub fn kinetic_energy(particles: &ParticleSet) -> f64 {
         .sum()
 }
 /// Compute the maximum particle velocity magnitude.
-#[allow(dead_code)]
 pub fn max_velocity(particles: &ParticleSet) -> f64 {
     particles
         .velocities
@@ -728,9 +712,9 @@ mod tests {
         ps.velocities[0] = Vec3::new(5.0, 0.0, 0.0);
         let kernel = CubicSplineKernel;
         let corrected = compute_xsph_correction(&ps, &neighbors, &kernel, h, 0.0);
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..ps.len() {
-            let diff = (corrected[i] - ps.velocities[i]).norm();
+
+        for (corr, vel) in corrected.iter().zip(ps.velocities.iter()) {
+            let diff = (*corr - *vel).norm();
             assert!(
                 diff < 1e-14,
                 "epsilon=0 should not change velocities, diff={diff}"
@@ -977,7 +961,6 @@ pub fn density_summation_shepard(
 }
 /// Apply Shepard density correction to all particles in `ps`, using only
 /// nearest-neighbor lists.
-#[allow(clippy::needless_range_loop)]
 pub fn apply_shepard_density_correction(
     ps: &mut ParticleSet,
     neighbors: &[Vec<usize>],
@@ -986,8 +969,8 @@ pub fn apply_shepard_density_correction(
 ) {
     let n = ps.positions.len();
     let mut corrected = vec![0.0_f64; n];
-    for i in 0..n {
-        corrected[i] = density_summation_shepard(
+    for (i, c) in corrected.iter_mut().enumerate().take(n) {
+        *c = density_summation_shepard(
             i,
             &ps.positions,
             &ps.masses,
@@ -1034,7 +1017,6 @@ pub fn mls_kernel_correction_factor(
     }
 }
 /// Apply MLS (Shepard) kernel correction to the density of every particle.
-#[allow(clippy::needless_range_loop)]
 pub fn apply_mls_density_correction(
     ps: &mut ParticleSet,
     neighbors: &[Vec<usize>],
@@ -1043,8 +1025,8 @@ pub fn apply_mls_density_correction(
 ) {
     let n = ps.positions.len();
     let mut betas = vec![1.0_f64; n];
-    for i in 0..n {
-        betas[i] = mls_kernel_correction_factor(
+    for (i, b) in betas.iter_mut().enumerate().take(n) {
+        *b = mls_kernel_correction_factor(
             i,
             &ps.positions,
             &ps.masses,
@@ -1054,8 +1036,8 @@ pub fn apply_mls_density_correction(
             h,
         );
     }
-    for i in 0..n {
-        ps.densities[i] *= betas[i];
+    for (i, &b) in betas.iter().enumerate().take(n) {
+        ps.densities[i] *= b;
     }
 }
 /// Tensile instability correction factor ε for particle `i` (Monaghan 2000).
@@ -1115,7 +1097,6 @@ pub fn detect_free_surface_particles(
 /// Computes the magnitude of the colour function gradient ‖∇C_i‖ and flags
 /// particles where this exceeds `kgd_threshold / h`.  A large gradient
 /// indicates an incomplete kernel support region (free surface).
-#[allow(clippy::too_many_arguments)]
 pub fn detect_free_surface_kgd(
     i: usize,
     positions: &[Vec3],
@@ -1152,7 +1133,6 @@ pub fn detect_free_surface_kgd(
 /// * `delta` – diffusion coefficient δ (typically 0.1)
 /// * `h` – smoothing length
 /// * `c_s` – speed of sound
-#[allow(clippy::too_many_arguments)]
 pub fn fourtakas_density_diffusion(
     i: usize,
     positions: &[Vec3],
@@ -1182,7 +1162,6 @@ pub fn fourtakas_density_diffusion(
     delta * h * c_s * diffusion
 }
 /// Apply Fourtakas density diffusion to all particles.
-#[allow(clippy::needless_range_loop)]
 pub fn apply_fourtakas_diffusion(
     ps: &mut ParticleSet,
     neighbors: &[Vec<usize>],
@@ -1194,8 +1173,8 @@ pub fn apply_fourtakas_diffusion(
 ) {
     let n = ps.positions.len();
     let mut d_rho = vec![0.0_f64; n];
-    for i in 0..n {
-        d_rho[i] = fourtakas_density_diffusion(
+    for (i, dr) in d_rho.iter_mut().enumerate().take(n) {
+        *dr = fourtakas_density_diffusion(
             i,
             &ps.positions,
             &ps.masses,
@@ -1207,8 +1186,8 @@ pub fn apply_fourtakas_diffusion(
             c_s,
         );
     }
-    for i in 0..n {
-        ps.densities[i] += d_rho[i] * dt;
+    for (i, &dr) in d_rho.iter().enumerate().take(n) {
+        ps.densities[i] += dr * dt;
         if ps.densities[i] < f64::EPSILON {
             ps.densities[i] = f64::EPSILON;
         }
@@ -1399,7 +1378,6 @@ mod tests_ext {
 /// `p = c_s² * (ρ - ρ₀)` (first-order Taylor expansion of Tait around ρ₀)
 ///
 /// This is useful for near-incompressible flows where density deviations are small.
-#[allow(dead_code)]
 pub fn pressure_linear_tait(rho: f64, rho0: f64, c_s: f64) -> f64 {
     c_s * c_s * (rho - rho0)
 }
@@ -1407,7 +1385,6 @@ pub fn pressure_linear_tait(rho: f64, rho0: f64, c_s: f64) -> f64 {
 ///
 /// `p = B * ((ρ/ρ₀)^γ - 1)` but ensures p ≥ 0 (no tension):
 /// `p = max(0, B * ((ρ/ρ₀)^γ - 1))`
-#[allow(dead_code)]
 pub fn pressure_tait_no_tension(rho: f64, rho0: f64, b: f64, gamma: f64) -> f64 {
     let ratio = rho / rho0;
     (b * (ratio.powf(gamma) - 1.0)).max(0.0)
@@ -1417,20 +1394,17 @@ pub fn pressure_tait_no_tension(rho: f64, rho0: f64, b: f64, gamma: f64) -> f64 
 /// `p = B * ((ρ/ρ₀)^γ - 1) + p_atm`
 ///
 /// where `p_atm` is the background atmospheric pressure.
-#[allow(dead_code)]
 pub fn pressure_cole_eos(rho: f64, rho0: f64, b: f64, gamma: f64, p_atm: f64) -> f64 {
     let ratio = rho / rho0;
     b * (ratio.powf(gamma) - 1.0) + p_atm
 }
 /// Compute pressure for all particles using the linearized Tait EOS.
-#[allow(dead_code)]
 pub fn compute_pressure_linear_tait(particles: &mut ParticleSet, rho0: f64, c_s: f64) {
     for i in 0..particles.len() {
         particles.pressures[i] = pressure_linear_tait(particles.densities[i], rho0, c_s);
     }
 }
 /// Compute pressure for all particles using the no-tension Tait EOS.
-#[allow(dead_code)]
 pub fn compute_pressure_tait_no_tension(
     particles: &mut ParticleSet,
     rho0: f64,
@@ -1449,7 +1423,6 @@ pub fn compute_pressure_tait_no_tension(
 ///       + (ρ_i c_i ρ_j c_j / (ρ_i c_i + ρ_j c_j)) * (v_i - v_j) · r_hat
 /// ```
 /// The interface pressure `p*_ij` replaces the standard SPH pressure symmetrization.
-#[allow(dead_code, clippy::too_many_arguments, clippy::needless_range_loop)]
 pub fn compute_riemann_pressure_force(
     particles: &mut ParticleSet,
     neighbors: &[Vec<usize>],
@@ -1494,8 +1467,8 @@ pub fn compute_riemann_pressure_force(
             p_forces[i] += factor * rhat;
         }
     }
-    for i in 0..n {
-        particles.forces[i] += p_forces[i] * particles.densities[i];
+    for (i, &pf) in p_forces.iter().enumerate().take(n) {
+        particles.forces[i] += pf * particles.densities[i];
     }
 }
 /// Compute particle shifting displacements to improve regularity.
@@ -1505,7 +1478,6 @@ pub fn compute_riemann_pressure_force(
 ///
 /// where `A` is the shifting coefficient (typically 0.01–0.1).
 /// Returns the displacement vector for each particle.
-#[allow(dead_code, clippy::needless_range_loop)]
 pub fn compute_particle_shifting(
     particles: &ParticleSet,
     neighbors: &[Vec<usize>],
@@ -1543,7 +1515,6 @@ pub fn compute_particle_shifting(
 ///
 /// Modifies particle positions according to the computed shift vectors.
 /// Does not update velocities.
-#[allow(dead_code, clippy::needless_range_loop)]
 pub fn apply_particle_shifting(
     particles: &mut ParticleSet,
     neighbors: &[Vec<usize>],
@@ -1552,8 +1523,8 @@ pub fn apply_particle_shifting(
     coefficient: f64,
 ) {
     let shifts = compute_particle_shifting(particles, neighbors, kernel, h, coefficient);
-    for i in 0..particles.len() {
-        particles.positions[i] += shifts[i];
+    for (i, &sh) in shifts.iter().enumerate().take(particles.len()) {
+        particles.positions[i] += sh;
     }
 }
 /// Dynamic boundary particle contribution.
@@ -1566,7 +1537,6 @@ pub fn apply_particle_shifting(
 ///
 /// Returns the boundary pressure for a boundary particle at `x_b`
 /// given a fluid reference particle at `x_f`.
-#[allow(dead_code)]
 pub fn dynamic_boundary_pressure(p_f: f64, rho_f: f64, x_f: Vec3, x_b: Vec3, gravity: Vec3) -> f64 {
     let dx = x_f - x_b;
     p_f + rho_f * gravity.dot(&dx)
@@ -1574,7 +1544,6 @@ pub fn dynamic_boundary_pressure(p_f: f64, rho_f: f64, x_f: Vec3, x_b: Vec3, gra
 /// Apply dynamic boundary force from boundary particle j on fluid particle i.
 ///
 /// Adds a mirror pressure contribution from the boundary particle.
-#[allow(dead_code, clippy::too_many_arguments)]
 pub fn dynamic_boundary_force_contribution(
     p_i: f64,
     p_b: f64,
@@ -1598,7 +1567,6 @@ pub fn dynamic_boundary_force_contribution(
 ///
 /// This is the "Riemann-WCSPH" variant that stabilizes high-speed flows by
 /// solving an acoustic Riemann problem at each particle pair.
-#[allow(dead_code, clippy::too_many_arguments)]
 pub fn step_riemann(
     particles: &mut ParticleSet,
     neighbors: &[Vec<usize>],
@@ -1621,7 +1589,6 @@ pub fn step_riemann(
     }
 }
 /// Perform a full-featured WCSPH step with Riemann solver + XSPH + particle shifting.
-#[allow(dead_code, clippy::too_many_arguments)]
 pub fn step_riemann_with_corrections(
     particles: &mut ParticleSet,
     neighbors: &[Vec<usize>],

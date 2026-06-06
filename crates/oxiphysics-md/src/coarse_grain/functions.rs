@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use super::types::{Bead, CgAngle, CgBond, CgDihedral, MartiniBead};
 
 /// Boltzmann constant (J K^-1).
@@ -74,13 +73,13 @@ pub fn compute_radius_of_gyration_cg(beads: &[Bead]) -> f64 {
     let mut total_mass = 0.0f64;
     for bead in beads {
         total_mass += bead.mass;
-        for d in 0..3 {
-            com[d] += bead.mass * bead.position[d];
+        for (d, c) in com.iter_mut().enumerate() {
+            *c += bead.mass * bead.position[d];
         }
     }
     if total_mass > 0.0 {
-        for d in 0..3 {
-            com[d] /= total_mass;
+        for v in &mut com {
+            *v /= total_mass;
         }
     }
     let sum_mr2: f64 = beads.iter().fold(0.0, |acc, bead| {
@@ -152,8 +151,8 @@ pub fn cg_radial_distribution_function(
     for i in 0..n {
         for j in (i + 1)..n {
             let mut r2 = 0.0f64;
-            for d in 0..3 {
-                let mut dx = positions[j][d] - positions[i][d];
+            for (pi, qi) in positions[i].iter().zip(positions[j].iter()) {
+                let mut dx = qi - pi;
                 dx -= box_len * (dx / box_len).round();
                 r2 += dx * dx;
             }
@@ -815,7 +814,6 @@ mod tests_cg_ext {
     }
 }
 /// MARTINI bead radius (nm) for a given `MartiniBead` type.
-#[allow(dead_code)]
 pub fn martini_bead_radius(bead: MartiniBead) -> f64 {
     match bead {
         MartiniBead::Sc3 => 0.43,
@@ -828,7 +826,6 @@ pub fn martini_bead_radius(bead: MartiniBead) -> f64 {
     }
 }
 /// MARTINI bead mass (amu) – typically 72 for regular, 54 for small beads.
-#[allow(dead_code)]
 pub fn martini_bead_mass(bead: MartiniBead) -> f64 {
     match bead {
         MartiniBead::Sc3 => 54.0,
@@ -840,7 +837,6 @@ pub fn martini_bead_mass(bead: MartiniBead) -> f64 {
 ///
 /// Returns CG bead positions. Trailing atoms that don't form a complete group
 /// are mapped as their own bead.
-#[allow(dead_code)]
 pub fn martini_4to1_mapping(atom_positions: &[[f64; 3]], atom_masses: &[f64]) -> Vec<[f64; 3]> {
     let n = atom_positions.len().min(atom_masses.len());
     if n == 0 {
@@ -861,8 +857,8 @@ pub fn martini_4to1_mapping(atom_positions: &[[f64; 3]], atom_masses: &[f64]) ->
             }
         }
         if total_mass > 0.0 {
-            for d in 0..3 {
-                com[d] /= total_mass;
+            for v in &mut com {
+                *v /= total_mass;
             }
         }
         beads.push(com);
@@ -877,7 +873,6 @@ pub fn martini_4to1_mapping(atom_positions: &[[f64; 3]], atom_masses: &[f64]) ->
 /// * `group_masses` – masses of the atoms in this bead's group.
 ///
 /// Returns per-atom forces.
-#[allow(dead_code)]
 pub fn distribute_force_to_atoms(cg_force: [f64; 3], group_masses: &[f64]) -> Vec<[f64; 3]> {
     let total: f64 = group_masses.iter().sum();
     if total < 1e-300 {
@@ -903,7 +898,6 @@ pub fn distribute_force_to_atoms(cg_force: [f64; 3], group_masses: &[f64]) -> Ve
 /// * `n_grid`   – grid resolution for brute-force 2-D search.
 ///
 /// Returns `(D_e, a)` best-fit pair.
-#[allow(dead_code)]
 pub fn fit_morse_potential(
     r_data: &[f64],
     v_data: &[f64],
@@ -942,13 +936,11 @@ pub fn fit_morse_potential(
     (best_de, best_a)
 }
 /// Evaluate Morse potential.
-#[allow(dead_code)]
 pub fn morse_potential(r: f64, de: f64, a: f64, r_e: f64) -> f64 {
     let expt = (-a * (r - r_e)).exp();
     de * (1.0 - expt).powi(2)
 }
 /// Evaluate Morse force: F = −dV/dr.
-#[allow(dead_code)]
 pub fn morse_force(r: f64, de: f64, a: f64, r_e: f64) -> f64 {
     let expt = (-a * (r - r_e)).exp();
     -2.0 * de * a * expt * (1.0 - expt)
@@ -956,7 +948,6 @@ pub fn morse_force(r: f64, de: f64, a: f64, r_e: f64) -> f64 {
 /// Fit a harmonic bond potential k·(r−r0)²/2 via linear regression.
 ///
 /// Returns `(k, r0)`.
-#[allow(dead_code)]
 pub fn fit_harmonic_bond(r_data: &[f64], v_data: &[f64]) -> (f64, f64) {
     let n = r_data.len().min(v_data.len());
     if n < 2 {
@@ -974,7 +965,6 @@ pub fn fit_harmonic_bond(r_data: &[f64], v_data: &[f64]) -> (f64, f64) {
     (k, mean_r)
 }
 /// Backmapping quality metric: RMSD between back-mapped and reference AA positions.
-#[allow(dead_code)]
 pub fn backmapping_rmsd(back_mapped: &[[f64; 3]], reference: &[[f64; 3]]) -> f64 {
     let n = back_mapped.len().min(reference.len());
     if n == 0 {
@@ -993,7 +983,6 @@ pub fn backmapping_rmsd(back_mapped: &[[f64; 3]], reference: &[[f64; 3]]) -> f64
 ///
 /// Adjusts a global scale factor for the reference frame offsets.
 /// Returns the scale factor that minimises RMSD.
-#[allow(dead_code)]
 pub fn backmapping_optimal_scale(
     cg_positions: &[[f64; 3]],
     reference_frames: &[Vec<[f64; 3]>],
@@ -1032,7 +1021,6 @@ pub fn backmapping_optimal_scale(
 /// Build a neighbour list for CG beads within `cutoff` (nm).
 ///
 /// Returns a list of unique pairs `(i, j)` with `i < j` within the cutoff.
-#[allow(dead_code)]
 pub fn build_neighbour_list(positions: &[[f64; 3]], cutoff: f64) -> Vec<(usize, usize)> {
     let n = positions.len();
     let cutoff_sq = cutoff * cutoff;
@@ -1051,7 +1039,6 @@ pub fn build_neighbour_list(positions: &[[f64; 3]], cutoff: f64) -> Vec<(usize, 
     pairs
 }
 /// Apply minimum-image convention to a distance vector.
-#[allow(dead_code)]
 pub fn minimum_image(mut dr: [f64; 3], box_lengths: [f64; 3]) -> [f64; 3] {
     for d in 0..3 {
         let l = box_lengths[d];
@@ -1062,7 +1049,6 @@ pub fn minimum_image(mut dr: [f64; 3], box_lengths: [f64; 3]) -> [f64; 3] {
     dr
 }
 /// Build a neighbour list with periodic boundary conditions.
-#[allow(dead_code)]
 pub fn build_neighbour_list_pbc(
     positions: &[[f64; 3]],
     cutoff: f64,
@@ -1093,9 +1079,8 @@ pub fn build_neighbour_list_pbc(
 /// `force_fn` must return per-bead forces for the current positions.
 ///
 /// Returns `(n_steps_taken, max_force_final)`.
-#[allow(dead_code)]
 pub fn steepest_descent_cg<F>(
-    positions: &mut Vec<[f64; 3]>,
+    positions: &mut [[f64; 3]],
     step_size: f64,
     f_tol: f64,
     max_steps: usize,
@@ -1139,7 +1124,6 @@ where
 ///
 /// The equilibrium bond length is estimated as the first peak of the
 /// radial distribution function `rdf` at `r_bins` positions.
-#[allow(dead_code)]
 pub fn ideal_bond_length_from_rdf(r_bins: &[f64], rdf: &[f64]) -> Option<f64> {
     if r_bins.is_empty() || rdf.is_empty() {
         return None;
@@ -1153,7 +1137,6 @@ pub fn ideal_bond_length_from_rdf(r_bins: &[f64], rdf: &[f64]) -> Option<f64> {
 /// Compute MARTINI bond spring constant from fluctuations:
 ///
 /// k = kT / ⟨(r − r₀)²⟩
-#[allow(dead_code)]
 pub fn bond_spring_constant_from_fluctuations(r_samples: &[f64], r0: f64, kt: f64) -> f64 {
     let n = r_samples.len();
     if n < 2 {
@@ -1168,7 +1151,6 @@ pub fn bond_spring_constant_from_fluctuations(r_samples: &[f64], r0: f64, kt: f6
 /// Compute MARTINI angle spring constant from fluctuations:
 ///
 /// k_θ = kT / ⟨(θ − θ₀)²⟩
-#[allow(dead_code)]
 pub fn angle_spring_constant_from_fluctuations(theta_samples: &[f64], theta0: f64, kt: f64) -> f64 {
     let n = theta_samples.len();
     if n < 2 {
@@ -1187,7 +1169,6 @@ pub fn angle_spring_constant_from_fluctuations(theta_samples: &[f64], theta0: f6
 /// Mean square displacement (MSD) from a list of position trajectories.
 ///
 /// `traj` is indexed `[time][bead]`; returns MSD(t) for lags 0..max_lag.
-#[allow(dead_code)]
 pub fn mean_square_displacement(traj: &[Vec<[f64; 3]>], max_lag: usize) -> Vec<f64> {
     let n_frames = traj.len();
     if n_frames == 0 || max_lag == 0 {
@@ -1196,15 +1177,18 @@ pub fn mean_square_displacement(traj: &[Vec<[f64; 3]>], max_lag: usize) -> Vec<f
     let n_beads = traj[0].len();
     let effective_max = max_lag.min(n_frames);
     let mut msd = vec![0.0_f64; effective_max];
-    for lag in 0..effective_max {
+    for (lag, msd_val) in msd.iter_mut().enumerate() {
         let mut sum = 0.0_f64;
         let mut count = 0usize;
         for t0 in 0..n_frames.saturating_sub(lag) {
             let t1 = t0 + lag;
             if t1 < n_frames {
-                for b in 0..n_beads.min(traj[t1].len()) {
-                    let dr: f64 = (0..3)
-                        .map(|d| (traj[t1][b][d] - traj[t0][b][d]).powi(2))
+                let b_max = n_beads.min(traj[t1].len());
+                for (bead1, bead0) in traj[t1][..b_max].iter().zip(traj[t0][..b_max].iter()) {
+                    let dr: f64 = bead1
+                        .iter()
+                        .zip(bead0.iter())
+                        .map(|(a, b)| (a - b).powi(2))
                         .sum();
                     sum += dr;
                     count += 1;
@@ -1212,7 +1196,7 @@ pub fn mean_square_displacement(traj: &[Vec<[f64; 3]>], max_lag: usize) -> Vec<f
             }
         }
         if count > 0 {
-            msd[lag] = sum / count as f64;
+            *msd_val = sum / count as f64;
         }
     }
     msd
@@ -1222,7 +1206,6 @@ pub fn mean_square_displacement(traj: &[Vec<[f64; 3]>], max_lag: usize) -> Vec<f
 /// Uses a linear fit of MSD vs time in the range \[fit_start, fit_end\] frames.
 ///
 /// Returns `None` if the fit range is too small.
-#[allow(dead_code)]
 pub fn diffusion_coefficient_from_msd(
     msd: &[f64],
     dt: f64,
@@ -1261,7 +1244,6 @@ pub fn diffusion_coefficient_from_msd(
 /// * `r`         – distance (nm).
 /// * `epsilon_r` – relative permittivity.
 /// * `lambda_d`  – Debye screening length (nm).
-#[allow(dead_code)]
 pub fn martini_screened_coulomb(qi: f64, qj: f64, r: f64, epsilon_r: f64, lambda_d: f64) -> f64 {
     if r < 1e-10 {
         return 0.0;
@@ -1275,7 +1257,6 @@ pub fn martini_screened_coulomb(qi: f64, qj: f64, r: f64, epsilon_r: f64, lambda
     factor * qi * qj / (epsilon_r * r) * screening
 }
 /// Force from screened Coulomb (along the r direction, magnitude).
-#[allow(dead_code)]
 pub fn martini_screened_coulomb_force(
     qi: f64,
     qj: f64,
@@ -1302,7 +1283,6 @@ pub fn martini_screened_coulomb_force(
 }
 /// MARTINI water bead — 4 water molecules → 1 bead (W type).
 /// Returns LJ energy using MARTINI P4 water parameters.
-#[allow(dead_code)]
 pub fn martini_water_lj(r: f64) -> f64 {
     let sigma = 0.47_f64;
     let epsilon = 5.0_f64;
@@ -1499,11 +1479,8 @@ mod tests_extended {
         let mut state = CgIntegratorState::new(pos, vel, masses);
         state.remove_com_velocity();
         let com_vel = state.centre_of_mass_velocity();
-        for d in 0..3 {
-            assert!(
-                com_vel[d].abs() < 1e-12,
-                "COM velocity should be zero after removal"
-            );
+        for v in com_vel {
+            assert!(v.abs() < 1e-12, "COM velocity should be zero after removal");
         }
     }
     #[test]
@@ -1513,11 +1490,10 @@ mod tests_extended {
         let masses = vec![1.0_f64];
         let mut state = CgIntegratorState::new(pos, vel, masses);
         state.apply_pbc([1.0, 1.0, 1.0]);
-        for d in 0..3 {
+        for (d, &v) in state.positions[0].iter().enumerate() {
             assert!(
-                state.positions[0][d] >= 0.0 && state.positions[0][d] < 1.0,
-                "PBC-wrapped position out of box at dim {d}: {}",
-                state.positions[0][d]
+                (0.0..1.0).contains(&v),
+                "PBC-wrapped position out of box at dim {d}: {v}"
             );
         }
     }

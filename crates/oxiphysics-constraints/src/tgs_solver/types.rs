@@ -13,7 +13,6 @@ use oxiphysics_rigid::RigidBodySet;
 /// Chooses the number of substeps based on the maximum velocity magnitude
 /// and a target CFL-like condition: `max_velocity * sub_dt < max_displacement`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AdaptiveTgsSolver {
     /// Base TGS solver parameters.
     pub base: TgsSolver,
@@ -24,7 +23,6 @@ pub struct AdaptiveTgsSolver {
     /// Maximum number of substeps.
     pub max_substeps: usize,
 }
-#[allow(dead_code)]
 impl AdaptiveTgsSolver {
     /// Create a new adaptive TGS solver.
     pub fn new(velocity_iterations: usize, gravity: Vec3, max_displacement: f64) -> Self {
@@ -61,7 +59,6 @@ impl AdaptiveTgsSolver {
 ///
 /// Stores the constraint bias (Baumgarte + restitution + user bias),
 /// the accumulated impulse (warm-start), and the effective mass.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BlockConstraint6 {
     /// Jacobian row.
@@ -81,7 +78,6 @@ pub struct BlockConstraint6 {
     /// Precomputed effective mass.
     pub(super) eff_mass: f64,
 }
-#[allow(dead_code)]
 impl BlockConstraint6 {
     /// Create a new block constraint.
     pub fn new(
@@ -143,7 +139,6 @@ impl BlockConstraint6 {
 }
 /// How position errors are corrected at the velocity level.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub enum PositionCorrectionMode {
     /// Classic Baumgarte: bias velocity added to constraint.
     Baumgarte,
@@ -153,7 +148,6 @@ pub enum PositionCorrectionMode {
     NonlinearGaussSeidel,
 }
 /// A 6×6 block mass matrix (diagonal for simplicity: inv_mass, inv_inertia).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct MassMatrix6 {
     /// Inverse mass (scalar, applied to linear DOFs).
@@ -161,7 +155,6 @@ pub struct MassMatrix6 {
     /// Inverse inertia (diagonal 3×3 stored as array \[Ixx, Iyy, Izz\]).
     pub inv_inertia: [f64; 3],
 }
-#[allow(dead_code)]
 impl MassMatrix6 {
     /// Create a new 6×6 diagonal mass matrix.
     pub fn new(inv_mass: f64, inv_inertia: [f64; 3]) -> Self {
@@ -197,7 +190,6 @@ impl MassMatrix6 {
     }
 }
 /// Strategy for constraint correction.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CorrectionStrategy {
     /// Velocity-level only (Baumgarte bias injected into velocity constraint).
@@ -210,7 +202,6 @@ pub enum CorrectionStrategy {
         threshold: f64,
     },
 }
-#[allow(dead_code)]
 impl CorrectionStrategy {
     /// Determine whether to apply velocity correction for a given penetration.
     pub fn use_velocity_correction(&self, penetration: f64) -> bool {
@@ -230,7 +221,6 @@ impl CorrectionStrategy {
     }
 }
 /// Descriptor for one simulation island (group of mutually interacting bodies).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IslandDescriptor {
     /// Handle indices of bodies in this island.
@@ -240,7 +230,6 @@ pub struct IslandDescriptor {
     /// Estimated FLOP count (used for load balancing).
     pub estimated_cost: usize,
 }
-#[allow(dead_code)]
 impl IslandDescriptor {
     /// Create a new island descriptor.
     pub fn new(body_indices: Vec<usize>, constraint_indices: Vec<usize>) -> Self {
@@ -264,7 +253,6 @@ impl IslandDescriptor {
 ///
 /// Stores `J_a` and `J_b` as 6-element arrays: `[Jlin_x, Jlin_y, Jlin_z,
 /// Jang_x, Jang_y, Jang_z]` for body A and body B respectively.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct JacobianRow6 {
     /// Jacobian for body A (linear + angular, 6 elements).
@@ -272,7 +260,6 @@ pub struct JacobianRow6 {
     /// Jacobian for body B (linear + angular, 6 elements).
     pub j_b: [f64; 6],
 }
-#[allow(dead_code)]
 impl JacobianRow6 {
     /// Create a zero Jacobian row.
     pub fn zero() -> Self {
@@ -303,13 +290,11 @@ impl JacobianRow6 {
 }
 /// Parallel island solver planner: decomposes a set of islands into
 /// independent work units that can be executed in parallel.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ParallelIslandPlanner {
     /// List of islands to solve.
     pub islands: Vec<IslandDescriptor>,
 }
-#[allow(dead_code)]
 impl ParallelIslandPlanner {
     /// Create an empty planner.
     pub fn new() -> Self {
@@ -354,7 +339,6 @@ impl ParallelIslandPlanner {
     }
 }
 /// Result of a drift correction pass.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct DriftCorrectionResult {
     /// Maximum position error before correction.
@@ -364,7 +348,6 @@ pub struct DriftCorrectionResult {
     /// Number of iterations performed.
     pub iterations: usize,
 }
-#[allow(dead_code)]
 impl DriftCorrectionResult {
     /// Error reduction ratio (before/after). Returns 1.0 if before ≈ 0.
     pub fn error_reduction_ratio(&self) -> f64 {
@@ -380,7 +363,6 @@ impl DriftCorrectionResult {
 }
 /// Diagnostics collected per substep for analysis.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct SubstepDiagnostics {
     /// Kinetic energy at start of substep.
     pub ke_start: f64,
@@ -391,7 +373,6 @@ pub struct SubstepDiagnostics {
     /// Maximum penetration among constraints (estimated).
     pub max_penetration: f64,
 }
-#[allow(dead_code)]
 impl SubstepDiagnostics {
     /// Create zeroed diagnostics.
     pub fn zero() -> Self {
@@ -415,7 +396,6 @@ impl SubstepDiagnostics {
     }
 }
 /// Baumgarte stabilization variant selection.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BaumgarteVariant {
     /// Classic Baumgarte: `bias = β * C / dt`.
@@ -430,7 +410,6 @@ pub enum BaumgarteVariant {
         omega_n: f64,
     },
 }
-#[allow(dead_code)]
 impl BaumgarteVariant {
     /// Compute the bias velocity for a given penetration and time step.
     pub fn compute_bias(&self, penetration: f64, slop: f64, dt: f64) -> f64 {
@@ -453,7 +432,6 @@ impl BaumgarteVariant {
 /// Stores per-constraint accumulated impulses from the previous frame to
 /// seed the next frame's solver, improving convergence for persistent contacts.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TgsWarmStartState {
     /// Accumulated normal impulses per constraint.
     pub normal_impulses: Vec<f64>,
@@ -464,7 +442,6 @@ pub struct TgsWarmStartState {
     /// Number of frames this state has been carried forward.
     pub age: u32,
 }
-#[allow(dead_code)]
 impl TgsWarmStartState {
     /// Create new warm-start state for `n` constraints.
     pub fn new(n: usize) -> Self {
@@ -553,7 +530,6 @@ impl TgsSolver {
         }
     }
     /// Create a solver with full control over all parameters.
-    #[allow(dead_code)]
     pub fn with_options(
         substeps: usize,
         velocity_iterations: usize,
@@ -615,7 +591,6 @@ impl TgsSolver {
     /// Solve with warm-start from a previous-frame [`TgsWarmStartState`].
     ///
     /// Scales cached impulses by `dt / prev_dt` before the first substep.
-    #[allow(dead_code)]
     pub fn step_warm(
         &self,
         constraints: &mut [Box<dyn Constraint>],
@@ -635,7 +610,6 @@ impl TgsSolver {
     /// Step with diagnostics collection.
     ///
     /// Returns both solver stats and a vector of per-substep diagnostics.
-    #[allow(dead_code)]
     pub fn step_with_diagnostics(
         &self,
         constraints: &mut [Box<dyn Constraint>],
@@ -713,7 +687,6 @@ impl TgsSolver {
     ///
     /// Identical to `step` but operates only on the provided body handles
     /// and constraints, enabling parallel island solving in the future.
-    #[allow(clippy::too_many_arguments)]
     pub fn solve_island(
         &self,
         island_bodies: &[oxiphysics_core::BodyHandle],
@@ -753,7 +726,6 @@ impl TgsSolver {
     /// Compute the Baumgarte bias term for a penetration depth.
     ///
     /// `bias = β * max(0, penetration - slop) / dt`
-    #[allow(dead_code)]
     pub fn baumgarte_bias(&self, penetration: f64, dt: f64) -> f64 {
         if dt < 1e-12 {
             return 0.0;
@@ -762,12 +734,10 @@ impl TgsSolver {
         self.baumgarte_beta * excess / dt
     }
     /// Compute total kinetic energy for all bodies in the set.
-    #[allow(dead_code)]
     pub fn total_kinetic_energy(&self, bodies: &RigidBodySet) -> f64 {
         compute_kinetic_energy(bodies)
     }
     /// Compute the maximum velocity magnitude among all dynamic bodies.
-    #[allow(dead_code)]
     pub fn max_velocity(&self, bodies: &RigidBodySet) -> f64 {
         compute_max_velocity(bodies)
     }
@@ -789,7 +759,6 @@ impl TgsSolver {
         }
     }
     /// Alias for `step` for compatibility with call-sites that use `solve`.
-    #[allow(dead_code)]
     pub fn solve(
         &self,
         constraints: &mut [Box<dyn Constraint>],

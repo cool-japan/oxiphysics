@@ -12,7 +12,6 @@ use std::f64::consts::PI;
 // ── Data structures ──────────────────────────────────────────────────────────
 
 /// GPU SPH pressure solver holding all per-particle state.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GpuSphPressureSolver {
     /// Total number of simulated particles.
@@ -163,7 +162,6 @@ impl GpuSphPressureSolver {
 
     /// Compute viscosity force on particle `i`:
     /// F_visc_i = μ Σⱼ mⱼ/ρⱼ (vⱼ − vᵢ) ∇²W_visc.
-    #[allow(clippy::too_many_arguments)]
     pub fn gpu_viscosity_force(&self, i: usize, velocities: &[[f64; 3]], mu: f64) -> [f64; 3] {
         let h = self.smoothing_h;
         let mut force = [0.0f64; 3];
@@ -197,7 +195,6 @@ impl GpuSphPressureSolver {
 }
 
 /// Statistics computed from the pressure solver state.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GpuSphStats {
     /// Maximum density across all particles.

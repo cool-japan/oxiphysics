@@ -2,17 +2,13 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::items_after_test_module)]
 use super::types::{FrequencySweepPoint, ViscoelasticMaterial, WLFShift};
 
 /// Compute reduced time using WLF time-temperature superposition.
 ///
 /// t_reduced = t / 10^(log a_T)
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn time_temperature_superposition(t: f64, T: f64, wlf: &WLFShift) -> f64 {
-    let log_at = wlf.shift_factor(T);
+pub fn time_temperature_superposition(t: f64, temp: f64, wlf: &WLFShift) -> f64 {
+    let log_at = wlf.shift_factor(temp);
     let at = 10.0_f64.powf(log_at);
     if at.abs() < 1e-30 { t } else { t / at }
 }
@@ -38,11 +34,11 @@ pub(super) fn solve_tridiagonal_system(k: &[Vec<f64>], f: &[f64]) -> Vec<f64> {
         if pivot.abs() < 1e-30 {
             continue;
         }
-        for row in (col + 1)..n {
-            let factor = a[row][col] / pivot;
-            for c in col..=n {
-                let val = a[col][c];
-                a[row][c] -= factor * val;
+        let col_slice: Vec<f64> = a[col][col..=n].to_vec();
+        for a_row in a[col + 1..].iter_mut() {
+            let factor = a_row[col] / pivot;
+            for (off, &cv) in col_slice.iter().enumerate() {
+                a_row[col + off] -= factor * cv;
             }
         }
     }
@@ -116,6 +112,75 @@ pub fn complex_modulus_magnitude(material: &ViscoelasticMaterial, omega: f64) ->
     let e_prime = material.storage_modulus(omega);
     let e_double_prime = material.loss_modulus(omega);
     (e_prime * e_prime + e_double_prime * e_double_prime).sqrt()
+}
+/// Evaluate the hereditary (convolution) integral for viscoelastic stress.
+///
+/// sigma(t) = integral_0^t E(t-s) * d(epsilon)/ds  ds
+///
+/// Uses the midpoint rule with uniform time steps.
+///
+/// # Arguments
+/// * `material`      - viscoelastic material
+/// * `strain_history` - strain at each time step \[epsilon_0, ..., epsilon_n\]
+/// * `dt`            - time step (s)
+pub fn hereditary_stress_integral(
+    material: &ViscoelasticMaterial,
+    strain_history: &[f64],
+    dt: f64,
+) -> f64 {
+    let n = strain_history.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let mut sigma = 0.0;
+    let t_total = (n - 1) as f64 * dt;
+    for k in 0..(n - 1) {
+        let d_eps = strain_history[k + 1] - strain_history[k];
+        let t_k = (k as f64 + 0.5) * dt;
+        let t_minus_t_k = t_total - t_k;
+        let e_rel = material.relaxation_modulus(t_minus_t_k);
+        sigma += e_rel * d_eps;
+    }
+    sigma
+}
+/// Perform a frequency sweep over a logarithmic range.
+///
+/// Returns a Vec of `FrequencySweepPoint` for each frequency.
+///
+/// # Arguments
+/// * `material`   - viscoelastic material
+/// * `omega_min`  - minimum angular frequency (rad/s)
+/// * `omega_max`  - maximum angular frequency (rad/s)
+/// * `n_points`   - number of frequency points
+pub fn frequency_sweep(
+    material: &ViscoelasticMaterial,
+    omega_min: f64,
+    omega_max: f64,
+    n_points: usize,
+) -> Vec<FrequencySweepPoint> {
+    if n_points == 0 || omega_min <= 0.0 || omega_max <= omega_min {
+        return Vec::new();
+    }
+    let log_min = omega_min.ln();
+    let log_max = omega_max.ln();
+    (0..n_points)
+        .map(|i| {
+            let log_omega =
+                log_min + (i as f64 / (n_points - 1).max(1) as f64) * (log_max - log_min);
+            let omega = log_omega.exp();
+            let e_prime = material.storage_modulus(omega);
+            let e_double_prime = material.loss_modulus(omega);
+            let tan_delta = material.loss_tangent(omega);
+            let magnitude = (e_prime * e_prime + e_double_prime * e_double_prime).sqrt();
+            FrequencySweepPoint {
+                omega,
+                storage: e_prime,
+                loss: e_double_prime,
+                tan_delta,
+                magnitude,
+            }
+        })
+        .collect()
 }
 #[cfg(test)]
 mod tests {
@@ -292,10 +357,9 @@ mod tests {
     fn beam_global_stiffness_symmetric() {
         let beam = ViscoelasticBeam1D::new(3, 1.0, 1e-4, polymer());
         let k = beam.assemble_stiffness(1.0);
-        let n = k.len();
-        for i in 0..n {
-            for j in 0..n {
-                assert!((k[i][j] - k[j][i]).abs() < 1e-6);
+        for (i, row) in k.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - k[j][i]).abs() < 1e-6);
             }
         }
     }
@@ -537,14 +601,14 @@ mod tests {
     #[test]
     fn test_prony_relaxation_at_t0() {
         let pr = PronyRelaxation {
-            E_inf: 0.5e9,
+            e_inf: 0.5e9,
             elements: vec![
                 PronyElement {
-                    E_i: 1.0e9,
+                    e_i: 1.0e9,
                     tau_i: 1.0,
                 },
                 PronyElement {
-                    E_i: 0.5e9,
+                    e_i: 0.5e9,
                     tau_i: 10.0,
                 },
             ],
@@ -559,9 +623,9 @@ mod tests {
     #[test]
     fn test_prony_relaxation_decays() {
         let pr = PronyRelaxation {
-            E_inf: 1e6,
+            e_inf: 1e6,
             elements: vec![PronyElement {
-                E_i: 1e9,
+                e_i: 1e9,
                 tau_i: 1.0,
             }],
         };
@@ -573,9 +637,9 @@ mod tests {
     #[test]
     fn test_wlf_shift_at_tref_returns_zero() {
         let wlf = WLFShift {
-            C1: 17.44,
-            C2: 51.6,
-            T_ref: 25.0,
+            c1: 17.44,
+            c2: 51.6,
+            t_ref: 25.0,
         };
         let log_at = wlf.shift_factor(25.0);
         assert!(
@@ -586,9 +650,9 @@ mod tests {
     #[test]
     fn test_time_temperature_superposition_at_tref() {
         let wlf = WLFShift {
-            C1: 17.44,
-            C2: 51.6,
-            T_ref: 25.0,
+            c1: 17.44,
+            c2: 51.6,
+            t_ref: 25.0,
         };
         let t_red = time_temperature_superposition(10.0, 25.0, &wlf);
         assert!(
@@ -599,8 +663,8 @@ mod tests {
     #[test]
     fn test_creep_compliance_monotone() {
         let creep = Creep {
-            J0: 1e-10,
-            J_inf: 5e-10,
+            j0: 1e-10,
+            j_inf: 5e-10,
             tau: 100.0,
         };
         let mut prev = creep.compliance(0.0);
@@ -616,8 +680,8 @@ mod tests {
     #[test]
     fn test_creep_compliance_at_zero() {
         let creep = Creep {
-            J0: 2e-10,
-            J_inf: 5e-10,
+            j0: 2e-10,
+            j_inf: 5e-10,
             tau: 50.0,
         };
         let j0 = creep.compliance(0.0);
@@ -626,8 +690,8 @@ mod tests {
     #[test]
     fn test_creep_compliance_at_infinity() {
         let creep = Creep {
-            J0: 1e-10,
-            J_inf: 5e-10,
+            j0: 1e-10,
+            j_inf: 5e-10,
             tau: 1.0,
         };
         let j_inf = creep.compliance(1e15);
@@ -637,9 +701,9 @@ mod tests {
     #[test]
     fn test_prony_fem_element_update_changes_state() {
         let prony = PronyRelaxation {
-            E_inf: 1e9,
+            e_inf: 1e9,
             elements: vec![PronyElement {
-                E_i: 0.5e9,
+                e_i: 0.5e9,
                 tau_i: 1.0,
             }],
         };
@@ -655,14 +719,14 @@ mod tests {
     #[test]
     fn test_prony_fem_element_internal_vars_updated() {
         let prony = PronyRelaxation {
-            E_inf: 1e9,
+            e_inf: 1e9,
             elements: vec![
                 PronyElement {
-                    E_i: 0.5e9,
+                    e_i: 0.5e9,
                     tau_i: 1.0,
                 },
                 PronyElement {
-                    E_i: 0.3e9,
+                    e_i: 0.3e9,
                     tau_i: 10.0,
                 },
             ],
@@ -680,73 +744,4 @@ mod tests {
             "internal variables should be updated after strain increment"
         );
     }
-}
-/// Evaluate the hereditary (convolution) integral for viscoelastic stress.
-///
-/// sigma(t) = integral_0^t E(t-s) * d(epsilon)/ds  ds
-///
-/// Uses the midpoint rule with uniform time steps.
-///
-/// # Arguments
-/// * `material`      - viscoelastic material
-/// * `strain_history` - strain at each time step \[epsilon_0, ..., epsilon_n\]
-/// * `dt`            - time step (s)
-pub fn hereditary_stress_integral(
-    material: &ViscoelasticMaterial,
-    strain_history: &[f64],
-    dt: f64,
-) -> f64 {
-    let n = strain_history.len();
-    if n < 2 {
-        return 0.0;
-    }
-    let mut sigma = 0.0;
-    let t_total = (n - 1) as f64 * dt;
-    for k in 0..(n - 1) {
-        let d_eps = strain_history[k + 1] - strain_history[k];
-        let t_k = (k as f64 + 0.5) * dt;
-        let t_minus_t_k = t_total - t_k;
-        let e_rel = material.relaxation_modulus(t_minus_t_k);
-        sigma += e_rel * d_eps;
-    }
-    sigma
-}
-/// Perform a frequency sweep over a logarithmic range.
-///
-/// Returns a Vec of `FrequencySweepPoint` for each frequency.
-///
-/// # Arguments
-/// * `material`   - viscoelastic material
-/// * `omega_min`  - minimum angular frequency (rad/s)
-/// * `omega_max`  - maximum angular frequency (rad/s)
-/// * `n_points`   - number of frequency points
-pub fn frequency_sweep(
-    material: &ViscoelasticMaterial,
-    omega_min: f64,
-    omega_max: f64,
-    n_points: usize,
-) -> Vec<FrequencySweepPoint> {
-    if n_points == 0 || omega_min <= 0.0 || omega_max <= omega_min {
-        return Vec::new();
-    }
-    let log_min = omega_min.ln();
-    let log_max = omega_max.ln();
-    (0..n_points)
-        .map(|i| {
-            let log_omega =
-                log_min + (i as f64 / (n_points - 1).max(1) as f64) * (log_max - log_min);
-            let omega = log_omega.exp();
-            let e_prime = material.storage_modulus(omega);
-            let e_double_prime = material.loss_modulus(omega);
-            let tan_delta = material.loss_tangent(omega);
-            let magnitude = (e_prime * e_prime + e_double_prime * e_double_prime).sqrt();
-            FrequencySweepPoint {
-                omega,
-                storage: e_prime,
-                loss: e_double_prime,
-                tan_delta,
-                magnitude,
-            }
-        })
-        .collect()
 }

@@ -2,9 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
+use super::functions::{
+    add3, cross3, dot3, exp_so3, identity3, inv3, len3, mat_mul3, mat_vec3, normalize3, outer3,
+    scale3, sub3,
+};
 /// A discrete Lagrangian L_d(q_k, q_{k+1}, h) that approximates the action
 /// integral over one time step.
 ///
@@ -34,7 +35,6 @@ impl DiscreteLagrangian {
     ///
     /// L_d(q_k, q_{k+1}, h) = h * \[T(v_mid) - V(q_mid)\]
     /// where v_mid = (q_{k+1} - q_k)/h, q_mid = (q_k + q_{k+1})/2.
-    #[allow(dead_code)]
     pub fn evaluate(&self, q_k: [f64; 3], q_kp1: [f64; 3], h: f64) -> f64 {
         let v_mid = scale3(sub3(q_kp1, q_k), 1.0 / h);
         let q_mid = scale3(add3(q_k, q_kp1), 0.5);
@@ -46,7 +46,6 @@ impl DiscreteLagrangian {
     /// Compute D1 L_d: partial derivative with respect to q_k.
     ///
     /// Uses finite differences for generality.
-    #[allow(dead_code)]
     pub fn d1(&self, q_k: [f64; 3], q_kp1: [f64; 3], h: f64) -> [f64; 3] {
         let eps = 1e-7;
         let mut result = [0.0; 3];
@@ -61,7 +60,6 @@ impl DiscreteLagrangian {
         result
     }
     /// Compute D2 L_d: partial derivative with respect to q_{k+1}.
-    #[allow(dead_code)]
     pub fn d2(&self, q_k: [f64; 3], q_kp1: [f64; 3], h: f64) -> [f64; 3] {
         let eps = 1e-7;
         let mut result = [0.0; 3];
@@ -129,7 +127,6 @@ impl HolonomicConstraint {
         }
     }
     /// Evaluate the constraint value g(q) given positions.
-    #[allow(dead_code)]
     pub fn evaluate(&self, positions: &[[f64; 3]]) -> f64 {
         match self.kind {
             HolonomicKind::Distance | HolonomicKind::RigidRod => {
@@ -153,7 +150,6 @@ impl HolonomicConstraint {
     /// Compute the constraint Jacobian dg/dq for the involved bodies.
     ///
     /// Returns a vector of (body_index, gradient) pairs.
-    #[allow(dead_code)]
     pub fn jacobian(&self, positions: &[[f64; 3]]) -> Vec<(usize, [f64; 3])> {
         match self.kind {
             HolonomicKind::Distance | HolonomicKind::RigidRod => {
@@ -215,7 +211,6 @@ impl DiscreteEulerLagrange {
         }
     }
     /// Compute the DEL residual: D2 L_d(q_{k-1}, q_k, h) + D1 L_d(q_k, q_{k+1}, h).
-    #[allow(dead_code)]
     pub fn residual(&self, q_km1: [f64; 3], q_k: [f64; 3], q_kp1: [f64; 3]) -> [f64; 3] {
         let d2_prev = self.lagrangian.d2(q_km1, q_k, self.dt);
         let d1_next = self.lagrangian.d1(q_k, q_kp1, self.dt);
@@ -224,7 +219,6 @@ impl DiscreteEulerLagrange {
     /// Solve for q_{k+1} given q_{k-1} and q_k using Newton's method.
     ///
     /// Returns the converged q_{k+1} and the number of iterations used.
-    #[allow(dead_code)]
     pub fn solve(&self, q_km1: [f64; 3], q_k: [f64; 3]) -> ([f64; 3], usize) {
         let mut q_kp1 = add3(q_k, sub3(q_k, q_km1));
         let eps = 1e-7;
@@ -253,7 +247,6 @@ impl DiscreteEulerLagrange {
         (q_kp1, self.max_iter)
     }
     /// Step forward from two configurations: q_{k-1}, q_k -> q_{k+1}.
-    #[allow(dead_code)]
     pub fn step(&self, q_km1: [f64; 3], q_k: [f64; 3]) -> [f64; 3] {
         self.solve(q_km1, q_k).0
     }
@@ -293,7 +286,6 @@ impl SymplecticPRK {
         }
     }
     /// Perform one step of the SPRK method.
-    #[allow(dead_code)]
     pub fn step(
         &self,
         q: [f64; 3],
@@ -340,7 +332,6 @@ impl NBodyVariational {
         }
     }
     /// Compute gravitational force on particle i from all others.
-    #[allow(dead_code)]
     pub fn gravitational_force(&self, i: usize, positions: &[[f64; 3]]) -> [f64; 3] {
         let mut force = [0.0; 3];
         let n = self.masses.len();
@@ -358,7 +349,6 @@ impl NBodyVariational {
         force
     }
     /// Perform one Stormer-Verlet step for the N-body system.
-    #[allow(dead_code)]
     pub fn step(
         &self,
         positions: &[[f64; 3]],
@@ -366,31 +356,32 @@ impl NBodyVariational {
     ) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
         let n = self.masses.len();
         let mut v_half = Vec::with_capacity(n);
-        for i in 0..n {
+        for (i, (vel, mass)) in velocities.iter().zip(self.masses.iter()).enumerate() {
             let f = self.gravitational_force(i, positions);
-            let a = scale3(f, 1.0 / self.masses[i]);
-            v_half.push(add3(velocities[i], scale3(a, 0.5 * self.dt)));
+            let a = scale3(f, 1.0 / mass);
+            v_half.push(add3(*vel, scale3(a, 0.5 * self.dt)));
         }
-        let mut q_new = Vec::with_capacity(n);
-        for i in 0..n {
-            q_new.push(add3(positions[i], scale3(v_half[i], self.dt)));
-        }
+        let q_new: Vec<[f64; 3]> = positions
+            .iter()
+            .zip(v_half.iter())
+            .map(|(pos, vh)| add3(*pos, scale3(*vh, self.dt)))
+            .collect();
         let mut v_new = Vec::with_capacity(n);
-        for i in 0..n {
+        for (i, (vh, mass)) in v_half.iter().zip(self.masses.iter()).enumerate() {
             let f = self.gravitational_force(i, &q_new);
-            let a = scale3(f, 1.0 / self.masses[i]);
-            v_new.push(add3(v_half[i], scale3(a, 0.5 * self.dt)));
+            let a = scale3(f, 1.0 / mass);
+            v_new.push(add3(*vh, scale3(a, 0.5 * self.dt)));
         }
         (q_new, v_new)
     }
     /// Compute total energy (kinetic + gravitational potential).
-    #[allow(dead_code)]
     pub fn total_energy(&self, positions: &[[f64; 3]], velocities: &[[f64; 3]]) -> f64 {
         let n = self.masses.len();
-        let mut ke = 0.0;
-        for i in 0..n {
-            ke += 0.5 * self.masses[i] * dot3(velocities[i], velocities[i]);
-        }
+        let ke: f64 = velocities
+            .iter()
+            .zip(self.masses.iter())
+            .map(|(v, m)| 0.5 * m * dot3(*v, *v))
+            .sum();
         let mut pe = 0.0;
         for i in 0..n {
             for j in (i + 1)..n {
@@ -402,16 +393,14 @@ impl NBodyVariational {
         ke + pe
     }
     /// Compute total linear momentum.
-    #[allow(dead_code)]
     pub fn total_momentum(&self, velocities: &[[f64; 3]]) -> [f64; 3] {
         let mut p = [0.0; 3];
-        for i in 0..self.masses.len() {
-            p = add3(p, scale3(velocities[i], self.masses[i]));
+        for (vel, mass) in velocities.iter().zip(self.masses.iter()) {
+            p = add3(p, scale3(*vel, *mass));
         }
         p
     }
     /// Compute total angular momentum.
-    #[allow(dead_code)]
     pub fn total_angular_momentum(
         &self,
         positions: &[[f64; 3]],
@@ -444,7 +433,6 @@ impl SymplecticVerlet {
     /// Perform one step: (q, p) -> (q', p') given a force function.
     ///
     /// The force function takes a position and returns the force.
-    #[allow(dead_code)]
     pub fn step(
         &self,
         q: [f64; 3],
@@ -459,7 +447,6 @@ impl SymplecticVerlet {
         (q_new, p_new)
     }
     /// Integrate over multiple steps and return the trajectory.
-    #[allow(dead_code)]
     pub fn integrate(
         &self,
         q0: [f64; 3],
@@ -480,7 +467,6 @@ impl SymplecticVerlet {
         trajectory
     }
     /// Compute the Hamiltonian H = |p|^2/(2m) + V(q) for energy monitoring.
-    #[allow(dead_code)]
     pub fn hamiltonian(&self, p: [f64; 3], potential: f64) -> f64 {
         dot3(p, p) / (2.0 * self.mass) + potential
     }
@@ -506,7 +492,6 @@ impl LieGroupIntegrator {
     ///   I * omega_{k+1} = I * omega_k + h * (I*omega_mid) x omega_mid
     ///
     /// For torque-free motion, angular momentum is conserved.
-    #[allow(dead_code)]
     pub fn step_free(&self, state: &LieGroupState) -> LieGroupState {
         let omega = state.omega_body;
         let inertia = state.inertia;
@@ -532,7 +517,6 @@ impl LieGroupIntegrator {
         }
     }
     /// Step with external torque (body frame).
-    #[allow(dead_code)]
     pub fn step_with_torque(&self, state: &LieGroupState, torque_body: [f64; 3]) -> LieGroupState {
         let omega = state.omega_body;
         let inertia = state.inertia;
@@ -559,7 +543,6 @@ impl LieGroupIntegrator {
         }
     }
     /// Integrate over multiple steps for a free rigid body.
-    #[allow(dead_code)]
     pub fn integrate_free(&self, initial: &LieGroupState, steps: usize) -> Vec<LieGroupState> {
         let mut trajectory = Vec::with_capacity(steps + 1);
         trajectory.push(initial.clone());
@@ -610,7 +593,6 @@ impl DiscreteNullSpace {
     /// distance constraint between two particles.
     ///
     /// Returns corrected positions for body_a and body_b.
-    #[allow(dead_code)]
     pub fn project_distance(
         &self,
         q_a: [f64; 3],
@@ -643,14 +625,12 @@ impl DiscreteNullSpace {
         (qa, qb)
     }
     /// Project positions onto a plane constraint n.q = d.
-    #[allow(dead_code)]
     pub fn project_plane(&self, q: [f64; 3], normal: [f64; 3], offset: f64) -> [f64; 3] {
         let error = dot3(normal, q) - offset;
         sub3(q, scale3(normal, error))
     }
     /// Compute the null space projection matrix P = I - G^T (G G^T)^{-1} G
     /// for a single constraint gradient.
-    #[allow(dead_code)]
     pub fn null_space_projector(&self, gradient: [f64; 3]) -> [[f64; 3]; 3] {
         let g_norm2 = dot3(gradient, gradient);
         if g_norm2 < 1e-30 {
@@ -697,7 +677,6 @@ impl LieGroupState {
         }
     }
     /// Compute the body-frame angular momentum L = I * omega.
-    #[allow(dead_code)]
     pub fn angular_momentum(&self) -> [f64; 3] {
         [
             self.inertia[0] * self.omega_body[0],
@@ -706,7 +685,6 @@ impl LieGroupState {
         ]
     }
     /// Compute the rotational kinetic energy T = 0.5 * omega^T I omega.
-    #[allow(dead_code)]
     pub fn kinetic_energy(&self) -> f64 {
         0.5 * (self.inertia[0] * self.omega_body[0] * self.omega_body[0]
             + self.inertia[1] * self.omega_body[1] * self.omega_body[1]
@@ -754,7 +732,6 @@ impl MomentumMap {
         Self { n_particles }
     }
     /// Compute the total linear momentum.
-    #[allow(dead_code)]
     pub fn linear_momentum(&self, momenta: &[[f64; 3]]) -> [f64; 3] {
         let mut total = [0.0; 3];
         for p in momenta.iter().take(self.n_particles) {
@@ -765,7 +742,6 @@ impl MomentumMap {
     /// Compute the total angular momentum about the origin.
     ///
     /// L = sum_i (q_i x p_i)
-    #[allow(dead_code)]
     pub fn angular_momentum(&self, positions: &[[f64; 3]], momenta: &[[f64; 3]]) -> [f64; 3] {
         let mut total = [0.0; 3];
         for i in 0..self.n_particles {
@@ -774,7 +750,6 @@ impl MomentumMap {
         total
     }
     /// Compute angular momentum about a given center.
-    #[allow(dead_code)]
     pub fn angular_momentum_about(
         &self,
         positions: &[[f64; 3]],
@@ -789,7 +764,6 @@ impl MomentumMap {
         total
     }
     /// Compute the center of mass.
-    #[allow(dead_code)]
     pub fn center_of_mass(&self, positions: &[[f64; 3]], masses: &[f64]) -> [f64; 3] {
         let mut com = [0.0; 3];
         let mut total_mass = 0.0;
@@ -803,7 +777,6 @@ impl MomentumMap {
         scale3(com, 1.0 / total_mass)
     }
     /// Compute total kinetic energy.
-    #[allow(dead_code)]
     pub fn kinetic_energy(&self, momenta: &[[f64; 3]], masses: &[f64]) -> f64 {
         let mut ke = 0.0;
         for i in 0..self.n_particles {
@@ -812,7 +785,6 @@ impl MomentumMap {
         ke
     }
     /// Check if linear momentum is conserved between two snapshots.
-    #[allow(dead_code)]
     pub fn is_linear_momentum_conserved(
         &self,
         momenta_before: &[[f64; 3]],
@@ -824,7 +796,6 @@ impl MomentumMap {
         len3(sub3(p_before, p_after)) < tol
     }
     /// Check if angular momentum is conserved between two snapshots.
-    #[allow(dead_code)]
     pub fn is_angular_momentum_conserved(
         &self,
         positions_before: &[[f64; 3]],
@@ -855,7 +826,6 @@ impl FourthOrderVariational {
         Self { mass, dt }
     }
     /// Yoshida coefficients for fourth-order composition.
-    #[allow(dead_code)]
     fn yoshida_coefficients() -> [f64; 3] {
         let cbrt2 = 2.0_f64.cbrt();
         let w1 = 1.0 / (2.0 - cbrt2);
@@ -863,7 +833,6 @@ impl FourthOrderVariational {
         [w1, w0, w1]
     }
     /// Perform a leapfrog sub-step with given time step fraction.
-    #[allow(dead_code)]
     fn leapfrog_substep(
         &self,
         q: [f64; 3],
@@ -879,7 +848,6 @@ impl FourthOrderVariational {
         (q_new, p_new)
     }
     /// Perform one fourth-order step.
-    #[allow(dead_code)]
     pub fn step(
         &self,
         q: [f64; 3],
@@ -898,7 +866,6 @@ impl FourthOrderVariational {
         (q_cur, p_cur)
     }
     /// Integrate over multiple steps.
-    #[allow(dead_code)]
     pub fn integrate(
         &self,
         q0: [f64; 3],
@@ -945,7 +912,6 @@ impl VariationalCollision {
     ///
     /// The plane is defined by normal `n` and offset `d` (n.q >= d).
     /// Returns (corrected_position, corrected_momentum).
-    #[allow(dead_code)]
     pub fn collide_plane(
         &self,
         q: [f64; 3],
@@ -983,8 +949,6 @@ impl VariationalCollision {
     /// Apply variational collision between two particles.
     ///
     /// Returns corrected (q_a, p_a, q_b, p_b).
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
     pub fn collide_particles(
         &self,
         q_a: [f64; 3],
@@ -1020,7 +984,6 @@ impl VariationalCollision {
         (qa_new, pa_new, qb_new, pb_new)
     }
     /// Compute the energy change due to collision (should be <= 0 for valid restitution).
-    #[allow(dead_code)]
     pub fn energy_change(&self, p_before: [f64; 3], p_after: [f64; 3], mass: f64) -> f64 {
         let ke_before = dot3(p_before, p_before) / (2.0 * mass);
         let ke_after = dot3(p_after, p_after) / (2.0 * mass);
@@ -1042,19 +1005,16 @@ impl DiscreteLegendreTransform {
         Self { lagrangian, dt }
     }
     /// Left discrete Legendre transform: p_k^- = -D1 L_d(q_k, q_{k+1}).
-    #[allow(dead_code)]
     pub fn left_transform(&self, q_k: [f64; 3], q_kp1: [f64; 3]) -> [f64; 3] {
         let d1 = self.lagrangian.d1(q_k, q_kp1, self.dt);
         scale3(d1, -1.0)
     }
     /// Right discrete Legendre transform: p_{k+1}^+ = D2 L_d(q_k, q_{k+1}).
-    #[allow(dead_code)]
     pub fn right_transform(&self, q_k: [f64; 3], q_kp1: [f64; 3]) -> [f64; 3] {
         self.lagrangian.d2(q_k, q_kp1, self.dt)
     }
     /// Matching condition: at the DEL solution, p_k^+ = p_k^-.
     /// Returns the mismatch.
-    #[allow(dead_code)]
     pub fn momentum_mismatch(&self, q_km1: [f64; 3], q_k: [f64; 3], q_kp1: [f64; 3]) -> [f64; 3] {
         let p_plus = self.right_transform(q_km1, q_k);
         let p_minus = self.left_transform(q_k, q_kp1);
@@ -1081,7 +1041,6 @@ impl VariationalMidpoint {
     ///
     /// Given q_k and v_k, compute q_{k+1} and v_{k+1}.
     /// Uses the midpoint rule: force evaluated at midpoint.
-    #[allow(dead_code)]
     pub fn step(
         &self,
         q: [f64; 3],
@@ -1096,7 +1055,6 @@ impl VariationalMidpoint {
         (q_new, v_new)
     }
     /// Compute the discrete action over a trajectory.
-    #[allow(dead_code)]
     pub fn discrete_action(
         &self,
         trajectory: &[[f64; 3]],
@@ -1146,7 +1104,6 @@ impl ConstrainedVariationalIntegrator {
         }
     }
     /// Compute unconstrained update for particle i: q_{k+1} = 2*q_k - q_{k-1} + h^2*f/m.
-    #[allow(dead_code)]
     fn unconstrained_step(
         &self,
         q_km1: [f64; 3],
@@ -1162,7 +1119,6 @@ impl ConstrainedVariationalIntegrator {
     ///
     /// 1. Compute unconstrained update.
     /// 2. Project onto constraint manifold iteratively.
-    #[allow(dead_code)]
     pub fn step(
         &self,
         positions_km1: &[[f64; 3]],
@@ -1208,7 +1164,6 @@ impl ConstrainedVariationalIntegrator {
         q_new
     }
     /// Compute velocity from position difference: v_k = (q_{k+1} - q_{k-1}) / (2*h).
-    #[allow(dead_code)]
     pub fn velocity(&self, q_km1: [f64; 3], q_kp1: [f64; 3]) -> [f64; 3] {
         scale3(sub3(q_kp1, q_km1), 1.0 / (2.0 * self.dt))
     }
@@ -1230,17 +1185,14 @@ impl EnergyMonitor {
         }
     }
     /// Record an energy value.
-    #[allow(dead_code)]
     pub fn record_energy(&mut self, e: f64) {
         self.energies.push(e);
     }
     /// Record a momentum magnitude.
-    #[allow(dead_code)]
     pub fn record_momentum(&mut self, p_mag: f64) {
         self.momenta.push(p_mag);
     }
     /// Compute the maximum energy drift.
-    #[allow(dead_code)]
     pub fn max_energy_drift(&self) -> f64 {
         if self.energies.is_empty() {
             return 0.0;
@@ -1252,7 +1204,6 @@ impl EnergyMonitor {
             .fold(0.0_f64, f64::max)
     }
     /// Compute the relative energy error.
-    #[allow(dead_code)]
     pub fn relative_energy_error(&self) -> f64 {
         if self.energies.is_empty() {
             return 0.0;
@@ -1264,7 +1215,6 @@ impl EnergyMonitor {
         self.max_energy_drift() / e0.abs()
     }
     /// Compute the maximum momentum drift.
-    #[allow(dead_code)]
     pub fn max_momentum_drift(&self) -> f64 {
         if self.momenta.is_empty() {
             return 0.0;
@@ -1276,7 +1226,6 @@ impl EnergyMonitor {
             .fold(0.0_f64, f64::max)
     }
     /// Check if energy is bounded (not growing).
-    #[allow(dead_code)]
     pub fn is_energy_bounded(&self, tol: f64) -> bool {
         self.max_energy_drift() < tol
     }
@@ -1304,7 +1253,6 @@ impl BackwardErrorAnalysis {
     /// For H = p^2/(2m) + k*q^2/2, the modified Hamiltonian of the
     /// symplectic Euler method is:
     ///   H_mod = H + (h/2) * k * p * q / m + O(h^2)
-    #[allow(dead_code)]
     pub fn modified_hamiltonian_harmonic(&self, q: f64, p: f64, mass: f64, stiffness: f64) -> f64 {
         let h_original = p * p / (2.0 * mass) + 0.5 * stiffness * q * q;
         let h1_correction = (self.dt / 2.0) * stiffness * p * q / mass;
@@ -1315,7 +1263,6 @@ impl BackwardErrorAnalysis {
     /// |H(q_n, p_n) - H(q_0, p_0)| <= C * h^p * t * exp(gamma * t)
     ///
     /// For exponentially long times, the error grows very slowly.
-    #[allow(dead_code)]
     pub fn energy_error_bound(&self, time: f64, _energy_scale: f64, gamma: f64) -> f64 {
         let h_p = self.dt.powi(self.order as i32);
         h_p * time * (gamma * time).exp()
@@ -1323,7 +1270,6 @@ impl BackwardErrorAnalysis {
     /// Compute the shadow Hamiltonian error: H_mod - H.
     ///
     /// Approximated by tracking energy drift over a trajectory.
-    #[allow(dead_code)]
     pub fn shadow_hamiltonian_drift(&self, energies: &[f64]) -> f64 {
         if energies.len() < 2 {
             return 0.0;
@@ -1339,7 +1285,6 @@ impl BackwardErrorAnalysis {
     ///
     /// If we halve the time step and the energy error decreases by a factor
     /// of 2^p, then the order is p.
-    #[allow(dead_code)]
     pub fn estimate_order(&self, error_h: f64, error_h_half: f64) -> f64 {
         if error_h_half.abs() < 1e-30 || error_h.abs() < 1e-30 {
             return 0.0;
@@ -1350,7 +1295,6 @@ impl BackwardErrorAnalysis {
     ///
     /// For a symplectic integrator, the phase space volume should be preserved.
     /// This measures the deviation from volume preservation using the Jacobian determinant.
-    #[allow(dead_code)]
     pub fn volume_preservation_error(&self, jacobian_det: f64) -> f64 {
         (jacobian_det - 1.0).abs()
     }
@@ -1374,7 +1318,6 @@ impl DiscreteNoether {
     ///
     /// Evaluates L_d(q_k + eps, q_{k+1} + eps) - L_d(q_k, q_{k+1}) for
     /// a small displacement eps in each direction.
-    #[allow(dead_code)]
     pub fn check_translation_invariance(
         &self,
         lagrangian: &DiscreteLagrangian,
@@ -1397,7 +1340,6 @@ impl DiscreteNoether {
         true
     }
     /// Check rotational invariance (about z-axis) of the discrete Lagrangian.
-    #[allow(dead_code)]
     pub fn check_rotation_invariance_z(
         &self,
         lagrangian: &DiscreteLagrangian,
@@ -1415,14 +1357,12 @@ impl DiscreteNoether {
     }
     /// Verify Noether conservation: given momentum map values at two time steps,
     /// check they are equal to within tolerance.
-    #[allow(dead_code)]
     pub fn verify_conservation(&self, momentum_before: [f64; 3], momentum_after: [f64; 3]) -> bool {
         len3(sub3(momentum_before, momentum_after)) < self.tol
     }
     /// Compute the discrete momentum map from the discrete Lagrangian.
     ///
     /// p_k = -D1 L_d(q_k, q_{k+1}, h) (the left discrete Legendre transform).
-    #[allow(dead_code)]
     pub fn discrete_momentum(
         &self,
         lagrangian: &DiscreteLagrangian,

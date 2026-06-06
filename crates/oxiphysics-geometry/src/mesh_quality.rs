@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,8 +5,6 @@
 //!
 //! Provides quality metrics for tetrahedral and triangular elements,
 //! mesh repair utilities, Laplacian smoothing, and 2-D edge flipping.
-
-#![allow(dead_code, missing_docs)]
 
 use std::collections::HashMap;
 
@@ -342,9 +339,8 @@ pub fn smooth_laplacian(positions: &mut [[f64; 3]], tets: &[[usize; 4]], iterati
             for k in 0..4 {
                 let vi = tet[k];
                 // Accumulate neighbour contributions
-                for j in 0..4 {
+                for (j, &vj) in tet.iter().enumerate() {
                     if j != k {
-                        let vj = tet[j];
                         sums[vi] = add3(sums[vi], positions[vj]);
                         counts[vi] += 1;
                     }
@@ -374,7 +370,7 @@ pub fn smooth_laplacian(positions: &mut [[f64; 3]], tets: &[[usize; 4]], iterati
 ///
 /// `positions` is an (x, y) 2-D position array encoded as `[f64; 3]`
 /// (z component is ignored).
-pub fn flip_edges_2d(triangles: &mut Vec<[usize; 3]>, positions: &[[f64; 3]]) -> usize {
+pub fn flip_edges_2d(triangles: &mut [[usize; 3]], positions: &[[f64; 3]]) -> usize {
     let mut flips = 0usize;
     let mut changed = true;
 
@@ -811,7 +807,6 @@ pub fn wedge_aspect_ratio(
 /// Aspect ratio of a hexahedral element.
 ///
 /// Approximated as max_edge / min_edge across the 12 edges.
-#[allow(clippy::too_many_arguments)]
 pub fn hex_aspect_ratio(
     v0: [f64; 3],
     v1: [f64; 3],
@@ -878,9 +873,8 @@ pub fn quality_guided_smoothing(
         for tet in tets.iter() {
             for k in 0..4 {
                 let vi = tet[k];
-                for j in 0..4 {
+                for (j, &vj) in tet.iter().enumerate() {
                     if j != k {
-                        let vj = tet[j];
                         sums[vi] = add3(sums[vi], positions[vj]);
                         counts[vi] += 1;
                     }

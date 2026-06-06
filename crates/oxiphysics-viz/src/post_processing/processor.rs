@@ -3,8 +3,6 @@
 
 //! High-level post-processing dispatcher (PostProcessor).
 
-#![allow(dead_code)]
-
 use super::core::{Image, PostColor};
 use super::image_filters::ChromaticAberrationEffect;
 
@@ -15,7 +13,6 @@ use super::image_filters::ChromaticAberrationEffect;
 ///
 /// Each method consumes an `&Image` and returns a new processed `Image`.  This
 /// lets callers build a per-frame pipeline without mutating the original.
-#[allow(dead_code)]
 pub struct PostProcessor {
     /// Focal distance for depth-of-field (in normalised depth units 0–1).
     pub focal_distance: f32,
@@ -33,7 +30,6 @@ pub struct PostProcessor {
     pub ca_b_shift: i32,
 }
 
-#[allow(dead_code)]
 impl PostProcessor {
     /// Construct a default `PostProcessor` with all effects disabled.
     pub fn new() -> Self {
@@ -125,7 +121,6 @@ impl PostProcessor {
     ///
     /// The returned image is `input + flare`, so it may exceed `[0, 1]` in
     /// bright regions (callers should tone-map afterwards).
-    #[allow(clippy::too_many_arguments)]
     pub fn compute_lens_flare(&self, image: &Image, flare_pos: [f32; 2]) -> Image {
         let w = image.width;
         let h = image.height;
@@ -202,7 +197,6 @@ impl PostProcessor {
     }
 }
 
-#[allow(dead_code)]
 impl Default for PostProcessor {
     fn default() -> Self {
         Self::new()

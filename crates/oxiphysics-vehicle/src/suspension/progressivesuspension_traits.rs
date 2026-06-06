@@ -12,8 +12,6 @@
 use oxiphysics_core::math::Real;
 
 use super::functions::SuspensionModel;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::ProgressiveSuspension;
 
 impl Default for ProgressiveSuspension {

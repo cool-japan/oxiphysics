@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     bar_uncertainty, bootstrap_uncertainty, fep_bar, fep_convergence_trace, fep_zwanzig,
     mbar_weights, natural_spline_second_deriv, thermodynamic_integration, ti_uncertainty,
@@ -13,7 +10,6 @@ use super::types::{UmbrellaWindow, WhamWindow2D};
 
 /// Evaluate a natural cubic spline at position `xq` given nodes `x`, `y`, and
 /// second derivatives `m` (from [`natural_spline_second_deriv`]).
-#[allow(dead_code)]
 pub fn spline_eval(x: &[f64], y: &[f64], m: &[f64], xq: f64) -> f64 {
     let n = x.len();
     if n == 0 {
@@ -23,8 +19,8 @@ pub fn spline_eval(x: &[f64], y: &[f64], m: &[f64], xq: f64) -> f64 {
         return y[0];
     }
     let mut idx = 0usize;
-    for i in 0..n - 1 {
-        if xq >= x[i] {
+    for (i, &xi) in x[..n - 1].iter().enumerate() {
+        if xq >= xi {
             idx = i;
         }
     }
@@ -44,7 +40,6 @@ pub fn spline_eval(x: &[f64], y: &[f64], m: &[f64], xq: f64) -> f64 {
 /// # Arguments
 /// * `lambdas`    – λ values (must be strictly increasing, length ≥ 2).
 /// * `du_dlambda` – ⟨∂U/∂λ⟩ values at each λ.
-#[allow(dead_code)]
 pub fn ti_spline(lambdas: &[f64], du_dlambda: &[f64]) -> f64 {
     let n = lambdas.len();
     if n < 2 || du_dlambda.len() != n {
@@ -68,7 +63,6 @@ pub fn ti_spline(lambdas: &[f64], du_dlambda: &[f64]) -> f64 {
 /// Overlap diagnostic: fraction of forward samples with |ΔU| < 2kT.
 ///
 /// A value close to 1 indicates good phase-space overlap (BAR is reliable).
-#[allow(dead_code)]
 pub fn bar_overlap_fraction(du_forward: &[f64], kt: f64) -> f64 {
     if du_forward.is_empty() {
         return 0.0;
@@ -88,7 +82,6 @@ pub fn bar_overlap_fraction(du_forward: &[f64], kt: f64) -> f64 {
 /// ```text
 /// ΔF_corr = ΔF_BAR - (σ²_f / n₀ - σ²_b / n₁) / 2kT
 /// ```
-#[allow(dead_code)]
 pub fn bar_richardson(du_forward: &[f64], du_backward: &[f64], kt: f64, tol: f64) -> f64 {
     let df = fep_bar(du_forward, du_backward, kt, tol);
     let n0 = du_forward.len() as f64;
@@ -102,7 +95,6 @@ pub fn bar_richardson(du_forward: &[f64], du_backward: &[f64], kt: f64, tol: f64
     df - correction
 }
 /// Sample variance (unbiased, n-1).
-#[allow(dead_code)]
 pub(super) fn variance(xs: &[f64]) -> f64 {
     let n = xs.len();
     if n < 2 {
@@ -112,8 +104,6 @@ pub(super) fn variance(xs: &[f64]) -> f64 {
     xs.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (n - 1) as f64
 }
 /// Two-dimensional WHAM: returns flat (bins×bins) PMF grid as `Vec<(xi1, xi2, pmf)>`.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn wham_2d_pmf(
     windows: &mut [WhamWindow2D],
     bins: usize,
@@ -204,15 +194,15 @@ pub fn wham_2d_pmf(
         }
     }
     let pmf_min = pmf_vals.iter().cloned().fold(f64::INFINITY, f64::min);
-    for b1 in 0..bins {
-        for b2 in 0..bins {
+    for (b1, &c1) in centers1.iter().enumerate().take(bins) {
+        for (b2, &c2) in centers2.iter().enumerate().take(bins) {
             let b = b1 * bins + b2;
             let pmf = if pmf_vals[b].is_finite() {
                 pmf_vals[b] - pmf_min
             } else {
                 0.0
             };
-            result.push((centers1[b1], centers2[b2], pmf));
+            result.push((c1, c2, pmf));
         }
     }
     result
@@ -224,7 +214,6 @@ pub fn wham_2d_pmf(
 /// # Arguments
 /// * `u_kn`   – `K × N` reduced potential energies (state × sample).
 /// * `k_ref`  – index of the reference state.
-#[allow(dead_code)]
 pub fn mbar_delta_u_matrix(u_kn: &[Vec<f64>], k_ref: usize) -> Vec<Vec<f64>> {
     let k_states = u_kn.len();
     if k_states == 0 {
@@ -245,7 +234,6 @@ pub fn mbar_delta_u_matrix(u_kn: &[Vec<f64>], k_ref: usize) -> Vec<Vec<f64>> {
 /// * `n_k`   – samples per state.
 /// * `f`     – converged MBAR free energies.
 /// * `k`, `l` – state indices.
-#[allow(dead_code)]
 pub fn mbar_df_uncertainty(u_kn: &[Vec<f64>], n_k: &[usize], f: &[f64], k: usize, l: usize) -> f64 {
     let weights_k = mbar_weights(u_kn, n_k, f);
     let weights_l = mbar_weights(u_kn, n_k, f);
@@ -263,7 +251,6 @@ pub fn mbar_df_uncertainty(u_kn: &[Vec<f64>], n_k: &[usize], f: &[f64], k: usize
 /// Build a uniform umbrella-sampling schedule.
 ///
 /// Returns a `Vec<UmbrellaWindow>` spaced `spacing` apart from `xi_min` to `xi_max`.
-#[allow(dead_code)]
 pub fn umbrella_schedule(
     xi_min: f64,
     xi_max: f64,
@@ -288,7 +275,6 @@ pub fn umbrella_schedule(
 /// suitable for well-overlapping windows.
 ///
 /// Returns `Vec<(bin_center, pmf)>` with PMF shifted so minimum = 0.
-#[allow(dead_code)]
 pub fn umbrella_pmf_simple(
     windows: &[UmbrellaWindow],
     bins: usize,
@@ -340,7 +326,6 @@ pub fn umbrella_pmf_simple(
 ///
 /// Splits the interval \[0, 1\] into `n_elec` electrostatics windows followed by
 /// `n_vdw` van-der-Waals windows (GROMACS-style decoupling order).
-#[allow(dead_code)]
 pub fn alchemical_lambda_schedule(n_elec: usize, n_vdw: usize) -> Vec<f64> {
     let n_total = n_elec + n_vdw;
     if n_total == 0 {
@@ -365,7 +350,6 @@ pub fn alchemical_lambda_schedule(n_elec: usize, n_vdw: usize) -> Vec<f64> {
 /// * `sigma`   – LJ size parameter.
 /// * `alpha`   – soft-core α parameter (typically 0.5).
 /// * `p`       – soft-core exponent (typically 1).
-#[allow(dead_code)]
 pub fn soft_core_lj_dlambda_p(
     r: f64,
     lambda: f64,
@@ -396,7 +380,6 @@ pub fn soft_core_lj_dlambda_p(
 ///
 /// Convenience wrapper: given per-window du_forward/du_backward arrays and λ values,
 /// returns cumulative ΔF profile.
-#[allow(dead_code)]
 pub fn alchemical_bar_profile(
     du_forwards: &[Vec<f64>],
     du_backwards: &[Vec<f64>],
@@ -415,7 +398,6 @@ pub fn alchemical_bar_profile(
     cumulative
 }
 /// Alchemical free energy uncertainty profile: propagated BAR uncertainties.
-#[allow(dead_code)]
 pub fn alchemical_bar_uncertainty_profile(
     du_forwards: &[Vec<f64>],
     du_backwards: &[Vec<f64>],
@@ -444,7 +426,6 @@ pub fn alchemical_bar_uncertainty_profile(
 ///
 /// Step 1: turn off electrostatics (λ: 0→1), step 2: turn off vdW (λ: 0→1).
 /// Accepts `ti_elec` and `ti_vdw` as `(lambdas, du_dlambda)` pairs.
-#[allow(dead_code)]
 pub fn solvation_free_energy(
     ti_elec: (&[f64], &[f64]),
     ti_vdw: (&[f64], &[f64]),
@@ -455,7 +436,6 @@ pub fn solvation_free_energy(
     (df_elec, df_vdw, df_total)
 }
 /// Solvation free energy uncertainty (propagated TI trapezoid errors).
-#[allow(dead_code)]
 pub fn solvation_free_energy_uncertainty(
     ti_elec: (&[f64], &[f64], &[f64]),
     ti_vdw: (&[f64], &[f64], &[f64]),
@@ -469,19 +449,16 @@ pub fn solvation_free_energy_uncertainty(
 /// μ_ex = −kT ln⟨exp(−ΔU_ins / kT)⟩
 ///
 /// where `du_ins` contains the energy change upon inserting a test particle.
-#[allow(dead_code)]
 pub fn widom_insertion(du_ins: &[f64], kt: f64) -> f64 {
     fep_zwanzig(du_ins, kt)
 }
 /// Widom insertion uncertainty via bootstrap (seed 42).
-#[allow(dead_code)]
 pub fn widom_insertion_uncertainty(du_ins: &[f64], kt: f64, n_boot: usize) -> f64 {
     bootstrap_uncertainty(du_ins, n_boot, kt, 42)
 }
 /// Exponential moving average of |ΔF| blocks for convergence assessment.
 ///
 /// Returns a smoothed trajectory of block-wise free energies.
-#[allow(dead_code)]
 pub fn ema_fep_convergence(du_samples: &[f64], n_blocks: usize, kt: f64, alpha: f64) -> Vec<f64> {
     let trace = fep_convergence_trace(du_samples, n_blocks, kt);
     if trace.is_empty() {
@@ -501,7 +478,6 @@ pub fn ema_fep_convergence(du_samples: &[f64], n_blocks: usize, kt: f64, alpha: 
 /// Uses the analytical estimate: ΔT ≈ T_min · 2·√(n_DOF) · √(−ln p_accept)
 ///
 /// where `n_dof` is the effective number of degrees of freedom.
-#[allow(dead_code)]
 pub fn remd_suggest_temperature_spacing(t_min: f64, n_dof: f64, p_accept: f64) -> f64 {
     if p_accept <= 0.0 || p_accept >= 1.0 || n_dof <= 0.0 {
         return 0.0;
@@ -511,7 +487,6 @@ pub fn remd_suggest_temperature_spacing(t_min: f64, n_dof: f64, p_accept: f64) -
 /// REMD free energy across all replicas via cumulative TI-like integration.
 ///
 /// Each replica pair contributes − ln(p_swap) / β_diff.
-#[allow(dead_code)]
 pub fn remd_cumulative_free_energy(acceptance_ratios: &[f64], temperatures: &[f64]) -> Vec<f64> {
     let n = acceptance_ratios
         .len()
@@ -540,7 +515,6 @@ pub fn remd_cumulative_free_energy(acceptance_ratios: &[f64], temperatures: &[f6
 /// ```
 ///
 /// Returns normalised probability distribution at `t_target`.
-#[allow(dead_code)]
 pub fn histogram_reweight_temperature(
     energies: &[f64],
     counts: &[usize],
@@ -564,7 +538,6 @@ pub fn histogram_reweight_temperature(
     probs
 }
 /// Shannon entropy of a discrete probability distribution.
-#[allow(dead_code)]
 pub fn shannon_entropy(probs: &[f64]) -> f64 {
     probs
         .iter()
@@ -575,7 +548,6 @@ pub fn shannon_entropy(probs: &[f64]) -> f64 {
 /// Approximate heat capacity from energy histogram at temperature `t`.
 ///
 /// C_V = (⟨E²⟩ − ⟨E⟩²) / (kT²)
-#[allow(dead_code)]
 pub fn heat_capacity_from_histogram(energies: &[f64], probs: &[f64], t: f64) -> f64 {
     let kb = 0.008_314_462_618_f64;
     let n = energies.len().min(probs.len());

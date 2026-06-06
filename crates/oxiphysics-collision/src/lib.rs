@@ -6,9 +6,6 @@
 //! Provides broadphase (brute force, sweep-and-prune, BVH), narrowphase
 //! (GJK, EPA, specialized sphere/box/capsule tests), and contact manifold
 //! generation.
-#![allow(missing_docs)]
-#![allow(ambiguous_glob_reexports)]
-#![allow(dead_code)]
 
 mod error;
 pub use error::*;
@@ -61,13 +58,25 @@ pub use contact_graph::{
     speculative_contact, speculative_impulse,
 };
 
-#[allow(missing_docs)]
+/// Persistent contact manifold caching and warm-starting for stable simulation.
 pub mod manifold_cache;
-pub use manifold_cache::*;
+pub use manifold_cache::{
+    CachingStrategy, ContactIsland, ContactManifoldCache, ContactPointId, ManifoldCompressor,
+    ManifoldLifetimeManager, ManifoldMetrics, ManifoldPointMatcher, ManifoldReduction,
+    PersistentManifold, age_cache_warm_start, age_manifold_warm_start, age_warm_start,
+    apply_position_corrections, baumgarte_correction, baumgarte_correction_slop,
+    build_contact_islands, compute_manifold_metrics, find_match_with_strategy,
+};
 
-#[allow(missing_docs)]
+/// Separating Axis Theorem (SAT) collision detection for OBBs and convex shapes.
 pub mod sat_collision;
-pub use sat_collision::*;
+pub use sat_collision::{
+    Capsule as SatCapsule, ContactFeature, ContactManifoldBuilder, ConvexPolyhedraSat,
+    ConvexPolyhedron, ConvexPolytope, Obb, ObbBvh, ObbBvhNode, ObbCapsuleCollision, ObbCollision,
+    ObbTree, ObbTriangleCollision, PolyhedraContact, PolytopeCollision, SatAxisCache, SatContact,
+    SatContactPointGenerator, closest_points_on_segments, edge_edge_contact, obb_bvh_pair_query,
+    obb_overlap_on_axis, obb_project,
+};
 
 #[cfg(test)]
 mod prop_tests {

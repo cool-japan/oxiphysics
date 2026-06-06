@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -148,13 +147,13 @@ impl NeuralLayer {
                 let in_sz = input.len();
                 let out_sz = self.output_size;
                 let mut out = vec![0.0; out_sz];
-                for j in 0..out_sz {
+                for (j, out_val) in out.iter_mut().enumerate() {
                     let mut acc = self.biases.get(j).copied().unwrap_or(0.0);
-                    for i in 0..in_sz {
+                    for (i, &inp) in input.iter().enumerate() {
                         let w = self.weights.get(j * in_sz + i).copied().unwrap_or(0.0);
-                        acc += w * input[i];
+                        acc += w * inp;
                     }
-                    out[j] = acc;
+                    *out_val = acc;
                 }
                 out
             }

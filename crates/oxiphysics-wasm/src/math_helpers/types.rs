@@ -1,8 +1,6 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
 use super::functions::*;
 use crate::types::{QuatWasm, TransformWasm, Vec3Wasm};
 use serde::{Deserialize, Serialize};
@@ -168,7 +166,6 @@ impl JsVec3 {
     }
 }
 /// A 3-D ray defined by an origin and a (non-normalized) direction.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ray {
     /// Ray origin.
@@ -176,7 +173,6 @@ pub struct Ray {
     /// Ray direction (need not be unit-length).
     pub direction: [f64; 3],
 }
-#[allow(dead_code)]
 impl Ray {
     /// Create a new ray.
     pub fn new(origin: [f64; 3], direction: [f64; 3]) -> Self {
@@ -653,9 +649,7 @@ impl JsQuat {
     }
 }
 /// Collection of common easing functions mapping `t ∈ \[0, 1\]` to `\[0, 1\]`.
-#[allow(dead_code)]
 pub struct Easing;
-#[allow(dead_code)]
 impl Easing {
     /// Linear (no easing).
     pub fn linear(t: f64) -> f64 {
@@ -771,10 +765,8 @@ impl Easing {
 ///
 /// Stored as `\[f64; 16\]` in column-major order:
 /// `m\[col * 4 + row\]`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Mat4(pub [f64; 16]);
-#[allow(dead_code)]
 impl Mat4 {
     /// Identity matrix.
     pub fn identity() -> Self {
@@ -918,7 +910,6 @@ impl Mat4 {
         ])
     }
     /// Build an orthographic projection matrix (right-handed, depth 0..1 NDC).
-    #[allow(clippy::too_many_arguments)]
     pub fn orthographic(left: f64, right: f64, bottom: f64, top: f64, near: f64, far: f64) -> Self {
         let rl = 1.0 / (right - left);
         let tb = 1.0 / (top - bottom);
@@ -978,13 +969,11 @@ impl Mat4 {
 ///
 /// Each plane is represented as `\[nx, ny, nz, d\]` where the plane equation is
 /// `nx*x + ny*y + nz*z + d >= 0` for points inside.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Frustum {
     /// Six planes: [left, right, bottom, top, near, far].
     pub planes: [[f64; 4]; 6],
 }
-#[allow(dead_code)]
 impl Frustum {
     /// Extract frustum planes from a combined view-projection matrix.
     pub fn from_view_proj(vp: &Mat4) -> Self {

@@ -11,8 +11,6 @@
 //! - DNA origami scaffold routing
 //! - Melting temperature prediction (nearest-neighbor thermodynamics)
 
-#![allow(dead_code)]
-
 /// Physical constants used in DNA simulation.
 pub mod constants {
     /// Boltzmann constant in kcal/(mol·K).

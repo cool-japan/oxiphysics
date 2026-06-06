@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,8 +5,6 @@
 //!
 //! Implements bond-based (PMB) and ordinary state-based peridynamic models,
 //! crack tracking, fracture energy computation, and convergence helpers.
-
-#![allow(dead_code)]
 
 // ── Vector helpers ────────────────────────────────────────────────────────────
 
@@ -36,6 +33,7 @@ fn scale3(v: [f64; 3], s: f64) -> [f64; 3] {
     [v[0] * s, v[1] * s, v[2] * s]
 }
 
+#[cfg(test)]
 #[inline]
 fn normalize3(v: [f64; 3]) -> [f64; 3] {
     let len = norm3(v);
@@ -431,12 +429,12 @@ impl PdSystem {
             }
         }
 
-        for k in 0..n {
+        for (k, &bc) in broken_counts.iter().enumerate().take(n) {
             let init = self.initial_bond_count[k];
             self.particles[k].damage = if init == 0 {
                 0.0
             } else {
-                broken_counts[k] as f64 / init as f64
+                bc as f64 / init as f64
             };
         }
     }
@@ -525,7 +523,6 @@ impl PdSystem {
     /// Ordinary state-based force density for particle `i` due to particle `j`.
     ///
     /// Uses weighted volume, dilatation, and deviatoric strain.
-    #[allow(clippy::too_many_arguments)]
     pub fn osb_force_density(
         &self,
         xi: [f64; 3],

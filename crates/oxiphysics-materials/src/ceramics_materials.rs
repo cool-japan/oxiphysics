@@ -7,9 +7,6 @@
 //! resistance, sintering kinetics, grain growth, high-temperature creep,
 //! dielectric/ferroelectric behaviour, and ZrO2 transformation toughening.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 /// Universal gas constant \[J/(mol·K)\]
@@ -49,7 +46,6 @@ pub struct CeramicProperties {
 
 impl CeramicProperties {
     /// Creates a new `CeramicProperties` with all fields specified.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         young_modulus: f64,
         poisson_ratio: f64,
@@ -319,7 +315,6 @@ pub struct SinteringModel {
 
 impl SinteringModel {
     /// Creates a new `SinteringModel` with all parameters.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         neck_growth_prefactor: f64,
         neck_growth_exponent: f64,

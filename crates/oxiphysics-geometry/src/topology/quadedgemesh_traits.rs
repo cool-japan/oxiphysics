@@ -1,5 +1,3 @@
-#[allow(unused_imports)]
-use super::functions::*;
 // # QuadEdgeMesh - Trait Implementations
 //
 // This module contains trait implementations for `QuadEdgeMesh`.

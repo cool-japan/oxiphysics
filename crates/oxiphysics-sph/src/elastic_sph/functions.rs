@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
 use super::types::{ConstitutiveModel, ElasticParticle};
@@ -284,8 +283,8 @@ pub fn hourglass_control(particles: &mut [ElasticParticle], alpha_hg: f64, sound
         }
     }
     for (i, p) in particles.iter_mut().enumerate() {
-        for d in 0..3 {
-            p.acceleration[d] += corrections[i][d];
+        for (d, corr) in corrections[i].iter().enumerate() {
+            p.acceleration[d] += corr;
         }
     }
 }
@@ -352,14 +351,14 @@ pub fn elastic_wave_speed(youngs_modulus: f64, poissons_ratio: f64, density: f64
 /// * `sigma`            – Cauchy stress tensor (3×3, Pa)
 /// * `tensile_strength` – σ_c (Pa)
 pub fn fracture_criterion(sigma: [[f64; 3]; 3], tensile_strength: f64) -> bool {
-    for i in 0..3 {
+    for (i, row) in sigma.iter().enumerate() {
         let mut off_sum = 0.0f64;
-        for j in 0..3 {
+        for (j, &val) in row.iter().enumerate() {
             if j != i {
-                off_sum += sigma[i][j].abs();
+                off_sum += val.abs();
             }
         }
-        if sigma[i][i] + off_sum > tensile_strength {
+        if row[i] + off_sum > tensile_strength {
             return true;
         }
     }
@@ -958,9 +957,9 @@ mod tests_elastic_solver {
     fn test_gl_strain_symmetric() {
         let f = [[1.1, 0.05, 0.0], [0.02, 0.98, 0.0], [0.0, 0.0, 1.0]];
         let e = green_lagrange_strain(&f);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((e[i][j] - e[j][i]).abs() < 1e-12);
+        for (i, row) in e.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - e[j][i]).abs() < 1e-12);
             }
         }
     }
@@ -982,9 +981,9 @@ mod tests_elastic_solver {
             [0.0, 0.001, 0.015],
         ];
         let sigma = linear_elastic_stress(&eps, 70e9, 0.33);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((sigma[i][j] - sigma[j][i]).abs() < 1e-6);
+        for (i, row) in sigma.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - sigma[j][i]).abs() < 1e-6);
             }
         }
     }
@@ -1128,12 +1127,9 @@ mod tests_new {
         let raw = [[1.0, 3.0, 0.0], [1.0, 2.0, 0.0], [0.0, 0.0, 0.5]];
         let srt = StrainRateTensor::from_tensor(raw);
         let t = srt.tensor;
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(
-                    (t[i][j] - t[j][i]).abs() < 1e-14,
-                    "not symmetric at ({i},{j})"
-                );
+        for (i, row) in t.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - t[j][i]).abs() < 1e-14, "not symmetric at ({i},{j})");
             }
         }
     }

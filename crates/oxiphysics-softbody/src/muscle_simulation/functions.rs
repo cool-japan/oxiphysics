@@ -17,11 +17,6 @@ pub(super) fn normalize3(v: [f64; 3]) -> [f64; 3] {
         [v[0] / n, v[1] / n, v[2] / n]
     }
 }
-/// Dot product of two 3-D vectors.
-#[inline]
-pub(super) fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
 /// Vector subtraction a − b.
 #[inline]
 pub(super) fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {

@@ -1,11 +1,8 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! Standalone corotational FEM functions: polar decomposition, strain/stress
 //! computations, stiffness matrix assembly, solvers, and time-integration helpers.
-
-#![allow(clippy::needless_range_loop)]
 
 use super::math_helpers::{
     det3x3, inv3x3, inv3x3_transpose, isotropic_d_matrix, mul3x3, transpose3x3,
@@ -20,7 +17,6 @@ use super::math_helpers::{
 /// R^T * R = I and det(R) = +1.
 ///
 /// Convergence is guaranteed for non-singular F.
-#[allow(dead_code)]
 pub fn polar_decompose_r(f: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut r = f;
     for _ in 0..40 {
@@ -46,7 +42,6 @@ pub fn polar_decompose_r(f: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 }
 
 /// Compute the symmetric stretch matrix S = R^T * F given F and R.
-#[allow(dead_code)]
 pub fn polar_decompose_s(r: [[f64; 3]; 3], f: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let rt = transpose3x3(r);
     mul3x3(rt, f)
@@ -62,7 +57,6 @@ pub fn polar_decompose_s(r: [[f64; 3]; 3], f: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 ///
 /// where S = R^T * F is the symmetric stretch matrix (symmetric by construction
 /// after polar decomposition).
-#[allow(dead_code)]
 pub fn corotational_strain(r: [[f64; 3]; 3], f: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let s = polar_decompose_s(r, f);
     // sym(S) = 0.5*(S + S^T); since S should already be symmetric after polar
@@ -74,8 +68,8 @@ pub fn corotational_strain(r: [[f64; 3]; 3], f: [[f64; 3]; 3]) -> [[f64; 3]; 3] 
         }
     }
     // Subtract identity
-    for i in 0..3 {
-        eps[i][i] -= 1.0;
+    for (i, eps_row) in eps.iter_mut().enumerate() {
+        eps_row[i] -= 1.0;
     }
     eps
 }
@@ -90,7 +84,6 @@ pub fn corotational_strain(r: [[f64; 3]; 3], f: [[f64; 3]; 3]) -> [[f64; 3]; 3] 
 ///   sigma = lambda * tr(eps) * I + 2*mu * eps
 ///
 /// where lambda and mu are the Lame parameters.
-#[allow(dead_code)]
 pub fn corot_cauchy_stress(eps: [[f64; 3]; 3], lambda: f64, mu: f64) -> [[f64; 3]; 3] {
     let trace = eps[0][0] + eps[1][1] + eps[2][2];
     let mut sigma = [[0.0_f64; 3]; 3];
@@ -114,8 +107,6 @@ pub fn corot_cauchy_stress(eps: [[f64; 3]; 3], lambda: f64, mu: f64) -> [[f64; 3
 /// in row-major order as a flat array of 144 entries.
 ///
 /// Uses the classical linear tetrahedral element B-matrix.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn tet_stiffness_matrix(
     p0: [f64; 3],
     p1: [f64; 3],
@@ -149,11 +140,11 @@ pub fn tet_stiffness_matrix(
 
     // 6x12 B matrix (Voigt engineering notation: [exx,eyy,ezz,2eyz,2exz,2exy])
     let mut b = [[0.0_f64; 12]; 6];
-    for a in 0..4 {
+    for (a, g) in grad.iter().enumerate() {
         let col = a * 3;
-        let gx = grad[a][0];
-        let gy = grad[a][1];
-        let gz = grad[a][2];
+        let gx = g[0];
+        let gy = g[1];
+        let gz = g[2];
         b[0][col] = gx;
         b[1][col + 1] = gy;
         b[2][col + 2] = gz;
@@ -207,8 +198,6 @@ pub fn tet_stiffness_matrix(
 /// displacement is measured in the unrotated reference frame.
 ///
 /// Returns 4 nodal force vectors.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn corot_internal_forces(
     rest: [[f64; 3]; 4],
     deformed: [[f64; 3]; 4],
@@ -296,7 +285,6 @@ pub fn corot_internal_forces(
 ///
 /// Special case alpha = 0 gives classic Newmark-beta (beta = 0.25, gamma = 0.5).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct HhtAlphaParams {
     /// Algorithmic dissipation parameter in \[-1/3, 0\].
     pub alpha: f64,
@@ -313,7 +301,6 @@ impl HhtAlphaParams {
     /// unconditional stability:
     ///
     ///   beta = (1 - alpha)^2 / 4,  gamma = (1 - 2*alpha) / 2
-    #[allow(dead_code)]
     pub fn from_alpha(alpha: f64, dt: f64) -> Self {
         let beta = (1.0 - alpha) * (1.0 - alpha) / 4.0;
         let gamma = (1.0 - 2.0 * alpha) / 2.0;
@@ -328,7 +315,6 @@ impl HhtAlphaParams {
     /// Predict displacement and velocity at t_{n+1} from known quantities.
     ///
     /// Returned as `(u_pred, v_pred)`.
-    #[allow(dead_code)]
     pub fn predict(
         &self,
         u: &[[f64; 3]],
@@ -349,13 +335,7 @@ impl HhtAlphaParams {
     }
 
     /// Correct displacement and velocity given new acceleration a_{n+1}.
-    #[allow(dead_code)]
-    pub fn correct(
-        &self,
-        u_pred: &mut Vec<[f64; 3]>,
-        v_pred: &mut Vec<[f64; 3]>,
-        a_new: &[[f64; 3]],
-    ) {
+    pub fn correct(&self, u_pred: &mut [[f64; 3]], v_pred: &mut [[f64; 3]], a_new: &[[f64; 3]]) {
         let dt = self.dt;
         for i in 0..u_pred.len() {
             for d in 0..3 {
@@ -379,10 +359,9 @@ impl HhtAlphaParams {
 /// - `a`:    accelerations at t_n.
 /// - `dt`:   time-step.
 /// - `pinned`: nodes to keep fixed.
-#[allow(dead_code)]
 pub fn central_difference_step(
-    x: &mut Vec<[f64; 3]>,
-    v_half: &mut Vec<[f64; 3]>,
+    x: &mut [[f64; 3]],
+    v_half: &mut [[f64; 3]],
     a: &[[f64; 3]],
     dt: f64,
     pinned: &[bool],
@@ -406,7 +385,6 @@ pub fn central_difference_step(
 /// `(3*n_nodes) x (3*n_nodes)` dense matrix (row-major).
 ///
 /// Only non-zero blocks for the 4 nodes of each element are added.
-#[allow(dead_code)]
 pub fn assemble_global_stiffness(
     positions: &[[f64; 3]],
     elements: &[([usize; 4], f64, f64)], // (indices, lambda, mu)
@@ -447,7 +425,6 @@ pub fn assemble_global_stiffness(
 /// `max_iter`: maximum iterations.
 ///
 /// Returns the solution vector `x`.
-#[allow(dead_code)]
 pub fn conjugate_gradient(a_flat: &[f64], b: &[f64], tol: f64, max_iter: usize) -> Vec<f64> {
     let n = b.len();
     let mut x = vec![0.0_f64; n];
@@ -491,7 +468,6 @@ pub fn conjugate_gradient(a_flat: &[f64], b: &[f64], tol: f64, max_iter: usize) 
 // ---------------------------------------------------------------------------
 
 /// Compute the signed volume of a tetrahedron given its four vertex positions.
-#[allow(dead_code)]
 pub fn tet_signed_volume(p: [[f64; 3]; 4]) -> f64 {
     let dm = [
         [p[1][0] - p[0][0], p[2][0] - p[0][0], p[3][0] - p[0][0]],
@@ -502,7 +478,6 @@ pub fn tet_signed_volume(p: [[f64; 3]; 4]) -> f64 {
 }
 
 /// Compute the current volume of all elements and return min/max/total.
-#[allow(dead_code)]
 pub fn element_volume_stats(
     positions: &[[f64; 3]],
     element_indices: &[[usize; 4]],
@@ -532,7 +507,6 @@ pub fn element_volume_stats(
 /// Compute gravitational forces for all nodes given per-node masses.
 ///
 /// `g_vec` is the gravitational acceleration vector (e.g. `[0.0, -9.81, 0.0]`).
-#[allow(dead_code)]
 pub fn gravity_forces(masses: &[f64], g_vec: [f64; 3]) -> Vec<[f64; 3]> {
     masses
         .iter()
@@ -546,7 +520,6 @@ pub fn gravity_forces(masses: &[f64], g_vec: [f64; 3]) -> Vec<[f64; 3]> {
 
 /// Given lumped masses and applied forces (including internal + external),
 /// compute nodal accelerations `a = f / m` for free nodes.
-#[allow(dead_code)]
 pub fn lumped_mass_accelerations(
     masses: &[f64],
     forces: &[[f64; 3]],

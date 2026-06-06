@@ -7,8 +7,6 @@ use oxiphysics_core::BodyHandle;
 use oxiphysics_core::math::{Quat, Real, Vec3};
 use oxiphysics_rigid::RigidBodySet;
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{JOINT_BAUMGARTE, apply_pair_impulse, read_body};
 
 /// Ball joint (spherical joint): constrains two anchor points to coincide.
@@ -116,7 +114,6 @@ impl PrismaticJoint {
     ///
     /// # Returns
     /// The constraint violation (velocity residual).
-    #[allow(dead_code)]
     pub fn compute_lead_screw(
         &self,
         v_rel_along_axis: Real,
@@ -133,7 +130,6 @@ impl PrismaticJoint {
     /// # Parameters
     /// * `bodies`  – the rigid body set.
     /// * `lead`    – thread lead in metres/radian (positive → right-handed).
-    #[allow(dead_code)]
     pub fn apply_lead_screw_impulse(&self, bodies: &mut RigidBodySet, lead: Real) -> Real {
         let a = match read_body(bodies, self.body_a) {
             Some(p) => p,
@@ -235,7 +231,6 @@ impl RevoluteJoint {
     /// * `omega_a` – angular velocity of this joint's body A along its world axis.
     /// * `omega_b_other` – angular velocity along the other joint's world axis.
     /// * `gear_ratio` – tooth ratio N_other / N_self.  Negative for external gears.
-    #[allow(dead_code)]
     pub fn compute_gear_ratio_constraint(
         &self,
         omega_a: Real,
@@ -256,8 +251,6 @@ impl RevoluteJoint {
     /// * `other_body` – the handle of the body of the second revolute joint.
     /// * `other_world_axis` – the world-space axis of the second revolute joint.
     /// * `gear_ratio` – the gear ratio `N_other / N_self`.
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
     pub fn apply_gear_ratio_impulse(
         &self,
         bodies: &mut RigidBodySet,
@@ -768,7 +761,6 @@ pub struct PulleyJoint {
 }
 impl PulleyJoint {
     /// Create a new pulley joint.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         body_a: u32,
         body_b: u32,
@@ -890,7 +882,6 @@ impl GearJoint {
 /// A cable only pulls — it goes slack when the distance is below `max_length`.
 /// The tension impulse is clamped to be non-negative (attractive only).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CableJoint {
     /// Handle of body A.
     pub body_a: BodyHandle,
@@ -1163,7 +1154,6 @@ impl<C: Constraint + Clone> JointForceMeter<C> {
 /// exposes `compute_twist_angle` to measure the twist rotation about the
 /// primary axis without enforcing any angular limit.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SphericalJoint {
     /// Handle of body A.
     pub body_a: BodyHandle,

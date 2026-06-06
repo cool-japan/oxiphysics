@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{CsrMatrix, SparseLu};
 
 /// Return the n×n identity matrix in CSR format.
@@ -105,14 +104,14 @@ pub fn cg_solve(
             return (x, iter as u32, res_norm);
         }
         let alpha = rr / pap;
-        for i in 0..n {
-            x[i] += alpha * p[i];
-            r[i] -= alpha * ap[i];
+        for ((xi, ri), (&pi, &api)) in x.iter_mut().zip(r.iter_mut()).zip(p.iter().zip(ap.iter())) {
+            *xi += alpha * pi;
+            *ri -= alpha * api;
         }
         let rr_new: f64 = r.iter().map(|ri| ri * ri).sum();
         let beta = rr_new / rr;
-        for i in 0..n {
-            p[i] = r[i] + beta * p[i];
+        for (pi, &ri) in p.iter_mut().zip(r.iter()) {
+            *pi = ri + beta * *pi;
         }
         rr = rr_new;
     }
@@ -154,9 +153,9 @@ pub fn pcg_solve(
             return (x, iter as u32, res_norm);
         }
         let alpha = rz / pap;
-        for i in 0..n {
-            x[i] += alpha * p[i];
-            r[i] -= alpha * ap[i];
+        for ((xi, ri), (&pi, &api)) in x.iter_mut().zip(r.iter_mut()).zip(p.iter().zip(ap.iter())) {
+            *xi += alpha * pi;
+            *ri -= alpha * api;
         }
         z = r
             .iter()
@@ -165,8 +164,8 @@ pub fn pcg_solve(
             .collect();
         let rz_new: f64 = r.iter().zip(z.iter()).map(|(ri, zi)| ri * zi).sum();
         let beta = rz_new / rz;
-        for i in 0..n {
-            p[i] = z[i] + beta * p[i];
+        for (pi, &zi) in p.iter_mut().zip(z.iter()) {
+            *pi = zi + beta * *pi;
         }
         rz = rz_new;
     }
@@ -252,10 +251,10 @@ pub fn jacobi_solve(a: &CsrMatrix, b: &[f64], tol: f64, max_iter: usize) -> (Vec
 pub fn diagonal_preconditioner(a: &CsrMatrix) -> Vec<f64> {
     let n = a.nrows.min(a.ncols);
     let mut m = vec![1.0f64; a.nrows];
-    for i in 0..n {
+    for (i, mi) in m.iter_mut().enumerate().take(n) {
         let d = a.get(i, i);
         if d.abs() > f64::EPSILON {
-            m[i] = 1.0 / d;
+            *mi = 1.0 / d;
         }
     }
     m
@@ -473,8 +472,7 @@ pub fn jacobi_scale(a: &CsrMatrix) -> CsrMatrix {
         col_idx: a.col_idx.clone(),
         values: a.values.clone(),
     };
-    for i in 0..a.nrows {
-        let d = diag[i];
+    for (i, &d) in diag.iter().enumerate().take(a.nrows) {
         let scale = if d.abs() > 1e-30 { 1.0 / d } else { 1.0 };
         for k in a.row_ptr[i]..a.row_ptr[i + 1] {
             scaled.values[k] *= scale;
@@ -485,7 +483,6 @@ pub fn jacobi_scale(a: &CsrMatrix) -> CsrMatrix {
 /// Biconjugate Gradient Stabilised (BICGStab) solver for non-symmetric systems A x = b.
 ///
 /// Returns `(solution, converged, iterations)`.
-#[allow(dead_code)]
 pub fn bicgstab_solve(
     a: &CsrMatrix,
     b: &[f64],
@@ -517,8 +514,8 @@ pub fn bicgstab_solve(
             p = r.clone();
         } else {
             let beta = (rho / rho_prev) * (alpha / omega);
-            for i in 0..n {
-                p[i] = r[i] + beta * (p[i] - omega * v[i]);
+            for ((pi, &ri), &vi) in p.iter_mut().zip(r.iter()).zip(v.iter()) {
+                *pi = ri + beta * (*pi - omega * vi);
             }
         }
         v = a.matvec(&p);
@@ -534,8 +531,8 @@ pub fn bicgstab_solve(
             .collect();
         let s_norm: f64 = s.iter().map(|x| x * x).sum::<f64>().sqrt();
         if s_norm / b_norm < tol {
-            for i in 0..n {
-                x[i] += alpha * p[i];
+            for (xi, &pi) in x.iter_mut().zip(p.iter()) {
+                *xi += alpha * pi;
             }
             return (x, true, iter + 1);
         }
@@ -547,11 +544,11 @@ pub fn bicgstab_solve(
         } else {
             t_dot_s / t_dot_t
         };
-        for i in 0..n {
-            x[i] += alpha * p[i] + omega * s[i];
+        for ((xi, &pi), &si) in x.iter_mut().zip(p.iter()).zip(s.iter()) {
+            *xi += alpha * pi + omega * si;
         }
-        for i in 0..n {
-            r[i] = s[i] - omega * t[i];
+        for (ri, (&si, &ti)) in r.iter_mut().zip(s.iter().zip(t.iter())) {
+            *ri = si - omega * ti;
         }
         let r_norm: f64 = r.iter().map(|x| x * x).sum::<f64>().sqrt();
         if r_norm / b_norm < tol {
@@ -572,8 +569,6 @@ pub fn bicgstab_solve(
 /// Minimum Residual (MINRES) method for symmetric (possibly indefinite) systems A x = b.
 ///
 /// Returns `(solution, converged, iterations)`.
-#[allow(dead_code)]
-#[allow(unused_assignments)]
 pub fn minres_solve(
     a: &CsrMatrix,
     b: &[f64],
@@ -586,7 +581,6 @@ pub fn minres_solve(
     let mut r = b.to_vec();
     let b_norm: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt().max(1e-30);
     let mut v_old = vec![0.0f64; n];
-    let mut beta_old = 0.0f64;
     let mut beta: f64 = r.iter().map(|x| x * x).sum::<f64>().sqrt();
     if beta < 1e-30 {
         return (x, true, 0);
@@ -635,8 +629,8 @@ pub fn minres_solve(
             .map(|(i, &vi)| (vi - c * d[i] - s * d_old[i]) / gamma)
             .collect();
         let eta = c_new * phi_bar;
-        for i in 0..n {
-            x[i] += eta * d_new[i];
+        for (xi, &dni) in x.iter_mut().zip(d_new.iter()) {
+            *xi += eta * dni;
         }
         phi_bar *= s_new;
         if phi_bar / b_norm < tol {
@@ -652,9 +646,7 @@ pub fn minres_solve(
         d = d_new;
         v_old = v;
         v = v_new;
-        beta_old = beta;
         beta = beta_new;
-        let _ = beta_old;
         r = b
             .iter()
             .zip(a.matvec(&x).iter())
@@ -671,7 +663,6 @@ pub fn minres_solve(
 ///
 /// Requires A to have non-zero diagonal entries.
 /// Returns `(solution, iterations_performed)`.
-#[allow(dead_code)]
 pub fn gauss_seidel_solve(
     a: &CsrMatrix,
     b: &[f64],
@@ -703,7 +694,6 @@ pub fn gauss_seidel_solve(
     (x, max_iter)
 }
 /// Forward substitution: solve L x = b where L is lower triangular (CSR).
-#[allow(dead_code)]
 pub fn forward_substitution(l: &CsrMatrix, b: &[f64]) -> Vec<f64> {
     let n = l.nrows;
     assert_eq!(b.len(), n);
@@ -726,7 +716,6 @@ pub fn forward_substitution(l: &CsrMatrix, b: &[f64]) -> Vec<f64> {
     x
 }
 /// Backward substitution: solve U x = b where U is upper triangular (CSR).
-#[allow(dead_code)]
 pub fn backward_substitution(u: &CsrMatrix, b: &[f64]) -> Vec<f64> {
     let n = u.nrows;
     assert_eq!(b.len(), n);
@@ -752,7 +741,6 @@ pub fn backward_substitution(u: &CsrMatrix, b: &[f64]) -> Vec<f64> {
 ///
 /// `diagonals[k]` is the value at offset `offsets[k]` (0 = main diagonal,
 /// positive = superdiagonal, negative = subdiagonal).
-#[allow(dead_code)]
 pub fn banded_matrix(n: usize, offsets: &[i64], diagonals: &[f64]) -> CsrMatrix {
     assert_eq!(offsets.len(), diagonals.len());
     let mut rows = Vec::new();
@@ -771,7 +759,6 @@ pub fn banded_matrix(n: usize, offsets: &[i64], diagonals: &[f64]) -> CsrMatrix 
     CsrMatrix::from_triplets(n, n, &rows, &cols, &vals)
 }
 /// Row-scale a CSR matrix: D_r A where D_r = diag(scales).
-#[allow(dead_code)]
 pub fn row_scale(a: &CsrMatrix, scales: &[f64]) -> CsrMatrix {
     assert_eq!(scales.len(), a.nrows);
     let values: Vec<f64> = (0..a.nrows)
@@ -789,7 +776,6 @@ pub fn row_scale(a: &CsrMatrix, scales: &[f64]) -> CsrMatrix {
     }
 }
 /// Column-scale a CSR matrix: A D_c where D_c = diag(scales).
-#[allow(dead_code)]
 pub fn col_scale(a: &CsrMatrix, scales: &[f64]) -> CsrMatrix {
     assert_eq!(scales.len(), a.ncols);
     let values: Vec<f64> = a
@@ -808,21 +794,20 @@ pub fn col_scale(a: &CsrMatrix, scales: &[f64]) -> CsrMatrix {
 }
 /// Two-sided equilibration scaling: compute row/col scale vectors so that
 /// the scaled matrix has unit diagonal (i.e., sqrt(|A_ii|) scaling).
-#[allow(dead_code)]
 pub fn equilibration_scales(a: &CsrMatrix) -> (Vec<f64>, Vec<f64>) {
     let n = a.nrows.max(a.ncols);
     let mut row_scales = vec![1.0f64; a.nrows];
     let mut col_scales = vec![1.0f64; a.ncols];
-    for i in 0..a.nrows {
+    for (i, rs) in row_scales.iter_mut().enumerate() {
         let d = a.get(i, i).abs();
         if d > 1e-30 {
-            row_scales[i] = 1.0 / d.sqrt();
+            *rs = 1.0 / d.sqrt();
         }
     }
-    for j in 0..a.ncols {
+    for (j, cs) in col_scales.iter_mut().enumerate() {
         let d = a.get(j.min(a.nrows - 1), j).abs();
         if d > 1e-30 {
-            col_scales[j] = 1.0 / d.sqrt();
+            *cs = 1.0 / d.sqrt();
         }
     }
     let _ = n;
@@ -831,7 +816,6 @@ pub fn equilibration_scales(a: &CsrMatrix) -> (Vec<f64>, Vec<f64>) {
 /// Solve A X = B for multiple right-hand sides simultaneously using CG.
 ///
 /// Each column of `b_cols` is a separate RHS; returns a `Vec<Vec`f64`>` of solutions.
-#[allow(dead_code)]
 pub fn multi_rhs_cg(
     a: &CsrMatrix,
     b_cols: &[Vec<f64>],
@@ -861,8 +845,6 @@ pub fn multi_rhs_cg(
 /// * `g`        – RHS vector of length m
 /// * `tol`      – solver tolerance
 /// * `max_iter` – max iterations
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn saddle_point_solve(
     a: &CsrMatrix,
     bt: &CsrMatrix,
@@ -912,7 +894,6 @@ pub fn saddle_point_solve(
 /// - `alphas[k]` is the k-th diagonal of the tridiagonal matrix,
 /// - `betas[k]` is the k-th subdiagonal (length k steps),
 /// - `Q[k]` is the k-th Lanczos vector (orthonormal).
-#[allow(dead_code)]
 pub fn lanczos(a: &CsrMatrix, b0: &[f64], k: usize) -> (Vec<f64>, Vec<f64>, Vec<Vec<f64>>) {
     let n = a.nrows;
     assert_eq!(b0.len(), n);
@@ -927,10 +908,14 @@ pub fn lanczos(a: &CsrMatrix, b0: &[f64], k: usize) -> (Vec<f64>, Vec<f64>, Vec<
         let mut w = a.matvec(&q[j]);
         let alpha: f64 = q[j].iter().zip(w.iter()).map(|(qi, wi)| qi * wi).sum();
         alphas.push(alpha);
-        for i in 0..n {
-            w[i] -= alpha * q[j][i];
-            if j > 0 {
-                w[i] -= betas[j - 1] * q_prev[i];
+        if j > 0 {
+            let beta_prev = betas[j - 1];
+            for ((wi, &qji), &qpi) in w.iter_mut().zip(q[j].iter()).zip(q_prev.iter()) {
+                *wi -= alpha * qji + beta_prev * qpi;
+            }
+        } else {
+            for (wi, &qji) in w.iter_mut().zip(q[j].iter()) {
+                *wi -= alpha * qji;
             }
         }
         let beta: f64 = w.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -946,7 +931,6 @@ pub fn lanczos(a: &CsrMatrix, b0: &[f64], k: usize) -> (Vec<f64>, Vec<f64>, Vec<
 /// Compute Ritz values from a Lanczos tridiagonal matrix via QR iteration.
 ///
 /// Given `alphas` (diagonal) and `betas` (subdiagonal), returns approximate eigenvalues.
-#[allow(dead_code)]
 pub fn ritz_values(alphas: &[f64], betas: &[f64]) -> Vec<f64> {
     let m = alphas.len();
     if m == 0 {
@@ -991,7 +975,6 @@ pub fn ritz_values(alphas: &[f64], betas: &[f64]) -> Vec<f64> {
 }
 /// Invert a small dense matrix (size × size) stored row-major using Gauss-Jordan.
 /// Returns `None` if singular.
-#[allow(dead_code)]
 pub(super) fn invert_small_dense(m: &[f64], size: usize) -> Option<Vec<f64>> {
     let mut a = m.to_vec();
     let mut inv = vec![0.0f64; size * size];
@@ -1035,7 +1018,6 @@ pub(super) fn invert_small_dense(m: &[f64], size: usize) -> Option<Vec<f64>> {
     Some(inv)
 }
 /// Extract the lower triangular part of a sparse matrix (including diagonal).
-#[allow(dead_code)]
 pub fn lower_triangular(a: &CsrMatrix) -> CsrMatrix {
     let mut rows = Vec::new();
     let mut cols = Vec::new();
@@ -1186,10 +1168,10 @@ mod tests {
     fn test_to_dense_identity() {
         let id = identity_csr(3);
         let d = id.to_dense();
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in d.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((d[i][j] - expected).abs() < TOL);
+                assert!((val - expected).abs() < TOL);
             }
         }
     }
@@ -1632,13 +1614,13 @@ mod tests {
         let id = identity_csr(3);
         let result = spgemm(&id, &id);
         let dense = result.to_dense();
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in dense.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (dense[i][j] - expected).abs() < 1e-12,
+                    (val - expected).abs() < 1e-12,
                     "I*I[{i}][{j}] = {} expected {}",
-                    dense[i][j],
+                    val,
                     expected
                 );
             }

@@ -2,11 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
-#[allow(unused_imports)]
 use super::functions::*;
 /// Pressure field colourmap over a mesh.
-#[allow(dead_code)]
 pub struct PressureColormap {
     /// Minimum pressure for clamping.
     pub p_min: f64,
@@ -57,7 +54,6 @@ impl PressureColormap {
     }
 }
 /// Extracts the free surface from a signed-distance level-set φ field.
-#[allow(dead_code)]
 pub struct FreeSurfaceExtractor {
     /// Grid resolution per axis.
     pub resolution: usize,
@@ -106,7 +102,6 @@ impl FreeSurfaceExtractor {
     }
 }
 /// Flow statistics: mean, RMS, turbulence intensity, and Reynolds stress.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct FlowStatistics {
     /// Mean velocity components `[u_mean, v_mean, w_mean]`.
@@ -128,12 +123,12 @@ impl FlowStatistics {
         let nf = n as f64;
         let mut mean = [0.0_f64; 3];
         for s in samples {
-            for k in 0..3 {
-                mean[k] += s[k];
+            for (m, si) in mean.iter_mut().zip(s.iter()) {
+                *m += si;
             }
         }
-        for k in 0..3 {
-            mean[k] /= nf;
+        for m in mean.iter_mut() {
+            *m /= nf;
         }
         let mut rms = [0.0_f64; 3];
         let mut rs = [0.0_f64; 6];
@@ -151,11 +146,11 @@ impl FlowStatistics {
             rs[4] += u * w;
             rs[5] += v * w;
         }
-        for k in 0..3 {
-            rms[k] = (rms[k] / nf).sqrt();
+        for r in rms.iter_mut() {
+            *r = (*r / nf).sqrt();
         }
-        for k in 0..6 {
-            rs[k] /= nf;
+        for r in rs.iter_mut() {
+            *r /= nf;
         }
         let tke = 0.5 * (rs[0] + rs[1] + rs[2]);
         let u_mag = len3(mean);
@@ -177,7 +172,6 @@ impl FlowStatistics {
     }
 }
 /// A simple foam renderer that determines which particles should spawn foam.
-#[allow(dead_code)]
 pub struct FoamRenderer {
     /// Velocity threshold: particles above this speed spawn foam.
     pub velocity_threshold: f64,
@@ -210,7 +204,6 @@ impl FoamRenderer {
     }
 }
 /// A coloured pressure sample on a mesh vertex.
-#[allow(dead_code)]
 pub struct PressureSample {
     /// 3D position.
     pub position: [f64; 3],
@@ -220,7 +213,6 @@ pub struct PressureSample {
     pub color: [f32; 4],
 }
 /// A single rendered bubble.
-#[allow(dead_code)]
 pub struct Bubble {
     /// World-space centre.
     pub center: [f64; 3],
@@ -262,7 +254,6 @@ impl Bubble {
 }
 /// Renders a streakline: positions of particles that have passed through
 /// a fixed injection point over time.
-#[allow(dead_code)]
 pub struct StreaklineRenderer {
     /// Maximum length of the streak (number of positions).
     pub max_length: usize,
@@ -298,7 +289,6 @@ impl StreaklineRenderer {
     }
 }
 /// A triangle of the extracted free surface.
-#[allow(dead_code)]
 pub struct FreeSurfaceTriangle {
     /// Vertex positions.
     pub verts: [[f64; 3]; 3],
@@ -306,7 +296,6 @@ pub struct FreeSurfaceTriangle {
     pub normal: [f64; 3],
 }
 /// A single velocity glyph at a sample point.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VelocityGlyph {
     /// Sample origin.
@@ -375,7 +364,6 @@ impl VelocityGlyph {
     }
 }
 /// Fluid simulation statistics panel.
-#[allow(dead_code)]
 pub struct FluidStats {
     /// Reynolds number.
     pub reynolds: f64,
@@ -424,7 +412,6 @@ impl FluidStats {
     }
 }
 /// A single computed streamline.
-#[allow(dead_code)]
 pub struct Streamline3D {
     /// Sequence of points along the streamline.
     pub points: Vec<[f64; 3]>,
@@ -434,7 +421,6 @@ pub struct Streamline3D {
 /// Velocity arrow field renderer.
 ///
 /// Converts a vector field sample into renderable arrow glyphs.
-#[allow(dead_code)]
 pub struct VelocityArrows {
     /// Scale factor: length = magnitude * scale.
     pub scale: f64,
@@ -479,7 +465,6 @@ impl VelocityArrows {
     }
 }
 /// Line Integral Convolution renderer for 2D velocity field visualization.
-#[allow(dead_code)]
 pub struct LicRenderer {
     /// Image width in pixels.
     pub width: usize,
@@ -537,7 +522,6 @@ impl LicRenderer {
     }
 }
 /// Water surface wave visualization.
-#[allow(dead_code)]
 pub struct WaveViz {
     /// Normal map resolution.
     pub normal_map_res: usize,
@@ -598,7 +582,6 @@ impl WaveViz {
     }
 }
 /// Style for velocity field glyphs.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlyphStyle {
     /// Simple arrow glyphs.
@@ -609,7 +592,6 @@ pub enum GlyphStyle {
     LIC,
 }
 /// A structured 2-D or 3-D scalar/vector field on a regular grid.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FluidField {
     /// Number of cells along x, y, z.
@@ -660,7 +642,6 @@ impl FluidField {
     }
 }
 /// A single splat (Gaussian footprint) for a fluid particle.
-#[allow(dead_code)]
 pub struct Splat {
     /// Screen-space position.
     pub position: [f32; 2],
@@ -672,7 +653,6 @@ pub struct Splat {
     pub depth: f32,
 }
 /// A 2D slice extracted from a 3D scalar field.
-#[allow(dead_code)]
 pub struct VolumeSlice {
     /// Grid resolution of the slice (pixels per axis).
     pub resolution: usize,
@@ -737,7 +717,6 @@ impl VolumeSlice {
     }
 }
 /// A single velocity arrow glyph.
-#[allow(dead_code)]
 pub struct VelocityArrow {
     /// Arrow base position.
     pub origin: [f64; 3],
@@ -747,7 +726,6 @@ pub struct VelocityArrow {
     pub color: [f32; 4],
 }
 /// LBM lattice visualisation: density field, velocity magnitude, streamlines.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LbmViz {
     /// Grid dimensions `[nx, ny, nz]`.
@@ -814,7 +792,6 @@ impl LbmViz {
     }
 }
 /// Export a sequence of fluid frames for animation.
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct AnimationExport {
     /// Accumulated frames (each frame is a flat list of glyph origins).
@@ -864,7 +841,6 @@ impl AnimationExport {
     }
 }
 /// A triangle produced by marching cubes.
-#[allow(dead_code)]
 pub struct IsoTriangle {
     /// Vertex positions.
     pub vertices: [[f64; 3]; 3],
@@ -903,7 +879,6 @@ impl IsoTriangle {
     }
 }
 /// Streamline renderer using Runge-Kutta integration.
-#[allow(dead_code)]
 pub struct StreamlineRenderer {
     /// Maximum number of steps per streamline.
     pub max_steps: usize,
@@ -963,7 +938,6 @@ impl StreamlineRenderer {
     }
 }
 /// Isosurface visualizer using marching cubes.
-#[allow(dead_code)]
 pub struct IsosurfaceViz {
     /// Isosurface threshold value.
     pub threshold: f64,
@@ -1045,7 +1019,6 @@ impl IsosurfaceViz {
     }
 }
 /// A single metaball in a metaball field.
-#[allow(dead_code)]
 pub struct Metaball {
     /// World-space center.
     pub center: [f64; 3],
@@ -1055,7 +1028,6 @@ pub struct Metaball {
     pub strength: f64,
 }
 /// Vorticity field visualizer.
-#[allow(dead_code)]
 pub struct VorticityViz {
     /// Minimum vorticity magnitude to display.
     pub min_vorticity: f64,
@@ -1097,7 +1069,6 @@ impl VorticityViz {
     }
 }
 /// Bubble renderer for particle-based fluids.
-#[allow(dead_code)]
 pub struct BubbleRenderer {
     /// Bubbles to render.
     pub bubbles: Vec<Bubble>,
@@ -1136,7 +1107,6 @@ impl BubbleRenderer {
 /// A metaball implicit surface field.
 ///
 /// Used for particle-based fluid surface reconstruction.
-#[allow(dead_code)]
 pub struct MetaballField {
     /// List of metaballs.
     pub balls: Vec<Metaball>,
@@ -1180,7 +1150,6 @@ impl MetaballField {
     }
 }
 /// A pathline integrator that tracks particle trajectories over time.
-#[allow(dead_code)]
 pub struct PathlineIntegrator {
     /// Maximum number of history steps.
     pub max_steps: usize,
@@ -1226,7 +1195,6 @@ impl PathlineIntegrator {
     }
 }
 /// Particle splatting renderer (SPH/LBM particles).
-#[allow(dead_code)]
 pub struct ParticleSplat {
     /// Gaussian splat sigma (fraction of radius).
     pub sigma: f64,
@@ -1272,7 +1240,7 @@ impl ParticleSplat {
         })
     }
     /// Sort splats back-to-front for correct alpha blending.
-    pub fn depth_sort(splats: &mut Vec<Splat>) {
+    pub fn depth_sort(splats: &mut [Splat]) {
         splats.sort_by(|a, b| {
             b.depth
                 .partial_cmp(&a.depth)
@@ -1281,7 +1249,6 @@ impl ParticleSplat {
     }
 }
 /// Visualise a free surface from a VOF or level-set scalar field.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FreeSurfaceViz {
     /// Level-set or VOF field (positive = fluid, negative = air).

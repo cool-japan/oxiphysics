@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +7,6 @@
 //! (`SliceGrid`), scalar and vector field sampling on the grid, an RGBA image
 //! buffer (`SliceImage`), colormap rendering, vector-arrow generation, and
 //! marching-squares 2D contour extraction.
-
-#![allow(dead_code)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SlicePlane
@@ -517,8 +514,8 @@ mod tests {
         let plane = SlicePlane::xy_plane(2.0);
         let g = SliceGrid::new(plane.clone(), 4, 4, 1.0, 1.0);
         let w = g.uv_to_world(0, 0);
-        for i in 0..3 {
-            assert!((w[i] - plane.origin[i]).abs() < 1e-10);
+        for (&wi, &oi) in w.iter().zip(plane.origin.iter()) {
+            assert!((wi - oi).abs() < 1e-10);
         }
     }
 

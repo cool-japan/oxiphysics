@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -13,9 +12,6 @@
 //! - [`InstrumentalVariables`]     — IV estimation, two-stage least squares (2SLS)
 //! - [`CausalDiscovery`]           — PC algorithm skeleton, orientation rules
 //! - [`CounterfactualQuery`]       — E\[Y|do(X=x), Z=z\] style queries
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -503,15 +499,19 @@ impl BackdoorCriterion {
         }
 
         let mut total = 0.0_f64;
-        for s in 0..n_strata {
-            if stratum_counts[s] == 0 {
+        for ((&sc, &sc_near_x), (&sy_near_x, &ssum_y)) in stratum_counts
+            .iter()
+            .zip(stratum_counts_near_x.iter())
+            .zip(stratum_y_near_x.iter().zip(stratum_sums_y.iter()))
+        {
+            if sc == 0 {
                 continue;
             }
-            let p_z = stratum_counts[s] as f64 / n as f64;
-            let e_y_xz = if stratum_counts_near_x[s] > 0 {
-                stratum_y_near_x[s] / stratum_counts_near_x[s] as f64
+            let p_z = sc as f64 / n as f64;
+            let e_y_xz = if sc_near_x > 0 {
+                sy_near_x / sc_near_x as f64
             } else {
-                stratum_sums_y[s] / stratum_counts[s] as f64
+                ssum_y / sc as f64
             };
             total += e_y_xz * p_z;
         }
@@ -654,7 +654,6 @@ impl FrontdoorCriterion {
 }
 
 /// Gaussian kernel function for kernel smoothing.
-#[allow(dead_code)]
 fn gaussian_kernel(u: f64) -> f64 {
     (-0.5 * u * u).exp()
 }
@@ -707,8 +706,8 @@ impl PropensityScoreMatching {
                     grad[j + 1] += err * covariates[i][j];
                 }
             }
-            for k in 0..self.weights.len() {
-                self.weights[k] -= lr * grad[k] / n as f64;
+            for (w, &g) in self.weights.iter_mut().zip(grad.iter()) {
+                *w -= lr * g / n as f64;
             }
         }
     }
@@ -1402,10 +1401,10 @@ pub fn sample_covariance(data: &[Vec<f64>]) -> Vec<f64> {
         .map(|j| data.iter().map(|row| row[j]).sum::<f64>() / n as f64)
         .collect();
     let mut cov = vec![0.0_f64; p * p];
-    for i in 0..n {
+    for row in data.iter() {
         for j in 0..p {
             for k in j..p {
-                cov[j * p + k] += (data[i][j] - means[j]) * (data[i][k] - means[k]);
+                cov[j * p + k] += (row[j] - means[j]) * (row[k] - means[k]);
             }
         }
     }

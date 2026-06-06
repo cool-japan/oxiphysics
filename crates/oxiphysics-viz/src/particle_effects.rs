@@ -7,8 +7,6 @@
 //! a pool-based particle manager, billboard quad generation, and back-to-front
 //! sorting for correct alpha blending.
 
-#![allow(dead_code)]
-
 use rand::RngExt;
 
 // ─────────────────────────────────────────────────────────────────────────────

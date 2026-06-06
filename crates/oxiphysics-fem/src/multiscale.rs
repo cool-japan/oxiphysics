@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::useless_vec)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! Implements two-scale computational homogenization based on the Hill-Mandel
 //! condition, Voigt and Reuss bounds, Hill average, and Mori-Tanaka
 //! micromechanics for composite and heterogeneous materials.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Material phase
@@ -484,12 +481,9 @@ mod tests {
     fn test_stiffness_tensor_symmetry() {
         let s = steel();
         let c = s.stiffness_tensor();
-        for i in 0..6 {
-            for j in 0..6 {
-                assert!(
-                    (c[i][j] - c[j][i]).abs() < 1e-6,
-                    "C[{i}][{j}] != C[{j}][{i}]"
-                );
+        for (i, row) in c.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - c[j][i]).abs() < 1e-6, "C[{i}][{j}] != C[{j}][{i}]");
             }
         }
     }

@@ -33,9 +33,6 @@
 //! println!("{}", session.to_csv());
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 

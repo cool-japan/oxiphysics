@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +7,6 @@
 //! strip-theory added mass and damping, Froude-Krylov wave excitation,
 //! Morison equation for slender members, mooring line catenary analysis,
 //! seakeeping RAO computation, roll damping models, and propeller thrust.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -77,13 +74,17 @@ impl ShipState6DOF {
     /// `force` is `[Fx, Fy, Fz]` in newtons, `torque` is `[Mx, My, Mz]` in N*m.
     pub fn integrate_euler(&mut self, force: [f64; 3], torque: [f64; 3], dt: f64) {
         // Update translational velocity
-        for i in 0..3 {
-            self.velocity[i] += (force[i] / self.mass) * dt;
+        for (v, f) in self.velocity.iter_mut().zip(force.iter()) {
+            *v += (f / self.mass) * dt;
         }
         // Update angular velocity
-        for i in 0..3 {
-            if self.inertia[i] > 1e-30 {
-                self.angular_velocity[i] += (torque[i] / self.inertia[i]) * dt;
+        for (av, (t, inr)) in self
+            .angular_velocity
+            .iter_mut()
+            .zip(torque.iter().zip(self.inertia.iter()))
+        {
+            if *inr > 1e-30 {
+                *av += (t / inr) * dt;
             }
         }
         // Update position
@@ -124,7 +125,6 @@ pub struct HullGeometry {
 
 impl HullGeometry {
     /// Create hull geometry with given principal dimensions.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         length: f64,
         beam: f64,
@@ -412,7 +412,6 @@ pub fn froude_krylov_heave_strip(
 }
 
 /// Compute total Froude-Krylov heave force by integrating over all strips.
-#[allow(clippy::too_many_arguments)]
 pub fn total_froude_krylov_heave(
     wave: &RegularWave,
     strips: &[StripCoefficients],
@@ -463,7 +462,6 @@ pub fn total_froude_krylov_heave(
 /// `Cd` is the drag coefficient, and `Cm` is the inertia coefficient.
 ///
 /// `du_dt` is the fluid acceleration (time derivative of water velocity).
-#[allow(clippy::too_many_arguments)]
 pub fn morison_force_per_length(
     u_water: f64,
     u_body: f64,
@@ -485,7 +483,6 @@ pub fn morison_force_per_length(
 /// Integrates using the trapezoidal rule with `n_segments` segments.
 /// `water_vel_fn` and `water_accel_fn` are closures returning the water
 /// velocity and acceleration at depth `z`.
-#[allow(clippy::too_many_arguments)]
 pub fn morison_total_force<F1, F2>(
     water_vel_fn: F1,
     water_accel_fn: F2,
@@ -662,7 +659,6 @@ pub struct RaoPoint {
 /// RAO = F0 / sqrt((C33 - (M + A33) * omega^2)^2 + (B33 * omega)^2)
 ///
 /// where `F0` is the wave force amplitude per unit wave amplitude.
-#[allow(clippy::too_many_arguments)]
 pub fn heave_rao(
     mass: f64,
     added_mass: f64,
@@ -732,7 +728,6 @@ pub fn heave_natural_frequency(mass: f64, added_mass: f64, stiffness: f64) -> f6
 ///
 /// Total roll damping = friction + eddy + bilge keel + wave.
 /// Returns the equivalent linearized damping coefficient (N*m*s/rad).
-#[allow(clippy::too_many_arguments)]
 pub fn roll_damping_total(
     friction_damping: f64,
     eddy_damping: f64,
@@ -764,7 +759,6 @@ pub fn roll_damping_friction(
 ///
 /// where `l_bk` is bilge keel length, `b_bk` is bilge keel breadth,
 /// `r_bk` is the distance from roll axis to bilge keel, and `Cd` is drag coefficient.
-#[allow(clippy::too_many_arguments)]
 pub fn roll_damping_bilge_keel(
     rho: f64,
     cd: f64,
@@ -923,7 +917,6 @@ pub fn ittc_friction_coefficient(re: f64) -> f64 {
 /// Compute ship resistance using the Holtrop-Menher simplified method.
 ///
 /// Returns the total resistance in Newtons.
-#[allow(clippy::too_many_arguments)]
 pub fn simple_resistance(
     speed: f64,
     length: f64,

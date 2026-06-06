@@ -6,8 +6,6 @@
 //! All kernels mirror what would run on a GPU in their data layout and dispatch
 //! model, but execute in pure Rust on the CPU.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ── Element type ─────────────────────────────────────────────────────────────
 

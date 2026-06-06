@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 //! Seismic data I/O: SEG-Y, SAC, MiniSEED formats.
@@ -13,7 +12,6 @@ use std::collections::HashMap;
 // ── SEG-Y Format ──────────────────────────────────────────────────────────────
 
 /// EBCDIC-encoded textual header for SEG-Y files (3200 bytes, 40 lines × 80 chars).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SegyTextHeader {
     /// Raw EBCDIC bytes (3200 bytes).
@@ -68,7 +66,6 @@ impl Default for SegyTextHeader {
 }
 
 /// Convert ASCII byte to EBCDIC (partial table for printable ASCII).
-#[allow(dead_code)]
 fn ascii_to_ebcdic(ch: u8) -> u8 {
     match ch {
         b' ' => 0x40,
@@ -87,7 +84,6 @@ fn ascii_to_ebcdic(ch: u8) -> u8 {
 }
 
 /// Convert EBCDIC byte to ASCII (partial table).
-#[allow(dead_code)]
 fn ebcdic_to_ascii(b: u8) -> u8 {
     match b {
         0x40 => b' ',
@@ -109,7 +105,6 @@ fn ebcdic_to_ascii(b: u8) -> u8 {
 ///
 /// Contains survey-wide parameters like sample interval, number of samples,
 /// and data sample format code.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SegyBinaryHeader {
     /// Job identification number.
@@ -154,7 +149,6 @@ impl Default for SegyBinaryHeader {
 /// SEG-Y trace header (240 bytes).
 ///
 /// Contains per-trace metadata including shot and receiver coordinates.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SegyTraceHeader {
     /// Trace sequence number within the SEG-Y file.
@@ -215,7 +209,6 @@ impl Default for SegyTraceHeader {
 }
 
 /// A single SEG-Y trace with header and float32 sample data.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SegyTrace {
     /// Trace header metadata.
@@ -247,7 +240,6 @@ impl SegyTrace {
 }
 
 /// A complete SEG-Y file in memory.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SegyFile {
     /// Textual (EBCDIC) header.
@@ -326,7 +318,6 @@ impl Default for SegyFile {
 ///
 /// The SAC header is 632 bytes containing float, integer, logical, enumerated,
 /// and character fields.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SacHeader {
     /// Sampling interval in seconds (delta).
@@ -429,7 +420,6 @@ impl Default for SacHeader {
 }
 
 /// A complete SAC file with header and time-series data.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SacFile {
     /// SAC header.
@@ -495,7 +485,6 @@ impl SacFile {
 /// MiniSEED fixed record header (48 bytes).
 ///
 /// MiniSEED is a subset of SEED (Standard for the Exchange of Earthquake Data).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MiniSeedHeader {
     /// Sequence number (6 ASCII digits, 000001–999999).
@@ -593,7 +582,6 @@ impl MiniSeedHeader {
 /// Steim-1 compression: run-length encoded integer differences.
 ///
 /// This is a simplified implementation for testing purposes.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Steim1Frame {
     /// Word 0 contains a bitfield indicating how each of the 15 following words
@@ -640,7 +628,6 @@ impl Steim1Frame {
 }
 
 /// A MiniSEED record with header and integer sample data.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MiniSeedRecord {
     /// Fixed record header.
@@ -683,7 +670,6 @@ impl MiniSeedRecord {
 // ── SeismicTrace ──────────────────────────────────────────────────────────────
 
 /// A seismic time series with associated metadata.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SeismicTrace {
     /// Network code (2 characters).
@@ -758,7 +744,6 @@ impl SeismicTrace {
 // ── SeismicStation ────────────────────────────────────────────────────────────
 
 /// A seismic station with geographic coordinates.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SeismicStation {
     /// Network code.
@@ -809,7 +794,6 @@ impl SeismicStation {
 /// Haversine great-circle distance formula.
 ///
 /// Returns distance in kilometers between two points (lat/lon in degrees).
-#[allow(dead_code)]
 pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     const R_KM: f64 = 6371.0;
     let d_lat = (lat2 - lat1).to_radians();
@@ -827,7 +811,6 @@ pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 /// Computes the characteristic function CF(t) = STA(t) / LTA(t) where:
 /// - STA = short-time average of squared amplitudes over sta_samples
 /// - LTA = long-time average of squared amplitudes over lta_samples
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArrivalPicker {
     /// Short-term average window in samples.
@@ -903,7 +886,6 @@ impl ArrivalPicker {
 ///
 /// The filter is specified in the frequency domain by its corner frequencies
 /// and order. For actual filtering, a recursive IIR implementation is used.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FrequencyFilter {
     /// Lower corner frequency in Hz.
@@ -960,16 +942,12 @@ impl FrequencyFilter {
         let lp = moving_average(data, lp_samples);
         let hp_lp = moving_average(data, hp_samples);
         // Bandpass: LP - very_LP (removes DC and very low freqs)
-        let mut out = vec![0.0f64; n];
-        for i in 0..n {
-            out[i] = lp[i] - hp_lp[i];
-        }
+        let out: Vec<f64> = lp.iter().zip(hp_lp.iter()).map(|(&l, &h)| l - h).collect();
         out
     }
 }
 
 /// Compute a moving average with the given window size.
-#[allow(dead_code)]
 fn moving_average(data: &[f64], window: usize) -> Vec<f64> {
     let n = data.len();
     let w = window.max(1);
@@ -991,7 +969,6 @@ fn moving_average(data: &[f64], window: usize) -> Vec<f64> {
 // ── SeismicCatalog ────────────────────────────────────────────────────────────
 
 /// A seismic event in a catalog.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SeismicEvent {
     /// Event ID.
@@ -1016,7 +993,6 @@ pub struct SeismicEvent {
 
 impl SeismicEvent {
     /// Create a new seismic event.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         event_id: &str,
         origin_time: f64,
@@ -1067,7 +1043,6 @@ impl SeismicEvent {
 }
 
 /// A catalog of seismic events.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SeismicCatalog {
     /// All events in this catalog.
@@ -1147,7 +1122,6 @@ impl SeismicCatalog {
 // ── Voronoi/Roadmap placeholder ───────────────────────────────────────────────
 
 /// Phase arrival record: station, phase type, and observed time.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PhaseArrival {
     /// Station SEED ID.
@@ -1175,49 +1149,42 @@ impl PhaseArrival {
 // ── Binary I/O Helpers ────────────────────────────────────────────────────────
 
 /// Write a big-endian i32 at byte offset in buffer.
-#[allow(dead_code)]
 fn write_i32_be(buf: &mut [u8], offset: usize, val: i32) {
     let bytes = val.to_be_bytes();
     buf[offset..offset + 4].copy_from_slice(&bytes);
 }
 
 /// Write a big-endian i16 at byte offset in buffer.
-#[allow(dead_code)]
 fn write_i16_be(buf: &mut [u8], offset: usize, val: i16) {
     let bytes = val.to_be_bytes();
     buf[offset..offset + 2].copy_from_slice(&bytes);
 }
 
 /// Read a big-endian i32 from buffer at byte offset.
-#[allow(dead_code)]
 fn read_i32_be(buf: &[u8], offset: usize) -> i32 {
     let bytes: [u8; 4] = buf[offset..offset + 4].try_into().unwrap_or([0; 4]);
     i32::from_be_bytes(bytes)
 }
 
 /// Read a big-endian i16 from buffer at byte offset.
-#[allow(dead_code)]
 fn read_i16_be(buf: &[u8], offset: usize) -> i16 {
     let bytes: [u8; 2] = buf[offset..offset + 2].try_into().unwrap_or([0; 2]);
     i16::from_be_bytes(bytes)
 }
 
 /// Write a little-endian f32 at byte offset in buffer.
-#[allow(dead_code)]
 fn write_f32_le(buf: &mut [u8], offset: usize, val: f32) {
     let bytes = val.to_le_bytes();
     buf[offset..offset + 4].copy_from_slice(&bytes);
 }
 
 /// Write a little-endian i32 at byte offset in buffer.
-#[allow(dead_code)]
 fn write_i32_le(buf: &mut [u8], offset: usize, val: i32) {
     let bytes = val.to_le_bytes();
     buf[offset..offset + 4].copy_from_slice(&bytes);
 }
 
 /// Read a little-endian i32 from buffer at byte offset.
-#[allow(dead_code)]
 fn read_i32_le(buf: &[u8], offset: usize) -> i32 {
     let bytes: [u8; 4] = buf[offset..offset + 4].try_into().unwrap_or([0; 4]);
     i32::from_le_bytes(bytes)
@@ -1510,8 +1477,8 @@ mod tests {
     fn test_stalta_picks_before_direct_wave() {
         // Noise + impulsive signal at sample 500
         let mut data = vec![0.01f64; 1000];
-        for i in 500..510 {
-            data[i] = 100.0; // strong P-wave
+        for x in &mut data[500..510] {
+            *x = 100.0; // strong P-wave
         }
         // Add tiny noise
         for (i, x) in data.iter_mut().enumerate() {

@@ -2,19 +2,13 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use crate::xdmf::types::*;
 // Types are re-exported via mod.rs; import in test modules via use super::*.
 
 /// Count how many `<Grid ...>` elements appear in an XDMF XML string.
-#[allow(dead_code)]
 pub fn count_xdmf_grids(xml: &str) -> usize {
     xml.matches("<Grid ").count()
 }
 /// Extract all `Name="..."` attribute values from XDMF XML.
-#[allow(dead_code)]
 pub fn extract_xdmf_names(xml: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut rest = xml;
@@ -31,7 +25,7 @@ pub fn extract_xdmf_names(xml: &str) -> Vec<String> {
 }
 #[cfg(test)]
 mod tests_xdmf_additions {
-    use super::*;
+    use crate::xdmf::*;
     #[test]
     fn field_scalar_entry_count() {
         let f = XdmfFieldDescriptor::scalar("p", vec![1.0, 2.0, 3.0, 4.0]);

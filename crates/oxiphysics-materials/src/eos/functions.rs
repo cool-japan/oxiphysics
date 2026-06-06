@@ -27,7 +27,6 @@ pub(super) const R_UNIVERSAL: f64 = 8.314_462_618;
 /// * `gamma` - Adiabatic index γ = Cp/Cv.
 /// * `p`     - Pressure (Pa).
 /// * `rho`   - Density (kg/m³).
-#[allow(dead_code)]
 pub fn speed_of_sound_ideal(gamma: f64, p: f64, rho: f64) -> f64 {
     if rho <= 0.0 || p <= 0.0 {
         return 0.0;
@@ -39,7 +38,6 @@ pub fn speed_of_sound_ideal(gamma: f64, p: f64, rho: f64) -> f64 {
 /// Uses ordinary least squares on Up (particle velocity) vs Us (shock velocity).
 ///
 /// Returns (c₀, s) where Us = c₀ + s·Up.
-#[allow(dead_code)]
 pub fn fit_hugoniot_linear(up: &[f64], us: &[f64]) -> (f64, f64) {
     assert_eq!(up.len(), us.len(), "up and us must have same length");
     let n = up.len() as f64;
@@ -64,7 +62,6 @@ pub fn fit_hugoniot_linear(up: &[f64], us: &[f64]) -> (f64, f64) {
 /// The reference volume V₀ must be provided (known from 0-pressure experiment).
 ///
 /// Returns (K₀, K₀') in the same units as the input pressures.
-#[allow(dead_code)]
 pub fn fit_birch_murnaghan_3rd(
     v0: f64,
     volumes: &[f64],
@@ -125,7 +122,6 @@ pub fn fit_birch_murnaghan_3rd(
 ///   \[mass, momentum, energy\]
 ///
 /// Perfect conservation → all residuals = 0.
-#[allow(dead_code)]
 pub fn rankine_hugoniot_residuals(
     rho0: f64,
     p0: f64,
@@ -150,7 +146,6 @@ pub fn rankine_hugoniot_residuals(
 /// This gives p_H as a function of V via parametric elimination.
 ///
 /// Returns the Hugoniot pressure at specific volume V.
-#[allow(dead_code)]
 pub fn hugoniot_pressure_volume(rho0: f64, c0: f64, s: f64, v: f64) -> f64 {
     let v0 = 1.0 / rho0;
     let mu = v0 / v - 1.0;
@@ -166,7 +161,6 @@ pub fn hugoniot_pressure_volume(rho0: f64, c0: f64, s: f64, v: f64) -> f64 {
 /// Statistical EOS uncertainty: bootstrap error estimate for Hugoniot fit.
 ///
 /// Given Up/Us data, returns the standard error on c₀ and s from OLS.
-#[allow(dead_code)]
 pub fn hugoniot_fit_std_error(up: &[f64], us: &[f64]) -> (f64, f64) {
     assert_eq!(up.len(), us.len());
     let n = up.len();

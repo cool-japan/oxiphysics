@@ -8,8 +8,6 @@
 //! streamlines for steady flows.  All geometry is returned as plain Rust data
 //! structures — no GPU dependency.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -561,11 +559,13 @@ fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+#[cfg(test)]
 #[inline]
 fn vec3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+#[cfg(test)]
 #[inline]
 fn vec3_dist(a: [f64; 3], b: [f64; 3]) -> f64 {
     vec3_length(vec3_sub(a, b))

@@ -1,4 +1,3 @@
-#![allow(clippy::manual_div_ceil)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -42,7 +41,6 @@ use crate::Error as IoError;
 // ── Boundary patch ────────────────────────────────────────────────────────────
 
 /// An OpenFOAM boundary patch with a name and type string.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct FoamBoundaryPatch {
     /// Patch name (e.g. `"inlet"`, `"outlet"`, `"wall"`).
@@ -74,7 +72,6 @@ pub fn foam_boundary_patch(
 ///
 /// The internal field holds one value per cell. Boundary patches provide
 /// boundary conditions on named patch faces.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FoamField {
     /// Field name (e.g. `"p"`, `"U"`).
@@ -386,7 +383,6 @@ pub fn write_foam_field(field: &FoamField) -> String {
 ///
 /// This is a simplified in-memory representation of the files found in
 /// `constant/polyMesh/`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FoamMesh {
     /// Points: flat `[x0, y0, z0, x1, y1, z1, …]`.

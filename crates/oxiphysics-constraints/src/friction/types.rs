@@ -12,7 +12,6 @@ use super::functions::*;
 /// `mu(T) = mu_ref + k_thermal * (T - T_ref)`
 ///
 /// Clamped to \[mu_min, mu_max\] to prevent unphysical values.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ThermalFriction {
     /// Friction coefficient at reference temperature.
@@ -26,7 +25,6 @@ pub struct ThermalFriction {
     /// Maximum allowed friction coefficient.
     pub mu_max: f64,
 }
-#[allow(dead_code)]
 impl ThermalFriction {
     /// Create a thermal friction model.
     pub fn new(mu_ref: f64, t_ref: f64, k_thermal: f64, mu_min: f64, mu_max: f64) -> Self {
@@ -125,7 +123,6 @@ impl StaticFrictionConstraint {
     /// Create a new static friction constraint.
     ///
     /// `inv_mass_sum` is `inv_mass_a + inv_mass_b` (linear contribution only).
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         normal: [f64; 3],
         tangent1: [f64; 3],
@@ -409,7 +406,6 @@ impl PairwiseFrictionSolver {
 /// mu(v) = mu_k + (mu_s - mu_k) * exp(-(v / v_s)^2)   (static peak)
 ///       + mu_v * v                                      (viscous term)
 /// ```
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct StribeckParams {
     /// Kinetic (Coulomb) friction coefficient.
@@ -422,7 +418,6 @@ pub struct StribeckParams {
     /// Viscous friction coefficient (force per unit speed).
     pub mu_viscous: f64,
 }
-#[allow(dead_code)]
 impl StribeckParams {
     /// Create Stribeck parameters.
     pub fn new(mu_k: f64, mu_s: f64, v_stribeck: f64, mu_viscous: f64) -> Self {
@@ -685,7 +680,6 @@ impl AnisotropicFriction {
 ///
 /// Typical application: a tire rolling along world-X — longitudinal friction
 /// (along rolling direction) and lateral friction (sideways) are independent.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct AnisotropicFrictionCoeffs {
     /// Static friction coefficient along the primary axis.
@@ -697,7 +691,6 @@ pub struct AnisotropicFrictionCoeffs {
     /// Kinetic friction coefficient along the secondary (cross) axis.
     pub mu_k_secondary: f64,
 }
-#[allow(dead_code)]
 impl AnisotropicFrictionCoeffs {
     /// Create anisotropic coefficients.
     pub fn new(
@@ -995,7 +988,6 @@ impl FrictionCacheEntry {
 }
 /// Evaluates anisotropic friction limits for a contact with a decomposed
 /// tangential velocity.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AnisotropicFrictionSolver {
     /// The axis-dependent friction coefficients.
@@ -1003,7 +995,6 @@ pub struct AnisotropicFrictionSolver {
     /// Contact normal force magnitude (non-negative).
     pub normal_force: f64,
 }
-#[allow(dead_code)]
 impl AnisotropicFrictionSolver {
     /// Create the solver.
     pub fn new(coeffs: AnisotropicFrictionCoeffs, normal_force: f64) -> Self {
@@ -1041,7 +1032,6 @@ impl AnisotropicFrictionSolver {
     }
     /// Compute the friction force vector in 3D given the primary and secondary
     /// tangent axes and the decomposed tangential velocities.
-    #[allow(clippy::too_many_arguments)]
     pub fn friction_force_3d(
         &self,
         t_primary: [f64; 3],
@@ -1066,7 +1056,6 @@ impl AnisotropicFrictionSolver {
 /// force scales as `mu * fn * (2/3)` (standard result) and the spin-friction
 /// torque is `mu * fn * (3*pi/16) * r` (for a Hertzian contact).  This struct
 /// provides these standard factors.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct PatchFriction {
     /// Friction coefficient mu.
@@ -1074,7 +1063,6 @@ pub struct PatchFriction {
     /// Contact patch radius.
     pub radius: f64,
 }
-#[allow(dead_code)]
 impl PatchFriction {
     /// Create a patch-friction model.
     pub fn new(mu: f64, radius: f64) -> Self {
@@ -1168,7 +1156,6 @@ impl FrictionRegularizer {
 /// This resists spinning/twisting of one body relative to another at the
 /// contact.  The torque opposes the angular relative velocity about the
 /// contact normal.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct SpinFriction {
     /// Maximum spin-friction torque = `mu * fn_ * r`.
@@ -1177,7 +1164,6 @@ pub struct SpinFriction {
     /// torque).  At `|omega_rel| = reg_vel`, torque = `0.63 * max_torque`.
     pub reg_vel: f64,
 }
-#[allow(dead_code)]
 impl SpinFriction {
     /// Create a spin-friction model.
     pub fn new(max_torque: f64, reg_vel: f64) -> Self {
@@ -1276,13 +1262,11 @@ impl TangentBasisCache {
 /// The impulse is expressed in the contact-tangent plane (2 components).
 /// If the impulse magnitude exceeds `mu * fn_`, it is scaled down to lie on the
 /// cone boundary.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ConeFrictionProjector {
     /// Friction coefficient (combined static or kinetic).
     pub mu: f64,
 }
-#[allow(dead_code)]
 impl ConeFrictionProjector {
     /// Create the projector.
     pub fn new(mu: f64) -> Self {

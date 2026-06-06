@@ -339,14 +339,12 @@ mod tests {
 /// Compute adhesion energy in the JKR model.
 ///
 /// U_adh = -π * W * a²
-#[allow(dead_code)]
 pub fn jkr_adhesion_energy(contact_radius: f64, work_of_adhesion: f64) -> f64 {
     -PI * work_of_adhesion * contact_radius * contact_radius
 }
 /// Compute contact radius as a function of load for different adhesion models.
 ///
 /// Returns (load, contact_radius) pairs for the given load range.
-#[allow(dead_code)]
 pub fn contact_radius_vs_load(
     r_star: f64,
     e_star: f64,

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,9 +13,6 @@
 //! - [`FluidStructureForce`] – pressure and viscous forces on the immersed body
 //! - [`RigidImmersedBody`] – prescribed-motion rigid body with force/torque computation
 //! - [`ElasticImmersedBody`] – flexible fibre/membrane model with spring-like connections
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -259,8 +255,8 @@ impl ImmersedBody {
         }
         let mut c = [0.0; 3];
         for m in &self.markers {
-            for k in 0..3 {
-                c[k] += m.position[k];
+            for (ck, pk) in c.iter_mut().zip(m.position.iter()) {
+                *ck += pk;
             }
         }
         scale3(c, 1.0 / n)
@@ -270,8 +266,8 @@ impl ImmersedBody {
     pub fn total_force(&self) -> [f64; 3] {
         let mut f = [0.0; 3];
         for m in &self.markers {
-            for k in 0..3 {
-                f[k] += m.force[k];
+            for (fk, mk) in f.iter_mut().zip(m.force.iter()) {
+                *fk += mk;
             }
         }
         f
@@ -376,8 +372,8 @@ impl InterpolationOperator {
             let r = norm3(sub3(marker_pos, p.position));
             let w = cubic_kernel(r, self.h_ib);
             let wv = p.mass / p.density.max(1e-300) * w;
-            for k in 0..3 {
-                vel[k] += wv * p.velocity[k];
+            for (vk, pvk) in vel.iter_mut().zip(p.velocity.iter()) {
+                *vk += wv * pvk;
             }
         }
         vel
@@ -407,8 +403,8 @@ impl InterpolationOperator {
             let r = norm3(sub3(marker.position, p.position));
             let w = cubic_kernel(r, self.h_ib);
             let scale = w * marker.ds / p.density.max(1e-300);
-            for k in 0..3 {
-                p.ibm_force[k] += marker.force[k] * scale;
+            for (ibm_k, fk) in p.ibm_force.iter_mut().zip(marker.force.iter()) {
+                *ibm_k += fk * scale;
             }
         }
     }
@@ -454,8 +450,9 @@ impl FluidStructureForce {
         let mut f = [0.0; 3];
         for m in &body.markers {
             let p = self.interp.interpolate_pressure(m.position, particles);
-            for k in 0..3 {
-                f[k] -= p * m.normal[k] * m.ds;
+            let pds = p * m.ds;
+            for (fk, nk) in f.iter_mut().zip(m.normal.iter()) {
+                *fk -= pds * nk;
             }
         }
         f
@@ -726,6 +723,24 @@ impl FibreSegment {
     }
 }
 
+/// Material parameters for an elastic fibre, used by
+/// [`ElasticImmersedBody::straight_fibre`].
+#[derive(Debug, Clone, Copy)]
+pub struct FibreMaterialParams {
+    /// Axial stretching stiffness \[N/m\]
+    pub stiffness: f64,
+    /// Bending (flexural) stiffness \[N·m\]
+    pub bending_stiffness: f64,
+    /// Penalty force spring constant \[N/m\]
+    pub penalty_k: f64,
+    /// Penalty force damping coefficient \[N·s/m\]
+    pub penalty_d: f64,
+    /// Mass of each Lagrangian marker \[kg\]
+    pub marker_mass: f64,
+    /// Damping coefficient for marker dynamics \[N·s/m\]
+    pub marker_damping: f64,
+}
+
 /// A flexible immersed body modelled as a network of spring-like fibres.
 ///
 /// The body deforms under the combined action of:
@@ -770,13 +785,14 @@ impl ElasticImmersedBody {
         x1: f64,
         y: f64,
         z: f64,
-        stiffness: f64,
-        bending_stiffness: f64,
-        penalty_k: f64,
-        penalty_d: f64,
-        marker_mass: f64,
-        marker_damping: f64,
+        mat: FibreMaterialParams,
     ) -> Self {
+        let stiffness = mat.stiffness;
+        let bending_stiffness = mat.bending_stiffness;
+        let penalty_k = mat.penalty_k;
+        let penalty_d = mat.penalty_d;
+        let marker_mass = mat.marker_mass;
+        let marker_damping = mat.marker_damping;
         let dx = (x1 - x0) / (n - 1) as f64;
         let mut markers = Vec::with_capacity(n);
         for i in 0..n {
@@ -839,13 +855,21 @@ impl ElasticImmersedBody {
                 [0.0; 3]
             };
             let mut acc = [0.0; 3];
-            for k in 0..3 {
-                acc[k] = (m.force[k] + f_ibm[k] - self.marker_damping * m.velocity[k])
-                    / self.marker_mass.max(1e-300);
+            for ((ak, fk), (ibm_k, vk)) in acc
+                .iter_mut()
+                .zip(m.force.iter())
+                .zip(f_ibm.iter().zip(m.velocity.iter()))
+            {
+                *ak = (fk + ibm_k - self.marker_damping * vk) / self.marker_mass.max(1e-300);
             }
-            for k in 0..3 {
-                m.velocity[k] += acc[k] * dt;
-                m.position[k] += m.velocity[k] * dt;
+            for ((vk, pk), ak) in m
+                .velocity
+                .iter_mut()
+                .zip(m.position.iter_mut())
+                .zip(acc.iter())
+            {
+                *vk += ak * dt;
+                *pk += *vk * dt;
             }
         }
     }
@@ -1225,7 +1249,19 @@ mod tests {
     #[test]
     fn elastic_fibre_correct_marker_count() {
         let eib = ElasticImmersedBody::straight_fibre(
-            10, 0.0, 1.0, 0.0, 0.0, 1000.0, 1.0, 500.0, 10.0, 1e-3, 0.1,
+            10,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            FibreMaterialParams {
+                stiffness: 1000.0,
+                bending_stiffness: 1.0,
+                penalty_k: 500.0,
+                penalty_d: 10.0,
+                marker_mass: 1e-3,
+                marker_damping: 0.1,
+            },
         );
         assert_eq!(eib.body.len(), 10);
     }
@@ -1233,7 +1269,19 @@ mod tests {
     #[test]
     fn elastic_fibre_correct_segment_count() {
         let eib = ElasticImmersedBody::straight_fibre(
-            10, 0.0, 1.0, 0.0, 0.0, 1000.0, 1.0, 500.0, 10.0, 1e-3, 0.1,
+            10,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            FibreMaterialParams {
+                stiffness: 1000.0,
+                bending_stiffness: 1.0,
+                penalty_k: 500.0,
+                penalty_d: 10.0,
+                marker_mass: 1e-3,
+                marker_damping: 0.1,
+            },
         );
         assert_eq!(eib.segments.len(), 9);
     }
@@ -1241,7 +1289,19 @@ mod tests {
     #[test]
     fn elastic_energy_zero_at_rest() {
         let eib = ElasticImmersedBody::straight_fibre(
-            5, 0.0, 1.0, 0.0, 0.0, 1000.0, 1.0, 500.0, 10.0, 1e-3, 0.1,
+            5,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            FibreMaterialParams {
+                stiffness: 1000.0,
+                bending_stiffness: 1.0,
+                penalty_k: 500.0,
+                penalty_d: 10.0,
+                marker_mass: 1e-3,
+                marker_damping: 0.1,
+            },
         );
         let e = eib.elastic_energy();
         assert!(e.abs() < 1e-10, "energy at rest = {e}");
@@ -1250,7 +1310,19 @@ mod tests {
     #[test]
     fn elastic_energy_positive_when_stretched() {
         let mut eib = ElasticImmersedBody::straight_fibre(
-            3, 0.0, 1.0, 0.0, 0.0, 1000.0, 1.0, 500.0, 10.0, 1e-3, 0.1,
+            3,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            FibreMaterialParams {
+                stiffness: 1000.0,
+                bending_stiffness: 1.0,
+                penalty_k: 500.0,
+                penalty_d: 10.0,
+                marker_mass: 1e-3,
+                marker_damping: 0.1,
+            },
         );
         // Stretch the last marker
         eib.body.markers[2].position[0] += 0.5;
@@ -1261,7 +1333,19 @@ mod tests {
     #[test]
     fn elastic_compute_forces_zero_at_rest() {
         let mut eib = ElasticImmersedBody::straight_fibre(
-            5, 0.0, 1.0, 0.0, 0.0, 1000.0, 1.0, 500.0, 10.0, 1e-3, 0.1,
+            5,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            FibreMaterialParams {
+                stiffness: 1000.0,
+                bending_stiffness: 1.0,
+                penalty_k: 500.0,
+                penalty_d: 10.0,
+                marker_mass: 1e-3,
+                marker_damping: 0.1,
+            },
         );
         eib.compute_elastic_forces();
         for m in &eib.body.markers {
@@ -1274,7 +1358,19 @@ mod tests {
     #[test]
     fn elastic_force_nonzero_when_stretched() {
         let mut eib = ElasticImmersedBody::straight_fibre(
-            3, 0.0, 1.0, 0.0, 0.0, 1000.0, 1.0, 500.0, 10.0, 1e-3, 0.1,
+            3,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            FibreMaterialParams {
+                stiffness: 1000.0,
+                bending_stiffness: 1.0,
+                penalty_k: 500.0,
+                penalty_d: 10.0,
+                marker_mass: 1e-3,
+                marker_damping: 0.1,
+            },
         );
         eib.body.markers[2].position[0] += 0.1;
         eib.compute_elastic_forces();
@@ -1293,7 +1389,19 @@ mod tests {
     #[test]
     fn elastic_integrate_changes_position() {
         let mut eib = ElasticImmersedBody::straight_fibre(
-            3, 0.0, 1.0, 0.0, 0.0, 1000.0, 1.0, 500.0, 10.0, 1e-3, 0.1,
+            3,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            FibreMaterialParams {
+                stiffness: 1000.0,
+                bending_stiffness: 1.0,
+                penalty_k: 500.0,
+                penalty_d: 10.0,
+                marker_mass: 1e-3,
+                marker_damping: 0.1,
+            },
         );
         let ibm = vec![[1.0, 0.0, 0.0]; 3];
         let pos0 = eib.body.markers[1].position;

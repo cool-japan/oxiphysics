@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use crate::boundary::{Boundary, apply_boundaries_2d};
 use crate::collision::{bgk_collide_2d, bgk_collide_3d};
 use crate::grid::{LbmGrid2D, LbmGrid3D, equilibrium_2d};

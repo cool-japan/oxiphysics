@@ -2,11 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 
 /// Convection boundary condition: q = h (T - T_inf).
 ///
@@ -185,8 +181,8 @@ impl ThermalConductivityTensor {
     /// Create an isotropic conductivity tensor: k * I.
     pub fn isotropic(k: f64) -> Self {
         let mut mat = [[0.0_f64; 3]; 3];
-        for i in 0..3 {
-            mat[i][i] = k;
+        for (i, row) in mat.iter_mut().enumerate() {
+            row[i] = k;
         }
         Self { k: mat }
     }
@@ -206,10 +202,12 @@ impl ThermalConductivityTensor {
     /// * `grad_t` - temperature gradient \[dT/dx, dT/dy, dT/dz\]
     pub fn heat_flux(&self, grad_t: &[f64; 3]) -> [f64; 3] {
         let mut q = [0.0_f64; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                q[i] -= self.k[i][j] * grad_t[j];
-            }
+        for (q_i, k_row) in q.iter_mut().zip(self.k.iter()) {
+            *q_i -= k_row
+                .iter()
+                .zip(grad_t.iter())
+                .map(|(&k, &g)| k * g)
+                .sum::<f64>();
         }
         q
     }

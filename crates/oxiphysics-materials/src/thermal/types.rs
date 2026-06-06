@@ -3,8 +3,6 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::R_GAS;
-#[allow(unused_imports)]
-use super::functions::*;
 
 /// Phase change (melting/solidification) model with latent heat.
 ///
@@ -27,7 +25,6 @@ pub struct PhaseChangeModel {
 }
 impl PhaseChangeModel {
     /// Create a new phase change model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         t_solidus: f64,
         t_liquidus: f64,
@@ -155,7 +152,6 @@ impl ThermalStressCoupling {
 /// a critical temperature (e.g., Ac1 for steel).
 ///
 /// HAZ width: w ≈ (Q / (π·ρ·cp·v)) * (1/T_crit - 1/T_melt)  (thick plate)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HeatAffectedZone {
     /// Heat input Q \[J/m\] (= Power / welding speed).
@@ -175,7 +171,6 @@ pub struct HeatAffectedZone {
 }
 impl HeatAffectedZone {
     /// Create a new HAZ model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         heat_input: f64,
         rho: f64,
@@ -243,7 +238,6 @@ impl HeatAffectedZone {
 /// where T* = (T - T_room) / (T_melt - T_room) is the homologous temperature.
 ///
 /// Reference: Johnson & Cook (1983).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct JohnsonCookModel {
     /// Yield stress A \[Pa\].
@@ -265,7 +259,6 @@ pub struct JohnsonCookModel {
 }
 impl JohnsonCookModel {
     /// Create a new Johnson-Cook model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         a: f64,
         b: f64,
@@ -307,15 +300,13 @@ impl JohnsonCookModel {
     /// * `eps`     - Equivalent plastic strain (dimensionless, ≥ 0)
     /// * `eps_dot` - Equivalent plastic strain rate \[1/s\]
     /// * `temp`    - Current temperature \[K\]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(non_snake_case)]
     pub fn flow_stress(&self, eps: f64, eps_dot: f64, temp: f64) -> f64 {
-        let term_A = self.a + self.b * eps.max(0.0).powf(self.n);
+        let term_a = self.a + self.b * eps.max(0.0).powf(self.n);
         let eps_dot_ratio = (eps_dot / self.eps_dot0).max(1.0);
-        let term_B = 1.0 + self.c * eps_dot_ratio.ln();
+        let term_b = 1.0 + self.c * eps_dot_ratio.ln();
         let t_star = self.homologous_temperature(temp);
-        let term_C = 1.0 - t_star.powf(self.m);
-        term_A * term_B * term_C
+        let term_c = 1.0 - t_star.powf(self.m);
+        term_a * term_b * term_c
     }
     /// Isothermal flow stress (room temperature, reference strain rate).
     pub fn isothermal_flow_stress(&self, eps: f64) -> f64 {
@@ -399,12 +390,11 @@ impl ThermalConductivityTensor {
     /// * `grad_t` — temperature gradient ∇T \[K/m\]
     ///
     /// Returns heat flux \[W/m²\].
-    #[allow(clippy::needless_range_loop)]
     pub fn heat_flux(&self, grad_t: [f64; 3]) -> [f64; 3] {
         let mut q = [0.0_f64; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                q[i] -= self.k[i][j] * grad_t[j];
+        for (q_i, k_row) in q.iter_mut().zip(self.k.iter()) {
+            for (k_ij, &gt_j) in k_row.iter().zip(grad_t.iter()) {
+                *q_i -= k_ij * gt_j;
             }
         }
         q
@@ -491,7 +481,6 @@ impl AblationModel {
 ///
 /// where f_l is the liquid fraction. The temperature-update is performed
 /// by inverting H(T) given the updated enthalpy.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EnthalpyMethod {
     /// Density \[kg/m³\].
@@ -627,7 +616,6 @@ pub struct ThermalShockResistance {
 }
 impl ThermalShockResistance {
     /// Create a new ThermalShockResistance calculator.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         fracture_strength: f64,
         young_modulus: f64,
@@ -786,7 +774,6 @@ impl DebyeModel {
 /// ΔV/V = 3 α ΔT, where α is the linear thermal expansion coefficient.
 /// For orthotropic/anisotropic materials separate coefficients are used
 /// along each principal axis.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ThermalExpansion {
     /// Linear thermal expansion coefficient along x-axis \[1/K\].
@@ -798,7 +785,6 @@ pub struct ThermalExpansion {
     /// Reference temperature T_ref \[K\] at which the body is stress-free.
     pub t_ref: f64,
 }
-#[allow(dead_code)]
 impl ThermalExpansion {
     /// Create an **isotropic** thermal expansion model.
     ///
@@ -882,7 +868,6 @@ impl ThermalExpansion {
 /// - R'' (energy-based, including fracture toughness)
 /// - Hasselman parameter R''''
 /// - Thermal shock damage resistance
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ThermalShockParam {
     /// Fracture strength \[Pa\].
@@ -900,7 +885,6 @@ pub struct ThermalShockParam {
 }
 impl ThermalShockParam {
     /// Create a new thermal shock parameter set.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(sigma_f: f64, young_modulus: f64, nu: f64, alpha: f64, k: f64, k_ic: f64) -> Self {
         Self {
             sigma_f,
@@ -1233,7 +1217,6 @@ impl NewtonianCooling {
 /// Δε_p = α · ΔT · E_correction
 ///
 /// Coffin-Manson: N_f = C / Δε_p^β
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ThermalFatigue {
     /// Coffin-Manson ductility coefficient C.

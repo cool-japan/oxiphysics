@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +7,6 @@
 //! tension at immiscible fluid interfaces, following the approach of Morris (2000)
 //! and Lafaurie et al. (1994). Each particle carries a phase identifier and a
 //! color function value that tracks the local phase composition.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -343,11 +340,11 @@ impl ImmiscibleSystem {
         let n = self.particles.len();
         let h = self.h;
         let mut densities = vec![0.0_f64; n];
-        for i in 0..n {
-            densities[i] = density_summation_multiphase(&self.particles, i, h);
+        for (i, d) in densities.iter_mut().enumerate() {
+            *d = density_summation_multiphase(&self.particles, i, h);
         }
-        for (i, p) in self.particles.iter_mut().enumerate() {
-            p.density = densities[i];
+        for (p, d) in self.particles.iter_mut().zip(densities.iter()) {
+            p.density = *d;
         }
     }
 
@@ -356,11 +353,11 @@ impl ImmiscibleSystem {
         let n = self.particles.len();
         let h = self.h;
         let mut colors = vec![0.0_f64; n];
-        for i in 0..n {
-            colors[i] = color_field_sph(&self.particles, i, h);
+        for (i, c) in colors.iter_mut().enumerate() {
+            *c = color_field_sph(&self.particles, i, h);
         }
-        for (i, p) in self.particles.iter_mut().enumerate() {
-            p.color_function = colors[i];
+        for (p, c) in self.particles.iter_mut().zip(colors.iter()) {
+            p.color_function = *c;
         }
     }
 
@@ -759,7 +756,6 @@ mod tests {
 
 /// Result of interface detection at a particle.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct InterfaceInfo {
     /// Whether this particle is near a phase interface.
     pub is_interface: bool,
@@ -774,7 +770,6 @@ pub struct InterfaceInfo {
 /// A particle is classified as an interface particle if its color function
 /// gradient exceeds a threshold `threshold` relative to the reference gradient
 /// scale `1/h`.
-#[allow(dead_code)]
 pub fn detect_interface_particle(
     particles: &[ImmiscibleParticle],
     i: usize,
@@ -799,7 +794,6 @@ pub fn detect_interface_particle(
 /// Classify all particles as interface or bulk.
 ///
 /// Returns a vector of [`InterfaceInfo`] one per particle.
-#[allow(dead_code)]
 pub fn classify_all_particles(
     particles: &[ImmiscibleParticle],
     h: f64,
@@ -824,21 +818,19 @@ pub fn classify_all_particles(
 ///
 /// # Returns
 /// A new vector of updated color function values (same length as `particles`).
-#[allow(dead_code)]
 pub fn advect_color_function(particles: &[ImmiscibleParticle], h: f64, dt: f64) -> Vec<f64> {
     let n = particles.len();
     let mut dc_dt = vec![0.0_f64; n];
 
-    for i in 0..n {
-        let pi = particles[i].position;
-        let vi = particles[i].velocity;
-        let ci = particles[i].color_function;
+    for (i, particle_i) in particles.iter().enumerate() {
+        let pi = particle_i.position;
+        let vi = particle_i.velocity;
+        let ci = particle_i.color_function;
 
-        for j in 0..n {
+        for (j, pj) in particles.iter().enumerate() {
             if i == j {
                 continue;
             }
-            let pj = &particles[j];
             let r_vec = [
                 pi[0] - pj.position[0],
                 pi[1] - pj.position[1],
@@ -878,7 +870,6 @@ pub fn advect_color_function(particles: &[ImmiscibleParticle], h: f64, dt: f64) 
 ///
 /// where β = interphase_drag_coeff and u_other_phase is the weighted mean
 /// velocity of other-phase neighbors.
-#[allow(dead_code)]
 pub fn interphase_drag_force(
     particles: &[ImmiscibleParticle],
     i: usize,
@@ -931,7 +922,6 @@ pub fn interphase_drag_force(
 /// surrounding phase.
 ///
 /// F_buoyancy = (rho_local - rho_0_phase) * V_particle * g_vec
-#[allow(dead_code)]
 pub fn buoyancy_force(
     particle: &ImmiscibleParticle,
     phases: &[FluidPhase],
@@ -958,7 +948,6 @@ pub fn buoyancy_force(
 /// Compute the mass fraction of `phase_id` in a local neighbourhood of `point`.
 ///
 /// mass_frac = Σ_{j ∈ phase} m_j W(|x - x_j|, h) / Σ_j m_j W(|x - x_j|, h)
-#[allow(dead_code)]
 pub fn mass_fraction_at(
     particles: &[ImmiscibleParticle],
     point: [f64; 3],
@@ -985,7 +974,6 @@ pub fn mass_fraction_at(
 }
 
 /// Compute local mixture density via kernel-weighted average of phase densities.
-#[allow(dead_code)]
 pub fn mixture_density_at(particles: &[ImmiscibleParticle], point: [f64; 3], h: f64) -> f64 {
     let mut rho = 0.0_f64;
     for pj in particles {
@@ -1005,7 +993,6 @@ pub fn mixture_density_at(particles: &[ImmiscibleParticle], point: [f64; 3], h: 
 /// Compute Tait EOS pressure for an ImmiscibleParticle.
 ///
 /// P = B * ((rho/rho0)^gamma - 1), gamma = 7
-#[allow(dead_code)]
 pub fn tait_pressure_immiscible(particle: &ImmiscibleParticle, phases: &[FluidPhase]) -> f64 {
     if particle.phase_id >= phases.len() {
         return 0.0;
@@ -1020,7 +1007,6 @@ pub fn tait_pressure_immiscible(particle: &ImmiscibleParticle, phases: &[FluidPh
 /// Compute SPH pressure gradient force on particle `i`.
 ///
 /// F_p / m_i = - Σ_j m_j (P_i/ρ_i² + P_j/ρ_j²) ∇W_ij
-#[allow(dead_code)]
 pub fn pressure_gradient_force(particles: &[ImmiscibleParticle], i: usize, h: f64) -> [f64; 3] {
     let pi = &particles[i];
     let rho_i = pi.density.max(1e-14);

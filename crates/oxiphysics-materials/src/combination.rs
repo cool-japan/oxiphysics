@@ -180,7 +180,6 @@ impl ContactMaterialPair {
     ///
     /// Uses geometric mean for friction, minimum for restitution, and
     /// Hertz formula for effective modulus.
-    #[allow(clippy::too_many_arguments)]
     pub fn from_materials(
         friction1: f64,
         restitution1: f64,
@@ -272,7 +271,6 @@ pub fn maxwell_diffusivity(d1: f64, d2: f64, volume_fraction2: f64) -> f64 {
 ///
 /// where fᵢ are volume fractions and Pᵢ are phase properties.
 /// This is the iso-strain (parallel) bound.
-#[allow(dead_code)]
 pub fn voigt_average(volume_fractions: &[f64], properties: &[f64]) -> f64 {
     volume_fractions
         .iter()
@@ -287,7 +285,6 @@ pub fn voigt_average(volume_fractions: &[f64], properties: &[f64]) -> f64 {
 ///
 /// where fᵢ are volume fractions and Pᵢ are phase properties.
 /// This is the iso-stress (series) bound.
-#[allow(dead_code)]
 pub fn reuss_average(volume_fractions: &[f64], properties: &[f64]) -> f64 {
     let inv_sum: f64 = volume_fractions
         .iter()
@@ -306,7 +303,6 @@ pub fn reuss_average(volume_fractions: &[f64], properties: &[f64]) -> f64 {
 /// P_Hill = (P_Voigt + P_Reuss) / 2
 ///
 /// Provides a practical estimate between the upper and lower bounds.
-#[allow(dead_code)]
 pub fn hill_average(volume_fractions: &[f64], properties: &[f64]) -> f64 {
     let v = voigt_average(volume_fractions, properties);
     let r = reuss_average(volume_fractions, properties);
@@ -320,7 +316,6 @@ pub fn hill_average(volume_fractions: &[f64], properties: &[f64]) -> f64 {
 /// E_1 = V_f * E_f + (1 - V_f) * E_m
 ///
 /// where V_f is fiber volume fraction, E_f is fiber modulus, E_m is matrix modulus.
-#[allow(dead_code)]
 pub fn rule_of_mixtures_longitudinal(vf: f64, e_fiber: f64, e_matrix: f64) -> f64 {
     let vf = vf.clamp(0.0, 1.0);
     vf * e_fiber + (1.0 - vf) * e_matrix
@@ -329,7 +324,6 @@ pub fn rule_of_mixtures_longitudinal(vf: f64, e_fiber: f64, e_matrix: f64) -> f6
 /// Transverse modulus of a unidirectional fiber composite via the inverse rule of mixtures.
 ///
 /// 1/E_2 = V_f / E_f + (1 - V_f) / E_m
-#[allow(dead_code)]
 pub fn rule_of_mixtures_transverse(vf: f64, e_fiber: f64, e_matrix: f64) -> f64 {
     let vf = vf.clamp(0.0, 1.0);
     let inv = vf / e_fiber + (1.0 - vf) / e_matrix;
@@ -343,7 +337,6 @@ pub fn rule_of_mixtures_transverse(vf: f64, e_fiber: f64, e_matrix: f64) -> f64 
 /// Longitudinal Poisson's ratio of a unidirectional fiber composite.
 ///
 /// ν_12 = V_f * ν_f + (1 - V_f) * ν_m
-#[allow(dead_code)]
 pub fn rule_of_mixtures_poisson(vf: f64, nu_fiber: f64, nu_matrix: f64) -> f64 {
     let vf = vf.clamp(0.0, 1.0);
     vf * nu_fiber + (1.0 - vf) * nu_matrix
@@ -352,7 +345,6 @@ pub fn rule_of_mixtures_poisson(vf: f64, nu_fiber: f64, nu_matrix: f64) -> f64 {
 /// In-plane shear modulus of a unidirectional fiber composite (inverse rule).
 ///
 /// 1/G_12 = V_f / G_f + (1 - V_f) / G_m
-#[allow(dead_code)]
 pub fn rule_of_mixtures_shear(vf: f64, g_fiber: f64, g_matrix: f64) -> f64 {
     let vf = vf.clamp(0.0, 1.0);
     let inv = vf / g_fiber + (1.0 - vf) / g_matrix;
@@ -366,7 +358,6 @@ pub fn rule_of_mixtures_shear(vf: f64, g_fiber: f64, g_matrix: f64) -> f64 {
 /// Composite density via rule of mixtures.
 ///
 /// ρ_c = V_f * ρ_f + (1 - V_f) * ρ_m
-#[allow(dead_code)]
 pub fn rule_of_mixtures_density(vf: f64, rho_fiber: f64, rho_matrix: f64) -> f64 {
     let vf = vf.clamp(0.0, 1.0);
     vf * rho_fiber + (1.0 - vf) * rho_matrix
@@ -380,7 +371,6 @@ pub fn rule_of_mixtures_density(vf: f64, rho_fiber: f64, rho_matrix: f64) -> f64
 ///
 /// where η = (E_f/E_m - 1) / (E_f/E_m + ξ)
 /// and ξ is a shape/packing factor (typically 1 or 2 for transverse modulus).
-#[allow(dead_code)]
 pub fn halpin_tsai_modulus(vf: f64, e_fiber: f64, e_matrix: f64, xi: f64) -> f64 {
     let vf = vf.clamp(0.0, 1.0);
     if e_matrix.abs() < f64::EPSILON {
@@ -397,7 +387,6 @@ pub fn halpin_tsai_modulus(vf: f64, e_fiber: f64, e_matrix: f64, xi: f64) -> f64
 ///
 /// where η = (G_f/G_m - 1) / (G_f/G_m + ξ)
 /// and ξ is typically 1 for shear modulus.
-#[allow(dead_code)]
 pub fn halpin_tsai_shear(vf: f64, g_fiber: f64, g_matrix: f64, xi: f64) -> f64 {
     let vf = vf.clamp(0.0, 1.0);
     if g_matrix.abs() < f64::EPSILON {
@@ -414,7 +403,6 @@ pub fn halpin_tsai_shear(vf: f64, g_fiber: f64, g_matrix: f64, xi: f64) -> f64 {
 /// for a unidirectional composite using Schapery's formula.
 ///
 /// α_1 = (V_f * E_f * α_f + V_m * E_m * α_m) / (V_f * E_f + V_m * E_m)
-#[allow(dead_code)]
 pub fn effective_cte_longitudinal(
     vf: f64,
     e_fiber: f64,
@@ -438,8 +426,6 @@ pub fn effective_cte_longitudinal(
 /// α_2 = (1 + ν_f) * V_f * α_f + (1 + ν_m) * V_m * α_m - α_1 * ν_12
 ///
 /// where ν_12 is the composite Poisson's ratio.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn effective_cte_transverse(
     vf: f64,
     alpha_fiber: f64,
@@ -459,7 +445,6 @@ pub fn effective_cte_transverse(
 /// α_eff = (V_1 * K_1 * α_1 + V_2 * K_2 * α_2) / (V_1 * K_1 + V_2 * K_2)
 ///
 /// where K is the bulk modulus and V is volume fraction.
-#[allow(dead_code)]
 pub fn turner_cte(v1: f64, k1: f64, alpha1: f64, k2: f64, alpha2: f64) -> f64 {
     let v1 = v1.clamp(0.0, 1.0);
     let v2 = 1.0 - v1;
@@ -483,7 +468,6 @@ pub fn turner_cte(v1: f64, k1: f64, alpha1: f64, k2: f64, alpha2: f64) -> f64 {
 /// Q22 = E2 / (1 - ν12*ν21)
 /// Q12 = ν12 * E2 / (1 - ν12*ν21)
 /// Q66 = G12
-#[allow(dead_code)]
 pub fn lamina_stiffness_matrix(e1: f64, e2: f64, nu12: f64, g12: f64) -> [f64; 9] {
     let nu21 = nu12 * e2 / e1;
     let denom = 1.0 - nu12 * nu21;
@@ -498,7 +482,6 @@ pub fn lamina_stiffness_matrix(e1: f64, e2: f64, nu12: f64, g12: f64) -> [f64; 9
 ///
 /// Returns the transformed Q-bar matrix as \[f64; 9\] in row-major order.
 /// Uses standard CLT transformation with m = cos(θ), n = sin(θ).
-#[allow(dead_code)]
 pub fn transform_stiffness(q: &[f64; 9], theta: f64) -> [f64; 9] {
     let m = theta.cos();
     let n = theta.sin();
@@ -544,7 +527,6 @@ pub struct Lamina {
 /// D_ij = (1/3) Σ Q̄_ij_k * (z_k³ - z_{k-1}³)
 ///
 /// where z is measured from the laminate midplane.
-#[allow(dead_code)]
 pub fn laminate_abd(plies: &[Lamina]) -> ([f64; 9], [f64; 9], [f64; 9]) {
     let total_thickness: f64 = plies.iter().map(|p| p.thickness).sum();
     let mut z_bot = -total_thickness / 2.0;
@@ -572,7 +554,6 @@ pub fn laminate_abd(plies: &[Lamina]) -> ([f64; 9], [f64; 9], [f64; 9]) {
 /// Compute effective in-plane engineering constants from the A matrix of a laminate.
 ///
 /// Returns (E_x, E_y, G_xy, nu_xy) assuming a symmetric laminate (B=0).
-#[allow(dead_code)]
 pub fn laminate_engineering_constants(
     a_mat: &[f64; 9],
     total_thickness: f64,
@@ -603,7 +584,6 @@ pub fn laminate_engineering_constants(
 /// K_upper = K_2 + V_1 / (1/(K_1-K_2) + 3*V_2/(3*K_2+4*G_2))
 ///
 /// Assumes K_2 > K_1 (phase 2 is the stiffer phase).
-#[allow(dead_code)]
 pub fn hashin_shtrikman_bulk_upper(v1: f64, k1: f64, k2: f64, g2: f64) -> f64 {
     let v1 = v1.clamp(0.0, 1.0);
     let v2 = 1.0 - v1;
@@ -624,7 +604,6 @@ pub fn hashin_shtrikman_bulk_upper(v1: f64, k1: f64, k2: f64, g2: f64) -> f64 {
 /// K_lower = K_1 + V_2 / (1/(K_2-K_1) + 3*V_1/(3*K_1+4*G_1))
 ///
 /// Assumes K_1 < K_2 (phase 1 is the softer phase).
-#[allow(dead_code)]
 pub fn hashin_shtrikman_bulk_lower(v1: f64, k1: f64, g1: f64, k2: f64) -> f64 {
     let v1 = v1.clamp(0.0, 1.0);
     let v2 = 1.0 - v1;
@@ -991,7 +970,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_laminate_abd_symmetric() {
         // Symmetric laminate [0/90]_s should have B=0
         let q = lamina_stiffness_matrix(140.0e9, 10.0e9, 0.3, 5.0e9);
@@ -1018,11 +996,10 @@ mod tests {
             },
         ];
         let (_a, b, _d) = laminate_abd(&plies);
-        for i in 0..9 {
+        for (i, &val) in b.iter().enumerate() {
             assert!(
-                b[i].abs() < 1e-3,
-                "B[{i}]={} should be ~0 for symmetric laminate",
-                b[i]
+                val.abs() < 1e-3,
+                "B[{i}]={val} should be ~0 for symmetric laminate"
             );
         }
     }
@@ -1134,7 +1111,6 @@ pub struct HomogenizationResult {
 ///
 /// K_eff = K_m + V_f * (K_f - K_m) / (1 + V_m * (K_f - K_m) / (K_m + 4/3 G_m))
 /// G_eff = G_m + V_f * (G_f - G_m) / (1 + V_m * (G_f - G_m) * (6*(K_m + 2*G_m)) / (5*G_m*(3*K_m + 4*G_m)))
-#[allow(dead_code)]
 pub fn mori_tanaka_homogenization(
     vf: f64,
     k_fiber: f64,
@@ -1169,7 +1145,6 @@ pub fn mori_tanaka_homogenization(
 }
 
 /// Convert bulk modulus K and shear modulus G to engineering constants (E, ν).
-#[allow(dead_code)]
 pub fn bulk_shear_to_engineering(k: f64, g: f64) -> (f64, f64) {
     let e = 9.0 * k * g / (3.0 * k + g);
     let nu = (3.0 * k - 2.0 * g) / (2.0 * (3.0 * k + g));
@@ -1177,7 +1152,6 @@ pub fn bulk_shear_to_engineering(k: f64, g: f64) -> (f64, f64) {
 }
 
 /// Build a `HomogenizationResult` from the Mori-Tanaka effective moduli.
-#[allow(dead_code)]
 pub fn homogenization_result(
     vf: f64,
     k_fiber: f64,
@@ -1228,7 +1202,6 @@ pub fn homogenization_result(
 /// η_l = 1 - tanh(β * l/2) / (β * l/2)
 /// β = sqrt(2*G_m / (E_f * A * ln(R/r)))
 /// Simplified here to η_l as a direct input.
-#[allow(dead_code)]
 pub fn cox_krenchel_modulus(vf: f64, e_fiber: f64, e_matrix: f64, eta_l: f64) -> f64 {
     let vf = vf.clamp(0.0, 1.0);
     let vm = 1.0 - vf;
@@ -1242,7 +1215,6 @@ pub fn cox_krenchel_modulus(vf: f64, e_fiber: f64, e_matrix: f64, eta_l: f64) ->
 ///
 /// where n = sqrt(2 * G_m / (E_f * ln(R / r))) and L is the fiber length,
 /// r is the fiber radius, R is the mean fibre spacing radius.
-#[allow(dead_code)]
 pub fn cox_length_efficiency(_fiber_length: f64, beta_l_over_2: f64) -> f64 {
     // beta_l_over_2 = β * L/2, a dimensionless parameter
     let x = beta_l_over_2;
@@ -1257,7 +1229,6 @@ pub fn cox_length_efficiency(_fiber_length: f64, beta_l_over_2: f64) -> f64 {
 /// E_iso = (3/8) * E_11 + (5/8) * E_22
 ///
 /// where E_11 and E_22 are the longitudinal and transverse Halpin-Tsai moduli.
-#[allow(dead_code)]
 pub fn halpin_tsai_random_2d(vf: f64, e_fiber: f64, e_matrix: f64, xi: f64) -> f64 {
     let e11 = rule_of_mixtures_longitudinal(vf, e_fiber, e_matrix);
     let e22 = halpin_tsai_modulus(vf, e_fiber, e_matrix, xi);
@@ -1276,7 +1247,6 @@ pub fn halpin_tsai_random_2d(vf: f64, e_fiber: f64, e_matrix: f64, xi: f64) -> f
 /// `e_tow` is the effective modulus of a straight tow.
 /// `e_matrix` is the matrix modulus.
 /// `crimp_angle` is the crimp half-angle (rad) of the tow undulation.
-#[allow(dead_code)]
 pub fn woven_mosaic_modulus(
     vf_warp: f64,
     vf_fill: f64,
@@ -1299,7 +1269,6 @@ pub fn woven_mosaic_modulus(
 ///
 /// G_eff = G_m * (V_f * G_f + V_m * G_m) / (V_m * G_f + V_f * G_m)
 /// (analogous to Reuss shear, weighted by bridging)
-#[allow(dead_code)]
 pub fn woven_shear_modulus(vf: f64, g_fiber: f64, g_matrix: f64) -> f64 {
     let vf = vf.clamp(0.0, 1.0);
     let vm = 1.0 - vf;
@@ -1319,7 +1288,6 @@ pub fn woven_shear_modulus(vf: f64, g_fiber: f64, g_matrix: f64) -> f64 {
 /// K_eff / K_m = \[1 + V_p * (K_p - K_m) / (K_m + 4/3 G_m * (1 - V_p))\]
 ///
 /// This is equivalent to the dilute Eshelby estimate.
-#[allow(dead_code)]
 pub fn kerner_bulk_modulus(vp: f64, k_particle: f64, g_matrix: f64, k_matrix: f64) -> f64 {
     let vp = vp.clamp(0.0, 1.0);
     let dk = k_particle - k_matrix;
@@ -1339,7 +1307,6 @@ pub fn kerner_bulk_modulus(vp: f64, k_particle: f64, g_matrix: f64, k_matrix: f6
 /// ψ = 1 + (1 - φ_m) * V_p / φ_m²
 /// φ_m is the maximum packing fraction (e.g. 0.637 for random packing)
 /// A_E is the Einstein coefficient (e.g. 2.5 for spheres)
-#[allow(dead_code)]
 pub fn nielsen_modulus(vp: f64, e_particle: f64, e_matrix: f64, a_e: f64, phi_max: f64) -> f64 {
     let vp = vp.clamp(0.0, phi_max);
     if e_matrix.abs() < f64::EPSILON {
@@ -1361,7 +1328,6 @@ pub fn nielsen_modulus(vp: f64, e_particle: f64, e_matrix: f64, a_e: f64, phi_ma
 /// K_eff = K_2 + V_1 / (1/(K_1 - K_2) + 3*V_2 / (3*K_2 + 4*G_2))
 ///
 /// (identical to Mori-Tanaka for spherical inclusions in an isotropic matrix)
-#[allow(dead_code)]
 pub fn composite_sphere_bulk(vp: f64, k_inclusion: f64, g_matrix: f64, k_matrix: f64) -> f64 {
     let vp = vp.clamp(0.0, 1.0);
     let vm = 1.0 - vp;
@@ -1384,7 +1350,6 @@ pub fn composite_sphere_bulk(vp: f64, k_inclusion: f64, g_matrix: f64, k_matrix:
 /// V_eff = V_f * (1 + t / r)^3
 ///
 /// where t is interphase thickness and r is particle radius.
-#[allow(dead_code)]
 pub fn nano_effective_volume_fraction(
     vf: f64,
     particle_radius: f64,
@@ -1401,7 +1366,6 @@ pub fn nano_effective_volume_fraction(
 /// applying the Mori-Tanaka sequentially:
 /// 1) Combine core particle + interphase → effective inclusion.
 /// 2) Combine effective inclusion + matrix → composite modulus.
-#[allow(dead_code)]
 pub fn nano_composite_modulus(
     vf_core: f64,
     e_core: f64,
@@ -1428,7 +1392,6 @@ pub fn nano_composite_modulus(
 /// ΔK_surface ≈ 2 * K_s / r
 ///
 /// where K_s is the surface bulk modulus and r is the particle radius.
-#[allow(dead_code)]
 pub fn nano_surface_elasticity_correction(k_surface: f64, particle_radius: f64) -> f64 {
     if particle_radius < f64::EPSILON {
         return 0.0;

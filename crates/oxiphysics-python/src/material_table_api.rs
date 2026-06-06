@@ -5,9 +5,6 @@
 //!
 //! Exposes runtime material interaction table with combine rules to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::material_table::{MaterialId, MaterialTable};
 use pyo3::prelude::*;
 
@@ -40,7 +37,6 @@ impl PyMaterialTable {
     }
 
     /// Register a material with all properties. Returns its ID as u32.
-    #[allow(clippy::too_many_arguments)]
     pub fn register_named(
         &mut self,
         name: &str,

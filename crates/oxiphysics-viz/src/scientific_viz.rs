@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 //! Scientific visualization: tensor fields, phase diagrams, uncertainty bands.
@@ -12,8 +11,6 @@
 //! - Force-directed network layouts (Fruchterman-Reingold)
 //! - Phase portraits (vector field + trajectories)
 //! - Hodographs and Lissajous figures
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -137,7 +134,6 @@ impl TensorGlyph {
 /// `tensors`: each entry is `[Txx, Tyy, Tzz, Txy, Txz, Tyz]`.
 /// `positions`: matching list of `[x, y, z]` positions.
 /// Returns one `TensorGlyph` per entry after 3×3 eigen-decomposition (power iteration).
-#[allow(clippy::too_many_arguments)]
 pub fn build_tensor_glyphs(
     tensors: &[[f64; 6]],
     positions: &[[f64; 3]],
@@ -170,10 +166,10 @@ fn eigen3_sym(voigt: [f64; 6]) -> ([f64; 3], [f64; 9]) {
         let mut max_off = 0.0_f64;
         let mut p = 0;
         let mut q = 1;
-        for i in 0..3 {
-            for j in (i + 1)..3 {
-                if a[i][j].abs() > max_off {
-                    max_off = a[i][j].abs();
+        for (i, a_row) in a.iter().enumerate() {
+            for (j, a_ij) in a_row.iter().enumerate().skip(i + 1) {
+                if a_ij.abs() > max_off {
+                    max_off = a_ij.abs();
                     p = i;
                     q = j;
                 }
@@ -195,22 +191,22 @@ fn eigen3_sym(voigt: [f64; 6]) -> ([f64; 3], [f64; 9]) {
         a[q][q] = s * s * app + 2.0 * c * s * apq + c * c * aqq;
         a[p][q] = 0.0;
         a[q][p] = 0.0;
-        for r in 0..3 {
-            if r != p && r != q {
-                let apr = a[p][r];
-                let aqr = a[q][r];
-                a[p][r] = c * apr - s * aqr;
-                a[r][p] = a[p][r];
-                a[q][r] = s * apr + c * aqr;
-                a[r][q] = a[q][r];
-            }
+        let sym_updates: Vec<(usize, f64, f64)> = (0..3)
+            .filter(|&r| r != p && r != q)
+            .map(|r| (r, c * a[p][r] - s * a[q][r], s * a[p][r] + c * a[q][r]))
+            .collect();
+        for (r, new_pr, new_qr) in sym_updates {
+            a[p][r] = new_pr;
+            a[r][p] = new_pr;
+            a[q][r] = new_qr;
+            a[r][q] = new_qr;
         }
         // Update eigenvectors
-        for r in 0..3 {
-            let vp = v[r][p];
-            let vq = v[r][q];
-            v[r][p] = c * vp - s * vq;
-            v[r][q] = s * vp + c * vq;
+        for v_row in v.iter_mut() {
+            let vp = v_row[p];
+            let vq = v_row[q];
+            v_row[p] = c * vp - s * vq;
+            v_row[q] = s * vp + c * vq;
         }
     }
 
@@ -838,7 +834,7 @@ impl NetworkViz {
             }
 
             // Repulsive forces (all pairs)
-            for i in 0..n {
+            for (i, disp_i) in disp.iter_mut().enumerate() {
                 for j in 0..n {
                     if i == j {
                         continue;
@@ -847,8 +843,8 @@ impl NetworkViz {
                     let dy = self.nodes[i].position[1] - self.nodes[j].position[1];
                     let dist = (dx * dx + dy * dy).sqrt().max(1e-6);
                     let force = k * k / dist;
-                    disp[i][0] += (dx / dist) * force;
-                    disp[i][1] += (dy / dist) * force;
+                    disp_i[0] += (dx / dist) * force;
+                    disp_i[1] += (dy / dist) * force;
                 }
             }
 
@@ -872,13 +868,13 @@ impl NetworkViz {
             }
 
             // Apply displacement capped at temperature
-            for i in 0..n {
-                let disp_len = (disp[i][0] * disp[i][0] + disp[i][1] * disp[i][1])
+            for (i, disp_i) in disp.iter().enumerate() {
+                let disp_len = (disp_i[0] * disp_i[0] + disp_i[1] * disp_i[1])
                     .sqrt()
                     .max(1e-10);
                 let capped = disp_len.min(temperature);
-                self.nodes[i].position[0] += (disp[i][0] / disp_len) * capped;
-                self.nodes[i].position[1] += (disp[i][1] / disp_len) * capped;
+                self.nodes[i].position[0] += (disp_i[0] / disp_len) * capped;
+                self.nodes[i].position[1] += (disp_i[1] / disp_len) * capped;
                 // Clamp to canvas
                 self.nodes[i].position[0] = self.nodes[i].position[0].clamp(0.0, self.width);
                 self.nodes[i].position[1] = self.nodes[i].position[1].clamp(0.0, self.height);

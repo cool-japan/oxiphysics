@@ -8,7 +8,6 @@ use super::types::CameraKeyframe;
 ///
 /// Given a list of keyframes sorted by time, interpolates position and
 /// target at a given time `t`.
-#[allow(dead_code)]
 pub fn interpolate_camera_path(keyframes: &[CameraKeyframe], t: f64) -> ([f64; 3], [f64; 3]) {
     if keyframes.is_empty() {
         return ([0.0; 3], [0.0, 0.0, -1.0]);
@@ -39,7 +38,6 @@ pub fn interpolate_camera_path(keyframes: &[CameraKeyframe], t: f64) -> ([f64; 3
     (pos, tgt)
 }
 /// Catmull-Rom interpolation for camera paths (smoother than linear).
-#[allow(dead_code)]
 pub fn interpolate_camera_path_catmull_rom(
     keyframes: &[CameraKeyframe],
     t: f64,
@@ -104,7 +102,6 @@ pub(super) fn lattice_noise(i: i64) -> f64 {
     (x as f64 / u32::MAX as f64) * 2.0 - 1.0
 }
 /// Compute the Halton sequence value for index `index` in base `base`.
-#[allow(dead_code)]
 pub fn halton(mut index: usize, base: usize) -> f64 {
     let mut result = 0.0_f64;
     let mut denom = 1.0_f64;
@@ -122,7 +119,6 @@ pub(super) fn sub4(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]]
 }
 /// Linear interpolation between two 3-vectors.
-#[allow(dead_code)]
 pub fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     [
         a[0] + (b[0] - a[0]) * t,
@@ -131,17 +127,14 @@ pub fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     ]
 }
 /// Add two 3-vectors.
-#[allow(dead_code)]
 pub fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 /// Scale a 3-vector by a scalar.
-#[allow(dead_code)]
 pub fn scale3(v: [f64; 3], s: f64) -> [f64; 3] {
     [v[0] * s, v[1] * s, v[2] * s]
 }
 /// Catmull-Rom interpolation for a single 3-vector component.
-#[allow(dead_code)]
 pub(super) fn catmull_rom_3(
     p0: [f64; 3],
     p1: [f64; 3],
@@ -162,12 +155,10 @@ pub(super) fn catmull_rom_3(
     result
 }
 /// Length of a 3-vector.
-#[allow(dead_code)]
 pub fn length3(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 /// 4x4 matrix multiply (column-major).
-#[allow(dead_code)]
 pub fn mat4_mul(a: [[f64; 4]; 4], b: [[f64; 4]; 4]) -> [[f64; 4]; 4] {
     let mut out = [[0.0f64; 4]; 4];
     for col in 0..4 {
@@ -178,7 +169,6 @@ pub fn mat4_mul(a: [[f64; 4]; 4], b: [[f64; 4]; 4]) -> [[f64; 4]; 4] {
     out
 }
 /// Normalize a 3-vector.
-#[allow(dead_code)]
 pub fn normalize3(v: [f64; 3]) -> [f64; 3] {
     let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if len > 1e-12 {
@@ -188,12 +178,10 @@ pub fn normalize3(v: [f64; 3]) -> [f64; 3] {
     }
 }
 /// Dot product of two 3-vectors.
-#[allow(dead_code)]
 pub fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 /// Cross product of two 3-vectors.
-#[allow(dead_code)]
 pub fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -202,7 +190,6 @@ pub fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 /// Subtract two 3-vectors.
-#[allow(dead_code)]
 pub fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }

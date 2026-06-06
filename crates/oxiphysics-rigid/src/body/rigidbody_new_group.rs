@@ -3,9 +3,6 @@
 //! This module contains method implementations for `RigidBody`.
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use oxiphysics_core::Transform;
 use oxiphysics_core::math::{Mat3, Quat, Real, Unit, Vec3};
 
@@ -55,7 +52,6 @@ impl RigidBody {
         body
     }
     /// Restore body state from a snapshot.
-    #[allow(dead_code)]
     pub fn restore_from_snapshot(&mut self, snap: &BodySnapshot) {
         self.transform.position = Vec3::new(snap.position[0], snap.position[1], snap.position[2]);
         let qw = snap.rotation[3];
@@ -100,7 +96,6 @@ impl RigidBody {
     ///
     /// The resulting body has combined mass, weighted center of mass,
     /// and momentum-conserving velocity.
-    #[allow(dead_code)]
     pub fn merge(a: &RigidBody, b: &RigidBody) -> RigidBody {
         let total_mass = a.mass + b.mass;
         if total_mass < 1e-30 {

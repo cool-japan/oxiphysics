@@ -19,9 +19,6 @@
 //!
 //! All vectors use `[f64; 3]` arrays (no nalgebra dependency).
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────

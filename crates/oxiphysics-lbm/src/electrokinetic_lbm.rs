@@ -1,5 +1,3 @@
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -22,8 +20,6 @@
 //! - Probstein, R. F. (1994). *Physicochemical Hydrodynamics*.
 //! - Hunter, R. J. (2001). *Foundations of Colloid Science*.
 //! - Li, D. (2004). *Electrokinetics in Microfluidics*.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Physical constants
@@ -222,7 +218,6 @@ pub fn zeta_potential_from_streaming_current(
 /// Couples the Navier–Stokes equations (via BGK-LBM) with the
 /// Poisson equation for the electric potential and the transport
 /// of a net charge density field.
-#[allow(clippy::too_many_arguments)]
 #[derive(Debug, Clone)]
 pub struct ElectrokineticLBM {
     /// Grid dimension in x.
@@ -407,7 +402,6 @@ impl ElectrokineticLBM {
     ///
     /// # Arguments
     /// * `e_x`, `e_y` — applied external electric field components (V m⁻¹)
-    #[allow(clippy::too_many_arguments)]
     pub fn collide_stream(&mut self, e_x: f64, e_y: f64) {
         let nx = self.nx;
         let ny = self.ny;
@@ -426,11 +420,11 @@ impl ElectrokineticLBM {
                 let mut rho = 0.0_f64;
                 let mut ux = 0.0_f64;
                 let mut uy = 0.0_f64;
-                for q in 0..9usize {
+                for (q, c) in D2Q9_C.iter().enumerate() {
                     let f = self.f_dist[base + q];
                     rho += f;
-                    ux += D2Q9_C[q][0] * f;
-                    uy += D2Q9_C[q][1] * f;
+                    ux += c[0] * f;
+                    uy += c[1] * f;
                 }
                 if rho > 1e-20 {
                     ux /= rho;
@@ -463,15 +457,16 @@ impl ElectrokineticLBM {
         // Streaming (periodic)
         for j in 0..ny {
             for i in 0..nx {
-                #[allow(clippy::manual_memcpy)]
-                for q in 0..9usize {
-                    let src_base = (j * nx + i) * 9;
+                for (q, cell) in f_post[(j * nx + i) * 9..(j * nx + i) * 9 + 9]
+                    .iter()
+                    .enumerate()
+                {
                     let di = D2Q9_C[q][0] as isize;
                     let dj = D2Q9_C[q][1] as isize;
                     let ni = ((i as isize + di).rem_euclid(nx as isize)) as usize;
                     let nj = ((j as isize + dj).rem_euclid(ny as isize)) as usize;
                     let dst_base = (nj * nx + ni) * 9;
-                    self.f_dist[dst_base + q] = f_post[src_base + q];
+                    self.f_dist[dst_base + q] = *cell;
                 }
             }
         }
@@ -786,7 +781,7 @@ mod tests {
     fn test_sor_returns_iteration_count() {
         let mut ek = ElectrokineticLBM::new(4, 4, 7.1e-10, -0.05, 1.0 / 6.0);
         let iters = ek.solve_poisson_sor(50, 1.5);
-        assert!(iters >= 1 && iters <= 50);
+        assert!((1..=50).contains(&iters));
     }
 
     #[test]

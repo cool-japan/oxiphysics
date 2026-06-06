@@ -5,6 +5,7 @@
 /// Air density at sea level in kg/m³.
 pub(super) const AIR_DENSITY_SEA_LEVEL: f64 = 1.225;
 /// Dynamic viscosity of air at 20 °C in Pa·s.
+#[cfg(test)]
 pub(super) const AIR_VISCOSITY: f64 = 1.81e-5;
 /// Linear interpolation helper for 1-D tables.
 pub(super) fn interpolate_table(xs: &[f64], ys: &[f64], x: f64) -> f64 {

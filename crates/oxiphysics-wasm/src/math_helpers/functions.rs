@@ -2,10 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use super::types::{JsQuat, JsTransform, JsVec3};
 use crate::types::{QuatWasm, TransformWasm, Vec3Wasm};
-
-#[allow(unused_imports)]
-use super::types::{Easing, Frustum, JsQuat, JsTransform, JsVec3, Mat4, Ray};
 
 impl From<JsVec3> for Vec3Wasm {
     fn from(v: JsVec3) -> Self {
@@ -298,7 +296,6 @@ mod tests {
         assert_eq!(flat, vec![0.0, 0.0, 0.0, 1.0]);
     }
 }
-#[allow(dead_code)]
 pub(super) fn normalize_plane(p: [f64; 4]) -> [f64; 4] {
     let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
     if len < 1e-15 {
@@ -310,7 +307,6 @@ pub(super) fn normalize_plane(p: [f64; 4]) -> [f64; 4] {
 ///
 /// Uses a fixed-seed hash function — suitable for deterministic procedural content.
 /// `x`, `y`, `z` are world-space coordinates.
-#[allow(dead_code)]
 pub fn value_noise_3d(x: f64, y: f64, z: f64) -> f64 {
     let xi = x.floor() as i64;
     let yi = y.floor() as i64;
@@ -338,7 +334,6 @@ pub fn value_noise_3d(x: f64, y: f64, z: f64) -> f64 {
     lerp_f64(y0, y1, uz) * 2.0 - 1.0
 }
 /// Fractal Brownian Motion (fBm) summing `octaves` layers of value noise.
-#[allow(dead_code)]
 pub fn fbm_3d(x: f64, y: f64, z: f64, octaves: u32, lacunarity: f64, gain: f64) -> f64 {
     let mut value = 0.0;
     let mut amplitude = 0.5;
@@ -351,7 +346,6 @@ pub fn fbm_3d(x: f64, y: f64, z: f64, octaves: u32, lacunarity: f64, gain: f64) 
     value
 }
 /// Simple Perlin-like gradient noise in 2-D. Returns value in approximately `[-1, 1]`.
-#[allow(dead_code)]
 pub fn gradient_noise_2d(x: f64, y: f64) -> f64 {
     let xi = x.floor() as i64;
     let yi = y.floor() as i64;
@@ -377,6 +371,7 @@ pub fn gradient_noise_2d(x: f64, y: f64) -> f64 {
 pub(super) fn smooth_step(t: f64) -> f64 {
     t * t * (3.0 - 2.0 * t)
 }
+#[cfg(test)]
 #[inline]
 pub(super) fn smooth_step_quintic(t: f64) -> f64 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
@@ -412,7 +407,6 @@ pub(super) fn hash_2d(x: i64, y: i64) -> u64 {
 /// Evaluate a cubic Bezier curve at parameter `t ∈ [0, 1]`.
 ///
 /// Control points: `p0`, `p1`, `p2`, `p3`.
-#[allow(dead_code)]
 pub fn bezier_cubic(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3], p3: [f64; 3], t: f64) -> [f64; 3] {
     let t = t.clamp(0.0, 1.0);
     let mt = 1.0 - t;
@@ -429,7 +423,6 @@ pub fn bezier_cubic(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3], p3: [f64; 3], t: f
     ]
 }
 /// Evaluate the tangent of a cubic Bezier curve at `t`.
-#[allow(dead_code)]
 pub fn bezier_cubic_tangent(
     p0: [f64; 3],
     p1: [f64; 3],
@@ -449,7 +442,6 @@ pub fn bezier_cubic_tangent(
     ]
 }
 /// Evaluate a quadratic Bezier curve at `t`.
-#[allow(dead_code)]
 pub fn bezier_quadratic(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3], t: f64) -> [f64; 3] {
     let t = t.clamp(0.0, 1.0);
     let mt = 1.0 - t;
@@ -463,7 +455,6 @@ pub fn bezier_quadratic(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3], t: f64) -> [f6
     ]
 }
 /// Sample a cubic Bezier curve uniformly into `n_samples` points (including endpoints).
-#[allow(dead_code)]
 pub fn bezier_cubic_sample(
     p0: [f64; 3],
     p1: [f64; 3],
@@ -482,7 +473,6 @@ pub fn bezier_cubic_sample(
         .collect()
 }
 /// Catmull-Rom spline through `points`, evaluated at `t ∈ [0, 1]` over the whole curve.
-#[allow(dead_code)]
 pub fn catmull_rom(points: &[[f64; 3]], t: f64) -> Option<[f64; 3]> {
     let n = points.len();
     if n < 2 {

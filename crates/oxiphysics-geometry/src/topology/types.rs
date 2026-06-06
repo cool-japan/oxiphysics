@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::ptr_arg)]
 use super::functions::*;
 use std::collections::{HashMap, HashSet};
 
@@ -486,7 +485,7 @@ impl MeshSimplification {
     ///
     /// This is a simplified greedy approach suitable for small meshes.
     pub fn simplify_qem(
-        positions: &mut Vec<[f64; 3]>,
+        positions: &mut [[f64; 3]],
         triangles: &mut Vec<[usize; 3]>,
         target_count: usize,
     ) {

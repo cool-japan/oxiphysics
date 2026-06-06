@@ -12,8 +12,6 @@
 //! - XDMF for particle/mesh visualization in ParaView/VisIt
 //! - Trajectory for accumulating and writing animation frames
 //! - GROMACS GRO format for molecular simulation snapshots
-#![allow(missing_docs)]
-#![allow(dead_code)]
 
 mod error;
 pub use error::*;
@@ -63,7 +61,6 @@ pub use vtu::VtuWriter;
 pub use xdmf::{write_xdmf_particles, write_xdmf_temporal};
 
 /// Trait for physics data I/O.
-#[allow(dead_code)]
 pub trait PhysicsIo {
     /// Initialize this component.
     fn init(&mut self);
@@ -104,6 +101,10 @@ pub mod openfoam_format;
 pub mod parallel_io;
 pub mod particle_data_io;
 pub mod particle_formats;
+pub use particle_formats::{
+    BinaryFrameReader, BinaryFrameWriter, DcdHeader, DcdReader, DcdWriter, GroReader, GroWriter,
+    ParticleFrame, ParticleTrajectory, TrajectoryStats, XyzReader, XyzWriter,
+};
 pub mod physics_binary;
 pub mod plot3d_format;
 pub mod point_cloud_io;

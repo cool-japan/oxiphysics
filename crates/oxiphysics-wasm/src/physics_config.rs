@@ -21,9 +21,6 @@
 //! assert_eq!(cfg.substeps, 4);
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use crate::types::SimulationConfig;
 use crate::wasm_helpers::{err_to_jsvalue, to_js_value};
 use serde::{Deserialize, Serialize};

@@ -1,6 +1,6 @@
 # oxiphysics-softbody
 
-**Status: Alpha** | Version 0.1.1 | Part of [OxiPhysics](https://github.com/cool-japan/oxiphysics)
+**Status: Alpha** | Version 0.1.2 | Part of [OxiPhysics](https://github.com/cool-japan/oxiphysics)
 
 Soft body simulation for the OxiPhysics engine — Pure Rust, no C/Fortran dependencies.
 
@@ -49,7 +49,7 @@ use oxiphysics_softbody::{cloth::*, fracture_dynamics::*, inflatable::*, particl
 | Metric | Count |
 |---|---|
 | Public items | 4,524 |
-| Tests | 3,469 |
+| Tests | 3,473 |
 | Stubs | 0 |
 
 ## License

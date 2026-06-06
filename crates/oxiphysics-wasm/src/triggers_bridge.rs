@@ -6,9 +6,6 @@
 //! Wraps `oxiphysics::trigger::TriggerWorld` and exposes a JSON-oriented
 //! surface suitable for use across the WASM boundary.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -199,7 +196,6 @@ struct TriggerVolume {
     id: u32,
     shape: TriggerShape,
     enabled: bool,
-    tags: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -231,27 +227,25 @@ impl WasmTriggerWorld {
     }
 
     /// Add a spherical trigger volume. Returns the assigned volume ID.
-    pub fn add_sphere(&mut self, center: [f64; 3], radius: f64, tags: Vec<String>) -> u32 {
+    pub fn add_sphere(&mut self, center: [f64; 3], radius: f64, _tags: Vec<String>) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
         self.volumes.push(TriggerVolume {
             id,
             shape: TriggerShape::Sphere { center, radius },
             enabled: true,
-            tags,
         });
         id
     }
 
     /// Add an AABB trigger volume. Returns the assigned volume ID.
-    pub fn add_aabb(&mut self, min: [f64; 3], max: [f64; 3], tags: Vec<String>) -> u32 {
+    pub fn add_aabb(&mut self, min: [f64; 3], max: [f64; 3], _tags: Vec<String>) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
         self.volumes.push(TriggerVolume {
             id,
             shape: TriggerShape::Aabb { min, max },
             enabled: true,
-            tags,
         });
         id
     }
@@ -262,7 +256,7 @@ impl WasmTriggerWorld {
         start: [f64; 3],
         end: [f64; 3],
         radius: f64,
-        tags: Vec<String>,
+        _tags: Vec<String>,
     ) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
@@ -270,7 +264,6 @@ impl WasmTriggerWorld {
             id,
             shape: TriggerShape::Capsule { start, end, radius },
             enabled: true,
-            tags,
         });
         id
     }

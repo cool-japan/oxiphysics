@@ -7,8 +7,6 @@
 //! triangles, capsules, meshes, and point clouds. Uses `[f64; 3]` for 3D
 //! vectors (no nalgebra dependency).
 
-#![allow(dead_code)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Vector math helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -716,7 +714,6 @@ impl MeshMeshDist {
     /// Brute-force minimum distance between two meshes.
     ///
     /// Returns (distance, tri_idx_a, tri_idx_b, witness_a, witness_b).
-    #[allow(clippy::too_many_arguments)]
     pub fn query(
         verts_a: &[[f64; 3]],
         idx_a: &[usize],
@@ -763,7 +760,6 @@ impl SweptVolumeDist {
     ///
     /// Each swept capsule is described by start/end positions of its axis endpoint,
     /// and a radius.
-    #[allow(clippy::too_many_arguments)]
     pub fn capsule_trajectory_dist(
         start_a: [f64; 3],
         end_a: [f64; 3],

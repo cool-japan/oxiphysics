@@ -2,22 +2,15 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::ptr_arg)]
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions::{
-    CS2, D2Q9_OPPOSITES, D2Q9_VELOCITIES, D2Q9_WEIGHTS, D3Q19_VELOCITIES, D3Q19_WEIGHTS,
-    D3Q27_VELOCITIES, D3Q27_WEIGHTS,
-};
-#[allow(unused_imports)]
-use super::streaming::{equilibrium_d2q9, equilibrium_d3q19, non_equilibrium_d2q9};
-#[allow(unused_imports)]
-use super::types::{D2Q9, D3Q19, D3Q27};
+use super::functions::{CS2, D2Q9_OPPOSITES, D2Q9_VELOCITIES, D2Q9_WEIGHTS};
+#[cfg(test)]
+use super::functions::{D3Q19_VELOCITIES, D3Q19_WEIGHTS};
+#[cfg(test)]
+use super::streaming::non_equilibrium_d2q9;
+use super::streaming::{equilibrium_d2q9, equilibrium_d3q19};
 
 /// Compute the 2×2 deviatoric stress tensor components `[Pxx, Pyy, Pxy]`
 /// from the non-equilibrium part of a D2Q9 distribution.
-#[allow(dead_code)]
 pub fn stress_tensor_d2q9(fneq: &[f64; 9]) -> [f64; 3] {
     let mut pxx = 0.0f64;
     let mut pyy = 0.0f64;
@@ -34,7 +27,6 @@ pub fn stress_tensor_d2q9(fneq: &[f64; 9]) -> [f64; 3] {
 /// Compute the shear-rate magnitude from the non-equilibrium stress tensor (2D).
 ///
 /// `|S| = 1/(2 * rho * cs^2 * tau) * sqrt(2 * Pi_neq : Pi_neq)`
-#[allow(dead_code)]
 pub fn shear_rate_magnitude_d2q9(fneq: &[f64; 9], rho: f64, tau: f64) -> f64 {
     let [pxx, pyy, pxy] = stress_tensor_d2q9(fneq);
     let pi_sq = pxx * pxx + pyy * pyy + 2.0 * pxy * pxy;
@@ -44,7 +36,6 @@ pub fn shear_rate_magnitude_d2q9(fneq: &[f64; 9], rho: f64, tau: f64) -> f64 {
 /// Compute TRT (two-relaxation-time) equilibrium split for D2Q9.
 ///
 /// Returns symmetric (`feq_sym`) and anti-symmetric (`feq_anti`) parts.
-#[allow(dead_code)]
 pub fn trt_equilibrium_split_d2q9(rho: f64, ux: f64, uy: f64) -> ([f64; 9], [f64; 9]) {
     let feq = equilibrium_d2q9(rho, ux, uy);
     let mut sym = [0.0f64; 9];
@@ -62,7 +53,6 @@ pub fn trt_equilibrium_split_d2q9(rho: f64, ux: f64, uy: f64) -> ([f64; 9], [f64
 /// * `omega_anti` – relaxation rate for anti-symmetric part (controls numerical diffusion).
 ///   The "magic" parameter Λ = (1/omega_sym - 0.5)*(1/omega_anti - 0.5) = 3/16
 ///   gives exact Poiseuille flow with `omega_anti = 8*(2-omega_sym)/(8-omega_sym)`.
-#[allow(dead_code)]
 pub fn trt_collision_d2q9(
     f: &mut [f64; 9],
     rho: f64,
@@ -86,7 +76,6 @@ pub fn trt_collision_d2q9(
 /// Compute the "magic" TRT anti-symmetric relaxation rate for Poiseuille accuracy.
 ///
 /// Λ = (τ_sym - 0.5)(τ_anti - 0.5) = 3/16  →  τ_anti = 0.5 + 3/(16*(τ_sym-0.5))
-#[allow(dead_code)]
 pub fn trt_magic_omega_anti(omega_sym: f64) -> f64 {
     let tau_sym = 1.0 / omega_sym;
     let tau_anti = 0.5 + 3.0 / (16.0 * (tau_sym - 0.5));
@@ -96,7 +85,6 @@ pub fn trt_magic_omega_anti(omega_sym: f64) -> f64 {
 ///
 /// Assumes the missing populations at the inlet are `q = 1, 5, 8` (eastward).
 /// Computes `rho` from the known and wall populations, then fills the missing ones.
-#[allow(dead_code)]
 pub fn zou_he_west_velocity(f: &mut [f64; 9], ux: f64, uy: f64) {
     let rho = (f[0] + f[2] + f[4] + 2.0 * (f[3] + f[6] + f[7])) / (1.0 - ux);
     let ru = rho * ux;
@@ -105,7 +93,6 @@ pub fn zou_he_west_velocity(f: &mut [f64; 9], ux: f64, uy: f64) {
     f[8] = f[6] + 0.5 * (f[2] - f[4]) + (1.0 / 6.0) * ru - 0.5 * rho * uy;
 }
 /// Zou–He outlet BC: prescribe velocity `(ux, uy)` on the **east** (x=nx-1) boundary.
-#[allow(dead_code)]
 pub fn zou_he_east_velocity(f: &mut [f64; 9], ux: f64, uy: f64) {
     let rho = (f[0] + f[2] + f[4] + 2.0 * (f[1] + f[5] + f[8])) / (1.0 + ux);
     let ru = rho * ux;
@@ -114,7 +101,6 @@ pub fn zou_he_east_velocity(f: &mut [f64; 9], ux: f64, uy: f64) {
     f[6] = f[8] - 0.5 * (f[2] - f[4]) - (1.0 / 6.0) * ru + 0.5 * rho * uy;
 }
 /// Zou–He south-wall BC: prescribe velocity on the **south** (y=0) boundary.
-#[allow(dead_code)]
 pub fn zou_he_south_velocity(f: &mut [f64; 9], ux: f64, uy: f64) {
     let rho = (f[0] + f[1] + f[3] + 2.0 * (f[4] + f[7] + f[8])) / (1.0 - uy);
     let rv = rho * uy;
@@ -125,33 +111,27 @@ pub fn zou_he_south_velocity(f: &mut [f64; 9], ux: f64, uy: f64) {
 /// Convert physical kinematic viscosity to lattice relaxation time τ.
 ///
 /// τ = 0.5 + ν_phys / (cs² * dx² / dt)
-#[allow(dead_code)]
 pub fn physical_nu_to_tau(nu_phys: f64, dx: f64, dt: f64) -> f64 {
     let nu_lb = nu_phys * dt / (dx * dx);
     0.5 + nu_lb / CS2
 }
 /// Convert τ back to lattice kinematic viscosity.
-#[allow(dead_code)]
 pub fn tau_to_nu_lb(tau: f64) -> f64 {
     CS2 * (tau - 0.5)
 }
 /// Convert lattice velocity to physical velocity.
-#[allow(dead_code)]
 pub fn lb_to_physical_velocity(u_lb: f64, dx: f64, dt: f64) -> f64 {
     u_lb * dx / dt
 }
 /// Convert lattice density to physical pressure (isothermal EOS: p = rho * cs²).
-#[allow(dead_code)]
 pub fn lb_to_physical_pressure(rho_lb: f64, rho0: f64, cs_phys: f64) -> f64 {
     (rho_lb - rho0) * cs_phys * cs_phys
 }
 /// Return the 0th moment (density) of a D2Q9 population.
-#[allow(dead_code)]
 pub fn moment0_d2q9(f: &[f64; 9]) -> f64 {
     f.iter().sum()
 }
 /// Return the 1st-order moments (momentum) of a D2Q9 population as `[jx, jy]`.
-#[allow(dead_code)]
 pub fn moment1_d2q9(f: &[f64; 9]) -> [f64; 2] {
     let mut jx = 0.0f64;
     let mut jy = 0.0f64;
@@ -162,7 +142,6 @@ pub fn moment1_d2q9(f: &[f64; 9]) -> [f64; 2] {
     [jx, jy]
 }
 /// Return the 2nd-order moments (stress) as `[Pxx, Pyy, Pxy]`.
-#[allow(dead_code)]
 pub fn moment2_d2q9(f: &[f64; 9]) -> [f64; 3] {
     let mut pxx = 0.0f64;
     let mut pyy = 0.0f64;
@@ -179,7 +158,6 @@ pub fn moment2_d2q9(f: &[f64; 9]) -> [f64; 3] {
 /// Compute the H-function (Boltzmann entropy) for a D2Q9 population.
 ///
 /// H = Σ_i f_i * ln(f_i / w_i)
-#[allow(dead_code)]
 pub fn entropy_d2q9(f: &[f64; 9]) -> f64 {
     f.iter()
         .enumerate()
@@ -196,13 +174,11 @@ pub fn entropy_d2q9(f: &[f64; 9]) -> f64 {
 /// Initialize a uniform equilibrium population array at rest.
 ///
 /// Returns `Vec<[f64; 9]>` of length `nx * ny` with `feq(rho=1, u=0)`.
-#[allow(dead_code)]
 pub fn init_equilibrium_rest_2d(nx: usize, ny: usize) -> Vec<[f64; 9]> {
     let feq = equilibrium_d2q9(1.0, 0.0, 0.0);
     vec![feq; nx * ny]
 }
 /// Initialize a uniform equilibrium population array for D3Q19.
-#[allow(dead_code)]
 pub fn init_equilibrium_rest_3d(nx: usize, ny: usize, nz: usize) -> Vec<[f64; 19]> {
     let feq = equilibrium_d3q19(1.0, 0.0, 0.0, 0.0);
     vec![feq; nx * ny * nz]
@@ -210,8 +186,7 @@ pub fn init_equilibrium_rest_3d(nx: usize, ny: usize, nz: usize) -> Vec<[f64; 19
 /// Set inlet velocity profile (parabolic Poiseuille) on the west face of a 2D grid.
 ///
 /// `u_max` is the centreline velocity; the profile is `u_x(y) = u_max * 4y(H-y)/H²`.
-#[allow(dead_code)]
-pub fn set_poiseuille_inlet_west(f: &mut Vec<[f64; 9]>, nx: usize, ny: usize, u_max: f64) {
+pub fn set_poiseuille_inlet_west(f: &mut [[f64; 9]], nx: usize, ny: usize, u_max: f64) {
     for j in 0..ny {
         let y = j as f64 + 0.5;
         let h = ny as f64;
@@ -222,10 +197,9 @@ pub fn set_poiseuille_inlet_west(f: &mut Vec<[f64; 9]>, nx: usize, ny: usize, u_
 /// Perform a full periodic streaming step for D3Q27 populations.
 ///
 /// `f` is stored as `f[z*ny*nx + y*nx + x][q]`.
-#[allow(dead_code)]
-pub fn stream_d3q27_periodic(f: &mut Vec<[f64; 27]>, nx: usize, ny: usize, nz: usize) {
+pub fn stream_d3q27_periodic(f: &mut [[f64; 27]], nx: usize, ny: usize, nz: usize) {
     use crate::lattice::D3Q27_VELOCITIES;
-    let src = f.clone();
+    let src = f.to_vec();
     for z in 0..nz {
         for y in 0..ny {
             for x in 0..nx {

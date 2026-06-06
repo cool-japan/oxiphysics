@@ -5,9 +5,6 @@
 //!
 //! Exposes the Extended Position-Based Dynamics integrator to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::xpbd::{XpbdConstraint, XpbdSolver};
 use pyo3::prelude::*;
 

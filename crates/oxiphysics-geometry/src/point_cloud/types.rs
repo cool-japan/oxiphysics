@@ -2,11 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::collections::HashMap;
 
 /// Static utility methods for filtering point clouds.
@@ -119,7 +115,6 @@ impl PointCloudFilter {
 }
 /// A 3-D k-d tree for efficient nearest-neighbor queries.
 pub struct KdTree3D {
-    pub(super) nodes: Vec<KdNode3D>,
     pub(super) points: Vec<[f64; 3]>,
     pub(super) root: Option<Box<KdNode3D>>,
 }
@@ -129,7 +124,6 @@ impl KdTree3D {
         let mut indices: Vec<usize> = (0..points.len()).collect();
         let root = Self::build_recursive(points, &mut indices, 0);
         Self {
-            nodes: Vec::new(),
             points: points.to_vec(),
             root,
         }
@@ -326,19 +320,19 @@ impl NormalEstimation {
         let n = pts.len() as f64;
         let mut centroid = [0.0f64; 3];
         for &p in pts {
-            for i in 0..3 {
-                centroid[i] += p[i];
+            for (c, p_i) in centroid.iter_mut().zip(p.iter()) {
+                *c += p_i;
             }
         }
-        for i in 0..3 {
-            centroid[i] /= n;
+        for c in centroid.iter_mut() {
+            *c /= n;
         }
         let mut cov = [[0.0f64; 3]; 3];
         for &p in pts {
             let d = sub(p, centroid);
-            for i in 0..3 {
-                for j in 0..3 {
-                    cov[i][j] += d[i] * d[j];
+            for (i, cov_row) in cov.iter_mut().enumerate() {
+                for (j, cov_ij) in cov_row.iter_mut().enumerate() {
+                    *cov_ij += d[i] * d[j];
                 }
             }
         }
@@ -596,25 +590,25 @@ impl PointCloud {
                 let n = pts.len() as f64;
                 let mut centroid = [0.0f64; 3];
                 for &q in &pts {
-                    for i in 0..3 {
-                        centroid[i] += q[i];
+                    for (c, q_i) in centroid.iter_mut().zip(q.iter()) {
+                        *c += q_i;
                     }
                 }
-                for i in 0..3 {
-                    centroid[i] /= n;
+                for c in centroid.iter_mut() {
+                    *c /= n;
                 }
                 let mut cov = [[0.0f64; 3]; 3];
                 for &q in &pts {
                     let d = sub(q, centroid);
-                    for i in 0..3 {
-                        for j in 0..3 {
-                            cov[i][j] += d[i] * d[j];
+                    for (i, cov_row) in cov.iter_mut().enumerate() {
+                        for (j, cov_ij) in cov_row.iter_mut().enumerate() {
+                            *cov_ij += d[i] * d[j];
                         }
                     }
                 }
-                for i in 0..3 {
-                    for j in 0..3 {
-                        cov[i][j] /= n;
+                for cov_row in cov.iter_mut() {
+                    for cov_ij in cov_row.iter_mut() {
+                        *cov_ij /= n;
                     }
                 }
                 let eigenvalues = jacobi_eigenvalues_3x3(cov);

@@ -5,7 +5,6 @@
 use super::functions::*;
 
 /// XDMF topology type.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum XdmfTopologyType {
     /// Triangle elements.
@@ -28,7 +27,6 @@ impl XdmfTopologyType {
     }
 }
 /// Metadata describing compression settings for a dataset.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DeflateMetadata {
     /// Compression level.
@@ -69,7 +67,6 @@ impl DeflateMetadata {
     }
 }
 /// Compression level for SHDF datasets (analogous to HDF5 deflate filter).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressionLevel {
     /// No compression.
@@ -98,7 +95,6 @@ impl CompressionLevel {
 }
 /// A single named, shaped dataset inside a [`ShdfFile`].
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Dataset {
     /// Dataset name (must be unique within a file).
     pub name: String,
@@ -115,14 +111,12 @@ pub struct Dataset {
 }
 /// Compression settings for a dataset.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CompressionSettings {
     /// Which algorithm to use.
     pub algorithm: CompressionAlgorithm,
     /// Compression level (0-9, higher = more compression).
     pub level: u32,
 }
-#[allow(dead_code)]
 impl CompressionSettings {
     /// No compression.
     pub fn none() -> Self {
@@ -188,7 +182,6 @@ impl CompressionSettings {
     }
 }
 /// A field in a compound dataset (analogous to an HDF5 compound type member).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompoundField {
     /// Field name.
@@ -210,7 +203,6 @@ impl CompoundField {
 }
 /// Compression algorithm selection.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub enum CompressionAlgorithm {
     /// No compression.
     None,
@@ -220,7 +212,6 @@ pub enum CompressionAlgorithm {
     Delta,
 }
 /// A compound dataset (analogous to HDF5 compound dataset with multiple fields per record).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompoundDataset {
     /// Dataset name.
@@ -341,14 +332,12 @@ impl DatasetStats {
 }
 /// Expected schema for an SHDF file.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ShdfSchema {
     /// Expected dataset names and their types.
     pub expected_datasets: Vec<(String, DataType)>,
     /// Required global attributes.
     pub required_attributes: Vec<String>,
 }
-#[allow(dead_code)]
 impl ShdfSchema {
     /// Create a new schema.
     pub fn new() -> Self {
@@ -397,7 +386,6 @@ impl Default for ShdfSchema {
     }
 }
 /// Chunk descriptor: defines chunk shape and offset within a dataset.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ChunkDescriptor {
     /// Chunk dimensions (same rank as dataset).
@@ -409,7 +397,6 @@ pub struct ChunkDescriptor {
 }
 /// Data type tag stored in each [`Dataset`].
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum DataType {
     /// 64-bit IEEE 754 floating point.
     Float64,
@@ -421,7 +408,6 @@ pub enum DataType {
     Int64,
 }
 /// A chunked dataset: stores data split into uniform-sized chunks.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ChunkedDataset {
     /// Dataset name.
@@ -504,7 +490,6 @@ impl ChunkedDataset {
     }
 }
 /// Parameters for writing an XDMF file that references HDF5/SHDF data.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct XdmfParams {
     /// Path to the HDF5/SHDF file.
@@ -592,12 +577,10 @@ impl GroupNavigator {
 }
 /// Chunking configuration for a dataset.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ChunkingConfig {
     /// Chunk dimensions. Must have the same number of dimensions as the dataset.
     pub chunk_dims: Vec<usize>,
 }
-#[allow(dead_code)]
 impl ChunkingConfig {
     /// Create a chunking config with the given chunk dimensions.
     pub fn new(chunk_dims: Vec<usize>) -> Self {
@@ -640,7 +623,6 @@ impl ChunkingConfig {
 }
 /// Extended attribute support with typed values.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum AttributeValue {
     /// String value.
     String(String),
@@ -653,7 +635,6 @@ pub enum AttributeValue {
 }
 /// A group in the SHDF hierarchy, containing datasets and sub-groups.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ShdfGroup {
     /// Group name.
     pub name: String,
@@ -664,7 +645,6 @@ pub struct ShdfGroup {
     /// Group-level attributes.
     pub attributes: Vec<(String, String)>,
 }
-#[allow(dead_code)]
 impl ShdfGroup {
     /// Create a new empty group.
     pub fn new(name: &str) -> Self {
@@ -748,7 +728,6 @@ impl ShdfGroup {
 ///
 /// Each call to [`TimeSeriesAppender::append`] concatenates data to the
 /// internal buffer, tracking the number of appended frames.
-#[allow(dead_code)]
 pub struct TimeSeriesAppender {
     /// Name of the logical dataset.
     pub name: String,
@@ -815,7 +794,6 @@ impl TimeSeriesAppender {
 }
 /// Describes a virtual link from one dataset path to another — similar to
 /// HDF5 virtual datasets or external links.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VirtualLink {
     /// The logical path within this file (e.g. `"/virtual/positions"`).
@@ -866,7 +844,6 @@ impl VirtualLink {
 }
 /// An in-memory `.shdf` file.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ShdfFile {
     /// Ordered list of datasets.
     pub datasets: Vec<Dataset>,
@@ -875,7 +852,6 @@ pub struct ShdfFile {
 }
 impl ShdfFile {
     /// Create an empty [`ShdfFile`].
-    #[allow(dead_code)]
     pub fn new() -> Self {
         ShdfFile {
             datasets: Vec::new(),
@@ -883,7 +859,6 @@ impl ShdfFile {
         }
     }
     /// Append a Float64 dataset.
-    #[allow(dead_code)]
     pub fn add_dataset_f64(&mut self, name: &str, shape: Vec<usize>, data: Vec<f64>) {
         self.datasets.push(Dataset {
             name: name.to_string(),
@@ -895,7 +870,6 @@ impl ShdfFile {
         });
     }
     /// Append an Int32 dataset.
-    #[allow(dead_code)]
     pub fn add_dataset_i32(&mut self, name: &str, shape: Vec<usize>, data: Vec<i32>) {
         self.datasets.push(Dataset {
             name: name.to_string(),
@@ -907,13 +881,11 @@ impl ShdfFile {
         });
     }
     /// Add a global (file-level) key/value attribute.
-    #[allow(dead_code)]
     pub fn add_global_attr(&mut self, key: &str, value: &str) {
         self.global_attributes
             .push((key.to_string(), value.to_string()));
     }
     /// Look up a Float64 dataset by name and return its data slice.
-    #[allow(dead_code)]
     pub fn get_f64(&self, name: &str) -> Option<&[f64]> {
         self.datasets
             .iter()
@@ -921,7 +893,6 @@ impl ShdfFile {
             .map(|d| d.data_f64.as_slice())
     }
     /// Look up an Int32 dataset by name and return its data slice.
-    #[allow(dead_code)]
     pub fn get_i32(&self, name: &str) -> Option<&[i32]> {
         self.datasets
             .iter()
@@ -929,7 +900,6 @@ impl ShdfFile {
             .map(|d| d.data_i32.as_slice())
     }
     /// Serialize the file to a binary blob (little-endian).
-    #[allow(dead_code)]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out: Vec<u8> = Vec::new();
         out.extend_from_slice(MAGIC);
@@ -990,7 +960,6 @@ impl ShdfFile {
     /// Deserialize a binary blob written by [`ShdfFile::to_bytes`].
     ///
     /// Returns `Err(String)` on any format violation.
-    #[allow(dead_code)]
     pub fn from_bytes(data: &[u8]) -> Result<Self, String> {
         let mut pos: usize = 0;
         if data.len() < 4 {
@@ -1079,7 +1048,6 @@ impl ShdfFile {
         })
     }
     /// Return a human-readable summary of the file contents.
-    #[allow(dead_code)]
     pub fn write_to_text(&self) -> String {
         let mut out = String::new();
         out.push_str("=== SHDF File Summary ===\n");
@@ -1133,9 +1101,7 @@ impl Default for ShdfFile {
     }
 }
 /// Helper for managing typed attributes.
-#[allow(dead_code)]
 pub struct AttributeHelper;
-#[allow(dead_code)]
 impl AttributeHelper {
     /// Serialize an attribute value to a string.
     pub fn to_string(val: &AttributeValue) -> String {

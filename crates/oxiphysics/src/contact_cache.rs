@@ -43,9 +43,6 @@
 //! assert_eq!(entry.points.len(), 1);
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------

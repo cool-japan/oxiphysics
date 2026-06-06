@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::ptr_arg)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     ConvexSupport, add, dot, norm, normalize, scale, speculative_contact_candidate, sub,
 };
@@ -171,7 +168,6 @@ impl RotatingSweptBody {
     }
 }
 /// Accumulated statistics for a CCD simulation pass.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct CcdStats {
     /// Number of body pairs evaluated.
@@ -280,7 +276,6 @@ impl SweptCapsule {
     }
 }
 /// A body slot in the CCD broadphase, combining swept geometry and filter.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CcdBodySlot {
     /// The swept body.
@@ -329,7 +324,6 @@ pub struct GjkResult {
     pub overlapping: bool,
 }
 /// A CCD broadphase that produces filtered candidate pairs.
-#[allow(dead_code)]
 pub struct CcdBroadphase {
     /// The time step.
     pub dt: f64,
@@ -486,7 +480,6 @@ pub struct CcdEvent {
     pub contact_point: [f64; 3],
 }
 /// Filter flags for CCD broadphase pairs.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CcdFilter {
     /// Category bitmask of the body.
@@ -602,7 +595,7 @@ impl SubstepIntegrator {
         Self { n_substeps }
     }
     /// Advance all bodies linearly to time `toi`.
-    pub fn step_to_toi(&self, bodies: &mut Vec<SweptBody>, toi: f64) {
+    pub fn step_to_toi(&self, bodies: &mut [SweptBody], toi: f64) {
         for b in bodies.iter_mut() {
             b.pos = b.position_at(toi);
         }
@@ -611,7 +604,7 @@ impl SubstepIntegrator {
     ///
     /// Uses a simple coefficient-of-restitution impulse along the contact
     /// normal.  Bodies with `inv_mass == 0` (static) are unaffected.
-    pub fn resolve_event(&self, bodies: &mut Vec<SweptBody>, event: &CcdEvent, restitution: f64) {
+    pub fn resolve_event(&self, bodies: &mut [SweptBody], event: &CcdEvent, restitution: f64) {
         let idx_a = bodies.iter().position(|_| true).map(|_| event.body_a);
         let idx_b = Some(event.body_b);
         let (ia, ib) = match (idx_a, idx_b) {

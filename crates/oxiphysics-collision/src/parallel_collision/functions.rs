@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::collections::HashMap;
 
 use super::types::{
@@ -90,10 +89,10 @@ pub fn aabb_overlap_batch(query: &ParAabb, targets: &[ParAabb]) -> Vec<usize> {
 /// Returns pairs `(i, j)` with `i < j`.
 pub fn aabb_all_pairs_overlap(aabbs: &[ParAabb]) -> Vec<(usize, usize)> {
     let mut pairs = Vec::new();
-    for i in 0..aabbs.len() {
-        for j in (i + 1)..aabbs.len() {
-            if aabbs[i].overlaps(&aabbs[j]) {
-                pairs.push((i, j));
+    for (i, a) in aabbs.iter().enumerate() {
+        for (j, b) in aabbs[i + 1..].iter().enumerate() {
+            if a.overlaps(b) {
+                pairs.push((i, i + 1 + j));
             }
         }
     }
@@ -137,12 +136,17 @@ pub fn par_sphere_box(
     sphere: &ParSphere,
     bx: &ParBox,
 ) -> Option<ParContact> {
-    let mut closest = [0.0f64; 3];
-    for i in 0..3 {
-        let lo = bx.center[i] - bx.half_extents[i];
-        let hi = bx.center[i] + bx.half_extents[i];
-        closest[i] = sphere.center[i].max(lo).min(hi);
-    }
+    let closest: [f64; 3] = [
+        sphere.center[0]
+            .max(bx.center[0] - bx.half_extents[0])
+            .min(bx.center[0] + bx.half_extents[0]),
+        sphere.center[1]
+            .max(bx.center[1] - bx.half_extents[1])
+            .min(bx.center[1] + bx.half_extents[1]),
+        sphere.center[2]
+            .max(bx.center[2] - bx.half_extents[2])
+            .min(bx.center[2] + bx.half_extents[2]),
+    ];
     let delta = sub3(sphere.center, closest);
     let dist_sq = len_sq3(delta);
     if dist_sq >= sphere.radius * sphere.radius {
@@ -164,16 +168,17 @@ pub fn par_sphere_box(
     })
 }
 /// Test box-box (AABB) contact using SAT on the three coordinate axes.
-#[allow(clippy::too_many_arguments)]
 pub fn par_box_box(a_idx: u32, b_idx: u32, a: &ParBox, b: &ParBox) -> Option<ParContact> {
     let mut min_depth = f64::MAX;
     let mut best_axis = 0usize;
-    for i in 0..3 {
-        let a_lo = a.center[i] - a.half_extents[i];
-        let a_hi = a.center[i] + a.half_extents[i];
-        let b_lo = b.center[i] - b.half_extents[i];
-        let b_hi = b.center[i] + b.half_extents[i];
-        let overlap = a_hi.min(b_hi) - a_lo.max(b_lo);
+    for (i, ((&ac, &ah), (&bc, &bh))) in a
+        .center
+        .iter()
+        .zip(a.half_extents.iter())
+        .zip(b.center.iter().zip(b.half_extents.iter()))
+        .enumerate()
+    {
+        let overlap = (ac + ah).min(bc + bh) - (ac - ah).max(bc - bh);
         if overlap <= 0.0 {
             return None;
         }
@@ -325,7 +330,6 @@ pub fn build_islands(n_bodies: usize, contacts: &[ParContact]) -> Vec<Vec<usize>
 /// 3. Contact reduction.
 /// 4. Island detection.
 /// 5. Optionally CCD sweep.
-#[allow(clippy::too_many_arguments)]
 pub fn run_parallel_collision(
     aabbs: &[ParAabb],
     shapes: &[ParShapeKind],

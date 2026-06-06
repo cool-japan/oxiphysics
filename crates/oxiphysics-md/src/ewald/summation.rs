@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -111,7 +110,6 @@ impl PmeElectrostatics {
 ///
 /// Computes real-space, reciprocal-space, and self-energy contributions for
 /// a periodic orthorhombic box.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EwaldSummation {
     /// Ewald splitting parameters.
@@ -124,7 +122,6 @@ pub struct EwaldSummation {
 
 impl EwaldSummation {
     /// Create a new Ewald summation.
-    #[allow(dead_code)]
     pub fn new(params: EwaldParams, box_lengths: [f64; 3]) -> Self {
         Self {
             params,
@@ -134,7 +131,6 @@ impl EwaldSummation {
     }
 
     /// Create with explicit k_max.
-    #[allow(dead_code)]
     pub fn with_k_max(params: EwaldParams, box_lengths: [f64; 3], k_max: i32) -> Self {
         Self {
             params,
@@ -144,12 +140,10 @@ impl EwaldSummation {
     }
 
     /// Apply minimum image convention for an orthorhombic box.
-    #[allow(dead_code)]
     pub(crate) fn minimum_image(&self, dr: [f64; 3]) -> [f64; 3] {
         let mut result = dr;
-        for a in 0..3 {
-            let l = self.box_lengths[a];
-            result[a] -= l * (result[a] / l).round();
+        for (r, &l) in result.iter_mut().zip(self.box_lengths.iter()) {
+            *r -= l * (*r / l).round();
         }
         result
     }
@@ -157,7 +151,6 @@ impl EwaldSummation {
     /// Real-space (direct) energy (kJ mol^-1).
     ///
     /// sum_{i<j} COULOMB_K * q_i * q_j * erfc(alpha * r_ij) / r_ij
-    #[allow(dead_code)]
     pub fn real_space_energy(&self, positions: &[[f64; 3]], charges: &[f64]) -> f64 {
         let n = positions.len();
         let alpha = self.params.alpha;
@@ -189,7 +182,6 @@ impl EwaldSummation {
     /// E_recip = (1 / 2*pi*V) sum_{k!=0} (4*pi^2/k^2) exp(-k^2/(4*alpha^2)) |S(k)|^2
     /// ```
     /// where S(k) = sum_i q_i exp(i k*r_i).
-    #[allow(dead_code)]
     pub fn reciprocal_space_energy(&self, positions: &[[f64; 3]], charges: &[f64]) -> f64 {
         let n = positions.len();
         let alpha = self.params.alpha;
@@ -235,7 +227,6 @@ impl EwaldSummation {
     /// ```text
     /// E_self = -COULOMB_K / epsilon_r * alpha / sqrt(pi) * sum q_i^2
     /// ```
-    #[allow(dead_code)]
     pub fn self_energy(&self, charges: &[f64]) -> f64 {
         let sum_q2: f64 = charges.iter().map(|q| q * q).sum();
         -(COULOMB_K / self.params.epsilon_r) * self.params.alpha / std::f64::consts::PI.sqrt()
@@ -243,7 +234,6 @@ impl EwaldSummation {
     }
 
     /// Total Ewald energy = real + reciprocal + self (kJ mol^-1).
-    #[allow(dead_code)]
     pub fn total_energy(&self, positions: &[[f64; 3]], charges: &[f64]) -> f64 {
         self.real_space_energy(positions, charges)
             + self.reciprocal_space_energy(positions, charges)
@@ -257,7 +247,6 @@ impl EwaldSummation {
     /// E_dipole = (2*pi / (3*V)) * |M|^2
     /// ```
     /// where M = sum_i q_i * r_i is the total dipole moment.
-    #[allow(dead_code)]
     pub fn total_energy_vacuum_bc(&self, positions: &[[f64; 3]], charges: &[f64]) -> f64 {
         let base = self.total_energy(positions, charges);
         let dipole_corr = self.dipole_correction(positions, charges);
@@ -269,7 +258,6 @@ impl EwaldSummation {
     /// ```text
     /// E_dip = COULOMB_K * (2*pi / (3*V)) * |M|^2 / epsilon_r
     /// ```
-    #[allow(dead_code)]
     pub fn dipole_correction(&self, positions: &[[f64; 3]], charges: &[f64]) -> f64 {
         let n = positions.len();
         let mut mx = 0.0;
@@ -290,7 +278,6 @@ impl EwaldSummation {
     /// ```text
     /// F_i = sum_{j!=i} K/epsilon_r q_i q_j [erfc(alpha*r)/r^2 + 2*alpha exp(-alpha^2*r^2)/(sqrt(pi) r)] (r_hat_ij)
     /// ```
-    #[allow(dead_code)]
     pub fn real_space_forces(&self, positions: &[[f64; 3]], charges: &[f64]) -> Vec<[f64; 3]> {
         let n = positions.len();
         let alpha = self.params.alpha;
@@ -332,7 +319,6 @@ impl EwaldSummation {
     /// Reciprocal-space forces (kJ mol^-1 angstrom^-1) on each atom.
     ///
     /// Computed as derivative of the reciprocal energy with respect to positions.
-    #[allow(dead_code)]
     pub fn reciprocal_space_forces(
         &self,
         positions: &[[f64; 3]],
@@ -391,7 +377,6 @@ impl EwaldSummation {
     }
 
     /// Total forces = real-space + reciprocal-space (kJ mol^-1 angstrom^-1).
-    #[allow(dead_code)]
     pub fn total_forces(&self, positions: &[[f64; 3]], charges: &[f64]) -> Vec<[f64; 3]> {
         let f_real = self.real_space_forces(positions, charges);
         let f_recip = self.reciprocal_space_forces(positions, charges);
@@ -406,7 +391,6 @@ impl EwaldSummation {
     }
 
     /// Compute the system dipole moment vector (e * angstrom).
-    #[allow(dead_code)]
     pub fn system_dipole(&self, positions: &[[f64; 3]], charges: &[f64]) -> [f64; 3] {
         let n = positions.len();
         let mut m = [0.0; 3];
@@ -419,7 +403,6 @@ impl EwaldSummation {
     }
 
     /// Box volume in angstrom^3.
-    #[allow(dead_code)]
     pub fn volume(&self) -> f64 {
         self.box_lengths[0] * self.box_lengths[1] * self.box_lengths[2]
     }
@@ -430,7 +413,6 @@ impl EwaldSummation {
 // ---------------------------------------------------------------------------
 
 /// Decomposition of Ewald energy into components.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EwaldEnergyDecomposition {
     /// Real-space pair interaction energy.
@@ -445,7 +427,6 @@ pub struct EwaldEnergyDecomposition {
 
 impl EwaldEnergyDecomposition {
     /// Total energy.
-    #[allow(dead_code)]
     pub fn total(&self) -> f64 {
         self.real_space + self.reciprocal + self.self_correction + self.dipole_correction
     }
@@ -453,7 +434,6 @@ impl EwaldEnergyDecomposition {
 
 impl EwaldSummation {
     /// Compute full energy decomposition.
-    #[allow(dead_code)]
     pub fn energy_decomposition(
         &self,
         positions: &[[f64; 3]],
@@ -468,7 +448,6 @@ impl EwaldSummation {
     }
 
     /// Compute full energy decomposition with vacuum BC.
-    #[allow(dead_code)]
     pub fn energy_decomposition_vacuum(
         &self,
         positions: &[[f64; 3]],
@@ -489,25 +468,21 @@ impl EwaldSummation {
 
 impl EwaldSummation {
     /// Compute the net total charge (e) of the system.
-    #[allow(dead_code)]
     pub fn net_charge(charges: &[f64]) -> f64 {
         charges.iter().sum()
     }
 
     /// Check whether the system is charge-neutral (|Q_net| < tol).
-    #[allow(dead_code)]
     pub fn is_charge_neutral(charges: &[f64], tol: f64) -> bool {
         Self::net_charge(charges).abs() < tol
     }
 
     /// Compute the real-space virial for the system.
-    #[allow(dead_code)]
     pub fn real_space_virial(&self, positions: &[[f64; 3]], charges: &[f64]) -> f64 {
         ewald_real_space_virial(positions, charges, self)
     }
 
     /// Compute the squared charge sum Σᵢ qᵢ².
-    #[allow(dead_code)]
     pub fn charge_sum_sq(charges: &[f64]) -> f64 {
         charges.iter().map(|q| q * q).sum()
     }
@@ -515,7 +490,6 @@ impl EwaldSummation {
     /// Reciprocal-space energy for a single k-vector (kJ mol⁻¹).
     ///
     /// Useful for debugging and per-k contributions.
-    #[allow(dead_code)]
     pub fn reciprocal_energy_single_k(
         &self,
         k: [f64; 3],
@@ -543,7 +517,6 @@ impl EwaldSummation {
     /// ```text
     /// E_excl = COULOMB_K / epsilon_r * Σ_{excl} qi * qj * erf(alpha * r_ij) / r_ij
     /// ```
-    #[allow(dead_code)]
     pub fn excluded_pair_correction(
         &self,
         positions: &[[f64; 3]],
@@ -585,7 +558,6 @@ impl EwaldSummation {
 /// Useful when you want to switch between "real-space only" (for testing)
 /// and the full Ewald sum without restructuring the calling code.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct EwaldForceMixer {
     /// Full Ewald summation engine.
     pub ewald: EwaldSummation,
@@ -593,7 +565,6 @@ pub struct EwaldForceMixer {
     pub real_only: bool,
 }
 
-#[allow(dead_code)]
 impl EwaldForceMixer {
     /// Create a mixer that uses the full Ewald sum.
     pub fn new(ewald: EwaldSummation) -> Self {
@@ -639,7 +610,6 @@ impl EwaldForceMixer {
 
 /// Result of a full Ewald energy + force calculation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct EwaldEnergy {
     /// Total electrostatic energy (kJ mol⁻¹).
     pub total: f64,
@@ -653,7 +623,6 @@ pub struct EwaldEnergy {
     pub forces: Vec<[f64; 3]>,
 }
 
-#[allow(dead_code)]
 impl EwaldEnergy {
     /// Compute a full Ewald energy+force calculation.
     pub fn compute(ewald: &EwaldSummation, positions: &[[f64; 3]], charges: &[f64]) -> Self {
@@ -683,7 +652,6 @@ impl EwaldSummation {
     ///
     /// # Returns
     /// `(energy, forces)` where energy includes real, reciprocal, and self terms.
-    #[allow(dead_code)]
     pub fn compute_forces_full(
         &self,
         positions: &[[f64; 3]],
@@ -722,7 +690,6 @@ impl EwaldSummation {
     ///
     /// # Returns
     /// Slab dipole correction energy (kJ mol^-1).
-    #[allow(dead_code)]
     pub fn compute_dipole_correction(&self, positions: &[[f64; 3]], charges: &[f64]) -> f64 {
         let n = positions.len();
         let mut mx = 0.0_f64;
@@ -756,7 +723,6 @@ impl EwaldSummation {
     ///
     /// # Returns
     /// Estimated total Ewald error (kJ mol^-1).
-    #[allow(dead_code)]
     pub fn estimate_error(&self, charges: &[f64], box_length: f64, k_max: i32) -> f64 {
         let charge_sum_sq: f64 = charges.iter().map(|q| q * q).sum();
         let err_real = self.params.real_space_error_estimate(charge_sum_sq);
@@ -878,8 +844,8 @@ mod tests {
         let positions = [[1.0, 1.0, 1.0], [4.0, 1.0, 1.0]];
         let charges = [1.0, -1.0];
         let forces = ewald.real_space_forces(&positions, &charges);
-        for a in 0..3 {
-            let sum = forces[0][a] + forces[1][a];
+        for (a, (&f0a, &f1a)) in forces[0].iter().zip(forces[1].iter()).enumerate() {
+            let sum = f0a + f1a;
             assert!(
                 sum.abs() < 1e-10,
                 "Newton III violated: axis {a}, sum = {sum}"
@@ -978,8 +944,8 @@ mod tests {
         let positions = [[3.0, 10.0, 10.0], [12.0, 10.0, 10.0]];
         let charges = [1.0, -1.0];
         let forces = ewald.reciprocal_space_forces(&positions, &charges);
-        for a in 0..3 {
-            let sum = forces[0][a] + forces[1][a];
+        for (a, (&f0a, &f1a)) in forces[0].iter().zip(forces[1].iter()).enumerate() {
+            let sum = f0a + f1a;
             assert!(
                 sum.abs() < 1e-6,
                 "Reciprocal forces Newton III violated: axis {a}, sum = {sum}"
@@ -994,8 +960,8 @@ mod tests {
         let positions = [[3.0, 10.0, 10.0], [7.0, 10.0, 10.0]];
         let charges = [1.0, -1.0];
         let forces = ewald.total_forces(&positions, &charges);
-        for a in 0..3 {
-            let sum = forces[0][a] + forces[1][a];
+        for (a, (&f0a, &f1a)) in forces[0].iter().zip(forces[1].iter()).enumerate() {
+            let sum = f0a + f1a;
             assert!(
                 sum.abs() < 1e-6,
                 "Total forces Newton III violated: axis {a}, sum = {sum}"
@@ -1073,8 +1039,8 @@ mod tests {
         let positions = [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]];
         let charges = [1.0, -1.0];
         let forces = ewald_real_forces(&positions, &charges, 0.5, 10.0);
-        for a in 0..3 {
-            let sum = forces[0][a] + forces[1][a];
+        for (a, (&f0a, &f1a)) in forces[0].iter().zip(forces[1].iter()).enumerate() {
+            let sum = f0a + f1a;
             assert!(
                 sum.abs() < 1e-10,
                 "Newton III violated on axis {a}: sum = {sum}"
@@ -1096,21 +1062,20 @@ mod tests {
         let pos1 = [[0.0, 0.0, 0.0], [4.0 + dx, 0.0, 0.0]];
         let e1 = ewald_real_space_energy(&pos1, &charges, alpha, cutoff);
 
-        #[allow(non_snake_case)]
-        let dEdx_numerical = (e1 - e0) / dx;
+        let de_dx_numerical = (e1 - e0) / dx;
 
         // Analytic force (on atom 1 in +x direction)
         let forces = ewald_real_forces(&pos0, &charges, alpha, cutoff);
         let f_x_on_1 = forces[1][0]; // force on atom 1 in x
 
-        // F = -dE/dr => f_x_on_1 should be approximately -dEdx_numerical * dEdx/dr_1_x
+        // F = -dE/dr => f_x_on_1 should be approximately -de_dx_numerical * dEdx/dr_1_x
         // For atom 1 at (4,0,0), moving it in +x increases r, so:
         // dE/dr_1x ~ dEdx (chain rule with r = r_1x - r_0x = r_1x)
-        // f_1x ~ -dEdx_numerical
+        // f_1x ~ -de_dx_numerical
         assert!(
-            (f_x_on_1 + dEdx_numerical).abs() / (f_x_on_1.abs().max(1e-10)) < 1e-3,
+            (f_x_on_1 + de_dx_numerical).abs() / (f_x_on_1.abs().max(1e-10)) < 1e-3,
             "Force consistency: F_x = {f_x_on_1}, -dE/dx = {}",
-            -dEdx_numerical
+            -de_dx_numerical
         );
     }
 
@@ -1119,8 +1084,8 @@ mod tests {
         let positions = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
         let charges = [1.0, -1.0];
         let forces = coulomb_forces_direct(&positions, &charges);
-        for a in 0..3 {
-            let sum = forces[0][a] + forces[1][a];
+        for (a, (&f0a, &f1a)) in forces[0].iter().zip(forces[1].iter()).enumerate() {
+            let sum = f0a + f1a;
             assert!(
                 sum.abs() < 1e-10,
                 "Newton III violated on axis {a}: sum = {sum}"
@@ -1181,8 +1146,8 @@ mod tests {
         let positions = [[1.0, 0.0, 0.0], [5.0, 0.0, 0.0]];
         let charges = [1.0, -1.0];
         let forces = es.real_space_forces(&positions, &charges);
-        for a in 0..3 {
-            let sum = forces[0][a] + forces[1][a];
+        for (a, (&f0a, &f1a)) in forces[0].iter().zip(forces[1].iter()).enumerate() {
+            let sum = f0a + f1a;
             assert!(
                 sum.abs() < 1e-10,
                 "Newton III violated on axis {a}: sum = {sum}"
@@ -1298,8 +1263,8 @@ mod tests {
         let positions = [[3.0, 0.0, 0.0], [7.0, 0.0, 0.0]];
         let charges = [1.0, -1.0];
         let forces = ewald.total_forces(&positions, &charges);
-        for a in 0..3 {
-            let sum = forces[0][a] + forces[1][a];
+        for (a, (&f0a, &f1a)) in forces[0].iter().zip(forces[1].iter()).enumerate() {
+            let sum = f0a + f1a;
             assert!(sum.abs() < 0.1, "Newton III violation on axis {a}: {sum}");
         }
     }
@@ -1312,11 +1277,10 @@ mod tests {
         let positions = [[10.0, 10.0, 10.0], [10.0, 10.0, 10.0]];
         let charges = [1.0, -1.0];
         let m = ewald.system_dipole(&positions, &charges);
-        for a in 0..3 {
+        for (a, v) in m.iter().enumerate() {
             assert!(
-                m[a].abs() < 1e-14,
-                "zero dipole for centrosymmetric pair, axis {a}: {}",
-                m[a]
+                v.abs() < 1e-14,
+                "zero dipole for centrosymmetric pair, axis {a}: {v}"
             );
         }
     }
@@ -1364,8 +1328,8 @@ mod tests {
         let (pos, charges, ewald) = two_charge_system();
         let (_e, f) = ewald.compute_forces_full(&pos, &charges);
         // For a two-charge system, Newton's 3rd law: F0 + F1 ≈ 0
-        for a in 0..3 {
-            let net = f[0][a] + f[1][a];
+        for (a, (&f0a, &f1a)) in f[0].iter().zip(f[1].iter()).enumerate() {
+            let net = f0a + f1a;
             assert!(net.abs() < 1e-6, "net force on axis {a} = {net}");
         }
     }

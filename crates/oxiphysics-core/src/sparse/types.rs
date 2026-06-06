@@ -2,12 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::functions::invert_small_dense;
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 
 /// Sparse LU factorization result.
 ///
@@ -29,9 +24,9 @@ impl SparseLu {
         let n = a.nrows;
         assert_eq!(a.nrows, a.ncols, "ILU(0) requires square matrix");
         let mut lval = vec![vec![0.0f64; n]; n];
-        for r in 0..n {
+        for (r, lval_row) in lval.iter_mut().enumerate() {
             for k in a.row_ptr[r]..a.row_ptr[r + 1] {
-                lval[r][a.col_idx[k]] = a.values[k];
+                lval_row[a.col_idx[k]] = a.values[k];
             }
         }
         for k in 0..n {
@@ -56,22 +51,22 @@ impl SparseLu {
         let mut u_rows = Vec::new();
         let mut u_cols = Vec::new();
         let mut u_vals = Vec::new();
-        for i in 0..n {
+        for (i, lrow) in lval.iter().enumerate() {
             l_rows.push(i);
             l_cols.push(i);
             l_vals.push(1.0);
-            for j in 0..i {
-                if lval[i][j].abs() > 1e-30 {
+            for (j, &v) in lrow.iter().enumerate().take(i) {
+                if v.abs() > 1e-30 {
                     l_rows.push(i);
                     l_cols.push(j);
-                    l_vals.push(lval[i][j]);
+                    l_vals.push(v);
                 }
             }
-            for j in i..n {
-                if lval[i][j].abs() > 1e-30 {
+            for (j, &v) in lrow.iter().enumerate().skip(i) {
+                if v.abs() > 1e-30 {
                     u_rows.push(i);
                     u_cols.push(j);
-                    u_vals.push(lval[i][j]);
+                    u_vals.push(v);
                 }
             }
         }
@@ -137,14 +132,14 @@ impl CscMatrix {
             col_counts[c] += 1;
         }
         let mut col_ptr = vec![0usize; ncols + 1];
-        for j in 0..ncols {
-            col_ptr[j + 1] = col_ptr[j] + col_counts[j];
+        for (j, &cnt) in col_counts.iter().enumerate() {
+            col_ptr[j + 1] = col_ptr[j] + cnt;
         }
         let mut row_idx = vec![0usize; nnz];
         let mut values = vec![0.0f64; nnz];
         let mut pos = col_ptr.clone();
-        for i in 0..nrows {
-            for k in a.row_ptr[i]..a.row_ptr[i + 1] {
+        for (i, window) in (0..nrows).map(|i| (i, a.row_ptr[i]..a.row_ptr[i + 1])) {
+            for k in window {
                 let j = a.col_idx[k];
                 let p = pos[j];
                 row_idx[p] = i;
@@ -173,9 +168,9 @@ impl CscMatrix {
     pub fn matvec(&self, x: &[f64]) -> Vec<f64> {
         assert_eq!(x.len(), self.ncols, "matvec: dimension mismatch");
         let mut y = vec![0.0f64; self.nrows];
-        for j in 0..self.ncols {
+        for (j, &xj) in x.iter().enumerate() {
             for k in self.col_ptr[j]..self.col_ptr[j + 1] {
-                y[self.row_idx[k]] += self.values[k] * x[j];
+                y[self.row_idx[k]] += self.values[k] * xj;
             }
         }
         y
@@ -191,16 +186,12 @@ impl CscMatrix {
 /// `block_size` must divide `n`.
 pub struct BlockJacobi {
     /// Inverse of each diagonal block, stored as flat row-major matrices.
-    #[allow(dead_code)]
     pub block_invs: Vec<Vec<f64>>,
     /// Dimension of each block.
-    #[allow(dead_code)]
     pub block_size: usize,
     /// Number of rows / columns.
-    #[allow(dead_code)]
     pub n: usize,
 }
-#[allow(dead_code)]
 impl BlockJacobi {
     /// Build a block Jacobi preconditioner from a CSR matrix.
     pub fn new(a: &CsrMatrix, block_size: usize) -> Self {
@@ -287,8 +278,8 @@ impl CsrMatrix {
             assert!(r < nrows, "row index out of bounds");
             row_ptr[r + 1] += 1;
         }
-        for i in 0..nrows {
-            row_ptr[i + 1] += row_ptr[i];
+        for i in 1..=nrows {
+            row_ptr[i] += row_ptr[i - 1];
         }
         let nnz = rows.len();
         let mut col_idx = vec![0usize; nnz];
@@ -364,12 +355,12 @@ impl CsrMatrix {
     pub fn matvec(&self, x: &[f64]) -> Vec<f64> {
         assert_eq!(x.len(), self.ncols, "matvec: x length must equal ncols");
         let mut y = vec![0.0f64; self.nrows];
-        for r in 0..self.nrows {
+        for (r, yr) in y.iter_mut().enumerate() {
             let mut acc = 0.0;
             for k in self.row_ptr[r]..self.row_ptr[r + 1] {
                 acc += self.values[k] * x[self.col_idx[k]];
             }
-            y[r] = acc;
+            *yr = acc;
         }
         y
     }
@@ -421,17 +412,17 @@ impl CsrMatrix {
     pub fn diagonal(&self) -> Vec<f64> {
         let n = self.nrows.min(self.ncols);
         let mut d = vec![0.0f64; n];
-        for i in 0..n {
-            d[i] = self.get(i, i);
+        for (i, di) in d.iter_mut().enumerate() {
+            *di = self.get(i, i);
         }
         d
     }
     /// Convert to dense row-major representation.
     pub fn to_dense(&self) -> Vec<Vec<f64>> {
         let mut dense = vec![vec![0.0f64; self.ncols]; self.nrows];
-        for r in 0..self.nrows {
+        for (r, row) in dense.iter_mut().enumerate() {
             for k in self.row_ptr[r]..self.row_ptr[r + 1] {
-                dense[r][self.col_idx[k]] = self.values[k];
+                row[self.col_idx[k]] = self.values[k];
             }
         }
         dense
@@ -473,7 +464,6 @@ impl CsrMatrix {
     /// Compute the Kronecker product `A ⊗ B` of two CSR matrices.
     ///
     /// The result is an `(m*p) × (n*q)` matrix where `A` is `m×n` and `B` is `p×q`.
-    #[allow(dead_code)]
     pub fn kronecker_product(&self, b: &CsrMatrix) -> CsrMatrix {
         let (m, n) = (self.nrows, self.ncols);
         let (p, q) = (b.nrows, b.ncols);
@@ -507,7 +497,6 @@ impl CsrMatrix {
     ///
     /// # Panics
     /// Panics if the matrix is not square, or if a zero pivot is encountered.
-    #[allow(dead_code)]
     pub fn incomplete_cholesky(&self) -> CsrMatrix {
         assert_eq!(self.nrows, self.ncols, "IC(0): matrix must be square");
         let n = self.nrows;
@@ -579,7 +568,6 @@ impl CsrMatrix {
     ///
     /// # Panics
     /// Panics if the matrix is not square or if `n == 0`.
-    #[allow(dead_code)]
     pub fn power_iteration(&self, max_iter: usize, tol: f64) -> (f64, Vec<f64>) {
         assert_eq!(
             self.nrows, self.ncols,
@@ -646,18 +634,18 @@ impl SparseQr {
             if norm_v2 < 1e-28 {
                 continue;
             }
-            for j in k..n {
+            (k..n).for_each(|j| {
                 let dot: f64 = (0..col_len).map(|i| v[i] * r[i + k][j]).sum();
                 let factor = 2.0 * dot / norm_v2;
                 for i in 0..col_len {
                     r[i + k][j] -= factor * v[i];
                 }
-            }
-            for i in 0..m {
-                let dot: f64 = (0..col_len).map(|l| q[i][l + k] * v[l]).sum();
+            });
+            for qi in q.iter_mut().take(m) {
+                let dot: f64 = (0..col_len).map(|l| qi[l + k] * v[l]).sum();
                 let factor = 2.0 * dot / norm_v2;
                 for l in 0..col_len {
-                    q[i][l + k] -= factor * v[l];
+                    qi[l + k] -= factor * v[l];
                 }
             }
         }
@@ -675,16 +663,16 @@ impl SparseQr {
         let m = self.nrows;
         let n = self.ncols;
         let mut c = vec![0.0f64; m];
-        for i in 0..m {
-            for j in 0..m.min(b.len()) {
-                c[i] += self.q[j][i] * b[j];
+        for (i, ci) in c.iter_mut().enumerate() {
+            for (j, &bj) in b.iter().enumerate().take(m.min(b.len())) {
+                *ci += self.q[j][i] * bj;
             }
         }
         let mut x = vec![0.0f64; n];
         for i in (0..n).rev() {
             let mut s = c[i];
-            for j in (i + 1)..n {
-                s -= self.r[i][j] * x[j];
+            for (j, &xj) in x.iter().enumerate().take(n).skip(i + 1) {
+                s -= self.r[i][j] * xj;
             }
             let diag = self.r[i][i];
             x[i] = if diag.abs() < 1e-14 { 0.0 } else { s / diag };
@@ -705,19 +693,16 @@ impl IncompleteCholesky {
         let n = a.nrows;
         assert_eq!(a.nrows, a.ncols, "IC(0) requires square matrix");
         let mut lval = vec![vec![0.0f64; n]; n];
-        for r in 0..n {
+        for (r, lval_row) in lval.iter_mut().enumerate() {
             for k in a.row_ptr[r]..a.row_ptr[r + 1] {
                 let c = a.col_idx[k];
                 if c <= r {
-                    lval[r][c] = a.values[k];
+                    lval_row[c] = a.values[k];
                 }
             }
         }
         for j in 0..n {
-            let mut sum_sq = 0.0f64;
-            for k in 0..j {
-                sum_sq += lval[j][k] * lval[j][k];
-            }
+            let sum_sq: f64 = lval[j][..j].iter().map(|&v| v * v).sum();
             let d = lval[j][j] - sum_sq;
             if d <= 0.0 {
                 return None;
@@ -728,22 +713,23 @@ impl IncompleteCholesky {
                 if lval[i][j].abs() < 1e-30 {
                     continue;
                 }
-                let mut dot = 0.0;
-                for k in 0..j {
-                    dot += lval[i][k] * lval[j][k];
-                }
+                let dot: f64 = lval[i][..j]
+                    .iter()
+                    .zip(lval[j][..j].iter())
+                    .map(|(&a, &b)| a * b)
+                    .sum();
                 lval[i][j] = (lval[i][j] - dot) / ljj;
             }
         }
         let mut rows = Vec::new();
         let mut cols = Vec::new();
         let mut vals = Vec::new();
-        for i in 0..n {
-            for j in 0..=i {
-                if lval[i][j].abs() > 1e-30 {
+        for (i, lrow) in lval.iter().enumerate() {
+            for (j, &v) in lrow.iter().enumerate().take(i + 1) {
+                if v.abs() > 1e-30 {
                     rows.push(i);
                     cols.push(j);
-                    vals.push(lval[i][j]);
+                    vals.push(v);
                 }
             }
         }
@@ -791,10 +777,10 @@ impl IncompleteCholesky {
         let mut x = vec![0.0f64; n];
         for i in (0..n).rev() {
             let mut s = y[i];
-            for row in (i + 1)..n {
+            for (row, &xrow) in x.iter().enumerate().take(n).skip(i + 1) {
                 let val = self.l.get(row, i);
                 if val.abs() > 1e-30 {
-                    s -= val * x[row];
+                    s -= val * xrow;
                 }
             }
             let diag = self.l.get(i, i);
@@ -839,9 +825,9 @@ impl SsorPreconditioner {
             }
             x[i] = (b[i] - w * sigma) * w / aii;
         }
-        for i in 0..n {
+        for (i, xi) in x.iter_mut().enumerate() {
             let aii = a.get(i, i);
-            x[i] *= aii / w;
+            *xi *= aii / w;
         }
         for i in (0..n).rev() {
             let aii = a.get(i, i);

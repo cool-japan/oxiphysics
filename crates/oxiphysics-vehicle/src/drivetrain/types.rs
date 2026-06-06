@@ -1,9 +1,6 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 pub use super::types_ext::{Gearbox, GearboxLegacy};
 use oxiphysics_core::math::Real;
 
@@ -640,7 +637,6 @@ impl EngineBraking {
 /// Extends [`TorqueConverter`] with hysteresis-controlled lock-up logic.
 /// The clutch engages above `lockup_speed_ratio` and disengages below
 /// `lockup_speed_ratio - hysteresis`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TorqueConverterLockup {
     /// Base torque converter.
@@ -768,7 +764,6 @@ impl Clutch {
 /// closed-loop shift strategy.
 ///
 /// Models a simplified Ravigneaux or Simpson-type 4–6 speed automatic.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AutomaticTransmission {
     /// Planetary gear set providing the gear ratios.
@@ -804,7 +799,6 @@ pub struct AutomaticTransmission {
 }
 impl AutomaticTransmission {
     /// Create a new automatic transmission.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         planetary: PlanetaryGearSet,
         gear_ratios: Vec<f64>,
@@ -1017,7 +1011,6 @@ pub struct BsfcMap {
 }
 impl BsfcMap {
     /// Create a BSFC map with given parameters.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         bsfc_optimal: f64,
         best_rpm: f64,
@@ -1063,7 +1056,6 @@ impl BsfcMap {
 ///
 /// The backlash is a dead-band in the torsional deflection: no torque is
 /// transmitted until the deflection exceeds `±lash_rad`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DriveshaftNonlinear {
     /// Torsional stiffness (N·m/rad).
@@ -1119,7 +1111,6 @@ impl DriveshaftNonlinear {
     }
 }
 /// Shift strategy for the automatic transmission.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShiftMode {
     /// Standard efficiency-oriented shift schedule.
@@ -1136,7 +1127,6 @@ pub enum ShiftMode {
 ///
 /// The ratio is controlled by a hydraulic actuator modelled as a first-order
 /// lag system.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CvtTransmission {
     /// Minimum gear ratio (highest speed / overdrive).
@@ -1223,7 +1213,6 @@ impl CvtTransmission {
     }
 }
 /// State of a gear shift in progress.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShiftPhase {
     /// No shift in progress.
@@ -1321,7 +1310,6 @@ impl Differential {
     }
 }
 /// Centre differential distributing torque to front and rear axles.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AwdCenterDifferential {
     /// Current operating mode.
@@ -1523,7 +1511,6 @@ impl TorqueConverter {
 /// - Open (fixed front/rear bias ratio)
 /// - Viscous coupling (speed-sensitive)
 /// - Active (direct torque demand from software)
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AwdCenterMode {
     /// Fixed front-to-total torque split fraction \[0, 1\].
@@ -1549,7 +1536,6 @@ pub enum AwdCenterMode {
 ///
 /// Torque relations (ideal, lossless):
 /// `T_R = -T_S * Z_R / Z_S` (reaction torque on ring from sun input)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PlanetaryGearSet {
     /// Number of teeth on the sun gear.

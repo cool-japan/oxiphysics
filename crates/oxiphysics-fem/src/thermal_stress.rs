@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -22,9 +21,6 @@
 //! let sig = plane_stress_thermal(200e9, 0.3, 12e-6, 50.0);
 //! assert!(sig[0] < 0.0); // compressive on heating
 //! ```
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § 1  FREE FUNCTIONS
@@ -406,7 +402,6 @@ pub struct ThermalStressAnalysis {
 
 impl ThermalStressAnalysis {
     /// Create a `ThermalStressAnalysis` with default one-way coupling.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mesh: ThermoelasticMesh,
         thermal_bc: Vec<BoundaryCondition>,
@@ -542,9 +537,9 @@ impl ThermalStressAnalysis {
             // Find pivot.
             let mut pivot_row = col;
             let mut max_val = mat[col][col].abs();
-            for row in (col + 1)..n {
-                if mat[row][col].abs() > max_val {
-                    max_val = mat[row][col].abs();
+            for (row, mat_row) in mat.iter().enumerate().skip(col + 1) {
+                if mat_row[col].abs() > max_val {
+                    max_val = mat_row[col].abs();
                     pivot_row = row;
                 }
             }
@@ -555,12 +550,12 @@ impl ThermalStressAnalysis {
             if diag.abs() < 1e-30 {
                 continue;
             }
+            let col_slice: Vec<f64> = mat[col][col..].to_vec();
             for row in (col + 1)..n {
                 let factor = mat[row][col] / diag;
                 rhs[row] -= factor * rhs[col];
-                for c in col..n {
-                    let delta = factor * mat[col][c];
-                    mat[row][c] -= delta;
+                for (off, &cv) in col_slice.iter().enumerate() {
+                    mat[row][col + off] -= factor * cv;
                 }
             }
         }

@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use crate::colormap::{Colormap, map_scalar};
 use crate::primitives::{Color, LinePrimitive};
@@ -210,8 +208,8 @@ impl StressField {
         }
         let mut avg = [0.0_f64; 6];
         for s in &self.stresses {
-            for i in 0..6 {
-                avg[i] += s.voigt[i];
+            for (a, &sv) in avg.iter_mut().zip(s.voigt.iter()) {
+                *a += sv;
             }
         }
         let n = self.stresses.len() as f64;

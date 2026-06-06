@@ -1,7 +1,5 @@
 //! Internal helper math functions for medical visualization.
 
-#[allow(unused_imports)]
-use super::functions::*;
 #[inline]
 pub(crate) fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
@@ -9,12 +7,6 @@ pub(crate) fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 #[inline]
 pub(crate) fn clamp_f32(x: f32, lo: f32, hi: f32) -> f32 {
-    x.max(lo).min(hi)
-}
-
-#[inline]
-#[allow(dead_code)]
-pub(crate) fn clamp_f64(x: f64, lo: f64, hi: f64) -> f64 {
     x.max(lo).min(hi)
 }
 

@@ -21,13 +21,11 @@ impl BoxShape {
     }
 
     /// Volume: (2hx)(2hy)(2hz).
-    #[allow(dead_code)]
     pub fn volume_explicit(&self) -> Real {
         8.0 * self.half_extents.x * self.half_extents.y * self.half_extents.z
     }
 
     /// Surface area: 2*(2hx*2hy + 2hy*2hz + 2hx*2hz).
-    #[allow(dead_code)]
     pub fn surface_area(&self) -> Real {
         let hx = self.half_extents.x;
         let hy = self.half_extents.y;
@@ -40,7 +38,6 @@ impl BoxShape {
 
     /// Inertia tensor as \[\[f64;3\\];3] row-major.
     /// Diagonal: m/12*(b²+c², a²+c², a²+b²) where a,b,c are full side lengths.
-    #[allow(dead_code)]
     pub fn inertia_tensor_array(&self, mass: f64) -> [[f64; 3]; 3] {
         let hx = self.half_extents.x;
         let hy = self.half_extents.y;
@@ -57,7 +54,6 @@ impl BoxShape {
     }
 
     /// Ray cast returning (t, normal) as plain arrays (slab method).
-    #[allow(dead_code)]
     pub fn ray_cast_array(
         &self,
         origin: [f64; 3],
@@ -71,7 +67,6 @@ impl BoxShape {
     }
 
     /// GJK support function: farthest point in `direction` (componentwise sign).
-    #[allow(dead_code)]
     pub fn support(&self, direction: [f64; 3]) -> [f64; 3] {
         [
             self.half_extents.x.copysign(direction[0]),
@@ -81,7 +76,6 @@ impl BoxShape {
     }
 
     /// All 8 vertices of the box.
-    #[allow(dead_code)]
     pub fn vertex_list(&self) -> [[f64; 3]; 8] {
         let hx = self.half_extents.x;
         let hy = self.half_extents.y;
@@ -101,7 +95,6 @@ impl BoxShape {
     // ── New methods ──
 
     /// Returns the 6 face normals of the box (axis-aligned, outward).
-    #[allow(dead_code)]
     pub fn face_normals() -> [[f64; 3]; 6] {
         [
             [1.0, 0.0, 0.0],
@@ -114,7 +107,6 @@ impl BoxShape {
     }
 
     /// Returns the 12 edges of the box as pairs of vertex indices into `vertex_list()`.
-    #[allow(dead_code)]
     pub fn edge_list() -> [(usize, usize); 12] {
         [
             // Bottom face (y = -hy)
@@ -137,7 +129,6 @@ impl BoxShape {
 
     /// Returns the 6 faces as groups of 4 vertex indices (into `vertex_list()`).
     /// Each face's vertices are in counter-clockwise order from outside.
-    #[allow(dead_code)]
     pub fn face_vertex_indices() -> [[usize; 4]; 6] {
         [
             [1, 2, 6, 5], // +X face
@@ -150,7 +141,6 @@ impl BoxShape {
     }
 
     /// Area of each face: returns \[+X, -X, +Y, -Y, +Z, -Z\].
-    #[allow(dead_code)]
     pub fn face_areas(&self) -> [f64; 6] {
         let hx = self.half_extents.x;
         let hy = self.half_extents.y;
@@ -162,7 +152,6 @@ impl BoxShape {
     }
 
     /// Closest point on (or inside) the box to point `p`.
-    #[allow(dead_code)]
     pub fn closest_point(&self, p: [f64; 3]) -> [f64; 3] {
         [
             p[0].clamp(-self.half_extents.x, self.half_extents.x),
@@ -172,7 +161,6 @@ impl BoxShape {
     }
 
     /// Returns true if `p` is inside (or on the surface of) the box.
-    #[allow(dead_code)]
     pub fn contains_point(&self, p: [f64; 3]) -> bool {
         p[0].abs() <= self.half_extents.x
             && p[1].abs() <= self.half_extents.y
@@ -181,7 +169,6 @@ impl BoxShape {
 
     /// Signed distance from a point to the box surface.
     /// Negative if inside, positive if outside.
-    #[allow(dead_code)]
     pub fn signed_distance(&self, p: [f64; 3]) -> f64 {
         let dx = p[0].abs() - self.half_extents.x;
         let dy = p[1].abs() - self.half_extents.y;
@@ -202,7 +189,6 @@ impl BoxShape {
     /// Clip a line segment (from `a` to `b`) against this box.
     /// Returns `Some((t_enter, t_exit))` where 0 <= t_enter <= t_exit <= 1,
     /// or `None` if the segment doesn't intersect the box.
-    #[allow(dead_code)]
     pub fn clip_segment(&self, a: [f64; 3], b: [f64; 3]) -> Option<(f64, f64)> {
         let dir = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
         let half = [
@@ -239,7 +225,6 @@ impl BoxShape {
 
     /// Determine which face a surface point is on.
     /// Returns the face index (0=+X, 1=-X, 2=+Y, 3=-Y, 4=+Z, 5=-Z).
-    #[allow(dead_code)]
     pub fn classify_face(&self, p: [f64; 3]) -> usize {
         let dx_pos = (p[0] - self.half_extents.x).abs();
         let dx_neg = (p[0] + self.half_extents.x).abs();
@@ -261,7 +246,6 @@ impl BoxShape {
     }
 
     /// Diagonal length of the box: 2 * sqrt(hx² + hy² + hz²).
-    #[allow(dead_code)]
     pub fn diagonal_length(&self) -> f64 {
         let hx = self.half_extents.x;
         let hy = self.half_extents.y;
@@ -270,7 +254,6 @@ impl BoxShape {
     }
 
     /// Edge lengths: \[2*hx, 2*hy, 2*hz\].
-    #[allow(dead_code)]
     pub fn edge_lengths(&self) -> [f64; 3] {
         [
             2.0 * self.half_extents.x,
@@ -280,7 +263,6 @@ impl BoxShape {
     }
 
     /// Project the box onto an axis and return `(min, max)` interval.
-    #[allow(dead_code)]
     pub fn project_on_axis(&self, axis: [f64; 3]) -> (f64, f64) {
         // For an AABB, the projection extent is the sum of |axis_i * half_extent_i|
         let extent = self.half_extents.x * axis[0].abs()
@@ -393,19 +375,16 @@ impl Shape for BoxShape {
 // so they can be used without nalgebra.
 
 /// Dot product of two \[f64;3\] vectors.
-#[allow(dead_code)]
 fn dot3b(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// Matrix-vector multiply: rot (row-major) * v.
-#[allow(dead_code)]
 fn mat3_mul_vec(rot: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     [dot3b(rot[0], v), dot3b(rot[1], v), dot3b(rot[2], v)]
 }
 
 /// Transpose of a 3×3 matrix.
-#[allow(dead_code)]
 fn mat3_transpose(rot: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     [
         [rot[0][0], rot[1][0], rot[2][0]],
@@ -415,7 +394,6 @@ fn mat3_transpose(rot: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 }
 
 /// 3×3 matrix multiply A*B.
-#[allow(dead_code)]
 fn mat3_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let bt = mat3_transpose(b);
     [
@@ -428,7 +406,6 @@ fn mat3_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 /// Inertia tensor of an OBB in its own local frame (diagonal matrix).
 /// `half_extents`: half-widths along each local axis.
 /// Returns a 3×3 row-major array.
-#[allow(dead_code)]
 pub fn obb_inertia_tensor(half_extents: [f64; 3], mass: f64) -> [[f64; 3]; 3] {
     let ax2 = (2.0 * half_extents[0]).powi(2);
     let ay2 = (2.0 * half_extents[1]).powi(2);
@@ -444,7 +421,6 @@ pub fn obb_inertia_tensor(half_extents: [f64; 3], mass: f64) -> [[f64; 3]; 3] {
 /// Inertia tensor of an OBB transformed to world frame via rotation matrix `rot`.
 /// `rot` maps local axes to world axes (each row is a world-space basis vector).
 /// Uses I_world = R * I_local * R^T.
-#[allow(dead_code)]
 pub fn obb_inertia_tensor_rotated(
     half_extents: [f64; 3],
     mass: f64,
@@ -461,7 +437,6 @@ pub fn obb_inertia_tensor_rotated(
 /// `half_extents`: half-widths along each local axis.
 /// `rot`: rotation matrix (row i = world direction of local axis i).
 /// Returns world-space closest point (may be on interior if `p` is inside).
-#[allow(dead_code)]
 pub fn obb_closest_point(
     p: [f64; 3],
     center: [f64; 3],
@@ -491,7 +466,6 @@ pub fn obb_closest_point(
 
 /// Compute the projection half-extent of an OBB onto a world-space axis.
 /// This is the sum of |half_i * dot(rot_col_i, axis)| over i.
-#[allow(dead_code)]
 pub fn obb_projection_extent(half_extents: [f64; 3], rot: [[f64; 3]; 3], axis: [f64; 3]) -> f64 {
     // rot row i = world direction of local axis i
     // dot(rot row i, axis) = projection of local axis i onto axis
@@ -506,7 +480,6 @@ pub fn obb_projection_extent(half_extents: [f64; 3], rot: [[f64; 3]; 3], axis: [
 /// `ray_origin`, `ray_dir`: world-space ray.
 /// `center`, `half_extents`, `rot`: OBB parameters.
 /// Returns the hit parameter `t` if intersection within `[0, max_toi]`, else `None`.
-#[allow(dead_code)]
 pub fn obb_ray_intersection(
     ray_origin: [f64; 3],
     ray_dir: [f64; 3],
@@ -560,7 +533,6 @@ pub fn obb_ray_intersection(
 /// Signed distance from the OBB to a plane (ax + by + cz + d = 0).
 /// Returns `(min_signed_dist, max_signed_dist)` for the OBB interval projected on the plane normal.
 /// If `min < 0 && max > 0`, the OBB straddles the plane.
-#[allow(dead_code)]
 pub fn obb_plane_distance(
     center: [f64; 3],
     half_extents: [f64; 3],
@@ -580,7 +552,6 @@ pub fn obb_plane_distance(
 }
 
 /// Returns all 8 vertices of the OBB in world space.
-#[allow(dead_code)]
 pub fn obb_vertices(center: [f64; 3], half_extents: [f64; 3], rot: [[f64; 3]; 3]) -> Vec<[f64; 3]> {
     let rt = mat3_transpose(rot);
     let signs = [
@@ -612,7 +583,6 @@ pub fn obb_vertices(center: [f64; 3], half_extents: [f64; 3], rot: [[f64; 3]; 3]
 }
 
 /// Returns all 12 edges of the OBB in world space as (start, end) pairs.
-#[allow(dead_code)]
 pub fn obb_edges(
     center: [f64; 3],
     half_extents: [f64; 3],
@@ -639,7 +609,6 @@ pub fn obb_edges(
 
 /// Returns the 6 face centers of the OBB in world space.
 /// Order: +local_x, -local_x, +local_y, -local_y, +local_z, -local_z.
-#[allow(dead_code)]
 pub fn obb_face_centers(
     center: [f64; 3],
     half_extents: [f64; 3],
@@ -663,7 +632,6 @@ pub fn obb_face_centers(
 }
 
 /// GJK support function for an OBB: returns the farthest vertex in `direction`.
-#[allow(dead_code)]
 pub fn obb_support_fn(
     center: [f64; 3],
     half_extents: [f64; 3],
@@ -687,7 +655,6 @@ pub fn obb_support_fn(
 }
 
 /// Compute the AABB bounds (lo, hi) of an OBB in world space.
-#[allow(dead_code)]
 pub fn obb_aabb_bounds(
     center: [f64; 3],
     half_extents: [f64; 3],

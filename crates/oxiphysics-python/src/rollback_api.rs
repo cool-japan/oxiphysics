@@ -6,9 +6,6 @@
 //! Exposes a byte-command rollback buffer (`RollbackBuffer<Vec<u8>>`) and
 //! desync detection to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::rollback::{DesyncReport, Frame, RollbackBuffer};
 use pyo3::prelude::*;
 use std::collections::HashMap;

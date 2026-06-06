@@ -6,9 +6,6 @@
 //! Provides task graphs, topological scheduling, resource barriers, async
 //! compute simulation, frame graphs, and timestamp queries — all CPU-side.
 
-#![allow(dead_code)]
-#![allow(missing_docs)]
-
 use std::collections::{HashMap, HashSet, VecDeque};
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 use super::types::{
     AdmmResult, AugLagResult, BarrierResult, KktCheck, LcpResult, ProxGradResult, QpResult,
     SocConstraint, SocpResult,
@@ -15,18 +14,6 @@ pub(super) fn dot(a: &[f64], b: &[f64]) -> f64 {
 /// L2 norm of a vector.
 pub(super) fn norm(v: &[f64]) -> f64 {
     dot(v, v).sqrt()
-}
-/// Scale a vector in place.
-pub(super) fn scale_vec(v: &mut [f64], s: f64) {
-    for vi in v.iter_mut() {
-        *vi *= s;
-    }
-}
-/// Add `alpha * b` to `a` (axpy operation).
-pub(super) fn axpy(a: &mut [f64], alpha: f64, b: &[f64]) {
-    for (ai, bi) in a.iter_mut().zip(b.iter()) {
-        *ai += alpha * bi;
-    }
 }
 /// Matrix-vector product: y = A * x. A is row-major with `cols` columns.
 pub(super) fn mat_vec(a: &[f64], x: &[f64], rows: usize, cols: usize) -> Vec<f64> {
@@ -199,8 +186,8 @@ pub fn qp_active_set(
                     kkt[i_rc(j, n + k, dim)] = val;
                 }
             }
-            for i in 0..n {
-                rhs[i] = -c[i];
+            for (i, ri) in rhs[..n].iter_mut().enumerate() {
+                *ri = -c[i];
             }
             for (k, &ai) in active_indices.iter().enumerate() {
                 rhs[n + k] = b_ineq[ai];
@@ -272,9 +259,9 @@ pub fn lcp_lemke(m_mat: &[f64], q: &[f64], n: usize, max_pivots: usize) -> LcpRe
     let mut basis: Vec<usize> = (0..n).collect();
     let mut pivot_row = 0;
     let mut min_q = q[0];
-    for i in 1..n {
-        if q[i] < min_q {
-            min_q = q[i];
+    for (i, &q_i) in q.iter().enumerate().take(n).skip(1) {
+        if q_i < min_q {
+            min_q = q_i;
             pivot_row = i;
         }
     }
@@ -343,10 +330,10 @@ pub fn lcp_lemke(m_mat: &[f64], q: &[f64], n: usize, max_pivots: usize) -> LcpRe
     }
     if solved {
         let mz = mat_vec(m_mat, &z, n, n);
-        for i in 0..n {
-            w[i] = mz[i] + q[i];
-            if w[i] < 0.0 && w[i] > -1e-10 {
-                w[i] = 0.0;
+        for (i, wi) in w.iter_mut().enumerate() {
+            *wi = mz[i] + q[i];
+            if *wi < 0.0 && *wi > -1e-10 {
+                *wi = 0.0;
             }
         }
     }
@@ -385,8 +372,8 @@ pub fn socp_solve(
             let c_norm_sq: f64 = constraint.c_vec.iter().map(|ci| ci * ci).sum();
             if c_norm_sq > 1e-15 {
                 let needed = 1.0 - slack;
-                for i in 0..n {
-                    x[i] += needed * constraint.c_vec[i] / c_norm_sq;
+                for (i, xi) in x.iter_mut().enumerate() {
+                    *xi += needed * constraint.c_vec[i] / c_norm_sq;
                 }
             }
         }
@@ -398,16 +385,16 @@ pub fn socp_solve(
         for constraint in constraints {
             let ax = mat_vec(&constraint.a_mat, &x, constraint.cone_dim, n);
             let mut residual = vec![0.0; constraint.cone_dim];
-            for k in 0..constraint.cone_dim {
-                residual[k] = ax[k] + constraint.b_vec[k];
+            for (k, rk) in residual.iter_mut().enumerate() {
+                *rk = ax[k] + constraint.b_vec[k];
             }
             let res_norm = norm(&residual);
             let slack = dot(&constraint.c_vec, &x) + constraint.d_val;
             let gap = slack - res_norm;
             if gap <= 0.0 {
                 all_feasible = false;
-                for i in 0..n {
-                    grad[i] -= constraint.c_vec[i];
+                for (i, gi) in grad.iter_mut().enumerate() {
+                    *gi -= constraint.c_vec[i];
                 }
                 continue;
             }
@@ -417,8 +404,8 @@ pub fn socp_solve(
             }
             let inv_barrier = mu / barrier_denom;
             let at_res = mat_t_vec(&constraint.a_mat, &residual, constraint.cone_dim, n);
-            for i in 0..n {
-                grad[i] += inv_barrier * (2.0 * at_res[i] - 2.0 * constraint.c_vec[i] * slack);
+            for (i, gi) in grad.iter_mut().enumerate() {
+                *gi += inv_barrier * (2.0 * at_res[i] - 2.0 * constraint.c_vec[i] * slack);
             }
         }
         let grad_norm = norm(&grad);
@@ -429,8 +416,8 @@ pub fn socp_solve(
             }
         }
         let step_size = 0.01 / (1.0 + grad_norm);
-        for i in 0..n {
-            x[i] -= step_size * grad[i];
+        for (i, xi) in x.iter_mut().enumerate() {
+            *xi -= step_size * grad[i];
         }
         mu *= 0.95;
     }
@@ -442,25 +429,53 @@ pub fn socp_solve(
         converged,
     }
 }
+/// Parameters for [`barrier_method`].
+#[derive(Debug, Clone)]
+pub struct BarrierMethodParams<'a> {
+    /// Objective cost vector `f` (length `n`).
+    pub f: &'a [f64],
+    /// Inequality constraint matrix `A_ineq` (row-major, `m × n`).
+    pub a_ineq: &'a [f64],
+    /// Inequality constraint right-hand side `b_ineq` (length `m`).
+    pub b_ineq: &'a [f64],
+    /// Number of primal variables.
+    pub n: usize,
+    /// Number of inequality constraints.
+    pub m: usize,
+    /// Initial primal iterate (length `n`).
+    pub x0: &'a [f64],
+    /// Initial barrier parameter.
+    pub mu_init: f64,
+    /// Barrier reduction factor per outer iteration.
+    pub mu_factor: f64,
+    /// Maximum outer iterations.
+    pub outer_iter: usize,
+    /// Maximum inner (Newton) iterations.
+    pub inner_iter: usize,
+    /// Convergence tolerance.
+    pub tol: f64,
+}
+
 /// Log-barrier method for inequality-constrained optimization.
 ///
 /// min  f^T x
 /// s.t. A x <= b
 ///
 /// Uses the log-barrier approach: min f^T x - mu * sum(log(b_i - a_i^T x)).
-pub fn barrier_method(
-    f: &[f64],
-    a_ineq: &[f64],
-    b_ineq: &[f64],
-    n: usize,
-    m: usize,
-    x0: &[f64],
-    mu_init: f64,
-    mu_factor: f64,
-    outer_iter: usize,
-    inner_iter: usize,
-    tol: f64,
-) -> BarrierResult {
+pub fn barrier_method(p: BarrierMethodParams<'_>) -> BarrierResult {
+    let BarrierMethodParams {
+        f,
+        a_ineq,
+        b_ineq,
+        n,
+        m,
+        x0,
+        mu_init,
+        mu_factor,
+        outer_iter,
+        inner_iter,
+        tol,
+    } = p;
     let mut x = x0.to_vec();
     let mut mu = mu_init;
     let mut converged = false;
@@ -486,8 +501,8 @@ pub fn barrier_method(
             if !feasible {
                 let grad_norm = norm(&grad);
                 let step_size = 0.001 / (1.0 + grad_norm);
-                for i in 0..n {
-                    x[i] -= step_size * grad[i];
+                for (i, xi) in x.iter_mut().enumerate() {
+                    *xi -= step_size * grad[i];
                 }
                 continue;
             }
@@ -523,8 +538,8 @@ pub fn barrier_method(
                 }
                 alpha *= 0.5;
             }
-            for i in 0..n {
-                x[i] += alpha * step[i];
+            for (i, xi) in x.iter_mut().enumerate() {
+                *xi += alpha * step[i];
             }
             let grad_norm = norm(&grad);
             if grad_norm < tol {
@@ -546,6 +561,33 @@ pub fn barrier_method(
         converged,
     }
 }
+/// Parameters for [`augmented_lagrangian`].
+#[derive(Debug, Clone)]
+pub struct AugLagParams<'a> {
+    /// Quadratic objective matrix `H` (row-major, `n × n`).
+    pub h: &'a [f64],
+    /// Linear cost vector `c` (length `n`).
+    pub c: &'a [f64],
+    /// Equality constraint matrix `A_eq` (row-major, `m × n`).
+    pub a_eq: &'a [f64],
+    /// Equality constraint right-hand side `b_eq` (length `m`).
+    pub b_eq: &'a [f64],
+    /// Number of primal variables.
+    pub n: usize,
+    /// Number of equality constraints.
+    pub m: usize,
+    /// Initial penalty parameter.
+    pub rho_init: f64,
+    /// Penalty growth factor per outer iteration.
+    pub rho_factor: f64,
+    /// Maximum outer iterations.
+    pub outer_iter: usize,
+    /// Maximum inner (linear solve) iterations.
+    pub inner_iter: usize,
+    /// Convergence tolerance.
+    pub tol: f64,
+}
+
 /// Augmented Lagrangian method for equality-constrained optimization.
 ///
 /// min  0.5 * x^T H x + c^T x
@@ -553,19 +595,20 @@ pub fn barrier_method(
 ///
 /// The augmented Lagrangian is:
 /// L_rho(x, lambda) = f(x) + lambda^T (Ax - b) + (rho/2) ||Ax - b||^2
-pub fn augmented_lagrangian(
-    h: &[f64],
-    c: &[f64],
-    a_eq: &[f64],
-    b_eq: &[f64],
-    n: usize,
-    m: usize,
-    rho_init: f64,
-    rho_factor: f64,
-    outer_iter: usize,
-    inner_iter: usize,
-    tol: f64,
-) -> AugLagResult {
+pub fn augmented_lagrangian(p: AugLagParams<'_>) -> AugLagResult {
+    let AugLagParams {
+        h,
+        c,
+        a_eq,
+        b_eq,
+        n,
+        m,
+        rho_init,
+        rho_factor,
+        outer_iter,
+        inner_iter,
+        tol,
+    } = p;
     let mut x = vec![0.0; n];
     let mut lambda = vec![0.0; m];
     let mut rho = rho_init;
@@ -576,14 +619,14 @@ pub fn augmented_lagrangian(
             let hx = mat_vec(h, &x, n, n);
             let ax = mat_vec(a_eq, &x, m, n);
             let mut residual = vec![0.0; m];
-            for i in 0..m {
-                residual[i] = ax[i] - b_eq[i];
+            for (i, ri) in residual.iter_mut().enumerate() {
+                *ri = ax[i] - b_eq[i];
             }
             let at_lambda = mat_t_vec(a_eq, &lambda, m, n);
             let at_res = mat_t_vec(a_eq, &residual, m, n);
             let mut grad = vec![0.0; n];
-            for i in 0..n {
-                grad[i] = hx[i] + c[i] + at_lambda[i] + rho * at_res[i];
+            for (i, gi) in grad.iter_mut().enumerate() {
+                *gi = hx[i] + c[i] + at_lambda[i] + rho * at_res[i];
             }
             let mut hess = h.to_vec();
             for i in 0..n {
@@ -598,8 +641,8 @@ pub fn augmented_lagrangian(
                 Some(s) => s,
                 None => break,
             };
-            for i in 0..n {
-                x[i] += step[i];
+            for (i, xi) in x.iter_mut().enumerate() {
+                *xi += step[i];
             }
             if norm(&grad) < tol * 0.1 {
                 break;
@@ -607,12 +650,12 @@ pub fn augmented_lagrangian(
         }
         let ax = mat_vec(a_eq, &x, m, n);
         let mut residual = vec![0.0; m];
-        for i in 0..m {
-            residual[i] = ax[i] - b_eq[i];
+        for (i, ri) in residual.iter_mut().enumerate() {
+            *ri = ax[i] - b_eq[i];
         }
         violation = norm(&residual);
-        for i in 0..m {
-            lambda[i] += rho * residual[i];
+        for (i, li) in lambda.iter_mut().enumerate() {
+            *li += rho * residual[i];
         }
         if violation < tol {
             converged = true;
@@ -664,8 +707,8 @@ pub fn admm_consensus(
     for iter in 0..max_iter {
         iterations = iter + 1;
         let mut rhs = vec![0.0; n];
-        for i in 0..n {
-            rhs[i] = -c[i] + rho * (z[i] - y[i]);
+        for (i, ri) in rhs.iter_mut().enumerate() {
+            *ri = -c[i] + rho * (z[i] - y[i]);
         }
         let x_new = match solve_spd(&h_aug, &rhs, n) {
             Some(s) => s,
@@ -683,8 +726,8 @@ pub fn admm_consensus(
                     let row_norm_sq: f64 = row.iter().map(|r| r * r).sum();
                     if row_norm_sq > 1e-15 {
                         let excess = az[i] - b_ineq[i];
-                        for j in 0..n {
-                            z_target[j] -= (excess / row_norm_sq) * row[j];
+                        for (j, zt) in z_target.iter_mut().enumerate() {
+                            *zt -= (excess / row_norm_sq) * row[j];
                         }
                     }
                 }
@@ -694,8 +737,8 @@ pub fn admm_consensus(
             }
         }
         z = z_target;
-        for i in 0..n {
-            y[i] += x_new[i] - z[i];
+        for (i, yi) in y.iter_mut().enumerate() {
+            *yi += x_new[i] - z[i];
         }
         primal_res = norm(&(0..n).map(|i| x_new[i] - z[i]).collect::<Vec<_>>());
         dual_res = rho * norm(&(0..n).map(|i| z[i] - z_old[i]).collect::<Vec<_>>());
@@ -831,8 +874,8 @@ pub fn check_licq(active_gradients: &[Vec<f64>], n: usize, tol: f64) -> bool {
         let mut v = grad.clone();
         for b in &basis {
             let proj = dot(&v, b) / dot(b, b).max(1e-30);
-            for i in 0..n {
-                v[i] -= proj * b[i];
+            for (i, vi) in v.iter_mut().enumerate() {
+                *vi -= proj * b[i];
             }
         }
         let v_norm = norm(&v);
@@ -872,16 +915,16 @@ pub fn check_mfcq(
     }
     let mut d = vec![0.0; n];
     for grad in ineq_gradients {
-        for i in 0..n {
-            d[i] -= grad[i];
+        for (i, di) in d.iter_mut().enumerate() {
+            *di -= grad[i];
         }
     }
     for eq_grad in eq_gradients {
         let eq_norm_sq = dot(eq_grad, eq_grad);
         if eq_norm_sq > 1e-15 {
             let proj = dot(&d, eq_grad) / eq_norm_sq;
-            for i in 0..n {
-                d[i] -= proj * eq_grad[i];
+            for (i, di) in d.iter_mut().enumerate() {
+                *di -= proj * eq_grad[i];
             }
         }
     }
@@ -927,28 +970,28 @@ pub fn check_kkt(
     let hx = mat_vec(h, x, n, n);
     let at_mu = mat_t_vec(a_ineq, mu, m, n);
     let mut stationarity_vec = vec![0.0; n];
-    for i in 0..n {
-        stationarity_vec[i] = hx[i] + c[i] + at_mu[i];
+    for (i, si) in stationarity_vec.iter_mut().enumerate() {
+        *si = hx[i] + c[i] + at_mu[i];
     }
     let stationarity = norm(&stationarity_vec);
     let ax = mat_vec(a_ineq, x, m, n);
     let mut pf = 0.0_f64;
-    for i in 0..m {
-        let violation = ax[i] - b_ineq[i];
+    for (&axi, &bi) in ax.iter().zip(b_ineq.iter()) {
+        let violation = axi - bi;
         if violation > pf {
             pf = violation;
         }
     }
     let mut df = 0.0_f64;
-    for i in 0..m {
-        if -mu[i] > df {
-            df = -mu[i];
+    for &mui in &mu[..m] {
+        if -mui > df {
+            df = -mui;
         }
     }
     let mut cs = 0.0_f64;
-    for i in 0..m {
-        let slack = b_ineq[i] - ax[i];
-        let violation = (mu[i] * slack).abs();
+    for ((&bi, &axi), &mui) in b_ineq.iter().zip(ax.iter()).zip(mu.iter()) {
+        let slack = bi - axi;
+        let violation = (mui * slack).abs();
         if violation > cs {
             cs = violation;
         }
@@ -986,8 +1029,8 @@ pub fn proximal_gradient_l1(
         iterations = iter + 1;
         let hx = mat_vec(h, &x, n, n);
         let mut grad = vec![0.0; n];
-        for i in 0..n {
-            grad[i] = hx[i] + c[i];
+        for (i, gi) in grad.iter_mut().enumerate() {
+            *gi = hx[i] + c[i];
         }
         let mut x_grad: Vec<f64> = (0..n).map(|i| x[i] - step_size * grad[i]).collect();
         let x_new = prox_l1(&x_grad, lambda * step_size);

@@ -55,8 +55,6 @@
 //! cargo test -p oxiphysics --test validation_sph -- --ignored --nocapture
 //! ```
 
-#![allow(missing_docs)]
-
 use oxiphysics_sph::particle::SphParticleSet;
 use oxiphysics_sph::simulation::types_sim::WcSphSim;
 

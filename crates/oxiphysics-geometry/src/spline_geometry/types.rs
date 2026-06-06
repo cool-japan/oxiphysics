@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use std::f64::consts::PI;
 
@@ -94,10 +92,10 @@ impl NurbsSurface {
         let bu = bspline_basis(span_u, self.degree_u, u, &self.knots_u);
         let bv = bspline_basis(span_v, self.degree_v, v, &self.knots_v);
         let mut hw = [0.0f64; 4];
-        for i in 0..=self.degree_u {
-            for j in 0..=self.degree_v {
+        for (i, &bui) in bu.iter().enumerate().take(self.degree_u + 1) {
+            for (j, &bvj) in bv.iter().enumerate().take(self.degree_v + 1) {
                 let cpw = self.control_net[span_u - self.degree_u + i][span_v - self.degree_v + j];
-                let b = bu[i] * bv[j];
+                let b = bui * bvj;
                 for k in 0..4 {
                     hw[k] += b * cpw[k];
                 }
@@ -165,10 +163,10 @@ impl NurbsCurve {
         let span = find_knot_span(n, p, t, &self.knots);
         let basis = bspline_basis(span, p, t, &self.knots);
         let mut hw = [0.0f64; 4];
-        for i in 0..=p {
+        for (i, &bi) in basis.iter().enumerate().take(p + 1) {
             let cpw = self.control_points_w[span - p + i];
             for k in 0..4 {
-                hw[k] += basis[i] * cpw[k];
+                hw[k] += bi * cpw[k];
             }
         }
         if hw[3].abs() < 1e-300 {
@@ -536,10 +534,10 @@ impl BSplineSurface {
         let bu = bspline_basis(span_u, self.degree_u, u, &self.knots_u);
         let bv = bspline_basis(span_v, self.degree_v, v, &self.knots_v);
         let mut point = [0.0f64; 3];
-        for i in 0..=self.degree_u {
-            for j in 0..=self.degree_v {
+        for (i, &bui) in bu.iter().enumerate().take(self.degree_u + 1) {
+            for (j, &bvj) in bv.iter().enumerate().take(self.degree_v + 1) {
                 let cp = self.control_net[span_u - self.degree_u + i][span_v - self.degree_v + j];
-                let b = bu[i] * bv[j];
+                let b = bui * bvj;
                 point = vec3_add(point, vec3_scale(cp, b));
             }
         }
@@ -795,9 +793,9 @@ impl BSplineCurve {
         let span = find_knot_span(n, p, t, &self.knots);
         let basis = bspline_basis(span, p, t, &self.knots);
         let mut point = [0.0f64; 3];
-        for i in 0..=p {
+        for (i, &bi) in basis.iter().enumerate().take(p + 1) {
             let cp = self.control_points[span - p + i];
-            point = vec3_add(point, vec3_scale(cp, basis[i]));
+            point = vec3_add(point, vec3_scale(cp, bi));
         }
         point
     }

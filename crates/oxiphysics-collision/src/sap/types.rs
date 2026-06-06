@@ -2,12 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::collections::{HashMap, HashSet};
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{aabb3_overlaps, aabb3_point_dist_sq, axis_is_sorted};
 
 /// An endpoint on one axis used by the Sweep-and-Prune broadphase.
@@ -21,14 +17,12 @@ pub struct SapEndpoint {
     pub is_min: bool,
 }
 /// Extended SAP that tracks statistics.
-#[allow(dead_code)]
 pub struct StatTrackingSap {
     /// Inner SAP structure.
     pub inner: IncrementalSap,
     /// Statistics from the last query.
     pub stats: SapStats,
 }
-#[allow(dead_code)]
 impl StatTrackingSap {
     /// Create a new statistics-tracking SAP.
     pub fn new() -> Self {
@@ -72,7 +66,6 @@ pub struct SapObject {
     pub max: [f64; 3],
 }
 /// Result of a single broadphase step.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BroadphaseResult {
     /// All currently overlapping pairs.
@@ -85,7 +78,6 @@ pub struct BroadphaseResult {
     pub stats: SapStats,
 }
 /// An endpoint on one axis used by the incremental multi-axis SAP.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SapEndpointU32 {
     /// The coordinate value of this endpoint.
@@ -157,7 +149,6 @@ impl GridBroadphase {
 }
 impl GridBroadphase {
     /// Return all object ids in the cell that contains world-space point `p`.
-    #[allow(dead_code)]
     pub fn query_point(&self, p: [f64; 3]) -> Vec<u64> {
         let key = (
             self.cell_coord(p[0]),
@@ -167,12 +158,10 @@ impl GridBroadphase {
         self.cells.get(&key).cloned().unwrap_or_default()
     }
     /// Return total number of object-cell entries (not unique objects).
-    #[allow(dead_code)]
     pub fn total_entries(&self) -> usize {
         self.cells.values().map(|v| v.len()).sum()
     }
     /// Return the number of occupied cells.
-    #[allow(dead_code)]
     pub fn occupied_cells(&self) -> usize {
         self.cells.len()
     }
@@ -180,7 +169,6 @@ impl GridBroadphase {
     ///
     /// Scans all cells — `O(cells * max_per_cell)`.  For high-density scenes
     /// prefer `clear` + bulk re-insert.
-    #[allow(dead_code)]
     pub fn remove(&mut self, id: u64) {
         for ids in self.cells.values_mut() {
             ids.retain(|&x| x != id);
@@ -189,7 +177,6 @@ impl GridBroadphase {
     }
     /// Return a conservative over-approximation of all objects that could
     /// overlap `aabb` by checking every cell the AABB touches.
-    #[allow(dead_code)]
     pub fn query_aabb(&self, min: [f64; 3], max: [f64; 3]) -> Vec<u64> {
         let min_cx = self.cell_coord(min[0]);
         let min_cy = self.cell_coord(min[1]);
@@ -219,13 +206,11 @@ impl GridBroadphase {
 ///
 /// Maintains a sorted list of `SapEndpointU32` entries and provides
 /// insertion-sort for small moves.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct SapAxis {
     /// Sorted endpoints on this axis.
     pub endpoints: Vec<SapEndpointU32>,
 }
-#[allow(dead_code)]
 impl SapAxis {
     /// Create an empty axis.
     pub fn new() -> Self {
@@ -298,27 +283,22 @@ impl SapAxis {
 }
 impl SapAxis {
     /// Return `true` if the endpoint list is sorted.
-    #[allow(dead_code)]
     pub fn is_sorted(&self) -> bool {
         axis_is_sorted(&self.endpoints)
     }
     /// Return the number of distinct bodies tracked on this axis.
-    #[allow(dead_code)]
     pub fn body_count(&self) -> usize {
         self.endpoints.iter().filter(|e| e.is_min).count()
     }
     /// Return the minimum value across all endpoints.
-    #[allow(dead_code)]
     pub fn min_value(&self) -> Option<f64> {
         self.endpoints.first().map(|e| e.value)
     }
     /// Return the maximum value across all endpoints.
-    #[allow(dead_code)]
     pub fn max_value(&self) -> Option<f64> {
         self.endpoints.last().map(|e| e.value)
     }
     /// Return all body ids currently tracked on this axis.
-    #[allow(dead_code)]
     pub fn tracked_bodies(&self) -> Vec<u32> {
         let mut ids: Vec<u32> = self
             .endpoints
@@ -332,12 +312,10 @@ impl SapAxis {
     }
 }
 /// A snapshot of an `IncrementalSap` that can be restored cheaply.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SapSnapshot {
     pub(super) aabbs: HashMap<u32, Aabb3>,
 }
-#[allow(dead_code)]
 impl SapSnapshot {
     /// Capture the current AABB map from `sap`.
     pub fn capture(sap: &IncrementalSap) -> Self {
@@ -366,7 +344,6 @@ impl SapSnapshot {
     }
 }
 /// An overlap event: a pair has just started or stopped overlapping.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OverlapEvent {
     /// Bodies `(a, b)` began overlapping this frame.
@@ -375,7 +352,6 @@ pub enum OverlapEvent {
     End(u32, u32),
 }
 /// A simple AABB for the incremental SAP (raw f64 arrays).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Aabb3 {
     /// Minimum corner `[x, y, z]`.
@@ -384,7 +360,6 @@ pub struct Aabb3 {
     pub max: [f64; 3],
 }
 /// Statistics collected during a SAP broadphase query.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct SapStats {
     /// Number of overlapping pairs found in the last query.
@@ -398,13 +373,11 @@ pub struct SapStats {
 ///
 /// Call `step_pairs` each frame; it returns only the *delta* — new overlaps
 /// and vanished overlaps — rather than the full pair list.
-#[allow(dead_code)]
 pub struct EventDrivenSap {
     pub(super) inner: IncrementalSap,
     /// Pairs that were overlapping in the *previous* frame.
     pub(super) prev_pairs: HashSet<(u32, u32)>,
 }
-#[allow(dead_code)]
 impl EventDrivenSap {
     /// Create a new event-driven SAP.
     pub fn new() -> Self {
@@ -570,7 +543,6 @@ impl SweepAndPrune {
     ///
     /// More efficient than calling `add_object` repeatedly when adding many
     /// objects at the same time.
-    #[allow(dead_code)]
     pub fn add_object_batch(&mut self, objects: &[(u64, [f64; 3], [f64; 3])]) {
         for &(id, min, max) in objects {
             self.objects.push(SapObject { id, min, max });
@@ -592,7 +564,6 @@ impl SweepAndPrune {
     /// Returns `[var_x, var_y, var_z]`.  The axis with the highest variance is
     /// the best choice for the SAP sweep direction (maximises early-out
     /// opportunities).
-    #[allow(dead_code)]
     pub fn compute_axis_variance(&self) -> [f64; 3] {
         let n = self.objects.len();
         if n == 0 {
@@ -621,7 +592,6 @@ impl SweepAndPrune {
     /// `sorted_x` to reflect the chosen axis) and re-sorts the endpoint list.
     ///
     /// Returns the chosen axis index (`0`=X, `1`=Y, `2`=Z).
-    #[allow(dead_code)]
     pub fn reorder_axes(&mut self) -> usize {
         let var = self.compute_axis_variance();
         let best_axis = if var[0] >= var[1] && var[0] >= var[2] {
@@ -652,7 +622,6 @@ impl SweepAndPrune {
 ///
 /// Maintains sorted endpoint lists on X, Y, and Z axes and intersects
 /// overlap sets from all three to produce the final pair set.
-#[allow(dead_code)]
 pub struct IncrementalSap {
     /// Sorted endpoints on the X axis.
     pub endpoints_x: Vec<SapEndpointU32>,
@@ -665,7 +634,6 @@ pub struct IncrementalSap {
     /// Active overlapping pairs from the last query.
     pub active_pairs: HashSet<(u32, u32)>,
 }
-#[allow(dead_code)]
 impl IncrementalSap {
     /// Create an empty incremental SAP.
     pub fn new() -> Self {
@@ -880,7 +848,6 @@ impl IncrementalSap {
     /// Compute the variance of AABB centres on each axis, returning
     /// `[var_x, var_y, var_z]`.  The axis with highest variance is the best
     /// sweep direction.
-    #[allow(dead_code)]
     pub fn compute_axis_variance(&self) -> [f64; 3] {
         let n = self.aabbs.len();
         if n == 0 {
@@ -907,7 +874,6 @@ impl IncrementalSap {
     /// highest AABB-centre variance, then re-sort.
     ///
     /// Returns the chosen axis index (`0`=X, `1`=Y, `2`=Z).
-    #[allow(dead_code)]
     pub fn reorder_axes(&mut self) -> usize {
         let var = self.compute_axis_variance();
         let best = if var[0] >= var[1] && var[0] >= var[2] {
@@ -940,7 +906,6 @@ impl IncrementalSap {
 }
 impl IncrementalSap {
     /// Return `true` if any body in the SAP overlaps `aabb`.
-    #[allow(dead_code)]
     pub fn any_overlap(&self, aabb: &Aabb3) -> bool {
         for stored in self.aabbs.values() {
             if aabb3_overlaps(stored, aabb) {
@@ -950,7 +915,6 @@ impl IncrementalSap {
         false
     }
     /// Return the ids of all bodies whose AABB overlaps `aabb`.
-    #[allow(dead_code)]
     pub fn query_aabb(&self, aabb: &Aabb3) -> Vec<u32> {
         self.aabbs
             .iter()
@@ -964,7 +928,6 @@ impl IncrementalSap {
             .collect()
     }
     /// Return the ids of all bodies within squared distance `radius_sq` of point `p`.
-    #[allow(dead_code)]
     pub fn query_sphere_sq(&self, p: [f64; 3], radius_sq: f64) -> Vec<u32> {
         self.aabbs
             .iter()
@@ -978,7 +941,6 @@ impl IncrementalSap {
             .collect()
     }
     /// Remove all bodies and reset to empty.
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.endpoints_x.clear();
         self.endpoints_y.clear();
@@ -987,19 +949,16 @@ impl IncrementalSap {
         self.active_pairs.clear();
     }
     /// Return the AABB for `id`, or `None` if not present.
-    #[allow(dead_code)]
     pub fn get_aabb(&self, id: u32) -> Option<&Aabb3> {
         self.aabbs.get(&id)
     }
     /// Return an iterator over all tracked body ids.
-    #[allow(dead_code)]
     pub fn body_ids(&self) -> impl Iterator<Item = u32> + '_ {
         self.aabbs.keys().copied()
     }
     /// Batch-insert all bodies from `other` into `self`.
     ///
     /// Bodies already in `self` are overwritten (their AABBs updated).
-    #[allow(dead_code)]
     pub fn merge_from(&mut self, other: &IncrementalSap) {
         for (&id, aabb) in &other.aabbs {
             if self.aabbs.contains_key(&id) {
@@ -1010,18 +969,15 @@ impl IncrementalSap {
         }
     }
     /// Return `true` if `id` is currently tracked.
-    #[allow(dead_code)]
     pub fn contains(&self, id: u32) -> bool {
         self.aabbs.contains_key(&id)
     }
 }
 /// A multi-phase SAP that integrates event tracking and statistics.
-#[allow(dead_code)]
 pub struct MultiPhaseSap {
     pub(super) event_sap: EventDrivenSap,
     pub(super) stat_sap: StatTrackingSap,
 }
-#[allow(dead_code)]
 impl MultiPhaseSap {
     /// Create a new multi-phase SAP.
     pub fn new() -> Self {

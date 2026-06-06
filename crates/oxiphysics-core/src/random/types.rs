@@ -2,11 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     EULER_MASCHERONI, box_muller, first_n_primes, gamma_fn, halton_1d, log_gamma, normal_cdf,
     sample_gamma, scrambled_halton_1d, shuffle_fisher_yates, student_t_cdf, weighted_choice_index,
@@ -219,13 +216,9 @@ impl SobolSequence {
         } else {
             self.index.trailing_zeros() as usize
         };
-        for dim in 0..self.dim {
-            let dir = if c < v[dim].len() {
-                v[dim][c]
-            } else {
-                v[dim][0] >> c
-            };
-            self.state[dim] ^= dir;
+        for (st, vd) in self.state.iter_mut().zip(v.iter()) {
+            let dir = if c < vd.len() { vd[c] } else { vd[0] >> c };
+            *st ^= dir;
         }
         self.index += 1;
         self.state.iter().map(|&x| x as f64 * norm).collect()
@@ -1370,11 +1363,20 @@ impl RandomSampler {
     pub fn latin_hypercube(rng: &mut Xoshiro256, n: usize, d: usize) -> Vec<Vec<f64>> {
         let inv_n = 1.0 / n as f64;
         let mut samples = vec![vec![0.0f64; d]; n];
-        for dim in 0..d {
-            let mut perm: Vec<usize> = (0..n).collect();
-            shuffle_fisher_yates(&mut perm, rng);
-            for (i, &p) in perm.iter().enumerate() {
-                samples[i][dim] = (p as f64 + rng.next_f64()) * inv_n;
+        // Build each dimension's column independently via a permutation.
+        let perms: Vec<Vec<usize>> = (0..d)
+            .map(|_| {
+                let mut perm: Vec<usize> = (0..n).collect();
+                shuffle_fisher_yates(&mut perm, rng);
+                perm
+            })
+            .collect();
+        for (sample, perms_row) in samples
+            .iter_mut()
+            .zip((0..n).map(|i| perms.iter().map(|p| p[i]).collect::<Vec<_>>()))
+        {
+            for (slot, p) in sample.iter_mut().zip(perms_row) {
+                *slot = (p as f64 + rng.next_f64()) * inv_n;
             }
         }
         samples
@@ -1407,20 +1409,20 @@ impl RandomSampler {
         ];
         let norm = 1.0 / (1u64 << 32) as f64;
         let mut x = vec![0u64; d];
-        for i in 0..n {
+        for (i, point) in points.iter_mut().enumerate() {
             let c = if i == 0 {
                 32
             } else {
                 i.trailing_zeros() as usize
             };
-            for dim in 0..d {
+            for (dim, pt_dim) in point.iter_mut().enumerate() {
                 let dir = if c < v[dim].len() {
                     v[dim][c]
                 } else {
                     v[dim][0] >> c
                 };
                 x[dim] ^= dir;
-                points[i][dim] = x[dim] as f64 * norm;
+                *pt_dim = x[dim] as f64 * norm;
             }
         }
         points
@@ -1510,12 +1512,12 @@ impl FractionalBrownianMotion {
             return path;
         }
         let mut prev = 0.0f64;
-        for i in 1..=n {
+        for p in path[1..].iter_mut() {
             let (z, _) = box_muller(rng);
             let scale = self.dt.powf(h);
             let std_incr = gamma(0).max(0.0).sqrt() * scale;
             prev += std_incr * z;
-            path[i] = prev;
+            *p = prev;
         }
         path
     }

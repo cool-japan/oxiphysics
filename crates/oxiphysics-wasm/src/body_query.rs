@@ -15,9 +15,6 @@
 //! - **AABB overlap query** — find bodies whose AABB overlaps a test box.
 //! - **Simulation snapshot** — serializable full-state export.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use crate::engine::WasmPhysicsEngine;
 use crate::types::{BodyState, ContactResult, DebugInfo};
 use crate::wasm_helpers::{err_to_jsvalue, to_js_value};

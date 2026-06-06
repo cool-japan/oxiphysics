@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -10,8 +9,6 @@
 //!
 //! Each axis can be `Free`, `Limited` (with min/max bounds), or `Locked`.
 //! An optional motor can drive any axis toward a target velocity or position.
-
-#![allow(dead_code, missing_docs, clippy::too_many_arguments)]
 
 use oxiphysics_core::BodyHandle;
 use oxiphysics_core::math::{Real, Vec3};
@@ -372,8 +369,7 @@ impl Constraint for SixDofConstraint {
         let anchor_world_b = pos_b + self.r_b;
         let positional_error = anchor_world_b - anchor_world_a;
 
-        for i in 0..3 {
-            let ax = axes[i];
+        for (i, &ax) in axes.iter().enumerate() {
             let config = &self.linear[i];
 
             if config.locked || config.limited.is_some() {
@@ -418,8 +414,7 @@ impl Constraint for SixDofConstraint {
         let ang_vel_rel = ang_vel_a - ang_vel_b;
         let _ = ang_vel_rel; // used below per-axis
 
-        for i in 0..3 {
-            let ax = axes[i];
+        for (i, &ax) in axes.iter().enumerate() {
             let config = &self.angular[i];
 
             if config.locked || config.limited.is_some() {
@@ -450,14 +445,13 @@ impl Constraint for SixDofConstraint {
         let r_b = self.r_b;
 
         // ── Linear rows ────────────────────────────────────────────────────────
-        for i in 0..3 {
+        for (i, &ax) in axes.iter().enumerate() {
             let config = self.linear[i].clone();
 
             if !config.locked && config.limited.is_none() && config.motor.is_none() {
                 continue;
             }
 
-            let ax = axes[i];
             let eff_mass = self.eff_mass_linear[i];
             if eff_mass < 1e-14 {
                 continue;
@@ -509,14 +503,13 @@ impl Constraint for SixDofConstraint {
         }
 
         // ── Angular rows ───────────────────────────────────────────────────────
-        for i in 0..3 {
+        for (i, &ax) in axes.iter().enumerate() {
             let config = self.angular[i].clone();
 
             if !config.locked && config.limited.is_none() && config.motor.is_none() {
                 continue;
             }
 
-            let ax = axes[i];
             let eff_mass = self.eff_mass_angular[i];
             if eff_mass < 1e-14 {
                 continue;
@@ -595,13 +588,11 @@ impl Constraint for SixDofConstraint {
         let anchor_b = pos_b + r_b_world;
         let positional_error = anchor_b - anchor_a;
 
-        for i in 0..3 {
+        for (i, &ax) in axes.iter().enumerate() {
             let config = &self.linear[i];
             if !config.locked {
                 continue;
             }
-
-            let ax = axes[i];
             let err = positional_error.dot(&ax);
             let correction = (err.abs() - SLOP_6DOF).max(0.0) * BAUMGARTE_6DOF * err.signum();
 

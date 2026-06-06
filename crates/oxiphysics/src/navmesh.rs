@@ -32,9 +32,6 @@
 //! assert!(path.is_ok());
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -57,11 +54,6 @@ fn sub2(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
 #[inline]
 fn cross2(a: [f64; 2], b: [f64; 2]) -> f64 {
     a[0] * b[1] - a[1] * b[0]
-}
-
-#[inline]
-fn len2(a: [f64; 2]) -> f64 {
-    dot2(a, a).sqrt()
 }
 
 #[inline]

@@ -1,6 +1,6 @@
 # oxiphysics-gpu TODO
 
-Last updated: 2026-05-17 / v0.1.1
+Last updated: 2026-06-06 / v0.1.2
 
 ## Phase 1: Foundation
 - [x] Define core types and traits (ComputeBackend, ComputeKernel, BufferHandle)
@@ -22,7 +22,7 @@ Last updated: 2026-05-17 / v0.1.1
 - [x] Compute pipeline management (compute_pipeline, pipeline modules)
 - [x] Shader registry stubs (shader_registry, shaders modules)
 - [x] Neural compute kernels — CPU (neural_compute module)
-- [x] Integration tests (2,748 public items, 2,740 tests, 0 stubs)
+- [x] Integration tests (2,748 public items, 2,811 tests, 0 stubs)
 - [x] Performance benchmarks (basic)
 
 ## Phase 3: GPU backends (planned)

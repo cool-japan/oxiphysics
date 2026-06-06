@@ -31,41 +31,11 @@
 //! * IEC 61400-1 (2019) – Wind turbines – Part 1: Design requirements.
 //! * Manwell, McGowan & Rogers (2009) – Wind Energy Explained, 2nd ed.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
 // Math helpers
 // ---------------------------------------------------------------------------
-
-/// 3-D vector type alias.
-type Vec3 = [f64; 3];
-
-/// Dot product.
-#[inline]
-fn dot3(a: Vec3, b: Vec3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-/// Euclidean norm.
-#[inline]
-fn norm3(v: Vec3) -> f64 {
-    dot3(v, v).sqrt()
-}
-
-/// Scale a vector.
-#[inline]
-fn scale3(v: Vec3, s: f64) -> Vec3 {
-    [v[0] * s, v[1] * s, v[2] * s]
-}
-
-/// Element-wise addition.
-#[inline]
-fn add3(a: Vec3, b: Vec3) -> Vec3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
 
 /// Clamp a value to `[lo, hi]`.
 #[inline]

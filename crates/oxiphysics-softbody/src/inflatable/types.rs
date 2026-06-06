@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 use super::functions::*;
 // Auto-generated module
 //
@@ -47,7 +46,6 @@ pub struct InflatableEdge {
 }
 /// Thin shell inflatable: vertices, velocities, masses, triangle connectivity,
 /// target volume and pressure.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct InflatableShell {
     /// Vertex positions (m).
@@ -67,7 +65,6 @@ pub struct InflatableShell {
     /// Edge rest lengths for membrane constraints.
     pub edge_rest: Vec<(usize, usize, f64)>,
 }
-#[allow(dead_code)]
 impl InflatableShell {
     /// Compute the signed enclosed volume via the divergence theorem.
     ///
@@ -110,21 +107,16 @@ impl InflatableShell {
     /// * `dt`          – timestep (s).
     /// * `k_pressure`  – pressure gain (scales computed pressure).
     /// * `k_membrane`  – stiffness multiplier for edge (membrane) constraints.
-    #[allow(clippy::too_many_arguments)]
     pub fn step(&mut self, dt: f64, k_pressure: f64, k_membrane: f64) {
         let n = self.vertices.len();
         let cur_vol = self.compute_enclosed_volume();
         let p = inflation_rate(cur_vol, self.target_volume, k_pressure);
         self.pressure = p;
         let mut acc: Vec<[f64; 3]> = vec![[0.0; 3]; n];
-        for i in 0..n {
+        for (i, (a, mass)) in acc.iter_mut().zip(self.masses.iter()).enumerate() {
             let fp = self.pressure_force(i);
-            let inv_m = if self.masses[i] > 1e-30 {
-                1.0 / self.masses[i]
-            } else {
-                0.0
-            };
-            acc[i] = vec_add(acc[i], vec_scale(fp, inv_m));
+            let inv_m = if *mass > 1e-30 { 1.0 / mass } else { 0.0 };
+            *a = vec_add(*a, vec_scale(fp, inv_m));
         }
         let edges_snap = self.edge_rest.clone();
         for (a, b, rest) in &edges_snap {
@@ -152,16 +144,19 @@ impl InflatableShell {
             acc[*a] = vec_add(acc[*a], vec_scale(force, inv_a));
             acc[*b] = vec_sub(acc[*b], vec_scale(force, inv_b));
         }
-        for i in 0..n {
-            self.velocities[i] = vec_add(self.velocities[i], vec_scale(acc[i], dt));
-            self.vertices[i] = vec_add(self.vertices[i], vec_scale(self.velocities[i], dt));
+        for (vel, (vert, a)) in self
+            .velocities
+            .iter_mut()
+            .zip(self.vertices.iter_mut().zip(acc.iter()))
+        {
+            *vel = vec_add(*vel, vec_scale(*a, dt));
+            *vert = vec_add(*vert, vec_scale(*vel, dt));
         }
     }
 }
 /// A simple mold geometry: vertices and triangle faces.
 ///
 /// Used to constrain an [`InflatableShell`] from expanding beyond its shape.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BlowMolding {
     /// Mold surface vertex positions.
@@ -169,7 +164,6 @@ pub struct BlowMolding {
     /// Mold triangle face indices.
     pub mold_tris: Vec<[usize; 3]>,
 }
-#[allow(dead_code)]
 impl BlowMolding {
     /// Create a new empty mold.
     pub fn new() -> Self {
@@ -202,7 +196,6 @@ impl BlowMolding {
 /// Isothermal assumption: `T = const`, so `p * V = const`.
 /// Isobaric assumption: `p = const` (simple target pressure).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PressureVolumeGas {
     /// Amount of gas in moles times R*T: `n_RT = n * R * T`.
     /// This is conserved during isothermal expansion/compression.
@@ -556,7 +549,6 @@ impl InflatableBody {
     ///
     /// # Arguments
     /// * `prev_volume` – volume at the start of the step (m³).
-    #[allow(dead_code)]
     pub fn compute_pressure_volume_work(&self, prev_volume: f64) -> f64 {
         let current_volume = self.total_volume();
         let delta_v = current_volume - prev_volume;
@@ -573,7 +565,6 @@ impl InflatableBody {
     ///
     /// The resulting pressure is clamped to zero (cannot go sub-atmospheric
     /// for a simple model).
-    #[allow(dead_code)]
     pub fn simulate_puncture(&mut self, hole_area: f64, discharge_coeff: f64, dt: f64) {
         const RHO_AIR: f64 = 1.225;
         let p = self.current_pressure;
@@ -601,7 +592,6 @@ impl InflatableBody {
     /// * `thickness` – membrane thickness (m).
     ///
     /// Returns the hoop tension per unit length (N/m).
-    #[allow(dead_code)]
     pub fn compute_membrane_tension(&self, thickness: f64) -> f64 {
         if thickness < 1e-15 {
             return 0.0;
@@ -616,7 +606,6 @@ impl InflatableBody {
 /// Uses the ideal gas law: p * V = p0 * V0 (isothermal) to compute
 /// the internal pressure, then distributes it over the surface.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct BalloonModel {
     /// Reference pressure (Pa).
     pub p0: f64,
@@ -627,7 +616,6 @@ pub struct BalloonModel {
     /// Young's modulus of the membrane (Pa).
     pub youngs_modulus: f64,
 }
-#[allow(dead_code)]
 impl BalloonModel {
     /// Create a new balloon model from the current state of an inflatable body.
     pub fn new(body: &InflatableBody, thickness: f64, youngs_modulus: f64) -> Self {
@@ -668,7 +656,6 @@ impl BalloonModel {
 /// `max_gauge_pressure` at rate `pressure_rate_pa_per_s` (Pa/s).
 /// Monitors burst events via a `BurstDetector`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct BlowMoldingSimulation {
     /// Rate of pressure increase (Pa/s).
     pub pressure_rate: f64,
@@ -681,7 +668,6 @@ pub struct BlowMoldingSimulation {
     /// Whether the mold has completed (pressure reached max or burst).
     pub complete: bool,
 }
-#[allow(dead_code)]
 impl BlowMoldingSimulation {
     /// Create a new blow-molding simulation.
     pub fn new(pressure_rate: f64, max_gauge_pressure: f64, max_stretch: f64) -> Self {
@@ -727,7 +713,6 @@ impl BlowMoldingSimulation {
 }
 /// Parameters for a simple blow-molding simulation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct BlowMoldingParams {
     /// Pressure ramp rate (Pa/s).
     pub pressure_rate: f64,
@@ -737,7 +722,6 @@ pub struct BlowMoldingParams {
     /// constrain the inflatable from expanding beyond.
     pub mold_spheres: Vec<([f64; 3], f64)>,
 }
-#[allow(dead_code)]
 impl BlowMoldingParams {
     /// Create new blow-molding parameters.
     pub fn new(pressure_rate: f64, max_pressure: f64) -> Self {
@@ -787,7 +771,6 @@ impl BlowMoldingParams {
 /// The flow rate follows a linear pressure-differential model:
 /// `dm/dt = K_v * (p_source - p_body)` (clamped to \[0, max_flow_rate\]).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Valve {
     /// Flow conductance (mol/s/Pa).
     pub conductance: f64,
@@ -800,7 +783,6 @@ pub struct Valve {
     /// Total moles that have passed through (for diagnostics).
     pub total_moles_transferred: f64,
 }
-#[allow(dead_code)]
 impl Valve {
     /// Create a new valve.
     pub fn new(conductance: f64, max_flow_rate: f64, source_pressure: f64) -> Self {
@@ -860,7 +842,6 @@ impl Valve {
 /// Monitors the maximum principal strain across the surface and triggers a
 /// burst event when the strain threshold is exceeded.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct BurstDetector {
     /// Maximum allowable stretch ratio (e.g., 1.5 = 50% elongation).
     pub max_stretch_ratio: f64,
@@ -871,7 +852,6 @@ pub struct BurstDetector {
     /// Stretch ratio at burst.
     pub burst_stretch: f64,
 }
-#[allow(dead_code)]
 impl BurstDetector {
     /// Create a new burst detector with `max_stretch_ratio`.
     pub fn new(max_stretch_ratio: f64) -> Self {
@@ -946,14 +926,12 @@ impl BurstDetector {
 /// Inflation sequence controller: ramps pressure over time with configurable
 /// stages (inflate, hold, deflate).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct InflationSequence {
     /// Stages: (duration_s, target_pressure_Pa).
     pub stages: Vec<(f64, f64)>,
     /// Current elapsed time.
     pub elapsed: f64,
 }
-#[allow(dead_code)]
 impl InflationSequence {
     /// Create a new inflation sequence.
     pub fn new(stages: Vec<(f64, f64)>) -> Self {

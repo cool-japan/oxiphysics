@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -23,9 +22,6 @@
 //! - Succi, S. (2015). Quantum Lattice Boltzmann. *Phil. Trans. R. Soc. A*, 373.
 //! - Gross, E.P. (1961). *Nuovo Cimento*, 20, 454.
 //! - Pitaevskii, L.P. (1961). *Sov. Phys. JETP*, 13, 451.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -323,22 +319,22 @@ impl GrossPitaevskiiLbm {
             // Normalize feq to conserve mass
             let feq_sum: f64 = feq.iter().sum();
             if feq_sum > 1e-30 {
-                for q in 0..3 {
-                    feq[q] *= ri / feq_sum;
+                for fq in feq.iter_mut() {
+                    *fq *= ri / feq_sum;
                 }
             }
-            for q in 0..3 {
-                f_post[i][q] = self.f[i][q] - (self.f[i][q] - feq[q]) / tau;
+            for (q, f_post_iq) in f_post[i].iter_mut().enumerate() {
+                *f_post_iq = self.f[i][q] - (self.f[i][q] - feq[q]) / tau;
             }
         }
 
         // 2. Streaming (periodic)
         let e_idx: [isize; 3] = [-1, 0, 1];
         let mut f_new = vec![[0.0f64; 3]; nx];
-        for i in 0..nx {
-            for q in 0..3 {
+        for (i, f_new_i) in f_new.iter_mut().enumerate() {
+            for (q, f_new_iq) in f_new_i.iter_mut().enumerate() {
                 let src = ((i as isize - e_idx[q]).rem_euclid(nx as isize)) as usize;
-                f_new[i][q] = f_post[src][q];
+                *f_new_iq = f_post[src][q];
             }
         }
         self.f = f_new;
@@ -474,7 +470,7 @@ impl VortexDynamics {
     pub fn step(&mut self) {
         let n = self.vortices.len();
         let mut vels = vec![[0.0f64; 2]; n];
-        for i in 0..n {
+        for (i, vel_i) in vels.iter_mut().enumerate() {
             let px = self.vortices[i].x;
             let py = self.vortices[i].y;
             for j in 0..n {
@@ -487,13 +483,13 @@ impl VortexDynamics {
                 let r2 = (dx * dx + dy * dy).max(self.cutoff * self.cutoff);
                 let gamma = v.circulation();
                 let factor = gamma / (2.0 * PI * r2);
-                vels[i][0] += -factor * dy;
-                vels[i][1] += factor * dx;
+                vel_i[0] += -factor * dy;
+                vel_i[1] += factor * dx;
             }
         }
-        for i in 0..n {
-            self.vortices[i].x += vels[i][0] * self.dt;
-            self.vortices[i].y += vels[i][1] * self.dt;
+        for (i, v) in self.vortices.iter_mut().enumerate() {
+            v.x += vels[i][0] * self.dt;
+            v.y += vels[i][1] * self.dt;
         }
     }
 
@@ -555,7 +551,6 @@ impl SuperfluidLbm {
     /// * `tau_n`      – normal fluid relaxation time
     /// * `dx`         – lattice spacing
     /// * `dt`         – time step
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         nx: usize,
         temperature: f64,
@@ -830,7 +825,7 @@ impl SchroedingerLbm {
 
         // amplitude evolution via continuity
         let mut new_amp = self.amplitude.clone();
-        for i in 0..nx {
+        for (i, new_amp_i) in new_amp.iter_mut().enumerate() {
             let im_idx = if i == 0 { nx - 1 } else { i - 1 };
             let ip_idx = if i == nx - 1 { 0 } else { i + 1 };
             let dphi_p = (self.phase[ip_idx] - self.phase[i]) / dx;
@@ -843,7 +838,7 @@ impl SchroedingerLbm {
             let da_dx = (a_p - a_m) / (2.0 * dx);
             let dphi_c = (self.phase[ip_idx] - self.phase[im_idx]) / (2.0 * dx);
             let da = -hbar / (2.0 * mass) * (a * lap_phi + dphi_c * da_dx) * dt;
-            new_amp[i] = (a + da).max(0.0);
+            *new_amp_i = (a + da).max(0.0);
         }
         self.amplitude = new_amp;
     }
@@ -902,7 +897,6 @@ impl BoseEinsteinCondensate {
     /// * `dx`         – lattice spacing
     /// * `mass`       – particle mass
     /// * `hbar`       – reduced Planck constant
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         nx: usize,
         mu: f64,

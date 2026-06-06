@@ -6,13 +6,9 @@ use crate::atom::AtomSet;
 use oxiphysics_core::math::Vec3;
 
 use super::functions::Thermostat;
-#[allow(unused_imports)]
-use super::functions::*;
 
 /// Computes kinetic temperature per spatial component for diagnostics.
-#[allow(dead_code)]
 pub struct KineticDiagnostics;
-#[allow(dead_code)]
 impl KineticDiagnostics {
     /// Component-wise temperatures: (T_x, T_y, T_z).
     ///
@@ -89,7 +85,6 @@ pub struct CsvrThermostat {
     /// Internal pseudo-random state (LCG).
     pub(super) rng_state: u64,
 }
-#[allow(dead_code)]
 impl CsvrThermostat {
     /// Create a new CSVR thermostat.
     pub fn new(tau: f64) -> Self {
@@ -151,18 +146,6 @@ impl CsvrThermostat {
         let u2 = self.next_uniform();
         (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
     }
-    /// Sum of n_dof independent chi-squared(1) random variables
-    /// approximated via the Wilson-Hilferty transformation for n_dof >= 2.
-    fn chi_squared(&mut self, n_dof: f64) -> f64 {
-        if n_dof < 2.0 {
-            let z = self.next_normal();
-            return (z * z).max(0.0);
-        }
-        let z = self.next_normal();
-        let a = 2.0 / (9.0 * n_dof);
-        let val = n_dof * (1.0 - a + z * a.sqrt()).powi(3);
-        val.max(0.0)
-    }
 }
 /// Stochastic velocity rescaling thermostat (full Bussi et al. implementation).
 ///
@@ -173,7 +156,6 @@ impl CsvrThermostat {
 /// # Reference
 /// Bussi, Donadio, Parrinello, J. Chem. Phys. 126, 014101 (2007).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SvrThermostat {
     /// Coupling time constant τ (ps).
     pub tau: f64,
@@ -182,7 +164,6 @@ pub struct SvrThermostat {
     /// LCG RNG state.
     pub(super) rng_state: u64,
 }
-#[allow(dead_code)]
 impl SvrThermostat {
     /// Create a new SVR thermostat.
     ///
@@ -283,7 +264,6 @@ impl BerendsenThermostat {
 ///
 /// Useful for equilibration protocols: e.g., use Berendsen for the first
 /// 10,000 steps, then switch to Nose-Hoover for production.
-#[allow(dead_code)]
 pub struct ThermostatSwitcher {
     /// List of (step_threshold, thermostat) pairs.
     /// The active thermostat is the one whose threshold is <= current step.
@@ -291,7 +271,6 @@ pub struct ThermostatSwitcher {
     /// Current step counter.
     pub(super) step: usize,
 }
-#[allow(dead_code)]
 impl ThermostatSwitcher {
     /// Create a new switcher starting with a default thermostat.
     pub fn new(initial: Box<dyn Thermostat>) -> Self {
@@ -330,7 +309,6 @@ impl ThermostatSwitcher {
 ///
 /// Useful for heating/cooling protocols and simulated annealing.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TemperatureRamp {
     /// Starting temperature.
     pub t_start: f64,
@@ -341,7 +319,6 @@ pub struct TemperatureRamp {
     /// Current step counter.
     pub(super) step: usize,
 }
-#[allow(dead_code)]
 impl TemperatureRamp {
     /// Create a new temperature ramp.
     pub fn new(t_start: f64, t_end: f64, ramp_steps: usize) -> Self {
@@ -511,7 +488,6 @@ impl VelocityRescalingThermostat {
     }
 }
 /// Tracks temperature over time for monitoring equilibration.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct TemperatureProfile {
     /// Recorded temperature samples.
@@ -519,7 +495,6 @@ pub struct TemperatureProfile {
     /// Corresponding step numbers.
     pub(super) steps: Vec<usize>,
 }
-#[allow(dead_code)]
 impl TemperatureProfile {
     /// Create a new empty profile.
     pub fn new() -> Self {
@@ -613,7 +588,6 @@ impl TemperatureProfile {
 /// # Reference
 /// Martyna, Klein, Tuckerman. J. Chem. Phys. 97, 2635 (1992).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NoseHooverChain {
     /// Chain length M.
     pub chain_length: usize,
@@ -626,7 +600,6 @@ pub struct NoseHooverChain {
     /// Number of degrees of freedom.
     pub n_dof: usize,
 }
-#[allow(dead_code)]
 impl NoseHooverChain {
     /// Create a new NHC thermostat.
     ///
@@ -769,14 +742,12 @@ impl NoseHooverChain {
 /// # Reference
 /// Leimkuhler & Matthews, Appl. Math. Res. Express. 2013(1), 34 (2013).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct LangevinThermostat {
     /// Friction coefficient γ (ps⁻¹).
     pub gamma: f64,
     /// Internal LCG RNG state.
     pub(super) rng_state: u64,
 }
-#[allow(dead_code)]
 impl LangevinThermostat {
     /// Create a new Langevin thermostat with friction coefficient `gamma`.
     pub fn new(gamma: f64) -> Self {

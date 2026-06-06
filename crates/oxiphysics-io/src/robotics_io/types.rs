@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{Mat4, ROS_MAGIC, Vec3};
 
@@ -425,9 +424,6 @@ pub(super) struct CubicCoeffs {
 impl CubicCoeffs {
     fn eval(&self, t: f64) -> f64 {
         self.a0 + self.a1 * t + self.a2 * t * t + self.a3 * t * t * t
-    }
-    fn deriv(&self, t: f64) -> f64 {
-        self.a1 + 2.0 * self.a2 * t + 3.0 * self.a3 * t * t
     }
 }
 /// A visual or collision element attached to a URDF link.

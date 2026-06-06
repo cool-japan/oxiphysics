@@ -32,9 +32,6 @@
 //! solver.step(1.0 / 60.0);
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------

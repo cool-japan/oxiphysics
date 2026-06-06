@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,8 +15,6 @@
 //! - **SootModel**: Simple soot formation/oxidation model.
 //! - **NoxModel**: Thermal-NOx and prompt-NOx formation.
 //! - **CoModel**: CO formation/oxidation sub-mechanism.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // D2Q9 lattice constants
@@ -55,14 +52,6 @@ const CS2: f64 = 1.0 / 3.0;
 // ---------------------------------------------------------------------------
 // Math helpers
 // ---------------------------------------------------------------------------
-
-fn dot2(a: [f64; 2], b: [f64; 2]) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
-}
-
-fn len2(a: [f64; 2]) -> f64 {
-    dot2(a, a).sqrt()
-}
 
 // ---------------------------------------------------------------------------
 // Arrhenius kinetics
@@ -241,8 +230,7 @@ impl SpeciesField {
     ///
     /// Updates YF, YO, YP in-place using Arrhenius kinetics and temperature field `temp`.
     pub fn react(&mut self, temp: &[f64], kinetics: &ArrheniusKinetics, dt: f64, _rho: &[f64]) {
-        for i in 0..self.nx * self.ny {
-            let t = temp[i];
+        for (i, &t) in temp.iter().enumerate().take(self.nx * self.ny) {
             let yf = self.fuel[i];
             let yo = self.oxidizer[i];
             let r = kinetics.rate(t, yf, yo) * dt;
@@ -846,7 +834,6 @@ pub fn bgk_collision(f: [f64; 9], feq: [f64; 9], omega: f64) -> [f64; 9] {
 /// Main combustion LBM solver coupling flow, species, and temperature.
 ///
 /// Uses D2Q9 lattice for flow, with separate passive-scalar LBM for each species.
-#[allow(clippy::too_many_arguments)]
 pub struct CombustionLbm {
     /// Number of cells in x.
     pub nx: usize,
@@ -882,7 +869,6 @@ pub struct CombustionLbm {
 
 impl CombustionLbm {
     /// Create a new [`CombustionLbm`] solver.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         nx: usize,
         ny: usize,

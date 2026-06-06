@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -12,8 +11,6 @@
 //! - [`BiofilmProperties`]: Derived macroscopic properties (porosity, permeability, tortuosity).
 //! - [`monod_kinetics`]: Standalone Monod rate function.
 //! - [`kozeny_carman_permeability`]: Kozeny–Carman equation for porous-media permeability.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Standalone free functions
@@ -316,20 +313,14 @@ impl BiofilmSimulation {
         }
     }
 
-    /// Index for cell (ix, iy).
-    #[inline]
-    fn idx(&self, ix: usize, iy: usize) -> usize {
-        iy * self.nx + ix
-    }
-
     /// Synchronise LBM distribution functions from current nutrient concentrations
     /// (initialise to equilibrium).
     pub fn init_from_grid(&mut self) {
         let n = self.nx * self.ny;
-        for i in 0..n {
-            let c = self.grid[i].nutrient_concentration;
-            for q in 0..9 {
-                self.f[q * n + i] = W[q] * c;
+        for (i, cell) in self.grid.iter().enumerate() {
+            let c = cell.nutrient_concentration;
+            for (q, w_q) in W.iter().enumerate() {
+                self.f[q * n + i] = w_q * c;
             }
         }
     }

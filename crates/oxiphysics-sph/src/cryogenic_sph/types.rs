@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use rand::RngExt;
 use std::f64::consts::PI;
@@ -12,7 +10,6 @@ use std::f64::consts::PI;
 ///
 /// Combines particle dynamics with phase transition, two-fluid model,
 /// Kapitza resistance, and vortex filament tracking.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CryogenicSphSimulation {
     /// SPH particles.
@@ -138,7 +135,7 @@ impl CryogenicSphSimulation {
     pub fn update_densities(&mut self) {
         let n = self.particles.len();
         let mut densities = vec![0.0_f64; n];
-        for i in 0..n {
+        for (i, d) in densities.iter_mut().enumerate() {
             let mut rho = 0.0;
             let hi = self.particles[i].h;
             for j in 0..n {
@@ -146,7 +143,7 @@ impl CryogenicSphSimulation {
                 let w = cubic_spline_kernel(r, hi);
                 rho += self.particles[j].mass * w;
             }
-            densities[i] = rho.max(1.0);
+            *d = rho.max(1.0);
         }
         for (i, p) in self.particles.iter_mut().enumerate() {
             p.density = densities[i];
@@ -157,8 +154,8 @@ impl CryogenicSphSimulation {
     pub fn apply_forces(&mut self) {
         let n = self.particles.len();
         let mut accs = vec![[0.0_f64; 3]; n];
-        for i in 0..n {
-            accs[i][2] -= GRAVITY;
+        for (i, acc) in accs.iter_mut().enumerate() {
+            acc[2] -= GRAVITY;
             let rho_i = self.particles[i].density;
             let p_i = self.particles[i].pressure;
             let hi = self.particles[i].h;
@@ -175,9 +172,9 @@ impl CryogenicSphSimulation {
                 let p_j = self.particles[j].pressure;
                 let pressure_term = p_i / (rho_i * rho_i) + p_j / (rho_j * rho_j);
                 let factor = -self.particles[j].mass * pressure_term * dw / r;
-                accs[i][0] += factor * dx;
-                accs[i][1] += factor * dy;
-                accs[i][2] += factor * dz;
+                acc[0] += factor * dx;
+                acc[1] += factor * dy;
+                acc[2] += factor * dz;
             }
         }
         for (i, p) in self.particles.iter_mut().enumerate() {
@@ -229,7 +226,6 @@ impl CryogenicSphSimulation {
 ///
 /// Implements the Rohsenow correlation for nucleate boiling and the
 /// Leidenfrost criterion for film boiling.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BoilingHeatTransfer {
     /// Fluid type.
@@ -302,7 +298,6 @@ impl BoilingHeatTransfer {
 /// Tait equation of state for cryogenic fluids.
 ///
 /// Uses the modified Tait EOS: P = P0 + B * \[(rho/rho0)^gamma - 1\]
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TaitEquationCryogenic {
     /// Reference pressure P0 in Pa.
@@ -362,7 +357,6 @@ impl TaitEquationCryogenic {
 /// interface between He-II and a solid material.
 ///
 /// R_K ≈ R0 * T^{-3} (Khalatnikov acoustic mismatch theory)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct KapitzaResistance {
     /// Prefactor R0 in m^2 K^4 / W.
@@ -398,7 +392,6 @@ impl KapitzaResistance {
 ///
 /// Uses a generalised van der Waals equation of state to track
 /// liquid-vapour coexistence at cryogenic temperatures.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CryogenicPhaseTransition {
     /// Critical temperature in K.
@@ -494,7 +487,6 @@ impl CryogenicPhaseTransition {
 ///
 /// Models the multi-layer insulation (MLI) system combined with an
 /// active cryocooler that removes the residual heat load.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ZeroBoilOffInsulation {
     /// MLI total thickness in metres.
@@ -636,7 +628,6 @@ impl CryogenicFluid {
     }
 }
 /// A single SPH particle representing a parcel of cryogenic fluid.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CryogenicParticle {
     /// Position \[x, y, z\] in metres.
@@ -726,7 +717,6 @@ impl CryogenicParticle {
 ///
 /// Here we solve on a uniform 1D spatial grid using split-step Fourier method
 /// (time-split operator). The 1D version captures the essential physics.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GrossPitaevskiiSolver {
     /// Number of grid points.
@@ -838,8 +828,8 @@ impl GrossPitaevskiiSolver {
             })
             .collect();
         let v_mean = v_effs.iter().copied().sum::<f64>() / n as f64;
-        for i in 0..n {
-            let exp_arg = -(v_effs[i] - v_mean) * dtau / HBAR;
+        for (i, &v_eff) in v_effs.iter().enumerate() {
+            let exp_arg = -(v_eff - v_mean) * dtau / HBAR;
             let decay = exp_arg.clamp(-500.0, 500.0).exp();
             self.psi_re[i] *= decay;
             self.psi_im[i] *= decay;
@@ -889,7 +879,6 @@ impl GrossPitaevskiiSolver {
 /// The superfluid velocity is governed by the Euler equation with a
 /// chemical potential gradient, while the normal fluid obeys the
 /// Navier-Stokes equations.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SuperfluidTwoFluidModel {
     /// Total density in kg/m^3.
@@ -1031,7 +1020,6 @@ impl MagnetocaloricMaterial {
 /// Models the liquid motion in a partially filled cryogenic tank
 /// under external accelerations (launch, manoeuvring). Uses a
 /// simplified pendulum analogy for the dominant slosh mode.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TankSloshDynamics {
     /// Tank inner radius in metres.
@@ -1107,7 +1095,6 @@ impl TankSloshDynamics {
 ///
 /// The Biot-Savart law is used to compute the velocity field induced
 /// by a set of filament segments.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VortexFilament {
     /// Control points \[x, y, z\] defining the filament geometry in metres.
@@ -1225,7 +1212,6 @@ impl VortexFilament {
 /// The magnetocaloric effect (MCE) is an adiabatic temperature change
 /// upon application/removal of a magnetic field. Used for cooling
 /// below 1 K via adiabatic demagnetisation refrigeration (ADR).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MagnetocaloricCooling {
     /// Magnetic material name.

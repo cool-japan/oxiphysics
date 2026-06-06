@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 /// Simplified linear MPC controller.
 pub struct MpcController {
@@ -23,27 +21,6 @@ pub struct MpcController {
     pub r: Vec<f64>,
 }
 impl MpcController {
-    /// Create a new MPC controller.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        a: Vec<f64>,
-        b: Vec<f64>,
-        n: usize,
-        m: usize,
-        horizon: usize,
-        q: Vec<f64>,
-        r: Vec<f64>,
-    ) -> Self {
-        Self {
-            a,
-            b,
-            n,
-            m,
-            horizon,
-            q,
-            r,
-        }
-    }
     /// Compute the MPC control action for current state toward target.
     ///
     /// Uses a simplified one-step LQR-like approach.
@@ -58,9 +35,11 @@ impl MpcController {
             &self.b,
             &self.q,
             &self.r,
-            self.n,
-            self.m,
-            self.horizon * 10,
+            LqrDims {
+                n: self.n,
+                m: self.m,
+                max_iter: self.horizon * 10,
+            },
         );
         let error_state: Vec<f64> = state
             .iter()
@@ -148,6 +127,17 @@ impl PidController {
         self
     }
 }
+/// Dimensions and iteration limit for LQR solving.
+#[derive(Debug, Clone, Copy)]
+pub struct LqrDims {
+    /// State dimension `n`.
+    pub n: usize,
+    /// Input dimension `m`.
+    pub m: usize,
+    /// Maximum Riccati iterations.
+    pub max_iter: usize,
+}
+
 /// LQR controller: solve the discrete algebraic Riccati equation iteratively.
 ///
 /// Minimizes J = sum(x'Qx + u'Ru).
@@ -163,16 +153,11 @@ impl LqrController {
     /// Solve LQR by iterating the Riccati equation.
     ///
     /// `a` is n-by-n, `b` is n-by-m, `q` is n-by-n, `r` is m-by-m.
-    #[allow(clippy::too_many_arguments)]
-    pub fn solve(
-        a: &[f64],
-        b: &[f64],
-        q: &[f64],
-        r: &[f64],
-        n: usize,
-        m: usize,
-        max_iter: usize,
-    ) -> Self {
+    /// Dimensions and iteration limit are given via `dims`.
+    pub fn solve(a: &[f64], b: &[f64], q: &[f64], r: &[f64], dims: LqrDims) -> Self {
+        let n = dims.n;
+        let m = dims.m;
+        let max_iter = dims.max_iter;
         let bt = mat_transpose(b, n, m);
         let mut p = q.to_vec();
         for _iter in 0..max_iter {
@@ -212,9 +197,9 @@ impl LqrController {
     /// Compute optimal control: u = -K * x.
     pub fn control(&self, x: &[f64]) -> Vec<f64> {
         let mut u = vec![0.0; self.m];
-        for i in 0..self.m {
-            for j in 0..self.n {
-                u[i] -= self.k[i * self.n + j] * x[j];
+        for (i, ui) in u.iter_mut().enumerate() {
+            for (j, &xj) in x.iter().enumerate() {
+                *ui -= self.k[i * self.n + j] * xj;
             }
         }
         u

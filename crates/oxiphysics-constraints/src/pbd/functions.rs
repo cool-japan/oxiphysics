@@ -270,7 +270,6 @@ mod tests {
     }
 }
 /// XPBD simulation step for a single sub-step.
-#[allow(dead_code)]
 pub fn xpbd_pbd_step(
     particles: &mut [PbdParticle],
     constraints: &mut [XpbdDistanceConstraint],
@@ -430,7 +429,6 @@ mod tests_extended {
     }
 }
 /// Compute the signed volume of a tetrahedron defined by four points.
-#[allow(dead_code)]
 pub fn tet_volume(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3], p3: [f64; 3]) -> f64 {
     let a = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
     let b = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];

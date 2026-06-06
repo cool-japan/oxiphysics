@@ -20,8 +20,6 @@
 //! - **Multi-fraction** transport with hiding/exposure corrections
 //! - **Cohesive sediment** flocculation and hindered settling
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -78,42 +76,9 @@ fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-/// Cross product of two 3-vectors.
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-/// Normalise a 3-vector, returns zero vector if length is near zero.
-fn normalise3(v: [f64; 3]) -> [f64; 3] {
-    let l = len3(v);
-    if l < 1.0e-30 {
-        [0.0; 3]
-    } else {
-        scale3(v, 1.0 / l)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // SPH kernel (cubic spline)
 // ---------------------------------------------------------------------------
-
-/// Cubic-spline kernel value in 3-D.
-fn cubic_spline_w(r: f64, h: f64) -> f64 {
-    let q = r / h;
-    let sigma = 1.0 / (PI * h * h * h);
-    if q < 1.0 {
-        sigma * (1.0 - 1.5 * q * q + 0.75 * q * q * q)
-    } else if q < 2.0 {
-        let t = 2.0 - q;
-        sigma * 0.25 * t * t * t
-    } else {
-        0.0
-    }
-}
 
 /// Gradient magnitude of the cubic-spline kernel in 3-D.
 fn cubic_spline_dw(r: f64, h: f64) -> f64 {
@@ -474,7 +439,6 @@ pub fn eddy_viscosity_parabolic(u_star: f64, z: f64, h: f64) -> f64 {
 ///   `(eps_i + eps_j) * (c_j - c_i) * (r_ij . grad_W) / (|r_ij|^2 + eta^2)`
 ///
 /// Multiply by `m_j / rho_j` and sum over all neighbours.
-#[allow(clippy::too_many_arguments)]
 pub fn sph_diffusion_pair(
     c_i: f64,
     c_j: f64,
@@ -496,7 +460,6 @@ pub fn sph_diffusion_pair(
 /// Compute the full diffusion rate for particle i given all neighbours.
 ///
 /// `dc_i/dt = sum_j (m_j/rho_j) * diffusion_pair(...)`
-#[allow(clippy::too_many_arguments)]
 pub fn sph_diffusion_rate(
     _i: usize,
     positions: &[[f64; 3]],
@@ -973,7 +936,6 @@ impl SedimentSphSolver {
     ///
     /// Uses a simple approach: for each bed column, compute local shear stress
     /// from nearest fluid particles, then update bed elevation.
-    #[allow(clippy::too_many_arguments)]
     pub fn morphological_step(&mut self, dt: f64) {
         let cfg = &self.config;
         let rho_f = cfg.rho_f;
@@ -1305,7 +1267,6 @@ pub fn classify_transport(rouse_z: f64) -> TransportMode {
 /// `Q_ls = K / (16 * (s-1) * (1-p)) * sqrt(g / gamma_b) * H_b^{5/2} * sin(2*alpha_b)`
 ///
 /// where `H_b` is breaking wave height and `alpha_b` is breaking angle.
-#[allow(clippy::too_many_arguments)]
 pub fn cerc_longshore_transport(
     k_cerc: f64,
     h_b: f64,
@@ -1445,7 +1406,6 @@ pub fn is_armoured(d50_surface: f64, d50_subsurface: f64, threshold: f64) -> boo
 /// Sediment transport capacity (Engelund-Hansen total load).
 ///
 /// `q_t = 0.05 * rho_f * u^5 / (g^2 * d50 * Delta^2 * Cf^{-1/2})`
-#[allow(clippy::too_many_arguments)]
 pub fn transport_capacity_eh(u: f64, d50: f64, rho_s: f64, rho_f: f64, cf: f64) -> f64 {
     let delta = (rho_s - rho_f) / rho_f;
     if delta.abs() < 1.0e-30 || d50 < 1.0e-30 || cf < 1.0e-30 {

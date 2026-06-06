@@ -5,9 +5,6 @@
 //!
 //! Exposes Level-of-Detail simulation tier management to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::lod::{LodConfig, LodSystem, LodTier};
 use pyo3::prelude::*;
 

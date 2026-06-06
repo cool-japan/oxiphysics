@@ -4,8 +4,6 @@
 //! Full vehicle chassis dynamics: 6-DOF sprung mass motion, load transfer,
 //! roll-centre height, anti-dive, anti-squat, and chassis torsional flex.
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // ChassisState
 // ---------------------------------------------------------------------------
@@ -85,7 +83,6 @@ impl ChassisState {
 /// * `corner_forces` - Normal suspension forces at each corner `[FL, FR, RL, RR]` (N).
 /// * `gravity` - Gravitational acceleration (m/s², positive).
 /// * `dt` - Integration time step (s).
-#[allow(clippy::too_many_arguments)]
 pub fn sprung_mass_motion(
     state: &mut ChassisState,
     corner_forces: [f64; 4],

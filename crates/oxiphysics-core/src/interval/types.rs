@@ -14,7 +14,6 @@ pub struct LinearConstraint {
 /// A Taylor model represents a polynomial approximation plus an interval
 /// remainder: `p(x) + r` where `p` is a polynomial with f64 coefficients
 /// and `r` is an interval remainder enclosing the truncation error.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TaylorModel {
     /// Polynomial coefficients in ascending degree order: poly\[i\] = coeff of x^i
@@ -22,7 +21,6 @@ pub struct TaylorModel {
     /// Interval remainder bound
     pub remainder: Interval,
 }
-#[allow(dead_code)]
 impl TaylorModel {
     /// Create a new Taylor model with given polynomial coefficients and remainder.
     pub fn new(poly: Vec<f64>, remainder: Interval) -> Self {

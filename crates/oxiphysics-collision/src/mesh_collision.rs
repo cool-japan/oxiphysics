@@ -7,12 +7,6 @@
 //! detection for deformables, proximity query (distance field), swept triangle vs
 //! static mesh, penetration depth estimation, and contact manifold generation.
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(clippy::too_many_arguments)]
-
-use std::f64::consts::PI;
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Vector math (no nalgebra — use [f64; 3] arrays)
 // ─────────────────────────────────────────────────────────────────────────────

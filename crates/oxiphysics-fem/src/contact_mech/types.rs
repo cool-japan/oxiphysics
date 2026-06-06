@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
 use std::f64::consts::PI;
 
@@ -132,7 +131,6 @@ impl FrettingContact {
     ///
     /// h = K * p_mean * delta_t * N / H
     /// where K is the wear coefficient, H is hardness.
-    #[allow(clippy::too_many_arguments)]
     pub fn wear_depth(
         wear_coefficient: f64,
         mean_pressure: f64,
@@ -151,7 +149,6 @@ impl FrettingContact {
 /// Characterized by the Maugis parameter λ:
 ///   λ < 0.1 → DMT-like
 ///   λ > 5.0 → JKR-like
-#[allow(dead_code)]
 pub struct MaugisDugdaleContact {
     /// Effective radius R* (m).
     pub effective_radius: f64,
@@ -164,7 +161,6 @@ pub struct MaugisDugdaleContact {
 }
 impl MaugisDugdaleContact {
     /// Maugis parameter λ = σ₀ * (R* / (π * W * E*²))^(1/3).
-    #[allow(dead_code)]
     pub fn maugis_parameter(&self) -> f64 {
         let denom = PI * self.work_of_adhesion * self.reduced_modulus * self.reduced_modulus;
         if denom < 1e-60 {
@@ -173,12 +169,10 @@ impl MaugisDugdaleContact {
         self.cohesive_stress * (self.effective_radius / denom).cbrt()
     }
     /// Approximate JKR pull-off force: -(3/2)πWR*.
-    #[allow(dead_code)]
     pub fn jkr_pull_off_force(&self) -> f64 {
         -1.5 * PI * self.work_of_adhesion * self.effective_radius
     }
     /// Approximate DMT pull-off force: -2πWR*.
-    #[allow(dead_code)]
     pub fn dmt_pull_off_force(&self) -> f64 {
         -2.0 * PI * self.work_of_adhesion * self.effective_radius
     }
@@ -186,7 +180,6 @@ impl MaugisDugdaleContact {
     ///
     /// Uses a heuristic: F_po = F_dmt + (F_jkr - F_dmt) * f(λ)
     /// where f(λ) = 1 - exp(-λ).
-    #[allow(dead_code)]
     pub fn pull_off_force(&self) -> f64 {
         let lambda = self.maugis_parameter();
         let f_dmt = self.dmt_pull_off_force();
@@ -194,7 +187,6 @@ impl MaugisDugdaleContact {
         f_dmt + (f_jkr - f_dmt) * (1.0 - (-lambda).exp())
     }
     /// Transition contact radius under zero applied force (approximation).
-    #[allow(dead_code)]
     pub fn zero_force_contact_radius(&self) -> f64 {
         let lambda = self.maugis_parameter();
         let a_dmt = (6.0 * PI * self.work_of_adhesion * self.effective_radius.powi(2)
@@ -417,7 +409,6 @@ impl HertzianStressField {
     }
 }
 /// Contact loading/unloading curve analysis.
-#[allow(dead_code)]
 pub struct ContactLoadDisplacement {
     /// Hertz contact.
     pub hertz: HertzContact,
@@ -426,7 +417,6 @@ pub struct ContactLoadDisplacement {
 }
 impl ContactLoadDisplacement {
     /// Compute displacement at each load step.
-    #[allow(dead_code)]
     pub fn displacements(&self) -> Vec<f64> {
         self.loads
             .iter()
@@ -434,7 +424,6 @@ impl ContactLoadDisplacement {
             .collect()
     }
     /// Compute contact radius at each load step.
-    #[allow(dead_code)]
     pub fn contact_radii(&self) -> Vec<f64> {
         self.loads
             .iter()
@@ -442,7 +431,6 @@ impl ContactLoadDisplacement {
             .collect()
     }
     /// Compute stiffness dF/dd at each load step.
-    #[allow(dead_code)]
     pub fn stiffnesses(&self) -> Vec<f64> {
         self.loads
             .iter()
@@ -450,12 +438,10 @@ impl ContactLoadDisplacement {
             .collect()
     }
     /// Peak load.
-    #[allow(dead_code)]
     pub fn peak_load(&self) -> f64 {
         self.loads.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
     }
     /// Total elastic work = integral F dd (trapezoidal).
-    #[allow(dead_code)]
     pub fn elastic_work(&self) -> f64 {
         let disps = self.displacements();
         let n = self.loads.len();
@@ -520,7 +506,6 @@ impl PenaltyContactConstraint {
 /// Derjaguin-Muller-Toporov (DMT) adhesive contact model.
 ///
 /// Suitable for stiff materials with low adhesion (complements JKR).
-#[allow(dead_code)]
 pub struct DmtContact {
     /// Underlying Hertz contact.
     pub hertz: HertzContact,
@@ -531,7 +516,6 @@ impl DmtContact {
     /// DMT contact radius: same as Hertz but with modified load.
     ///
     /// a = (3(F + 2πWR*) R* / (4E*))^(1/3)
-    #[allow(dead_code)]
     pub fn contact_radius(&self, normal_force: f64) -> f64 {
         let r_star = self.hertz.effective_radius();
         let e_star = ElasticSolid::reduced_modulus(&self.hertz.solid_a, &self.hertz.solid_b);
@@ -544,19 +528,16 @@ impl DmtContact {
     /// DMT pull-off force.
     ///
     /// F_pull_off = -2 * π * W * R*
-    #[allow(dead_code)]
     pub fn pull_off_force(&self) -> f64 {
         let r_star = self.hertz.effective_radius();
         -2.0 * PI * self.work_of_adhesion * r_star
     }
     /// Contact area at zero applied load.
-    #[allow(dead_code)]
     pub fn zero_load_contact_area(&self) -> f64 {
         let a = self.contact_radius(0.0);
         PI * a * a
     }
     /// DMT contact pressure distribution (Hertz-like).
-    #[allow(dead_code)]
     pub fn pressure_at_zero_force(&self) -> f64 {
         let a = self.contact_radius(0.0);
         if a < 1e-30 {
@@ -639,7 +620,6 @@ impl RoughSurfaceContact {
     }
 }
 /// Extended rough surface contact with plasticity and adhesion.
-#[allow(dead_code)]
 pub struct ExtendedGwContact {
     /// Base GW model.
     pub gw: RoughSurfaceContact,
@@ -652,7 +632,6 @@ impl ExtendedGwContact {
     /// Adhesive contact force using GW + DMT adhesion per asperity.
     ///
     /// Total adhesive force = N * A * 2 * π * W * β * prob_contact(d)
-    #[allow(dead_code)]
     pub fn adhesive_force(&self, separation: f64, nominal_area: f64) -> f64 {
         let prob = self.gw.real_contact_area_fraction(separation);
         2.0 * PI
@@ -665,7 +644,6 @@ impl ExtendedGwContact {
     /// Fraction of asperities in plastic deformation.
     ///
     /// Criterion: contact pressure at asperity tip > hardness/3.
-    #[allow(dead_code)]
     pub fn plastic_fraction(&self, separation: f64, e_star: f64) -> f64 {
         if self.hardness < 1e-30 {
             return 0.0;
@@ -682,7 +660,6 @@ impl ExtendedGwContact {
     /// Effective friction coefficient (Bowden-Tabor model).
     ///
     /// mu = shear_strength / (H/3)
-    #[allow(dead_code)]
     pub fn friction_coefficient(&self, shear_strength: f64) -> f64 {
         if self.hardness < 1e-30 {
             return 0.0;
@@ -691,7 +668,6 @@ impl ExtendedGwContact {
     }
 }
 /// Adhesion model selector.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdhesionModel {
     /// Hertz (no adhesion)
@@ -704,7 +680,6 @@ pub enum AdhesionModel {
 /// Johnson-Kendall-Roberts (JKR) adhesive contact model.
 ///
 /// Extends Hertz contact to include surface adhesion via surface energy.
-#[allow(dead_code)]
 pub struct JkrContact {
     /// Underlying Hertz contact.
     pub hertz: HertzContact,
@@ -715,7 +690,6 @@ impl JkrContact {
     /// JKR contact radius under applied load F.
     ///
     /// a³ = (R*/E*) * \[F + 3πWR* + sqrt(6πWR*F + (3πWR*)²)\]
-    #[allow(dead_code)]
     pub fn contact_radius(&self, normal_force: f64) -> f64 {
         let r_star = self.hertz.effective_radius();
         let e_star = ElasticSolid::reduced_modulus(&self.hertz.solid_a, &self.hertz.solid_b);
@@ -731,13 +705,11 @@ impl JkrContact {
     /// Pull-off force (critical detachment force) in the JKR model.
     ///
     /// F_pull_off = -(3/2) * π * W * R*
-    #[allow(dead_code)]
     pub fn pull_off_force(&self) -> f64 {
         let r_star = self.hertz.effective_radius();
         -1.5 * PI * self.work_of_adhesion * r_star
     }
     /// Contact area at zero applied load (spontaneous adhesion).
-    #[allow(dead_code)]
     pub fn zero_load_contact_area(&self) -> f64 {
         let a = self.contact_radius(0.0);
         PI * a * a
@@ -745,7 +717,6 @@ impl JkrContact {
     /// JKR indentation depth.
     ///
     /// delta = a²/R* - sqrt(2πWa/E*)
-    #[allow(dead_code)]
     pub fn indentation(&self, normal_force: f64) -> f64 {
         let r_star = self.hertz.effective_radius();
         let e_star = ElasticSolid::reduced_modulus(&self.hertz.solid_a, &self.hertz.solid_b);
@@ -756,7 +727,6 @@ impl JkrContact {
         a * a / r_star - (2.0 * PI * self.work_of_adhesion * a / e_star).sqrt()
     }
     /// Elastic energy stored in JKR contact.
-    #[allow(dead_code)]
     pub fn stored_elastic_energy(&self, normal_force: f64) -> f64 {
         let a = self.contact_radius(normal_force);
         let e_star = ElasticSolid::reduced_modulus(&self.hertz.solid_a, &self.hertz.solid_b);

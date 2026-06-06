@@ -683,7 +683,6 @@ impl TerrainDeformation {
     }
     /// Apply a linear track (tire track) along a path defined by a start/end
     /// point, width, and depth.
-    #[allow(clippy::too_many_arguments)]
     pub fn apply_track(&mut self, start: [f64; 2], end: [f64; 2], width: f64, depth: f64) {
         let d = [end[0] - start[0], end[1] - start[1]];
         let len = (d[0] * d[0] + d[1] * d[1]).sqrt();
@@ -1143,7 +1142,6 @@ impl<'a> TerrainCollider<'a> {
         }
     }
     /// Capsule vs heightfield contact (tests both endpoints and midpoint).
-    #[allow(clippy::too_many_arguments)]
     pub fn capsule_vs_terrain(
         &self,
         cap_a: [f64; 3],

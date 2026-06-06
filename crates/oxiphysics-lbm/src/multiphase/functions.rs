@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 use crate::lattice::{D3Q19_VELOCITIES, D3Q19_WEIGHTS};
 
 use super::types::{FreeEnergyModel, PsiType, SpinodалDecompositionParams};
@@ -18,7 +17,6 @@ use crate::multiphase::types::*;
 /// - `rho`:      local density
 /// - `rho_0`:    reference density (used by Exponential and Sukop-Thorne)
 /// - `psi_type`: choice of functional form
-#[allow(dead_code)]
 pub fn compute_psi(rho: f64, rho_0: f64, psi_type: PsiType) -> f64 {
     match psi_type {
         PsiType::Linear => rho,
@@ -32,7 +30,6 @@ pub fn compute_psi(rho: f64, rho_0: f64, psi_type: PsiType) -> f64 {
 /// `psi = sqrt(2 * (p_eos(rho) - rho * cs^2) / (G * cs^2))`
 ///
 /// Returns zero if the argument under the square root is non-positive.
-#[allow(dead_code)]
 pub fn compute_psi_from_eos(p_eos: f64, rho: f64, g: f64) -> f64 {
     let cs2 = 1.0 / 3.0;
     let arg = 2.0 * (p_eos - rho * cs2) / (g * cs2);
@@ -43,7 +40,6 @@ pub fn compute_psi_from_eos(p_eos: f64, rho: f64, g: f64) -> f64 {
 /// `p = rho * R * T * (1 + eta + eta^2 - eta^3) / (1 - eta)^3 - a * rho^2`
 ///
 /// where `eta = b * rho / 4`.
-#[allow(dead_code)]
 pub fn carnahan_starling_eos(rho: f64, a: f64, b: f64, r_t: f64) -> f64 {
     let eta = b * rho / 4.0;
     let denom = (1.0 - eta).powi(3);
@@ -57,7 +53,6 @@ pub fn carnahan_starling_eos(rho: f64, a: f64, b: f64, r_t: f64) -> f64 {
 /// `p = rho * R * T / (1 - b*rho) - a * alpha(T) * rho^2 / (1 + 2*b*rho - b^2*rho^2)`
 ///
 /// Simplified version with alpha = 1.
-#[allow(dead_code)]
 pub fn peng_robinson_eos(rho: f64, a: f64, b: f64, r_t: f64) -> f64 {
     let denom1 = 1.0 - b * rho;
     let denom2 = 1.0 + 2.0 * b * rho - b * b * rho * rho;
@@ -74,7 +69,6 @@ pub fn peng_robinson_eos(rho: f64, a: f64, b: f64, r_t: f64) -> f64 {
 /// `F = -psi_here * (G1 * sum_nn + G2 * sum_nnn)`
 ///
 /// Returns (Fx, Fy).
-#[allow(dead_code)]
 pub fn multi_range_interaction_force(
     psi_field: &[f64],
     x: usize,
@@ -133,7 +127,6 @@ pub fn multi_range_interaction_force(
 /// `rho_wall = rho_vapor + (rho_liquid - rho_vapor) * (1 + cos(theta)) / 2`
 ///
 /// where theta is the contact angle (0 = fully wetting, pi = non-wetting).
-#[allow(dead_code)]
 pub fn contact_angle_wall_density(rho_liquid: f64, rho_vapor: f64, theta: f64) -> f64 {
     rho_vapor + (rho_liquid - rho_vapor) * 0.5 * (1.0 + theta.cos())
 }
@@ -142,7 +135,6 @@ pub fn contact_angle_wall_density(rho_liquid: f64, rho_vapor: f64, theta: f64) -
 /// Sets the pseudo-potential on solid boundary nodes to achieve a desired
 /// contact angle. `is_solid` marks solid nodes, and the `psi_field` is
 /// modified in-place for solid nodes.
-#[allow(dead_code)]
 pub fn apply_wetting_boundary(psi_field: &mut [f64], is_solid: &[bool], psi_wall: f64) {
     for (k, &solid) in is_solid.iter().enumerate() {
         if solid {
@@ -156,7 +148,6 @@ pub fn apply_wetting_boundary(psi_field: &mut [f64], is_solid: &[bool], psi_wall
 /// `psi_field[z * ny * nx + y * nx + x]`.
 ///
 /// Returns the force vector `[Fx, Fy, Fz]`.
-#[allow(dead_code)]
 pub fn compute_interaction_force_d3q19(
     psi_field: &[f64],
     x: usize,
@@ -170,26 +161,23 @@ pub fn compute_interaction_force_d3q19(
     let idx = |xi: usize, yi: usize, zi: usize| zi * ny * nx + yi * nx + xi;
     let psi_here = psi_field[idx(x, y, z)];
     let mut force = [0.0f64; 3];
-    for i in 1..19 {
-        let c = D3Q19_VELOCITIES[i];
+    for (c, &w) in D3Q19_VELOCITIES[1..19].iter().zip(&D3Q19_WEIGHTS[1..19]) {
         let xi = ((x as i64 + c[0] as i64).rem_euclid(nx as i64)) as usize;
         let yi = ((y as i64 + c[1] as i64).rem_euclid(ny as i64)) as usize;
         let zi = ((z as i64 + c[2] as i64).rem_euclid(nz as i64)) as usize;
         let psi_nb = psi_field[idx(xi, yi, zi)];
-        let w = D3Q19_WEIGHTS[i];
-        for d in 0..3 {
-            force[d] += w * psi_nb * c[d] as f64;
+        for (force_d, &cd) in force.iter_mut().zip(c.iter()) {
+            *force_d += w * psi_nb * cd as f64;
         }
     }
-    for d in 0..3 {
-        force[d] *= -g * psi_here;
+    for force_d in &mut force {
+        *force_d *= -g * psi_here;
     }
     force
 }
 /// Compute the free-energy thermodynamic pressure (standalone function).
 ///
 /// See `FreeEnergyModel::compute_free_energy_pressure`.
-#[allow(dead_code)]
 pub fn compute_free_energy_pressure(rho: f64, grad_rho_sq: f64, kappa: f64, a: f64, b: f64) -> f64 {
     let model = FreeEnergyModel::new(kappa, a, b);
     model.compute_free_energy_pressure(rho, grad_rho_sq)
@@ -197,7 +185,6 @@ pub fn compute_free_energy_pressure(rho: f64, grad_rho_sq: f64, kappa: f64, a: f
 /// Compute the density ratio between liquid and vapor phases.
 ///
 /// Uses the equilibrium densities from the free-energy model.
-#[allow(dead_code)]
 pub fn density_ratio(rho_liquid: f64, rho_vapor: f64) -> f64 {
     if rho_vapor.abs() < 1e-30 {
         return f64::INFINITY;
@@ -207,7 +194,6 @@ pub fn density_ratio(rho_liquid: f64, rho_vapor: f64) -> f64 {
 /// Compute effective density using harmonic mean (for momentum exchange).
 ///
 /// `rho_eff = 2 * rho_1 * rho_2 / (rho_1 + rho_2)`
-#[allow(dead_code)]
 pub fn harmonic_mean_density(rho_1: f64, rho_2: f64) -> f64 {
     let sum = rho_1 + rho_2;
     if sum.abs() < 1e-30 {
@@ -219,7 +205,6 @@ pub fn harmonic_mean_density(rho_1: f64, rho_2: f64) -> f64 {
 ///
 /// Prevents negative or excessively low densities that can cause
 /// numerical instability in multiphase simulations.
-#[allow(dead_code)]
 pub fn clip_density(rho: f64, rho_min: f64, rho_max: f64) -> f64 {
     rho.clamp(rho_min, rho_max)
 }
@@ -229,7 +214,6 @@ pub fn clip_density(rho: f64, rho_min: f64, rho_max: f64) -> f64 {
 /// on the other, connected by a tanh interface.
 ///
 /// Returns density as a function of position.
-#[allow(dead_code)]
 pub fn flat_interface_density(
     y: f64,
     y_interface: f64,
@@ -242,7 +226,6 @@ pub fn flat_interface_density(
     rho_mean + rho_diff * ((y - y_interface) / interface_width).tanh()
 }
 /// Initialize a circular droplet density profile.
-#[allow(dead_code)]
 pub fn circular_droplet_density(
     x: f64,
     y: f64,
@@ -263,7 +246,6 @@ pub fn circular_droplet_density(
 /// `m = (1/N) * sum_i (rho_i - rho_mean)^2`
 ///
 /// This quantity increases as phase separation progresses.
-#[allow(dead_code)]
 pub fn phase_separation_order_parameter(rho: &[f64]) -> f64 {
     if rho.is_empty() {
         return 0.0;
@@ -282,7 +264,6 @@ pub fn phase_separation_order_parameter(rho: &[f64]) -> f64 {
 /// where `f''(phi0) = A + 3*B*phi0^2`.
 ///
 /// Returns the growth rate (positive = unstable).
-#[allow(dead_code)]
 pub fn spinodal_growth_rate(
     k_wave: f64,
     mobility: f64,
@@ -297,7 +278,6 @@ pub fn spinodal_growth_rate(
 /// Check if a state is inside the spinodal region.
 ///
 /// The spinodal is defined by `f''(phi) = A + 3*B*phi^2 < 0`.
-#[allow(dead_code)]
 pub fn is_spinodal(phi: f64, a: f64, b: f64) -> bool {
     let f_double_prime = a + 3.0 * b * phi * phi;
     f_double_prime < 0.0
@@ -306,7 +286,6 @@ pub fn is_spinodal(phi: f64, a: f64, b: f64) -> bool {
 ///
 /// For a symmetric double-well potential: `phi_eq = sqrt(-A / B)`.
 /// Returns `(phi_liquid, phi_vapor)`.
-#[allow(dead_code)]
 pub fn maxwell_construction(a: f64, b: f64) -> (f64, f64) {
     if a < 0.0 && b > 0.0 {
         let phi_eq = (-a / b).sqrt();
@@ -320,7 +299,6 @@ pub fn maxwell_construction(a: f64, b: f64) -> (f64, f64) {
 /// `phi(x) = phi_eq * tanh(x / (sqrt(2) * xi))`
 ///
 /// where `xi = sqrt(-kappa / A)` is the interface width.
-#[allow(dead_code)]
 pub fn tanh_interface_profile(x: f64, a: f64, b: f64, kappa: f64) -> f64 {
     if a >= 0.0 || b <= 0.0 || kappa <= 0.0 {
         return 0.0;
@@ -333,21 +311,18 @@ pub fn tanh_interface_profile(x: f64, a: f64, b: f64, kappa: f64) -> f64 {
 ///
 /// A cell is considered an interface cell if its density lies strictly between
 /// the liquid and vapor equilibrium densities.
-#[allow(dead_code)]
 pub fn is_interface_cell(rho: f64) -> bool {
     let rho_low = 0.4;
     let rho_high = 1.6;
     rho > rho_low && rho < rho_high
 }
 /// Determine interface cells with custom thresholds.
-#[allow(dead_code)]
 pub fn is_interface_cell_custom(rho: f64, rho_low: f64, rho_high: f64) -> bool {
     rho > rho_low && rho < rho_high
 }
 /// Count the number of cells in each phase.
 ///
 /// Returns `(n_liquid, n_interface, n_vapor)`.
-#[allow(dead_code)]
 pub fn count_phases(rho: &[f64], rho_low: f64, rho_high: f64) -> (usize, usize, usize) {
     let mut n_liquid = 0;
     let mut n_interface = 0;
@@ -366,7 +341,6 @@ pub fn count_phases(rho: &[f64], rho_low: f64, rho_high: f64) -> (usize, usize, 
 /// Compute the Laplacian of a 2D scalar field using 5-point stencil with periodic BCs.
 ///
 /// Returns laplacian\[y * nx + x\].
-#[allow(dead_code)]
 pub fn laplacian_2d_periodic(field: &[f64], nx: usize, ny: usize) -> Vec<f64> {
     let mut lap = vec![0.0f64; nx * ny];
     let idx = |xi: usize, yi: usize| yi * nx + xi;
@@ -389,7 +363,6 @@ pub fn laplacian_2d_periodic(field: &[f64], nx: usize, ny: usize) -> Vec<f64> {
 /// `phi_{n+1} = phi_n + dt * M * lap( A*phi + B*phi^3 - kappa * lap(phi) )`
 ///
 /// Modifies `phi` in-place.
-#[allow(dead_code)]
 pub fn cahn_hilliard_step(
     phi: &mut [f64],
     nx: usize,
@@ -399,18 +372,17 @@ pub fn cahn_hilliard_step(
 ) {
     let lap_phi = laplacian_2d_periodic(phi, nx, ny);
     let mut mu = vec![0.0f64; nx * ny];
-    for k in 0..nx * ny {
-        mu[k] = params.a * phi[k] + params.b * phi[k].powi(3) - params.kappa * lap_phi[k];
+    for (k, mu_k) in mu.iter_mut().enumerate() {
+        *mu_k = params.a * phi[k] + params.b * phi[k].powi(3) - params.kappa * lap_phi[k];
     }
     let lap_mu = laplacian_2d_periodic(&mu, nx, ny);
-    for k in 0..nx * ny {
-        phi[k] += dt * params.mobility * lap_mu[k];
+    for (phi_k, &lap_mu_k) in phi.iter_mut().zip(&lap_mu) {
+        *phi_k += dt * params.mobility * lap_mu_k;
     }
 }
 /// Compute the total free energy for a 2D phi field.
 ///
 /// `F = sum [ A/2 * phi^2 + B/4 * phi^4 + kappa/2 * |grad phi|^2 ]`
-#[allow(dead_code)]
 pub fn total_free_energy_2d(phi: &[f64], nx: usize, ny: usize, a: f64, b: f64, kappa: f64) -> f64 {
     let idx = |xi: usize, yi: usize| yi * nx + xi;
     let mut energy = 0.0;
@@ -433,7 +405,6 @@ pub fn total_free_energy_2d(phi: &[f64], nx: usize, ny: usize, a: f64, b: f64, k
 /// (factors of 2 apply in 2D: single interface in each direction).
 ///
 /// Returns `2 * sigma / radius`.
-#[allow(dead_code)]
 pub fn laplace_pressure_2d(sigma: f64, radius: f64) -> f64 {
     if radius < 1e-30 {
         f64::INFINITY
@@ -444,7 +415,6 @@ pub fn laplace_pressure_2d(sigma: f64, radius: f64) -> f64 {
 /// Compute the Laplace pressure across a 3D spherical droplet.
 ///
 /// `ΔP = 4 * sigma / D` (two interfaces for a bubble or `2*sigma/R` for a droplet).
-#[allow(dead_code)]
 pub fn laplace_pressure_3d_droplet(sigma: f64, radius: f64) -> f64 {
     if radius < 1e-30 {
         f64::INFINITY
@@ -458,7 +428,6 @@ pub fn laplace_pressure_3d_droplet(sigma: f64, radius: f64) -> f64 {
 /// `omega_n = sqrt(3 * kappa_ad * P_inf / (rho_liq * R0^2))`
 ///
 /// where `kappa_ad` is the polytropic index and `P_inf` the ambient pressure.
-#[allow(dead_code)]
 pub fn bubble_natural_frequency(r0: f64, rho_liquid: f64, p_inf: f64, kappa_ad: f64) -> f64 {
     if r0 < 1e-30 || rho_liquid < 1e-30 {
         return 0.0;
@@ -469,7 +438,6 @@ pub fn bubble_natural_frequency(r0: f64, rho_liquid: f64, p_inf: f64, kappa_ad: 
 ///
 /// For a spherical droplet of radius R rising in a fluid of viscosity mu_c:
 /// `U_t = (2/3) * R^2 * (rho_c - rho_d) * g / (mu_c * (mu_d + mu_c) / (mu_d + 1.5*mu_c))`
-#[allow(dead_code)]
 pub fn droplet_terminal_velocity(
     radius: f64,
     rho_continuous: f64,
@@ -490,7 +458,6 @@ pub fn droplet_terminal_velocity(
 ///
 /// `Cd = (8/Re) * (2 + 3 * lambda) / (3 * (1 + lambda))`
 /// where `lambda = mu_droplet / mu_continuous`.
-#[allow(dead_code)]
 pub fn droplet_drag_coefficient(re: f64, mu_droplet: f64, mu_continuous: f64) -> f64 {
     if re < 1e-30 {
         return f64::INFINITY;
@@ -505,7 +472,6 @@ pub fn droplet_drag_coefficient(re: f64, mu_droplet: f64, mu_continuous: f64) ->
 ///
 /// Here we use a simplified non-dimensional form.
 /// Returns the estimated superheat temperature difference `ΔT`.
-#[allow(dead_code)]
 pub fn leidenfrost_superheat(
     sigma: f64,
     rho_vapor: f64,
@@ -523,7 +489,6 @@ pub fn leidenfrost_superheat(
 ///
 /// This is the functional form; we expose a simplified version:
 /// `h ~ [k^3 * rho^2 * g * h_fg / (mu * delta_T)]^0.25`
-#[allow(dead_code)]
 pub fn film_boiling_heat_transfer(
     k_vapor: f64,
     rho_vapor: f64,
@@ -547,7 +512,6 @@ pub fn film_boiling_heat_transfer(
 /// `S_mass = Gamma * (T - T_sat)`
 ///
 /// where `Gamma` is the volumetric phase change rate coefficient.
-#[allow(dead_code)]
 pub fn phase_change_source(temperature: f64, t_sat: f64, gamma: f64) -> f64 {
     gamma * (temperature - t_sat)
 }
@@ -556,7 +520,6 @@ pub fn phase_change_source(temperature: f64, t_sat: f64, gamma: f64) -> f64 {
 /// `Q_latent = L_fg * S_mass`
 ///
 /// where `L_fg` is the latent heat of vaporization.
-#[allow(dead_code)]
 pub fn latent_heat_source(s_mass: f64, l_fg: f64) -> f64 {
     l_fg * s_mass
 }
@@ -567,7 +530,6 @@ pub fn latent_heat_source(s_mass: f64, l_fg: f64) -> f64 {
 ///
 /// This implements the simplified pseudopotential phase change:
 /// phase-change occurs when `rho * (T - T_sat) * gamma * dt` is non-negligible.
-#[allow(dead_code)]
 pub fn apply_phase_change(rho: &mut [f64], temperature: &[f64], t_sat: f64, gamma: f64, dt: f64) {
     for (r, &t) in rho.iter_mut().zip(temperature.iter()) {
         let s = phase_change_source(t, t_sat, gamma);
@@ -583,7 +545,6 @@ pub fn apply_phase_change(rho: &mut [f64], temperature: &[f64], t_sat: f64, gamm
 /// `J_evap = alpha_e * sqrt(M / (2 * pi * R * T_sat)) * (P_sat(T) - P_v)`
 ///
 /// Simplified version with alpha_e = 1.
-#[allow(dead_code)]
 pub fn hertz_knudsen_evaporation_rate(
     t_surface: f64,
     t_sat: f64,
@@ -602,7 +563,6 @@ pub fn hertz_knudsen_evaporation_rate(
 /// Phase indicator (volume fraction): smoothly transitions from 0 (vapor) to 1 (liquid).
 ///
 /// `C = 0.5 * (1 + tanh((rho - rho_mid) / delta))`
-#[allow(dead_code)]
 pub fn volume_fraction(rho: f64, rho_liquid: f64, rho_vapor: f64, interface_width: f64) -> f64 {
     let rho_mid = 0.5 * (rho_liquid + rho_vapor);
     let delta = interface_width.max(1e-30);
@@ -611,7 +571,6 @@ pub fn volume_fraction(rho: f64, rho_liquid: f64, rho_vapor: f64, interface_widt
 /// Compute the interface normal vector at a 2D node using central differences.
 ///
 /// Returns the unit normal `[nx, ny]` pointing from vapor to liquid.
-#[allow(dead_code)]
 pub fn interface_normal_2d(
     phi: &[f64],
     x: usize,
@@ -637,7 +596,6 @@ pub fn interface_normal_2d(
 ///
 /// Uses the divergence of the unit normal: `kappa = div(n)`.
 /// Returns a signed curvature (positive = concave toward vapor).
-#[allow(dead_code)]
 pub fn interface_curvature_2d(
     phi: &[f64],
     x: usize,
@@ -662,7 +620,6 @@ pub fn interface_curvature_2d(
 /// This form allows independent control of the saturation value `psi0`
 /// and the density scale `rho0`.  Setting `psi0 = 1` recovers the
 /// original Shan-Chen form used elsewhere in this module.
-#[allow(dead_code)]
 pub fn sukop_thorne_psi(rho: f64, rho0: f64, psi0: f64) -> f64 {
     psi0 * (-rho0 / rho.max(1e-30)).exp()
 }
@@ -675,7 +632,6 @@ pub fn sukop_thorne_psi(rho: f64, rho0: f64, psi0: f64) -> f64 {
 ///
 /// where `exp(-2)` comes from evaluating `d(psi^2)/d(rho)` at the
 /// inflection point `rho = rho0 / 2`.
-#[allow(dead_code)]
 pub fn sukop_thorne_critical_g(psi0: f64) -> f64 {
     -1.0 / (6.0 * psi0 * psi0 * (-2.0_f64).exp())
 }
@@ -685,7 +641,6 @@ pub fn sukop_thorne_critical_g(psi0: f64) -> f64 {
 /// drops below `r1 + r2 + tolerance` (centres closer than the sum of radii).
 ///
 /// Returns `true` if the droplets overlap or are within `tolerance` of contact.
-#[allow(dead_code)]
 pub fn droplets_coalescing(
     cx1: f64,
     cy1: f64,
@@ -706,7 +661,6 @@ pub fn droplets_coalescing(
 ///
 /// where `h_0` is the initial gap, `R_eff = 2*R1*R2/(R1+R2)` and
 /// `sigma` is the surface tension.
-#[allow(dead_code)]
 pub fn coalescence_time_scale(r1: f64, r2: f64, mu: f64, sigma: f64, h0: f64) -> f64 {
     if sigma < 1e-30 || h0 < 1e-30 {
         return f64::INFINITY;
@@ -718,12 +672,10 @@ pub fn coalescence_time_scale(r1: f64, r2: f64, mu: f64, sigma: f64, h0: f64) ->
 ///
 /// For 2D: `r_new = sqrt(r1^2 + r2^2)`
 /// For 3D: `r_new = (r1^3 + r2^3)^(1/3)`
-#[allow(dead_code)]
 pub fn coalesced_radius_2d(r1: f64, r2: f64) -> f64 {
     (r1 * r1 + r2 * r2).sqrt()
 }
 /// 3D coalesced radius.
-#[allow(dead_code)]
 pub fn coalesced_radius_3d(r1: f64, r2: f64) -> f64 {
     (r1.powi(3) + r2.powi(3)).powf(1.0 / 3.0)
 }
@@ -744,7 +696,6 @@ pub fn coalesced_radius_3d(r1: f64, r2: f64) -> f64 {
 /// the gradient coefficient `kappa`.
 ///
 /// A **positive** return value means the uniform phase is unstable.
-#[allow(dead_code)]
 pub fn phase_separation_rate_constant(mobility: f64, f_double_prime: f64, kappa: f64) -> f64 {
     if kappa < 1e-30 || f_double_prime >= 0.0 {
         return 0.0;
@@ -757,7 +708,6 @@ pub fn phase_separation_rate_constant(mobility: f64, f_double_prime: f64, kappa:
 ///
 /// A value > 1 indicates that the system is in the spinodal region and
 /// will phase-separate spontaneously.
-#[allow(dead_code)]
 pub fn spinodal_number(f_double_prime: f64, kappa: f64, k_min: f64) -> f64 {
     if kappa < 1e-30 || k_min < 1e-30 {
         return 0.0;
@@ -778,7 +728,6 @@ pub fn spinodal_number(f_double_prime: f64, kappa: f64, k_min: f64) -> f64 {
 /// droplet radius, and returns the surface tension.
 ///
 /// `dimension` must be 2 or 3.
-#[allow(dead_code)]
 pub fn surface_tension_from_laplace(
     p_inside: f64,
     p_outside: f64,
@@ -798,7 +747,6 @@ pub fn surface_tension_from_laplace(
 /// pressure `p_gas`, the equilibrium radius satisfies:
 ///
 /// `R_eq = 2 * sigma / (p_gas - p_ext)` (3D spherical)
-#[allow(dead_code)]
 pub fn equilibrium_droplet_radius(sigma: f64, p_gas: f64, p_ext: f64) -> f64 {
     let dp = p_gas - p_ext;
     if dp < 1e-30 {
@@ -814,7 +762,6 @@ pub fn equilibrium_droplet_radius(sigma: f64, p_gas: f64, p_ext: f64) -> f64 {
 ///
 /// This width is the relevant parameter for mesh resolution requirements:
 /// at least 4–5 grid points should span `W_90`.
-#[allow(dead_code)]
 pub fn diffuse_interface_width_90(kappa: f64, a: f64) -> f64 {
     if a >= 0.0 || kappa <= 0.0 {
         return 0.0;
@@ -824,7 +771,6 @@ pub fn diffuse_interface_width_90(kappa: f64, a: f64) -> f64 {
 /// Check whether the grid spacing `dx` resolves the diffuse interface.
 ///
 /// Returns `true` if at least `n_min` grid points span the 10–90% width.
-#[allow(dead_code)]
 pub fn interface_is_resolved(kappa: f64, a: f64, dx: f64, n_min: usize) -> bool {
     let w90 = diffuse_interface_width_90(kappa, a);
     w90 / dx >= n_min as f64
@@ -841,7 +787,6 @@ pub fn interface_is_resolved(kappa: f64, a: f64, dx: f64, n_min: usize) -> bool 
 /// and touches both minima, giving `phi_L = +sqrt(-A/B)`, `phi_V = -sqrt(-A/B)`.
 ///
 /// Returns `(phi_vapor, phi_liquid)` sorted with vapor < liquid.
-#[allow(dead_code)]
 pub fn tie_line_endpoints(a: f64, b: f64) -> (f64, f64) {
     if a < 0.0 && b > 0.0 {
         let phi_eq = (-a / b).sqrt();
@@ -856,7 +801,6 @@ pub fn tie_line_endpoints(a: f64, b: f64) -> (f64, f64) {
 /// `(phi_v, phi_l)`, the liquid volume fraction is:
 ///
 /// `x_l = (phi_0 - phi_v) / (phi_l - phi_v)`
-#[allow(dead_code)]
 pub fn lever_rule_liquid_fraction(phi_0: f64, phi_v: f64, phi_l: f64) -> f64 {
     let denom = phi_l - phi_v;
     if denom.abs() < 1e-30 {
@@ -869,7 +813,6 @@ pub fn lever_rule_liquid_fraction(phi_0: f64, phi_v: f64, phi_l: f64) -> f64 {
 /// `field[k] += amplitude * exp(-((x - cx)^2 + (y - cy)^2) / (2 * sigma^2))`
 ///
 /// Used to seed nucleation events in phase-separation simulations.
-#[allow(dead_code)]
 pub fn add_nucleation_seed(
     field: &mut [f64],
     nx: usize,
@@ -893,7 +836,6 @@ pub fn add_nucleation_seed(
 ///
 /// Seeds are placed at positions `(x_k, y_k)` drawn from the `centres` slice.
 /// Each seed has the same amplitude and width.
-#[allow(dead_code)]
 pub fn add_nucleation_seeds(
     field: &mut [f64],
     nx: usize,
@@ -916,7 +858,6 @@ pub fn add_nucleation_seeds(
 ///
 /// This sets a virtual psi on the solid that interpolates between the two
 /// bulk phases based on the wettability.
-#[allow(dead_code)]
 pub fn wetting_psi_from_angle(psi_liq: f64, psi_vap: f64, theta: f64) -> f64 {
     psi_vap + (psi_liq - psi_vap) * 0.5 * (1.0 + theta.cos())
 }
@@ -924,7 +865,6 @@ pub fn wetting_psi_from_angle(psi_liq: f64, psi_vap: f64, theta: f64) -> f64 {
 ///
 /// For each solid node, sets `psi_field[k]` to `psi_wall`.
 /// Non-solid nodes are left unchanged.
-#[allow(dead_code)]
 pub fn apply_contact_angle_bc(
     psi_field: &mut [f64],
     is_solid: &[bool],
@@ -943,7 +883,6 @@ pub fn apply_contact_angle_bc(
 ///
 /// Inverts the wetting formula:
 /// `theta = acos(2 * (psi_wall - psi_vap) / (psi_liq - psi_vap) - 1)`
-#[allow(dead_code)]
 pub fn contact_angle_from_psi(psi_wall: f64, psi_liq: f64, psi_vap: f64) -> f64 {
     let denom = psi_liq - psi_vap;
     if denom.abs() < 1e-30 {
@@ -965,7 +904,6 @@ pub fn contact_angle_from_psi(psi_wall: f64, psi_liq: f64, psi_vap: f64) -> f64 
 /// `G_cc = -ln(D) / (2 * psi_0^2)`
 ///
 /// This estimate holds for moderate density ratios (up to ~10).
-#[allow(dead_code)]
 pub fn g_cc_for_density_ratio(density_ratio_target: f64, psi_0: f64) -> f64 {
     if density_ratio_target <= 1.0 + 1e-10 || psi_0 < 1e-30 {
         return 0.0;
@@ -976,7 +914,6 @@ pub fn g_cc_for_density_ratio(density_ratio_target: f64, psi_0: f64) -> f64 {
 ///
 /// For D2Q9, the BGK scheme is stable when
 /// `|G_cc| * psi_0^2 < 1/6` (heuristic upper bound).
-#[allow(dead_code)]
 pub fn g_cc_is_stable(g_cc: f64, psi_0: f64) -> bool {
     g_cc.abs() * psi_0 * psi_0 < 1.0 / 6.0
 }
@@ -1075,11 +1012,11 @@ mod tests {
         let nz = 4;
         let psi_field = vec![1.0f64; nx * ny * nz];
         let force = compute_interaction_force_d3q19(&psi_field, 2, 2, 2, nx, ny, nz, -1.0);
-        for d in 0..3 {
+        for (d, &force_d) in force.iter().enumerate() {
             assert!(
-                force[d].abs() < 1e-14,
+                force_d.abs() < 1e-14,
                 "3D uniform force should be zero: F[{d}] = {}",
-                force[d]
+                force_d
             );
         }
     }

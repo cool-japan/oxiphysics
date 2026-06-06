@@ -2,14 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::type_complexity)]
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::types::*;
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::*;
     fn quad(x: &[f64]) -> f64 {
         (x[0] - 2.0).powi(2)
     }
@@ -67,23 +62,67 @@ mod tests {
     }
     #[test]
     fn test_adam_converges_quad() {
-        let res = adam(quad, quad_grad, vec![0.0], 0.1, 0.9, 0.999, 1e-8, 5000);
+        let res = adam(
+            quad,
+            quad_grad,
+            vec![0.0],
+            AdamConfig {
+                lr: 0.1,
+                beta1: 0.9,
+                beta2: 0.999,
+                eps: 1e-8,
+                max_iter: 5000,
+            },
+        );
         assert!((res.x[0] - 2.0).abs() < 1e-3);
     }
     #[test]
     fn test_adam_bowl_2d() {
-        let res = adam(bowl, bowl_grad, vec![5.0, 5.0], 0.1, 0.9, 0.999, 1e-8, 5000);
+        let res = adam(
+            bowl,
+            bowl_grad,
+            vec![5.0, 5.0],
+            AdamConfig {
+                lr: 0.1,
+                beta1: 0.9,
+                beta2: 0.999,
+                eps: 1e-8,
+                max_iter: 5000,
+            },
+        );
         assert!((res.x[0] - 0.0).abs() < 1e-2);
         assert!((res.x[1] - 1.0).abs() < 1e-2);
     }
     #[test]
     fn test_adam_fval_reasonable() {
-        let res = adam(quad, quad_grad, vec![0.0], 0.1, 0.9, 0.999, 1e-8, 5000);
+        let res = adam(
+            quad,
+            quad_grad,
+            vec![0.0],
+            AdamConfig {
+                lr: 0.1,
+                beta1: 0.9,
+                beta2: 0.999,
+                eps: 1e-8,
+                max_iter: 5000,
+            },
+        );
         assert!(res.f_val < 1e-4);
     }
     #[test]
     fn test_adam_n_iter_positive() {
-        let res = adam(quad, quad_grad, vec![0.0], 0.1, 0.9, 0.999, 1e-8, 100);
+        let res = adam(
+            quad,
+            quad_grad,
+            vec![0.0],
+            AdamConfig {
+                lr: 0.1,
+                beta1: 0.9,
+                beta2: 0.999,
+                eps: 1e-8,
+                max_iter: 100,
+            },
+        );
         assert!(res.n_iter > 0 && res.n_iter <= 100);
     }
     #[test]
@@ -212,7 +251,7 @@ mod tests {
         let dir = vec![1.0];
         let f0 = quad(&x);
         let gd = -2.0 * 2.0;
-        let alpha = backtracking_line_search(quad, &x, &dir, f0, gd, 1.0, 0.5, 1e-4);
+        let alpha = backtracking_line_search(quad, &x, &dir, f0, gd, BacktrackingConfig::default());
         let x_new: Vec<f64> = x
             .iter()
             .zip(dir.iter())
@@ -226,7 +265,7 @@ mod tests {
         let dir = vec![-1.0];
         let f0 = quad(&x);
         let gd = -6.0;
-        let alpha = backtracking_line_search(quad, &x, &dir, f0, gd, 1.0, 0.5, 1e-4);
+        let alpha = backtracking_line_search(quad, &x, &dir, f0, gd, BacktrackingConfig::default());
         assert!(alpha > 0.0);
     }
     #[test]
@@ -287,17 +326,50 @@ mod tests {
     }
     #[test]
     fn test_pso_quad() {
-        let res = particle_swarm(quad, &[-10.0], &[10.0], 20, 0.7, 2.0, 2.0, 200);
+        let res = particle_swarm(
+            quad,
+            &[-10.0],
+            &[10.0],
+            PsoConfig {
+                n_particles: 20,
+                w: 0.7,
+                c1: 2.0,
+                c2: 2.0,
+                max_iter: 200,
+            },
+        );
         assert!((res.x[0] - 2.0).abs() < 0.5, "pso x[0]={}", res.x[0]);
     }
     #[test]
     fn test_pso_bowl_2d() {
-        let res = particle_swarm(bowl, &[-10.0, -10.0], &[10.0, 10.0], 30, 0.7, 2.0, 2.0, 300);
+        let res = particle_swarm(
+            bowl,
+            &[-10.0, -10.0],
+            &[10.0, 10.0],
+            PsoConfig {
+                n_particles: 30,
+                w: 0.7,
+                c1: 2.0,
+                c2: 2.0,
+                max_iter: 300,
+            },
+        );
         assert!(res.f_val < 2.0, "pso f_val={}", res.f_val);
     }
     #[test]
     fn test_pso_respects_bounds() {
-        let res = particle_swarm(quad, &[0.0], &[1.0], 20, 0.7, 2.0, 2.0, 200);
+        let res = particle_swarm(
+            quad,
+            &[0.0],
+            &[1.0],
+            PsoConfig {
+                n_particles: 20,
+                w: 0.7,
+                c1: 2.0,
+                c2: 2.0,
+                max_iter: 200,
+            },
+        );
         assert!(
             res.x[0] >= 0.0 && res.x[0] <= 1.0,
             "out of bounds: x={}",
@@ -306,22 +378,66 @@ mod tests {
     }
     #[test]
     fn test_pso_n_iter_equals_max() {
-        let res = particle_swarm(quad, &[-5.0], &[5.0], 10, 0.7, 2.0, 2.0, 50);
+        let res = particle_swarm(
+            quad,
+            &[-5.0],
+            &[5.0],
+            PsoConfig {
+                n_particles: 10,
+                w: 0.7,
+                c1: 2.0,
+                c2: 2.0,
+                max_iter: 50,
+            },
+        );
         assert_eq!(res.n_iter, 50);
     }
     #[test]
     fn test_ga_quad_finds_minimum() {
-        let res = genetic_algorithm(quad, &[-10.0], &[10.0], 50, 0.8, 0.1, 0.5, 200);
+        let res = genetic_algorithm(
+            quad,
+            &[-10.0],
+            &[10.0],
+            GeneticAlgorithmConfig {
+                pop_size: 50,
+                crossover_rate: 0.8,
+                mutation_rate: 0.1,
+                mutation_scale: 0.5,
+                max_generations: 200,
+            },
+        );
         assert!((res.x[0] - 2.0).abs() < 1.0, "ga x[0]={}", res.x[0]);
     }
     #[test]
     fn test_ga_bowl_2d() {
-        let res = genetic_algorithm(bowl, &[-5.0, -5.0], &[5.0, 5.0], 80, 0.8, 0.2, 0.5, 500);
+        let res = genetic_algorithm(
+            bowl,
+            &[-5.0, -5.0],
+            &[5.0, 5.0],
+            GeneticAlgorithmConfig {
+                pop_size: 80,
+                crossover_rate: 0.8,
+                mutation_rate: 0.2,
+                mutation_scale: 0.5,
+                max_generations: 500,
+            },
+        );
         assert!(res.f_val < 3.0, "ga f_val={}", res.f_val);
     }
     #[test]
     fn test_ga_respects_bounds() {
-        let res = genetic_algorithm(quad, &[0.0], &[1.5], 30, 0.8, 0.1, 0.2, 100);
+        let res = genetic_algorithm(
+            quad,
+            &[0.0],
+            &[1.5],
+            GeneticAlgorithmConfig {
+                pop_size: 30,
+                crossover_rate: 0.8,
+                mutation_rate: 0.1,
+                mutation_scale: 0.2,
+                max_generations: 100,
+            },
+        );
         assert!(
             res.x[0] >= 0.0 && res.x[0] <= 1.5,
             "out of bounds: x={}",
@@ -330,12 +446,34 @@ mod tests {
     }
     #[test]
     fn test_ga_n_iter_equals_max_generations() {
-        let res = genetic_algorithm(quad, &[-5.0], &[5.0], 10, 0.8, 0.1, 0.5, 20);
+        let res = genetic_algorithm(
+            quad,
+            &[-5.0],
+            &[5.0],
+            GeneticAlgorithmConfig {
+                pop_size: 10,
+                crossover_rate: 0.8,
+                mutation_rate: 0.1,
+                mutation_scale: 0.5,
+                max_generations: 20,
+            },
+        );
         assert_eq!(res.n_iter, 20);
     }
     #[test]
     fn test_lbfgsb_quad_inside_bounds() {
-        let res = lbfgsb(quad, quad_grad, vec![0.0], &[0.0], &[5.0], 5, 1e-8, 200);
+        let res = lbfgsb(
+            quad,
+            quad_grad,
+            vec![0.0],
+            &[0.0],
+            &[5.0],
+            LbfgsbConfig {
+                m: 5,
+                tol: 1e-8,
+                max_iter: 200,
+            },
+        );
         assert!(res.converged);
         assert!((res.x[0] - 2.0).abs() < 1e-5, "x={}", res.x[0]);
     }
@@ -343,7 +481,18 @@ mod tests {
     fn test_lbfgsb_quad_min_outside_bounds() {
         let f = |x: &[f64]| (x[0] - 5.0).powi(2);
         let g = |x: &[f64]| vec![2.0 * (x[0] - 5.0)];
-        let res = lbfgsb(f, g, vec![0.0], &[-3.0], &[3.0], 5, 1e-8, 200);
+        let res = lbfgsb(
+            f,
+            g,
+            vec![0.0],
+            &[-3.0],
+            &[3.0],
+            LbfgsbConfig {
+                m: 5,
+                tol: 1e-8,
+                max_iter: 200,
+            },
+        );
         assert!((res.x[0] - 3.0).abs() < 1e-4, "x={}", res.x[0]);
     }
     #[test]
@@ -354,9 +503,11 @@ mod tests {
             vec![4.0, 4.0],
             &[-10.0, -10.0],
             &[10.0, 10.0],
-            5,
-            1e-8,
-            500,
+            LbfgsbConfig {
+                m: 5,
+                tol: 1e-8,
+                max_iter: 500,
+            },
         );
         assert!(res.converged, "lbfgsb should converge on bowl");
         assert!((res.x[0] - 0.0).abs() < 1e-4, "x[0]={}", res.x[0]);
@@ -370,16 +521,29 @@ mod tests {
             vec![-1.0, 1.0],
             &[-5.0, -5.0],
             &[5.0, 5.0],
-            10,
-            1e-6,
-            2000,
+            LbfgsbConfig {
+                m: 10,
+                tol: 1e-6,
+                max_iter: 2000,
+            },
         );
         assert!((res.x[0] - 1.0).abs() < 0.01, "x[0]={}", res.x[0]);
         assert!((res.x[1] - 1.0).abs() < 0.01, "x[1]={}", res.x[1]);
     }
     #[test]
     fn test_lbfgsb_respects_bounds() {
-        let res = lbfgsb(quad, quad_grad, vec![0.0], &[0.0], &[1.0], 5, 1e-8, 200);
+        let res = lbfgsb(
+            quad,
+            quad_grad,
+            vec![0.0],
+            &[0.0],
+            &[1.0],
+            LbfgsbConfig {
+                m: 5,
+                tol: 1e-8,
+                max_iter: 200,
+            },
+        );
         assert!(
             res.x[0] >= 0.0 && res.x[0] <= 1.0 + 1e-10,
             "out of bounds: x={}",
@@ -541,7 +705,7 @@ mod tests {
         let f = |x: &[f64]| x[0] * x[0];
         let gf = |x: &[f64]| vec![2.0 * x[0]];
         let constraints: Vec<fn(&[f64]) -> f64> = vec![];
-        let grad_constraints: Vec<fn(&[f64]) -> Vec<f64>> = vec![];
+        let grad_constraints = Vec::<fn(&[f64]) -> Vec<f64>>::new();
         let res = augmented_lagrangian(
             f,
             gf,
@@ -683,8 +847,8 @@ mod tests {
         let mut rng = rand::rng();
         let bounds = vec![(-1.0_f64, 1.0_f64)];
         let de = DifferentialEvolution::new(10, 1, &bounds, &mut rng);
-        assert!((de.F - 0.8).abs() < 1e-12);
-        assert!((de.CR - 0.9).abs() < 1e-12);
+        assert!((de.f_weight - 0.8).abs() < 1e-12);
+        assert!((de.cr - 0.9).abs() < 1e-12);
     }
     #[test]
     fn test_de_population_in_bounds() {
@@ -702,11 +866,13 @@ mod tests {
             rosenbrock,
             &[-2.0, -2.0],
             &[2.0, 2.0],
-            30,
-            0.7,
-            2.0,
-            2.0,
-            500,
+            PsoConfig {
+                n_particles: 30,
+                w: 0.7,
+                c1: 2.0,
+                c2: 2.0,
+                max_iter: 500,
+            },
         );
         assert!(res.f_val < 2.0, "PSO rosenbrock f_val={}", res.f_val);
     }
@@ -716,11 +882,13 @@ mod tests {
             |x: &[f64]| (x[0] - 3.0).powi(2),
             &[0.0],
             &[6.0],
-            20,
-            0.7,
-            2.0,
-            2.0,
-            300,
+            PsoConfig {
+                n_particles: 20,
+                w: 0.7,
+                c1: 2.0,
+                c2: 2.0,
+                max_iter: 300,
+            },
         );
         assert!((res.x[0] - 3.0).abs() < 0.5, "PSO 1D: x={}", res.x[0]);
     }

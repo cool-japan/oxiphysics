@@ -19,8 +19,6 @@
 //! - Brunauer, S., Emmett, P. H., & Teller, E. (1938). *J. Am. Chem. Soc.* 60, 309.
 //! - Dubinin, M. M., & Radushkevich, L. V. (1947). *Dokl. Akad. Nauk SSSR* 55, 331.
 
-#![allow(dead_code)]
-
 /// Universal gas constant R (J mol⁻¹ K⁻¹).
 pub const R_GAS: f64 = 8.314_462_618;
 /// Boltzmann constant k_B (J K⁻¹).

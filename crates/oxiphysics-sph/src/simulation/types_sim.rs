@@ -1,8 +1,5 @@
 //! Simulation types: WcSphSim, SphSimulation, TwoPhaseSimState, PeriodicSphSim, CflController.
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use crate::boundary_sph::BoundarySet;
 use crate::dfsph::{DfsphParams, DfsphSolver};
 use crate::kernel::SphKernel;
@@ -11,7 +8,6 @@ use crate::particle::ParticleSet;
 use crate::timestep;
 use crate::wcsph::WcsphParams;
 
-#[allow(unused_imports)]
 use super::types::{SolverType, SphSim, SphSimulationParams};
 
 /// Weakly-compressible SPH simulation using `SphParticleSet` (SoA layout).
@@ -25,7 +21,6 @@ use super::types::{SolverType, SphSim, SphSimulationParams};
 /// - CSF surface tension (optional)
 /// - CFL + viscous adaptive time stepping
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WcSphSim {
     /// Particle data (SoA).
     pub particles: crate::particle::SphParticleSet,
@@ -50,7 +45,6 @@ pub struct WcSphSim {
     /// Total potential energy tracker.
     pub potential_energy_history: Vec<f64>,
 }
-#[allow(dead_code)]
 impl WcSphSim {
     /// Create a new WCSPH simulation.
     pub fn new(
@@ -190,7 +184,7 @@ impl WcSphSim {
         let sigma = self.sigma;
         let rho0 = self.rho0;
         let mut grad_c = vec![[0.0_f64; 3]; n];
-        for i in 0..n {
+        for (i, gc_i) in grad_c.iter_mut().enumerate().take(n) {
             let rho_i = self.particles.densities[i].max(1e-14);
             let ci = rho_i / rho0;
             for j in 0..n {
@@ -209,9 +203,9 @@ impl WcSphSim {
                 let cj = rho_j / rho0;
                 let dw = crate::particle::cubic_spline_gradient_pub(r, h);
                 let factor = self.particles.masses[j] / rho_j * (cj - ci) * dw / r;
-                grad_c[i][0] += factor * (-dx);
-                grad_c[i][1] += factor * (-dy);
-                grad_c[i][2] += factor * (-dz);
+                gc_i[0] += factor * (-dx);
+                gc_i[1] += factor * (-dy);
+                gc_i[2] += factor * (-dz);
             }
         }
         for i in 0..n {
@@ -232,7 +226,7 @@ impl WcSphSim {
             ];
             let rho_i = self.particles.densities[i].max(1e-14);
             let mut kappa = 0.0_f64;
-            for j in 0..n {
+            for (j, gc_j) in grad_c.iter().enumerate().take(n) {
                 if i == j {
                     continue;
                 }
@@ -245,18 +239,12 @@ impl WcSphSim {
                 }
                 let r = r2.sqrt();
                 let rho_j = self.particles.densities[j].max(1e-14);
-                let gc_j_mag2 = grad_c[j][0] * grad_c[j][0]
-                    + grad_c[j][1] * grad_c[j][1]
-                    + grad_c[j][2] * grad_c[j][2];
+                let gc_j_mag2 = gc_j[0] * gc_j[0] + gc_j[1] * gc_j[1] + gc_j[2] * gc_j[2];
                 if gc_j_mag2 < 1e-20 {
                     continue;
                 }
                 let gc_j_mag = gc_j_mag2.sqrt();
-                let n_hat_j = [
-                    grad_c[j][0] / gc_j_mag,
-                    grad_c[j][1] / gc_j_mag,
-                    grad_c[j][2] / gc_j_mag,
-                ];
+                let n_hat_j = [gc_j[0] / gc_j_mag, gc_j[1] / gc_j_mag, gc_j[2] / gc_j_mag];
                 let dw = crate::particle::cubic_spline_gradient_pub(r, h);
                 let dn_dot_r = (n_hat_j[0] - n_hat[0]) * (-dx)
                     + (n_hat_j[1] - n_hat[1]) * (-dy)
@@ -264,8 +252,8 @@ impl WcSphSim {
                 kappa -= self.particles.masses[j] / rho_j * dn_dot_r * dw / r;
             }
             let force_scale = sigma * kappa * gc_mag / rho_i;
-            for k in 0..3 {
-                self.particles.accelerations[i][k] += force_scale * n_hat[k];
+            for (k, &nk) in n_hat.iter().enumerate() {
+                self.particles.accelerations[i][k] += force_scale * nk;
             }
         }
     }
@@ -375,7 +363,6 @@ impl SphSimulation {
     ///
     /// This implements periodic boundary conditions (PBC): any coordinate
     /// that drifts outside the box is folded back using modular arithmetic.
-    #[allow(dead_code)]
     pub fn apply_pbc(&mut self, box_size: [f64; 3]) {
         for p in &mut self.particles.positions {
             for k in 0..3 {
@@ -391,7 +378,6 @@ impl SphSimulation {
     ///
     /// Potential energy is computed relative to the y = 0 plane using
     /// `E_pot = sum_i m_i * |g| * y_i` where |g| is the magnitude of gravity.
-    #[allow(dead_code)]
     pub fn total_energy(&self) -> f64 {
         let ke = self
             .particles
@@ -416,7 +402,6 @@ impl SphSimulation {
     /// Total linear momentum vector `p = sum_i m_i * v_i`.
     ///
     /// Returns `[px, py, pz]`.
-    #[allow(dead_code)]
     pub fn total_momentum(&self) -> [f64; 3] {
         let mut mom = [0.0_f64; 3];
         for (v, &m) in self
@@ -443,7 +428,6 @@ impl SphSimulation {
     ///
     /// # Arguments
     /// * `dt` – Current time step \[s\].
-    #[allow(dead_code)]
     pub fn compute_courant_number(&self, dt: f64) -> f64 {
         let v_max = self
             .particles
@@ -463,7 +447,6 @@ impl SphSimulation {
     ///
     /// # Arguments
     /// * `cfl_factor` – Safety factor (commonly 0.4).
-    #[allow(dead_code)]
     pub fn adaptive_timestep(&self, cfl_factor: f64) -> f64 {
         let v_max = self
             .particles
@@ -483,7 +466,6 @@ impl SphSimulation {
     ///
     /// This is an alias exposed on `SphSimulation` for the educational API;
     /// see also [`total_energy`](Self::total_energy).
-    #[allow(dead_code)]
     pub fn compute_mechanical_energy(&self) -> f64 {
         self.total_energy()
     }
@@ -492,7 +474,6 @@ impl SphSimulation {
     /// Apply periodic boundary conditions to all fluid particles.
     ///
     /// Wraps each coordinate into `[0, L)` for the given box sizes `box_size`.
-    #[allow(dead_code)]
     pub fn apply_periodic_bc(&mut self, box_size: [f64; 3]) {
         for pos in &mut self.particles.positions {
             for k in 0..3 {
@@ -510,7 +491,6 @@ impl SphSimulation {
         }
     }
     /// Compute mean density across all fluid particles.
-    #[allow(dead_code)]
     pub fn mean_density(&self) -> f64 {
         let n = self.particles.len();
         if n == 0 {
@@ -519,7 +499,6 @@ impl SphSimulation {
         self.particles.densities.iter().sum::<f64>() / n as f64
     }
     /// Compute density standard deviation across all particles.
-    #[allow(dead_code)]
     pub fn density_std(&self) -> f64 {
         let n = self.particles.len();
         if n == 0 {
@@ -536,7 +515,6 @@ impl SphSimulation {
         var.sqrt()
     }
     /// Maximum speed among all fluid particles.
-    #[allow(dead_code)]
     pub fn max_speed_simulation(&self) -> f64 {
         self.particles
             .positions
@@ -549,7 +527,6 @@ impl SphSimulation {
             .fold(0.0_f64, f64::max)
     }
     /// Number of fluid particles that have exceeded a speed threshold `v_max`.
-    #[allow(dead_code)]
     pub fn count_fast_particles(&self, v_max: f64) -> usize {
         let v2_max = v_max * v_max;
         self.particles
@@ -560,7 +537,6 @@ impl SphSimulation {
     }
     /// Rescale all particle velocities by `factor` (e.g. for temperature
     /// rescaling or damping).
-    #[allow(dead_code)]
     pub fn rescale_velocities(&mut self, factor: f64) {
         for v in &mut self.particles.velocities {
             v.x *= factor;
@@ -569,12 +545,10 @@ impl SphSimulation {
         }
     }
     /// Sum of all particle masses.
-    #[allow(dead_code)]
     pub fn total_mass(&self) -> f64 {
         self.particles.masses.iter().sum()
     }
     /// Centre of mass of all particles.
-    #[allow(dead_code)]
     pub fn center_of_mass(&self) -> [f64; 3] {
         let total_m = self.total_mass();
         if total_m == 0.0 {
@@ -597,7 +571,6 @@ impl SphSimulation {
         com
     }
     /// Total kinetic energy Σ ½ mᵢ |vᵢ|² of the simulation.
-    #[allow(dead_code)]
     pub fn kinetic_energy_sim(&self) -> f64 {
         self.particles
             .velocities
@@ -607,7 +580,6 @@ impl SphSimulation {
             .sum()
     }
     /// Add a single fluid particle at `pos` with velocity `vel` and `mass`.
-    #[allow(dead_code)]
     pub fn add_particle_raw(&mut self, pos: [f64; 3], vel: [f64; 3], mass: f64) {
         use crate::particle::SphParticle;
         use oxiphysics_core::math::Vec3;
@@ -620,14 +592,12 @@ impl SphSimulation {
     }
     /// Advance the simulation by exactly `n` steps with a fixed time step `dt`
     /// and the given `kernel`.
-    #[allow(dead_code)]
     pub fn step_n(&mut self, n: usize, dt: f64, kernel: &dyn crate::kernel::SphKernel) {
         for _ in 0..n {
             self.step(dt, kernel);
         }
     }
     /// Bounding box of all particle positions: `(lo, hi)`.
-    #[allow(dead_code)]
     pub fn bounding_box(&self) -> ([f64; 3], [f64; 3]) {
         if self.particles.is_empty() {
             return ([0.0; 3], [0.0; 3]);
@@ -662,7 +632,6 @@ impl SphSimulation {
 /// Phase A is stored in `particles_a` and phase B in `particles_b`; a
 /// combined step advances both according to their respective configurations.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TwoPhaseSimState {
     /// Phase-A fluid particles.
     pub particles_a: SphSim,
@@ -673,7 +642,6 @@ pub struct TwoPhaseSimState {
     /// Current time.
     pub time: f64,
 }
-#[allow(dead_code)]
 impl TwoPhaseSimState {
     /// Construct from two existing [`SphSim`] instances.
     pub fn new(a: SphSim, b: SphSim, sigma_ab: f64) -> Self {
@@ -740,14 +708,12 @@ impl TwoPhaseSimState {
 /// Positions wrap with PBC; provides `total_energy()` and `total_momentum()`
 /// for conservation diagnostics. Inherits the SPH pipeline from [`SphSim`].
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PeriodicSphSim {
     /// Inner simulation state.
     pub inner: SphSim,
     /// Simulation box lengths `[Lx, Ly, Lz]` \[m\].
     pub box_size: [f64; 3],
 }
-#[allow(dead_code)]
 impl PeriodicSphSim {
     /// Create a periodic simulation wrapping an existing [`SphSim`].
     pub fn new(inner: SphSim, box_size: [f64; 3]) -> Self {
@@ -768,10 +734,10 @@ impl PeriodicSphSim {
     /// Wrap all positions into `[0, box_size)^3`.
     pub fn apply_pbc(&mut self) {
         for pos in &mut self.inner.positions {
-            for k in 0..3 {
+            for (k, p) in pos.iter_mut().enumerate().take(3) {
                 let l = self.box_size[k];
                 if l > 0.0 {
-                    pos[k] = pos[k].rem_euclid(l);
+                    *p = p.rem_euclid(l);
                 }
             }
         }
@@ -819,7 +785,6 @@ impl PeriodicSphSim {
 }
 /// Standalone CFL time step controller for SPH simulations.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CflController {
     /// CFL number (Courant number).  Typical value: 0.4.
     pub cfl: f64,
@@ -830,7 +795,6 @@ pub struct CflController {
     /// Maximum allowed timestep.
     pub dt_max: f64,
 }
-#[allow(dead_code)]
 impl CflController {
     /// Create a controller with standard SPH defaults.
     pub fn standard(dt_min: f64, dt_max: f64) -> Self {

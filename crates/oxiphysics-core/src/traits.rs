@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,9 +7,6 @@
 //! the engine.  All physics objects implement one or more of these traits so
 //! that solvers, integrators, and broadphase structures can operate on them
 //! generically.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use crate::math::Real;
 use crate::types::{Aabb, TimeStep, Transform};
@@ -1021,7 +1017,6 @@ pub fn xpbd_distance_correction(
 /// * `r_a` / `r_b` — contact offset vectors (world)
 /// * `normal` — contact normal (unit vector)
 /// * `restitution` — coefficient of restitution
-#[allow(clippy::too_many_arguments)]
 pub fn contact_impulse_scalar(
     v_rel_n: Real,
     inv_mass_a: Real,
@@ -1222,7 +1217,7 @@ impl PbdConstraint for PbdDistanceConstraint {
 /// Updates `positions` in-place by applying each constraint correction
 /// weighted by stiffness and inverse masses.
 pub fn pbd_solve_iteration(
-    positions: &mut Vec<[Real; 3]>,
+    positions: &mut [[Real; 3]],
     inv_masses: &[Real],
     constraints: &[&dyn PbdConstraint],
 ) {

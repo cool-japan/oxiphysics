@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -906,7 +905,6 @@ impl MolAtom {
         }
     }
     /// Create an atom with fully specified display properties.
-    #[allow(clippy::too_many_arguments)]
     pub fn with_display(
         index: usize,
         element: &str,

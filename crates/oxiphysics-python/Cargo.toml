@@ -3,6 +3,8 @@ name = "oxiphysics-python"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+documentation.workspace = true
 description = "Python bindings for the OxiPhysics engine"
 readme = "README.md"
 categories = ["science", "simulation"]
@@ -28,3 +30,10 @@ serde_json = { workspace = true }
 nalgebra = { workspace = true }
 pyo3 = { workspace = true, features = ["extension-module", "multiple-pymethods"] }
 numpy = { workspace = true, optional = true }
+
+[dev-dependencies]
+oxiphysics = { workspace = true }
+
+[[test]]
+name = "csg_imls_algorithms"
+path = "tests/csg_imls_algorithms.rs"

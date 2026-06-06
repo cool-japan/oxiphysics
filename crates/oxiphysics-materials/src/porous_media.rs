@@ -9,7 +9,6 @@
 //! geometry for open-cell foams.
 
 /// Porous medium descriptor.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct PorousMedia {
     /// Porosity φ – volume fraction of void space (0–1).
@@ -26,7 +25,6 @@ pub struct PorousMedia {
 
 impl PorousMedia {
     /// Create a new `PorousMedia`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         porosity: f64,
         permeability: f64,

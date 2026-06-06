@@ -8,9 +8,6 @@
 //! Gauss-Kronrod (G7K15), double-exponential (tanh-sinh), and 2D/3D tensor
 //! product quadrature.
 
-#![allow(dead_code)]
-#![allow(clippy::needless_range_loop)]
-
 use std::f64::consts::PI;
 
 // ── helpers ─────────────────────────────────────────────────────────────────

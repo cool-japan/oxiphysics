@@ -2,14 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::should_implement_trait)]
 use super::functions::*;
 use crate::{Error, Result};
 use oxiphysics_core::math::Vec3;
 use std::io::{BufRead, BufReader, Read, Write};
 
 /// Describes a custom column set for a LAMMPS dump.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DumpColumnSpec {
     /// Column names in order.
@@ -108,7 +106,6 @@ impl LammpsRestartWriter {
     }
 }
 /// Simulation box geometry for a LAMMPS run.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LammpsBox {
     /// Low corner `[xlo, ylo, zlo]`.
@@ -118,7 +115,6 @@ pub struct LammpsBox {
     /// Tilt factors `[xy, xz, yz]` for triclinic cells (0 for orthogonal).
     pub tilt: [f64; 3],
 }
-#[allow(dead_code)]
 impl LammpsBox {
     /// Create an orthogonal box with given extents.
     pub fn orthogonal(lo: [f64; 3], hi: [f64; 3]) -> Self {
@@ -163,19 +159,17 @@ impl LammpsBox {
     /// Wrap a position into the primary box using periodic boundary conditions.
     pub fn wrap_pbc(&self, pos: [f64; 3]) -> [f64; 3] {
         let mut out = pos;
-        for d in 0..3 {
-            let l = self.hi[d] - self.lo[d];
+        for ((o, &lo), &hi) in out.iter_mut().zip(self.lo.iter()).zip(self.hi.iter()) {
+            let l = hi - lo;
             if l > 1e-30 {
-                out[d] = out[d] - (((out[d] - self.lo[d]) / l).floor()) * l + self.lo[d];
+                *o = *o - (((*o - lo) / l).floor()) * l + lo;
             }
         }
         out
     }
 }
 /// Generator for common LAMMPS input-script sections.
-#[allow(dead_code)]
 pub struct LammpsInputScript;
-#[allow(dead_code)]
 impl LammpsInputScript {
     /// Generate a minimisation script section.
     ///
@@ -197,7 +191,6 @@ impl LammpsInputScript {
         )
     }
 }
-#[allow(dead_code)]
 impl LammpsInputScript {
     /// Generate a complete NVE run section.
     pub fn nve_script(n_steps: u64, dt: f64) -> String {
@@ -300,9 +293,7 @@ impl LammpsBinaryDumpWriter {
     }
 }
 /// Writer for the LAMMPS data-file format (used with `read_data`).
-#[allow(dead_code)]
 pub struct LammpsDataWriter;
-#[allow(dead_code)]
 impl LammpsDataWriter {
     /// Generate the header section of a LAMMPS data file.
     ///
@@ -396,14 +387,13 @@ impl LammpsDataWriter {
         for (&t, &m) in types.iter().zip(masses.iter()) {
             type_mass[t as usize] = m;
         }
-        for ti in 1..=max_type {
-            s.push_str(&format!("{} {}\n", ti, type_mass[ti]));
+        for (ti, &mass) in type_mass[1..].iter().enumerate() {
+            s.push_str(&format!("{} {}\n", ti + 1, mass));
         }
         s.push_str(&Self::write_atoms_atomic(positions, masses, types));
         s
     }
 }
-#[allow(dead_code)]
 impl LammpsDataWriter {
     /// Generate the `Atoms` section for `atom_style full`.
     ///
@@ -460,7 +450,6 @@ impl LammpsDataWriter {
     }
 }
 /// Reader for the LAMMPS data-file format.
-#[allow(dead_code)]
 pub struct LammpsDataReader {
     pub(super) positions: Vec<[f64; 3]>,
     pub(super) masses: Vec<f64>,
@@ -468,10 +457,9 @@ pub struct LammpsDataReader {
     pub(super) box_lo: [f64; 3],
     pub(super) box_hi: [f64; 3],
 }
-#[allow(dead_code)]
 impl LammpsDataReader {
     /// Parse a LAMMPS data file from a string.
-    pub fn from_str(data: &str) -> Result<Self> {
+    pub fn from_data_str(data: &str) -> Result<Self> {
         let mut positions: Vec<[f64; 3]> = Vec::new();
         let mut masses_map: Vec<(usize, f64)> = Vec::new();
         let mut types: Vec<u32> = Vec::new();
@@ -596,6 +584,12 @@ impl LammpsDataReader {
         (self.box_lo, self.box_hi)
     }
 }
+impl std::str::FromStr for LammpsDataReader {
+    type Err = Error;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Self::from_data_str(s)
+    }
+}
 /// Represents a single atom in a LAMMPS dump frame.
 #[derive(Debug, Clone)]
 pub struct LammpsAtom {
@@ -609,9 +603,7 @@ pub struct LammpsAtom {
     pub velocity: Vec3,
 }
 /// Generator for LAMMPS fix commands.
-#[allow(dead_code)]
 pub struct LammpsFix;
-#[allow(dead_code)]
 impl LammpsFix {
     /// Generate an NVE fix.
     pub fn nve(fix_id: &str, group: &str) -> String {
@@ -647,7 +639,6 @@ impl LammpsFix {
     }
 }
 /// Lennard-Jones pair interaction parameters for one type pair.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct LammpsLJPair {
     /// Type index I (1-based).
@@ -661,7 +652,6 @@ pub struct LammpsLJPair {
     /// Cutoff distance. If `None`, uses the global cutoff.
     pub cutoff: Option<f64>,
 }
-#[allow(dead_code)]
 impl LammpsLJPair {
     /// Compute the 12-6 LJ potential energy at separation `r`.
     ///
@@ -701,7 +691,6 @@ impl LammpsLJPair {
     }
 }
 /// A single thermo output record from a LAMMPS log file.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LammpsThermoRecord {
     /// Step number.
@@ -722,7 +711,6 @@ pub struct LammpsThermoRecord {
 /// Builder for the coefficient sections of a LAMMPS data file.
 ///
 /// Generates the `Masses`, `Pair Coeffs`, and `Bond Coeffs` sections.
-#[allow(dead_code)]
 pub struct LammpsDataSectionBuilder {
     /// (type_id, mass)
     pub masses: Vec<(usize, f64)>,
@@ -816,7 +804,6 @@ impl LammpsDataSectionBuilder {
 /// Harmonic bond potential parameters.
 ///
 /// `U(r) = K (r − r₀)²`
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct LammpsHarmonicBond {
     /// Bond type index (1-based).
@@ -826,7 +813,6 @@ pub struct LammpsHarmonicBond {
     /// Equilibrium bond length r₀.
     pub r0: f64,
 }
-#[allow(dead_code)]
 impl LammpsHarmonicBond {
     /// Compute bond potential energy.
     pub fn potential_energy(&self, r: f64) -> f64 {
@@ -842,7 +828,6 @@ impl LammpsHarmonicBond {
     }
 }
 /// Builder for a LAMMPS input script `run` / `timestep` / `fix` block.
-#[allow(dead_code)]
 pub struct LammpsRunBlock {
     /// Integration timestep in fs.
     pub timestep: f64,
@@ -1023,9 +1008,7 @@ impl LammpsDumpReader {
     }
 }
 /// Generator for LAMMPS pair style commands.
-#[allow(dead_code)]
 pub struct LammpsPairStyle;
-#[allow(dead_code)]
 impl LammpsPairStyle {
     /// Generate a `pair_style lj/cut` command.
     pub fn lj_cut(cutoff: f64) -> String {
@@ -1049,7 +1032,6 @@ impl LammpsPairStyle {
     }
 }
 /// Atom style for a LAMMPS data file.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LammpsAtomStyle {
     /// `atomic` — id type x y z
@@ -1065,9 +1047,7 @@ pub enum LammpsAtomStyle {
 ///
 /// Looks for lines starting with a header of whitespace-separated column names,
 /// then reads subsequent numeric rows.
-#[allow(dead_code)]
 pub struct LammpsLogParser;
-#[allow(dead_code)]
 impl LammpsLogParser {
     /// Parse thermo records from a LAMMPS log file string.
     ///
@@ -1155,17 +1135,16 @@ impl LammpsLogParser {
         total
     }
 }
+/// A parsed LAMMPS binary frame: `(timestep, box_bounds, atoms, bytes_consumed)`.
+pub type LammpsBinaryFrame = (i64, [[f64; 2]; 3], Vec<LammpsAtom>, usize);
+
 /// Reader for the binary dump format written by [`LammpsBinaryDumpWriter`].
 pub struct LammpsBinaryDumpReader;
 impl LammpsBinaryDumpReader {
     /// Read one binary frame from the byte slice starting at `offset`.
     ///
     /// Returns `(timestep, box_bounds, atoms, bytes_consumed)` on success.
-    #[allow(clippy::type_complexity)]
-    pub fn read_frame(
-        data: &[u8],
-        offset: usize,
-    ) -> Result<(i64, [[f64; 2]; 3], Vec<LammpsAtom>, usize)> {
+    pub fn read_frame(data: &[u8], offset: usize) -> Result<LammpsBinaryFrame> {
         let mut pos = offset;
         let timestep = Self::read_i64(data, &mut pos)?;
         let n_atoms = Self::read_i64(data, &mut pos)? as usize;
@@ -1221,7 +1200,6 @@ impl LammpsBinaryDumpReader {
     }
 }
 /// A table of LJ pair parameters for a simulation.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct LammpsLJTable {
     /// All pair interactions.
@@ -1229,7 +1207,6 @@ pub struct LammpsLJTable {
     /// Global LJ cutoff (distance units).
     pub global_cutoff: f64,
 }
-#[allow(dead_code)]
 impl LammpsLJTable {
     /// Create an empty table with a given global cutoff.
     pub fn new(cutoff: f64) -> Self {
@@ -1291,7 +1268,6 @@ impl LammpsLJTable {
 /// Harmonic angle potential parameters.
 ///
 /// `U(θ) = K (θ − θ₀)²`
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct LammpsHarmonicAngle {
     /// Angle type index (1-based).
@@ -1301,7 +1277,6 @@ pub struct LammpsHarmonicAngle {
     /// Equilibrium angle θ₀ (degrees).
     pub theta0_deg: f64,
 }
-#[allow(dead_code)]
 impl LammpsHarmonicAngle {
     /// Compute angle potential energy given `theta` in degrees.
     pub fn potential_energy_deg(&self, theta_deg: f64) -> f64 {
@@ -1317,9 +1292,7 @@ impl LammpsHarmonicAngle {
     }
 }
 /// Generator for LAMMPS compute commands.
-#[allow(dead_code)]
 pub struct LammpsCompute;
-#[allow(dead_code)]
 impl LammpsCompute {
     /// Generate a `compute` for temperature.
     pub fn temp(compute_id: &str, group: &str) -> String {

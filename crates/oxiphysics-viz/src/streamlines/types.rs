@@ -2,11 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use crate::primitives::Color;
 use oxiphysics_core::math::Vec3;
 
@@ -559,7 +554,6 @@ impl Streamline {
     }
 }
 /// A single arrow glyph placed along a streamline.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ArrowGlyph {
     /// Origin of the arrow.
@@ -572,7 +566,6 @@ pub struct ArrowGlyph {
     pub color: Color,
 }
 /// Parameters for the simplified Jobard–Lefer evenly-spaced streamline algorithm.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct JobardLeferParams {
     /// Minimum separation distance between any two streamlines.
@@ -626,7 +619,6 @@ impl EnhancedLicParams {
 }
 /// A stream ribbon whose width at each point is proportional to the local
 /// velocity magnitude.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StreamRibbonVelocity {
     /// Centre-line points.
@@ -659,8 +651,8 @@ impl StreamRibbonVelocity {
         } else {
             vec![1.0; n]
         };
-        for i in 0..n {
-            half_widths.push(base_width * mags[i]);
+        for (i, &mag) in mags.iter().enumerate() {
+            half_widths.push(base_width * mag);
             let tangent = if i + 1 < n {
                 let t = sl.points[i + 1] - sl.points[i];
                 t.try_normalize(1e-12).unwrap_or(Vec3::new(1.0, 0.0, 0.0))
@@ -739,7 +731,6 @@ impl LicParams {
     }
 }
 /// Placement strategy for streamline seed points.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SeedStrategy {
     /// Regular 3-D grid over the bounding box.

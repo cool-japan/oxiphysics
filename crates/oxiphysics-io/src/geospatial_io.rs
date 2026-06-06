@@ -8,9 +8,6 @@
 //! All coordinate values are plain `f64` or `[f64; 3]` (longitude, latitude,
 //! optional elevation). No external geometry library is used.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Errors
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1352,7 +1349,6 @@ pub fn dem_contour_lines(dem: &DemRaster, level: f32) -> Vec<Vec<LonLat>> {
     lines
 }
 
-#[allow(clippy::too_many_arguments)]
 fn marching_square_pts(
     v00: f32,
     v10: f32,

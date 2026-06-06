@@ -2,15 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     augmented_lagrangian_volume_penalty, heaviside_derivative, heaviside_projection,
 };
 
 /// Configuration for a topology optimization run.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TopOptConfig {
     /// Target volume fraction.
@@ -25,7 +21,6 @@ pub struct TopOptConfig {
     pub tol: f64,
 }
 /// SIMP interpolation model: E(ρ) = E_min + ρ^p * (E_0 - E_min).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SimpModel {
     /// Penalization exponent.
@@ -35,7 +30,6 @@ pub struct SimpModel {
     /// Solid Young's modulus.
     pub e_0: f64,
 }
-#[allow(dead_code)]
 impl SimpModel {
     /// Effective Young's modulus at density `rho`.
     pub fn young_modulus(&self, rho: f64) -> f64 {
@@ -86,7 +80,6 @@ impl ProjectionFilter {
     ///
     /// where `w_sum[i] = sum_j w_ij / (sum_j w_ij * rho_j)` is the density
     /// filter weight sum.
-    #[allow(clippy::too_many_arguments)]
     pub fn chain_sensitivity(
         &self,
         grid: &TopologyGrid,
@@ -100,12 +93,11 @@ impl ProjectionFilter {
             .collect();
         let dc_times_dh: Vec<f64> = (0..n).map(|i| dc_drho_phys[i] * dh[i]).collect();
         let mut filtered = vec![0.0f64; n];
-        for i in 0..n {
+        for (i, filt_i) in filtered.iter_mut().enumerate() {
             let ei = &grid.elements[i];
             let mut num = 0.0f64;
             let mut den = 0.0f64;
-            for j in 0..n {
-                let ej = &grid.elements[j];
+            for (j, ej) in grid.elements.iter().enumerate() {
                 let dist = ((ei.x0 - ej.x0).powi(2) + (ei.y0 - ej.y0).powi(2)).sqrt();
                 if dist < self.radius {
                     let w = self.radius - dist;
@@ -113,7 +105,7 @@ impl ProjectionFilter {
                     den += w;
                 }
             }
-            filtered[i] = if den > 1e-30 {
+            *filt_i = if den > 1e-30 {
                 num / den
             } else {
                 dc_times_dh[i]
@@ -126,7 +118,6 @@ impl ProjectionFilter {
 ///
 /// Averaging sensitivities over multiple iterations reduces numerical
 /// oscillations and improves convergence of the OC method.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SensitivityHistory {
     /// Number of elements.
@@ -312,7 +303,7 @@ impl TopologyGrid {
     pub fn filter_sensitivities(&self, radius: f64) -> Vec<f64> {
         let n = self.elements.len();
         let mut filtered = vec![0.0_f64; n];
-        for i in 0..n {
+        for (i, filt_i) in filtered.iter_mut().enumerate() {
             let ei = &self.elements[i];
             let mut num = 0.0_f64;
             let mut den = 0.0_f64;
@@ -325,7 +316,7 @@ impl TopologyGrid {
                     den += w * ej.rho;
                 }
             }
-            filtered[i] = if den.abs() > 1e-30 {
+            *filt_i = if den.abs() > 1e-30 {
                 num / den
             } else {
                 ei.sensitivity
@@ -339,7 +330,7 @@ impl TopologyGrid {
     pub fn filter_densities(&self, radius: f64) -> Vec<f64> {
         let n = self.elements.len();
         let mut filtered = vec![0.0_f64; n];
-        for i in 0..n {
+        for (i, filt_i) in filtered.iter_mut().enumerate() {
             let ei = &self.elements[i];
             let mut num = 0.0_f64;
             let mut den = 0.0_f64;
@@ -352,7 +343,7 @@ impl TopologyGrid {
                     den += w;
                 }
             }
-            filtered[i] = if den.abs() > 1e-30 { num / den } else { ei.rho };
+            *filt_i = if den.abs() > 1e-30 { num / den } else { ei.rho };
         }
         filtered
     }
@@ -426,10 +417,9 @@ impl TopologyGrid {
             }
         }
         let lmid = 0.5 * (l1 + l2);
-        for i in 0..n {
+        for (i, e) in self.elements.iter_mut().enumerate() {
             let lo = lower_asymptotes.get(i).copied().unwrap_or(0.0);
             let hi = upper_asymptotes.get(i).copied().unwrap_or(1.0);
-            let e = &mut self.elements[i];
             let be = (-sensitivities[i] / lmid).max(0.0).sqrt();
             e.rho = (e.rho * be)
                 .max(e.rho - params.move_limit)
@@ -490,7 +480,6 @@ impl TopologyGrid {
 ///
 /// Dual update: λ ← λ + ρ_aug * (V(ρ) - V_target)
 /// Penalty update: ρ_aug ← min(γ * ρ_aug, ρ_max)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AugmentedLagrangianVolumeConstraint {
     /// Target volume fraction.
@@ -731,7 +720,6 @@ impl LevelSetField {
 ///
 /// The RAMP scheme avoids the vanishing derivative at ρ=0 that SIMP exhibits,
 /// making it better suited for problems where intermediate densities occur.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RampModel {
     /// Penalization parameter q (typically 3–8).
@@ -777,8 +765,6 @@ impl RampModel {
 ///
 /// Maps filtered densities \tilde{ρ} to physical densities \bar{ρ}.
 /// As β → ∞ the projection converges to a 0/1 Heaviside.
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 #[derive(Debug, Clone, Copy)]
 pub struct DensityProjection {
     /// Projection sharpness (β); must be positive.
@@ -794,7 +780,6 @@ impl DensityProjection {
         Self { beta, eta }
     }
     /// Project filtered density `rho_tilde` to physical density.
-    #[allow(non_snake_case)]
     pub fn project(&self, rho_tilde: f64) -> f64 {
         let β = self.beta;
         let η = self.eta;
@@ -808,7 +793,6 @@ impl DensityProjection {
         num / denom
     }
     /// Derivative of projection w.r.t. `rho_tilde`.
-    #[allow(non_snake_case)]
     pub fn derivative(&self, rho_tilde: f64) -> f64 {
         let β = self.beta;
         let η = self.eta;
@@ -906,7 +890,6 @@ impl OcOptimizer {
 ///
 /// Declares convergence when the last `window` recorded changes are all
 /// below `tolerance`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TopOptConvergenceMonitor {
     /// Number of consecutive iterations required below tolerance.
@@ -1006,7 +989,6 @@ impl LevelSetOptimizer {
     }
 }
 /// Optimality Criteria (OC) density update solver.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OcSolver {
     /// Current element densities.
@@ -1016,7 +998,6 @@ pub struct OcSolver {
     /// Maximum density move per iteration.
     pub move_limit: f64,
 }
-#[allow(dead_code)]
 impl OcSolver {
     /// Create a new OC solver with uniform initial density.
     pub fn new(n_elements: usize, initial_density: f64, move_limit: f64) -> Self {
@@ -1181,7 +1162,6 @@ impl SimpElement {
     }
 }
 /// Summary of a completed topology optimization run.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TopOptResult {
     /// Final density field (n_elements).

@@ -5,9 +5,6 @@
 //!
 //! Exposes declarative scene description with JSON round-trip to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::scene::{SceneBuilder, SceneDescription};
 use pyo3::prelude::*;
 

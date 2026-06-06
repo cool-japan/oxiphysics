@@ -2,10 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
-use super::functions::{B_LL, BB, CX, CY, KAPPA_VK, W9, Y_PLUS_LOG_UPPER, Y_PLUS_TRANSITION};
+use super::functions::{
+    B_LL, BB, CX, CY, KAPPA_VK, W9, Y_PLUS_LOG_UPPER, Y_PLUS_TRANSITION, equilibrium_d2q9,
+    moments_d2q9,
+};
 
 /// D2Q9 LBM solver for turbulent channel flow with wall model.
 ///
@@ -175,9 +175,9 @@ impl ChannelFlow {
         let ny = self.ny;
         for i in 0..nx {
             for &j in &[0, ny - 1] {
-                for q in 0..9 {
+                for (q, &bb_q) in BB.iter().enumerate() {
                     let fi_src = self.fi(i, j, q);
-                    let fi_bb = self.fi(i, j, BB[q]);
+                    let fi_bb = self.fi(i, j, bb_q);
                     let val = self.f_dist[fi_src];
                     self.f_dist[fi_bb] = val;
                 }
@@ -656,7 +656,6 @@ impl DnsDrivenLbm {
     /// * `nx`  — streamwise lattice size
     /// * `ny`  — wall-normal lattice size (walls at j=0 and j=ny-1)
     /// * `re_tau` — target friction Reynolds number
-    #[allow(clippy::too_many_arguments)]
     pub fn new(nx: usize, ny: usize, re_tau: f64) -> Self {
         let half_width = ny as f64 / 2.0;
         let params = TurbulentChannelParams::new(re_tau, half_width);

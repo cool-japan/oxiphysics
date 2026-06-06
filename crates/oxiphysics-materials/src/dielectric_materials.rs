@@ -9,9 +9,6 @@
 //! - Skin depth, wave impedance, Fresnel reflection
 //! - Dielectric loss tangent and Snell refraction
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // DielectricMaterial
 // ---------------------------------------------------------------------------
@@ -144,7 +141,6 @@ impl DielectricMaterial {
 /// Compute the **attenuation coefficient** α \[Np/m\] for a plane wave.
 ///
 /// α = ω √(με/2) · √(√(1 + (σ/(ωε))²) − 1)
-#[allow(dead_code)]
 pub fn attenuation_coefficient(material: &DielectricMaterial, omega: f64) -> f64 {
     if omega <= 0.0 {
         return 0.0;
@@ -160,7 +156,6 @@ pub fn attenuation_coefficient(material: &DielectricMaterial, omega: f64) -> f64
 /// Compute the **phase velocity** v_p \[m/s\] in a non-conducting dielectric.
 ///
 /// v_p = c / √(ε_r · μ_r)
-#[allow(dead_code)]
 pub fn phase_velocity(material: &DielectricMaterial) -> f64 {
     let c = 1.0 / (EPSILON_0 * MU_0).sqrt();
     c / (material.epsilon_static * material.mu_r).sqrt()

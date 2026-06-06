@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -13,9 +12,6 @@
 //! - Wall and periodic boundary conditions
 //!
 //! All quantities use SI units.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -471,12 +467,12 @@ impl LiquidSimulation {
 
             // Compute and apply position corrections.
             let mut deltas = vec![[0.0_f64; 3]; n];
-            for i in 0..n {
-                deltas[i] =
+            for (i, delta) in deltas.iter_mut().enumerate() {
+                *delta =
                     density_constraint.position_correction(i, &self.particles, &neighbours_all[i]);
             }
-            for i in 0..n {
-                self.particles[i].predicted = add3(self.particles[i].predicted, deltas[i]);
+            for (p, delta) in self.particles.iter_mut().zip(deltas.iter()) {
+                p.predicted = add3(p.predicted, *delta);
             }
         }
 
@@ -497,12 +493,11 @@ impl LiquidSimulation {
                     .collect()
             })
             .collect();
-        let mut new_velocities = vec![[0.0_f64; 3]; n];
-        for i in 0..n {
-            new_velocities[i] = viscosity.apply(i, &self.particles, &neighbours_all[i]);
-        }
-        for i in 0..n {
-            self.particles[i].velocity = new_velocities[i];
+        let new_velocities: Vec<[f64; 3]> = (0..n)
+            .map(|i| viscosity.apply(i, &self.particles, &neighbours_all[i]))
+            .collect();
+        for (p, nv) in self.particles.iter_mut().zip(new_velocities.iter()) {
+            p.velocity = *nv;
         }
 
         // 5. Apply boundary conditions.
@@ -672,8 +667,8 @@ mod tests {
     fn test_liquid_particle_with_velocity() {
         let vel = [1.0, -2.0, 0.5];
         let p = LiquidParticle::with_velocity([0.0; 3], vel);
-        for k in 0..3 {
-            assert!((p.velocity[k] - vel[k]).abs() < EPS);
+        for (&vk, &vk_expected) in p.velocity.iter().zip(vel.iter()) {
+            assert!((vk - vk_expected).abs() < EPS);
         }
     }
 
@@ -754,8 +749,8 @@ mod tests {
         let visc = ViscosityForce::new(0.1, 0.1);
         let particles = vec![LiquidParticle::with_velocity([0.0; 3], [1.0, 2.0, 3.0])];
         let v = visc.apply(0, &particles, &[]);
-        for k in 0..3 {
-            assert!((v[k] - particles[0].velocity[k]).abs() < EPS);
+        for (&vk, &pk) in v.iter().zip(particles[0].velocity.iter()) {
+            assert!((vk - pk).abs() < EPS);
         }
     }
 
@@ -940,9 +935,9 @@ mod tests {
             LiquidParticle::with_velocity([0.05, 0.0, 0.0], [4.0, 5.0, 6.0]),
         ];
         let v = visc.apply(0, &particles, &[1]);
-        for k in 0..3 {
+        for (&vk, &pk) in v.iter().zip(particles[0].velocity.iter()) {
             assert!(
-                (v[k] - particles[0].velocity[k]).abs() < EPS,
+                (vk - pk).abs() < EPS,
                 "Zero coefficient viscosity should not change velocity"
             );
         }

@@ -15,9 +15,6 @@
 //! - Enhanced Geothermal System (EGS) energy extraction
 //! - Crustal thermal gradient and conductive heat flow
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -30,9 +27,6 @@ const G: f64 = 9.81;
 /// Universal gas constant (J mol⁻¹ K⁻¹).
 const R_GAS: f64 = 8.314_462_618;
 
-/// Boltzmann constant (J K⁻¹).
-const K_B: f64 = 1.380_649e-23;
-
 /// Critical temperature of water (K).
 const T_CRIT_WATER: f64 = 647.096;
 
@@ -44,9 +38,6 @@ const RHO_CRIT_WATER: f64 = 322.0;
 
 /// Molar mass of water (kg mol⁻¹).
 const M_WATER: f64 = 0.018_015;
-
-/// Stefan-Boltzmann constant (W m⁻² K⁻⁴).
-const SIGMA_SB: f64 = 5.670_374_419e-8;
 
 /// Latent heat of vaporization of water at 100 °C (J kg⁻¹).
 const L_VAP: f64 = 2.257e6;
@@ -955,21 +946,45 @@ pub fn sph_pressure_accel(
     scale3(grad_w, -coeff)
 }
 
+/// Fluid-state parameters for the artificial viscosity pair computation.
+#[derive(Debug, Clone, Copy)]
+pub struct ArtViscPairParams {
+    /// Position of particle i \[m\]
+    pub pos_i: [f64; 3],
+    /// Position of particle j \[m\]
+    pub pos_j: [f64; 3],
+    /// Velocity of particle i \[m/s\]
+    pub vel_i: [f64; 3],
+    /// Velocity of particle j \[m/s\]
+    pub vel_j: [f64; 3],
+    /// Density of particle i \[kg/m³\]
+    pub rho_i: f64,
+    /// Density of particle j \[kg/m³\]
+    pub rho_j: f64,
+    /// Sound speed of particle i \[m/s\]
+    pub c_i: f64,
+    /// Sound speed of particle j \[m/s\]
+    pub c_j: f64,
+}
+
 /// SPH artificial viscosity acceleration (Monaghan 1992).
 pub fn sph_artificial_viscosity(
-    pos_i: [f64; 3],
-    pos_j: [f64; 3],
-    vel_i: [f64; 3],
-    vel_j: [f64; 3],
-    rho_i: f64,
-    rho_j: f64,
-    c_i: f64,
-    c_j: f64,
+    pair: ArtViscPairParams,
     mass_j: f64,
     h: f64,
     alpha: f64,
     beta: f64,
 ) -> [f64; 3] {
+    let ArtViscPairParams {
+        pos_i,
+        pos_j,
+        vel_i,
+        vel_j,
+        rho_i,
+        rho_j,
+        c_i,
+        c_j,
+    } = pair;
     let r_vec = sub3(pos_i, pos_j);
     let v_vec = sub3(vel_i, vel_j);
     let rv = dot3(r_vec, v_vec);
@@ -1205,14 +1220,16 @@ impl GeothermalSimulation {
                     h,
                 );
                 let visc = sph_artificial_viscosity(
-                    positions[i],
-                    positions[j],
-                    velocities[i],
-                    velocities[j],
-                    densities[i],
-                    densities[j],
-                    c,
-                    c,
+                    ArtViscPairParams {
+                        pos_i: positions[i],
+                        pos_j: positions[j],
+                        vel_i: velocities[i],
+                        vel_j: velocities[j],
+                        rho_i: densities[i],
+                        rho_j: densities[j],
+                        c_i: c,
+                        c_j: c,
+                    },
                     masses[j],
                     h,
                     self.config.alpha_visc,

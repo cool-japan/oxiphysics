@@ -3,8 +3,6 @@
 
 //! CSR × CSR sparse matrix multiplication (SpMM) and Galerkin triple product.
 
-#![allow(dead_code)]
-
 use crate::parallel_solver::CsrMatrix;
 use std::collections::HashSet;
 
@@ -15,7 +13,6 @@ use std::collections::HashSet;
 /// - Pass 2 (numeric): accumulate values using a dense temporary array.
 ///
 /// Column indices in each output row are sorted.
-#[allow(clippy::needless_range_loop)]
 pub fn spmm(a: &CsrMatrix, b: &CsrMatrix) -> CsrMatrix {
     assert_eq!(a.ncols, b.nrows, "spmm: inner dimensions must match");
 
@@ -24,11 +21,11 @@ pub fn spmm(a: &CsrMatrix, b: &CsrMatrix) -> CsrMatrix {
 
     // Pass 1 (symbolic): collect column index sets per row
     let mut row_col_sets: Vec<HashSet<usize>> = (0..n_rows).map(|_| HashSet::new()).collect();
-    for i in 0..n_rows {
+    for (i, row_set) in row_col_sets.iter_mut().enumerate() {
         for k in a.row_offsets[i]..a.row_offsets[i + 1] {
             let ak_col = a.col_indices[k]; // row in B
             for bk in b.row_offsets[ak_col]..b.row_offsets[ak_col + 1] {
-                row_col_sets[i].insert(b.col_indices[bk]);
+                row_set.insert(b.col_indices[bk]);
             }
         }
     }

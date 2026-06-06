@@ -2,14 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use crate::netcdf::types::*;
-
 #[cfg(test)]
 mod tests_netcdf_ext {
-    use super::*;
+    use crate::netcdf::*;
     #[test]
     fn frame_n_atoms_correct() {
         let f = TrajectoryFrame {

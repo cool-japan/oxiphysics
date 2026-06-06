@@ -22,7 +22,6 @@ pub const N_AVOGADRO: f64 = 6.02214076e23;
 ///
 /// Models a polymer as N rigid segments of length b (Kuhn length),
 /// with free rotation about each joint.
-#[allow(dead_code)]
 pub struct FreelyJointedChain {
     /// Number of Kuhn segments
     pub n_segments: f64,
@@ -91,7 +90,6 @@ impl FreelyJointedChain {
 /// Worm-Like Chain polymer model for semi-flexible polymers.
 ///
 /// Uses the Marko-Siggia interpolation formula for force-extension.
-#[allow(dead_code)]
 pub struct WormLikeChainPolymer {
     /// Persistence length L_p \[m\]
     pub persistence_length: f64,
@@ -165,7 +163,6 @@ impl WormLikeChainPolymer {
 /// where I_1 is the first invariant of the left Cauchy-Green tensor,
 /// J is the volumetric deformation, μ is the shear modulus,
 /// λ is the Lamé first parameter.
-#[allow(dead_code)]
 pub struct RubberElasticityNeoHookean {
     /// Shear modulus μ = nkT \[Pa\]
     pub shear_modulus: f64,
@@ -246,7 +243,6 @@ impl RubberElasticityNeoHookean {
 ///
 /// Maxwell model: spring E in series with dashpot η.
 /// Kelvin-Voigt model: spring E in parallel with dashpot η.
-#[allow(dead_code)]
 pub struct ViscoelasticPolymer {
     /// Elastic modulus E \[Pa\]
     pub elastic_modulus: f64,
@@ -325,7 +321,6 @@ impl ViscoelasticPolymer {
 /// Glass transition temperature model using the WLF equation.
 ///
 /// log₁₀(a_T) = -C₁*(T - T_ref) / (C₂ + (T - T_ref))
-#[allow(dead_code)]
 pub struct GlassTransition {
     /// Reference temperature T_ref \[K\]
     pub t_ref: f64,
@@ -377,7 +372,6 @@ impl GlassTransition {
 ///
 /// First-order: M_n(t) = M_n0 * exp(-k*t)
 /// Autocatalytic: dM/dt = -k * M * \[H⁺\]
-#[allow(dead_code)]
 pub struct PolymerDegradation {
     /// Initial number-average molecular weight M_n0 \[g/mol\]
     pub initial_mw: f64,
@@ -433,7 +427,6 @@ impl PolymerDegradation {
 }
 
 /// Morphology type in diblock copolymer phase diagram.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum CopolymerMorphology {
     /// Disordered (mixed) phase
@@ -451,7 +444,6 @@ pub enum CopolymerMorphology {
 /// Diblock copolymer microphase separation model.
 ///
 /// Based on Flory-Huggins theory and self-consistent field theory (SCFT).
-#[allow(dead_code)]
 pub struct DiblockCopolymer {
     /// Degree of polymerization N
     pub degree_of_polymerization: f64,
@@ -541,7 +533,6 @@ impl DiblockCopolymer {
 /// Entanglement and reptation dynamics model.
 ///
 /// Describes chain diffusion, plateau modulus, and Rouse-reptation crossover.
-#[allow(dead_code)]
 pub struct EntanglementModel {
     /// Polymer density ρ \[kg/m³\]
     pub density: f64,
@@ -567,7 +558,6 @@ impl EntanglementModel {
     /// * `temperature` - Temperature \[K\]
     /// * `friction_coeff` - Monomeric friction coefficient \[N·s/m\]
     /// * `segment_length` - Statistical segment length \[m\]
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         density: f64,
         molecular_weight: f64,

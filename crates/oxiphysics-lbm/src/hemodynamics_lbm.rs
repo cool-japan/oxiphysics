@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,9 +15,6 @@
 //! - **Bifurcation flows**: Y-shaped and T-shaped bifurcations
 //! - **RBC transport**: Simplified red blood cell advection
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -33,21 +29,6 @@ fn dot2(a: [f64; 2], b: [f64; 2]) -> f64 {
 #[inline]
 fn len2(v: [f64; 2]) -> f64 {
     dot2(v, v).sqrt()
-}
-
-#[inline]
-fn add2(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
-    [a[0] + b[0], a[1] + b[1]]
-}
-
-#[inline]
-fn sub2(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
-    [a[0] - b[0], a[1] - b[1]]
-}
-
-#[inline]
-fn scale2(v: [f64; 2], s: f64) -> [f64; 2] {
-    [v[0] * s, v[1] * s]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -481,13 +462,13 @@ impl BifurcationGeometry {
         let center_y = ny as f64 / 2.0;
         let mut fluid_mask = vec![vec![false; ny]; nx];
 
-        for x in 0..nx {
-            for y in 0..ny {
+        for (x, row) in fluid_mask.iter_mut().enumerate() {
+            for (y, cell) in row.iter_mut().enumerate() {
                 let yf = y as f64;
                 if x < bif_x {
                     // Parent vessel
                     if (yf - center_y).abs() < parent_radius {
-                        fluid_mask[x][y] = true;
+                        *cell = true;
                     }
                 } else {
                     // Two daughter vessels
@@ -497,11 +478,11 @@ impl BifurcationGeometry {
                     if (yf - upper_center).abs() < daughter_radius
                         || (yf - lower_center).abs() < daughter_radius
                     {
-                        fluid_mask[x][y] = true;
+                        *cell = true;
                     }
                     // Also keep fluid in the transition region
                     if x < bif_x + 5 && (yf - center_y).abs() < parent_radius {
-                        fluid_mask[x][y] = true;
+                        *cell = true;
                     }
                 }
             }
@@ -710,10 +691,10 @@ impl HemodynamicsLbm {
                 let mut rho = 0.0;
                 let mut ux = 0.0;
                 let mut uy = 0.0;
-                for i in 0..9 {
+                for (i, ei) in D2Q9_E.iter().enumerate() {
                     rho += self.f[x][y][i];
-                    ux += self.f[x][y][i] * D2Q9_E[i][0] as f64;
-                    uy += self.f[x][y][i] * D2Q9_E[i][1] as f64;
+                    ux += self.f[x][y][i] * ei[0] as f64;
+                    uy += self.f[x][y][i] * ei[1] as f64;
                 }
                 self.rho[x][y] = rho;
                 if rho.abs() > 1e-12 {
@@ -735,8 +716,8 @@ impl HemodynamicsLbm {
                 }
                 let feq = Self::equilibrium_static(self.rho[x][y], self.vel[x][y]);
                 let omega = 1.0 / self.tau[x][y];
-                for i in 0..9 {
-                    self.f[x][y][i] += omega * (feq[i] - self.f[x][y][i]);
+                for (i, &feq_i) in feq.iter().enumerate() {
+                    self.f[x][y][i] += omega * (feq_i - self.f[x][y][i]);
                 }
             }
         }
@@ -1034,10 +1015,10 @@ impl ResidenceTimeTracer {
 
     /// Set inlet concentration to zero (washout).
     pub fn set_inlet_washout(&mut self, cell_type: &[Vec<CellType>]) {
-        for x in 0..self.nx {
-            for y in 0..self.ny {
-                if cell_type[x][y] == CellType::Inlet {
-                    self.concentration[x][y] = 0.0;
+        for (ct_row, conc_row) in cell_type.iter().zip(self.concentration.iter_mut()) {
+            for (ct, conc) in ct_row.iter().zip(conc_row.iter_mut()) {
+                if *ct == CellType::Inlet {
+                    *conc = 0.0;
                 }
             }
         }

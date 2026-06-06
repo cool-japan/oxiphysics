@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,8 +14,6 @@
 //! - Warm-starting contact
 //! - Sequential impulse contact solver
 //! - Contact stabilization via Baumgarte method
-
-#![allow(dead_code)]
 
 // ── Vec3 helpers ─────────────────────────────────────────────────────────────
 
@@ -79,7 +76,6 @@ fn mat3_vec(m: [[f64; 3]; 3], v: Vec3) -> Vec3 {
 // ── Contact point ─────────────────────────────────────────────────────────────
 
 /// A detected contact point between two bodies.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ContactPoint {
     /// Contact point in world space (on body A surface).
@@ -124,7 +120,6 @@ impl ContactPoint {
 /// The 6-row Jacobian for a single contact constraint (1 normal + 2 tangents).
 ///
 /// Each row is `[J_va, J_ωa, J_vb, J_ωb]` — four 3-vectors.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ContactJacobian {
     /// Normal row: `[n, (ra×n), -n, -(rb×n)]`.
@@ -189,8 +184,6 @@ impl ContactJacobian {
 /// `K = J * M^-1 * J^T`
 ///
 /// where `J` is a 12-element row split across two bodies.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn effective_mass_for_row(
     inv_mass_a: f64,
     inv_inertia_a: [[f64; 3]; 3],
@@ -213,7 +206,6 @@ pub fn effective_mass_for_row(
 ///
 /// Implements a sequential impulse step for a single contact point,
 /// clamping the accumulated normal impulse to `[0, ∞)`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FrictionlessContact {
     /// Associated contact point.
@@ -230,7 +222,6 @@ pub struct FrictionlessContact {
 
 impl FrictionlessContact {
     /// Create a frictionless contact constraint.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         contact: ContactPoint,
         inv_mass_a: f64,
@@ -301,10 +292,36 @@ impl FrictionlessContact {
 
 // ── Frictional contact (Coulomb cone) ────────────────────────────────────────
 
+/// Parameters for [`FrictionalContact::new`].
+#[derive(Debug, Clone)]
+pub struct FrictionalContactParams {
+    /// Contact manifold point.
+    pub contact: ContactPoint,
+    /// Inverse mass of body A.
+    pub inv_mass_a: f64,
+    /// Inverse inertia tensor of body A.
+    pub inv_inertia_a: [[f64; 3]; 3],
+    /// Inverse mass of body B.
+    pub inv_mass_b: f64,
+    /// Inverse inertia tensor of body B.
+    pub inv_inertia_b: [[f64; 3]; 3],
+    /// Lever arm from body A CoM to contact.
+    pub ra: Vec3,
+    /// Lever arm from body B CoM to contact.
+    pub rb: Vec3,
+    /// Coefficient of restitution.
+    pub restitution: f64,
+    /// Coulomb friction coefficient.
+    pub friction: f64,
+    /// Baumgarte stabilisation factor.
+    pub beta: f64,
+    /// Time step.
+    pub dt: f64,
+}
+
 /// Frictional contact constraint using the Coulomb friction cone.
 ///
 /// Tangential impulses are clamped within `[-mu * lambda_n, mu * lambda_n]`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FrictionalContact {
     /// Underlying frictionless constraint (handles normal impulse).
@@ -323,20 +340,20 @@ pub struct FrictionalContact {
 
 impl FrictionalContact {
     /// Create a frictional contact constraint.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        contact: ContactPoint,
-        inv_mass_a: f64,
-        inv_inertia_a: [[f64; 3]; 3],
-        inv_mass_b: f64,
-        inv_inertia_b: [[f64; 3]; 3],
-        ra: Vec3,
-        rb: Vec3,
-        restitution: f64,
-        friction: f64,
-        beta: f64,
-        dt: f64,
-    ) -> Self {
+    pub fn new(p: FrictionalContactParams) -> Self {
+        let FrictionalContactParams {
+            contact,
+            inv_mass_a,
+            inv_inertia_a,
+            inv_mass_b,
+            inv_inertia_b,
+            ra,
+            rb,
+            restitution,
+            friction,
+            beta,
+            dt,
+        } = p;
         let jac = ContactJacobian::new(&contact, ra, rb);
         let (t1, t2) = contact.tangent_basis();
         let _ = t1;
@@ -428,7 +445,6 @@ impl FrictionalContact {
     /// Warm-start by applying stored accumulated impulses.
     ///
     /// Returns the delta velocity contributions as 4 vectors: (dv_a, dω_a, dv_b, dω_b).
-    #[allow(clippy::too_many_arguments)]
     pub fn warm_start(
         &self,
         inv_mass_a: f64,
@@ -458,7 +474,6 @@ impl FrictionalContact {
 /// LCP: find `z ≥ 0` such that `w = M*z + q ≥ 0` and `z·w = 0`.
 ///
 /// Stores a dense `n×n` matrix `M` and vector `q`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Lcp {
     /// Dimension.
@@ -508,7 +523,6 @@ impl Lcp {
 // ── Lemke's algorithm ─────────────────────────────────────────────────────────
 
 /// Result of the Lemke LCP solver.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum LemkeResult {
     /// Solution found; `z` is the solution vector.
@@ -522,7 +536,6 @@ pub enum LemkeResult {
 /// Lemke's pivoting algorithm for solving the LCP `w = Mz + q`.
 ///
 /// Returns a solution `z ≥ 0` with complementarity, or a failure indicator.
-#[allow(dead_code)]
 pub fn lemke_solve(lcp: &Lcp, max_iter: usize) -> LemkeResult {
     let n = lcp.n;
     if n == 0 {
@@ -537,16 +550,20 @@ pub fn lemke_solve(lcp: &Lcp, max_iter: usize) -> LemkeResult {
     let mut tab = vec![vec![0.0_f64; total_cols]; n];
     // Fill M columns (z variables) — stored as -M so that
     // the row represents: -Mz + w - z_0 = q  (equiv. w = Mz + z_0 + q)
-    for i in 0..n {
-        for j in 0..n {
-            tab[i][j] = -lcp.m[i][j];
+    for (i, (tab_row, (m_row, q_i))) in tab
+        .iter_mut()
+        .zip(lcp.m.iter().zip(lcp.q.iter()))
+        .enumerate()
+    {
+        for (j, tab_ij) in tab_row.iter_mut().enumerate().take(n) {
+            *tab_ij = -m_row[j];
         }
         // Identity for w variables (cols n..2n)
-        tab[i][n + i] = 1.0;
+        tab_row[n + i] = 1.0;
         // -d column (col 2n)
-        tab[i][2 * n] = -1.0;
+        tab_row[2 * n] = -1.0;
         // q column (col 2n+1)
-        tab[i][2 * n + 1] = lcp.q[i];
+        tab_row[2 * n + 1] = *q_i;
     }
 
     // Basic variables: initially w_1..w_n (indices n..2n)
@@ -622,9 +639,8 @@ fn pivot(tab: &mut [Vec<f64>], row: usize, col: usize, _n: usize) {
     if pivot_val.abs() < 1e-15 {
         return;
     }
-    let ncols = tab[row].len();
-    for j in 0..ncols {
-        tab[row][j] /= pivot_val;
+    for t in tab[row].iter_mut() {
+        *t /= pivot_val;
     }
     let nrows = tab.len();
     for i in 0..nrows {
@@ -635,8 +651,9 @@ fn pivot(tab: &mut [Vec<f64>], row: usize, col: usize, _n: usize) {
         if factor.abs() < 1e-30 {
             continue;
         }
-        for j in 0..ncols {
-            tab[i][j] -= factor * tab[row][j];
+        let pivot_copy: Vec<f64> = tab[row].clone();
+        for (t, p) in tab[i].iter_mut().zip(pivot_copy.iter()) {
+            *t -= factor * p;
         }
     }
 }
@@ -680,7 +697,6 @@ fn extract_solution(tab: &[Vec<f64>], basis: &[usize], n: usize, total_cols: usi
 /// * `beta`  - Position error correction factor (0.1–0.3 typical).
 /// * `dt`    - Time step.
 /// * `slop`  - Allowed penetration before correction kicks in.
-#[allow(dead_code)]
 pub fn baumgarte_contact_bias(depth: f64, beta: f64, dt: f64, slop: f64) -> f64 {
     let correctable = (depth - slop).max(0.0);
     -(beta / dt) * correctable
@@ -689,7 +705,6 @@ pub fn baumgarte_contact_bias(depth: f64, beta: f64, dt: f64, slop: f64) -> f64 
 // ── Persistent contact constraint ────────────────────────────────────────────
 
 /// Persistent contact: stores accumulated impulse across time steps for warm-start.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PersistentContact {
     /// Contact geometry.
@@ -752,7 +767,6 @@ impl PersistentContact {
 /// A contact island groups bodies connected through contact constraints.
 ///
 /// Bodies in the same island must be solved together.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ContactIsland {
     /// Body indices in this island.
@@ -805,7 +819,6 @@ impl Default for ContactIsland {
 }
 
 /// Manages partitioning of all contacts into disjoint islands using Union-Find.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ContactIslandManager {
     /// Number of rigid bodies.
@@ -904,7 +917,6 @@ impl ContactIslandManager {
 // ── Sequential impulse contact solver ────────────────────────────────────────
 
 /// State of a single rigid body for the sequential impulse solver.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RigidBodyState {
     /// Linear velocity in m/s.
@@ -921,7 +933,6 @@ pub struct RigidBodyState {
 
 impl RigidBodyState {
     /// Create a dynamic body state.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         vel: Vec3,
         omega: Vec3,
@@ -958,7 +969,6 @@ impl RigidBodyState {
 }
 
 /// Sequential impulse solver for a set of contact constraints.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SequentialImpulseSolver {
     /// Number of iterations per time step.
@@ -1027,19 +1037,19 @@ impl SequentialImpulseSolver {
         let ra = sub(contact.point, body_a.position);
         let rb = sub(contact.point, body_b.position);
         let (t1, t2) = contact.tangent_basis();
-        let mut con = FrictionalContact::new(
-            contact.clone(),
-            body_a.inv_mass,
-            body_a.inv_inertia,
-            body_b.inv_mass,
-            body_b.inv_inertia,
+        let mut con = FrictionalContact::new(FrictionalContactParams {
+            contact: contact.clone(),
+            inv_mass_a: body_a.inv_mass,
+            inv_inertia_a: body_a.inv_inertia,
+            inv_mass_b: body_b.inv_mass,
+            inv_inertia_b: body_b.inv_inertia,
             ra,
             rb,
-            0.0,
+            restitution: 0.0,
             friction,
-            self.beta,
+            beta: self.beta,
             dt,
-        );
+        });
         for _ in 0..self.iterations {
             let (dn, dt1, dt2) =
                 con.solve(body_a.vel, body_a.omega, body_b.vel, body_b.omega, ra, rb);
@@ -1059,8 +1069,6 @@ impl SequentialImpulseSolver {
 ///
 /// This pre-loads the solver with the impulse from the previous time step,
 /// reducing the number of iterations needed to converge.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn apply_warm_start(
     body_a: &mut RigidBodyState,
     body_b: &mut RigidBodyState,
@@ -1157,19 +1165,19 @@ mod tests {
     #[test]
     fn test_frictional_impulse_clamped_coulomb() {
         let cp = ContactPoint::new([0.0; 3], [0.0, 1.0, 0.0], 0.01, 0, 1);
-        let mut con = FrictionalContact::new(
-            cp,
-            1.0,
-            identity_inertia(),
-            0.0,
-            zero_inertia(),
-            [0.0; 3],
-            [0.0; 3],
-            0.0,
-            0.5,
-            0.2,
-            0.016,
-        );
+        let mut con = FrictionalContact::new(FrictionalContactParams {
+            contact: cp,
+            inv_mass_a: 1.0,
+            inv_inertia_a: identity_inertia(),
+            inv_mass_b: 0.0,
+            inv_inertia_b: zero_inertia(),
+            ra: [0.0; 3],
+            rb: [0.0; 3],
+            restitution: 0.0,
+            friction: 0.5,
+            beta: 0.2,
+            dt: 0.016,
+        });
         // Give the constraint a large normal impulse to allow friction
         con.frictionless.impulse_normal = 10.0;
         let (_dn, dt1, dt2) = con.solve(
@@ -1515,19 +1523,19 @@ mod tests {
     #[test]
     fn test_frictional_contact_reset_impulses() {
         let cp = ContactPoint::new([0.0; 3], [0.0, 1.0, 0.0], 0.0, 0, 1);
-        let mut con = FrictionalContact::new(
-            cp,
-            1.0,
-            zero_inertia(),
-            1.0,
-            zero_inertia(),
-            [0.0; 3],
-            [0.0; 3],
-            0.0,
-            0.3,
-            0.2,
-            0.016,
-        );
+        let mut con = FrictionalContact::new(FrictionalContactParams {
+            contact: cp,
+            inv_mass_a: 1.0,
+            inv_inertia_a: zero_inertia(),
+            inv_mass_b: 1.0,
+            inv_inertia_b: zero_inertia(),
+            ra: [0.0; 3],
+            rb: [0.0; 3],
+            restitution: 0.0,
+            friction: 0.3,
+            beta: 0.2,
+            dt: 0.016,
+        });
         con.frictionless.impulse_normal = 5.0;
         con.impulse_t1 = 1.0;
         con.impulse_t2 = -0.5;

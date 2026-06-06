@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -18,7 +17,6 @@ use super::forces::{Atom, BarostatType, ThermostatType};
 /// Provides velocity-Verlet integration, PBC wrapping, temperature and
 /// kinetic energy calculation, and virial pressure.  Optional `thermostat`
 /// and `barostat` fields select ensemble control without external trait objects.
-#[allow(dead_code)]
 pub struct MdSimulationPlain {
     /// All atoms in the simulation.
     pub atoms: Vec<Atom>,
@@ -38,7 +36,6 @@ pub struct MdSimulationPlain {
     pub target_temp: f64,
 }
 
-#[allow(dead_code)]
 impl MdSimulationPlain {
     /// Create a new simulation in the NVE ensemble.
     pub fn new(atoms: Vec<Atom>, box_lengths: [f64; 3]) -> Self {
@@ -72,17 +69,6 @@ impl MdSimulationPlain {
                 atom.position[a] = atom.position[a].rem_euclid(l);
             }
         }
-    }
-
-    /// Minimum image displacement dr → [-L/2, L/2) for an orthorhombic box.
-    #[inline]
-    fn minimum_image(&self, dr: [f64; 3]) -> [f64; 3] {
-        let mut r = dr;
-        for a in 0..3 {
-            let l = self.box_lengths[a];
-            r[a] -= l * (r[a] / l).round();
-        }
-        r
     }
 
     // -----------------------------------------------------------------------
@@ -226,17 +212,17 @@ impl MdSimulationPlain {
         let mut com_v = [0.0_f64; 3];
         for atom in &self.atoms {
             total_mass += atom.mass;
-            for a in 0..3 {
-                com_v[a] += atom.mass * atom.velocity[a];
+            for (cv, &v) in com_v.iter_mut().zip(atom.velocity.iter()) {
+                *cv += atom.mass * v;
             }
         }
         if total_mass > 1e-20 {
-            for a in 0..3 {
-                com_v[a] /= total_mass;
+            for cv in com_v.iter_mut() {
+                *cv /= total_mass;
             }
             for atom in &mut self.atoms {
-                for a in 0..3 {
-                    atom.velocity[a] -= com_v[a];
+                for (v, &cv) in atom.velocity.iter_mut().zip(com_v.iter()) {
+                    *v -= cv;
                 }
             }
         }
@@ -249,7 +235,6 @@ impl MdSimulationPlain {
 
 /// Time-series record of MD observables collected during a run.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct ObservableRecord {
     /// Simulation time (ps) at each recorded frame.
     pub time: Vec<f64>,
@@ -267,7 +252,6 @@ pub struct ObservableRecord {
     pub msd: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl ObservableRecord {
     /// Create a new empty record.
     pub fn new() -> Self {
@@ -275,7 +259,6 @@ impl ObservableRecord {
     }
 
     /// Append a frame.
-    #[allow(clippy::too_many_arguments)]
     pub fn push(&mut self, time: f64, ke: f64, pe: f64, temp: f64, pressure: f64, msd: f64) {
         self.time.push(time);
         self.kinetic_energy.push(ke);
@@ -363,7 +346,6 @@ impl ObservableRecord {
 /// MSD = (1/N) Σᵢ |rᵢ(t) - rᵢ(0)|²
 ///
 /// Note: this uses unwrapped positions (no PBC folding) for correct MSD.
-#[allow(dead_code)]
 pub fn compute_msd(positions_now: &[[f64; 3]], positions_ref: &[[f64; 3]]) -> f64 {
     let n = positions_now.len().min(positions_ref.len());
     if n == 0 {
@@ -382,7 +364,6 @@ pub fn compute_msd(positions_now: &[[f64; 3]], positions_ref: &[[f64; 3]]) -> f6
 /// Compute per-atom squared displacements (Å²).
 ///
 /// Returns a vector of |rᵢ(t) - rᵢ(0)|² for each atom.
-#[allow(dead_code)]
 pub fn per_atom_displacement_sq(
     positions_now: &[[f64; 3]],
     positions_ref: &[[f64; 3]],

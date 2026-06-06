@@ -2,12 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions_2::*;
 use oxiphysics_core::math::Vec3;
 
-#[allow(unused_imports)]
-use super::functions::*;
+use super::functions::{
+    cross3_raw, dot3_raw, negate3_raw, obb_obb_test, project_obb_onto_axis, scale3_raw, sub3_raw,
+};
 
 /// Contact information produced by an OBB-OBB SAT query.
 #[derive(Debug, Clone)]
@@ -131,7 +130,6 @@ impl ObbSat {
     }
 }
 /// Result of a SAT collision test.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SatResult {
     /// Penetration depth (positive means overlap).
@@ -142,7 +140,6 @@ pub struct SatResult {
     pub contact_point: [f64; 3],
 }
 /// An oriented bounding box using raw `[f64;3]` arrays.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Obb {
     /// World-space center.
@@ -152,7 +149,6 @@ pub struct Obb {
     /// Rotation matrix (columns are the local axes in world space).
     pub rotation: [[f64; 3]; 3],
 }
-#[allow(dead_code)]
 impl Obb {
     /// Create a new OBB.
     pub fn new(center: [f64; 3], half_extents: [f64; 3], rotation: [[f64; 3]; 3]) -> Self {
@@ -188,9 +184,7 @@ impl Obb {
 /// All methods operate on the raw `Obb` type and return plain `[f64; 3]` data
 /// so they are usable independently of the nalgebra-backed types in the rest
 /// of the crate.
-#[allow(dead_code)]
 pub struct ObbSatTest;
-#[allow(dead_code)]
 impl ObbSatTest {
     /// Test the *edge-edge* separating axes between two OBBs.
     ///
@@ -329,7 +323,6 @@ impl ObbShape {
     }
 }
 /// Whether the contact normal is primarily from a face or an edge-edge interaction.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContactFeatureType {
     /// Contact normal is aligned with a face normal (face-face or face-edge).

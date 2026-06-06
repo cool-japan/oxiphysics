@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -27,10 +26,6 @@
 //! let lines = g.drain_lines();
 //! assert!(!lines.is_empty());
 //! ```
-
-#![allow(dead_code)]
-#![allow(non_snake_case)]
-#![allow(clippy::too_many_arguments)]
 
 use crate::primitives::{Color, LinePrimitive};
 use std::f64::consts::{PI, TAU};
@@ -217,13 +212,13 @@ impl GizmoTransform {
     /// Compose two transforms (self * other).
     pub fn compose(&self, other: &GizmoTransform) -> GizmoTransform {
         let mut r = [[0.0_f64; 4]; 4];
-        for col in 0..4 {
-            for row in 0..4 {
+        for (col, r_col) in r.iter_mut().enumerate() {
+            for (row, r_cr) in r_col.iter_mut().enumerate() {
                 let mut v = 0.0;
                 for k in 0..4 {
                     v += self.m[k][row] * other.m[col][k];
                 }
-                r[col][row] = v;
+                *r_cr = v;
             }
         }
         GizmoTransform { m: r }
@@ -1202,10 +1197,6 @@ impl VelocityTrail {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn white() -> Color {
-        Color::white()
-    }
 
     // --- basic line drawing ---
 

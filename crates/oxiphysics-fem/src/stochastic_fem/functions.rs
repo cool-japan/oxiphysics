@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_range_contains, clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
 use super::types::StochasticResponse;
@@ -476,20 +475,17 @@ mod tests {
     fn test_sfem_problem_covariance_matrix_diagonal() {
         let prob = StochasticFemProblem::new_uniform(3, 1.0, 0.0, 1.0, 1.0);
         let c = prob.covariance_matrix_exponential();
-        for i in 0..3 {
-            assert!((c[i][i] - 1.0).abs() < 1e-12);
+        for (i, row) in c.iter().enumerate() {
+            assert!((row[i] - 1.0).abs() < 1e-12);
         }
     }
     #[test]
     fn test_sfem_problem_covariance_matrix_symmetric() {
         let prob = StochasticFemProblem::new_uniform(4, 2.0, 0.0, 2.0, 0.5);
         let c = prob.covariance_matrix_gaussian();
-        for i in 0..4 {
-            for j in 0..4 {
-                assert!(
-                    (c[i][j] - c[j][i]).abs() < 1e-12,
-                    "Unsymmetric at ({i},{j})"
-                );
+        for (i, row) in c.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - c[j][i]).abs() < 1e-12, "Unsymmetric at ({i},{j})");
             }
         }
     }
@@ -623,7 +619,7 @@ mod tests {
     fn test_failure_prob_in_unit_interval() {
         let resp = StochasticResponse::new(vec![1.0, 5.0, 3.0, 7.0, 2.0]);
         let pf = failure_probability_monte_carlo(&resp, 4.0);
-        assert!(pf >= 0.0 && pf <= 1.0);
+        assert!((0.0..=1.0).contains(&pf));
     }
     #[test]
     fn test_failure_prob_empty() {

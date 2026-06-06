@@ -31,7 +31,6 @@ pub fn axpy(alpha: f64, x: &[f64], y: &mut [f64]) {
     }
 }
 /// Dense matrix-vector product y = A * x, A stored row-major with shape (m, n).
-#[allow(dead_code)]
 pub fn matvec_dense(a: &[f64], m: usize, n: usize, x: &[f64]) -> Vec<f64> {
     let mut y = vec![0.0f64; m];
     for i in 0..m {
@@ -42,7 +41,6 @@ pub fn matvec_dense(a: &[f64], m: usize, n: usize, x: &[f64]) -> Vec<f64> {
     y
 }
 /// Transpose-vector product y = A^T * x.
-#[allow(dead_code)]
 pub fn matvec_dense_t(a: &[f64], m: usize, n: usize, x: &[f64]) -> Vec<f64> {
     let mut y = vec![0.0f64; n];
     for i in 0..m {
@@ -57,7 +55,7 @@ pub trait Preconditioner {
     /// Apply the preconditioner: solve M z = r and return z.
     fn apply(&self, r: &[f64]) -> Vec<f64>;
 }
-#[allow(missing_docs)]
+/// Block matrix-vector product: compute `C = A * B` where `A` is `m×n` and `B` is `n×k`.
 pub fn matvec_block(a: &[f64], m: usize, n: usize, b: &[f64], k: usize) -> Vec<f64> {
     let mut c = vec![0.0f64; m * k];
     for i in 0..m {
@@ -72,7 +70,7 @@ pub fn matvec_block(a: &[f64], m: usize, n: usize, b: &[f64], k: usize) -> Vec<f
     }
     c
 }
-#[allow(missing_docs)]
+/// Block transposed matrix-vector product: compute `C = A^T * B` where `A` is `m×n` and `B` is `m×k`.
 pub fn matvec_block_t(a: &[f64], m: usize, n: usize, b: &[f64], k: usize) -> Vec<f64> {
     let mut c = vec![0.0f64; n * k];
     for i in 0..m {
@@ -84,7 +82,7 @@ pub fn matvec_block_t(a: &[f64], m: usize, n: usize, b: &[f64], k: usize) -> Vec
     }
     c
 }
-#[allow(missing_docs)]
+/// Rectangular matrix multiply: compute `C = A * B` where `A` is `m×k` and `B` is `k×p`.
 pub fn matmul_rect(a: &[f64], m: usize, k: usize, b: &[f64], _k2: usize, p: usize) -> Vec<f64> {
     let mut c = vec![0.0f64; m * p];
     for i in 0..m {
@@ -96,7 +94,7 @@ pub fn matmul_rect(a: &[f64], m: usize, k: usize, b: &[f64], _k2: usize, p: usiz
     }
     c
 }
-#[allow(missing_docs)]
+/// Rectangular transposed matrix multiply: compute `C = A^T * B` where `A` is `m×k` and `B` is `m×n`.
 pub fn matmul_rect_t(a: &[f64], m: usize, k: usize, b: &[f64], _m2: usize, n: usize) -> Vec<f64> {
     let mut c = vec![0.0f64; k * n];
     for i in 0..m {
@@ -108,7 +106,9 @@ pub fn matmul_rect_t(a: &[f64], m: usize, k: usize, b: &[f64], _m2: usize, n: us
     }
     c
 }
-#[allow(missing_docs)]
+/// Compute the thin QR factorisation of an `m×k` matrix stored row-major.
+///
+/// Returns the orthonormal `Q` factor as a flat `m×k` row-major vector.
 pub fn qr_thin(a: &[f64], m: usize, k: usize) -> Vec<f64> {
     let mut q = a.to_vec();
     for j in 0..k {
@@ -130,7 +130,9 @@ pub fn qr_thin(a: &[f64], m: usize, k: usize) -> Vec<f64> {
     }
     q
 }
-#[allow(missing_docs)]
+/// Compute the thin SVD of a small dense `m×n` matrix.
+///
+/// Returns `(U, s, Vt)` where `U` is `m×k`, `s` has length `k`, and `Vt` is `k×n`, with `k = min(m, n)`.
 pub fn svd_small(a: &[f64], m: usize, n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let k = m.min(n);
     let mut u = MatrixFunctions::eye(m);

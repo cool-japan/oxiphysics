@@ -74,7 +74,6 @@ pub(super) fn kdtree_max_depth(nodes: &[KdNode], idx: Option<usize>, depth: usiz
 /// Spatial join: find all pairs (i, j) from two point sets within distance `r`.
 ///
 /// Returns unique pairs `(i, j)` where point `i` is from set A and `j` from set B.
-#[allow(dead_code)]
 pub fn spatial_join(points_a: &[Vec3], points_b: &[Vec3], r: f64) -> Vec<(usize, usize)> {
     if points_a.is_empty() || points_b.is_empty() {
         return Vec::new();
@@ -93,7 +92,6 @@ pub fn spatial_join(points_a: &[Vec3], points_b: &[Vec3], r: f64) -> Vec<(usize,
     pairs
 }
 /// Spatial self-join: find all pairs (i, j) with i < j within distance `r`.
-#[allow(dead_code)]
 pub fn spatial_self_join(points: &[Vec3], r: f64) -> Vec<(usize, usize)> {
     let n = points.len();
     let mut grid = GridSpatialIndex::new(r.max(1e-15));
@@ -582,7 +580,6 @@ mod tests {
 ///
 /// Interleaves the bits of (x, y, z) to form a single 64-bit Morton code.
 /// Each coordinate must be < 2^21 for 63-bit Morton codes.
-#[allow(dead_code)]
 pub fn morton_encode(x: u32, y: u32, z: u32) -> u64 {
     let x = expand_bits(x as u64);
     let y = expand_bits(y as u64);
@@ -600,7 +597,6 @@ pub(super) fn expand_bits(mut v: u64) -> u64 {
     v
 }
 /// Decode a Morton code back to (x, y, z) integer coordinates.
-#[allow(dead_code)]
 pub fn morton_decode(code: u64) -> (u32, u32, u32) {
     let x = compact_bits(code);
     let y = compact_bits(code >> 1);
@@ -622,14 +618,12 @@ pub(super) fn compact_bits(mut v: u64) -> u64 {
 /// For each query point, returns the k nearest points from the tree.
 /// More efficient than calling `k_nearest` repeatedly if many queries share
 /// the same tree.
-#[allow(dead_code)]
 pub fn kd_batch_knn(tree: &KdTree, queries: &[Vec3], k: usize) -> Vec<Vec<(usize, f64)>> {
     queries.iter().map(|&q| tree.k_nearest(q, k)).collect()
 }
 /// Find all pairs of points within distance `r` between two KD-trees.
 ///
 /// Returns `(index_from_tree_a, index_from_tree_b)` pairs.
-#[allow(dead_code)]
 pub fn kd_cross_match(tree_a: &KdTree, tree_b: &KdTree, r: f64) -> Vec<(usize, usize)> {
     let mut pairs = Vec::new();
     for (i, &qa) in tree_a.points.iter().enumerate() {
@@ -643,7 +637,6 @@ pub fn kd_cross_match(tree_a: &KdTree, tree_b: &KdTree, r: f64) -> Vec<(usize, u
 /// Compute the k-nearest neighbors of `query` from `points` using brute force.
 ///
 /// Useful for verification and small datasets.
-#[allow(dead_code)]
 pub fn brute_force_knn(points: &[Vec3], query: Vec3, k: usize) -> Vec<(usize, f64)> {
     let mut dists: Vec<(usize, f64)> = points
         .iter()
@@ -655,7 +648,6 @@ pub fn brute_force_knn(points: &[Vec3], query: Vec3, k: usize) -> Vec<(usize, f6
     dists
 }
 /// Compute the k-nearest neighbors of each point in `queries` from `points`.
-#[allow(dead_code)]
 pub fn brute_force_batch_knn(
     points: &[Vec3],
     queries: &[Vec3],
@@ -669,7 +661,6 @@ pub fn brute_force_batch_knn(
 /// Build a uniform-spacing grid of points in 3D.
 ///
 /// Returns points on a `(nx × ny × nz)` grid with spacing `(dx, dy, dz)` starting at `origin`.
-#[allow(dead_code)]
 pub fn regular_grid_3d(
     origin: Vec3,
     nx: usize,

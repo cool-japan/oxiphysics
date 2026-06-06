@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! Provides ply/laminate data structures, the ABD stiffness matrix, mid-plane
 //! strain/curvature solution, ply-level stress recovery, and failure criteria
 //! (Tsai-Wu, Hashin).
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Ply
@@ -266,9 +263,9 @@ fn inv6(m: [[f64; 6]; 6]) -> [[f64; 6]; 6] {
         // Find pivot
         let mut pivot_row = col;
         let mut max_val = aug[col][col].abs();
-        for row in (col + 1)..n {
-            if aug[row][col].abs() > max_val {
-                max_val = aug[row][col].abs();
+        for (row, aug_row) in aug.iter().enumerate().take(n).skip(col + 1) {
+            if aug_row[col].abs() > max_val {
+                max_val = aug_row[col].abs();
                 pivot_row = row;
             }
         }
@@ -277,16 +274,17 @@ fn inv6(m: [[f64; 6]; 6]) -> [[f64; 6]; 6] {
         }
         aug.swap(col, pivot_row);
         let pivot = aug[col][col];
-        for j in 0..12 {
-            aug[col][j] /= pivot;
+        for val in aug[col].iter_mut() {
+            *val /= pivot;
         }
         for row in 0..n {
             if row == col {
                 continue;
             }
             let factor = aug[row][col];
-            for j in 0..12 {
-                aug[row][j] -= factor * aug[col][j];
+            let aug_col = aug[col];
+            for (j, val) in aug[row].iter_mut().enumerate() {
+                *val -= factor * aug_col[j];
             }
         }
     }
@@ -663,13 +661,9 @@ mod tests {
         // A symmetric laminate should have B ≈ 0
         let lam = make_symmetric_cross_ply();
         let abd = laminate_abd_matrix(&lam);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(
-                    abd[i][j + 3].abs() < 1.0,
-                    "B[{i}][{j}] = {} should be ≈ 0",
-                    abd[i][j + 3]
-                );
+        for (i, row) in abd.iter().enumerate().take(3) {
+            for (j, &v) in row.iter().enumerate().skip(3).take(3) {
+                assert!(v.abs() < 1.0, "B[{i}][{}] = {v} should be ≈ 0", j - 3);
             }
         }
     }
@@ -856,13 +850,9 @@ mod tests {
     fn test_symmetric_angle_ply_b_near_zero() {
         let lam = make_angle_ply_45();
         let abd = laminate_abd_matrix(&lam);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(
-                    abd[i][j + 3].abs() < 10.0,
-                    "B[{i}][{j}] = {} for symmetric ±45",
-                    abd[i][j + 3]
-                );
+        for (i, row) in abd.iter().enumerate().take(3) {
+            for (j, &v) in row.iter().enumerate().skip(3).take(3) {
+                assert!(v.abs() < 10.0, "B[{i}][{}] = {v} for symmetric ±45", j - 3);
             }
         }
     }
@@ -899,10 +889,10 @@ mod tests {
     fn test_inv3_identity() {
         let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let inv = inv3(id);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in inv.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((inv[i][j] - expected).abs() < 1e-10);
+                assert!((v - expected).abs() < 1e-10);
             }
         }
     }

@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 /// Emitter shape that controls where and how particles are emitted.
 #[derive(Debug, Clone, Copy)]
 pub enum EmitterShape {
@@ -223,14 +220,11 @@ impl ParticleRepulsion {
     pub fn apply(&self, buffer: &mut ParticleBuffer, dt: f32) {
         let n = buffer.count;
         let alive: Vec<usize> = (0..n).filter(|&i| buffer.is_alive(i)).collect();
-        let na = alive.len();
         let mut fx = vec![0.0f32; n];
         let mut fy = vec![0.0f32; n];
         let mut fz = vec![0.0f32; n];
-        for ai in 0..na {
-            let i = alive[ai];
-            for aj in (ai + 1)..na {
-                let j = alive[aj];
+        for (ai, &i) in alive.iter().enumerate() {
+            for &j in alive.iter().skip(ai + 1) {
                 let dx = buffer.positions_x[j] - buffer.positions_x[i];
                 let dy = buffer.positions_y[j] - buffer.positions_y[i];
                 let dz = buffer.positions_z[j] - buffer.positions_z[i];

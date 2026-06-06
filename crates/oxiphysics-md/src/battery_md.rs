@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -191,9 +190,9 @@ impl LatticeAtom {
     /// Distance to another atom with periodic boundary conditions.
     pub fn distance_pbc(&self, other: &LatticeAtom, box_size: [f64; 3]) -> f64 {
         let mut r2 = 0.0;
-        for d in 0..3 {
+        for (d, &bs) in box_size.iter().enumerate() {
             let mut dr = self.pos[d] - other.pos[d];
-            dr -= (dr / box_size[d]).round() * box_size[d];
+            dr -= (dr / bs).round() * bs;
             r2 += dr * dr;
         }
         r2.sqrt()
@@ -1071,9 +1070,9 @@ pub fn compute_battery_forces(atoms: &mut [LatticeAtom], cutoff: f64, dielectric
         for j in (i + 1)..n {
             let mut dr = [0.0f64; 3];
             let mut r2 = 0.0;
-            for d in 0..3 {
-                dr[d] = atoms[j].pos[d] - atoms[i].pos[d];
-                r2 += dr[d] * dr[d];
+            for (d, dr_val) in dr.iter_mut().enumerate() {
+                *dr_val = atoms[j].pos[d] - atoms[i].pos[d];
+                r2 += *dr_val * *dr_val;
             }
             let r = r2.sqrt();
             if r > cutoff || r < 0.01 {
@@ -1091,8 +1090,8 @@ pub fn compute_battery_forces(atoms: &mut [LatticeAtom], cutoff: f64, dielectric
             let fc = coulomb_force(r, atoms[i].charge, atoms[j].charge, dielectric);
 
             let f_total = flj + fc;
-            for d in 0..3 {
-                let f_d = f_total * dr[d] / r;
+            for (d, &dr_val) in dr.iter().enumerate() {
+                let f_d = f_total * dr_val / r;
                 atoms[i].force[d] += f_d;
                 atoms[j].force[d] -= f_d;
             }

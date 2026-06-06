@@ -13,8 +13,6 @@
 //! - [`ForceChain`]: contact force chain analysis.
 //! - Free functions [`bagnold_shear_stress`] and [`janssen_pressure`].
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ── internal vector helpers (no external crates) ─────────────────────────────
@@ -52,15 +50,6 @@ fn normalize3(v: [f64; 3]) -> [f64; 3] {
     } else {
         [0.0, 0.0, 0.0]
     }
-}
-
-#[inline]
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 // ── GranularParticle ──────────────────────────────────────────────────────────

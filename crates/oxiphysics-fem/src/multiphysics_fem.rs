@@ -1,5 +1,3 @@
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -19,9 +17,6 @@
 //! - Thermal-mechanical fatigue (Chaboche hardening)
 //! - Staggered and monolithic coupled solvers
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Helper math
 // ---------------------------------------------------------------------------
@@ -36,12 +31,6 @@ fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
 #[inline]
 fn norm3(a: [f64; 3]) -> f64 {
     dot3(a, a).sqrt()
-}
-
-/// Add two 3-vectors.
-#[inline]
-fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 /// Scale a 3-vector.
@@ -344,15 +333,15 @@ impl PiezoelectricFem {
     pub fn compute_stress(&self, strain: &[f64; 6], e_field: &[f64; 3]) -> [f64; 6] {
         let mut sigma = [0.0f64; 6];
         // C * ε
-        for i in 0..6 {
-            for j in 0..6 {
-                sigma[i] += self.elastic_stiffness[i * 6 + j] * strain[j];
+        for (i, sig_i) in sigma.iter_mut().enumerate() {
+            for (j, &sj) in strain.iter().enumerate() {
+                *sig_i += self.elastic_stiffness[i * 6 + j] * sj;
             }
         }
         // -e^T * E (e is 3x6, so e^T is 6x3)
-        for i in 0..6 {
-            for k in 0..3 {
-                sigma[i] -= self.piezo_coupling[k * 6 + i] * e_field[k];
+        for (i, sig_i) in sigma.iter_mut().enumerate() {
+            for (k, &ek) in e_field.iter().enumerate() {
+                *sig_i -= self.piezo_coupling[k * 6 + i] * ek;
             }
         }
         sigma
@@ -364,15 +353,15 @@ impl PiezoelectricFem {
     pub fn compute_electric_displacement(&self, strain: &[f64; 6], e_field: &[f64; 3]) -> [f64; 3] {
         let mut d = [0.0f64; 3];
         // e * ε
-        for i in 0..3 {
-            for j in 0..6 {
-                d[i] += self.piezo_coupling[i * 6 + j] * strain[j];
+        for (i, di) in d.iter_mut().enumerate() {
+            for (j, &sj) in strain.iter().enumerate() {
+                *di += self.piezo_coupling[i * 6 + j] * sj;
             }
         }
         // κ * E
-        for i in 0..3 {
-            for j in 0..3 {
-                d[i] += self.permittivity[i * 3 + j] * e_field[j];
+        for (i, di) in d.iter_mut().enumerate() {
+            for (j, &ej) in e_field.iter().enumerate() {
+                *di += self.permittivity[i * 3 + j] * ej;
             }
         }
         d
@@ -516,9 +505,9 @@ impl PoroelasticFem {
     /// * `grad_p` – pressure gradient vector
     pub fn darcy_flux(&self, grad_p: [f64; 3]) -> [f64; 3] {
         let mut q = [0.0f64; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                q[i] -= (self.permeability[i][j] / self.fluid_viscosity) * grad_p[j];
+        for (i, qi) in q.iter_mut().enumerate() {
+            for (j, &gpj) in grad_p.iter().enumerate() {
+                *qi -= (self.permeability[i][j] / self.fluid_viscosity) * gpj;
             }
         }
         q
@@ -1077,9 +1066,8 @@ impl ThermalMechanicalFatigue {
     ///
     /// Ẋ = C * ε̇_p - γ * X * ṗ
     pub fn update_back_stress(&mut self, d_plastic_strain: [f64; 6], d_p: f64) {
-        for i in 0..6 {
-            self.back_stress[i] += self.hardening_c1 * d_plastic_strain[i]
-                - self.hardening_gamma1 * self.back_stress[i] * d_p;
+        for (bs_i, &dps_i) in self.back_stress.iter_mut().zip(d_plastic_strain.iter()) {
+            *bs_i += self.hardening_c1 * dps_i - self.hardening_gamma1 * *bs_i * d_p;
         }
         self.accumulated_plastic_strain += d_p;
     }
@@ -1360,7 +1348,7 @@ mod tests {
         let fem = PoroelasticFem::new(1e7, 0.3, 0.8, 2e9, perm, 1e-3, 10);
         let b = fem.skempton_b();
         assert!(
-            b >= 0.0 && b <= 1.0,
+            (0.0..=1.0).contains(&b),
             "Skempton's B should be in [0,1], got {}",
             b
         );

@@ -2,17 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use oxiphysics_core::BodyHandle;
 use oxiphysics_core::math::{Real, Vec3};
 use oxiphysics_rigid::RigidBodySet;
 
 /// Per-frame statistics for the CCD solver.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct CcdStats {
     /// Number of CCD constraints processed.
     pub constraint_count: usize,
@@ -27,7 +22,6 @@ pub struct CcdStats {
 }
 impl CcdStats {
     /// Create a zeroed stats snapshot.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         CcdStats {
             constraint_count: 0,
@@ -38,7 +32,6 @@ impl CcdStats {
         }
     }
     /// Record a CCD event.
-    #[allow(dead_code)]
     pub fn record_event(&mut self, toi: Real, impulse: Real) {
         self.constraint_count += 1;
         if impulse > 1e-12 {
@@ -50,7 +43,6 @@ impl CcdStats {
         }
     }
     /// Merge another stats snapshot.
-    #[allow(dead_code)]
     pub fn merge(&mut self, other: &CcdStats) {
         self.constraint_count += other.constraint_count;
         self.active_impacts += other.active_impacts;
@@ -61,7 +53,6 @@ impl CcdStats {
         }
     }
     /// Returns `true` if any CCD events were active this frame.
-    #[allow(dead_code)]
     pub fn had_active_impacts(&self) -> bool {
         self.active_impacts > 0
     }
@@ -70,25 +61,21 @@ impl CcdStats {
 ///
 /// Used to process CCD events in the correct temporal order within a frame.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct ToiQueue {
     /// All pending TOI pairs (maintained in ascending-TOI order).
     pub(super) pairs: Vec<ToiPair>,
 }
 impl ToiQueue {
     /// Create an empty queue.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         ToiQueue { pairs: Vec::new() }
     }
     /// Insert a new pair and maintain sorted order.
-    #[allow(dead_code)]
     pub fn push(&mut self, pair: ToiPair) {
         let pos = self.pairs.partition_point(|p| p.toi <= pair.toi);
         self.pairs.insert(pos, pair);
     }
     /// Pop the earliest unprocessed pair, or `None` if the queue is empty.
-    #[allow(dead_code)]
     pub fn pop_earliest(&mut self) -> Option<ToiPair> {
         if let Some(pos) = self.pairs.iter().position(|p| !p.processed) {
             Some(self.pairs.remove(pos))
@@ -97,29 +84,24 @@ impl ToiQueue {
         }
     }
     /// Number of unprocessed pairs remaining.
-    #[allow(dead_code)]
     pub fn pending_count(&self) -> usize {
         self.pairs.iter().filter(|p| !p.processed).count()
     }
     /// Total number of pairs (including processed).
-    #[allow(dead_code)]
     pub fn total_count(&self) -> usize {
         self.pairs.len()
     }
     /// Clear all pairs.
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.pairs.clear();
     }
     /// Mark a pair as processed without removing it.
-    #[allow(dead_code)]
     pub fn mark_processed(&mut self, index: usize) {
         if index < self.pairs.len() {
             self.pairs[index].processed = true;
         }
     }
     /// Returns `true` if the queue has no unprocessed pairs.
-    #[allow(dead_code)]
     pub fn is_done(&self) -> bool {
         self.pending_count() == 0
     }
@@ -133,7 +115,6 @@ impl ToiQueue {
 ///
 /// Multiple CCD events create additional sub-steps.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SubStepCcd {
     /// Maximum number of CCD sub-steps per frame.
     pub max_substeps: usize,
@@ -144,7 +125,6 @@ pub struct SubStepCcd {
 }
 impl SubStepCcd {
     /// Create a new sub-step CCD configuration.
-    #[allow(dead_code)]
     pub fn new(max_substeps: usize, velocity_iterations: usize) -> Self {
         SubStepCcd {
             max_substeps,
@@ -156,7 +136,6 @@ impl SubStepCcd {
     ///
     /// Returns a list of `(t_start, t_end)` intervals covering \[0, 1\], with
     /// each CCD event inserted as a boundary.
-    #[allow(dead_code)]
     pub fn build_substeps(&self, toi_events: &[Real]) -> Vec<(Real, Real)> {
         let mut times: Vec<Real> = vec![0.0, 1.0];
         for &t in toi_events {
@@ -187,7 +166,6 @@ impl SubStepCcd {
 ///
 /// Returns the position correction magnitude applied.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ToiPositionCorrector {
     /// Fraction of penetration to correct per step (Baumgarte factor).
     pub baumgarte: Real,
@@ -198,7 +176,6 @@ pub struct ToiPositionCorrector {
 }
 impl ToiPositionCorrector {
     /// Create a new corrector with default Baumgarte settings.
-    #[allow(dead_code)]
     pub fn new(baumgarte: Real, slop: Real, max_correction: Real) -> Self {
         ToiPositionCorrector {
             baumgarte,
@@ -210,7 +187,6 @@ impl ToiPositionCorrector {
     ///
     /// Uses the Baumgarte method:
     /// `correction = baumgarte * max(0, depth - slop) / dt`
-    #[allow(dead_code)]
     pub fn correction_magnitude(&self, depth: Real, inv_mass_sum: Real, dt: Real) -> Real {
         if inv_mass_sum < 1e-15 || dt < 1e-15 {
             return 0.0;
@@ -222,7 +198,6 @@ impl ToiPositionCorrector {
 }
 /// Output of the CCD broadphase: a candidate pair that may collide.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct CcdBroadphasePair {
     /// Handle of body A.
     pub body_a: BodyHandle,
@@ -422,7 +397,6 @@ impl CcdConstraintSolver {
 /// a speculative constraint is added to the solver at the start of the step
 /// and ensures the body does not tunnel through the surface.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SpeculativeContactConstraint {
     /// Body handle.
     pub body: BodyHandle,
@@ -441,7 +415,6 @@ pub struct SpeculativeContactConstraint {
 }
 impl SpeculativeContactConstraint {
     /// Create a new speculative contact constraint.
-    #[allow(dead_code)]
     pub fn new(
         body: BodyHandle,
         normal: Vec3,
@@ -468,7 +441,6 @@ impl SpeculativeContactConstraint {
     /// ```text
     /// v_target = -predicted_distance / dt
     /// ```
-    #[allow(dead_code)]
     pub fn target_normal_velocity(&self, dt: Real) -> Real {
         if dt.abs() < 1e-15 {
             return 0.0;
@@ -476,14 +448,12 @@ impl SpeculativeContactConstraint {
         (self.predicted_distance / dt).min(0.0)
     }
     /// Returns `true` if the constraint is active (predicted penetration).
-    #[allow(dead_code)]
     pub fn is_active(&self) -> bool {
         self.predicted_distance < 0.0
     }
 }
 /// An entry in the TOI pair queue.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct ToiPair {
     /// Handle of body A.
     pub body_a: BodyHandle,
@@ -496,7 +466,6 @@ pub struct ToiPair {
 }
 impl ToiPair {
     /// Create a new TOI pair.
-    #[allow(dead_code)]
     pub fn new(body_a: BodyHandle, body_b: BodyHandle, toi: Real) -> Self {
         ToiPair {
             body_a,

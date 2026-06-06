@@ -2,14 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::geodesic::GeoMesh;
+    use crate::geodesic::*;
     fn strip_mesh(n_tris: usize) -> GeoMesh {
         let mut verts = Vec::new();
         for i in 0..=n_tris {
@@ -78,8 +74,8 @@ mod tests {
         let m = single_triangle();
         let adj = m.build_adjacency();
         assert_eq!(adj.len(), 3);
-        for v in 0..3 {
-            assert_eq!(adj[v].len(), 2, "vertex {v} should have 2 neighbours");
+        for (v, nbrs) in adj.iter().enumerate() {
+            assert_eq!(nbrs.len(), 2, "vertex {v} should have 2 neighbours");
         }
     }
     #[test]

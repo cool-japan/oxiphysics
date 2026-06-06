@@ -1,7 +1,7 @@
 //! Auto-generated module structure
 
-pub mod functions;
-pub mod functions_2;
+pub(crate) mod functions;
+pub(crate) mod functions_2;
 pub mod types;
 pub mod welfordonline_traits;
 

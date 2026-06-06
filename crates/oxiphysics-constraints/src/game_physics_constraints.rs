@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,20 +7,11 @@
 //! spring/rope/wheel constraints, character controllers, trigger volumes,
 //! composite constraint chains, and a sequential-impulse game solver.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
 // Helper math — [f64; 3] arrays only, no nalgebra
 // ---------------------------------------------------------------------------
-
-/// Add two 3-vectors.
-#[inline]
-fn v3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
 
 /// Subtract two 3-vectors (a − b).
 #[inline]
@@ -39,16 +29,6 @@ fn v3_scale(a: [f64; 3], s: f64) -> [f64; 3] {
 #[inline]
 fn v3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-/// Cross product of two 3-vectors.
-#[inline]
-fn v3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 /// Euclidean length of a 3-vector.
@@ -1366,7 +1346,7 @@ impl ConstraintSolver {
     }
 
     /// Warm-start all constraint rows by applying the stored accumulated impulses.
-    pub fn warm_start(&self, pairs: &[ConstraintPair], bodies: &mut Vec<SolverBody>) {
+    pub fn warm_start(&self, pairs: &[ConstraintPair], bodies: &mut [SolverBody]) {
         for pair in pairs {
             for row in &pair.rows {
                 let delta = row.accumulated * self.warm_start_factor;
@@ -1384,7 +1364,7 @@ impl ConstraintSolver {
     }
 
     /// Run the sequential impulse solve loop.
-    pub fn solve(&self, pairs: &mut Vec<ConstraintPair>, bodies: &mut Vec<SolverBody>) {
+    pub fn solve(&self, pairs: &mut [ConstraintPair], bodies: &mut [SolverBody]) {
         for _ in 0..self.iterations {
             for pair in pairs.iter_mut() {
                 let ba = pair.body_a;
@@ -1420,7 +1400,7 @@ impl ConstraintSolver {
 
     /// Update sleep state for each body. Bodies sleeping for `sleep_steps`
     /// consecutive steps are flagged `sleeping = true`.
-    pub fn update_sleep(&mut self, bodies: &mut Vec<SolverBody>) {
+    pub fn update_sleep(&mut self, bodies: &mut [SolverBody]) {
         if self.sleep_counters.len() < bodies.len() {
             self.sleep_counters.resize(bodies.len(), 0);
         }
@@ -1443,7 +1423,7 @@ impl ConstraintSolver {
     }
 
     /// Wake all bodies (reset sleep counters).
-    pub fn wake_all(&mut self, bodies: &mut Vec<SolverBody>) {
+    pub fn wake_all(&mut self, bodies: &mut [SolverBody]) {
         for body in bodies.iter_mut() {
             body.sleeping = false;
         }

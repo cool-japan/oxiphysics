@@ -12,9 +12,6 @@
 //! - LOD (coarse/fine grid resolution).
 //! - Blob-merging detection.
 
-#![allow(dead_code)]
-#![allow(missing_docs)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Metaball
 // ─────────────────────────────────────────────────────────────────────────────
@@ -197,7 +194,6 @@ impl IsoTriangle {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Grid resolution for marching-cubes evaluation.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GridResolution {
     /// Coarse grid (fast preview).
@@ -719,7 +715,6 @@ mod tests {
 /// compact support within radius `r`).
 ///
 /// The falloff is: `f(d) = (1 - (d/r)^2)^3` for d < r, 0 otherwise.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct WyvillMetaball {
     /// World-space centre.
@@ -772,7 +767,6 @@ impl WyvillMetaball {
 }
 
 /// A field of Wyvill metaballs with compact support.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct WyvillField {
     /// The Wyvill blobs in this field.
@@ -841,7 +835,6 @@ impl WyvillField {
 ///
 /// Expands each blob by twice its radius to cover the significant influence
 /// region. Returns `(min, max)` corners in world space.
-#[allow(dead_code)]
 pub fn field_bounds(field: &MetaballField) -> ([f64; 3], [f64; 3]) {
     if field.is_empty() {
         return ([0.0; 3], [0.0; 3]);
@@ -863,7 +856,6 @@ pub fn field_bounds(field: &MetaballField) -> ([f64; 3], [f64; 3]) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A keyframe for a single metaball in an animation.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct MetaballKeyframe {
     /// Time of this keyframe (seconds).
@@ -889,7 +881,6 @@ impl MetaballKeyframe {
 }
 
 /// Linearly interpolate between two keyframes at time `t`.
-#[allow(dead_code)]
 pub fn lerp_keyframe(a: &MetaballKeyframe, b: &MetaballKeyframe, t: f64) -> Metaball {
     let dur = b.time - a.time;
     let alpha = if dur.abs() < 1e-15 {
@@ -908,7 +899,6 @@ pub fn lerp_keyframe(a: &MetaballKeyframe, b: &MetaballKeyframe, t: f64) -> Meta
 }
 
 /// A single-blob animation track driven by keyframes.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct MetaballTrack {
     /// Sorted list of keyframes.
@@ -972,7 +962,6 @@ impl MetaballTrack {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Statistics about the scalar field sampled on a grid.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FieldStats {
     /// Minimum value found.
@@ -1032,7 +1021,6 @@ impl FieldStats {
 ///
 /// `k` controls the blend radius. Smaller `k` → sharper join.
 /// Returns a value ≤ min(a, b), reaching up to `k/4` below.
-#[allow(dead_code)]
 pub fn sdf_smooth_min(a: f64, b: f64, k: f64) -> f64 {
     if k.abs() < 1e-15 {
         return a.min(b);
@@ -1046,7 +1034,6 @@ pub fn sdf_smooth_min(a: f64, b: f64, k: f64) -> f64 {
 
 /// Sphere SDF: signed distance from `p` to the surface of a sphere at
 /// `centre` with `radius`.
-#[allow(dead_code)]
 pub fn sdf_sphere(p: [f64; 3], centre: [f64; 3], radius: f64) -> f64 {
     let dx = p[0] - centre[0];
     let dy = p[1] - centre[1];
@@ -1057,7 +1044,6 @@ pub fn sdf_sphere(p: [f64; 3], centre: [f64; 3], radius: f64) -> f64 {
 /// Evaluate a smooth union of multiple sphere SDFs.
 ///
 /// Returns the smooth-minimum blended SDF value at `p`.
-#[allow(dead_code)]
 pub fn sdf_multi_sphere(
     p: [f64; 3],
     spheres: &[(/* centre */ [f64; 3], /* radius */ f64)],
@@ -1079,7 +1065,6 @@ pub fn sdf_multi_sphere(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// A cached evaluation of a scalar field on a uniform 3D grid.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FieldGrid {
     /// Flat array of field values, row-major: `values[iz * (ny+1) * (nx+1) + iy * (nx+1) + ix]`.

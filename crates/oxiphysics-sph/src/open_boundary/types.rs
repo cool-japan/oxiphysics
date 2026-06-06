@@ -58,7 +58,6 @@ impl InletBuffer {
 ///
 /// Discretised as: u^{n+1}_out = u^n_out - c_conv Δt/Δx (u^n_out - u^n_{in})
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ConvectiveOutflowBC {
     /// Convective speed (m/s).
     pub c_conv: f64,
@@ -69,7 +68,6 @@ pub struct ConvectiveOutflowBC {
     /// Previous outlet velocities.
     pub vel_outlet_prev: Vec<[f64; 3]>,
 }
-#[allow(dead_code)]
 impl ConvectiveOutflowBC {
     /// Create a new convective outflow BC.
     pub fn new(c_conv: f64, dx: f64, dt: f64, n_particles: usize) -> Self {
@@ -110,7 +108,6 @@ impl ConvectiveOutflowBC {
 /// Adjusts the prescribed inlet velocity to match a target volumetric
 /// flow rate Q_target (m³/s).  The error is e = Q_actual - Q_target.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FlowRateController {
     /// Target volumetric flow rate Q_target (m³/s).
     pub q_target: f64,
@@ -127,7 +124,6 @@ pub struct FlowRateController {
     /// Maximum magnitude of velocity correction (m/s).
     pub max_correction: f64,
 }
-#[allow(dead_code)]
 impl FlowRateController {
     /// Create a new flow-rate PID controller.
     pub fn new(q_target: f64, kp: f64, ki: f64, kd: f64) -> Self {
@@ -202,7 +198,6 @@ pub struct RiemannBufferParticle {
 }
 impl RiemannBufferParticle {
     /// Create a Riemann buffer particle with a given exterior state.
-    #[allow(dead_code)]
     pub fn new(
         position: [f64; 3],
         velocity: [f64; 3],
@@ -221,7 +216,6 @@ impl RiemannBufferParticle {
     /// Riemann invariant in the normal direction (incoming wave).
     ///
     /// `W+ = v_n + 2*c / (gamma-1)` for the incoming Riemann invariant.
-    #[allow(dead_code)]
     pub fn riemann_invariant_plus(&self, normal: [f64; 3], gamma: f64) -> f64 {
         let v_n = self.velocity[0] * normal[0]
             + self.velocity[1] * normal[1]
@@ -231,7 +225,6 @@ impl RiemannBufferParticle {
     /// Riemann invariant for the outgoing wave.
     ///
     /// `W- = v_n - 2*c / (gamma-1)`
-    #[allow(dead_code)]
     pub fn riemann_invariant_minus(&self, normal: [f64; 3], gamma: f64) -> f64 {
         let v_n = self.velocity[0] * normal[0]
             + self.velocity[1] * normal[1]
@@ -313,7 +306,6 @@ pub struct SpongeLayer {
 }
 impl SpongeLayer {
     /// Create a new sponge layer.
-    #[allow(dead_code)]
     pub fn new(zone: BoundaryZone, thickness: f64, sigma_max: f64, polynomial_order: u32) -> Self {
         Self {
             zone,
@@ -325,7 +317,6 @@ impl SpongeLayer {
     /// Compute the local damping coefficient at `pos`.
     ///
     /// Returns 0 outside the sponge, rising to `sigma_max` at the outlet.
-    #[allow(dead_code)]
     pub fn damping_at(&self, pos: [f64; 3]) -> f64 {
         let sd = self.zone.signed_distance(pos);
         if sd < 0.0 || sd > self.thickness {
@@ -337,7 +328,6 @@ impl SpongeLayer {
     /// Apply the sponge forcing to a velocity field.
     ///
     /// Returns the relaxation force: `f = -sigma * (v - v_ref)`
-    #[allow(dead_code)]
     pub fn apply_sponge_forcing(&self, pos: [f64; 3], vel: [f64; 3], v_ref: [f64; 3]) -> [f64; 3] {
         let sigma = self.damping_at(pos);
         [
@@ -539,7 +529,6 @@ impl CharacteristicBc {
 /// Implements the LODI system of Poinsot & Lele (1992) for subsonic inlets
 /// and outlets, providing wave amplitudes for the characteristic variables.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct LodiBC {
     /// Speed of sound c (m/s).
     pub c_sound: f64,
@@ -552,7 +541,6 @@ pub struct LodiBC {
     /// Domain length scale L (m) for non-dimensionalisation.
     pub length: f64,
 }
-#[allow(dead_code)]
 impl LodiBC {
     /// Create a new LODI BC.
     pub fn new(c_sound: f64, density: f64, sigma: f64, p_ref: f64, length: f64) -> Self {
@@ -607,7 +595,6 @@ impl LodiBC {
 /// Stores two previous time levels of velocity at outlet particles to
 /// extrapolate the outgoing characteristic.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AbsorbingOutlet {
     /// Outlet normal (points outward from the domain).
     pub normal: [f64; 3],
@@ -622,7 +609,6 @@ pub struct AbsorbingOutlet {
     /// Time-step size Δt.
     pub dt: f64,
 }
-#[allow(dead_code)]
 impl AbsorbingOutlet {
     /// Create a new absorbing outlet.
     pub fn new(normal: [f64; 3], c_sound: f64, n_particles: usize, dx: f64, dt: f64) -> Self {
@@ -669,7 +655,6 @@ pub struct TurbulentInflowBoundary {
 }
 impl TurbulentInflowBoundary {
     /// Create a new turbulent inflow boundary.
-    #[allow(dead_code)]
     pub fn new(
         zone: BoundaryZone,
         mean_velocity: [f64; 3],
@@ -682,7 +667,6 @@ impl TurbulentInflowBoundary {
         }
     }
     /// Update buffer particle velocities with mean + turbulent fluctuation.
-    #[allow(dead_code)]
     pub fn apply_turbulent_velocities(&mut self) {
         let v_mean = self.inflow.inflow_velocity;
         let config = self.turb.clone();
@@ -701,7 +685,6 @@ impl TurbulentInflowBoundary {
 /// Recycles velocity fluctuations from a downstream plane and rescales
 /// them for injection at the inlet.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct RecyclingTurbulenceInlet {
     /// Mean inlet velocity magnitude (m/s).
     pub u_mean: f64,
@@ -714,7 +697,6 @@ pub struct RecyclingTurbulenceInlet {
     /// Stored recycled velocity fluctuations for current step.
     pub fluctuations: Vec<[f64; 3]>,
 }
-#[allow(dead_code)]
 impl RecyclingTurbulenceInlet {
     /// Create a new recycling turbulence inlet.
     pub fn new(u_mean: f64, delta_inlet: f64, delta_recycle: f64) -> Self {
@@ -880,7 +862,6 @@ impl BufferZoneManager {
 /// At an inlet the outgoing wave R⁺ is determined internally; R⁻ is prescribed.
 /// At an outlet the incoming wave R⁻ is determined internally; R⁺ is prescribed.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct RiemannInvariantBc {
     /// Ratio of specific heats γ (default 1.4 for air).
     pub gamma: f64,
@@ -889,7 +870,6 @@ pub struct RiemannInvariantBc {
     /// Reference density ρ_ref (kg/m³).
     pub rho_ref: f64,
 }
-#[allow(dead_code)]
 impl RiemannInvariantBc {
     /// Create a new Riemann-invariant BC.
     pub fn new(gamma: f64, c_ref: f64, rho_ref: f64) -> Self {
@@ -1041,7 +1021,6 @@ pub struct PressureOutletBC {
 }
 impl PressureOutletBC {
     /// Create a new pressure outlet BC.
-    #[allow(dead_code)]
     pub fn new(rho0: f64, b_coeff: f64, gamma: f64, p_outlet: f64) -> Self {
         Self {
             rho0,
@@ -1053,7 +1032,6 @@ impl PressureOutletBC {
     /// Compute the target density at the outlet to achieve `p_outlet`.
     ///
     /// Inverts the Tait equation: rho = rho0 * (p/B + 1)^(1/gamma)
-    #[allow(dead_code)]
     pub fn target_density(&self) -> f64 {
         let ratio = self.p_outlet / self.b_coeff + 1.0;
         if ratio < 0.0 {
@@ -1062,7 +1040,6 @@ impl PressureOutletBC {
         self.rho0 * ratio.powf(1.0 / self.gamma)
     }
     /// Compute pressure from density using the Tait equation.
-    #[allow(dead_code)]
     pub fn pressure_from_density(&self, rho: f64) -> f64 {
         self.b_coeff * ((rho / self.rho0).powf(self.gamma) - 1.0)
     }
@@ -1070,7 +1047,6 @@ impl PressureOutletBC {
     ///
     /// Returns the corrected pressure for a particle with density `rho`
     /// at signed distance `sd` from the boundary (0 = at boundary, <0 = outside).
-    #[allow(dead_code)]
     pub fn corrected_pressure(&self, rho: f64, sd: f64, damping_length: f64) -> f64 {
         let p_interior = self.pressure_from_density(rho);
         if sd >= 0.0 && sd < damping_length {
@@ -1177,7 +1153,6 @@ impl CharacteristicState {
     /// Compute the acoustic Riemann invariants.
     ///
     /// Returns `(J_plus, J_minus)` = `(v_n + p/(rho*c), v_n - p/(rho*c))`.
-    #[allow(dead_code)]
     pub fn acoustic_invariants(&self) -> (f64, f64) {
         let denom = self.density * self.sound_speed;
         if denom < 1e-30 {
@@ -1191,7 +1166,6 @@ impl CharacteristicState {
     ///
     /// For subsonic outflow: incoming wave `J_minus` comes from exterior (set to zero).
     /// Returns the corrected normal velocity and pressure.
-    #[allow(dead_code)]
     pub fn non_reflecting_outlet(&self, reference: &CharacteristicState) -> (f64, f64) {
         let (j_plus, _) = self.acoustic_invariants();
         let denom = reference.density * reference.sound_speed;

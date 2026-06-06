@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 /// Embedded PID controller used by servo motors.
 #[derive(Debug, Clone)]
 pub struct MotorPid {
@@ -186,24 +183,31 @@ impl MultiAxisCoordinator {
     /// Compute output forces/torques for all axes given current positions.
     ///
     /// Returns a Vec of forces/torques, one per axis.
-    #[allow(clippy::too_many_arguments)]
     pub fn step(&mut self, dt: f64, positions: &[f64]) -> Vec<f64> {
         let n = self.n_axes;
-        let mut errors = vec![0.0f64; n];
-        for i in 0..n {
-            let pos = positions.get(i).copied().unwrap_or(0.0);
-            errors[i] = self.targets[i] - pos;
-        }
+        let errors: Vec<f64> = self
+            .targets
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let pos = positions.get(i).copied().unwrap_or(0.0);
+                t - pos
+            })
+            .collect();
         let mut forces = vec![0.0f64; n];
-        for i in 0..n {
-            let base = self.pids[i].update(errors[i], dt);
+        for (i, (force, (pid, max_f))) in forces
+            .iter_mut()
+            .zip(self.pids.iter_mut().zip(self.max_forces.iter()))
+            .enumerate()
+        {
+            let base = pid.update(errors[i], dt);
             let mut coupling = 0.0;
-            for j in 0..n {
+            for (j, (&e_j, cg)) in errors.iter().zip(self.coupling_gains[i].iter()).enumerate() {
                 if j != i {
-                    coupling += self.coupling_gains[i][j] * errors[j];
+                    coupling += cg * e_j;
                 }
             }
-            forces[i] = (base + coupling).clamp(-self.max_forces[i], self.max_forces[i]);
+            *force = (base + coupling).clamp(-max_f, *max_f);
         }
         forces
     }

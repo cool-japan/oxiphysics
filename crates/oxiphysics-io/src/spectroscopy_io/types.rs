@@ -2,13 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 
 use super::functions::ANIF_MAGIC;
-#[allow(unused_imports)]
-use super::functions::*;
 
 /// Result of a peak-finding operation.
 #[derive(Debug, Clone)]
@@ -396,10 +393,11 @@ impl SpectralAnalysis {
             return vec![0.0; n];
         }
         let mut deriv = vec![0.0; n];
-        for i in 1..n - 1 {
-            let dx = record.x[i + 1] - record.x[i - 1];
+        for (i, d) in deriv[1..n - 1].iter_mut().enumerate() {
+            let idx = i + 1;
+            let dx = record.x[idx + 1] - record.x[idx - 1];
             if dx.abs() > 1e-15 {
-                deriv[i] = (record.y[i + 1] - record.y[i - 1]) / dx;
+                *d = (record.y[idx + 1] - record.y[idx - 1]) / dx;
             }
         }
         if n >= 2 {

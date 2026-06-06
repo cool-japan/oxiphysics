@@ -14,8 +14,6 @@
 //! - Undrained shear strength
 //! - Settlement calculation
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -624,7 +622,6 @@ pub struct BiotPoroelastic {
 
 impl BiotPoroelastic {
     /// Create a Biot poroelastic model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         bulk_modulus_drained: f64,
         shear_modulus: f64,
@@ -711,7 +708,6 @@ pub struct LiquefactionAssessment {
 
 impl LiquefactionAssessment {
     /// Create a liquefaction assessment.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         amax: f64,
         magnitude: f64,
@@ -1029,7 +1025,6 @@ pub fn secondary_compression_settlement(
 /// Terzaghi bearing capacity for strip footing.
 ///
 /// qu = c·Nc + q·Nq + 0.5·γ·B·Nγ
-#[allow(clippy::too_many_arguments)]
 pub fn terzaghi_bearing_capacity_strip(
     cohesion: f64,
     surcharge: f64,

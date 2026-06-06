@@ -13,8 +13,6 @@ use crate::atom::AtomSet;
 use crate::neighbor::{CellList, PeriodicBox};
 
 use super::functions::ForceField;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::PairForceField;
 
 impl Default for PairForceField {

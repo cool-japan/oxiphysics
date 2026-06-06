@@ -8,8 +8,6 @@
 //! marching-cubes iso-surface extractor (vertex positions only), volume
 //! histograms, and gradient-magnitude computation.
 
-#![allow(dead_code)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // VolumeData
 // ─────────────────────────────────────────────────────────────────────────────

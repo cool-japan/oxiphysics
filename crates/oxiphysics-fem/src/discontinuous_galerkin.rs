@@ -1,4 +1,3 @@
-#![allow(clippy::if_same_then_else, clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,38 +15,7 @@
 //! - **Hyperbolic conservation laws**: Euler equations in 1-D
 //! - **Advection-diffusion**: scalar transport with diffusion
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
-
-// ---------------------------------------------------------------------------
-// Math helpers
-// ---------------------------------------------------------------------------
-
-/// Dot product of two slices.
-fn dot_slice(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
-}
-
-/// L2-norm of a slice.
-fn norm_slice(a: &[f64]) -> f64 {
-    dot_slice(a, a).sqrt()
-}
-
-/// Adds two vectors element-wise, returning a new vector.
-fn vec_add(a: &[f64], b: &[f64]) -> Vec<f64> {
-    a.iter().zip(b.iter()).map(|(x, y)| x + y).collect()
-}
-
-/// Scales a vector by a scalar, returning a new vector.
-fn vec_scale(a: &[f64], s: f64) -> Vec<f64> {
-    a.iter().map(|x| x * s).collect()
-}
-
-/// Subtracts two vectors element-wise, returning a new vector.
-fn vec_sub(a: &[f64], b: &[f64]) -> Vec<f64> {
-    a.iter().zip(b.iter()).map(|(x, y)| x - y).collect()
-}
 
 // ---------------------------------------------------------------------------
 // Legendre polynomials
@@ -85,9 +53,7 @@ pub fn legendre_poly_deriv(n: usize, x: f64) -> f64 {
     let nf = n as f64;
     if (x * x - 1.0).abs() < 1e-14 {
         // Boundary value
-        let sign = if x > 0.0 {
-            1.0
-        } else if n.is_multiple_of(2) {
+        let sign = if x > 0.0 || n.is_multiple_of(2) {
             1.0
         } else {
             -1.0
@@ -346,7 +312,6 @@ pub fn upwind_flux(u_left: f64, u_right: f64, wave_speed: f64) -> f64 {
 }
 
 /// Evaluates the numerical flux at an interface given the flux type.
-#[allow(clippy::too_many_arguments)]
 pub fn compute_numerical_flux(
     flux_type: NumericalFlux,
     u_left: f64,
@@ -402,7 +367,6 @@ pub fn penalty_parameter(order: usize, h_left: f64, h_right: f64, c_pen: f64) ->
 /// Interior penalty diffusion bilinear form contribution at an interior face.
 ///
 /// Returns (contribution to left element, contribution to right element).
-#[allow(clippy::too_many_arguments)]
 pub fn interior_penalty_face(
     u_left: f64,
     u_right: f64,
@@ -591,8 +555,8 @@ pub fn tvb_limiter(elem: &mut DgElement, u_avg_left: f64, u_avg_right: f64, m_tv
         };
         // Zero out higher modes, scale the linear mode
         elem.coeffs[1] *= scale;
-        for i in 2..elem.coeffs.len() {
-            elem.coeffs[i] = 0.0;
+        for coeff_i in &mut elem.coeffs[2..] {
+            *coeff_i = 0.0;
         }
     }
 }
@@ -673,7 +637,6 @@ pub fn weno_limiting(cell_averages: &[f64]) -> Vec<(f64, f64)> {
 /// on a uniform mesh of DG elements.
 ///
 /// Returns a vector of residual coefficient vectors (one per element).
-#[allow(clippy::too_many_arguments)]
 pub fn dg_advection_residual(
     elements: &[DgElement],
     wave_speed: f64,
@@ -693,9 +656,9 @@ pub fn dg_advection_residual(
         // Volume integral: integral( a * u * dphi/dxi ) dxi
         for (k, &xi) in qpts.iter().enumerate() {
             let u_val = basis.evaluate_solution(&elements[i].coeffs, xi);
-            for m in 0..nmodes {
+            for (m, res_m) in res.iter_mut().enumerate().take(nmodes) {
                 let dphi = basis.evaluate_deriv(m, xi);
-                res[m] += qwts[k] * wave_speed * u_val * dphi;
+                *res_m += qwts[k] * wave_speed * u_val * dphi;
             }
         }
 
@@ -732,15 +695,15 @@ pub fn dg_advection_residual(
             wave_speed,
         );
 
-        for m in 0..nmodes {
+        for (m, res_m) in res.iter_mut().enumerate().take(nmodes) {
             let phi_r = basis.evaluate(m, 1.0);
             let phi_l = basis.evaluate(m, -1.0);
-            res[m] -= f_hat_r * phi_r - f_hat_l * phi_l;
+            *res_m -= f_hat_r * phi_r - f_hat_l * phi_l;
         }
 
         // Scale by inverse Jacobian
-        for m in 0..nmodes {
-            res[m] /= jac;
+        for res_m in &mut res {
+            *res_m /= jac;
         }
 
         residuals.push(res);
@@ -826,7 +789,6 @@ pub fn ssp_rk3_step(
 /// u_t + a*u_x = kappa * u_xx
 ///
 /// Uses the Local DG (LDG) approach for the diffusion term.
-#[allow(clippy::too_many_arguments)]
 pub fn dg_advection_diffusion_residual(
     elements: &[DgElement],
     wave_speed: f64,
@@ -856,9 +818,9 @@ pub fn dg_advection_diffusion_residual(
             for (m, &c) in elements[i].coeffs.iter().enumerate().take(nmodes) {
                 du_dxi += c * basis.evaluate_deriv(m, xi);
             }
-            for m in 0..nmodes {
+            for (m, res_im) in residuals[i].iter_mut().enumerate().take(nmodes) {
                 let dphi = basis.evaluate_deriv(m, xi);
-                residuals[i][m] += qwts[k] * kappa * du_dxi * dphi / jac;
+                *res_im += qwts[k] * kappa * du_dxi * dphi / jac;
             }
         }
 
@@ -903,9 +865,10 @@ pub fn dg_advection_diffusion_residual(
             let _noop = &basis0;
 
             // Apply penalty contributions to boundary modes
-            for m in 0..basis.num_modes() {
+            let nmodes_pen = basis.num_modes();
+            for (m, res_im) in residuals[i].iter_mut().enumerate().take(nmodes_pen) {
                 let phi_r = basis.evaluate(m, 1.0);
-                residuals[i][m] -= eta * kappa * (u_l - u_r) * phi_r / jac;
+                *res_im -= eta * kappa * (u_l - u_r) * phi_r / jac;
             }
         }
     }
@@ -1077,7 +1040,7 @@ impl DgMesh1D {
     /// Evaluates the DG solution at a physical point x.
     pub fn evaluate_at(&self, x: f64) -> f64 {
         for elem in &self.elements {
-            if x >= elem.x_left && x <= elem.x_right {
+            if (elem.x_left..=elem.x_right).contains(&x) {
                 let xi = elem.phys_to_ref(x);
                 return elem.evaluate(xi);
             }
@@ -1281,9 +1244,9 @@ pub fn solve_advection_diffusion(
             config.c_pen,
             config.flux_type,
         );
-        for i in 0..n {
+        for (i, res_i) in residuals.iter().enumerate().take(n) {
             for (m, c) in mesh.elements[i].coeffs.iter_mut().enumerate() {
-                *c += dt_actual * residuals[i][m];
+                *c += dt_actual * res_i[m];
             }
         }
 
@@ -1323,9 +1286,9 @@ pub fn dg_burgers_residual(elements: &[DgElement], flux_type: NumericalFlux) -> 
         for (k, &xi) in qpts.iter().enumerate() {
             let u_val = basis.evaluate_solution(&elements[i].coeffs, xi);
             let f_val = burgers_flux(u_val);
-            for m in 0..nmodes {
+            for (m, res_m) in res.iter_mut().enumerate().take(nmodes) {
                 let dphi = basis.evaluate_deriv(m, xi);
-                res[m] += qwts[k] * f_val * dphi;
+                *res_m += qwts[k] * f_val * dphi;
             }
         }
 
@@ -1362,14 +1325,14 @@ pub fn dg_burgers_residual(elements: &[DgElement], flux_type: NumericalFlux) -> 
             alpha_l,
         );
 
-        for m in 0..nmodes {
+        for (m, res_m) in res.iter_mut().enumerate().take(nmodes) {
             let phi_r = basis.evaluate(m, 1.0);
             let phi_l = basis.evaluate(m, -1.0);
-            res[m] -= f_hat_r * phi_r - f_hat_l * phi_l;
+            *res_m -= f_hat_r * phi_r - f_hat_l * phi_l;
         }
 
-        for m in 0..nmodes {
-            res[m] /= jac;
+        for res_m in &mut res {
+            *res_m /= jac;
         }
 
         residuals.push(res);
@@ -1394,11 +1357,11 @@ pub fn local_mass_matrix(elem: &DgElement) -> Vec<Vec<f64>> {
 
     let mut mass = vec![vec![0.0; nm]; nm];
     for (k, &xi) in qpts.iter().enumerate() {
-        for i in 0..nm {
+        for (i, mass_row) in mass.iter_mut().enumerate() {
             let phi_i = basis.evaluate(i, xi);
-            for j in 0..nm {
+            for (j, mass_ij) in mass_row.iter_mut().enumerate() {
                 let phi_j = basis.evaluate(j, xi);
-                mass[i][j] += qwts[k] * phi_i * phi_j * jac;
+                *mass_ij += qwts[k] * phi_i * phi_j * jac;
             }
         }
     }
@@ -1417,11 +1380,11 @@ pub fn local_stiffness_matrix(elem: &DgElement) -> Vec<Vec<f64>> {
 
     let mut stiff = vec![vec![0.0; nm]; nm];
     for (k, &xi) in qpts.iter().enumerate() {
-        for i in 0..nm {
+        for (i, stiff_row) in stiff.iter_mut().enumerate() {
             let dphi_i = basis.evaluate_deriv(i, xi) / jac;
-            for j in 0..nm {
+            for (j, stiff_ij) in stiff_row.iter_mut().enumerate() {
                 let dphi_j = basis.evaluate_deriv(j, xi) / jac;
-                stiff[i][j] += qwts[k] * dphi_i * dphi_j * jac;
+                *stiff_ij += qwts[k] * dphi_i * dphi_j * jac;
             }
         }
     }
@@ -1514,7 +1477,6 @@ pub fn solution_min(mesh: &DgMesh1D) -> f64 {
 /// Performs a convergence study for DG advection by halving the mesh.
 ///
 /// Returns (n_elements, l2_error) pairs.
-#[allow(clippy::too_many_arguments)]
 pub fn convergence_study<F: Fn(f64) -> f64 + Copy>(
     initial_condition: F,
     exact_solution: F,
@@ -1823,8 +1785,8 @@ mod tests {
         let elem = DgElement::new(0.0, 1.0, 2);
         let mass = local_mass_matrix(&elem);
         // Diagonal should be positive
-        for i in 0..3 {
-            assert!(mass[i][i] > 0.0);
+        for (i, row) in mass.iter().enumerate() {
+            assert!(row[i] > 0.0);
         }
     }
 
@@ -1861,14 +1823,14 @@ mod tests {
         let elem = DgElement::new(0.0, 1.0, 2);
         let stiff = local_stiffness_matrix(&elem);
         let nm = 3;
-        for i in 0..nm {
-            for j in 0..nm {
+        for (i, row) in stiff.iter().enumerate().take(nm) {
+            for (j, &val) in row.iter().enumerate().take(nm) {
                 assert!(
-                    (stiff[i][j] - stiff[j][i]).abs() < 1e-12,
+                    (val - stiff[j][i]).abs() < 1e-12,
                     "S[{}][{}] = {:.6}, S[{}][{}] = {:.6}",
                     i,
                     j,
-                    stiff[i][j],
+                    val,
                     j,
                     i,
                     stiff[j][i]

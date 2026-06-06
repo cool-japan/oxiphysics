@@ -100,7 +100,6 @@ pub fn cubic_spline_gradient(r: f64, h: f64) -> f64 {
     sigma / (h * h * h * h) * df
 }
 /// Compute the mean density of a set of cryogenic particles in kg/m^3.
-#[allow(dead_code)]
 pub fn mean_density(particles: &[CryogenicParticle]) -> f64 {
     if particles.is_empty() {
         return 0.0;
@@ -108,7 +107,6 @@ pub fn mean_density(particles: &[CryogenicParticle]) -> f64 {
     particles.iter().map(|p| p.density).sum::<f64>() / particles.len() as f64
 }
 /// Compute the mean temperature of a set of particles in K.
-#[allow(dead_code)]
 pub fn mean_particle_temperature(particles: &[CryogenicParticle]) -> f64 {
     if particles.is_empty() {
         return 0.0;
@@ -116,7 +114,6 @@ pub fn mean_particle_temperature(particles: &[CryogenicParticle]) -> f64 {
     particles.iter().map(|p| p.temperature).sum::<f64>() / particles.len() as f64
 }
 /// Interpolate fluid density at a target point using kernel summation.
-#[allow(dead_code)]
 pub fn sph_interpolate_density(particles: &[CryogenicParticle], target: [f64; 3]) -> f64 {
     let mut rho = 0.0;
     for p in particles {

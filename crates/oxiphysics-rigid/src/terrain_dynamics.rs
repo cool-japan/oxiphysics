@@ -5,15 +5,9 @@
 //! friction on uneven surfaces, slope resistance, terrain compliance, and
 //! vehicle tip-over stability.
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // Helper math (no nalgebra)
 // ---------------------------------------------------------------------------
-
-fn vec3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
 
 fn vec3_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -157,7 +151,6 @@ pub fn terrain_normal(patch: &TerrainPatch, wx: f64, wz: f64) -> [f64; 3] {
 /// terrain height at its XZ position.
 ///
 /// Returns `(contact_point, terrain_height)`.
-#[allow(clippy::too_many_arguments)]
 pub fn ground_contact_point(
     centre: [f64; 3],
     half_extents: [f64; 3],

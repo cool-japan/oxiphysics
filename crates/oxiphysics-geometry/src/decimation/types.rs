@@ -2,14 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::collections::{HashMap, HashSet};
 
 /// A record of one progressive mesh simplification step (edge collapse).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EdgeCollapseRecord {
     /// The vertex that was removed (merged into `target`).
@@ -20,7 +16,6 @@ pub struct EdgeCollapseRecord {
     pub deleted_triangles: Vec<[usize; 3]>,
 }
 /// Progressive mesh: stores the base (simplified) mesh and a list of refinement records.
-#[allow(dead_code)]
 pub struct ProgressiveMeshSimple {
     /// Current simplified mesh.
     pub current: SimpleMesh,
@@ -153,7 +148,6 @@ pub struct CollapseRecord {
     pub new_pos: [f64; 3],
 }
 /// A directed edge in the mesh.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeshEdge {
     /// First vertex index.
@@ -164,7 +158,6 @@ pub struct MeshEdge {
     pub cost: f64,
 }
 /// A min-priority queue of edges sorted by QEM cost.
-#[allow(dead_code)]
 pub struct EdgePriorityQueue {
     pub(super) heap: std::collections::BinaryHeap<MeshEdge>,
 }
@@ -324,7 +317,6 @@ impl QuadricMatrix {
 /// A normal cone: represents the range of normals in a region.
 ///
 /// Defined by an axis (average normal) and a half-angle (max deviation).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct NormalCone {
     /// Axis of the cone (unit vector).
@@ -363,7 +355,6 @@ impl NormalCone {
     }
 }
 /// Feature detection result for an edge.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EdgeFeature {
     /// Smooth interior edge.
@@ -374,7 +365,6 @@ pub enum EdgeFeature {
     Boundary,
 }
 /// Statistics from a decimation run.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct DecimationMetrics {
     /// Original vertex count.

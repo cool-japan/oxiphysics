@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::too_many_arguments)]
 use std::f64::consts::PI;
 
 /// Constant mobility model.
@@ -156,7 +155,6 @@ pub fn measure_interface_width(phi: &[f64], nx: usize, ny: usize, x_col: usize) 
 ///
 /// Uses a central-difference spatial discretisation with periodic BCs.
 /// Returns the updated phi field.
-#[allow(dead_code)]
 pub fn convective_cahn_hilliard_step(
     phi: &[f64],
     ux: &[f64],
@@ -210,7 +208,6 @@ pub fn convective_cahn_hilliard_step(
 /// The Cahn number controls the ratio of interface thickness to domain size.
 /// For convergence to the sharp-interface limit, `Cn → 0` is required.
 /// Typical values: `Cn = 0.01 – 0.1`.
-#[allow(dead_code)]
 pub fn cahn_number(epsilon: f64, domain_length: f64) -> f64 {
     if domain_length < 1e-30 {
         return f64::INFINITY;
@@ -221,7 +218,6 @@ pub fn cahn_number(epsilon: f64, domain_length: f64) -> f64 {
 ///
 /// `Pe = U * L / (M * |A|)` where `U` is the characteristic velocity,
 /// `L` is the domain length, and `M * |A|` is the effective diffusivity.
-#[allow(dead_code)]
 pub fn phase_field_peclet(u_ref: f64, domain_length: f64, mobility: f64, a: f64) -> f64 {
     let diff = mobility * a.abs();
     if diff < 1e-30 {
@@ -235,7 +231,6 @@ pub fn phase_field_peclet(u_ref: f64, domain_length: f64, mobility: f64, a: f64)
 /// width `xi = sqrt(kappa / |A|)`.
 ///
 /// Returns the maximum allowed grid spacing `dx_max`.
-#[allow(dead_code)]
 pub fn max_grid_spacing(kappa: f64, a: f64, n_points_per_xi: usize) -> f64 {
     if a >= 0.0 || kappa <= 0.0 || n_points_per_xi == 0 {
         return f64::INFINITY;
@@ -246,7 +241,6 @@ pub fn max_grid_spacing(kappa: f64, a: f64, n_points_per_xi: usize) -> f64 {
 /// Compute the free energy density for the double-well potential.
 ///
 /// `f(phi) = A/2 * phi^2 + B/4 * phi^4`
-#[allow(dead_code)]
 pub fn double_well_free_energy(phi: f64, a: f64, b: f64) -> f64 {
     0.5 * a * phi * phi + 0.25 * b * phi.powi(4)
 }
@@ -259,7 +253,6 @@ pub fn double_well_free_energy(phi: f64, a: f64, b: f64) -> f64 {
 /// surface tension.
 ///
 /// Returns the activation energy `Delta G`.
-#[allow(dead_code)]
 pub fn nucleation_energy_barrier(radius: f64, delta_f_v: f64, sigma: f64) -> f64 {
     use std::f64::consts::PI;
     -4.0 / 3.0 * PI * radius.powi(3) * delta_f_v + 4.0 * PI * radius * radius * sigma
@@ -269,7 +262,6 @@ pub fn nucleation_energy_barrier(radius: f64, delta_f_v: f64, sigma: f64) -> f64
 /// `R_crit = 2 * sigma / Delta_f_v`
 ///
 /// Nuclei smaller than `R_crit` dissolve; larger nuclei grow.
-#[allow(dead_code)]
 pub fn critical_nucleus_radius(sigma: f64, delta_f_v: f64) -> f64 {
     if delta_f_v < 1e-30 {
         return f64::INFINITY;
@@ -279,7 +271,6 @@ pub fn critical_nucleus_radius(sigma: f64, delta_f_v: f64) -> f64 {
 /// Maximum nucleation energy barrier at the critical radius.
 ///
 /// `Delta G_crit = (16 * pi * sigma^3) / (3 * Delta_f_v^2)`
-#[allow(dead_code)]
 pub fn critical_nucleation_barrier(sigma: f64, delta_f_v: f64) -> f64 {
     if delta_f_v < 1e-30 {
         return f64::INFINITY;
@@ -291,7 +282,6 @@ pub fn critical_nucleation_barrier(sigma: f64, delta_f_v: f64) -> f64 {
 /// `sigma(R) = sigma_flat / (1 + 2 * delta / R)`
 ///
 /// where `delta` is the Tolman length (typically small).
-#[allow(dead_code)]
 pub fn tolman_surface_tension(sigma_flat: f64, radius: f64, tolman_length: f64) -> f64 {
     let corr = 1.0 + 2.0 * tolman_length / radius.max(1e-30);
     sigma_flat / corr
@@ -301,7 +291,6 @@ pub fn tolman_surface_tension(sigma_flat: f64, radius: f64, tolman_length: f64) 
 /// `rho_mix = sum_k (phi_k * rho_k)`
 ///
 /// where `phi_k` are the volume fractions of each component.
-#[allow(dead_code)]
 pub fn mixture_density(phi_components: &[f64], rho_components: &[f64]) -> f64 {
     phi_components
         .iter()
@@ -310,7 +299,6 @@ pub fn mixture_density(phi_components: &[f64], rho_components: &[f64]) -> f64 {
         .sum()
 }
 /// Volume-fraction-weighted mixture viscosity (linear blending).
-#[allow(dead_code)]
 pub fn mixture_viscosity(phi_components: &[f64], mu_components: &[f64]) -> f64 {
     phi_components
         .iter()
@@ -321,7 +309,6 @@ pub fn mixture_viscosity(phi_components: &[f64], mu_components: &[f64]) -> f64 {
 /// Check that the phase-field order parameters sum to unity (partition of unity).
 ///
 /// Returns the maximum deviation from 1 across all grid cells.
-#[allow(dead_code)]
 pub fn partition_of_unity_error(phi_fields: &[&[f64]], n_cells: usize) -> f64 {
     let mut max_err = 0.0_f64;
     for k in 0..n_cells {
@@ -334,7 +321,6 @@ pub fn partition_of_unity_error(phi_fields: &[&[f64]], n_cells: usize) -> f64 {
 ///
 /// After each step, `phi_k` may drift; this function redistributes the
 /// residual equally among all components.
-#[allow(dead_code)]
 pub fn enforce_partition_of_unity(phi_fields: &mut [Vec<f64>], n_cells: usize) {
     let n_comp = phi_fields.len();
     if n_comp == 0 {
@@ -354,7 +340,6 @@ pub fn enforce_partition_of_unity(phi_fields: &mut [Vec<f64>], n_cells: usize) {
 /// `F[phi] = sum_{x,y} [ f_bulk(phi) + kappa/2 * |grad phi|^2 ]`
 ///
 /// Uses forward-difference gradients with periodic BCs.
-#[allow(dead_code)]
 pub fn cahn_hilliard_free_energy(
     phi: &[f64],
     nx: usize,
@@ -384,7 +369,6 @@ pub fn cahn_hilliard_free_energy(
 /// `mu(x) = A*phi + B*phi^3 - kappa * lap(phi)`
 ///
 /// Returns the chemical potential field.
-#[allow(dead_code)]
 pub fn cahn_hilliard_chemical_potential(
     phi: &[f64],
     nx: usize,

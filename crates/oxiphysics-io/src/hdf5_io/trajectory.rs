@@ -3,8 +3,6 @@
 
 //! Trajectory storage, checkpoints, virtual datasets.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use super::file::Hdf5File;

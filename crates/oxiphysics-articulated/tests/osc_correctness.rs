@@ -1,8 +1,6 @@
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
-#![allow(clippy::needless_range_loop)]
-
 use oxiphysics_articulated::{
     body::RigidBody,
     joint::RevoluteJoint,
@@ -81,9 +79,9 @@ fn test_osc_symmetric() {
     let (mut model, q) = make_6dof_chain();
     let jacobian = full_rank_jacobian_6x6();
     let lambda = compute_lambda(&mut model, &q, &jacobian);
-    for i in 0..6 {
-        for j in 0..6 {
-            let diff = (lambda[i][j] - lambda[j][i]).abs();
+    for (i, lambda_row) in lambda.iter().enumerate() {
+        for (j, &lambda_ij) in lambda_row.iter().enumerate() {
+            let diff = (lambda_ij - lambda[j][i]).abs();
             assert!(
                 diff < 1e-8,
                 "Λ not symmetric at [{i}][{j}]: diff={diff:.2e}"
@@ -99,17 +97,17 @@ fn test_cholesky_roundtrip_in_osc() {
     let jacobian = full_rank_jacobian_6x6();
     let lambda = compute_lambda(&mut model, &q, &jacobian);
     // All entries should be finite
-    for i in 0..6 {
-        for j in 0..6 {
-            assert!(lambda[i][j].is_finite(), "Λ[{i}][{j}] should be finite");
+    for (i, lambda_row) in lambda.iter().enumerate() {
+        for (j, &lambda_ij) in lambda_row.iter().enumerate() {
+            assert!(lambda_ij.is_finite(), "Λ[{i}][{j}] should be finite");
         }
     }
     // All diagonal entries should be positive (Λ is SPD)
-    for i in 0..6 {
+    for (i, lambda_row) in lambda.iter().enumerate() {
         assert!(
-            lambda[i][i] > 0.0,
+            lambda_row[i] > 0.0,
             "Λ[{i}][{i}] should be positive, got {}",
-            lambda[i][i]
+            lambda_row[i]
         );
     }
 }

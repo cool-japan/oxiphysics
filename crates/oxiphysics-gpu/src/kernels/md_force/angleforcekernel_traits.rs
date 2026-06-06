@@ -7,14 +7,10 @@
 //! - `ComputeKernel`
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use crate::compute::ComputeKernel;
 
 use super::types::AngleForceKernel;
 
-#[allow(clippy::needless_range_loop)]
 impl ComputeKernel for AngleForceKernel {
     fn name(&self) -> &str {
         "AngleForceKernel"

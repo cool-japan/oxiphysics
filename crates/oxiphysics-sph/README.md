@@ -1,6 +1,6 @@
 # oxiphysics-sph
 
-**Status: Alpha** | Version 0.1.1 | Part of [OxiPhysics](https://github.com/cool-japan/oxiphysics)
+**Status: Alpha** | Version 0.1.2 | Part of [OxiPhysics](https://github.com/cool-japan/oxiphysics)
 
 Smoothed-Particle Hydrodynamics (SPH) simulation for the OxiPhysics engine — Pure Rust, no C/Fortran dependencies.
 
@@ -39,7 +39,7 @@ use oxiphysics_sph::{adaptive_sph::*, free_surface::*, multiphase::*, turbulence
 | Metric | Count |
 |---|---|
 | Public items | 5,066 |
-| Tests | 4,367 |
+| Tests | 4,370 |
 | Stubs | 0 |
 
 ## License

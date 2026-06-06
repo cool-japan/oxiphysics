@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +7,6 @@
 //! Reynolds boids flocking, stigmergy-based coordination, response-threshold
 //! task allocation, leader-follower formation control, Levy-flight search,
 //! quorum-based collective decision making, and whole-swarm analysis metrics.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -701,10 +698,12 @@ impl FormationControl {
     /// Step all agents towards the formation using PD control.
     pub fn step(&self, agents: &mut [SwarmAgent], dt: f64) {
         let n = agents.len().min(self.shape.offsets.len());
-        let mut forces = Vec::with_capacity(n);
-        for slot in 0..n {
-            forces.push(self.compute_force(&agents[slot], slot));
-        }
+        let forces: Vec<_> = agents
+            .iter()
+            .enumerate()
+            .take(n)
+            .map(|(slot, agent)| self.compute_force(agent, slot))
+            .collect();
         for (slot, force) in forces.into_iter().enumerate() {
             agents[slot].apply_steering(force, dt);
         }

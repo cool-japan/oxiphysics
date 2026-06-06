@@ -20,8 +20,6 @@
 //!   coordination number, dihedral angle, and RMSD.
 //! - [`TransitionPathSampling`]: Two-ended shooting for reactive trajectories.
 
-#![allow(dead_code)]
-
 use rand::Rng;
 
 use rand::RngExt;
@@ -92,7 +90,6 @@ impl CollectiveVariable {
     /// * `r0` – reference distance.
     /// * `d0` – shift parameter.
     /// * `n`, `m` – exponents.
-    #[allow(clippy::too_many_arguments)]
     pub fn coordination_number(
         centre: usize,
         neighbours: &[usize],

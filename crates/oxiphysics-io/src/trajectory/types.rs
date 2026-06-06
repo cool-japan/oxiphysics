@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use crate::xdmf;
 use oxiphysics_core::math::Vec3;
@@ -12,9 +10,7 @@ use std::io::Write;
 /// Compute the velocity autocorrelation function (VACF) from velocity frames.
 ///
 /// VACF(lag) = ⟨ v(t) · v(t + lag) ⟩ / ⟨ v(0) · v(0) ⟩
-#[allow(dead_code)]
 pub struct VacfCalculator;
-#[allow(dead_code)]
 impl VacfCalculator {
     /// Compute the normalised VACF up to `max_lag` frames.
     ///
@@ -67,9 +63,7 @@ impl VacfCalculator {
     }
 }
 /// Reads particle trajectories from XYZ-format strings.
-#[allow(dead_code)]
 pub struct XyzReader;
-#[allow(dead_code)]
 impl XyzReader {
     /// Parse a single XYZ frame from the start of `data`.
     pub fn read_frame(data: &str) -> Result<TrajectoryFrame, crate::Error> {
@@ -151,9 +145,7 @@ impl XyzReader {
     }
 }
 /// Compute statistics over trajectory frames.
-#[allow(dead_code)]
 pub struct TrajectoryStatistics;
-#[allow(dead_code)]
 impl TrajectoryStatistics {
     /// Compute the mean position of each atom across all frames.
     pub fn mean_positions(frames: &[TrajectoryFrame]) -> Vec<[f64; 3]> {
@@ -218,13 +210,16 @@ impl TrajectoryStatistics {
         if total_mass < 1e-30 {
             return 0.0;
         }
-        let mut sum = 0.0_f64;
-        for i in 0..n {
-            let dx = frame.positions[i][0] - com[0];
-            let dy = frame.positions[i][1] - com[1];
-            let dz = frame.positions[i][2] - com[2];
-            sum += masses[i] * (dx * dx + dy * dy + dz * dz);
-        }
+        let sum = frame.positions[..n]
+            .iter()
+            .zip(masses[..n].iter())
+            .map(|(p, &m)| {
+                let dx = p[0] - com[0];
+                let dy = p[1] - com[1];
+                let dz = p[2] - com[2];
+                m * (dx * dx + dy * dy + dz * dz)
+            })
+            .sum::<f64>();
         (sum / total_mass).sqrt()
     }
     /// Compute the end-to-end distance of a chain (first to last atom).
@@ -241,9 +236,7 @@ impl TrajectoryStatistics {
     }
 }
 /// Compute the radial distribution function g(r) from one or more frames.
-#[allow(dead_code)]
 pub struct RdfCalculator;
-#[allow(dead_code)]
 impl RdfCalculator {
     /// Compute g(r) for all atom pairs within `r_max`, using `n_bins` bins.
     ///
@@ -321,9 +314,7 @@ impl RdfCalculator {
 ///
 /// Returns a vector of `(lag_index, msd_value)` pairs.
 /// `lag_index` runs from 0 to `max_lag` (inclusive); at lag 0 the MSD is 0.
-#[allow(dead_code)]
 pub struct MsdCalculator;
-#[allow(dead_code)]
 impl MsdCalculator {
     /// Compute MSD for all atoms combined.
     ///
@@ -384,9 +375,7 @@ impl MsdCalculator {
     }
 }
 /// Analyse bond lengths from trajectory data.
-#[allow(dead_code)]
 pub struct BondLengthAnalyser;
-#[allow(dead_code)]
 impl BondLengthAnalyser {
     /// Compute the distance between atoms `i` and `j` in a frame.
     pub fn bond_length(frame: &TrajectoryFrame, i: usize, j: usize) -> f64 {
@@ -435,9 +424,7 @@ impl BondLengthAnalyser {
     }
 }
 /// Resample a trajectory to a different time resolution.
-#[allow(dead_code)]
 pub struct TrajectoryResampler;
-#[allow(dead_code)]
 impl TrajectoryResampler {
     /// Resample frames at uniform time intervals.
     ///
@@ -509,7 +496,6 @@ impl TrajectoryResampler {
 }
 /// One snapshot in a particle trajectory.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TrajectoryFrame {
     /// Integer timestep index.
     pub timestep: u64,
@@ -520,7 +506,6 @@ pub struct TrajectoryFrame {
     /// Atom type labels (e.g. element symbols like `"C"`, `"H"`, `"O"`).
     pub atom_types: Vec<String>,
 }
-#[allow(dead_code)]
 impl TrajectoryFrame {
     /// Create a new `TrajectoryFrame`.
     pub fn new(
@@ -550,9 +535,7 @@ impl TrajectoryFrame {
 /// `type` `x` `y` `z`
 /// ...
 /// ```
-#[allow(dead_code)]
 pub struct XyzWriter;
-#[allow(dead_code)]
 impl XyzWriter {
     /// Render one frame as an XYZ-format string.
     pub fn write_frame(frame: &TrajectoryFrame) -> String {
@@ -577,9 +560,7 @@ impl XyzWriter {
 /// Note: this is distinct from `LammpsDumpWriter` in `lammps_dump.rs`, which
 /// operates on `LammpsDumpFrame` (with integer atom IDs and type indices).
 /// This writer uses the string atom types from `TrajectoryFrame`.
-#[allow(dead_code)]
 pub struct TrajLammpsWriter;
-#[allow(dead_code)]
 impl TrajLammpsWriter {
     /// Render one frame in LAMMPS dump format.
     ///
@@ -615,9 +596,7 @@ impl TrajLammpsWriter {
     }
 }
 /// Convert trajectory data between different representations.
-#[allow(dead_code)]
 pub struct TrajectoryConverter;
-#[allow(dead_code)]
 impl TrajectoryConverter {
     /// Convert a `TrajectoryFrame` to a flat `[x0,y0,z0, x1,y1,z1, ...]` array.
     pub fn to_flat_xyz(frame: &TrajectoryFrame) -> Vec<f64> {
@@ -699,9 +678,7 @@ impl TrajectoryConverter {
     }
 }
 /// Concatenate multiple trajectories into one.
-#[allow(dead_code)]
 pub struct TrajectoryConcatenator;
-#[allow(dead_code)]
 impl TrajectoryConcatenator {
     /// Concatenate trajectories, adjusting timestamps to be continuous.
     pub fn concatenate(trajectories: &[Vec<TrajectoryFrame>]) -> Vec<TrajectoryFrame> {
@@ -785,9 +762,7 @@ impl TrajectoryWriter {
     }
 }
 /// High-level analysis operations on multi-frame trajectories.
-#[allow(dead_code)]
 pub struct Trajectory;
-#[allow(dead_code)]
 impl Trajectory {
     /// Compute the per-frame Root-Mean-Square Deviation (RMSD) relative to a
     /// reference frame.
@@ -949,9 +924,7 @@ impl Trajectory {
     }
 }
 /// Filter trajectory frames by various criteria.
-#[allow(dead_code)]
 pub struct TrajectoryFilter;
-#[allow(dead_code)]
 impl TrajectoryFilter {
     /// Keep only frames within a time range \[t_start, t_end\].
     pub fn time_range(
@@ -1000,7 +973,6 @@ impl TrajectoryFilter {
     }
 }
 /// Trajectory frame with per-atom velocity data.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VelocityFrame {
     /// Timestep index.
@@ -1010,7 +982,6 @@ pub struct VelocityFrame {
     /// Per-atom velocities `[vx, vy, vz]`.
     pub velocities: Vec<[f64; 3]>,
 }
-#[allow(dead_code)]
 impl VelocityFrame {
     /// Create a new velocity frame.
     pub fn new(timestep: u64, time: f64, velocities: Vec<[f64; 3]>) -> Self {
@@ -1026,9 +997,7 @@ impl VelocityFrame {
     }
 }
 /// Handle periodic boundary conditions in trajectory analysis.
-#[allow(dead_code)]
 pub struct PeriodicImageHandler;
-#[allow(dead_code)]
 impl PeriodicImageHandler {
     /// Wrap positions into the primary box \[0, box_size\].
     pub fn wrap_positions(positions: &mut [[f64; 3]], box_size: [f64; 3]) {
@@ -1063,12 +1032,18 @@ impl PeriodicImageHandler {
         let n_atoms = frames[0].n_atoms();
         for i in 1..frames.len() {
             let n = n_atoms.min(frames[i].n_atoms());
-            for j in 0..n {
-                for d in 0..3 {
-                    if box_size[d] > 1e-30 {
-                        let dx = frames[i].positions[j][d] - frames[i - 1].positions[j][d];
-                        let shift = (dx / box_size[d]).round() * box_size[d];
-                        frames[i].positions[j][d] -= shift;
+            let (prev, curr) = frames.split_at_mut(i);
+            let prev_frame = &prev[i - 1];
+            let curr_frame = &mut curr[0];
+            for (pos, prev_pos) in curr_frame.positions[..n]
+                .iter_mut()
+                .zip(prev_frame.positions[..n].iter())
+            {
+                for ((&bs, p), &pp) in box_size.iter().zip(pos.iter_mut()).zip(prev_pos.iter()) {
+                    if bs > 1e-30 {
+                        let dx = *p - pp;
+                        let shift = (dx / bs).round() * bs;
+                        *p -= shift;
                     }
                 }
             }

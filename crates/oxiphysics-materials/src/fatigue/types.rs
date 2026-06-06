@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{normal_quantile, standard_normal_cdf};
 
 /// Coffin-Manson plastic strain-life equation.
@@ -11,7 +9,6 @@ use super::functions::{normal_quantile, standard_normal_cdf};
 /// Δε_p/2 = ε_f' * (2N_f)^c
 ///
 /// Relates the plastic strain amplitude to the number of reversals to failure.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CoffinManson {
     /// Fatigue ductility coefficient ε_f'
@@ -19,7 +16,6 @@ pub struct CoffinManson {
     /// Fatigue ductility exponent c (negative, typically -0.5 to -0.7)
     pub c: f64,
 }
-#[allow(dead_code)]
 impl CoffinManson {
     /// Create a new Coffin-Manson model.
     pub fn new(epsilon_f: f64, c: f64) -> Self {
@@ -54,12 +50,10 @@ impl CoffinManson {
 /// Each element of `damages` is the ratio n_i/N_i for one loading block.
 /// Failure is predicted when the sum reaches 1.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct MinerRule {
     /// Individual damage contributions D_i = n_i / N_i.
     pub damages: Vec<f64>,
 }
-#[allow(dead_code)]
 impl MinerRule {
     /// Create a new Miner rule accumulator.
     pub fn new(damages: Vec<f64>) -> Self {
@@ -79,7 +73,6 @@ impl MinerRule {
 /// Failure when: (σ_a / σ_e)^2 + a*σ_a*σ_b/σ_e^2 + (σ_b / σ_e)^2 = 1
 /// A simplified form using parameters `a` (interaction) and `b` (biaxiality ratio).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FatigueSurface {
     /// Interaction coefficient a.
     pub a: f64,
@@ -90,7 +83,6 @@ pub struct FatigueSurface {
     /// Endurance limit σ_e (Pa).
     pub sigma_endurance: f64,
 }
-#[allow(dead_code)]
 impl FatigueSurface {
     /// Create a new biaxial fatigue surface.
     pub fn new(a: f64, b: f64, sigma_ult: f64, sigma_endurance: f64) -> Self {
@@ -123,14 +115,12 @@ impl FatigueSurface {
 ///
 /// N = (σ_ar / A)^(1/B)  where σ_ar = σ_a / (1 - σ_m / σ_ult)
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FatigueLifePredictor {
     /// Basquin S-N curve.
     pub sn: BasquinCurve,
     /// Ultimate tensile strength for Goodman correction (Pa).
     pub sigma_ult: f64,
 }
-#[allow(dead_code)]
 impl FatigueLifePredictor {
     /// Create a new predictor.
     pub fn new(sn: BasquinCurve, sigma_ult: f64) -> Self {
@@ -155,7 +145,6 @@ impl FatigueLifePredictor {
 /// Δε_e/2 = ((σ_f' - σ_m) / E) * (2N_f)^b
 ///
 /// The mean stress σ_m reduces the effective fatigue strength coefficient.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MorrowCorrection {
     /// Fatigue strength coefficient σ_f' (Pa)
@@ -165,7 +154,6 @@ pub struct MorrowCorrection {
     /// Young's modulus E (Pa)
     pub e_modulus: f64,
 }
-#[allow(dead_code)]
 impl MorrowCorrection {
     /// Create a new Morrow correction model.
     pub fn new(sigma_f: f64, b: f64, e_modulus: f64) -> Self {
@@ -203,14 +191,12 @@ impl MorrowCorrection {
 ///
 /// Allowable amplitude: σ_a = σ_e * (1 - σ_m / σ_yield)
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SoderbergDiagram {
     /// Yield strength σ_yield (Pa).
     pub sigma_yield: f64,
     /// Fully-reversed endurance limit σ_e (Pa).
     pub sigma_endurance: f64,
 }
-#[allow(dead_code)]
 impl SoderbergDiagram {
     /// Create a new Soderberg diagram.
     pub fn new(sigma_yield: f64, sigma_endurance: f64) -> Self {
@@ -231,7 +217,6 @@ impl SoderbergDiagram {
 /// The standard Palmgren-Miner rule uses D_crit = 1.0, but experimental
 /// evidence shows that actual failure may occur between D = 0.3 and 3.0.
 /// This struct allows a custom D_crit.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MinerWithCrit {
     /// Accumulated damage D.
@@ -239,7 +224,6 @@ pub struct MinerWithCrit {
     /// Critical damage threshold D_crit (failure when D >= D_crit).
     pub d_crit: f64,
 }
-#[allow(dead_code)]
 impl MinerWithCrit {
     /// Create a new Miner rule accumulator with a custom critical damage.
     pub fn new(d_crit: f64) -> Self {
@@ -275,7 +259,6 @@ impl MinerWithCrit {
 /// ε = σ/E + (σ/K')^(1/n')
 ///
 /// Describes the cyclic (stabilised hysteresis loop) stress-strain behaviour.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RambergOsgood {
     /// Young's modulus E (Pa).
@@ -285,7 +268,6 @@ pub struct RambergOsgood {
     /// Cyclic strain hardening exponent n' (dimensionless, 0 < n' < 1).
     pub n_prime: f64,
 }
-#[allow(dead_code)]
 impl RambergOsgood {
     /// Create a new Ramberg-Osgood model.
     pub fn new(e_modulus: f64, k_prime: f64, n_prime: f64) -> Self {
@@ -384,12 +366,10 @@ impl PalmgrenMinor {
         self.damage = 0.0;
     }
     /// Remaining life fraction: 1.0 - D (clamped to \[0, 1\]).
-    #[allow(dead_code)]
     pub fn remaining_life(&self) -> f64 {
         (1.0 - self.damage).clamp(0.0, 1.0)
     }
     /// Apply damage from a list of (n_applied, n_failure) pairs.
-    #[allow(dead_code)]
     pub fn apply_spectrum(&mut self, blocks: &[(f64, f64)]) {
         for &(n_applied, n_failure) in blocks {
             self.apply_cycle_block(n_applied, n_failure);
@@ -397,7 +377,6 @@ impl PalmgrenMinor {
     }
     /// Compute the number of additional cycles at a given stress level
     /// before failure (D reaches 1.0).
-    #[allow(dead_code)]
     pub fn remaining_cycles(&self, n_failure_at_stress: f64) -> f64 {
         if self.damage >= 1.0 {
             return 0.0;
@@ -409,7 +388,6 @@ impl PalmgrenMinor {
 ///
 /// Stress amplitude: σ_a = σ_f_prime * (2N)^b
 /// Inverted to give N_f = 0.5 * (σ_a / σ_f_prime)^(1/b)
-#[allow(dead_code)]
 pub struct BasquinStressLife {
     /// Fatigue strength coefficient σ_f' (Pa)
     pub sigma_f_prime: f64,
@@ -463,7 +441,6 @@ impl BasquinStressLife {
 }
 /// A counted fatigue cycle from rainflow analysis.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct RainflowCycle {
     /// Cycle range (peak − valley).
     pub range: f64,
@@ -494,7 +471,6 @@ impl RainflowCycle {
 ///
 /// where A is the fatigue strength coefficient and B is the exponent.
 /// Alternatively: N = (σ_a / A)^(1/B)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BasquinCurve {
     /// Fatigue strength coefficient A (Pa)
@@ -504,7 +480,6 @@ pub struct BasquinCurve {
     /// Endurance limit σ_e (Pa). Below this stress, infinite life is assumed.
     pub endurance_limit: f64,
 }
-#[allow(dead_code)]
 impl BasquinCurve {
     /// Create a new Basquin S-N curve.
     pub fn new(a: f64, b_exp: f64, endurance_limit: f64) -> Self {
@@ -555,7 +530,6 @@ impl BasquinCurve {
 /// - Δε_p/2 = ε_f * (2N)^c        (Coffin-Manson plastic term)
 /// - Δε/2   = Δε_e/2 + Δε_p/2    (total)
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SNcurve {
     /// Fatigue strength coefficient σ_f (Pa)
     pub sigma_f: f64,
@@ -663,7 +637,6 @@ impl SNcurve {
 ///
 /// When combined with a cyclic stress-strain curve (e.g., Ramberg-Osgood)
 /// the intersection gives the actual local stress and strain.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NeuberRule {
     /// Stress concentration factor Kt.
@@ -675,7 +648,6 @@ pub struct NeuberRule {
     /// Ramberg-Osgood cyclic strain hardening exponent n'.
     pub n_prime: f64,
 }
-#[allow(dead_code)]
 impl NeuberRule {
     /// Create a new Neuber rule model.
     pub fn new(kt: f64, e_modulus: f64, k_prime: f64, n_prime: f64) -> Self {
@@ -764,7 +736,6 @@ impl NeuberRule {
 /// Δε/2 = ε_f' * (2N_f)^c
 ///
 /// where c is the ductility exponent (typically −0.5 to −0.7).
-#[allow(dead_code)]
 pub struct CoffinMansonLcf {
     /// Fatigue ductility coefficient ε_f' (dimensionless)
     pub epsilon_f_prime: f64,
@@ -813,14 +784,12 @@ impl CoffinMansonLcf {
 ///
 /// Allowable amplitude: σ_a = σ_e * (1 - σ_m / σ_ult)
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct GoodmanDiagramNew {
     /// Ultimate tensile strength σ_ult (Pa).
     pub sigma_ult: f64,
     /// Fully-reversed endurance limit σ_e (Pa).
     pub sigma_endurance: f64,
 }
-#[allow(dead_code)]
 impl GoodmanDiagramNew {
     /// Create a new Goodman diagram.
     pub fn new(sigma_ult: f64, sigma_endurance: f64) -> Self {
@@ -846,7 +815,6 @@ impl GoodmanDiagramNew {
 ///
 /// The SWT parameter for a Coffin-Manson-Basquin material:
 /// SWT = (σ_f')² / E * (2N)^(2b) + σ_f' * ε_f' * (2N)^(b+c)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SwtParameter {
     /// Fatigue strength coefficient σ_f' (Pa)
@@ -860,7 +828,6 @@ pub struct SwtParameter {
     /// Young's modulus E (Pa)
     pub e_modulus: f64,
 }
-#[allow(dead_code)]
 impl SwtParameter {
     /// Create a new SWT parameter model.
     pub fn new(sigma_f: f64, b: f64, epsilon_f: f64, c: f64, e_modulus: f64) -> Self {
@@ -918,7 +885,6 @@ impl SwtParameter {
 /// a reference life N_ref and a scatter factor T_n.
 ///
 /// T_n = N_p10 / N_p90 (ratio of 10%ile to 90%ile life).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SNScatterBand {
     /// Basquin S-N curve (median/mean life).
@@ -926,7 +892,6 @@ pub struct SNScatterBand {
     /// Scatter factor T_n = N_90% / N_10% (ratio of 90th to 10th percentile lives).
     pub t_n: f64,
 }
-#[allow(dead_code)]
 impl SNScatterBand {
     /// Create a new S-N scatter band.
     ///
@@ -985,7 +950,6 @@ impl SNScatterBand {
 ///
 /// Accumulates `n / N_f` for each loading block.  A block represents one or
 /// more applied cycles at a given stress amplitude.
-#[allow(dead_code)]
 pub struct CycleDamageAccumulator {
     /// Accumulated damage D = Σ (n_i / N_fi).
     pub damage: f64,
@@ -1052,7 +1016,6 @@ impl CycleDamageAccumulator {
 /// Paris law crack growth parameters.
 ///
 /// da/dN = C * (ΔK)^m  (valid between ΔK_th and K_c)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ParisLaw {
     /// Paris coefficient C.
@@ -1064,7 +1027,6 @@ pub struct ParisLaw {
     /// Fracture toughness K_c (above this, fast fracture).
     pub k_fracture: f64,
 }
-#[allow(dead_code)]
 impl ParisLaw {
     /// Create a new Paris law model.
     pub fn new(c: f64, m: f64, delta_k_threshold: f64, k_fracture: f64) -> Self {
@@ -1139,7 +1101,6 @@ impl ParisLaw {
 ///
 /// Accounts for the effect of non-zero mean stress on fatigue life.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct GoodmanDiagram {
     /// Ultimate tensile strength σ_u (Pa)
     pub ultimate_strength: f64,
@@ -1202,7 +1163,6 @@ impl GoodmanDiagram {
     ///
     /// This is the equivalent fully-reversed stress amplitude that produces
     /// the same fatigue damage as the given (σ_a, σ_m) combination.
-    #[allow(dead_code)]
     pub fn equivalent_amplitude(&self, mean_stress: f64, amplitude: f64) -> f64 {
         let denom = 1.0 - mean_stress / self.ultimate_strength;
         if denom <= 0.0 {
@@ -1213,7 +1173,6 @@ impl GoodmanDiagram {
     /// Factor of safety for a given (mean, amplitude) point.
     ///
     /// FS = 1 / (σ_a/σ_e + σ_m/σ_u)
-    #[allow(dead_code)]
     pub fn factor_of_safety(&self, mean_stress: f64, amplitude: f64, endurance: f64) -> f64 {
         let ratio = amplitude / endurance + mean_stress / self.ultimate_strength;
         if ratio <= 0.0 {
@@ -1223,7 +1182,6 @@ impl GoodmanDiagram {
     }
 }
 /// Damage tolerance analysis result.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DamageToleranceResult {
     /// Initial crack size.
@@ -1237,7 +1195,6 @@ pub struct DamageToleranceResult {
     /// Safety factor on life.
     pub safety_factor: f64,
 }
-#[allow(dead_code)]
 impl DamageToleranceResult {
     /// Whether the component is safe (cycles_to_critical > inspection_interval * safety_factor).
     pub fn is_safe(&self) -> bool {
@@ -1259,14 +1216,12 @@ impl DamageToleranceResult {
 ///
 /// Allowable amplitude: σ_a = σ_e * (1 - (σ_m / σ_ult)^2)
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct GerberDiagram {
     /// Ultimate tensile strength σ_ult (Pa).
     pub sigma_ult: f64,
     /// Fully-reversed endurance limit σ_e (Pa).
     pub sigma_endurance: f64,
 }
-#[allow(dead_code)]
 impl GerberDiagram {
     /// Create a new Gerber diagram.
     pub fn new(sigma_ult: f64, sigma_endurance: f64) -> Self {

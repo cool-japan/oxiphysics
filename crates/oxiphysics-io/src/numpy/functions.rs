@@ -344,7 +344,6 @@ pub(super) fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, String> {
 /// Compute the arithmetic mean of a slice.
 ///
 /// Returns `None` if the slice is empty.
-#[allow(dead_code)]
 pub fn slice_mean(data: &[f64]) -> Option<f64> {
     if data.is_empty() {
         return None;
@@ -352,19 +351,16 @@ pub fn slice_mean(data: &[f64]) -> Option<f64> {
     Some(data.iter().sum::<f64>() / data.len() as f64)
 }
 /// Compute the variance of a slice (population variance, ddof=0).
-#[allow(dead_code)]
 pub fn slice_var(data: &[f64]) -> Option<f64> {
     let mean = slice_mean(data)?;
     let var = data.iter().map(|&v| (v - mean) * (v - mean)).sum::<f64>() / data.len() as f64;
     Some(var)
 }
 /// Compute the standard deviation (population, ddof=0).
-#[allow(dead_code)]
 pub fn slice_std(data: &[f64]) -> Option<f64> {
     Some(slice_var(data)?.sqrt())
 }
 /// Compute min, max, and their flat indices.
-#[allow(dead_code)]
 pub fn slice_min_max(data: &[f64]) -> Option<(f64, usize, f64, usize)> {
     if data.is_empty() {
         return None;
@@ -388,7 +384,6 @@ pub fn slice_min_max(data: &[f64]) -> Option<(f64, usize, f64, usize)> {
 /// Compute the p-th percentile of a slice using linear interpolation.
 ///
 /// `p` must be in `\[0, 100\]`.
-#[allow(dead_code)]
 pub fn slice_percentile(data: &[f64], p: f64) -> std::result::Result<f64, String> {
     if data.is_empty() {
         return Err("slice_percentile: empty slice".to_string());
@@ -409,12 +404,10 @@ pub fn slice_percentile(data: &[f64], p: f64) -> std::result::Result<f64, String
     Ok(sorted[lo] * (1.0 - frac) + sorted[hi] * frac)
 }
 /// Clip values to `\[lo, hi\]`.
-#[allow(dead_code)]
 pub fn slice_clip(data: &[f64], lo: f64, hi: f64) -> Vec<f64> {
     data.iter().map(|&v| v.clamp(lo, hi)).collect()
 }
 /// Element-wise sum of two equal-length slices.
-#[allow(dead_code)]
 pub fn slice_add(a: &[f64], b: &[f64]) -> std::result::Result<Vec<f64>, String> {
     if a.len() != b.len() {
         return Err(format!(
@@ -426,7 +419,6 @@ pub fn slice_add(a: &[f64], b: &[f64]) -> std::result::Result<Vec<f64>, String> 
     Ok(a.iter().zip(b.iter()).map(|(&x, &y)| x + y).collect())
 }
 /// Element-wise product of two equal-length slices.
-#[allow(dead_code)]
 pub fn slice_mul(a: &[f64], b: &[f64]) -> std::result::Result<Vec<f64>, String> {
     if a.len() != b.len() {
         return Err(format!(
@@ -438,14 +430,12 @@ pub fn slice_mul(a: &[f64], b: &[f64]) -> std::result::Result<Vec<f64>, String> 
     Ok(a.iter().zip(b.iter()).map(|(&x, &y)| x * y).collect())
 }
 /// Dot product of two equal-length slices.
-#[allow(dead_code)]
 pub fn slice_dot(a: &[f64], b: &[f64]) -> std::result::Result<f64, String> {
     Ok(slice_mul(a, b)?.iter().sum())
 }
 /// Generate `n` equally-spaced values from `start` to `stop` (inclusive).
 ///
 /// Equivalent to `numpy.linspace(start, stop, num=n)`.
-#[allow(dead_code)]
 pub fn linspace(start: f64, stop: f64, n: usize) -> Vec<f64> {
     if n == 0 {
         return Vec::new();
@@ -460,7 +450,6 @@ pub fn linspace(start: f64, stop: f64, n: usize) -> Vec<f64> {
 /// Generate values from `start` to `stop` (exclusive) with step `step`.
 ///
 /// Equivalent to `numpy.arange(start, stop, step)`.
-#[allow(dead_code)]
 pub fn arange(start: f64, stop: f64, step: f64) -> std::result::Result<Vec<f64>, String> {
     if step == 0.0 {
         return Err("arange: step cannot be zero".to_string());
@@ -474,7 +463,6 @@ pub fn arange(start: f64, stop: f64, step: f64) -> std::result::Result<Vec<f64>,
 /// Generate `n` log-spaced values from `10^start` to `10^stop`.
 ///
 /// Equivalent to `numpy.logspace(start, stop, num=n)`.
-#[allow(dead_code)]
 pub fn logspace(start: f64, stop: f64, n: usize) -> Vec<f64> {
     linspace(start, stop, n)
         .into_iter()
@@ -484,7 +472,6 @@ pub fn logspace(start: f64, stop: f64, n: usize) -> Vec<f64> {
 /// Transpose a 2-D row-major matrix stored as a flat `Vec`f64`.
 ///
 /// `shape` must be `[nrows, ncols]`. Returns `(transposed_data, [ncols, nrows])`.
-#[allow(dead_code)]
 pub fn transpose_2d(
     data: &[f64],
     shape: &[usize],
@@ -515,7 +502,6 @@ pub fn transpose_2d(
 }
 /// Compute the matrix product C = A * B where A is (m×k) and B is (k×n),
 /// both stored as flat row-major `f64` slices.
-#[allow(dead_code)]
 pub fn matmul(
     a: &[f64],
     a_shape: &[usize],

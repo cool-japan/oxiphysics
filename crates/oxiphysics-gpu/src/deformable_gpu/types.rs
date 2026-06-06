@@ -1,9 +1,6 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     add3, cross3, dot3, len2_3, length3, normalize3, quat_rotate, scale3, sub3,
 };
@@ -483,7 +480,6 @@ pub struct TetElement {
 }
 impl TetElement {
     /// Create a new tetrahedral element.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         nodes: [usize; 4],
         rest_volume: f64,
@@ -550,23 +546,6 @@ impl JointTransform {
             self.row1[0] * p[0] + self.row1[1] * p[1] + self.row1[2] * p[2] + self.row1[3],
             self.row2[0] * p[0] + self.row2[1] * p[1] + self.row2[2] * p[2] + self.row2[3],
         ]
-    }
-    /// Blend (add) another transform scaled by `w` into this one.
-    #[allow(dead_code)]
-    fn add_scaled(&self, other: &JointTransform, w: f64) -> JointTransform {
-        let blend_row = |r: [f64; 4], o: [f64; 4]| {
-            [
-                r[0] + w * o[0],
-                r[1] + w * o[1],
-                r[2] + w * o[2],
-                r[3] + w * o[3],
-            ]
-        };
-        JointTransform {
-            row0: blend_row(self.row0, other.row0),
-            row1: blend_row(self.row1, other.row1),
-            row2: blend_row(self.row2, other.row2),
-        }
     }
 }
 /// FEM GPU kernel (CPU mock): element stiffness assembly and force computation.

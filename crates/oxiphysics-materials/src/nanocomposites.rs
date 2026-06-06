@@ -7,8 +7,6 @@
 //! thermal conductivity, CNT/graphene property models, and reinforcement
 //! enhancement for polymer-matrix nanocomposites.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────

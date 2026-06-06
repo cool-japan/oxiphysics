@@ -12,7 +12,6 @@ use thiserror::Error;
 // ── Error ─────────────────────────────────────────────────────────────────────
 
 /// Main error type for the collision module.
-#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum Error {
     /// Generic unclassified error message.
@@ -90,7 +89,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 // ── ErrorKind ────────────────────────────────────────────────────────────────
 
 /// Coarse classification of [`enum@Error`] variants for programmatic branching.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorKind {
     /// Algorithm failed to converge.
@@ -109,7 +107,6 @@ pub enum ErrorKind {
 
 impl Error {
     /// Return the coarse [`ErrorKind`] for this error.
-    #[allow(dead_code)]
     pub fn kind(&self) -> ErrorKind {
         match self {
             Error::GjkNoConverge { .. } | Error::CcdNoConverge { .. } => ErrorKind::Convergence,
@@ -124,19 +121,16 @@ impl Error {
     }
 
     /// Returns `true` when this error indicates a convergence failure.
-    #[allow(dead_code)]
     pub fn is_convergence(&self) -> bool {
         self.kind() == ErrorKind::Convergence
     }
 
     /// Returns `true` when this error indicates a numerical problem.
-    #[allow(dead_code)]
     pub fn is_numerical(&self) -> bool {
         self.kind() == ErrorKind::Numerical
     }
 
     /// Returns `true` when this error indicates an out-of-bounds access.
-    #[allow(dead_code)]
     pub fn is_bounds(&self) -> bool {
         self.kind() == ErrorKind::Bounds
     }
@@ -145,7 +139,6 @@ impl Error {
 // ── Severity ─────────────────────────────────────────────────────────────────
 
 /// Severity level for runtime triage and logging.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Severity {
     /// Informational — simulation continues normally.
@@ -160,7 +153,6 @@ pub enum Severity {
 
 impl Error {
     /// Suggest a [`Severity`] level for this error.
-    #[allow(dead_code)]
     pub fn severity(&self) -> Severity {
         match self {
             Error::GjkNoConverge { .. } | Error::CcdNoConverge { .. } => Severity::Warning,
@@ -175,7 +167,6 @@ impl Error {
     }
 
     /// Returns `true` if the severity is at least [`Severity::Error`].
-    #[allow(dead_code)]
     pub fn is_severe(&self) -> bool {
         self.severity() >= Severity::Error
     }
@@ -184,7 +175,6 @@ impl Error {
 // ── RecoveryHint ─────────────────────────────────────────────────────────────
 
 /// Suggested recovery action for a failed collision query.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecoveryHint {
     /// Skip this pair this frame; it will be retried next frame.
@@ -199,7 +189,6 @@ pub enum RecoveryHint {
 
 impl Error {
     /// Suggest what the caller should do when encountering this error.
-    #[allow(dead_code)]
     pub fn recovery_hint(&self) -> RecoveryHint {
         match self {
             Error::GjkNoConverge { .. }
@@ -221,7 +210,6 @@ impl Error {
 
 /// Collects multiple non-fatal errors so the caller can inspect them in bulk
 /// after a simulation step, rather than short-circuiting on the first failure.
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct ErrorCollector {
     errors: Vec<Error>,
@@ -229,7 +217,6 @@ pub struct ErrorCollector {
 
 impl ErrorCollector {
     /// Create an empty collector.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self { errors: Vec::new() }
     }
@@ -238,7 +225,6 @@ impl ErrorCollector {
     ///
     /// Returns `Err(error)` if the error is [`Severity::Fatal`] (caller must abort).
     /// Otherwise stores it and returns `Ok(())`.
-    #[allow(dead_code)]
     pub fn push(&mut self, err: Error) -> Result<()> {
         if err.severity() == Severity::Fatal {
             return Err(err);
@@ -248,37 +234,31 @@ impl ErrorCollector {
     }
 
     /// Returns `true` if any errors were collected.
-    #[allow(dead_code)]
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty()
     }
 
     /// Number of collected errors.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.errors.len()
     }
 
     /// Returns `true` when no errors have been collected.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.errors.is_empty()
     }
 
     /// Drain and return all collected errors.
-    #[allow(dead_code)]
     pub fn take_errors(&mut self) -> Vec<Error> {
         std::mem::take(&mut self.errors)
     }
 
     /// Count how many errors belong to a given [`ErrorKind`].
-    #[allow(dead_code)]
     pub fn count_by_kind(&self, kind: ErrorKind) -> usize {
         self.errors.iter().filter(|e| e.kind() == kind).count()
     }
 
     /// Returns all errors of at least the given severity.
-    #[allow(dead_code)]
     pub fn errors_above(&self, min: Severity) -> Vec<&Error> {
         self.errors.iter().filter(|e| e.severity() >= min).collect()
     }
@@ -292,7 +272,6 @@ impl ErrorCollector {
 /// an action (e.g., logging) should be triggered.  Budgets are decremented on
 /// each call to [`ErrorBudget::check`]; when they reach zero the call returns
 /// `true` indicating the caller should act.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ErrorBudget {
     convergence: u32,
@@ -318,13 +297,11 @@ impl Default for ErrorBudget {
 
 impl ErrorBudget {
     /// Create a new budget with default thresholds.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create a budget where every category has the same threshold.
-    #[allow(dead_code)]
     pub fn uniform(threshold: u32) -> Self {
         Self {
             convergence: threshold,
@@ -340,7 +317,6 @@ impl ErrorBudget {
     ///
     /// Returns `true` if the budget was already zero (caller should act),
     /// or if it just reached zero this call.
-    #[allow(dead_code)]
     pub fn check(&mut self, kind: ErrorKind) -> bool {
         let slot = match kind {
             ErrorKind::Convergence => &mut self.convergence,
@@ -358,13 +334,11 @@ impl ErrorBudget {
     }
 
     /// Reset all budgets to their default values.
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         *self = Self::default();
     }
 
     /// Returns `true` if the budget for this kind is exhausted (== 0).
-    #[allow(dead_code)]
     pub fn is_exhausted(&self, kind: ErrorKind) -> bool {
         match kind {
             ErrorKind::Convergence => self.convergence == 0,
@@ -384,7 +358,6 @@ impl ErrorBudget {
 /// Useful for telemetry: after each physics step the engine can drain the
 /// collector, tally the stats here, then emit a single structured log line
 /// instead of one log per error.
-#[allow(dead_code)]
 #[derive(Debug, Default, Clone)]
 pub struct ErrorStats {
     /// Counts per `ErrorKind`.
@@ -397,13 +370,11 @@ pub struct ErrorStats {
 
 impl ErrorStats {
     /// Create a zeroed stats block.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Record a single error observation.
-    #[allow(dead_code)]
     pub fn record(&mut self, err: &Error) {
         self.total += 1;
         let ki = match err.kind() {
@@ -425,7 +396,6 @@ impl ErrorStats {
     }
 
     /// Absorb all errors from a [`ErrorCollector`], recording each one.
-    #[allow(dead_code)]
     pub fn absorb(&mut self, collector: &mut ErrorCollector) {
         for err in collector.take_errors() {
             self.record(&err);
@@ -433,7 +403,6 @@ impl ErrorStats {
     }
 
     /// Returns the count for a specific [`ErrorKind`].
-    #[allow(dead_code)]
     pub fn count_kind(&self, kind: ErrorKind) -> u64 {
         let ki = match kind {
             ErrorKind::Convergence => 0,
@@ -447,7 +416,6 @@ impl ErrorStats {
     }
 
     /// Returns the count for a specific [`Severity`].
-    #[allow(dead_code)]
     pub fn count_severity(&self, sev: Severity) -> u64 {
         let si = match sev {
             Severity::Info => 0,
@@ -459,19 +427,16 @@ impl ErrorStats {
     }
 
     /// Reset all counters to zero.
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         *self = Self::default();
     }
 
     /// Returns `true` if any fatal errors were recorded.
-    #[allow(dead_code)]
     pub fn has_fatals(&self) -> bool {
         self.by_severity[3] > 0
     }
 
     /// Merge another stats block into this one.
-    #[allow(dead_code)]
     pub fn merge(&mut self, other: &ErrorStats) {
         self.total += other.total;
         for i in 0..6 {
@@ -489,7 +454,6 @@ impl ErrorStats {
 ///
 /// This lets the engine log "pair (3, 7) produced a GJK convergence failure"
 /// without baking body indices into every error variant.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ContextualError {
     /// The underlying error.
@@ -504,7 +468,6 @@ pub struct ContextualError {
 
 impl ContextualError {
     /// Wrap an [`enum@Error`] with body indices.
-    #[allow(dead_code)]
     pub fn new(error: Error, body_a: usize, body_b: usize) -> Self {
         Self {
             error,
@@ -515,26 +478,22 @@ impl ContextualError {
     }
 
     /// Attach an optional tag and return `self`.
-    #[allow(dead_code)]
     pub fn with_tag(mut self, tag: &'static str) -> Self {
         self.tag = Some(tag);
         self
     }
 
     /// The kind of the wrapped error.
-    #[allow(dead_code)]
     pub fn kind(&self) -> ErrorKind {
         self.error.kind()
     }
 
     /// The severity of the wrapped error.
-    #[allow(dead_code)]
     pub fn severity(&self) -> Severity {
         self.error.severity()
     }
 
     /// Recovery hint for the wrapped error.
-    #[allow(dead_code)]
     pub fn recovery_hint(&self) -> RecoveryHint {
         self.error.recovery_hint()
     }
@@ -560,7 +519,6 @@ impl std::fmt::Display for ContextualError {
 // ── ContextualCollector ────────────────────────────────────────────────────────
 
 /// Like [`ErrorCollector`] but stores [`ContextualError`] values.
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct ContextualCollector {
     errors: Vec<ContextualError>,
@@ -568,7 +526,6 @@ pub struct ContextualCollector {
 
 impl ContextualCollector {
     /// Create an empty collector.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -577,7 +534,6 @@ impl ContextualCollector {
     ///
     /// Fatal errors are NOT stored — they are returned directly so the caller
     /// can abort.
-    #[allow(dead_code)]
     pub fn push(&mut self, err: ContextualError) -> std::result::Result<(), ContextualError> {
         if err.severity() == Severity::Fatal {
             return Err(err);
@@ -587,25 +543,21 @@ impl ContextualCollector {
     }
 
     /// Number of collected errors.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.errors.len()
     }
 
     /// Returns `true` when no errors have been collected.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.errors.is_empty()
     }
 
     /// Drain and return all collected errors.
-    #[allow(dead_code)]
     pub fn take_errors(&mut self) -> Vec<ContextualError> {
         std::mem::take(&mut self.errors)
     }
 
     /// Count errors involving a specific body index.
-    #[allow(dead_code)]
     pub fn count_for_body(&self, body: usize) -> usize {
         self.errors
             .iter()
@@ -614,13 +566,11 @@ impl ContextualCollector {
     }
 
     /// Collect all body pairs that produced errors.
-    #[allow(dead_code)]
     pub fn error_pairs(&self) -> Vec<(usize, usize)> {
         self.errors.iter().map(|e| (e.body_a, e.body_b)).collect()
     }
 
     /// Drain into an [`ErrorStats`] block.
-    #[allow(dead_code)]
     pub fn drain_into_stats(&mut self, stats: &mut ErrorStats) {
         for ce in self.take_errors() {
             stats.record(&ce.error);
@@ -631,7 +581,6 @@ impl ContextualCollector {
 // ── Retry policy ──────────────────────────────────────────────────────────────
 
 /// Specifies how many times a failed collision query should be retried.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryPolicy {
     /// Maximum number of retries for convergence failures.
@@ -651,7 +600,6 @@ impl Default for RetryPolicy {
 
 impl RetryPolicy {
     /// Number of retries for an error of the given kind.
-    #[allow(dead_code)]
     pub fn retries_for(&self, kind: ErrorKind) -> u32 {
         match kind {
             ErrorKind::Convergence => self.max_convergence_retries,
@@ -661,7 +609,6 @@ impl RetryPolicy {
     }
 
     /// Returns `true` if the policy allows any retries for the kind.
-    #[allow(dead_code)]
     pub fn should_retry(&self, kind: ErrorKind) -> bool {
         self.retries_for(kind) > 0
     }

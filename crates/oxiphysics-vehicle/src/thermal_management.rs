@@ -1,4 +1,3 @@
-#![allow(clippy::if_same_then_else)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -285,8 +284,6 @@ impl ClimateControl {
         let error = self.target_temp - self.cabin_temp;
         if error.abs() < 0.1 {
             0.0
-        } else if error > 0.0 {
-            self.hvac_power
         } else {
             self.hvac_power
         }

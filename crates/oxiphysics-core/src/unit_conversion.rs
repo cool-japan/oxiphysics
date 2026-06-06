@@ -12,7 +12,6 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Fundamental physical constants in SI units (CODATA 2018 values).
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhysicalConstants {
     /// Speed of light in vacuum (m/s).
@@ -60,7 +59,6 @@ impl PhysicalConstants {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Units of length.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LengthUnit {
     /// Meter (SI base unit).
@@ -114,7 +112,6 @@ impl LengthUnit {
 /// let inches = convert_length(1.0, LengthUnit::Foot, LengthUnit::Inch);
 /// assert!((inches - 12.0).abs() < 1e-10);
 /// ```
-#[allow(dead_code)]
 pub fn convert_length(value: f64, from: LengthUnit, to: LengthUnit) -> f64 {
     value * from.to_meters() / to.to_meters()
 }
@@ -124,7 +121,6 @@ pub fn convert_length(value: f64, from: LengthUnit, to: LengthUnit) -> f64 {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Units of mass.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MassUnit {
     /// Kilogram (SI base unit).
@@ -168,7 +164,6 @@ impl MassUnit {
 /// let grams = convert_mass(1.0, MassUnit::Kilogram, MassUnit::Gram);
 /// assert!((grams - 1000.0).abs() < 1e-10);
 /// ```
-#[allow(dead_code)]
 pub fn convert_mass(value: f64, from: MassUnit, to: MassUnit) -> f64 {
     value * from.to_kg() / to.to_kg()
 }
@@ -178,7 +173,6 @@ pub fn convert_mass(value: f64, from: MassUnit, to: MassUnit) -> f64 {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Units of energy.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnergyUnit {
     /// Joule (SI).
@@ -223,7 +217,6 @@ impl EnergyUnit {
 /// let kj = convert_energy(1000.0, EnergyUnit::Joule, EnergyUnit::Kilojoule);
 /// assert!((kj - 1.0).abs() < 1e-10);
 /// ```
-#[allow(dead_code)]
 pub fn convert_energy(value: f64, from: EnergyUnit, to: EnergyUnit) -> f64 {
     value * from.to_joules() / to.to_joules()
 }
@@ -233,7 +226,6 @@ pub fn convert_energy(value: f64, from: EnergyUnit, to: EnergyUnit) -> f64 {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Units of temperature.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TemperatureUnit {
     /// Kelvin (absolute thermodynamic temperature).
@@ -257,7 +249,6 @@ pub enum TemperatureUnit {
 /// let f = convert_temperature(100.0, TemperatureUnit::Celsius, TemperatureUnit::Fahrenheit);
 /// assert!((f - 212.0).abs() < 1e-8);
 /// ```
-#[allow(dead_code)]
 pub fn convert_temperature(value: f64, from: TemperatureUnit, to: TemperatureUnit) -> f64 {
     // First convert to Kelvin.
     let kelvin = match from {
@@ -280,7 +271,6 @@ pub fn convert_temperature(value: f64, from: TemperatureUnit, to: TemperatureUni
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Units of pressure.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PressureUnit {
     /// Pascal (SI, N/m²).
@@ -325,7 +315,6 @@ impl PressureUnit {
 /// let pa = convert_pressure(1.0, PressureUnit::Atmosphere, PressureUnit::Pascal);
 /// assert!((pa - 101_325.0).abs() < 1e-4);
 /// ```
-#[allow(dead_code)]
 pub fn convert_pressure(value: f64, from: PressureUnit, to: PressureUnit) -> f64 {
     value * from.to_pascals() / to.to_pascals()
 }

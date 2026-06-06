@@ -3,13 +3,10 @@
 
 //! `EngineConstraintSolver` — iterative constraint solver for the WASM engine.
 
-#![allow(missing_docs)]
-
 use super::WasmPhysicsEngine;
 
 /// A single bilateral constraint between two bodies (or one body and ground).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WasmConstraint {
     /// Handle of the first body (or `u32::MAX` for world).
     pub body_a: u32,
@@ -26,7 +23,6 @@ pub struct WasmConstraint {
 
 /// Contact data for the constraint solver.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ContactData {
     /// First body handle.
     pub body_a: u32,
@@ -45,7 +41,6 @@ pub struct ContactData {
 /// Works in conjunction with a `WasmPhysicsEngine` by accepting contact data,
 /// building constraint rows, and iterating to convergence.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct EngineConstraintSolver {
     constraints: Vec<WasmConstraint>,
     contacts: Vec<ContactData>,
@@ -83,7 +78,6 @@ impl EngineConstraintSolver {
     }
 
     /// Add a contact for the next solve call.
-    #[allow(clippy::too_many_arguments)]
     pub fn add_contact(
         &mut self,
         body_a: u32,

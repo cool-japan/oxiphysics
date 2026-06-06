@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
 use std::cmp::Ordering;
 
@@ -15,7 +14,6 @@ pub(super) struct AStarState {
 /// A directed weighted graph stored as an edge list.
 ///
 /// Undirected graphs are represented by storing both directed edges.
-#[allow(dead_code)]
 pub struct Graph {
     /// Number of nodes.
     pub n_nodes: usize,
@@ -24,7 +22,6 @@ pub struct Graph {
 }
 impl Graph {
     /// Creates a new empty graph with the given number of nodes.
-    #[allow(dead_code)]
     pub fn new(n_nodes: usize) -> Self {
         Self {
             n_nodes,
@@ -32,20 +29,17 @@ impl Graph {
         }
     }
     /// Adds a directed edge from `src` to `dst` with `weight`.
-    #[allow(dead_code)]
     pub fn add_edge(&mut self, src: usize, dst: usize, weight: f64) {
         assert!(src < self.n_nodes, "src node out of range");
         assert!(dst < self.n_nodes, "dst node out of range");
         self.edges.push((src, dst, weight));
     }
     /// Adds an undirected edge between `a` and `b` with `weight` (stores both directions).
-    #[allow(dead_code)]
     pub fn add_undirected_edge(&mut self, a: usize, b: usize, weight: f64) {
         self.add_edge(a, b, weight);
         self.add_edge(b, a, weight);
     }
     /// Returns the adjacency list: for each node, a list of `(neighbor, weight)`.
-    #[allow(dead_code)]
     pub fn adjacency_list(&self) -> Vec<Vec<(usize, f64)>> {
         let mut adj = vec![Vec::new(); self.n_nodes];
         for &(src, dst, w) in &self.edges {
@@ -54,24 +48,20 @@ impl Graph {
         adj
     }
     /// Returns the number of nodes.
-    #[allow(dead_code)]
     pub fn node_count(&self) -> usize {
         self.n_nodes
     }
     /// Returns the number of directed edges stored.
-    #[allow(dead_code)]
     pub fn edge_count(&self) -> usize {
         self.edges.len()
     }
     /// Returns the out-degree of `node` (number of directed edges leaving it).
-    #[allow(dead_code)]
     pub fn degree(&self, node: usize) -> usize {
         self.edges.iter().filter(|&&(s, _, _)| s == node).count()
     }
     /// Compute strongly connected components using Tarjan's algorithm.
     ///
     /// Delegates to the free function `tarjan_scc`.
-    #[allow(dead_code)]
     pub fn strongly_connected_components(&self) -> Vec<Vec<usize>> {
         tarjan_scc(self)
     }
@@ -79,21 +69,18 @@ impl Graph {
     ///
     /// Returns a list of edges `(u, v, weight)` forming the MST.
     /// Delegates to the free function `kruskal_mst`.
-    #[allow(dead_code)]
     pub fn minimum_spanning_tree(&self) -> Vec<(usize, usize, f64)> {
         kruskal_mst(self)
     }
     /// Compute maximum flow from `source` to `sink` using Edmonds-Karp.
     ///
     /// Delegates to the free function `max_flow_edmonds_karp`.
-    #[allow(dead_code)]
     pub fn max_flow(&self, source: usize, sink: usize) -> f64 {
         max_flow_edmonds_karp(self, source, sink)
     }
     /// Compute betweenness centrality for all nodes.
     ///
     /// Delegates to the free function `betweenness_centrality`.
-    #[allow(dead_code)]
     pub fn betweenness_centrality(&self) -> Vec<f64> {
         betweenness_centrality(self)
     }

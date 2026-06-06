@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 #[cfg(test)]
 use crate::porous::types::*;
 
@@ -270,12 +269,11 @@ mod tests {
         let f_streamed = [2.0; 9];
         let mut f_out = [0.0_f64; 9];
         pbb.apply(&f_pre, &f_streamed, &mut f_out);
-        for k in 0..9 {
+        for (k, &fo) in f_out.iter().enumerate() {
             let expected = (1.0 - sigma) * 2.0 + sigma * 1.0;
             assert!(
-                (f_out[k] - expected).abs() < 1e-14,
-                "PBB intermediate: f_out[{k}]={}, expected {expected}",
-                f_out[k]
+                (fo - expected).abs() < 1e-14,
+                "PBB intermediate: f_out[{k}]={fo}, expected {expected}",
             );
         }
     }

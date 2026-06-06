@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 /// Helper: approximate Friedlander decay coefficient for ConWep.
 pub(super) fn b_coeff(scaled_distance: f64) -> f64 {
     if scaled_distance < 1.0 {
@@ -23,7 +22,7 @@ pub(super) fn interpolate_table(table: &[(f64, f64)], t: f64) -> f64 {
         return table[table.len() - 1].1;
     }
     for i in 0..table.len() - 1 {
-        if t >= table[i].0 && t <= table[i + 1].0 {
+        if (table[i].0..=table[i + 1].0).contains(&t) {
             let dt = table[i + 1].0 - table[i].0;
             if dt < 1e-30 {
                 return table[i].1;
@@ -75,9 +74,9 @@ pub fn tetrahedral_consistent_mass(nodes: &[[f64; 3]; 4], density: f64) -> [[f64
 pub fn tetrahedral_lumped_mass_row_sum(nodes: &[[f64; 3]; 4], density: f64) -> [f64; 12] {
     let m = tetrahedral_consistent_mass(nodes, density);
     let mut lumped = [0.0f64; 12];
-    for i in 0..12 {
-        for j in 0..12 {
-            lumped[i] += m[i][j];
+    for (i, lumped_i) in lumped.iter_mut().enumerate() {
+        for &mij in &m[i] {
+            *lumped_i += mij;
         }
     }
     lumped
@@ -627,8 +626,8 @@ mod tests {
             [0.0, 0.0, 1.0],
         ];
         let m = tetrahedral_consistent_mass(&nodes, 1000.0);
-        for i in 0..12 {
-            assert!(m[i][i] > 0.0);
+        for (i, row) in m.iter().enumerate() {
+            assert!(row[i] > 0.0);
         }
     }
     #[test]
@@ -640,9 +639,9 @@ mod tests {
             [0.0, 0.0, 1.0],
         ];
         let m = tetrahedral_consistent_mass(&nodes, 7800.0);
-        for i in 0..12 {
-            for j in 0..12 {
-                assert!((m[i][j] - m[j][i]).abs() < 1e-15);
+        for (i, row) in m.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - m[j][i]).abs() < 1e-15);
             }
         }
     }

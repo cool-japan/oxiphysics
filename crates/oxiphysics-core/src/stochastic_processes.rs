@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -19,9 +18,6 @@
 //! - [`MarkovChain`] — discrete-time Markov chain utilities
 //! - [`PoissonProcess`] — homogeneous and inhomogeneous Poisson
 //! - Variance reduction: [`antithetic_variates`], [`control_variate_estimator`], [`quasi_monte_carlo`]
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -204,9 +200,9 @@ impl GeometricBrownianMotion {
         let drift = (self.mu - 0.5 * self.sigma * self.sigma) * dt;
         let vol = self.sigma * dt.sqrt();
         let mut log_s = self.s0.ln();
-        for i in 1..=n_steps {
+        for p in path.iter_mut().skip(1) {
             log_s += drift + vol * rng.normal();
-            path[i] = log_s.exp();
+            *p = log_s.exp();
         }
         path
     }
@@ -907,9 +903,9 @@ impl MarkovChain {
         let mut pi: Vec<f64> = vec![1.0 / n as f64; n];
         for _ in 0..10_000 {
             let mut pi_new = vec![0.0_f64; n];
-            for i in 0..n {
-                for j in 0..n {
-                    pi_new[j] += pi[i] * self.transition[i][j];
+            for (i, &pi_i) in pi.iter().enumerate() {
+                for (j, pnj) in pi_new.iter_mut().enumerate() {
+                    *pnj += pi_i * self.transition[i][j];
                 }
             }
             let sum: f64 = pi_new.iter().sum();
@@ -948,8 +944,8 @@ impl MarkovChain {
         let size = self.n_states;
         // Start with identity
         let mut result = vec![vec![0.0_f64; size]; size];
-        for i in 0..size {
-            result[i][i] = 1.0;
+        for (i, row) in result.iter_mut().enumerate() {
+            row[i] = 1.0;
         }
         let mut base = self.transition.clone();
         let mut power = n;

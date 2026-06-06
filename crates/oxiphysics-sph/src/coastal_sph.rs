@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,8 +14,6 @@
 //! - Tidal flat wetting/drying model
 //! - Wave energy density and group power
 //! - SPH [`WaveParticle`] data structure
-
-#![allow(dead_code)]
 
 /// Gravitational acceleration (m/s²).
 const G: f64 = 9.81;
@@ -409,7 +406,6 @@ impl TidalFlat {
     /// * `dt`    – time step (s)
     /// * `q_in`  – inflow discharge at left boundary (m²/s)
     /// * `q_out` – outflow discharge at right boundary (m²/s)
-    #[allow(clippy::too_many_arguments)]
     pub fn step(&mut self, dt: f64, q_in: f64, q_out: f64) {
         let nx = self.nx;
         let dx = self.dx;
@@ -420,7 +416,7 @@ impl TidalFlat {
         flux[0] = q_in;
         flux[nx] = q_out;
 
-        for e in 1..nx {
+        for (fe, e) in flux[1..nx].iter_mut().zip(1..nx) {
             let hl = self.depth(e - 1);
             let hr = self.depth(e);
             let h_avg = 0.5 * (hl + hr);
@@ -432,16 +428,16 @@ impl TidalFlat {
             // Manning: q = (1/n) h^(5/3) S^(1/2)  (sign from slope)
             let s_abs = slope.abs().max(1e-12);
             let sign_s = if slope >= 0.0 { 1.0 } else { -1.0 };
-            flux[e] = sign_s * (1.0 / n) * h_avg.powf(5.0 / 3.0) * s_abs.sqrt();
+            *fe = sign_s * (1.0 / n) * h_avg.powf(5.0 / 3.0) * s_abs.sqrt();
         }
 
         // Update water surface
-        for i in 0..nx {
+        for (i, (water, &bed)) in self.water.iter_mut().zip(self.bed.iter()).enumerate() {
             let dh = -dt * (flux[i + 1] - flux[i]) / dx;
-            self.water[i] += dh;
+            *water += dh;
             // Wetting/drying: clamp to bed
-            if self.water[i] < self.bed[i] {
-                self.water[i] = self.bed[i];
+            if *water < bed {
+                *water = bed;
             }
         }
     }

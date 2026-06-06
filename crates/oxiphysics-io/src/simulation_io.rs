@@ -7,8 +7,6 @@
 //! materials), multi-body trajectories, contact force logs, energy logs,
 //! simulation checkpoints, VTK time-series output, and XDMF wrappers.
 
-#![allow(dead_code)]
-
 use std::io::{BufWriter, Write};
 use std::path::Path;
 

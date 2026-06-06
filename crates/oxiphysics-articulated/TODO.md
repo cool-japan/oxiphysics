@@ -1,6 +1,6 @@
 # oxiphysics-articulated TODO
 
-Last updated: 2026-05-13
+Last updated: 2026-06-06
 
 ## Phase 1: Foundation ✅ (shipped 2026-05-11)
 

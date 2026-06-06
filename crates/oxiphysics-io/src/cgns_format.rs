@@ -1,4 +1,3 @@
-#![allow(clippy::manual_strip, clippy::should_implement_trait)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -74,7 +73,13 @@ impl ZoneType {
     }
 
     /// Parse from the string representation used in the text format.
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_keyword(s: &str) -> Self {
+        Self::from(s)
+    }
+}
+
+impl From<&str> for ZoneType {
+    fn from(s: &str) -> Self {
         match s.trim() {
             "Unstructured" => ZoneType::Unstructured,
             _ => ZoneType::Structured,
@@ -186,7 +191,13 @@ impl SolutionLocation {
     }
 
     /// Parse from canonical string representation.
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_keyword(s: &str) -> Self {
+        Self::from(s)
+    }
+}
+
+impl From<&str> for SolutionLocation {
+    fn from(s: &str) -> Self {
         match s.trim() {
             "CellCenter" => SolutionLocation::CellCenter,
             _ => SolutionLocation::Vertex,
@@ -328,7 +339,6 @@ impl CgnsWriter {
     /// * `x`, `y`, `z` — coordinate arrays of equal length.
     /// * `solution`   — optional flow solution to attach.
     /// * `path`       — output file path.
-    #[allow(clippy::too_many_arguments)]
     pub fn write_structured_grid(
         &mut self,
         base_name: &str,
@@ -429,7 +439,7 @@ impl CgnsReader {
                                 let zparts: Vec<&str> = l.splitn(3, ' ').collect();
                                 let zone_name =
                                     zparts.get(1).copied().unwrap_or("Zone").to_string();
-                                let zone_type = ZoneType::from_str(
+                                let zone_type = ZoneType::from_keyword(
                                     zparts.get(2).copied().unwrap_or("Structured"),
                                 );
                                 let mut zone = CgnsZone::new(zone_name, zone_type);
@@ -446,12 +456,12 @@ impl CgnsReader {
                                             if zl.starts_with("N_POINTS") {
                                                 continue;
                                             }
-                                            if zl.starts_with("X ") {
-                                                zone.x = Self::parse_floats(&zl[2..]);
-                                            } else if zl.starts_with("Y ") {
-                                                zone.y = Self::parse_floats(&zl[2..]);
-                                            } else if zl.starts_with("Z ") {
-                                                zone.z = Self::parse_floats(&zl[2..]);
+                                            if let Some(rest) = zl.strip_prefix("X ") {
+                                                zone.x = Self::parse_floats(rest);
+                                            } else if let Some(rest) = zl.strip_prefix("Y ") {
+                                                zone.y = Self::parse_floats(rest);
+                                            } else if let Some(rest) = zl.strip_prefix("Z ") {
+                                                zone.z = Self::parse_floats(rest);
                                             } else if zl.starts_with("ELEMENTS ") {
                                                 // Format: ELEMENTS <count> <v1> <v2> ...
                                                 let ep: Vec<&str> = zl.splitn(3, ' ').collect();
@@ -493,7 +503,11 @@ mod tests {
     use super::*;
 
     fn tmp_path(name: &str) -> String {
-        format!("/tmp/cgns_test_{name}")
+        std::env::temp_dir()
+            .join(format!("cgns_test_{name}"))
+            .to_str()
+            .unwrap_or("")
+            .to_string()
     }
 
     // ── CgnsNode tests ───────────────────────────────────────────────────
@@ -526,13 +540,16 @@ mod tests {
 
     #[test]
     fn test_zone_type_from_str_structured() {
-        assert_eq!(ZoneType::from_str("Structured"), ZoneType::Structured);
-        assert_eq!(ZoneType::from_str("anything"), ZoneType::Structured);
+        assert_eq!(ZoneType::from_keyword("Structured"), ZoneType::Structured);
+        assert_eq!(ZoneType::from_keyword("anything"), ZoneType::Structured);
     }
 
     #[test]
     fn test_zone_type_from_str_unstructured() {
-        assert_eq!(ZoneType::from_str("Unstructured"), ZoneType::Unstructured);
+        assert_eq!(
+            ZoneType::from_keyword("Unstructured"),
+            ZoneType::Unstructured
+        );
     }
 
     // ── CgnsZone tests ───────────────────────────────────────────────────
@@ -597,15 +614,15 @@ mod tests {
     #[test]
     fn test_solution_location_from_str() {
         assert_eq!(
-            SolutionLocation::from_str("Vertex"),
+            SolutionLocation::from_keyword("Vertex"),
             SolutionLocation::Vertex
         );
         assert_eq!(
-            SolutionLocation::from_str("CellCenter"),
+            SolutionLocation::from_keyword("CellCenter"),
             SolutionLocation::CellCenter
         );
         assert_eq!(
-            SolutionLocation::from_str("other"),
+            SolutionLocation::from_keyword("other"),
             SolutionLocation::Vertex
         );
     }

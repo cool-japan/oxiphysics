@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_range_contains)]
 use std::f64::consts::PI;
 
 /// Standard normal CDF Φ(x) via Abramowitz & Stegun 26.2.17.
@@ -278,7 +277,7 @@ mod tests {
     fn test_random_field_energy_ratio() {
         let rf = RandomField::new(8, 1.0, 4, 0.1, 0.2, 1);
         let er = rf.energy_ratio();
-        assert!(er >= 0.0 && er <= 1.01);
+        assert!((0.0..=1.01).contains(&er));
     }
     #[test]
     fn test_random_field_sample_length() {
@@ -354,7 +353,7 @@ mod tests {
         let mut mc = MonteCarloFem::new(sfem, 50);
         mc.run();
         let pf = mc.failure_probability(1e10);
-        assert!(pf >= 0.0 && pf <= 1.0);
+        assert!((0.0..=1.0).contains(&pf));
     }
     #[test]
     fn test_mc_fem_percentile_95() {
@@ -467,7 +466,7 @@ mod tests {
     fn test_interval_arithmetic() {
         let a = Interval::new(1.0, 2.0);
         let b = Interval::new(3.0, 4.0);
-        let c = a.mul(b);
+        let c = a * b;
         assert!((c.lo - 3.0).abs() < 1e-12);
         assert!((c.hi - 8.0).abs() < 1e-12);
     }
@@ -486,7 +485,7 @@ mod tests {
         let mid = ifem.midpoint_solution();
         let iv = ifem.u_tip_interval;
         assert!(
-            mid >= iv.lo - 1e-10 && mid <= iv.hi + 1e-10,
+            (iv.lo - 1e-10..=iv.hi + 1e-10).contains(&mid),
             "midpoint {mid} not in [{}, {}]",
             iv.lo,
             iv.hi
@@ -509,7 +508,7 @@ mod tests {
         let m2 = FailureMode::new("m2", 2.5, vec![0.0, 1.0]);
         let fma = FailureModeAnalysis::new(vec![m1, m2]);
         let p_sys = fma.series_pf_upper();
-        assert!(p_sys >= 0.0 && p_sys <= 1.0);
+        assert!((0.0..=1.0).contains(&p_sys));
     }
     #[test]
     fn test_failure_mode_analysis_parallel_pf() {

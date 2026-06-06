@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
 use super::types::{MorphTarget, SkinningVertex};
@@ -23,7 +22,6 @@ pub fn decode_normal_map(r: f64, g: f64, b: f64) -> [f64; 3] {
 /// and bitangent vectors for normal mapping.
 ///
 /// Returns `(tangent, bitangent)` as unit vectors.
-#[allow(clippy::too_many_arguments)]
 pub fn compute_tbn(
     p0: [f64; 3],
     p1: [f64; 3],
@@ -197,13 +195,13 @@ mod tests {
         let mat = PhongMaterial::default_gray();
         let result =
             PhongMaterial::phong_lighting(&mat, [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
-        for ch in 0..3 {
+        for (ch, (&res, &amb)) in result.iter().zip(mat.ambient.iter()).enumerate() {
             assert!(
-                (result[ch] - mat.ambient[ch]).abs() < 1e-10,
+                (res - amb).abs() < 1e-10,
                 "channel {}: expected ambient {}, got {}",
                 ch,
-                mat.ambient[ch],
-                result[ch]
+                amb,
+                res
             );
         }
     }
@@ -268,27 +266,24 @@ mod tests {
     fn schlick_fresnel_cos_zero_gives_white() {
         let f0 = [0.04, 0.04, 0.04];
         let result = PbrMaterial::schlick_fresnel(0.0, f0);
-        for ch in 0..3 {
-            assert!((result[ch] - 1.0).abs() < 1e-12);
+        for &res in result.iter() {
+            assert!((res - 1.0).abs() < 1e-12);
         }
     }
     #[test]
     fn schlick_fresnel_cos_one_gives_f0() {
         let f0 = [0.1, 0.2, 0.3];
         let result = PbrMaterial::schlick_fresnel(1.0, f0);
-        for ch in 0..3 {
-            assert!((result[ch] - f0[ch]).abs() < 1e-12);
+        for (&res, &f) in result.iter().zip(f0.iter()) {
+            assert!((res - f).abs() < 1e-12);
         }
     }
     #[test]
     fn test_pbr_f0_dielectric() {
         let mat = PbrMaterial::dielectric([0.8, 0.2, 0.1], 0.5);
         let f0 = mat.f0();
-        for ch in 0..3 {
-            assert!(
-                (f0[ch] - 0.04).abs() < 1e-10,
-                "Dielectric F0 should be 0.04"
-            );
+        for &f in f0.iter() {
+            assert!((f - 0.04).abs() < 1e-10, "Dielectric F0 should be 0.04");
         }
     }
     #[test]
@@ -441,7 +436,6 @@ mod tests {
     }
 }
 /// Helper to concatenate a preamble with a shader body.
-#[allow(dead_code)]
 pub fn glsl_compose(preamble: &str, body: &str) -> String {
     format!("{preamble}\n{body}")
 }
@@ -451,7 +445,6 @@ pub const MAX_JOINTS: usize = 128;
 ///
 /// `joint_matrices` maps joint index → world-space joint matrix (column-major 4x4).
 /// Returns the blended world-space position.
-#[allow(dead_code)]
 pub fn skin_position(
     pos: [f64; 3],
     sv: &SkinningVertex,
@@ -482,7 +475,6 @@ pub fn skin_position(
 ///
 /// Returns the blended positions. Vertices beyond any target's length are
 /// left at their base positions.
-#[allow(dead_code)]
 pub fn apply_morph_targets(
     base_positions: &[[f32; 3]],
     targets: &[(&MorphTarget, f32)],
@@ -502,7 +494,6 @@ pub fn apply_morph_targets(
 }
 /// Evaluate all 9 real spherical harmonic basis functions (L0 + L1 + L2)
 /// at a unit direction.
-#[allow(dead_code)]
 pub fn sh9_basis(d: [f64; 3]) -> [f64; 9] {
     let [x, y, z] = d;
     let y00 = (1.0 / (4.0 * PI)).sqrt();
@@ -517,7 +508,6 @@ pub fn sh9_basis(d: [f64; 3]) -> [f64; 9] {
     [y00, y1m1, y10, y11, y2m2, y2m1, y20, y21, y22]
 }
 /// Create a 4x4 identity matrix (column-major).
-#[allow(dead_code)]
 pub fn identity4() -> [[f64; 4]; 4] {
     let mut m = [[0.0_f64; 4]; 4];
     m[0][0] = 1.0;
@@ -527,7 +517,6 @@ pub fn identity4() -> [[f64; 4]; 4] {
     m
 }
 /// Transform a 3D point by a 4x4 column-major matrix (assumes w=1).
-#[allow(dead_code)]
 pub fn mat4_transform_point(m: &[[f64; 4]; 4], p: [f64; 3]) -> [f64; 3] {
     let x = m[0][0] * p[0] + m[1][0] * p[1] + m[2][0] * p[2] + m[3][0];
     let y = m[0][1] * p[0] + m[1][1] * p[1] + m[2][1] * p[2] + m[3][1];
@@ -536,7 +525,6 @@ pub fn mat4_transform_point(m: &[[f64; 4]; 4], p: [f64; 3]) -> [f64; 3] {
 }
 /// Normalize a 3D vector (re-exported for shader helpers).
 #[inline]
-#[allow(dead_code)]
 pub(super) fn normalize3_shader(v: [f64; 3]) -> [f64; 3] {
     let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if len < 1e-15 {
@@ -802,9 +790,9 @@ mod extended_tests {
         let probe = IblProbe::uniform_grey(0.5);
         let c1 = probe.evaluate([1.0, 0.0, 0.0]);
         let c2 = probe.evaluate([0.0, 1.0, 0.0]);
-        for ch in 0..3 {
+        for (&v1, &v2) in c1.iter().zip(c2.iter()) {
             assert!(
-                (c1[ch] - c2[ch]).abs() < 1e-10,
+                (v1 - v2).abs() < 1e-10,
                 "uniform probe should be direction-independent: {c1:?} vs {c2:?}"
             );
         }
@@ -813,8 +801,8 @@ mod extended_tests {
     fn test_ibl_probe_non_negative() {
         let probe = IblProbe::uniform_grey(1.0);
         let c = probe.evaluate([0.0, 0.0, 1.0]);
-        for ch in 0..3 {
-            assert!(c[ch] >= 0.0, "irradiance must be non-negative");
+        for &v in c.iter() {
+            assert!(v >= 0.0, "irradiance must be non-negative");
         }
     }
     #[test]
@@ -825,9 +813,9 @@ mod extended_tests {
         p2.intensity = 2.0;
         let c1 = p1.evaluate([0.0, 0.0, 1.0]);
         let c2 = p2.evaluate([0.0, 0.0, 1.0]);
-        for ch in 0..3 {
+        for (&v2, &v1) in c2.iter().zip(c1.iter()) {
             assert!(
-                (c2[ch] - 2.0 * c1[ch]).abs() < 1e-10,
+                (v2 - 2.0 * v1).abs() < 1e-10,
                 "intensity 2x should double the output: {c2:?} vs {c1:?}"
             );
         }
@@ -849,10 +837,10 @@ mod extended_tests {
     #[test]
     fn test_identity4_correct() {
         let m = identity4();
-        for i in 0..4 {
-            for j in 0..4 {
+        for (i, row) in m.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((m[i][j] - expected).abs() < 1e-10);
+                assert!((val - expected).abs() < 1e-10);
             }
         }
     }
@@ -861,8 +849,8 @@ mod extended_tests {
         let m = identity4();
         let p = [1.0, 2.0, 3.0];
         let tp = mat4_transform_point(&m, p);
-        for i in 0..3 {
-            assert!((tp[i] - p[i]).abs() < 1e-10);
+        for (&tpi, &pi) in tp.iter().zip(p.iter()) {
+            assert!((tpi - pi).abs() < 1e-10);
         }
     }
     #[test]

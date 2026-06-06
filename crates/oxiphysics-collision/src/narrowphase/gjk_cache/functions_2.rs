@@ -2,21 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[cfg(test)]
-use super::functions::{
-    gjk_lower_bound, gjk_reduce_simplex, len3_arr, negate3, scale3_arr, simplex_vertex_max_dist,
-    simplex_vertex_min_dist,
-};
-#[cfg(test)]
-use super::types::{
-    BatchProximityEntry, CachedSupport, EvictionPolicy, GjkContactPair, TimestampedGjkRegistry,
-};
-
 #[cfg(test)]
 mod tests_gjk_extended {
-    use super::*;
+    use super::super::*;
     fn sphere_sup(center: [f64; 3], radius: f64, dir: [f64; 3]) -> [f64; 3] {
         let l = len3_arr(dir);
         if l < 1e-10 {

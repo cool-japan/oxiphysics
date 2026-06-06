@@ -6,9 +6,6 @@
 //! Provides FCC/BCC slip systems, Schmid tensor, Taylor factor, latent hardening,
 //! power-law creep, Voigt/Reuss/Hill polycrystal averaging, and texture evolution.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -309,9 +306,8 @@ pub fn taylor_factor(slip_systems: &[SlipSystem], strain_rate: [f64; 6]) -> f64 
 /// * `q`         – latent hardening ratio (0 = no latent, 1 = isotropic).
 pub fn hardening_matrix_latent(n_systems: usize, q: f64) -> Vec<Vec<f64>> {
     let mut h = vec![vec![q; n_systems]; n_systems];
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..n_systems {
-        h[i][i] = 1.0;
+    for (i, row) in h.iter_mut().enumerate() {
+        row[i] = 1.0;
     }
     h
 }
@@ -544,16 +540,12 @@ mod tests {
     // ── Schmid tensor ────────────────────────────────────────────────────────
 
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_schmid_tensor_symmetric() {
         let s = SlipSystem::new([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
         let p = s.schmid_tensor();
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(
-                    (p[i][j] - p[j][i]).abs() < EPS,
-                    "P not symmetric at ({i},{j})"
-                );
+        for (i, row) in p.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - p[j][i]).abs() < EPS, "P not symmetric at ({i},{j})");
             }
         }
     }
@@ -698,23 +690,21 @@ mod tests {
     // ── Latent hardening ─────────────────────────────────────────────────────
 
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_hardening_matrix_diagonal_is_one() {
         let h = hardening_matrix_latent(12, 1.4);
-        for i in 0..12 {
-            assert!((h[i][i] - 1.0).abs() < EPS);
+        for (i, row) in h.iter().enumerate() {
+            assert!((row[i] - 1.0).abs() < EPS);
         }
     }
 
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_hardening_matrix_off_diagonal_is_q() {
         let q = 1.4_f64;
         let h = hardening_matrix_latent(12, q);
-        for i in 0..12 {
-            for j in 0..12 {
+        for (i, row) in h.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 if i != j {
-                    assert!((h[i][j] - q).abs() < EPS);
+                    assert!((val - q).abs() < EPS);
                 }
             }
         }

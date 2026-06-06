@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -1139,15 +1138,15 @@ fn test_maxwell_boltzmann_velocities_com_removed() {
     let vels = maxwell_boltzmann_velocities(&masses, 300.0, 0);
     let mut com = [0.0f64; 3];
     for v in &vels {
-        for a in 0..3 {
-            com[a] += v[a];
+        for (a, &va) in v.iter().enumerate() {
+            com[a] += va;
         }
     }
-    for a in 0..3 {
+    for (a, &c) in com.iter().enumerate() {
         assert!(
-            com[a].abs() < 1e-10,
+            c.abs() < 1e-10,
             "COM velocity axis {a} should be ~0, got {}",
-            com[a]
+            c
         );
     }
 }

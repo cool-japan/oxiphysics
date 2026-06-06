@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -25,9 +24,6 @@
 //! * Morison et al. (1950) – Wave forces on offshore structures.
 //! * Chakrabarti (1987) – Hydrodynamics of Offshore Structures.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -37,15 +33,6 @@ use std::f64::consts::PI;
 #[inline]
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-#[inline]
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 #[inline]
@@ -359,10 +346,12 @@ impl AddedMassDamping {
     /// 6-DOF displacement vector `x` (m or rad).
     pub fn restoring_force(&self, x: [f64; 6]) -> [f64; 6] {
         let mut f = [0.0_f64; 6];
-        for i in 0..6 {
-            for j in 0..6 {
-                f[i] -= self.stiffness[i][j] * x[j];
-            }
+        for (f_i, stiff_row) in f.iter_mut().zip(self.stiffness.iter()) {
+            *f_i -= stiff_row
+                .iter()
+                .zip(x.iter())
+                .map(|(s, xj)| s * xj)
+                .sum::<f64>();
         }
         f
     }
@@ -370,10 +359,12 @@ impl AddedMassDamping {
     /// Compute radiation damping force for velocity vector `xdot`.
     pub fn radiation_damping_force(&self, xdot: [f64; 6]) -> [f64; 6] {
         let mut f = [0.0_f64; 6];
-        for i in 0..6 {
-            for j in 0..6 {
-                f[i] -= self.damping[i][j] * xdot[j];
-            }
+        for (f_i, damp_row) in f.iter_mut().zip(self.damping.iter()) {
+            *f_i -= damp_row
+                .iter()
+                .zip(xdot.iter())
+                .map(|(d, xd)| d * xd)
+                .sum::<f64>();
         }
         f
     }

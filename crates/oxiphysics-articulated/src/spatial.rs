@@ -1,6 +1,5 @@
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
-#![allow(clippy::needless_range_loop)]
 
 //! Spatial vectors (6D) for Featherstone articulated-body dynamics.
 //!
@@ -297,9 +296,9 @@ impl SpatialInertia {
         };
         // Combined inertia about origin (simple addition in this representation)
         let mut io = self.rot_inertia_origin;
-        for i in 0..3 {
-            for j in 0..3 {
-                io[i][j] += other.rot_inertia_origin[i][j];
+        for (io_row, other_row) in io.iter_mut().zip(other.rot_inertia_origin.iter()) {
+            for (io_cell, other_cell) in io_row.iter_mut().zip(other_row.iter()) {
+                *io_cell += other_cell;
             }
         }
         Self {
@@ -543,9 +542,9 @@ impl SpatialInertia6x6 {
             v.linear[2],
         ];
         let mut result = [0.0f64; 6];
-        for i in 0..6 {
-            for j in 0..6 {
-                result[i] += self.data[i][j] * vv[j];
+        for (result_i, data_row) in result.iter_mut().zip(self.data.iter()) {
+            for (data_ij, vv_j) in data_row.iter().zip(vv.iter()) {
+                *result_i += data_ij * vv_j;
             }
         }
         SpatialVec::new(
@@ -557,9 +556,13 @@ impl SpatialInertia6x6 {
     /// Add two 6×6 spatial inertias.
     pub fn add(&self, other: &Self) -> Self {
         let mut d = [[0.0f64; 6]; 6];
-        for i in 0..6 {
-            for j in 0..6 {
-                d[i][j] = self.data[i][j] + other.data[i][j];
+        for (d_row, (self_row, other_row)) in
+            d.iter_mut().zip(self.data.iter().zip(other.data.iter()))
+        {
+            for (d_cell, (self_cell, other_cell)) in
+                d_row.iter_mut().zip(self_row.iter().zip(other_row.iter()))
+            {
+                *d_cell = self_cell + other_cell;
             }
         }
         Self { data: d }
@@ -630,10 +633,10 @@ impl SpatialInertia6x6 {
         // Compute I_parent = X^T * I_child * X
         // Step 1: tmp = I_child * X
         let mut tmp = [[0.0f64; 6]; 6];
-        for i in 0..6 {
+        for (tmp_row, self_row) in tmp.iter_mut().zip(self.data.iter()) {
             for j in 0..6 {
-                for k in 0..6 {
-                    tmp[i][j] += self.data[i][k] * x6[k][j];
+                for (self_ik, x6_kj) in self_row.iter().zip(x6.iter().map(|x6k| &x6k[j])) {
+                    tmp_row[j] += self_ik * x6_kj;
                 }
             }
         }

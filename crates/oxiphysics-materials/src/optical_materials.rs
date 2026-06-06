@@ -18,22 +18,13 @@
 //! - Metamaterial effective medium (Maxwell Garnett)
 //! - Photonic crystal bandgap estimation
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 /// Speed of light in vacuum \[m/s\].
 const SPEED_OF_LIGHT: f64 = 2.997_924_58e8;
 
-/// Vacuum permeability μ₀ \[H/m\].
-const MU_0: f64 = 1.256_637_061_4e-6;
-
 /// Vacuum permittivity ε₀ \[F/m\].
 const EPSILON_0: f64 = 8.854_187_817e-12;
-
-/// Planck constant \[J·s\].
-const PLANCK_H: f64 = 6.626_070_15e-34;
 
 /// Elementary charge \[C\].
 const ELEM_CHARGE: f64 = 1.602_176_634e-19;

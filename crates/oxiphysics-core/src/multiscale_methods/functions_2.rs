@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::*;
     use crate::multiscale_methods::AdaptiveCriterion;
     use crate::multiscale_methods::Atom;
     use crate::multiscale_methods::CgBead;
@@ -270,10 +267,10 @@ mod tests {
         let k_eff = vec![1.0f64; n];
         let source = vec![0.0f64; n];
         let result = solve_macro_diffusion_1d(n, 1.0, &k_eff, &source, 0.0, 1.0);
-        for i in 1..=n {
+        for (i, &val) in result.iter().enumerate().skip(1).take(n) {
             let x = i as f64 / (n + 1) as f64;
             assert!(
-                (result[i] - x).abs() < 1e-6,
+                (val - x).abs() < 1e-6,
                 "linear solution expected at node {}",
                 i
             );

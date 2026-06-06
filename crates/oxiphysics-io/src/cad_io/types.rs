@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 /// Basic IGES file reader.
 ///
@@ -30,7 +28,6 @@ impl IgesReader {
     ///
     /// IGES files have a fixed 80-column format with section identifiers
     /// in column 73.
-    #[allow(dead_code)]
     pub fn parse(&mut self, content: &str) -> Result<(), String> {
         self.entities.clear();
         self.global_params.clear();
@@ -100,7 +97,6 @@ impl IgesReader {
         Ok(())
     }
     /// Get all entities of a specific type.
-    #[allow(dead_code)]
     pub fn find_entities(&self, etype: IgesEntityType) -> Vec<&IgesEntity> {
         self.entities
             .iter()
@@ -108,12 +104,10 @@ impl IgesReader {
             .collect()
     }
     /// Get the number of parsed entities.
-    #[allow(dead_code)]
     pub fn entity_count(&self) -> usize {
         self.entities.len()
     }
     /// Extract points (entity type 116).
-    #[allow(dead_code)]
     pub fn extract_points(&self) -> Vec<[f64; 3]> {
         let mut points = Vec::new();
         for entity in self.find_entities(IgesEntityType::Point) {
@@ -128,7 +122,6 @@ impl IgesReader {
         points
     }
     /// Extract lines (entity type 110).
-    #[allow(dead_code)]
     pub fn extract_lines(&self) -> Vec<([f64; 3], [f64; 3])> {
         let mut lines = Vec::new();
         for entity in self.find_entities(IgesEntityType::Line) {
@@ -149,7 +142,6 @@ impl IgesReader {
         lines
     }
     /// Extract circular arcs (entity type 100).
-    #[allow(dead_code)]
     pub fn extract_circular_arcs(&self) -> Vec<IgesCircularArc> {
         let mut arcs = Vec::new();
         for entity in self.find_entities(IgesEntityType::CircularArc) {
@@ -183,14 +175,12 @@ pub struct IgesCircularArc {
 }
 impl IgesCircularArc {
     /// Compute the radius.
-    #[allow(dead_code)]
     pub fn radius(&self) -> f64 {
         let dx = self.start[0] - self.center[0];
         let dy = self.start[1] - self.center[1];
         (dx * dx + dy * dy).sqrt()
     }
     /// Convert to 3D center point.
-    #[allow(dead_code)]
     pub fn center_3d(&self) -> [f64; 3] {
         [self.center[0], self.center[1], self.z_displacement]
     }
@@ -218,12 +208,10 @@ impl AssemblyComponent {
         }
     }
     /// Add a child component.
-    #[allow(dead_code)]
     pub fn add_child(&mut self, child: AssemblyComponent) {
         self.children.push(child);
     }
     /// Count total components (including self).
-    #[allow(dead_code)]
     pub fn total_components(&self) -> usize {
         1 + self
             .children
@@ -232,7 +220,6 @@ impl AssemblyComponent {
             .sum::<usize>()
     }
     /// Compute the bounding box in world space.
-    #[allow(dead_code)]
     pub fn world_bounding_box(&self) -> BoundingBox {
         let mut bb = BoundingBox::empty();
         for v in &self.solid.vertices {
@@ -246,7 +233,6 @@ impl AssemblyComponent {
         bb
     }
     /// Collect all leaf component names.
-    #[allow(dead_code)]
     pub fn leaf_names(&self) -> Vec<String> {
         if self.children.is_empty() {
             vec![self.name.clone()]
@@ -275,17 +261,14 @@ impl Assembly {
         }
     }
     /// Get the total number of components.
-    #[allow(dead_code)]
     pub fn total_components(&self) -> usize {
         self.root.total_components()
     }
     /// Compute the assembly bounding box.
-    #[allow(dead_code)]
     pub fn bounding_box(&self) -> BoundingBox {
         self.root.world_bounding_box()
     }
     /// Export the assembly to STL by tessellating all components.
-    #[allow(dead_code)]
     pub fn to_stl(&self) -> String {
         let exporter = StlExporter::new(&self.name);
         let mut mesh = TriangleMesh::new();
@@ -293,7 +276,6 @@ impl Assembly {
         exporter.to_ascii_stl(&mesh)
     }
     /// Recursively collect meshes from all components.
-    #[allow(dead_code)]
     fn collect_meshes(
         &self,
         component: &AssemblyComponent,
@@ -338,7 +320,6 @@ impl StepParser {
         }
     }
     /// Parse STEP content from a string.
-    #[allow(dead_code)]
     pub fn parse(&mut self, content: &str) -> Result<(), String> {
         self.entities.clear();
         self.description.clear();
@@ -374,7 +355,6 @@ impl StepParser {
         Ok(())
     }
     /// Parse a single entity line like "#123=CARTESIAN_POINT('name',(1.0,2.0,3.0));".
-    #[allow(dead_code)]
     fn parse_entity_line(&self, line: &str) -> Option<StepEntity> {
         let line = line.trim_end_matches(';');
         let eq_pos = line.find('=')?;
@@ -392,7 +372,6 @@ impl StepParser {
         Some(StepEntity::new(id, entity_type, params))
     }
     /// Find all entities of a given type.
-    #[allow(dead_code)]
     pub fn find_entities(&self, entity_type: &str) -> Vec<&StepEntity> {
         self.entities
             .iter()
@@ -400,17 +379,14 @@ impl StepParser {
             .collect()
     }
     /// Find an entity by ID.
-    #[allow(dead_code)]
     pub fn find_by_id(&self, id: usize) -> Option<&StepEntity> {
         self.entities.iter().find(|e| e.id == id)
     }
     /// Get the total number of parsed entities.
-    #[allow(dead_code)]
     pub fn entity_count(&self) -> usize {
         self.entities.len()
     }
     /// Extract Cartesian points from parsed STEP entities.
-    #[allow(dead_code)]
     pub fn extract_cartesian_points(&self) -> Vec<(usize, [f64; 3])> {
         let mut points = Vec::new();
         for entity in self.find_entities("CARTESIAN_POINT") {
@@ -421,7 +397,6 @@ impl StepParser {
         points
     }
     /// Parse point coordinates from a STEP parameter string.
-    #[allow(dead_code)]
     fn parse_point_coordinates(&self, params: &str) -> Option<[f64; 3]> {
         let inner_start = params.rfind('(')?;
         let inner_end = params[inner_start..].find(')')? + inner_start;
@@ -439,7 +414,6 @@ impl StepParser {
         }
     }
     /// Extract direction entities.
-    #[allow(dead_code)]
     pub fn extract_directions(&self) -> Vec<(usize, [f64; 3])> {
         let mut dirs = Vec::new();
         for entity in self.find_entities("DIRECTION") {
@@ -471,23 +445,20 @@ impl BoundingBox {
         Self { min, max }
     }
     /// Expand the bounding box to include a point.
-    #[allow(dead_code)]
     pub fn include_point(&mut self, p: [f64; 3]) {
-        for i in 0..3 {
-            self.min[i] = self.min[i].min(p[i]);
-            self.max[i] = self.max[i].max(p[i]);
+        for (i, pi) in p.iter().enumerate() {
+            self.min[i] = self.min[i].min(*pi);
+            self.max[i] = self.max[i].max(*pi);
         }
     }
     /// Expand to include another bounding box.
-    #[allow(dead_code)]
     pub fn include_box(&mut self, other: &BoundingBox) {
-        for i in 0..3 {
-            self.min[i] = self.min[i].min(other.min[i]);
-            self.max[i] = self.max[i].max(other.max[i]);
+        for (i, (lo, hi)) in other.min.iter().zip(other.max.iter()).enumerate() {
+            self.min[i] = self.min[i].min(*lo);
+            self.max[i] = self.max[i].max(*hi);
         }
     }
     /// Compute from a set of points.
-    #[allow(dead_code)]
     pub fn from_points(points: &[[f64; 3]]) -> Self {
         let mut bb = Self::empty();
         for p in points {
@@ -496,7 +467,6 @@ impl BoundingBox {
         bb
     }
     /// Get the center of the bounding box.
-    #[allow(dead_code)]
     pub fn center(&self) -> [f64; 3] {
         [
             (self.min[0] + self.max[0]) * 0.5,
@@ -505,7 +475,6 @@ impl BoundingBox {
         ]
     }
     /// Get the size (extent) of the bounding box.
-    #[allow(dead_code)]
     pub fn size(&self) -> [f64; 3] {
         [
             self.max[0] - self.min[0],
@@ -514,25 +483,21 @@ impl BoundingBox {
         ]
     }
     /// Get the diagonal length.
-    #[allow(dead_code)]
     pub fn diagonal(&self) -> f64 {
         let s = self.size();
         (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt()
     }
     /// Get the volume.
-    #[allow(dead_code)]
     pub fn volume(&self) -> f64 {
         let s = self.size();
         s[0] * s[1] * s[2]
     }
     /// Get the surface area.
-    #[allow(dead_code)]
     pub fn surface_area(&self) -> f64 {
         let s = self.size();
         2.0 * (s[0] * s[1] + s[1] * s[2] + s[2] * s[0])
     }
     /// Check if a point is inside the bounding box.
-    #[allow(dead_code)]
     pub fn contains_point(&self, p: [f64; 3]) -> bool {
         p[0] >= self.min[0]
             && p[0] <= self.max[0]
@@ -542,7 +507,6 @@ impl BoundingBox {
             && p[2] <= self.max[2]
     }
     /// Check if this box intersects another.
-    #[allow(dead_code)]
     pub fn intersects(&self, other: &BoundingBox) -> bool {
         self.min[0] <= other.max[0]
             && self.max[0] >= other.min[0]
@@ -552,12 +516,10 @@ impl BoundingBox {
             && self.max[2] >= other.min[2]
     }
     /// Check if the bounding box is valid (non-empty).
-    #[allow(dead_code)]
     pub fn is_valid(&self) -> bool {
         self.min[0] <= self.max[0] && self.min[1] <= self.max[1] && self.min[2] <= self.max[2]
     }
     /// Apply a unit conversion to the bounding box.
-    #[allow(dead_code)]
     pub fn convert_units(&self, converter: &UnitConverter) -> BoundingBox {
         BoundingBox {
             min: converter.convert_point(self.min),
@@ -625,7 +587,6 @@ impl BrepEdge {
         }
     }
     /// Evaluate a point on the edge at parameter t in \[0,1\].
-    #[allow(dead_code)]
     pub fn evaluate(&self, t: f64, vertices: &[BrepVertex]) -> [f64; 3] {
         let p0 = vertices[self.start_vertex].position;
         let p1 = vertices[self.end_vertex].position;
@@ -654,7 +615,6 @@ impl BrepEdge {
         }
     }
     /// Compute the approximate length of the edge.
-    #[allow(dead_code)]
     pub fn approximate_length(&self, vertices: &[BrepVertex]) -> f64 {
         let n = 20;
         let mut length = 0.0;
@@ -707,21 +667,18 @@ impl BrepSolid {
         }
     }
     /// Add a vertex and return its index.
-    #[allow(dead_code)]
     pub fn add_vertex(&mut self, position: [f64; 3]) -> usize {
         let id = self.vertices.len();
         self.vertices.push(BrepVertex::new(id, position));
         id
     }
     /// Add a line edge and return its index.
-    #[allow(dead_code)]
     pub fn add_line_edge(&mut self, start: usize, end: usize) -> usize {
         let id = self.edges.len();
         self.edges.push(BrepEdge::line(id, start, end));
         id
     }
     /// Add a planar face and return its index.
-    #[allow(dead_code)]
     pub fn add_planar_face(
         &mut self,
         edge_loop: Vec<usize>,
@@ -734,12 +691,10 @@ impl BrepSolid {
         id
     }
     /// Compute the bounding box of the solid.
-    #[allow(dead_code)]
     pub fn bounding_box(&self) -> BoundingBox {
         BoundingBox::from_points(&self.vertices.iter().map(|v| v.position).collect::<Vec<_>>())
     }
     /// Validate the topology: check that all edge vertex references are valid.
-    #[allow(dead_code)]
     pub fn validate(&self) -> Result<(), String> {
         let n_verts = self.vertices.len();
         let n_edges = self.edges.len();
@@ -769,12 +724,10 @@ impl BrepSolid {
         Ok(())
     }
     /// Get Euler characteristic: V - E + F.
-    #[allow(dead_code)]
     pub fn euler_characteristic(&self) -> i64 {
         self.vertices.len() as i64 - self.edges.len() as i64 + self.faces.len() as i64
     }
     /// Create a box (cuboid) BREP solid.
-    #[allow(dead_code)]
     pub fn create_box(name: &str, sx: f64, sy: f64, sz: f64) -> Self {
         let mut solid = Self::new(name);
         let v0 = solid.add_vertex([0.0, 0.0, 0.0]);
@@ -863,12 +816,10 @@ impl BrepFace {
         }
     }
     /// Get the outer edge loop.
-    #[allow(dead_code)]
     pub fn outer_loop(&self) -> &[usize] {
         &self.edge_loops[0]
     }
     /// Get hole loops (if any).
-    #[allow(dead_code)]
     pub fn hole_loops(&self) -> &[Vec<usize>] {
         if self.edge_loops.len() > 1 {
             &self.edge_loops[1..]
@@ -923,7 +874,6 @@ pub enum IgesEntityType {
 }
 impl IgesEntityType {
     /// Convert from entity type number.
-    #[allow(dead_code)]
     pub fn from_type_number(num: u32) -> Self {
         match num {
             100 => IgesEntityType::CircularArc,
@@ -949,7 +899,6 @@ impl IgesEntityType {
         }
     }
     /// Convert to entity type number.
-    #[allow(dead_code)]
     pub fn to_type_number(&self) -> u32 {
         match self {
             IgesEntityType::CircularArc => 100,
@@ -975,7 +924,6 @@ impl IgesEntityType {
         }
     }
     /// Check if this is a curve entity.
-    #[allow(dead_code)]
     pub fn is_curve(&self) -> bool {
         matches!(
             self,
@@ -989,7 +937,6 @@ impl IgesEntityType {
         )
     }
     /// Check if this is a surface entity.
-    #[allow(dead_code)]
     pub fn is_surface(&self) -> bool {
         matches!(
             self,
@@ -1022,7 +969,6 @@ pub enum LengthUnit {
 }
 impl LengthUnit {
     /// Conversion factor to meters.
-    #[allow(dead_code)]
     pub fn to_meters_factor(&self) -> f64 {
         match self {
             LengthUnit::Meter => 1.0,
@@ -1034,12 +980,10 @@ impl LengthUnit {
         }
     }
     /// Convert a length from this unit to another unit.
-    #[allow(dead_code)]
     pub fn convert(&self, value: f64, to: LengthUnit) -> f64 {
         value * self.to_meters_factor() / to.to_meters_factor()
     }
     /// Convert a 3D point from this unit to another.
-    #[allow(dead_code)]
     pub fn convert_point(&self, point: [f64; 3], to: LengthUnit) -> [f64; 3] {
         let factor = self.to_meters_factor() / to.to_meters_factor();
         [point[0] * factor, point[1] * factor, point[2] * factor]
@@ -1059,23 +1003,19 @@ impl UnitConverter {
         Self { from, to }
     }
     /// Get the conversion factor.
-    #[allow(dead_code)]
     pub fn factor(&self) -> f64 {
         self.from.to_meters_factor() / self.to.to_meters_factor()
     }
     /// Convert a scalar value.
-    #[allow(dead_code)]
     pub fn convert_scalar(&self, value: f64) -> f64 {
         value * self.factor()
     }
     /// Convert a 3D point.
-    #[allow(dead_code)]
     pub fn convert_point(&self, point: [f64; 3]) -> [f64; 3] {
         let f = self.factor();
         [point[0] * f, point[1] * f, point[2] * f]
     }
     /// Convert an array of points.
-    #[allow(dead_code)]
     pub fn convert_points(&self, points: &[[f64; 3]]) -> Vec<[f64; 3]> {
         let f = self.factor();
         points
@@ -1098,7 +1038,6 @@ impl StlExporter {
         }
     }
     /// Generate ASCII STL content from a triangle mesh.
-    #[allow(dead_code)]
     pub fn to_ascii_stl(&self, mesh: &TriangleMesh) -> String {
         let mut output = format!("solid {}\n", self.solid_name);
         for (i, tri) in mesh.triangles.iter().enumerate() {
@@ -1127,7 +1066,6 @@ impl StlExporter {
         output
     }
     /// Generate binary STL content as bytes.
-    #[allow(dead_code)]
     pub fn to_binary_stl(&self, mesh: &TriangleMesh) -> Vec<u8> {
         let mut data = Vec::new();
         let mut header = [0u8; 80];
@@ -1161,7 +1099,6 @@ impl StlExporter {
         data
     }
     /// Export a BREP solid as ASCII STL.
-    #[allow(dead_code)]
     pub fn export_brep_ascii(&self, solid: &BrepSolid) -> String {
         let mesh = tessellate_brep(solid, 10);
         self.to_ascii_stl(&mesh)
@@ -1240,7 +1177,6 @@ impl AssemblyTransform {
         }
     }
     /// Apply the transform to a point.
-    #[allow(dead_code)]
     pub fn apply(&self, p: [f64; 3]) -> [f64; 3] {
         let rotated = [
             self.rotation[0][0] * p[0] + self.rotation[0][1] * p[1] + self.rotation[0][2] * p[2],
@@ -1250,13 +1186,12 @@ impl AssemblyTransform {
         add3(rotated, self.translation)
     }
     /// Compose two transforms: self * other.
-    #[allow(dead_code)]
     pub fn compose(&self, other: &AssemblyTransform) -> AssemblyTransform {
         let mut new_rot = [[0.0; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    new_rot[i][j] += self.rotation[i][k] * other.rotation[k][j];
+        for (i, row) in new_rot.iter_mut().enumerate() {
+            for (j, cell) in row.iter_mut().enumerate() {
+                for (k, &self_ik) in self.rotation[i].iter().enumerate() {
+                    *cell += self_ik * other.rotation[k][j];
                 }
             }
         }
@@ -1267,7 +1202,6 @@ impl AssemblyTransform {
         }
     }
     /// Get the inverse transform.
-    #[allow(dead_code)]
     pub fn inverse(&self) -> AssemblyTransform {
         let r_inv = [
             [
@@ -1323,19 +1257,16 @@ impl TriangleMesh {
         }
     }
     /// Add a vertex and return its index.
-    #[allow(dead_code)]
     pub fn add_vertex(&mut self, position: [f64; 3]) -> usize {
         let idx = self.vertices.len();
         self.vertices.push(position);
         idx
     }
     /// Add a triangle.
-    #[allow(dead_code)]
     pub fn add_triangle(&mut self, v0: usize, v1: usize, v2: usize) {
         self.triangles.push([v0, v1, v2]);
     }
     /// Compute normals for all triangles.
-    #[allow(dead_code)]
     pub fn compute_normals(&mut self) {
         self.normals.clear();
         for tri in &self.triangles {
@@ -1349,12 +1280,10 @@ impl TriangleMesh {
         }
     }
     /// Compute the bounding box.
-    #[allow(dead_code)]
     pub fn bounding_box(&self) -> BoundingBox {
         BoundingBox::from_points(&self.vertices)
     }
     /// Compute the total surface area.
-    #[allow(dead_code)]
     pub fn surface_area(&self) -> f64 {
         let mut area = 0.0;
         for tri in &self.triangles {
@@ -1368,17 +1297,14 @@ impl TriangleMesh {
         area
     }
     /// Count the number of vertices.
-    #[allow(dead_code)]
     pub fn vertex_count(&self) -> usize {
         self.vertices.len()
     }
     /// Count the number of triangles.
-    #[allow(dead_code)]
     pub fn triangle_count(&self) -> usize {
         self.triangles.len()
     }
     /// Merge another mesh into this one.
-    #[allow(dead_code)]
     pub fn merge(&mut self, other: &TriangleMesh) {
         let offset = self.vertices.len();
         self.vertices.extend_from_slice(&other.vertices);

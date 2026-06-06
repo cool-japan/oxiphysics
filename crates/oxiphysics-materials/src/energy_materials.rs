@@ -7,10 +7,6 @@
 //!
 //! All functions use SI units unless otherwise stated.
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 /// Universal gas constant (J/mol·K).
@@ -21,10 +17,6 @@ const F_FARADAY: f64 = 96_485.0;
 const K_B: f64 = 1.380649e-23;
 /// Elementary charge (C).
 const Q_E: f64 = 1.602176634e-19;
-/// Planck constant (J·s).
-const H_PLANCK: f64 = 6.62607015e-34;
-/// Speed of light (m/s).
-const C_LIGHT: f64 = 2.99792458e8;
 
 // ---------------------------------------------------------------------------
 // Lithium-Ion Battery — Butler-Volmer Kinetics & Diffusion

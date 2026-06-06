@@ -19,9 +19,6 @@
 //! - **Pre-tension / initial strain**
 //! - **Healing model** (collagen remodeling)
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -60,9 +57,6 @@ const DEFAULT_DENSITY: f64 = 1100.0;
 
 /// Default Poisson's ratio for tendon (nearly incompressible).
 const DEFAULT_POISSON: f64 = 0.49;
-
-/// Default damping coefficient for viscoelastic models.
-const DEFAULT_DAMPING: f64 = 0.05;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TendonMaterialProperties

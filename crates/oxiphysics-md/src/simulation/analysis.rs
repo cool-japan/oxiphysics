@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -21,7 +20,6 @@ use super::plain_sim::{ObservableRecord, compute_msd};
 /// sufficient number of consecutive windows, the system is considered
 /// equilibrated.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct EquilibrationDetector {
     /// Window size (number of energy samples per window).
     pub window: usize,
@@ -37,7 +35,6 @@ pub struct EquilibrationDetector {
     pub equilibration_step: Option<u64>,
 }
 
-#[allow(dead_code)]
 impl EquilibrationDetector {
     /// Create a new equilibration detector.
     ///
@@ -124,7 +121,6 @@ impl EquilibrationDetector {
 ///  positions (3*n), velocities (3*n), forces (3*n), masses (n)]
 /// ```
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct RestartData {
     /// Number of atoms.
     pub n_atoms: usize,
@@ -146,7 +142,6 @@ pub struct RestartData {
     pub masses: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl RestartData {
     /// Serialise the restart data into a flat `Vec`f64` buffer.
     ///
@@ -264,7 +259,6 @@ impl RestartData {
 
 /// Comprehensive statistics collected during an MD run.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct RunStatistics {
     /// Total number of steps completed.
     pub total_steps: u64,
@@ -288,7 +282,6 @@ pub struct RunStatistics {
     pub mean_pressure: f64,
 }
 
-#[allow(dead_code)]
 impl RunStatistics {
     /// Build from an [`ObservableRecord`] and timing info.
     pub fn from_record(record: &ObservableRecord, wall_time_s: f64) -> Self {
@@ -350,7 +343,6 @@ impl RunStatistics {
 
 impl MdSim {
     /// Compute instantaneous MSD relative to reference positions.
-    #[allow(dead_code)]
     pub fn msd_from_reference(&self, reference: &[[f64; 3]]) -> f64 {
         compute_msd(&self.state.positions, reference)
     }
@@ -364,7 +356,6 @@ impl MdSim {
     /// * `forces_fn`      - external force function `(positions, box) -> forces`.
     /// * `record_every`   - record observables every this many steps (0 = never).
     /// * `virial_fn`      - optional function to compute the scalar virial for pressure.
-    #[allow(dead_code)]
     pub fn run_full(
         &mut self,
         forces_fn: impl Fn(&[[f64; 3]], &[f64; 3]) -> Vec<[f64; 3]>,
@@ -423,7 +414,6 @@ impl MdSim {
     ///
     /// Runs for at most `max_steps` steps or until equilibration is detected,
     /// returning the number of steps taken.
-    #[allow(dead_code)]
     pub fn run_until_equilibrated(
         &mut self,
         forces_fn: impl Fn(&[[f64; 3]], &[f64; 3]) -> Vec<[f64; 3]>,
@@ -456,7 +446,6 @@ impl MdSim {
     }
 
     /// Save the current state as a [`RestartData`] serialized to a `Vec`f64`.
-    #[allow(dead_code)]
     pub fn save_restart(&self) -> Vec<f64> {
         RestartData::from_state(&self.state).to_buffer()
     }
@@ -464,7 +453,6 @@ impl MdSim {
     /// Restore simulation state from a restart buffer produced by `save_restart`.
     ///
     /// Returns `true` on success, `false` if the buffer was malformed.
-    #[allow(dead_code)]
     pub fn load_restart(&mut self, buf: &[f64]) -> bool {
         if let Some(rd) = RestartData::from_buffer(buf) {
             self.state = rd.to_state();
@@ -491,7 +479,6 @@ impl MdSim {
 /// * `masses`      - atom masses (amu).
 /// * `temperature` - target temperature (K).
 /// * `seed_offset` - deterministic offset to initialise the PRNG stream.
-#[allow(dead_code)]
 pub fn maxwell_boltzmann_velocities(
     masses: &[f64],
     temperature: f64,
@@ -527,8 +514,8 @@ pub fn maxwell_boltzmann_velocities(
 
     for i in 0..n {
         let sigma = (KB_REDUCED * temperature / masses[i]).sqrt();
-        for a in 0..3 {
-            velocities[i][a] = sigma * next_gauss();
+        for v in &mut velocities[i] {
+            *v = sigma * next_gauss();
         }
     }
 
@@ -542,12 +529,12 @@ pub fn maxwell_boltzmann_velocities(
         }
     }
     if total_mass > 1e-20 {
-        for a in 0..3 {
-            com_v[a] /= total_mass;
+        for v in &mut com_v {
+            *v /= total_mass;
         }
-        for i in 0..n {
-            for a in 0..3 {
-                velocities[i][a] -= com_v[a];
+        for vel in velocities.iter_mut().take(n) {
+            for (v, &cv) in vel.iter_mut().zip(com_v.iter()) {
+                *v -= cv;
             }
         }
     }
@@ -559,7 +546,6 @@ pub fn maxwell_boltzmann_velocities(
 ///
 /// Computes the current temperature from the given velocities and masses,
 /// then scales all velocities by √(T_target / T_current).
-#[allow(dead_code)]
 pub fn rescale_to_temperature(velocities: &mut [[f64; 3]], masses: &[f64], target_t: f64) {
     let n = velocities.len();
     if n == 0 {

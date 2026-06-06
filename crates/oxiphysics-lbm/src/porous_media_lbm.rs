@@ -1,4 +1,3 @@
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,8 +14,6 @@
 //!   Darcy–Brinkman forcing.
 //! - **[`DrainageImbibition`]**: capillary pressure curves, wetting/drainage relative
 //!   permeability, and Brooks–Corey parameterization.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // D2Q9 lattice constants (private)
@@ -1069,14 +1066,14 @@ mod tests {
     fn test_drainage_relative_permeability_wetting_range() {
         let di = DrainageImbibition::new(1000.0, 2.0, 0.1, 0.05);
         let krw = di.relative_permeability_wetting(0.5);
-        assert!(krw >= 0.0 && krw <= 1.0, "krw={krw}");
+        assert!((0.0..=1.0).contains(&krw), "krw={krw}");
     }
 
     #[test]
     fn test_drainage_relative_permeability_nonwetting_range() {
         let di = DrainageImbibition::new(1000.0, 2.0, 0.1, 0.05);
         let krnw = di.relative_permeability_nonwetting(0.5);
-        assert!(krnw >= 0.0 && krnw <= 1.0, "krnw={krnw}");
+        assert!((0.0..=1.0).contains(&krnw), "krnw={krnw}");
     }
 
     #[test]
@@ -1108,7 +1105,7 @@ mod tests {
     fn test_drainage_fractional_flow_unit_viscosity_ratio() {
         let di = DrainageImbibition::new(1000.0, 2.0, 0.1, 0.05);
         let fw = di.fractional_flow(0.5, 1.0);
-        assert!(fw >= 0.0 && fw <= 1.0, "fw={fw}");
+        assert!((0.0..=1.0).contains(&fw), "fw={fw}");
     }
 
     #[test]

@@ -125,13 +125,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
     /// Create a `General` error from any string-like value.
-    #[allow(dead_code)]
     pub fn general(msg: impl Into<String>) -> Self {
         Self::General(msg.into())
     }
 
     /// Create an `OutOfRange` error.
-    #[allow(dead_code)]
     pub fn out_of_range(name: &'static str, value: f64, min: f64, max: f64) -> Self {
         Self::OutOfRange {
             name,
@@ -142,7 +140,6 @@ impl Error {
     }
 
     /// Create an `InvalidMesh` error.
-    #[allow(dead_code)]
     pub fn invalid_mesh(reason: impl Into<String>) -> Self {
         Self::InvalidMesh {
             reason: reason.into(),
@@ -150,13 +147,11 @@ impl Error {
     }
 
     /// Create a `LengthMismatch` error.
-    #[allow(dead_code)]
     pub fn length_mismatch(expected: usize, actual: usize) -> Self {
         Self::LengthMismatch { expected, actual }
     }
 
     /// Create a `ConvergenceFailure` error.
-    #[allow(dead_code)]
     pub fn convergence_failure(operation: &'static str, iterations: usize, residual: f64) -> Self {
         Self::ConvergenceFailure {
             operation,
@@ -166,19 +161,16 @@ impl Error {
     }
 
     /// Create an `IndexOutOfBounds` error.
-    #[allow(dead_code)]
     pub fn index_out_of_bounds(index: usize, len: usize) -> Self {
         Self::IndexOutOfBounds { index, len }
     }
 
     /// Create a `TooFewPoints` error.
-    #[allow(dead_code)]
     pub fn too_few_points(required: usize, actual: usize) -> Self {
         Self::TooFewPoints { required, actual }
     }
 
     /// Create a `DegenerateGeometry` error.
-    #[allow(dead_code)]
     pub fn degenerate_geometry(details: impl Into<String>) -> Self {
         Self::DegenerateGeometry {
             details: details.into(),
@@ -186,7 +178,6 @@ impl Error {
     }
 
     /// Create a `DimensionMismatch` error.
-    #[allow(dead_code)]
     pub fn dimension_mismatch(
         lhs: &'static str,
         lhs_len: usize,
@@ -202,7 +193,6 @@ impl Error {
     }
 
     /// Create an `Unsupported` error.
-    #[allow(dead_code)]
     pub fn unsupported(operation: &'static str, reason: impl Into<String>) -> Self {
         Self::Unsupported {
             operation,
@@ -211,7 +201,6 @@ impl Error {
     }
 
     /// Create an `Io` error.
-    #[allow(dead_code)]
     pub fn io(context: &'static str, message: impl Into<String>) -> Self {
         Self::Io {
             context,
@@ -220,31 +209,26 @@ impl Error {
     }
 
     /// Returns `true` if this is a `General` error.
-    #[allow(dead_code)]
     pub fn is_general(&self) -> bool {
         matches!(self, Self::General(_))
     }
 
     /// Returns `true` if this is a `LengthMismatch` error.
-    #[allow(dead_code)]
     pub fn is_length_mismatch(&self) -> bool {
         matches!(self, Self::LengthMismatch { .. })
     }
 
     /// Returns `true` if this is a convergence failure.
-    #[allow(dead_code)]
     pub fn is_convergence_failure(&self) -> bool {
         matches!(self, Self::ConvergenceFailure { .. })
     }
 
     /// Returns `true` if this is an index-out-of-bounds error.
-    #[allow(dead_code)]
     pub fn is_index_out_of_bounds(&self) -> bool {
         matches!(self, Self::IndexOutOfBounds { .. })
     }
 
     /// Returns `true` if this error indicates degenerate geometry.
-    #[allow(dead_code)]
     pub fn is_degenerate(&self) -> bool {
         matches!(self, Self::DegenerateGeometry { .. })
     }
@@ -254,7 +238,6 @@ impl Error {
 
 /// Assert that `value` lies in `[min, max]`, returning `Err(Error::OutOfRange)`
 /// if it does not.
-#[allow(dead_code)]
 pub fn check_range(name: &'static str, value: f64, min: f64, max: f64) -> Result<()> {
     if value >= min && value <= max {
         Ok(())
@@ -264,7 +247,6 @@ pub fn check_range(name: &'static str, value: f64, min: f64, max: f64) -> Result
 }
 
 /// Assert that `len == expected`, returning `Err(Error::LengthMismatch)` if not.
-#[allow(dead_code)]
 pub fn check_len(expected: usize, actual: usize) -> Result<()> {
     if actual == expected {
         Ok(())
@@ -274,7 +256,6 @@ pub fn check_len(expected: usize, actual: usize) -> Result<()> {
 }
 
 /// Assert that `index < len`, returning `Err(Error::IndexOutOfBounds)` if not.
-#[allow(dead_code)]
 pub fn check_index(index: usize, len: usize) -> Result<()> {
     if index < len {
         Ok(())
@@ -284,7 +265,6 @@ pub fn check_index(index: usize, len: usize) -> Result<()> {
 }
 
 /// Assert that `count >= required`, returning `Err(Error::TooFewPoints)` if not.
-#[allow(dead_code)]
 pub fn check_min_points(required: usize, actual: usize) -> Result<()> {
     if actual >= required {
         Ok(())
@@ -294,7 +274,6 @@ pub fn check_min_points(required: usize, actual: usize) -> Result<()> {
 }
 
 /// Assert that `lhs_len == rhs_len`, returning `Err(Error::DimensionMismatch)`.
-#[allow(dead_code)]
 pub fn check_dim_match(
     lhs: &'static str,
     lhs_len: usize,
@@ -309,7 +288,6 @@ pub fn check_dim_match(
 }
 
 /// Assert that a value is strictly positive, returning `Err(Error::OutOfRange)`.
-#[allow(dead_code)]
 pub fn check_positive(name: &'static str, value: f64) -> Result<()> {
     if value > 0.0 {
         Ok(())
@@ -319,7 +297,6 @@ pub fn check_positive(name: &'static str, value: f64) -> Result<()> {
 }
 
 /// Assert that a value is non-negative, returning `Err(Error::OutOfRange)`.
-#[allow(dead_code)]
 pub fn check_non_negative(name: &'static str, value: f64) -> Result<()> {
     if value >= 0.0 {
         Ok(())
@@ -329,7 +306,6 @@ pub fn check_non_negative(name: &'static str, value: f64) -> Result<()> {
 }
 
 /// Assert that a value is finite (not NaN, not infinite).
-#[allow(dead_code)]
 pub fn check_finite(name: &'static str, value: f64) -> Result<()> {
     if value.is_finite() {
         Ok(())
@@ -341,7 +317,6 @@ pub fn check_finite(name: &'static str, value: f64) -> Result<()> {
 }
 
 /// Check all values in a slice are finite.
-#[allow(dead_code)]
 pub fn check_finite_slice(name: &'static str, values: &[f64]) -> Result<()> {
     for (i, &v) in values.iter().enumerate() {
         if !v.is_finite() {
@@ -361,7 +336,6 @@ pub fn check_finite_slice(name: &'static str, values: &[f64]) -> Result<()> {
 /// 1. `vertices` is non-empty.
 /// 2. All indices in `triangles` are less than `vertices.len()`.
 /// 3. No triangle has repeated vertex indices (degenerate triangles).
-#[allow(dead_code)]
 pub fn validate_mesh(vertices: &[[f64; 3]], triangles: &[[usize; 3]]) -> Result<()> {
     check_min_points(1, vertices.len())?;
     for (i, tri) in triangles.iter().enumerate() {
@@ -391,7 +365,6 @@ pub fn validate_mesh(vertices: &[[f64; 3]], triangles: &[[usize; 3]]) -> Result<
 ///
 /// Checks that `rows >= 2`, `cols >= 2`, `scale_x > 0`, `scale_z > 0`, and
 /// `heights.len() == rows * cols`.
-#[allow(dead_code)]
 pub fn validate_heightfield(
     heights: &[f64],
     rows: usize,
@@ -419,7 +392,6 @@ pub fn validate_heightfield(
 }
 
 /// Validate that a ray direction is non-zero and finite.
-#[allow(dead_code)]
 pub fn validate_ray_dir(dir: [f64; 3]) -> Result<()> {
     check_finite_slice("ray_dir", &dir)?;
     let len_sq = dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2];
@@ -432,7 +404,6 @@ pub fn validate_ray_dir(dir: [f64; 3]) -> Result<()> {
 }
 
 /// Validate a point cloud: non-empty, all coordinates finite.
-#[allow(dead_code)]
 pub fn validate_point_cloud(points: &[[f64; 3]]) -> Result<()> {
     check_min_points(1, points.len())?;
     for (i, p) in points.iter().enumerate() {
@@ -449,7 +420,6 @@ pub fn validate_point_cloud(points: &[[f64; 3]]) -> Result<()> {
 
 /// Attach a context string to a `Result`, wrapping the error in a new
 /// `General` message that includes the original error's display text.
-#[allow(dead_code)]
 pub trait WithContext<T> {
     /// Wrap any error with an additional context prefix.
     fn with_context(self, ctx: &str) -> Result<T>;
@@ -466,7 +436,6 @@ impl<T, E: std::fmt::Display> WithContext<T> for std::result::Result<T, E> {
 /// Tracks residual progress for an iterative solver and raises
 /// `Error::ConvergenceFailure` when the iteration limit is exceeded.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ConvergenceTracker {
     operation: &'static str,
     max_iterations: usize,
@@ -475,7 +444,6 @@ pub struct ConvergenceTracker {
     last_residual: f64,
 }
 
-#[allow(dead_code)]
 impl ConvergenceTracker {
     /// Create a new tracker.
     ///

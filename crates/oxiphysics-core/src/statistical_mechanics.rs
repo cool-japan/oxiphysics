@@ -8,8 +8,6 @@
 //! Boltzmann distributions, 1D/2D Ising model with Metropolis MC, Landau theory,
 //! Einstein relations, transport coefficients, and classical equations of state.
 
-#![allow(dead_code)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Local LCG RNG
 // ─────────────────────────────────────────────────────────────────────────────
@@ -839,7 +837,6 @@ impl EquationOfState {
     /// P = RT/(V-b) - a(T) / (V(V+b) + b(V-b))
     ///
     /// where a(T) = a_c · α(T), α(T) = \[1 + κ(1 - √(T/T_c))\]².
-    #[allow(clippy::too_many_arguments)]
     pub fn peng_robinson_pressure(
         &self,
         molar_volume: f64,
@@ -1356,7 +1353,6 @@ mod tests {
         assert!((p - 5.670374419e-8).abs() < 1e-15);
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[test]
     fn test_partition_function_degeneracy_scaling() {
         // Doubling all degeneracies should not change average energy

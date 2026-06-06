@@ -2,22 +2,17 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use std::f64::consts::PI;
-
-#[allow(unused_imports)]
-use super::types_advanced::*;
 use super::types_core::*;
+use std::f64::consts::PI;
 
 /// Radar range equation (Friis / monostatic radar).
 ///
 /// `Pr = Pt * Gt * Gr * lambda² * sigma / ((4π)³ * R⁴)`
-#[allow(dead_code)]
 pub fn radar_range_equation(pt: f64, gt: f64, gr: f64, lambda: f64, sigma: f64, range: f64) -> f64 {
     let four_pi_cubed = (4.0 * PI).powi(3);
     pt * gt * gr * lambda * lambda * sigma / (four_pi_cubed * range.powi(4))
 }
 /// Compute the centroid of a point cloud.
-#[allow(dead_code)]
 pub fn point_cloud_centroid(points: &[LidarPoint]) -> [f64; 3] {
     if points.is_empty() {
         return [0.0, 0.0, 0.0];
@@ -31,7 +26,6 @@ pub fn point_cloud_centroid(points: &[LidarPoint]) -> [f64; 3] {
 /// Compute the axis-aligned bounding box of a point cloud.
 ///
 /// Returns `(min_corner, max_corner)`.
-#[allow(dead_code)]
 pub fn point_cloud_bounding_box(points: &[LidarPoint]) -> ([f64; 3], [f64; 3]) {
     if points.is_empty() {
         return ([0.0; 3], [0.0; 3]);
@@ -54,7 +48,6 @@ pub fn point_cloud_bounding_box(points: &[LidarPoint]) -> ([f64; 3], [f64; 3]) {
 /// Compute the number of cells per side for a square bird's-eye-view grid.
 ///
 /// `range_m` is the half-extent of the grid; `resolution_m` is metres per cell.
-#[allow(dead_code)]
 pub fn bev_grid_size(range_m: f64, resolution_m: f64) -> usize {
     ((2.0 * range_m) / resolution_m).ceil() as usize
 }
@@ -64,6 +57,7 @@ pub fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 #[cfg(test)]
 mod tests {
+    use super::super::types_advanced::*;
     use super::*;
     use rand::SeedableRng;
     #[test]
@@ -834,7 +828,6 @@ mod tests {
 /// * `noise_rate`   – additive noise for range-rate (m/s)
 ///
 /// Returns `[range_m, range_rate_m_s]`.
-#[allow(dead_code)]
 pub fn radar_range_rate_measurement(
     radar_pos: [f64; 3],
     radar_vel: [f64; 3],
@@ -856,6 +849,7 @@ pub fn radar_range_rate_measurement(
 }
 #[cfg(test)]
 mod tests_sensors_extended {
+    use super::super::types_advanced::*;
     use super::*;
     #[test]
     fn test_dop_from_many_sats_is_low() {

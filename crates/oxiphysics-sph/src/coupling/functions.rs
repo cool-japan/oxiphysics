@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use crate::coupling::types::*;
 
 /// Smooth transition weight function for the handshake region.
@@ -189,7 +187,6 @@ pub fn cubic_kernel_grad(r: f64, h: f64) -> f64 {
 ///
 /// The net SPH force `F = Σ sph_forces\[i\]` accelerates the body:
 ///   v_new = v_old + (F / body_mass) · dt
-#[allow(dead_code)]
 pub fn two_way_coupling_update(
     sph_forces: &[[f64; 3]],
     body_mass: f64,
@@ -212,7 +209,6 @@ pub fn two_way_coupling_update(
 ///
 /// For each FEM node `n` and each SPH particle `p`, the weight is
 /// W(|x_n - x_p|, h) · m_p / ρ_p  (consistent with SPH interpolation).
-#[allow(dead_code)]
 pub fn build_sph_fem_weights(
     fem_positions: &[[f64; 3]],
     sph_positions: &[[f64; 3]],
@@ -243,7 +239,6 @@ pub fn build_sph_fem_weights(
     weights
 }
 /// Transfer velocity from SPH particles to FEM nodes via interpolation weights.
-#[allow(dead_code)]
 pub fn sph_to_fem_velocity(
     weights: &[SphFemWeight],
     sph_velocities: &[[f64; 3]],
@@ -258,18 +253,17 @@ pub fn sph_to_fem_velocity(
         vel_fem[wt.fem_idx][2] += wt.weight * v[2];
         w_sum[wt.fem_idx] += wt.weight;
     }
-    for ni in 0..n_fem_nodes {
-        if w_sum[ni] > 1e-30 {
-            let inv = 1.0 / w_sum[ni];
-            for c in 0..3 {
-                vel_fem[ni][c] *= inv;
+    for (vf, &ws) in vel_fem.iter_mut().zip(w_sum.iter()) {
+        if ws > 1e-30 {
+            let inv = 1.0 / ws;
+            for c in vf.iter_mut() {
+                *c *= inv;
             }
         }
     }
     vel_fem
 }
 /// Transfer stress/pressure from FEM nodes to SPH particles.
-#[allow(dead_code)]
 pub fn fem_to_sph_pressure(
     weights: &[SphFemWeight],
     fem_pressures: &[f64],
@@ -293,7 +287,6 @@ pub fn fem_to_sph_pressure(
 /// F_LJ = ε_LJ · \[(r0/r)^n1 - (r0/r)^n2\] / r² · (x_j - x_i)
 ///
 /// Typical: n1=4, n2=2, r0 = particle spacing.
-#[allow(dead_code)]
 pub fn lennard_jones_repulsion(
     pos_fluid: [f64; 3],
     pos_boundary: [f64; 3],
@@ -322,7 +315,6 @@ pub fn lennard_jones_repulsion(
 /// p_w = (Σ_f p_f W_fw + (g - a_w) · Σ_f ρ_f (x_w - x_f) W_fw) / Σ_f W_fw
 ///
 /// Here we use the simplified form without body force.
-#[allow(dead_code)]
 pub fn adami_wall_pressure(
     fluid_pressures: &[f64],
     fluid_positions: &[[f64; 3]],
@@ -345,7 +337,6 @@ pub fn adami_wall_pressure(
 /// Compute the SPH boundary velocity (mirror/ghost-particle method).
 ///
 /// v_wall_ghost = 2 v_wall - v_fluid_avg  (no-slip condition)
-#[allow(dead_code)]
 pub fn ghost_particle_velocity(
     v_wall: [f64; 3],
     fluid_velocities: &[[f64; 3]],
@@ -355,20 +346,20 @@ pub fn ghost_particle_velocity(
 ) -> [f64; 3] {
     let mut v_avg = [0.0_f64; 3];
     let mut w_sum = 0.0_f64;
-    for (i, &fp) in fluid_positions.iter().enumerate() {
-        let r = dist(ghost_pos, fp);
+    for (fp, fv) in fluid_positions.iter().zip(fluid_velocities.iter()) {
+        let r = dist(ghost_pos, *fp);
         if r > 2.0 * h {
             continue;
         }
         let w = cubic_kernel(r, h);
-        for c in 0..3 {
-            v_avg[c] += w * fluid_velocities[i][c];
+        for (va, &fvc) in v_avg.iter_mut().zip(fv.iter()) {
+            *va += w * fvc;
         }
         w_sum += w;
     }
     if w_sum > 1e-30 {
-        for c in 0..3 {
-            v_avg[c] /= w_sum;
+        for va in v_avg.iter_mut() {
+            *va /= w_sum;
         }
     }
     [
@@ -382,7 +373,6 @@ pub fn ghost_particle_velocity(
 /// F^FEM_n = Σ_p φ_n(x_p) · f^SPH_p · V_p
 ///
 /// where φ_n are hat functions approximated by kernel weights.
-#[allow(dead_code)]
 pub fn sph_to_fem_nodal_forces(
     weights: &[SphFemWeight],
     sph_forces: &[[f64; 3]],

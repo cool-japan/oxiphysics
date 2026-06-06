@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::type_complexity)]
-#[allow(unused_imports)]
-use super::functions::*;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
@@ -104,6 +101,9 @@ impl NamedMorphism {
         }
     }
 }
+/// A product morphism: `((f_name, g_name), (dom_c, dom_d), (cod_c, cod_d))`.
+pub type ProductMorphism = ((String, String), (String, String), (String, String));
+
 /// The product of two categories C x D.
 ///
 /// Objects are pairs `(c, d)` where `c` is an object of C and `d` is an object of D.
@@ -117,7 +117,7 @@ pub struct ProductCategory {
     /// Product objects as `(c_label, d_label)` pairs.
     pub product_objects: Vec<(String, String)>,
     /// Product morphisms as `((f_name, g_name), (dom_c, dom_d), (cod_c, cod_d))`.
-    pub product_morphisms: Vec<((String, String), (String, String), (String, String))>,
+    pub product_morphisms: Vec<ProductMorphism>,
 }
 impl ProductCategory {
     /// Create a product category from two component categories.
@@ -165,11 +165,7 @@ impl ProductCategory {
         self.product_objects.get(idx).map(|(_, d)| d.as_str())
     }
     /// Compose two product morphisms component-wise.
-    pub fn compose_product_morphisms(
-        &self,
-        f_idx: usize,
-        g_idx: usize,
-    ) -> Option<((String, String), (String, String), (String, String))> {
+    pub fn compose_product_morphisms(&self, f_idx: usize, g_idx: usize) -> Option<ProductMorphism> {
         let f = self.product_morphisms.get(f_idx)?;
         let g = self.product_morphisms.get(g_idx)?;
         if f.2 != g.1 {

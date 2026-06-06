@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
 /// Dynamic fracture toughness model (Freund's model).
 ///
@@ -532,14 +531,12 @@ impl FractureMesh {
 /// ```
 /// Solved analytically: `tan(θ/2) = K_I / (4*K_II) - sign(K_II) * sqrt((K_I/(4*K_II))² + 0.5)`
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct CrackBranching {
     /// Mode-I stress intensity factor (Pa·√m).
     pub k_i: f64,
     /// Mode-II stress intensity factor (Pa·√m).
     pub k_ii: f64,
 }
-#[allow(dead_code)]
 impl CrackBranching {
     /// Create a new branching model.
     pub fn new(k_i: f64, k_ii: f64) -> Self {
@@ -884,14 +881,12 @@ impl CodProfile {
 /// ```
 /// Solved iteratively to self-consistency.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CrackPropagation {
     /// Dynamic fracture toughness model.
     pub toughness: DynamicFractureToughness,
     /// Applied (static) stress intensity factor K_I (Pa·√m).
     pub k_i_applied: f64,
 }
-#[allow(dead_code)]
 impl CrackPropagation {
     /// Create a new propagation model.
     pub fn new(k_ic: f64, rayleigh_speed: f64, exponent: f64, k_i_applied: f64) -> Self {
@@ -946,7 +941,6 @@ impl CrackPropagation {
 /// * ε̇   – strain rate (1/s)
 /// * E    – Young's modulus (Pa)
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FragmentDistribution {
     /// Fracture toughness K_Ic (Pa·√m).
     pub fracture_toughness: f64,
@@ -955,7 +949,6 @@ pub struct FragmentDistribution {
     /// Young's modulus E (Pa).
     pub youngs_modulus: f64,
 }
-#[allow(dead_code)]
 impl FragmentDistribution {
     /// Create a new fragment distribution model.
     pub fn new(fracture_toughness: f64, density: f64, youngs_modulus: f64) -> Self {

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,8 +13,6 @@
 //! - Trajectory metadata
 //! - Coordinate compression (quantization)
 //! - Box matrix utilities
-
-#![allow(dead_code)]
 
 // ─────────────────────────────────────────────
 //  XTC  (simplified, lossless)
@@ -638,7 +635,7 @@ impl SimpleDcdReader {
                 Vec::with_capacity(n),
             ];
 
-            for dim in 0..3usize {
+            for (dim, xyz_dim) in xyz.iter_mut().enumerate() {
                 let block_len = read_u32!() as usize;
                 let expected = n * 4;
                 if block_len != expected {
@@ -647,7 +644,7 @@ impl SimpleDcdReader {
                     ));
                 }
                 for _ in 0..n {
-                    xyz[dim].push(read_f32!());
+                    xyz_dim.push(read_f32!());
                 }
                 let block_len2 = read_u32!() as usize;
                 if block_len2 != block_len {
@@ -679,7 +676,6 @@ impl SimpleDcdReader {
 ///
 /// Each element in `frames` is a slice of `[f32; 3]` positions for one frame.
 /// Returns the complete DCD byte stream.
-#[allow(dead_code)]
 pub fn write_dcd_trajectory(n_atoms: u32, timestep: f32, frames: &[Vec<[f32; 3]>]) -> Vec<u8> {
     let mut writer = SimpleDcdWriter::new(n_atoms, timestep);
     for frame in frames {
@@ -692,7 +688,6 @@ pub fn write_dcd_trajectory(n_atoms: u32, timestep: f32, frames: &[Vec<[f32; 3]>
 ///
 /// This reads the existing stream, appends the new frame, and returns the
 /// updated byte stream.
-#[allow(dead_code)]
 pub fn append_dcd_frame(existing: &[u8], new_positions: &[[f32; 3]]) -> Result<Vec<u8>, String> {
     let (header, mut frames) = SimpleDcdReader::from_bytes(existing)?;
     let mut writer = SimpleDcdWriter::with_title(header.n_atoms, header.timestep, &header.title);
@@ -715,7 +710,6 @@ pub fn append_dcd_frame(existing: &[u8], new_positions: &[[f32; 3]]) -> Result<V
 ///
 /// Precision is given as the number of decimal places to keep (1-6).
 /// Higher precision retains more spatial detail but produces larger files.
-#[allow(dead_code)]
 pub fn apply_xtc_precision(writer: &mut SimpleXtcWriter, precision: u32) {
     let q = CoordinateQuantizer::new(precision);
     for frame in writer.frames.iter_mut() {
@@ -726,7 +720,6 @@ pub fn apply_xtc_precision(writer: &mut SimpleXtcWriter, precision: u32) {
 /// Round-trip an XTC byte stream through a given precision level.
 ///
 /// Returns the re-encoded bytes at the given coordinate precision.
-#[allow(dead_code)]
 pub fn xtc_recompress(data: &[u8], precision: u32) -> Result<Vec<u8>, String> {
     let frames = SimpleXtcReader::from_bytes(data)?;
     let q = CoordinateQuantizer::new(precision);
@@ -739,7 +732,6 @@ pub fn xtc_recompress(data: &[u8], precision: u32) -> Result<Vec<u8>, String> {
 }
 
 /// Compute the root-mean-square deviation (RMSD) between two sets of positions.
-#[allow(dead_code)]
 pub fn compute_rmsd(a: &[[f32; 3]], b: &[[f32; 3]]) -> f32 {
     if a.is_empty() || a.len() != b.len() {
         return 0.0;
@@ -767,7 +759,6 @@ pub fn compute_rmsd(a: &[[f32; 3]], b: &[[f32; 3]]) -> f32 {
 /// Frame times (in ps) are preserved in the DCD timestep if all frames have
 /// the same inter-frame interval; otherwise the average is used.
 /// Atom count is taken from the first XTC frame.
-#[allow(dead_code)]
 pub fn xtc_to_dcd(xtc_data: &[u8]) -> Result<Vec<u8>, String> {
     let frames = SimpleXtcReader::from_bytes(xtc_data)?;
     if frames.is_empty() {
@@ -790,7 +781,6 @@ pub fn xtc_to_dcd(xtc_data: &[u8]) -> Result<Vec<u8>, String> {
 /// Convert a simplified DCD byte stream to an XTC byte stream.
 ///
 /// Positions are converted from Å (DCD) to nm (XTC) by dividing by 10.
-#[allow(dead_code)]
 pub fn dcd_to_xtc(dcd_data: &[u8]) -> Result<Vec<u8>, String> {
     let (header, frames) = SimpleDcdReader::from_bytes(dcd_data)?;
     let timestep_ps = header.timestep;
@@ -810,21 +800,18 @@ pub fn dcd_to_xtc(dcd_data: &[u8]) -> Result<Vec<u8>, String> {
 // ─────────────────────────────────────────────
 
 /// Extract the simulation time (in ps) for every frame in an XTC byte stream.
-#[allow(dead_code)]
 pub fn xtc_extract_frame_times(data: &[u8]) -> Result<Vec<f32>, String> {
     let frames = SimpleXtcReader::from_bytes(data)?;
     Ok(frames.iter().map(|f| f.time).collect())
 }
 
 /// Extract the simulation step number for every frame in an XTC byte stream.
-#[allow(dead_code)]
 pub fn xtc_extract_frame_steps(data: &[u8]) -> Result<Vec<i32>, String> {
     let frames = SimpleXtcReader::from_bytes(data)?;
     Ok(frames.iter().map(|f| f.step).collect())
 }
 
 /// Compute inter-frame time deltas (ps) from an XTC byte stream.
-#[allow(dead_code)]
 pub fn xtc_frame_time_deltas(data: &[u8]) -> Result<Vec<f32>, String> {
     let times = xtc_extract_frame_times(data)?;
     if times.len() < 2 {
@@ -847,13 +834,11 @@ pub struct XtcFrameWithVelocity {
 
 impl XtcFrameWithVelocity {
     /// Create from a position-only frame and separately computed velocities.
-    #[allow(dead_code)]
     pub fn new(frame: XtcFrame, velocities: Vec<[f32; 3]>) -> Self {
         Self { frame, velocities }
     }
 
     /// Kinetic energy (sum of 0.5 * v^2 for each atom, unweighted).
-    #[allow(dead_code)]
     pub fn kinetic_energy_proxy(&self) -> f32 {
         self.velocities
             .iter()
@@ -862,7 +847,6 @@ impl XtcFrameWithVelocity {
     }
 
     /// RMS speed (root-mean-square over all atoms).
-    #[allow(dead_code)]
     pub fn rms_speed(&self) -> f32 {
         if self.velocities.is_empty() {
             return 0.0;
@@ -877,7 +861,6 @@ impl XtcFrameWithVelocity {
     }
 
     /// Maximum speed among all atoms.
-    #[allow(dead_code)]
     pub fn max_speed(&self) -> f32 {
         self.velocities
             .iter()
@@ -899,7 +882,6 @@ pub struct XtcVelocityWriter {
 
 impl XtcVelocityWriter {
     /// Create an empty velocity writer.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             positions: SimpleXtcWriter::new(),
@@ -908,7 +890,6 @@ impl XtcVelocityWriter {
     }
 
     /// Add a frame with both positions and velocities.
-    #[allow(dead_code)]
     pub fn add_frame(
         &mut self,
         step: i32,
@@ -921,7 +902,6 @@ impl XtcVelocityWriter {
     }
 
     /// Number of frames stored.
-    #[allow(dead_code)]
     pub fn frame_count(&self) -> usize {
         self.positions.frame_count()
     }
@@ -929,7 +909,6 @@ impl XtcVelocityWriter {
     /// Serialize positions and velocities to bytes.
     ///
     /// Layout: XTC bytes + velocity magic (4) + velocity payload.
-    #[allow(dead_code)]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = self.positions.to_bytes();
         // Velocity block marker
@@ -947,7 +926,6 @@ impl XtcVelocityWriter {
     }
 
     /// Compute kinetic energy proxy for a frame.
-    #[allow(dead_code)]
     pub fn frame_kinetic_energy(&self, frame_idx: usize) -> f32 {
         if frame_idx >= self.velocities.len() {
             return 0.0;
@@ -969,7 +947,6 @@ impl Default for XtcVelocityWriter {
 ///
 /// Returns one fewer velocity frame than position frames.
 /// `dt_ps` is the time step in picoseconds between consecutive frames.
-#[allow(dead_code)]
 pub fn compute_finite_difference_velocities(frames: &[XtcFrame], dt_ps: f32) -> Vec<Vec<[f32; 3]>> {
     if frames.len() < 2 || dt_ps < 1e-30 {
         return Vec::new();

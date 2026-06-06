@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use crate::atom::AtomSet;
 
 /// Trait for thermostats that control the system temperature.
@@ -698,11 +697,10 @@ mod nhc_langevin_tests {
     fn test_langevin_friction_force_zero_velocity() {
         let mut lang = LangevinThermostat::with_seed(1.5, 1234);
         let (f_fric, _) = lang.compute_friction_force([0.0, 0.0, 0.0], 2.0, 300.0, 0.001, 1.0);
-        for k in 0..3 {
+        for v in f_fric {
             assert!(
-                f_fric[k].abs() < 1e-30,
-                "zero-velocity friction must be zero, got {}",
-                f_fric[k]
+                v.abs() < 1e-30,
+                "zero-velocity friction must be zero, got {v}"
             );
         }
     }

@@ -14,7 +14,6 @@ use std::sync::Arc;
 // ── ColliderShape ─────────────────────────────────────────────────────────────
 
 /// Analytic shape description stored directly in a collider (no trait object).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum ColliderShape {
     /// Sphere with the given radius.
@@ -110,7 +109,6 @@ impl ColliderShape {
 // ── ColliderMaterial ──────────────────────────────────────────────────────────
 
 /// Physical material properties attached to a collider.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ColliderMaterial {
     /// Coulomb friction coefficient (dimensionless, ≥ 0).
@@ -145,7 +143,6 @@ impl ColliderMaterial {
 // ── Aabb ──────────────────────────────────────────────────────────────────────
 
 /// Axis-aligned bounding box in 3D.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Aabb {
     /// Minimum corner.
@@ -189,7 +186,6 @@ impl Aabb {
 ///
 /// Unlike `Collider` (which wraps a trait-object), `SimpleCollider` uses the
 /// `ColliderShape` enum and therefore never allocates on the heap.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SimpleCollider {
     /// Analytic shape.
@@ -265,7 +261,6 @@ pub struct SimpleColliderHandle {
 // ── SimpleColliderSet ─────────────────────────────────────────────────────────
 
 /// Generational arena of `SimpleCollider` objects.
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct SimpleColliderSet {
     colliders: Vec<Option<SimpleCollider>>,
@@ -273,7 +268,6 @@ pub struct SimpleColliderSet {
     free_list: Vec<u32>,
 }
 
-#[allow(dead_code)]
 impl SimpleColliderSet {
     /// Create an empty set.
     pub fn new() -> Self {
@@ -500,7 +494,6 @@ impl Collider {
 ///
 /// Returns `(mass, center_of_mass, inertia_diagonal)` where inertia is the
 /// principal moments Ixx, Iyy, Izz about the local centre of mass.
-#[allow(dead_code)]
 pub fn shape_mass_properties(shape: &ColliderShape, density: f64) -> (f64, [f64; 3], [f64; 3]) {
     match shape {
         ColliderShape::Sphere { radius } => {
@@ -556,7 +549,6 @@ pub fn shape_mass_properties(shape: &ColliderShape, density: f64) -> (f64, [f64;
 /// Minimal 3-D rigid transform stored as position + rotation (column-major 3×3).
 ///
 /// This is the no-nalgebra version used by `SimpleCollider`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ColliderTransform {
     /// World-space position.
@@ -624,7 +616,6 @@ impl Default for ColliderTransform {
 ///
 /// Used when colliders need arbitrary orientation in addition to a position
 /// offset.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TransformedCollider {
     /// Underlying simple collider.
@@ -633,7 +624,6 @@ pub struct TransformedCollider {
     pub local_transform: ColliderTransform,
 }
 
-#[allow(dead_code)]
 impl TransformedCollider {
     /// Create a new transformed collider.
     pub fn new(collider: SimpleCollider, local_transform: ColliderTransform) -> Self {
@@ -662,14 +652,12 @@ impl TransformedCollider {
 // ── CompoundColliderShape ────────────────────────────────────────────────────
 
 /// A compound shape made of multiple `ColliderShape`s with local offsets.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompoundColliderShape {
     /// Child shapes and their local position offsets.
     pub children: Vec<(ColliderShape, [f64; 3])>,
 }
 
-#[allow(dead_code)]
 impl CompoundColliderShape {
     /// Create an empty compound shape.
     pub fn new() -> Self {
@@ -765,7 +753,6 @@ impl Default for CompoundColliderShape {
 ///
 /// Wraps a `ColliderShape` and exposes convenience APIs for sensor-specific
 /// behaviour (e.g., event queue integration).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SensorCollider {
     /// The sensor shape.
@@ -780,7 +767,6 @@ pub struct SensorCollider {
     pub sensor_id: u32,
 }
 
-#[allow(dead_code)]
 impl SensorCollider {
     /// Create a new sensor.
     pub fn new(shape: ColliderShape, position: [f64; 3], sensor_id: u32) -> Self {
@@ -821,7 +807,6 @@ impl SensorCollider {
 // ── ColliderMaterialCombiner ──────────────────────────────────────────────────
 
 /// Rules for combining friction and restitution from two colliders in contact.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CombineRule {
     /// Average of the two values.
@@ -847,7 +832,6 @@ impl CombineRule {
 }
 
 /// Compute the combined friction and restitution for a contact pair.
-#[allow(dead_code)]
 pub fn combine_materials(
     mat_a: &ColliderMaterial,
     mat_b: &ColliderMaterial,

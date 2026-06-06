@@ -140,7 +140,6 @@ impl PcisphSolver {
     // -----------------------------------------------------------------------
 
     /// Compute SPH densities (kernel summation, including self-contribution).
-    #[allow(clippy::needless_range_loop)]
     fn compute_densities(
         &self,
         positions: &[Vec3],
@@ -163,7 +162,6 @@ impl PcisphSolver {
     }
 
     /// Compute pressure forces from a pressure field.
-    #[allow(clippy::needless_range_loop)]
     fn pressure_forces(
         &self,
         positions: &[Vec3],
@@ -218,7 +216,6 @@ impl PcisphSolver {
     /// # Note
     /// `delta` must be positive (call [`Self::compute_delta`] first).  If
     /// `delta ≤ 0` the function returns zero forces immediately.
-    #[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
     pub fn solve_pressure(
         &self,
         positions: &[Vec3],
@@ -290,7 +287,6 @@ impl PcisphSolver {
     ///
     /// Identical to [`Self::solve_pressure`] but returns both the forces and
     /// convergence statistics via [`PcisphConvergenceInfo`].
-    #[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
     pub fn solve_pressure_tracked(
         &self,
         positions: &[Vec3],
@@ -374,7 +370,6 @@ impl PcisphSolver {
 
     /// Compute the average density error (fraction of rest density) from a
     /// predicted state.
-    #[allow(dead_code, clippy::needless_range_loop)]
     pub fn compute_density_error(
         &self,
         positions: &[Vec3],
@@ -397,7 +392,6 @@ impl PcisphSolver {
     ///
     /// Uses the CFL-like condition: dt_new = cfl_factor * h / v_max.
     /// Clamps between `dt_min` and `dt_max`.
-    #[allow(dead_code)]
     pub fn adaptive_timestep(
         &self,
         velocities: &[Vec3],
@@ -414,7 +408,6 @@ impl PcisphSolver {
     }
 
     /// Compute the maximum pressure across all particles (useful for diagnostics).
-    #[allow(dead_code, clippy::needless_range_loop, clippy::too_many_arguments)]
     pub fn max_pressure_after_solve(
         &self,
         positions: &[Vec3],
@@ -480,7 +473,6 @@ pub struct PcisphConvergenceInfo {
 ///
 /// Wraps [`PcisphSolver`] and adjusts `dt` based on CFL conditions and
 /// convergence feedback.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AdaptivePcisph {
     /// Inner solver.
@@ -499,7 +491,6 @@ pub struct AdaptivePcisph {
     pub growth_factor: f64,
 }
 
-#[allow(dead_code)]
 impl AdaptivePcisph {
     /// Create a new adaptive PCISPH wrapper.
     pub fn new(solver: PcisphSolver, dt_max: f64) -> Self {
@@ -516,7 +507,6 @@ impl AdaptivePcisph {
 
     /// Perform one adaptive solve step.  Returns the pressure forces and the
     /// time step actually used.
-    #[allow(clippy::too_many_arguments)]
     pub fn solve_adaptive(
         &mut self,
         positions: &[Vec3],
@@ -556,13 +546,11 @@ impl AdaptivePcisph {
 // ---------------------------------------------------------------------------
 
 /// Compute per-particle density errors (signed) relative to rest density.
-#[allow(dead_code)]
 pub fn compute_density_errors(densities: &[f64], rest_density: f64) -> Vec<f64> {
     densities.iter().map(|&d| d - rest_density).collect()
 }
 
 /// Compute the RMS density error relative to rest density.
-#[allow(dead_code)]
 pub fn rms_density_error(densities: &[f64], rest_density: f64) -> f64 {
     if densities.is_empty() {
         return 0.0;
@@ -578,7 +566,6 @@ pub fn rms_density_error(densities: &[f64], rest_density: f64) -> f64 {
 }
 
 /// Clamp pressures to non-negative values (used in PCISPH).
-#[allow(dead_code)]
 pub fn clamp_pressures(pressures: &mut [f64]) {
     for p in pressures.iter_mut() {
         if *p < 0.0 {
@@ -590,7 +577,6 @@ pub fn clamp_pressures(pressures: &mut [f64]) {
 /// Apply a simple under-relaxation to pressure updates.
 ///
 /// `p_new = (1 - omega) * p_old + omega * p_candidate`
-#[allow(dead_code)]
 pub fn relax_pressures(old: &[f64], candidate: &[f64], omega: f64) -> Vec<f64> {
     old.iter()
         .zip(candidate.iter())
@@ -607,7 +593,6 @@ pub fn relax_pressures(old: &[f64], candidate: &[f64], omega: f64) -> Vec<f64> {
 /// This table stores `(spacing, delta)` pairs and provides interpolation for
 /// configurations that fall between stored values.  Using a table avoids
 /// recomputing the O(N_reg³) loop at every restart.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PressureCoefficientTable {
     /// Stored `(spacing, delta)` entries, sorted by spacing ascending.
@@ -618,7 +603,6 @@ pub struct PressureCoefficientTable {
     pub h: f64,
 }
 
-#[allow(dead_code)]
 impl PressureCoefficientTable {
     /// Build a table by sampling `n_samples` spacings logarithmically between
     /// `spacing_min` and `spacing_max`.
@@ -685,7 +669,6 @@ impl PressureCoefficientTable {
 // ---------------------------------------------------------------------------
 
 /// Tracks density error history across time steps for diagnostics.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct DensityErrorTracker {
     /// Per-step max density error history.
@@ -696,7 +679,6 @@ pub struct DensityErrorTracker {
     pub iter_counts: Vec<usize>,
 }
 
-#[allow(dead_code)]
 impl DensityErrorTracker {
     /// Create an empty tracker.
     pub fn new() -> Self {
@@ -750,7 +732,6 @@ impl DensityErrorTracker {
 /// where κ_i = δ * (ρ_i - ρ₀).
 ///
 /// Returns the correction displacement `[Δx, Δy, Δz]` for particle `i`.
-#[allow(clippy::too_many_arguments)]
 pub fn pcisph_correction_vector(
     pos_i: [f64; 3],
     rho_i: f64,
@@ -806,7 +787,6 @@ pub fn pcisph_correction_vector(
 ///
 /// Provides methods to check whether the solver should exit early based on
 /// the density error trend.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PcisphConvergenceMonitor {
     /// History of max density errors within the current time step's iteration.
@@ -819,7 +799,6 @@ pub struct PcisphConvergenceMonitor {
     pub max_iter: usize,
 }
 
-#[allow(dead_code)]
 impl PcisphConvergenceMonitor {
     /// Create a new convergence monitor.
     pub fn new(tolerance: f64, min_iter: usize, max_iter: usize) -> Self {
@@ -881,7 +860,6 @@ impl PcisphConvergenceMonitor {
 /// Compute SPH density using plain `[f64; 3]` arrays (no Vec3 dependency).
 ///
 /// Uses the cubic spline kernel W(r, h).
-#[allow(dead_code)]
 pub fn sph_density_plain(
     pos_i: [f64; 3],
     h: f64,

@@ -2,9 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_range_contains)]
-#[allow(unused_imports)]
+#[cfg(test)]
 use super::functions::*;
 use super::functions::{lu_decompose, lu_solve, matvec_dense, normalize, vec_norm};
 use super::types::SubspaceConvergence;
@@ -16,7 +14,6 @@ use super::types::SubspaceConvergence;
 ///
 /// Returns `(eigenvalue, eigenvector)` on convergence, or the best estimate
 /// if `max_iter` is exhausted.
-#[allow(dead_code)]
 pub fn rayleigh_quotient_iteration(
     a: &[Vec<f64>],
     n: usize,
@@ -37,8 +34,8 @@ pub fn rayleigh_quotient_iteration(
     };
     for _ in 0..max_iter {
         let mut a_shifted: Vec<Vec<f64>> = a.to_vec();
-        for i in 0..n {
-            a_shifted[i][i] -= mu;
+        for (i, row) in a_shifted.iter_mut().enumerate().take(n) {
+            row[i] -= mu;
         }
         let lu = lu_decompose(&a_shifted, n);
         let w = lu_solve(&lu, &v, n);
@@ -72,7 +69,6 @@ pub fn rayleigh_quotient_iteration(
 ///
 /// Solves `(A - sigma I) w = v` at each step, then normalizes.
 /// Converges to the eigenvector for the eigenvalue nearest `sigma`.
-#[allow(dead_code)]
 pub fn inverse_iteration(
     a: &[Vec<f64>],
     n: usize,
@@ -84,8 +80,8 @@ pub fn inverse_iteration(
         return None;
     }
     let mut a_shifted: Vec<Vec<f64>> = a.to_vec();
-    for i in 0..n {
-        a_shifted[i][i] -= sigma;
+    for (i, row) in a_shifted.iter_mut().enumerate().take(n) {
+        row[i] -= sigma;
     }
     let lu = lu_decompose(&a_shifted, n);
     let mut v: Vec<f64> = (0..n).map(|i| 1.0 + 0.01 * i as f64).collect();
@@ -119,7 +115,6 @@ pub fn inverse_iteration(
 ///
 /// Scales each mode `phi_i` so that `phi_i^T * M * phi_i = 1`.
 /// `m_diag` is the diagonal mass vector.
-#[allow(dead_code)]
 pub fn mass_normalize_modes(modes: &[Vec<f64>], m_diag: &[f64]) -> Vec<Vec<f64>> {
     modes
         .iter()
@@ -138,7 +133,6 @@ pub fn mass_normalize_modes(modes: &[Vec<f64>], m_diag: &[f64]) -> Vec<Vec<f64>>
 ///
 /// Computes the generalized mass matrix `M_modal = Phi^T M Phi`.
 /// Returns the off-diagonal norm (should be near zero for orthogonal modes).
-#[allow(dead_code)]
 pub fn check_mass_orthogonality(modes: &[Vec<f64>], m_diag: &[f64]) -> f64 {
     let n_modes = modes.len();
     let mut off_diag_sq = 0.0;
@@ -165,7 +159,6 @@ pub fn check_mass_orthogonality(modes: &[Vec<f64>], m_diag: &[f64]) -> f64 {
 /// `beta`  – off-diagonal (length n-1)
 ///
 /// Returns eigenvalues sorted ascending.
-#[allow(dead_code)]
 pub fn tridiagonal_eigenvalues_bisection(alpha: &[f64], beta: &[f64]) -> Vec<f64> {
     let n = alpha.len();
     if n == 0 {
@@ -224,7 +217,6 @@ pub fn tridiagonal_eigenvalues_bisection(alpha: &[f64], beta: &[f64]) -> Vec<f64
     eigenvalues
 }
 /// Compute residual norms for each eigenpair `(lambda, v)`.
-#[allow(dead_code)]
 pub fn eigenpair_residuals(
     a: &[Vec<f64>],
     n: usize,
@@ -249,7 +241,6 @@ pub fn eigenpair_residuals(
 ///
 /// For the generalized eigenproblem K*phi = lambda*M*phi, the Rayleigh
 /// quotient provides an upper bound on the smallest eigenvalue.
-#[allow(dead_code)]
 pub fn generalized_rayleigh_quotient(k: &[Vec<f64>], m_diag: &[f64], v: &[f64]) -> f64 {
     let n = v.len();
     let kv = matvec_dense(k, v, n);
@@ -270,7 +261,6 @@ pub fn generalized_rayleigh_quotient(k: &[Vec<f64>], m_diag: &[f64], v: &[f64]) 
 /// `Gamma_i = phi_i^T * M * r`
 ///
 /// Returns a vector of participation factors (one per mode).
-#[allow(dead_code)]
 pub fn modal_participation_factors(
     modes: &[Vec<f64>],
     m_diag: &[f64],
@@ -293,7 +283,6 @@ pub fn modal_participation_factors(
 /// H(omega) = Σ_i Gamma_i² / (omega_i² - omega² + 2i*zeta_i*omega_i*omega)
 ///
 /// Returns the magnitude (real approximation without damping for simplicity).
-#[allow(dead_code)]
 pub fn frf_magnitude(
     omega_sq: &[f64],
     participation_factors: &[f64],
@@ -474,7 +463,7 @@ mod eigen_extended_tests {
         let v = vec![1.0 / 2.0f64.sqrt(), 1.0 / 2.0f64.sqrt()];
         let rq = generalized_rayleigh_quotient(&k, &m_diag, &v);
         assert!(
-            rq >= 2.0 - 1e-10 && rq <= 8.0 + 1e-10,
+            (2.0 - 1e-10..=8.0 + 1e-10).contains(&rq),
             "Rayleigh quotient {rq} should be in [2,8]"
         );
     }

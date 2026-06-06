@@ -2,10 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// Arruda-Boyce hyperelastic material (8-chain rubber elasticity model).
 ///
 /// W = mu * sum_{i=1..5} C_i / lambda_m^{2i-2} * (I1^i - 3^i) + K/2*(J-1)^2
@@ -284,7 +281,6 @@ pub struct NearlyIncompressibleNeoHookean {
     /// Current pressure variable p (mixed formulation).
     pub pressure: f64,
 }
-#[allow(dead_code)]
 impl NearlyIncompressibleNeoHookean {
     /// Create from Young's modulus and Poisson's ratio.
     pub fn from_young_poisson(e: f64, nu: f64) -> Self {

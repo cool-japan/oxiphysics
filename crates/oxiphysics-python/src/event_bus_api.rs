@@ -9,9 +9,6 @@
 //! The pyclass is therefore marked `unsendable` — it cannot be shared
 //! across Python threads.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::event_bus::EventBus;
 use pyo3::prelude::*;
 

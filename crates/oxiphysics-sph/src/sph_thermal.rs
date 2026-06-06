@@ -11,8 +11,6 @@
 //! - [`nucleation`] – nucleation-site probability model
 //! - [`solidification_front`] – Stefan problem front velocity
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -117,7 +115,6 @@ impl ThermalParticle {
     /// * `temperature`         – initial temperature (K)
     /// * `thermal_conductivity` – λ (W/(m·K))
     /// * `specific_heat`       – c_p (J/(kg·K))
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         position: [f64; 3],
         mass: f64,
@@ -313,7 +310,6 @@ pub fn thermal_conduction_step(particles: &mut [ThermalParticle], dt: f64) {
 /// * `density_solid`       – density of the solid phase (kg/m³)
 /// * `surface_energy`      – solid–liquid interface energy γ (J/m²)
 /// * `prefactor`           – kinetic prefactor A (m⁻³ s⁻¹)
-#[allow(clippy::too_many_arguments)]
 pub fn nucleation(
     temperature: f64,
     melting_temperature: f64,

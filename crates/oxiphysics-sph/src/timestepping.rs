@@ -1,4 +1,3 @@
-#![allow(clippy::should_implement_trait)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,7 +8,6 @@
 
 /// Configuration for CFL time-step coefficients.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CflConfig {
     /// CFL coefficient for velocity/sound-speed constraint.
     pub c_cfl: f64,
@@ -19,16 +17,18 @@ pub struct CflConfig {
     pub c_force: f64,
 }
 
-impl CflConfig {
+impl Default for CflConfig {
     /// Default CFL coefficients (all 0.25).
-    pub fn default() -> Self {
+    fn default() -> Self {
         Self {
             c_cfl: 0.25,
             c_visc: 0.25,
             c_force: 0.25,
         }
     }
+}
 
+impl CflConfig {
     /// Conservative CFL coefficients (all 0.1) for stability-critical simulations.
     pub fn conservative() -> Self {
         Self {
@@ -101,7 +101,6 @@ pub fn adaptive_dt(
 
 /// High-level adaptive time stepper for SPH simulations.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TimeStepper {
     /// Current timestep.
     pub dt: f64,
@@ -317,7 +316,6 @@ pub fn max_acceleration(forces: &[[f64; 3]], masses: &[f64]) -> f64 {
 ///
 /// Particles with faster dynamics (higher velocities/accelerations) are
 /// integrated with smaller timesteps, while slow particles use larger steps.
-#[allow(dead_code)]
 pub struct MultiRateTimeStepper {
     /// Base (largest) timestep.
     pub dt_base: f64,
@@ -329,7 +327,6 @@ pub struct MultiRateTimeStepper {
     pub cfl_config: CflConfig,
 }
 
-#[allow(dead_code)]
 impl MultiRateTimeStepper {
     /// Create a new multi-rate stepper.
     pub fn new(dt_base: f64, n_levels: usize, n_particles: usize) -> Self {
@@ -395,7 +392,6 @@ impl MultiRateTimeStepper {
 
 /// Particle state for asynchronous timestepping.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct AsyncParticleState {
     /// Last update time for this particle.
     pub t_last: f64,
@@ -405,7 +401,6 @@ pub struct AsyncParticleState {
     pub t_next: f64,
 }
 
-#[allow(dead_code)]
 impl AsyncParticleState {
     /// Create a new async state.
     pub fn new(dt: f64) -> Self {
@@ -434,10 +429,8 @@ impl AsyncParticleState {
 
 /// Sub-cycling integrator: advances fast particles with multiple small steps
 /// within a single global step.
-#[allow(dead_code)]
 pub struct SubCyclingIntegrator;
 
-#[allow(dead_code)]
 impl SubCyclingIntegrator {
     /// Integrate a single particle for one global step using sub-cycling.
     ///
@@ -484,10 +477,8 @@ impl SubCyclingIntegrator {
 // ---------------------------------------------------------------------------
 
 /// Utilities for synchronizing multi-rate particles to a common time.
-#[allow(dead_code)]
 pub struct TimestepSync;
 
-#[allow(dead_code)]
 impl TimestepSync {
     /// Predict position at time `t` from last known state using linear extrapolation.
     pub fn predict_position(pos: [f64; 3], vel: [f64; 3], t_last: f64, t: f64) -> [f64; 3] {
@@ -524,10 +515,8 @@ impl TimestepSync {
 // ---------------------------------------------------------------------------
 
 /// Timestep error estimation for adaptive integration.
-#[allow(dead_code)]
 pub struct ErrorEstimator;
 
-#[allow(dead_code)]
 impl ErrorEstimator {
     /// Estimate local truncation error using Richardson extrapolation.
     ///
@@ -569,7 +558,6 @@ impl ErrorEstimator {
 }
 
 /// Fourth-order Runge-Kutta step.
-#[allow(dead_code)]
 impl RungeKuttaSph {
     /// RK4 step for a single particle.
     ///
@@ -983,10 +971,8 @@ mod tests {
 // ---------------------------------------------------------------------------
 
 /// Velocity Verlet integrator for SPH.
-#[allow(dead_code)]
 pub struct VerletIntegrator;
 
-#[allow(dead_code)]
 impl VerletIntegrator {
     /// Full velocity-Verlet step assuming constant acceleration.
     ///
@@ -1073,10 +1059,8 @@ impl VerletIntegrator {
 // ---------------------------------------------------------------------------
 
 /// Full leapfrog (kick-drift-kick) integrator.
-#[allow(dead_code)]
 pub struct LeapfrogIntegrator;
 
-#[allow(dead_code)]
 impl LeapfrogIntegrator {
     /// Complete kick-drift-kick leapfrog step.
     ///
@@ -1130,10 +1114,8 @@ impl LeapfrogIntegrator {
 /// Adams-Bashforth second-order (AB2) multi-step integrator.
 ///
 /// Requires the current and previous accelerations.
-#[allow(dead_code)]
 pub struct AdamsBashforth2;
 
-#[allow(dead_code)]
 impl AdamsBashforth2 {
     /// Adams-Bashforth 2nd-order step.
     ///
@@ -1187,10 +1169,8 @@ impl AdamsBashforth2 {
 ///
 /// Updates velocity first, then uses the new velocity for the position update.
 /// This is a first-order symplectic method that preserves a modified energy.
-#[allow(dead_code)]
 pub struct SymplecticEuler;
 
-#[allow(dead_code)]
 impl SymplecticEuler {
     /// Perform a symplectic Euler step.
     ///
@@ -1230,7 +1210,6 @@ impl SymplecticEuler {
 // ---------------------------------------------------------------------------
 
 /// Statistics about the timestep usage during a simulation.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct TimestepStatistics {
     /// History of timestep values.
@@ -1241,7 +1220,6 @@ pub struct TimestepStatistics {
     pub n_steps: u64,
 }
 
-#[allow(dead_code)]
 impl TimestepStatistics {
     /// Create empty statistics.
     pub fn new() -> Self {
@@ -1297,7 +1275,6 @@ impl TimestepStatistics {
 // ---------------------------------------------------------------------------
 
 /// SPH time stepper with variable timestep control and statistics collection.
-#[allow(dead_code)]
 pub struct VariableDtStepper {
     /// Current timestep.
     pub dt: f64,
@@ -1311,7 +1288,6 @@ pub struct VariableDtStepper {
     pub dt_max: f64,
 }
 
-#[allow(dead_code)]
 impl VariableDtStepper {
     /// Create a new variable-dt stepper.
     pub fn new(dt_init: f64, dt_min: f64, dt_max: f64) -> Self {

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,17 +6,11 @@
 //! Implements LSCM and Tutte parameterization, UV quality metrics,
 //! mesh subdivision, and mesh repair operations.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Math helpers
 // ---------------------------------------------------------------------------
-
-fn dot2(a: [f64; 2], b: [f64; 2]) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
-}
 
 fn cross2(a: [f64; 2], b: [f64; 2]) -> f64 {
     a[0] * b[1] - a[1] * b[0]
@@ -669,8 +662,8 @@ pub fn loop_subdivision(mesh: &ParamTriMesh) -> ParamTriMesh {
     }
 
     // Pad smoothed to full length
-    for i in n_orig..n_new {
-        smoothed.push(new_positions[i]);
+    for pos in new_positions.iter().take(n_new).skip(n_orig) {
+        smoothed.push(*pos);
     }
 
     // Build result mesh
@@ -1084,9 +1077,8 @@ pub struct AtlasPackResult {
 /// Pack a list of `AtlasChart`s into a texture atlas using a simple row-based packing.
 ///
 /// Charts are normalized, sorted by height, and placed in rows.
-#[allow(clippy::too_many_arguments)]
 pub fn pack_atlas_charts(
-    charts: &mut Vec<AtlasChart>,
+    charts: &mut [AtlasChart],
     n_verts: usize,
     padding: f64,
 ) -> AtlasPackResult {

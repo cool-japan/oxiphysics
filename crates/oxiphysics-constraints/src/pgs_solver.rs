@@ -1,4 +1,3 @@
-#![allow(clippy::too_many_arguments)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,7 +13,6 @@
 //! - Block PGS for coupled constraint rows.
 //! - Convergence criteria (absolute, relative, combined).
 
-#[allow(dead_code)]
 use oxiphysics_core::BodyHandle;
 use oxiphysics_rigid::RigidBodySet;
 
@@ -37,7 +35,6 @@ pub struct SolverStats {
 
 /// Convergence criteria for the PGS solver.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub enum ConvergenceCriteria {
     /// Absolute residual below threshold.
     Absolute(f64),
@@ -52,7 +49,6 @@ pub enum ConvergenceCriteria {
     },
 }
 
-#[allow(dead_code)]
 impl ConvergenceCriteria {
     /// Check if convergence is met given current and initial residual.
     pub fn is_converged(&self, residual: f64, initial_residual: f64) -> bool {
@@ -83,7 +79,6 @@ impl ConvergenceCriteria {
 /// starting is enabled the solver scales this by `dt_ratio = dt_new / dt_prev`
 /// and pre-applies it before the first iteration.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PgsState {
     /// Accumulated (normal + friction) impulse magnitudes from the last frame,
     /// indexed by constraint index.
@@ -96,7 +91,6 @@ pub struct PgsState {
 
 impl PgsState {
     /// Create a new empty state for `n` constraints.
-    #[allow(dead_code)]
     pub fn new(n: usize) -> Self {
         Self {
             lambdas: vec![0.0; n],
@@ -106,7 +100,6 @@ impl PgsState {
     }
 
     /// Reset all accumulated impulse data.
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         for l in &mut self.lambdas {
             *l = 0.0;
@@ -117,7 +110,6 @@ impl PgsState {
     }
 
     /// Scale all lambdas by `factor` (used for warm starting with dt ratio).
-    #[allow(dead_code)]
     pub fn scale(&mut self, factor: f64) {
         for l in &mut self.lambdas {
             *l *= factor;
@@ -130,20 +122,17 @@ impl PgsState {
     }
 
     /// Resize the state to accommodate `n` constraints, preserving existing data.
-    #[allow(dead_code)]
     pub fn resize(&mut self, n: usize) {
         self.lambdas.resize(n, 0.0);
         self.cached_impulses.resize(n, [0.0; 3]);
     }
 
     /// Return the total accumulated impulse magnitude (L2 norm of lambdas).
-    #[allow(dead_code)]
     pub fn total_impulse_magnitude(&self) -> f64 {
         self.lambdas.iter().map(|l| l * l).sum::<f64>().sqrt()
     }
 
     /// Return the number of active (non-zero) lambdas.
-    #[allow(dead_code)]
     pub fn active_count(&self) -> usize {
         self.lambdas.iter().filter(|&&l| l.abs() > 1e-12).count()
     }
@@ -151,7 +140,6 @@ impl PgsState {
     /// Blend current lambdas with a target using exponential smoothing.
     ///
     /// `alpha` in \[0, 1\]: 0 = keep current, 1 = take target entirely.
-    #[allow(dead_code)]
     pub fn blend(&mut self, target: &PgsState, alpha: f64) {
         let alpha = alpha.clamp(0.0, 1.0);
         let n = self.lambdas.len().min(target.lambdas.len());
@@ -174,7 +162,6 @@ impl PgsState {
 
 /// Tracks per-iteration residual history for convergence analysis.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ResidualHistory {
     /// Residual at each iteration.
     pub values: Vec<f64>,
@@ -188,7 +175,6 @@ impl Default for ResidualHistory {
     }
 }
 
-#[allow(dead_code)]
 impl ResidualHistory {
     /// Create a new empty history.
     pub fn new() -> Self {
@@ -279,7 +265,6 @@ impl PgsSolver {
     }
 
     /// Create a solver with custom tolerance and warm-starting flag.
-    #[allow(dead_code)]
     pub fn with_options(
         max_iterations: usize,
         position_iterations: usize,
@@ -350,7 +335,6 @@ impl PgsSolver {
     ///
     /// Scales cached lambdas by `dt / state.prev_dt` before the first
     /// iteration so the solver starts closer to the solution.
-    #[allow(dead_code)]
     pub fn solve_warm(
         &self,
         constraints: &mut [Box<dyn Constraint>],
@@ -395,7 +379,6 @@ impl Default for PgsSolver {
 /// systems, while under-relaxation (omega < 1.0) can improve stability for
 /// stiff or ill-conditioned constraint sets.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SorPgsSolver {
     /// Maximum number of velocity iterations.
     pub max_iterations: usize,
@@ -409,7 +392,6 @@ pub struct SorPgsSolver {
     pub warm_starting: bool,
 }
 
-#[allow(dead_code)]
 impl SorPgsSolver {
     /// Create a new SOR-PGS solver.
     pub fn new(max_iterations: usize, position_iterations: usize, omega: f64) -> Self {
@@ -497,7 +479,6 @@ impl SorPgsSolver {
 /// Block PGS groups coupled constraints (e.g., normal + 2 friction rows for
 /// a contact) and solves them simultaneously for better convergence.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ConstraintBlock {
     /// Indices into the constraint array.
     pub indices: Vec<usize>,
@@ -505,7 +486,6 @@ pub struct ConstraintBlock {
     pub label: &'static str,
 }
 
-#[allow(dead_code)]
 impl ConstraintBlock {
     /// Create a block with the given constraint indices.
     pub fn new(indices: Vec<usize>, label: &'static str) -> Self {
@@ -526,7 +506,6 @@ impl ConstraintBlock {
 /// Solve constraints in blocks for better coupled convergence.
 ///
 /// Each block is iterated multiple times internally before moving to the next.
-#[allow(dead_code)]
 pub fn solve_block_pgs(
     constraints: &mut [Box<dyn Constraint>],
     blocks: &[ConstraintBlock],
@@ -574,7 +553,6 @@ pub fn solve_block_pgs(
 /// `lambda_lo`, `lambda_hi` – projection bounds.
 ///
 /// Returns the clamped delta-lambda to apply.
-#[allow(dead_code)]
 pub fn solve_single_constraint(
     jv: f64,
     eff: f64,
@@ -591,7 +569,6 @@ pub fn solve_single_constraint(
 /// Solve a single constraint with SOR relaxation applied.
 ///
 /// `omega` – SOR relaxation factor (1.0 = standard, >1.0 = over-relaxation).
-#[allow(dead_code)]
 pub fn solve_single_constraint_sor(
     jv: f64,
     eff: f64,
@@ -613,7 +590,6 @@ pub fn solve_single_constraint_sor(
 /// `r_a`, `r_b`               – lever arms (contact-point offsets) as \[x,y,z\].
 /// `inv_i_a`, `inv_i_b`       – diagonal of the inverse inertia tensors (3 elements).
 /// `dir`                       – constraint direction as \[x,y,z\].
-#[allow(dead_code)]
 pub fn effective_mass(
     inv_mass_a: f64,
     inv_mass_b: f64,
@@ -649,7 +625,6 @@ pub fn effective_mass(
 ///
 /// CFM adds a small diagonal term to prevent singularities:
 /// `eff = 1 / (J M^-1 J^T + cfm / dt^2)`
-#[allow(dead_code)]
 pub fn effective_mass_with_cfm(
     inv_mass_a: f64,
     inv_mass_b: f64,
@@ -692,7 +667,6 @@ pub fn effective_mass_with_cfm(
 ///
 /// `jacobian` is the constraint direction \[x,y,z\]; `r` is the lever arm.
 /// The sign convention is +1 for body A and −1 for body B.
-#[allow(dead_code)]
 pub fn apply_impulse(
     bodies: &mut RigidBodySet,
     handle: BodyHandle,
@@ -731,7 +705,6 @@ pub fn apply_impulse(
 /// `lambda_t` – candidate friction impulse.
 ///
 /// Returns the clamped friction impulse.
-#[allow(dead_code)]
 pub fn clamp_friction_lambda(lambda_n: f64, mu: f64, lambda_t: f64) -> f64 {
     let limit = mu * lambda_n.max(0.0);
     lambda_t.clamp(-limit, limit)
@@ -740,7 +713,6 @@ pub fn clamp_friction_lambda(lambda_n: f64, mu: f64, lambda_t: f64) -> f64 {
 /// Clamp a 2D friction impulse to the Coulomb friction cone (elliptical).
 ///
 /// Enforces sqrt(lambda_t1^2 + lambda_t2^2) <= mu * lambda_n.
-#[allow(dead_code)]
 pub fn clamp_friction_cone_2d(
     lambda_n: f64,
     mu: f64,
@@ -763,7 +735,6 @@ pub fn clamp_friction_cone_2d(
 /// `ang_a`, `ang_b` – angular velocities.
 /// `r_a`, `r_b`     – lever arms.
 /// `dir`            – constraint direction.
-#[allow(dead_code)]
 pub fn constraint_velocity_error(
     vel_a: &[f64; 3],
     ang_a: &[f64; 3],
@@ -798,7 +769,6 @@ pub fn constraint_velocity_error(
 /// `closing_velocity` – relative velocity along normal (negative = approaching).
 /// `restitution` – coefficient of restitution.
 /// `threshold` – velocity below which restitution is suppressed.
-#[allow(dead_code)]
 pub fn restitution_bias(closing_velocity: f64, restitution: f64, threshold: f64) -> f64 {
     if closing_velocity < -threshold {
         -restitution * closing_velocity
@@ -813,7 +783,6 @@ pub fn restitution_bias(closing_velocity: f64, restitution: f64, threshold: f64)
 /// `beta` – Baumgarte coefficient.
 /// `slop` – allowed penetration before correction kicks in.
 /// `dt` – time step.
-#[allow(dead_code)]
 pub fn baumgarte_position_bias(penetration: f64, beta: f64, slop: f64, dt: f64) -> f64 {
     if dt < 1e-12 {
         return 0.0;
@@ -825,7 +794,6 @@ pub fn baumgarte_position_bias(penetration: f64, beta: f64, slop: f64, dt: f64) 
 /// Compute the velocity-level residual norm across all constraints.
 ///
 /// Returns the L2 norm of velocity changes for the bodies involved.
-#[allow(dead_code)]
 pub fn compute_velocity_residual(
     constraints: &[Box<dyn Constraint>],
     bodies: &RigidBodySet,

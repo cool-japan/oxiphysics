@@ -128,7 +128,6 @@ pub fn simplify(expr: &Expr) -> Expr {
     cur
 }
 /// One pass of simplification rules.
-#[allow(dead_code)]
 pub fn simplify_once(expr: &Expr) -> Expr {
     match expr {
         Expr::Const(v) => Expr::Const(*v),
@@ -454,7 +453,6 @@ pub fn expr_to_polynomial(expr: &Expr, var_name: &str) -> Option<Polynomial> {
     }
 }
 /// Check structural equality of two expressions.
-#[allow(dead_code)]
 pub fn expr_equal(a: &Expr, b: &Expr) -> bool {
     a == b
 }
@@ -590,7 +588,6 @@ pub fn legendre_p(n: usize) -> Polynomial {
 ///
 /// This can be used to compare different algebraically equivalent forms
 /// and pick the simplest.
-#[allow(dead_code)]
 pub fn complexity(expr: &Expr) -> usize {
     match expr {
         Expr::Const(_) | Expr::Var(_) => 1,
@@ -775,7 +772,6 @@ pub fn is_polynomial_expr(expr: &Expr) -> bool {
     }
 }
 /// Check if an expression is a rational function (ratio of polynomials).
-#[allow(dead_code)]
 pub fn is_rational_expr(expr: &Expr) -> bool {
     match expr {
         Expr::Div(a, b) => is_polynomial_expr(a) && is_polynomial_expr(b),

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -135,7 +134,6 @@ impl Boundary {
 /// Apply all boundary conditions to a 2D grid.
 ///
 /// This should be called after the streaming step.
-#[allow(clippy::too_many_arguments)]
 pub fn apply_boundaries_2d(grid: &mut LbmGrid2D, boundaries: &[Boundary]) {
     for bc in boundaries {
         match bc.bc_type {
@@ -200,12 +198,12 @@ fn apply_bounce_back(grid: &mut LbmGrid2D, x: usize, y: usize) {
     let k = grid.idx(x, y);
     let q = grid.lattice.q();
     let mut temp = vec![0.0; q];
-    for (i, temp_i) in temp.iter_mut().enumerate().take(q) {
+    for (i, temp_i) in temp.iter_mut().enumerate() {
         *temp_i = grid.f[i][k];
     }
-    for i in 0..q {
+    for (i, f_row) in grid.f.iter_mut().enumerate().take(q) {
         let opp = grid.lattice.opposite(i);
-        grid.f[i][k] = temp[opp];
+        f_row[k] = temp[opp];
     }
 }
 
@@ -408,7 +406,6 @@ fn apply_pressure_equilibrium(grid: &mut LbmGrid2D, x: usize, y: usize, rho: f64
 ///   f_i(x_b, t+1) = f_i(x_b, t) + u_conv * (f_i(x_b-1, t) - f_i(x_b, t))
 ///
 /// where x_b is the boundary cell and x_b-1 is the interior neighbour.
-#[allow(dead_code)]
 fn apply_convective_outflow(grid: &mut LbmGrid2D, x: usize, y: usize, u_conv: f64, side: WallSide) {
     let k = grid.idx(x, y);
     let q = grid.lattice.q();
@@ -456,7 +453,6 @@ fn apply_convective_outflow(grid: &mut LbmGrid2D, x: usize, y: usize, u_conv: f6
 ///
 /// Copies the distributions from the penultimate cell to the boundary cell.
 /// This is a simple zero-gradient (Neumann) outflow.
-#[allow(dead_code)]
 fn apply_extrapolation_outflow(grid: &mut LbmGrid2D, x: usize, y: usize, side: WallSide) {
     let k = grid.idx(x, y);
     let q = grid.lattice.q();
@@ -503,7 +499,6 @@ fn apply_extrapolation_outflow(grid: &mut LbmGrid2D, x: usize, y: usize, side: W
 /// Applies a velocity `u(y) = u_max * 4 * y'*(1-y')` where `y'` is the
 /// normalised position across the channel.  Uses the Zou-He velocity BC
 /// to impose the resulting velocity.
-#[allow(dead_code)]
 fn apply_parabolic_inlet(grid: &mut LbmGrid2D, x: usize, y: usize, u_max: f64, side: WallSide) {
     // Determine the channel height from the grid dimension perpendicular
     // to the inlet wall.
@@ -539,7 +534,6 @@ fn apply_parabolic_inlet(grid: &mut LbmGrid2D, x: usize, y: usize, u_max: f64, s
 /// Plug inlet velocity profile.
 ///
 /// Applies a uniform velocity across the inlet face.
-#[allow(dead_code)]
 fn apply_plug_inlet(grid: &mut LbmGrid2D, x: usize, y: usize, u_inlet: f64, side: WallSide) {
     let (ux, uy) = match side {
         WallSide::Left => (u_inlet, 0.0),
@@ -561,7 +555,6 @@ fn apply_plug_inlet(grid: &mut LbmGrid2D, x: usize, y: usize, u_inlet: f64, side
 ///   f_opp(x, t+1) = f_i(x, t) - 2 * w_i * rho_wall * (e_i . u_wall) / cs^2
 ///
 /// where the wall density is estimated from the current distributions.
-#[allow(dead_code)]
 fn apply_moving_wall(grid: &mut LbmGrid2D, x: usize, y: usize, ux_wall: f64, uy_wall: f64) {
     let k = grid.idx(x, y);
     let q = grid.lattice.q();
@@ -577,13 +570,13 @@ fn apply_moving_wall(grid: &mut LbmGrid2D, x: usize, y: usize, ux_wall: f64, uy_
         *t = grid.f[i][k];
     }
 
-    for i in 0..q {
+    for (i, &ti) in temp.iter().enumerate() {
         let opp = grid.lattice.opposite(i);
         let c = grid.lattice.velocity_2d(i);
         let eu_wall = c[0] as f64 * ux_wall + c[1] as f64 * uy_wall;
         let w = grid.lattice.weight(i);
         // Modified bounce-back with wall velocity correction.
-        grid.f[opp][k] = temp[i] - 2.0 * w * rho_wall * eu_wall / CS2;
+        grid.f[opp][k] = ti - 2.0 * w * rho_wall * eu_wall / CS2;
     }
 }
 
@@ -600,7 +593,6 @@ fn apply_moving_wall(grid: &mut LbmGrid2D, x: usize, y: usize, ux_wall: f64, uy_
 /// For simplicity, we use the single-node approximation that only uses
 /// local data (the delta >= 0.5 branch applied for all delta, clamped):
 ///   f_opp = (1/(2*delta)) * f_i + (2*delta - 1)/(2*delta) * f_opp_old
-#[allow(dead_code)]
 fn apply_interpolated_bounce_back(grid: &mut LbmGrid2D, x: usize, y: usize, delta: f64) {
     let k = grid.idx(x, y);
     let q = grid.lattice.q();
@@ -628,7 +620,6 @@ fn apply_interpolated_bounce_back(grid: &mut LbmGrid2D, x: usize, y: usize, delt
 ///
 /// This is useful when the streaming step does not automatically handle
 /// periodicity (e.g., when using non-periodic streaming kernels).
-#[allow(dead_code)]
 pub fn apply_periodic_bc_x(grid: &mut LbmGrid2D) {
     let nx = grid.nx;
     let ny = grid.ny;
@@ -651,7 +642,6 @@ pub fn apply_periodic_bc_x(grid: &mut LbmGrid2D) {
 }
 
 /// Apply periodic boundary conditions in the y-direction.
-#[allow(dead_code)]
 pub fn apply_periodic_bc_y(grid: &mut LbmGrid2D) {
     let nx = grid.nx;
     let ny = grid.ny;
@@ -681,7 +671,6 @@ pub fn apply_periodic_bc_y(grid: &mut LbmGrid2D) {
 ///
 /// Sets the density at the boundary to a prescribed value and computes
 /// the non-equilibrium part from the interior neighbour.
-#[allow(dead_code)]
 pub fn apply_pressure_neeq(grid: &mut LbmGrid2D, x: usize, y: usize, rho_bc: f64, side: WallSide) {
     let k = grid.idx(x, y);
     let q = grid.lattice.q();
@@ -766,7 +755,6 @@ pub fn zou_he_pressure_outlet(nx: usize, ny: usize, rho: f64) -> Vec<Boundary> {
 }
 
 /// Convenience: create a convective outflow on the right wall.
-#[allow(dead_code)]
 pub fn convective_outflow_right(nx: usize, ny: usize, u_conv: f64) -> Vec<Boundary> {
     let mut bcs = Vec::with_capacity(ny);
     for y in 0..ny {
@@ -781,7 +769,6 @@ pub fn convective_outflow_right(nx: usize, ny: usize, u_conv: f64) -> Vec<Bounda
 }
 
 /// Convenience: create an extrapolation outflow on the right wall.
-#[allow(dead_code)]
 pub fn extrapolation_outflow_right(nx: usize, ny: usize) -> Vec<Boundary> {
     let mut bcs = Vec::with_capacity(ny);
     for y in 0..ny {
@@ -796,7 +783,6 @@ pub fn extrapolation_outflow_right(nx: usize, ny: usize) -> Vec<Boundary> {
 }
 
 /// Convenience: create a parabolic inlet on the left wall.
-#[allow(dead_code)]
 pub fn parabolic_inlet_left(ny: usize, u_max: f64) -> Vec<Boundary> {
     let mut bcs = Vec::with_capacity(ny);
     for y in 0..ny {
@@ -811,7 +797,6 @@ pub fn parabolic_inlet_left(ny: usize, u_max: f64) -> Vec<Boundary> {
 }
 
 /// Convenience: create a plug inlet on the left wall.
-#[allow(dead_code)]
 pub fn plug_inlet_left(ny: usize, u_inlet: f64) -> Vec<Boundary> {
     let mut bcs = Vec::with_capacity(ny);
     for y in 0..ny {
@@ -826,7 +811,6 @@ pub fn plug_inlet_left(ny: usize, u_inlet: f64) -> Vec<Boundary> {
 }
 
 /// Convenience: create a moving wall on the top wall.
-#[allow(dead_code)]
 pub fn moving_wall_top(nx: usize, ny: usize, ux_wall: f64) -> Vec<Boundary> {
     let mut bcs = Vec::with_capacity(nx);
     for x in 0..nx {
@@ -873,7 +857,6 @@ pub fn viscosity_from_omega(omega: f64) -> f64 {
 /// Compute the analytical parabolic velocity profile value.
 ///
 /// Returns `u_max * 4 * y'*(1-y')` where `y' = y / (ny - 1)`.
-#[allow(dead_code)]
 pub fn parabolic_profile(u_max: f64, ny: usize, y: usize) -> f64 {
     let y_prime = y as f64 / (ny - 1).max(1) as f64;
     u_max * 4.0 * y_prime * (1.0 - y_prime)

@@ -14,9 +14,6 @@
 //! - `wasm_renderer`: `WasmRenderer` with SSAO/instanced mesh / screen-space AABB
 //! - `pipeline`: GPU pipeline descriptor helpers (blend modes, G-buffers, frame graph)
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 pub mod core;
 pub mod pipeline;
 pub mod wasm_renderer;

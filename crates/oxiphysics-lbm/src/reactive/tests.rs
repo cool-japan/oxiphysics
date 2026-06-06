@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,8 +5,8 @@
 
 use super::*;
 
-#[allow(clippy::module_inception)]
-mod tests {
+#[cfg(test)]
+mod reactive_tests {
     use super::*;
 
     /// First-order reaction: after one step, C should equal C0 * exp(-k*dt).
@@ -571,10 +570,10 @@ mod tests {
         let mut ps = LbmPassiveScalar::new(nx, ny, 0.1);
         let conc: Vec<f64> = (0..nx * ny).map(|i| i as f64 * 0.1).collect();
         ps.initialize_concentration(&conc);
-        for k in 0..(nx * ny) {
+        for (k, &expected_c) in conc.iter().enumerate() {
             let c = ps.concentration(k);
             assert!(
-                (c - conc[k]).abs() < 1e-12,
+                (c - expected_c).abs() < 1e-12,
                 "Initialized concentration mismatch at {k}"
             );
         }

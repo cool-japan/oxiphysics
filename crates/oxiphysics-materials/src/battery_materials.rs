@@ -16,9 +16,6 @@
 //! - Thermal battery model (Bernardi heat generation, cooling, temperature uniformity)
 //! - Battery cycling (CC/CV protocol, SOC tracking, Coulombic efficiency)
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 /// Faraday constant \[C/mol\]
 pub const FARADAY: f64 = 96_485.0;
 /// Universal gas constant \[J/(mol·K)\]

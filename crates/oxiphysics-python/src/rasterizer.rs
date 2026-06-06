@@ -7,8 +7,6 @@
 //! per-vertex Phong lighting for the [`super::viz_api::PyMeshRenderer`] software
 //! rendering path.
 
-#![allow(missing_docs)]
-
 // ---------------------------------------------------------------------------
 // Math helpers
 // ---------------------------------------------------------------------------

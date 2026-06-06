@@ -2,12 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod pbd_extended_tests {
-    use super::*;
     use crate::pbd_system::ConstraintColoring;
     use crate::pbd_system::PbdConstraint;
     use crate::pbd_system::PbdConstraintType;
@@ -15,6 +11,7 @@ mod pbd_extended_tests {
     use crate::pbd_system::PbdSystem;
     use crate::pbd_system::SleepController;
     use crate::pbd_system::WarmStartCache;
+    use crate::pbd_system::functions::*;
     pub(super) const EPS: f64 = 1e-9;
     /// Coloring of non-overlapping constraints gives one group.
     #[test]

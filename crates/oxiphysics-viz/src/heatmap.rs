@@ -1,4 +1,3 @@
-#![allow(clippy::too_many_arguments)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,8 +15,6 @@
 //! - [`SeedPoints`] — uniform / random seed point generation
 //! - [`GradientField`] — gradient of a scalar field via central differences
 //! - [`HeatmapAnimation`] — sequence of `HeatmapGrid` frames with interpolation
-
-#![allow(dead_code)]
 
 use crate::colormap::{Colormap, map_scalar};
 

@@ -2,16 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use crate::body::RigidBody;
 use crate::collider::Collider;
 use oxiphysics_core::math::Vec3;
 use oxiphysics_core::{BodyHandle, ColliderHandle, MassProperties};
 
 /// A 3-D axis-aligned bounding box used for BVH construction and queries.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Aabb3 {
     /// Minimum corner.
@@ -19,7 +15,6 @@ pub struct Aabb3 {
     /// Maximum corner.
     pub max: [f64; 3],
 }
-#[allow(dead_code)]
 impl Aabb3 {
     /// Create a new AABB from `min` and `max` corners.
     pub fn new(min: [f64; 3], max: [f64; 3]) -> Self {
@@ -50,8 +45,8 @@ impl Aabb3 {
     }
     /// Test whether `point` is inside this AABB (inclusive).
     pub fn contains(&self, point: [f64; 3]) -> bool {
-        for i in 0..3 {
-            if point[i] < self.min[i] || point[i] > self.max[i] {
+        for ((p, mn), mx) in point.iter().zip(self.min.iter()).zip(self.max.iter()) {
+            if p < mn || p > mx {
                 return false;
             }
         }
@@ -114,12 +109,12 @@ impl Aabb3 {
     /// AABB.  Returns 0 when the point is inside.
     pub fn sq_dist_to_point(&self, point: [f64; 3]) -> f64 {
         let mut sq = 0.0f64;
-        for i in 0..3 {
-            if point[i] < self.min[i] {
-                let d = self.min[i] - point[i];
+        for ((p, mn), mx) in point.iter().zip(self.min.iter()).zip(self.max.iter()) {
+            if p < mn {
+                let d = mn - p;
                 sq += d * d;
-            } else if point[i] > self.max[i] {
-                let d = point[i] - self.max[i];
+            } else if p > mx {
+                let d = p - mx;
                 sq += d * d;
             }
         }
@@ -203,13 +198,11 @@ impl ColliderSet {
     }
 }
 /// A complete BVH over a set of axis-aligned bounding boxes.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct BvhTree {
     pub(super) nodes: Vec<BvhNode>,
     pub(super) root: Option<usize>,
 }
-#[allow(dead_code)]
 impl BvhTree {
     /// Build a BVH from a list of `(id, aabb)` pairs.
     pub fn build(primitives: &[(usize, Aabb3)]) -> Self {
@@ -319,12 +312,10 @@ impl BvhTree {
 ///
 /// Each entry maps a sorted pair `(min_idx, max_idx)` to a user-defined
 /// `f64` value (e.g. accumulated impulse).
-#[allow(dead_code)]
 #[derive(Debug, Default, Clone)]
 pub struct BodyPairCache {
     pub(super) data: std::collections::HashMap<(u32, u32), f64>,
 }
-#[allow(dead_code)]
 impl BodyPairCache {
     /// Create an empty cache.
     pub fn new() -> Self {
@@ -377,13 +368,11 @@ impl BodyPairCache {
 ///
 /// Used for island detection: connected components of the graph correspond to
 /// independent simulation islands that can be solved in isolation.
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct ConstraintGraph {
     /// Adjacency list: `edges[i]` holds all body handles connected to body `i`.
     pub(super) edges: std::collections::HashMap<u32, Vec<u32>>,
 }
-#[allow(dead_code)]
 impl ConstraintGraph {
     /// Create an empty graph.
     pub fn new() -> Self {
@@ -456,7 +445,6 @@ impl ConstraintGraph {
 /// The tree is built by recursively splitting along the longest axis at the
 /// median position (median-cut SAH approximation).  Leaf nodes store a single
 /// primitive ID.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum BvhNode {
     /// An internal node with a bounding volume and two children.
@@ -475,14 +463,6 @@ pub enum BvhNode {
         /// Primitive identifier (e.g. body slot index).
         id: usize,
     },
-}
-impl BvhNode {
-    #[allow(dead_code)]
-    fn aabb(&self) -> &Aabb3 {
-        match self {
-            BvhNode::Internal { aabb, .. } | BvhNode::Leaf { aabb, .. } => aabb,
-        }
-    }
 }
 /// Arena storage for rigid bodies with generational handles.
 #[derive(Debug, Default)]
@@ -1023,7 +1003,6 @@ pub struct BodySetStatistics {
 /// Stores the "previous" positions/velocities of all bodies so that
 /// intermediate positions can be linearly interpolated using a sub-step
 /// blend factor `alpha ∈ [0, 1]`.
-#[allow(dead_code)]
 #[derive(Debug, Default, Clone)]
 pub struct BodyInterpolator {
     /// Map from body handle (index) to previous position.
@@ -1031,7 +1010,6 @@ pub struct BodyInterpolator {
     /// Map from body handle (index) to previous velocity.
     pub(super) prev_velocities: std::collections::HashMap<u32, oxiphysics_core::math::Vec3>,
 }
-#[allow(dead_code)]
 impl BodyInterpolator {
     /// Create a new empty interpolator.
     pub fn new() -> Self {
@@ -1097,7 +1075,6 @@ impl BodyInterpolator {
 /// Bodies are mapped to integer cells of side `cell_size`.  All bodies that
 /// fall into the same cell — or an immediately adjacent cell for radius queries
 /// — are returned as candidates.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SpatialHash {
     /// Side-length of each cubic cell.
@@ -1107,7 +1084,6 @@ pub struct SpatialHash {
     /// All (id, pos) pairs inserted (used for radius queries).
     pub(super) entries: Vec<(usize, [f64; 3])>,
 }
-#[allow(dead_code)]
 impl SpatialHash {
     /// Create a new spatial hash with the given cell size.
     pub fn new(cell_size: f64) -> Self {

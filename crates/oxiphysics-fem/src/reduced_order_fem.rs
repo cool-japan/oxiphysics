@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,8 +10,6 @@
 //! - Chaturantabut & Sorensen (2010) "Nonlinear model reduction via DEIM"
 //! - Rozza, Huynh & Patera (2008) "Reduced basis approximation and a posteriori
 //!   error estimation"
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Math helpers (plain f64 / Vec<f64>, no nalgebra)
@@ -82,6 +79,7 @@ fn mat_mul(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
 }
 
 /// Solve upper-triangular system Ux = b (back-substitution).
+#[cfg(test)]
 fn back_substitute(u: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
     let n = b.len();
     let mut x = vec![0.0; n];
@@ -143,8 +141,8 @@ fn cg_solve(a: &[Vec<f64>], b: &[f64], max_iter: usize, tol: f64) -> Vec<f64> {
 /// Identity matrix of size n.
 fn eye(n: usize) -> Vec<Vec<f64>> {
     let mut m = vec![vec![0.0; n]; n];
-    for i in 0..n {
-        m[i][i] = 1.0;
+    for (i, row) in m.iter_mut().enumerate().take(n) {
+        row[i] = 1.0;
     }
     m
 }
@@ -367,7 +365,6 @@ impl GalerkinSystem {
 /// - `k_full` – full stiffness matrix (N × N, row-major).
 /// - `f_full` – full force vector (N).
 /// - `basis`  – [`PodBasis`] with r modes.
-#[allow(clippy::too_many_arguments)]
 pub fn galerkin_projection(
     k_full: &[Vec<f64>],
     f_full: &[f64],
@@ -378,9 +375,9 @@ pub fn galerkin_projection(
     let k_phi: Vec<Vec<f64>> = basis.modes.iter().map(|phi| mat_vec(k_full, phi)).collect();
     // K_r[i][j] = phi_i . (K phi_j)
     let mut k_reduced = vec![vec![0.0; r]; r];
-    for i in 0..r {
-        for j in 0..r {
-            k_reduced[i][j] = dot(&basis.modes[i], &k_phi[j]);
+    for (i, row) in k_reduced.iter_mut().enumerate().take(r) {
+        for (j, cell) in row.iter_mut().enumerate().take(r) {
+            *cell = dot(&basis.modes[i], &k_phi[j]);
         }
     }
     // f_r[i] = phi_i . f
@@ -670,7 +667,6 @@ impl PetrovGalerkinSystem {
 /// - `f_full` – full-order force vector.
 /// - `phi`    – trial basis (columns of Φ, length N).
 /// - `psi`    – test basis (columns of Ψ, length N).
-#[allow(clippy::too_many_arguments)]
 pub fn petrov_galerkin_projection(
     k_full: &[Vec<f64>],
     f_full: &[f64],
@@ -720,9 +716,9 @@ impl BalancedTruncation {
         let _p = t_r[0].len();
         // at_r is N × r, multiply T_l (r × N) * at_r (N × r)
         let mut out = vec![vec![0.0; self.reduced_dim]; m];
-        for i in 0..m {
-            for j in 0..self.reduced_dim {
-                out[i][j] = dot(
+        for (i, out_row) in out.iter_mut().enumerate().take(m) {
+            for (j, cell) in out_row.iter_mut().enumerate().take(self.reduced_dim) {
+                *cell = dot(
                     &self.transform_left[i],
                     &(0..a.len()).map(|k| at_r[k][j]).collect::<Vec<_>>(),
                 );
@@ -749,7 +745,6 @@ impl BalancedTruncation {
 /// - `b_mat`      – input matrix B (N × n_inputs).
 /// - `c_mat`      – output matrix C (n_outputs × N).
 /// - `max_modes`  – number of balanced modes to retain.
-#[allow(clippy::too_many_arguments)]
 pub fn balanced_truncation(
     a: &[Vec<f64>],
     b_mat: &[Vec<f64>],
@@ -1016,9 +1011,9 @@ impl AffineDecomposition {
             if q >= self.k_reduced_components.len() {
                 break;
             }
-            for i in 0..r {
-                for j in 0..r {
-                    k_r[i][j] += th * self.k_reduced_components[q][i][j];
+            for (i, kr_row) in k_r.iter_mut().enumerate().take(r) {
+                for (j, kr_ij) in kr_row.iter_mut().enumerate().take(r) {
+                    *kr_ij += th * self.k_reduced_components[q][i][j];
                 }
             }
         }
@@ -1026,8 +1021,8 @@ impl AffineDecomposition {
             if q >= self.f_reduced_components.len() {
                 break;
             }
-            for i in 0..r {
-                f_r[i] += th * self.f_reduced_components[q][i];
+            for (i, fr_i) in f_r.iter_mut().enumerate().take(r) {
+                *fr_i += th * self.f_reduced_components[q][i];
             }
         }
         GalerkinSystem {
@@ -1042,7 +1037,6 @@ impl AffineDecomposition {
 ///
 /// Projects each stiffness component K_q and force component f_q onto the
 /// POD basis Φ, storing the reduced representations for fast online assembly.
-#[allow(clippy::too_many_arguments)]
 pub fn offline_affine_decomposition(
     k_components: &[Vec<Vec<f64>>],
     f_components: &[Vec<f64>],
@@ -1054,9 +1048,9 @@ pub fn offline_affine_decomposition(
         .map(|kq| {
             let k_phi: Vec<Vec<f64>> = basis.modes.iter().map(|phi| mat_vec(kq, phi)).collect();
             let mut kq_r = vec![vec![0.0; r]; r];
-            for i in 0..r {
-                for j in 0..r {
-                    kq_r[i][j] = dot(&basis.modes[i], &k_phi[j]);
+            for (i, kqr_row) in kq_r.iter_mut().enumerate().take(r) {
+                for (j, kqr_ij) in kqr_row.iter_mut().enumerate().take(r) {
+                    *kqr_ij = dot(&basis.modes[i], &k_phi[j]);
                 }
             }
             kq_r
@@ -1117,9 +1111,9 @@ impl ManifoldInterpolator {
         // Build RBF matrix Φ[i][j] = φ(|μ_i − μ_j|)
         let rbf = |r: f64| -> f64 { (-(r * r) / (2.0 * self.rbf_width * self.rbf_width)).exp() };
         let mut phi_mat = vec![vec![0.0; n]; n];
-        for i in 0..n {
-            for j in 0..n {
-                phi_mat[i][j] = rbf((self.params[i] - self.params[j]).abs());
+        for (i, row) in phi_mat.iter_mut().enumerate().take(n) {
+            for (j, cell) in row.iter_mut().enumerate().take(n) {
+                *cell = rbf((self.params[i] - self.params[j]).abs());
             }
         }
         // RBF evaluation vector
@@ -1211,8 +1205,8 @@ impl ReducedDynamicState {
             })
             .collect();
         // Update velocity and displacement
-        for i in 0..r {
-            self.dq[i] += a[i] * dt;
+        for (i, &ai) in a.iter().enumerate().take(r) {
+            self.dq[i] += ai * dt;
             self.q[i] += self.dq[i] * dt;
         }
         self.time += dt;
@@ -1299,7 +1293,7 @@ pub fn qdeim_indices(modes: &[Vec<f64>], m: usize) -> Vec<usize> {
     let n = modes[0].len();
     let mut selected: Vec<usize> = Vec::with_capacity(m);
     // Build residual matrix = copy of modes columns transposed → (n × r) stored row-major
-    let r = modes.len();
+    let _r = modes.len();
     let mut residual: Vec<Vec<f64>> = (0..n)
         .map(|i| modes.iter().map(|mode| mode[i]).collect())
         .collect(); // residual[i] = modes[:][i]
@@ -1325,10 +1319,14 @@ pub fn qdeim_indices(modes: &[Vec<f64>], m: usize) -> Vec<usize> {
             break;
         }
         let row_unit: Vec<f64> = row.iter().map(|x| x / rn).collect();
-        for i in 0..n {
-            let c: f64 = (0..r).map(|k| residual[i][k] * row_unit[k]).sum();
-            for k in 0..r {
-                residual[i][k] -= c * row_unit[k];
+        for res_row in residual.iter_mut().take(n) {
+            let c: f64 = res_row
+                .iter()
+                .zip(row_unit.iter())
+                .map(|(&ri, &ru)| ri * ru)
+                .sum();
+            for (res_k, &ru_k) in res_row.iter_mut().zip(row_unit.iter()) {
+                *res_k -= c * ru_k;
             }
         }
     }

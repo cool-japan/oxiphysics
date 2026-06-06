@@ -2,33 +2,26 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(dead_code)]
 #[inline]
 pub(super) fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
-#[allow(dead_code)]
 #[inline]
 pub(super) fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
-#[allow(dead_code)]
 #[inline]
 pub(super) fn scale3(v: [f64; 3], s: f64) -> [f64; 3] {
     [v[0] * s, v[1] * s, v[2] * s]
 }
-#[allow(dead_code)]
 #[inline]
 pub(super) fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-#[allow(dead_code)]
 #[inline]
 pub(super) fn len3(v: [f64; 3]) -> f64 {
     dot3(v, v).sqrt()
 }
-#[allow(dead_code)]
 #[inline]
 pub(super) fn norm3(v: [f64; 3]) -> [f64; 3] {
     let l = len3(v);
@@ -38,7 +31,6 @@ pub(super) fn norm3(v: [f64; 3]) -> [f64; 3] {
         scale3(v, 1.0 / l)
     }
 }
-#[allow(dead_code)]
 #[inline]
 pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
@@ -48,7 +40,6 @@ pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 /// Linear interpolation between two RGBA colours.
-#[allow(dead_code)]
 pub fn lerp_color(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     [
         a[0] + (b[0] - a[0]) * t,
@@ -63,7 +54,6 @@ pub fn lerp_color(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
 ///
 /// where Ω = antisymmetric part, S = symmetric part of J.
 /// Positive Q indicates vortex cores.
-#[allow(dead_code)]
 pub fn compute_q_criterion(j: [f64; 9]) -> f64 {
     let mut norm_s2 = 0.0;
     let mut norm_omega2 = 0.0;
@@ -83,14 +73,12 @@ pub fn compute_q_criterion(j: [f64; 9]) -> f64 {
 ///
 /// λ2 is the second eigenvalue of S²+Ω². Negative λ2 indicates a vortex core.
 /// This function returns an approximate value using the Frobenius norms.
-#[allow(dead_code)]
 pub fn compute_lambda2_approx(j: [f64; 9]) -> f64 {
     -compute_q_criterion(j)
 }
 /// Compute the turbulent kinetic energy (TKE) from a velocity ensemble.
 ///
 /// TKE = 0.5 * (σ_u² + σ_v² + σ_w²)
-#[allow(dead_code)]
 pub fn compute_turbulent_kinetic_energy(velocities: &[[f64; 3]]) -> f64 {
     let n = velocities.len();
     if n == 0 {
@@ -112,15 +100,14 @@ pub fn compute_turbulent_kinetic_energy(velocities: &[[f64; 3]]) -> f64 {
             variance[k] += d * d;
         }
     }
-    for k in 0..3 {
-        variance[k] /= n as f64;
+    for v in variance.iter_mut() {
+        *v /= n as f64;
     }
     0.5 * (variance[0] + variance[1] + variance[2])
 }
 /// Compute an approximate TKE spectrum from a velocity ensemble.
 ///
 /// Returns (wavenumber, energy) pairs for a simplified energy spectrum.
-#[allow(dead_code)]
 pub fn compute_tke_spectrum(velocities: &[[f64; 3]], num_bins: usize) -> Vec<(f64, f64)> {
     let n = velocities.len();
     if n == 0 || num_bins == 0 {
@@ -141,7 +128,6 @@ pub fn compute_tke_spectrum(velocities: &[[f64; 3]], num_bins: usize) -> Vec<(f6
 /// Compute a voxelized density map from particle positions and masses.
 ///
 /// Uses a simple nearest-cell splatting approach.
-#[allow(dead_code)]
 pub fn compute_density_map(
     positions: &[[f64; 3]],
     masses: &[f64],
@@ -191,7 +177,6 @@ pub fn compute_density_map(
     density
 }
 /// Compute the gradient of a scalar field at a grid cell using central differences.
-#[allow(dead_code)]
 pub fn field_gradient(
     field: &[f64],
     ix: usize,
@@ -222,7 +207,6 @@ pub fn field_gradient(
 /// Compute mean curvature of a level-set field using finite differences.
 ///
 /// κ = div(∇φ / |∇φ|)  (simplified second-order FD)
-#[allow(dead_code)]
 pub fn level_set_mean_curvature(
     phi: &[f64],
     ix: usize,

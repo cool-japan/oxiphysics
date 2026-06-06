@@ -5,9 +5,6 @@
 //!
 //! Exposes world-state snapshots with delta tracking to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::snapshot::{BodySnapshot, SnapshotManager, WorldSnapshot};
 use pyo3::prelude::*;
 

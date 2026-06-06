@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,9 +10,6 @@
 //! - [`VorticityVisualization`] — vorticity magnitude, Q-criterion, λ2, swirling strength.
 //! - [`PressureField`] — pressure contours, iso-surfaces, pressure coefficient Cp.
 //! - [`FlowStatistics`] — time-averaged fields, RMS, energy spectra.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -1094,16 +1090,24 @@ impl FlowStatistics {
         debug_assert_eq!(snapshot.len(), self.size, "snapshot length mismatch");
         self.count += 1;
         let n = self.count as f64;
-        for i in 0..self.size.min(snapshot.len()) {
+        let len = self.size.min(snapshot.len());
+        for (i, ((mean, sum_sq), (min_v, max_v))) in self
+            .mean
+            .iter_mut()
+            .zip(self.sum_sq.iter_mut())
+            .zip(self.min_val.iter_mut().zip(self.max_val.iter_mut()))
+            .enumerate()
+            .take(len)
+        {
             let x = snapshot[i];
-            let delta = x - self.mean[i];
-            self.mean[i] += delta / n;
-            self.sum_sq[i] += x * x;
-            if x < self.min_val[i] {
-                self.min_val[i] = x;
+            let delta = x - *mean;
+            *mean += delta / n;
+            *sum_sq += x * x;
+            if x < *min_v {
+                *min_v = x;
             }
-            if x > self.max_val[i] {
-                self.max_val[i] = x;
+            if x > *max_v {
+                *max_v = x;
             }
         }
     }
@@ -1153,20 +1157,20 @@ impl FlowStatistics {
         let mut psd = vec![0.0f64; out_len];
 
         // DFT (O(n²), sufficient for moderate n in simulation use)
-        for k in 0..out_len {
+        for (k, psd_k) in psd.iter_mut().enumerate() {
             let mut re = 0.0f64;
             let mut im = 0.0f64;
-            for j in 0..n {
+            for (j, &sig_j) in signal.iter().enumerate() {
                 let angle = -2.0 * PI * k as f64 * j as f64 / n as f64;
-                re += signal[j] * angle.cos();
-                im += signal[j] * angle.sin();
+                re += sig_j * angle.cos();
+                im += sig_j * angle.sin();
             }
-            psd[k] = (re * re + im * im) / n as f64;
+            *psd_k = (re * re + im * im) / n as f64;
         }
 
         // Double non-DC, non-Nyquist components (one-sided spectrum)
-        for k in 1..out_len.saturating_sub(1) {
-            psd[k] *= 2.0;
+        for psd_k in psd[1..out_len.saturating_sub(1)].iter_mut() {
+            *psd_k *= 2.0;
         }
         psd
     }

@@ -3,8 +3,6 @@
 
 //! Continuous Collision Detection (CCD) via conservative advancement.
 
-#![allow(dead_code)]
-
 use crate::narrowphase::gjk::{Gjk, GjkResult};
 use oxiphysics_core::Transform;
 use oxiphysics_core::math::{Real, Vec3};
@@ -143,7 +141,6 @@ fn interpolate_transform(start: &Transform, end: &Transform, t: Real) -> Transfo
 }
 
 /// Bisection refinement to find precise TOI between t_low and t_high.
-#[allow(clippy::too_many_arguments)]
 fn bisect_toi(
     shape_a: &dyn Shape,
     ta_start: &Transform,
@@ -584,7 +581,6 @@ fn nearest_simplex_tetrahedron(simplex: &mut Vec<[f64; 3]>) -> ([f64; 3], bool, 
 /// At each step the GJK distance provides a lower bound on how far the shapes
 /// can move before contact; time is advanced accordingly.  Returns the
 /// estimated TOI ∈ \[0, 1\] when separation ≤ threshold, or `None`.
-#[allow(clippy::too_many_arguments)]
 pub fn conservative_advancement(
     support_a: impl Fn([f64; 3]) -> [f64; 3],
     support_b: impl Fn([f64; 3]) -> [f64; 3],
@@ -677,7 +673,6 @@ fn capsule_support(p0: [f64; 3], p1: [f64; 3], radius: f64, dir: [f64; 3]) -> [f
 /// Capsule vs capsule time-of-impact via conservative advancement.
 ///
 /// Each capsule is defined by its two axis endpoints and a radius.
-#[allow(clippy::too_many_arguments)]
 pub fn capsule_capsule_toi(
     pa0: [f64; 3],
     pa1: [f64; 3],
@@ -775,7 +770,6 @@ impl ConservativeAdvancement {
     ///
     /// Returns `Some(toi)` ∈ `[0, 1]` when the shapes come within `threshold`,
     /// or `None` if no impact occurs.
-    #[allow(clippy::too_many_arguments)]
     pub fn compute_toi(
         &self,
         support_a: impl Fn([f64; 3]) -> [f64; 3],

@@ -1,10 +1,7 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! 6x6 matrix utilities for Voigt notation tensors.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // 6×6 matrix utilities
@@ -59,8 +56,8 @@ pub fn mat6_scale(a: &[[f64; 6]; 6], s: f64) -> [[f64; 6]; 6] {
 /// Return the 6×6 identity matrix.
 pub fn mat6_identity() -> [[f64; 6]; 6] {
     let mut m = [[0.0f64; 6]; 6];
-    for i in 0..6 {
-        m[i][i] = 1.0;
+    for (i, row) in m.iter_mut().enumerate() {
+        row[i] = 1.0;
     }
     m
 }
@@ -79,9 +76,9 @@ pub fn mat6_transpose(a: &[[f64; 6]; 6]) -> [[f64; 6]; 6] {
 /// Max absolute value of (a\[i\]\[j\] - a\[j\]\[i\]) over all i, j.
 pub fn mat6_symmetry_error(a: &[[f64; 6]; 6]) -> f64 {
     let mut max_err = 0.0f64;
-    for i in 0..6 {
-        for j in 0..6 {
-            let err = (a[i][j] - a[j][i]).abs();
+    for (i, row_i) in a.iter().enumerate() {
+        for (j, &aij) in row_i.iter().enumerate() {
+            let err = (aij - a[j][i]).abs();
             if err > max_err {
                 max_err = err;
             }
@@ -93,9 +90,9 @@ pub fn mat6_symmetry_error(a: &[[f64; 6]; 6]) -> f64 {
 /// Frobenius norm of a 6×6 matrix.
 pub fn mat6_frobenius_norm(a: &[[f64; 6]; 6]) -> f64 {
     let mut sum = 0.0f64;
-    for i in 0..6 {
-        for j in 0..6 {
-            sum += a[i][j] * a[i][j];
+    for row in a.iter() {
+        for &val in row.iter() {
+            sum += val * val;
         }
     }
     sum.sqrt()
@@ -137,8 +134,8 @@ pub fn mat6_inv(a: &[[f64; 6]; 6]) -> Option<[[f64; 6]; 6]> {
         // Partial pivot
         let mut max_row = col;
         let mut max_val = aug[col][col].abs();
-        for row in (col + 1)..N {
-            let v = aug[row][col].abs();
+        for (row, aug_row) in aug.iter().enumerate().take(N).skip(col + 1) {
+            let v = aug_row[col].abs();
             if v > max_val {
                 max_val = v;
                 max_row = row;
@@ -150,16 +147,16 @@ pub fn mat6_inv(a: &[[f64; 6]; 6]) -> Option<[[f64; 6]; 6]> {
         aug.swap(col, max_row);
 
         let pivot = aug[col][col];
-        for j in 0..12 {
-            aug[col][j] /= pivot;
+        for aug_col_j in aug[col].iter_mut() {
+            *aug_col_j /= pivot;
         }
         for row in 0..N {
             if row == col {
                 continue;
             }
             let factor = aug[row][col];
-            for j in 0..12 {
-                aug[row][j] -= factor * aug[col][j];
+            for (jj, _) in (0..12usize).enumerate() {
+                aug[row][jj] -= factor * aug[col][jj];
             }
         }
     }

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use rayon::prelude::*;
 
 use super::types::GpuCellList;
@@ -812,11 +811,11 @@ mod extended_cell_tests {
         let mut positions = vec![[6.0, 7.0, 0.0], [-1.0, 2.5, 11.0]];
         mgr.wrap_all(&mut positions);
         for p in &positions {
-            for k in 0..3 {
+            for &coord in p.iter() {
                 assert!(
-                    p[k] >= 0.0 && p[k] < 5.0,
+                    (0.0..5.0).contains(&coord),
                     "wrapped coord out of range: {}",
-                    p[k]
+                    coord
                 );
             }
         }

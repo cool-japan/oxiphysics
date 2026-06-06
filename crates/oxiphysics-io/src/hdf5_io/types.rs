@@ -3,8 +3,6 @@
 
 //! Core types for the HDF5 mock: error, dtype, storage, layout, attributes, links.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------

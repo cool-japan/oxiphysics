@@ -11,7 +11,6 @@ use super::renderer::WireframeRenderer;
 
 /// Helper to describe the visual style of a wireframe line.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct LineStyle {
     /// RGB color (0.0–1.0 per channel).
     pub color: [f32; 3],
@@ -23,7 +22,6 @@ pub struct LineStyle {
     pub always_on_top: bool,
 }
 
-#[allow(dead_code)]
 impl LineStyle {
     /// Solid white 1-px line, depth tested.
     pub fn white() -> Self {
@@ -110,7 +108,6 @@ impl LineStyle {
 /// Each vertex occupies 6 × f32: `[x, y, z, r, g, b]`.
 /// Suitable for GL_LINES or Vulkan vertex attribute upload.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct VertexBufferData {
     /// Flat float data: 6 f32 per vertex (xyz + rgb).
     pub data: Vec<f32>,
@@ -118,7 +115,6 @@ pub struct VertexBufferData {
     pub vertex_count: usize,
 }
 
-#[allow(dead_code)]
 impl VertexBufferData {
     /// Build a `VertexBufferData` from a `WireframeBatch`.
     ///
@@ -163,7 +159,6 @@ impl VertexBufferData {
 
 /// A simple color map for mapping scalar values to wire colors.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WireframeColorMap {
     /// Control points: each is `(value, [r, g, b])`.
     stops: Vec<(f64, [f64; 3])>,
@@ -175,7 +170,6 @@ impl Default for WireframeColorMap {
     }
 }
 
-#[allow(dead_code)]
 impl WireframeColorMap {
     /// Create an empty color map (will return black for all queries).
     pub fn new() -> Self {
@@ -243,7 +237,6 @@ impl WireframeColorMap {
 
 /// Configuration for generating layered wireframe overlays.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct WireframeOverlayConfig {
     /// Width of base (all) edges in pixels.
     pub base_width_px: f64,
@@ -261,7 +254,6 @@ pub struct WireframeOverlayConfig {
     pub silhouette_color: [f64; 3],
 }
 
-#[allow(dead_code)]
 impl WireframeOverlayConfig {
     /// Default settings: subtle base edges, yellow features, white silhouette.
     pub fn default_config() -> Self {
@@ -283,7 +275,6 @@ impl WireframeOverlayConfig {
 /// defined by `[min, max]` corners.  Returns `true` if the segment overlaps.
 ///
 /// Uses the slab method (Smits' algorithm).
-#[allow(dead_code)]
 pub fn segment_intersects_aabb(
     p: [f64; 3],
     q: [f64; 3],
@@ -326,7 +317,6 @@ pub fn segment_intersects_aabb(
 /// single plane are discarded.
 ///
 /// Returns a new `WireframeBatch` with only potentially-visible segments.
-#[allow(dead_code)]
 pub fn cull_wireframe_batch(batch: &WireframeBatch, planes: &[[f64; 4]; 6]) -> WireframeBatch {
     let mut out = WireframeBatch::new(format!("{}_culled", batch.label));
     'seg: for seg in &batch.segments {
@@ -355,7 +345,6 @@ pub fn cull_wireframe_batch(batch: &WireframeBatch, planes: &[[f64; 4]; 6]) -> W
 ///
 /// `nodes` is a flat array of `(min, max, left_child, right_child)` where
 /// child indices of `usize::MAX` mean "no child".
-#[allow(dead_code)]
 pub fn render_bvh_tree(
     nodes: &[([f64; 3], [f64; 3], usize, usize)],
     root: usize,
@@ -1052,7 +1041,6 @@ mod extra_wire_tests {
 
 /// A line segment with colour, thickness, and an optional label.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WireframeSegment {
     /// Start position.
     pub start: [f64; 3],
@@ -1068,7 +1056,6 @@ pub struct WireframeSegment {
 
 impl WireframeSegment {
     /// Create a plain white unit-thickness segment.
-    #[allow(dead_code)]
     pub fn new(start: [f64; 3], end: [f64; 3]) -> Self {
         WireframeSegment {
             start,
@@ -1080,28 +1067,24 @@ impl WireframeSegment {
     }
 
     /// Set the colour.
-    #[allow(dead_code)]
     pub fn with_color(mut self, r: f32, g: f32, b: f32, a: f32) -> Self {
         self.color = [r, g, b, a];
         self
     }
 
     /// Set the thickness.
-    #[allow(dead_code)]
     pub fn with_thickness(mut self, t: f32) -> Self {
         self.thickness = t;
         self
     }
 
     /// Set an annotation label.
-    #[allow(dead_code)]
     pub fn with_label(mut self, label: &str) -> Self {
         self.label = Some(label.to_string());
         self
     }
 
     /// Euclidean length of the segment.
-    #[allow(dead_code)]
     pub fn length(&self) -> f64 {
         let dx = self.end[0] - self.start[0];
         let dy = self.end[1] - self.start[1];
@@ -1110,7 +1093,6 @@ impl WireframeSegment {
     }
 
     /// Midpoint of the segment.
-    #[allow(dead_code)]
     pub fn midpoint(&self) -> [f64; 3] {
         [
             (self.start[0] + self.end[0]) * 0.5,
@@ -1120,7 +1102,6 @@ impl WireframeSegment {
     }
 
     /// Direction vector (not normalised).
-    #[allow(dead_code)]
     pub fn direction(&self) -> [f64; 3] {
         [
             self.end[0] - self.start[0],
@@ -1130,7 +1111,6 @@ impl WireframeSegment {
     }
 
     /// Unit direction vector.  Returns `[0,0,0]` for zero-length segments.
-    #[allow(dead_code)]
     pub fn unit_direction(&self) -> [f64; 3] {
         let d = self.direction();
         let len = self.length();
@@ -1141,7 +1121,6 @@ impl WireframeSegment {
     }
 
     /// Test if this segment intersects the axis-aligned slab `z_min ≤ z ≤ z_max`.
-    #[allow(dead_code)]
     pub fn intersects_z_slab(&self, z_min: f64, z_max: f64) -> bool {
         let z0 = self.start[2].min(self.end[2]);
         let z1 = self.start[2].max(self.end[2]);
@@ -1155,7 +1134,6 @@ impl WireframeSegment {
 
 /// A flat XZ-plane grid for use as a scene floor.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WireframeGrid {
     /// All line segments composing the grid.
     pub segments: Vec<WireframeSegment>,
@@ -1168,7 +1146,6 @@ pub struct WireframeGrid {
 /// Generate a flat grid on the XZ-plane centred at the origin.
 ///
 /// `n_cells` cells in each direction, `spacing` between grid lines.
-#[allow(dead_code)]
 pub fn generate_floor_grid(n_cells: usize, spacing: f64) -> WireframeGrid {
     let half = n_cells as f64 * spacing * 0.5;
     let mut segments = Vec::new();
@@ -1191,13 +1168,11 @@ pub fn generate_floor_grid(n_cells: usize, spacing: f64) -> WireframeGrid {
 
 impl WireframeGrid {
     /// Total number of line segments.
-    #[allow(dead_code)]
     pub fn segment_count(&self) -> usize {
         self.segments.len()
     }
 
     /// Total length of all segments combined.
-    #[allow(dead_code)]
     pub fn total_length(&self) -> f64 {
         self.segments.iter().map(|s| s.length()).sum()
     }
@@ -1209,7 +1184,6 @@ impl WireframeGrid {
 
 /// A buffer for depth-sorted wireframe segments (painter's algorithm).
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct DepthSortBuffer {
     /// Stored segments with their precomputed depth keys.
     entries: Vec<(f64, WireframeSegment)>,
@@ -1217,7 +1191,6 @@ pub struct DepthSortBuffer {
 
 impl DepthSortBuffer {
     /// Create an empty buffer.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         DepthSortBuffer {
             entries: Vec::new(),
@@ -1226,52 +1199,44 @@ impl DepthSortBuffer {
 
     /// Insert a segment.  Depth is computed as the midpoint Z coordinate (for
     /// a view along +Z).  Use a custom `depth_fn` variant for other views.
-    #[allow(dead_code)]
     pub fn insert(&mut self, seg: WireframeSegment) {
         let depth = seg.midpoint()[2];
         self.entries.push((depth, seg));
     }
 
     /// Insert with an explicit depth key.
-    #[allow(dead_code)]
     pub fn insert_with_depth(&mut self, seg: WireframeSegment, depth: f64) {
         self.entries.push((depth, seg));
     }
 
     /// Sort in back-to-front order (decreasing depth).
-    #[allow(dead_code)]
     pub fn sort_back_to_front(&mut self) {
         self.entries
             .sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     }
 
     /// Sort in front-to-back order (increasing depth).
-    #[allow(dead_code)]
     pub fn sort_front_to_back(&mut self) {
         self.entries
             .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     }
 
     /// Return segments in current order.
-    #[allow(dead_code)]
     pub fn segments(&self) -> Vec<&WireframeSegment> {
         self.entries.iter().map(|(_, s)| s).collect()
     }
 
     /// Number of segments.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// True if empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
     /// Clear all entries.
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.entries.clear();
     }
@@ -1284,7 +1249,6 @@ impl DepthSortBuffer {
 /// Generate RGB axis arrows at the origin with length `size`.
 ///
 /// Returns three segments: X (red), Y (green), Z (blue).
-#[allow(dead_code)]
 pub fn axis_arrows(size: f64) -> [WireframeSegment; 3] {
     [
         WireframeSegment::new([0.0, 0.0, 0.0], [size, 0.0, 0.0])
@@ -1300,7 +1264,6 @@ pub fn axis_arrows(size: f64) -> [WireframeSegment; 3] {
 }
 
 /// Generate a wireframe circle (approximate polygon) on the XY-plane.
-#[allow(dead_code)]
 pub fn circle_wireframe(centre: [f64; 3], radius: f64, n_segments: usize) -> Vec<WireframeSegment> {
     let n = n_segments.max(3);
     let mut segs = Vec::with_capacity(n);
@@ -1326,7 +1289,6 @@ pub fn circle_wireframe(centre: [f64; 3], radius: f64, n_segments: usize) -> Vec
 ///
 /// `radius` is the capsule radius, `half_height` is the half-length of the
 /// cylindrical section.  Returns segments for the outline only.
-#[allow(dead_code)]
 pub fn capsule_outline_xz(
     centre: [f64; 3],
     radius: f64,

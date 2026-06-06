@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //!
 //! Provides iterative solution methods for systems of nonlinear equations
 //! arising in finite element analysis, using plain `f64` arrays throughout.
-
-#![allow(dead_code)]
 
 // ─── Residual trait ──────────────────────────────────────────────────────────
 
@@ -312,8 +309,8 @@ impl BfgsSolver {
         };
 
         let mut h_inv = vec![vec![0.0f64; n]; n];
-        for i in 0..n {
-            h_inv[i][i] = scale;
+        for (i, row) in h_inv.iter_mut().enumerate().take(n) {
+            row[i] = scale;
         }
 
         let mut r_prev = problem.residual(&u);
@@ -582,21 +579,36 @@ impl ArcLengthMethod {
 
 /// Convergence criteria for nonlinear solvers.
 #[derive(Debug, Clone)]
-#[allow(missing_docs)]
 pub enum ConvergenceCriteria {
     /// Converge when ‖R‖₂ < tol.
-    ResidualNorm { tol: f64 },
+    ResidualNorm {
+        /// Convergence tolerance.
+        tol: f64,
+    },
     /// Converge when ‖Δu‖₂ < tol.
-    DisplacementNorm { tol: f64 },
+    DisplacementNorm {
+        /// Convergence tolerance.
+        tol: f64,
+    },
     /// Converge when the incremental energy |Δu · R| < tol.
-    EnergyNorm { tol: f64 },
+    EnergyNorm {
+        /// Convergence tolerance.
+        tol: f64,
+    },
     /// Converge when both residual and displacement norms are satisfied.
     Combined {
+        /// Residual tolerance.
         residual_tol: f64,
+        /// Displacement tolerance.
         displacement_tol: f64,
     },
     /// Converge when relative residual ‖R‖ / ‖R₀‖ < tol.
-    RelativeResidual { tol: f64, initial_norm: f64 },
+    RelativeResidual {
+        /// Convergence tolerance.
+        tol: f64,
+        /// Initial norm for relative comparison.
+        initial_norm: f64,
+    },
 }
 
 impl ConvergenceCriteria {
@@ -631,7 +643,7 @@ impl ConvergenceCriteria {
 // ─── Linear algebra helpers ──────────────────────────────────────────────────
 
 /// Gaussian elimination with partial pivoting.
-pub fn gauss_elimination(a: &mut Vec<Vec<f64>>, b: &mut Vec<f64>) -> Result<Vec<f64>, String> {
+pub fn gauss_elimination(a: &mut [Vec<f64>], b: &mut [f64]) -> Result<Vec<f64>, String> {
     let n = b.len();
     if n == 0 {
         return Err("Empty system".to_string());
@@ -659,9 +671,9 @@ pub fn gauss_elimination(a: &mut Vec<Vec<f64>>, b: &mut Vec<f64>) -> Result<Vec<
         let pivot = a[col][col];
         for row in (col + 1)..n {
             let factor = a[row][col] / pivot;
-            for k in col..n {
-                let av = a[col][k];
-                a[row][k] -= factor * av;
+            let aug_col_slice: Vec<f64> = a[col][col..n].to_vec();
+            for (off, &av) in aug_col_slice.iter().enumerate() {
+                a[row][col + off] -= factor * av;
             }
             b[row] -= factor * b[col];
         }
@@ -1180,7 +1192,6 @@ impl ConvergenceMonitor {
 // ─── Solver statistics ────────────────────────────────────────────────────────
 
 /// Aggregated statistics for a nonlinear solver run.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct SolverStatistics {
     residuals: Vec<f64>,

@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::ptr_arg)]
-#[allow(unused_imports)]
 use super::functions::*;
 /// Hanging-node constraint: a slave node is linearly interpolated from
 /// a master node with a given weight.
@@ -213,13 +211,13 @@ impl NodeSmoothing {
     /// Each node is moved to the average of its neighbours.
     /// Boundary nodes (listed in `boundary`) are fixed.
     pub fn laplacian_smooth(
-        nodes: &mut Vec<[f64; 3]>,
+        nodes: &mut [[f64; 3]],
         connectivity: &[Vec<usize>],
         iter: usize,
         boundary: &[bool],
     ) {
         for _ in 0..iter {
-            let old = nodes.clone();
+            let old: Vec<[f64; 3]> = nodes.to_vec();
             for (idx, neighbors) in connectivity.iter().enumerate() {
                 if boundary.get(idx).copied().unwrap_or(false) {
                     continue;
@@ -237,14 +235,14 @@ impl NodeSmoothing {
     }
     /// Weighted Laplacian smoothing: each neighbour is weighted by `weights[i][k]`.
     pub fn weighted_laplacian(
-        nodes: &mut Vec<[f64; 3]>,
+        nodes: &mut [[f64; 3]],
         weights: &[Vec<f64>],
         connectivity: &[Vec<usize>],
         iter: usize,
         boundary: &[bool],
     ) {
         for _ in 0..iter {
-            let old = nodes.clone();
+            let old: Vec<[f64; 3]> = nodes.to_vec();
             for (idx, neighbors) in connectivity.iter().enumerate() {
                 if boundary.get(idx).copied().unwrap_or(false) {
                     continue;
@@ -330,7 +328,7 @@ impl EdgeCollapse {
     /// Perform the edge collapse: node j is merged into node i (midpoint).
     ///
     /// Returns the updated tet list with degenerate tets (collapsed to a line/point) removed.
-    pub fn collapse(nodes: &mut Vec<[f64; 3]>, tets: &mut Vec<[usize; 4]>, i: usize, j: usize) {
+    pub fn collapse(nodes: &mut [[f64; 3]], tets: &mut Vec<[usize; 4]>, i: usize, j: usize) {
         let mp = Self::midpoint(nodes[i], nodes[j]);
         nodes[i] = mp;
         for tet in tets.iter_mut() {

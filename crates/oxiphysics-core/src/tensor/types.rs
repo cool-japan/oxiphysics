@@ -2,7 +2,6 @@
 //!
 //! Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::decomposition::cp_reconstruct;
 use super::operations::{matmul, transpose, truncated_svd_left, tucker_reconstruct};
 
@@ -33,9 +32,9 @@ impl Tensor2 {
     /// Component-wise addition.
     pub fn add(&self, other: &Tensor2) -> Tensor2 {
         let mut d = [[0.0f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                d[i][j] = self.data[i][j] + other.data[i][j];
+        for (di, (si, oi)) in d.iter_mut().zip(self.data.iter().zip(other.data.iter())) {
+            for (dij, (sij, oij)) in di.iter_mut().zip(si.iter().zip(oi.iter())) {
+                *dij = *sij + *oij;
             }
         }
         Tensor2 { data: d }
@@ -43,9 +42,9 @@ impl Tensor2 {
     /// Component-wise subtraction.
     pub fn sub(&self, other: &Tensor2) -> Tensor2 {
         let mut d = [[0.0f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                d[i][j] = self.data[i][j] - other.data[i][j];
+        for (di, (si, oi)) in d.iter_mut().zip(self.data.iter().zip(other.data.iter())) {
+            for (dij, (sij, oij)) in di.iter_mut().zip(si.iter().zip(oi.iter())) {
+                *dij = *sij - *oij;
             }
         }
         Tensor2 { data: d }
@@ -53,9 +52,9 @@ impl Tensor2 {
     /// Scalar multiplication.
     pub fn scale(&self, s: f64) -> Tensor2 {
         let mut d = [[0.0f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                d[i][j] = self.data[i][j] * s;
+        for (di, si) in d.iter_mut().zip(self.data.iter()) {
+            for (dij, sij) in di.iter_mut().zip(si.iter()) {
+                *dij = *sij * s;
             }
         }
         Tensor2 { data: d }
@@ -63,10 +62,10 @@ impl Tensor2 {
     /// Matrix–matrix product (A · B).
     pub fn dot(&self, other: &Tensor2) -> Tensor2 {
         let mut d = [[0.0f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    d[i][j] += self.data[i][k] * other.data[k][j];
+        for (di, si) in d.iter_mut().zip(self.data.iter()) {
+            for (j, dij) in di.iter_mut().enumerate() {
+                for (k, sik) in si.iter().enumerate() {
+                    *dij += *sik * other.data[k][j];
                 }
             }
         }
@@ -75,9 +74,9 @@ impl Tensor2 {
     /// Transpose A^T.
     pub fn transpose(&self) -> Tensor2 {
         let mut d = [[0.0f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                d[i][j] = self.data[j][i];
+        for (i, si) in self.data.iter().enumerate() {
+            for (j, sij) in si.iter().enumerate() {
+                d[j][i] = *sij;
             }
         }
         Tensor2 { data: d }
@@ -123,13 +122,11 @@ impl Tensor2 {
     }
     /// Double contraction A:B = Σ_ij A_ij B_ij.
     pub fn double_contract(&self, other: &Tensor2) -> f64 {
-        let mut s = 0.0f64;
-        for i in 0..3 {
-            for j in 0..3 {
-                s += self.data[i][j] * other.data[i][j];
-            }
-        }
-        s
+        self.data
+            .iter()
+            .zip(other.data.iter())
+            .flat_map(|(si, oi)| si.iter().zip(oi.iter()).map(|(s, o)| *s * *o))
+            .sum()
     }
     /// Frobenius norm √(A:A).
     pub fn norm(&self) -> f64 {
@@ -173,9 +170,9 @@ impl Tensor2 {
             + 2.0 * p1;
         let p = (p2 / 6.0).sqrt();
         let mut b = [[0.0f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                b[i][j] = a[i][j] / p;
+        for (bi, ai) in b.iter_mut().zip(a.iter()) {
+            for (bij, aij) in bi.iter_mut().zip(ai.iter()) {
+                *bij = *aij / p;
             }
         }
         b[0][0] -= q / p;
@@ -197,9 +194,9 @@ impl Tensor2 {
     /// Outer (dyadic) product a ⊗ b: result_ij = a_i * b_j.
     pub fn outer_product(a: [f64; 3], b: [f64; 3]) -> Tensor2 {
         let mut d = [[0.0f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                d[i][j] = a[i] * b[j];
+        for (di, ai) in d.iter_mut().zip(a.iter()) {
+            for (dij, bj) in di.iter_mut().zip(b.iter()) {
+                *dij = *ai * *bj;
             }
         }
         Tensor2 { data: d }
@@ -207,9 +204,9 @@ impl Tensor2 {
     /// Matrix–vector product: result_i = Σ_j A_ij v_j.
     pub fn apply(&self, v: [f64; 3]) -> [f64; 3] {
         let mut r = [0.0f64; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                r[i] += self.data[i][j] * v[j];
+        for (ri, si) in r.iter_mut().zip(self.data.iter()) {
+            for (sij, vj) in si.iter().zip(v.iter()) {
+                *ri += *sij * *vj;
             }
         }
         r
@@ -281,9 +278,9 @@ impl Tensor2 {
     }
     /// Check if the tensor is symmetric within tolerance.
     pub fn is_symmetric(&self, tol: f64) -> bool {
-        for i in 0..3 {
-            for j in 0..3 {
-                if (self.data[i][j] - self.data[j][i]).abs() > tol {
+        for (i, row) in self.data.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                if (val - self.data[j][i]).abs() > tol {
                     return false;
                 }
             }
@@ -302,12 +299,6 @@ impl Tensor2 {
             result = result.add(&term);
         }
         result
-    }
-}
-impl Tensor2 {
-    #[allow(dead_code)]
-    fn clone_t2(&self) -> Tensor2 {
-        Tensor2 { data: self.data }
     }
 }
 /// Rank-3 tensor with 27 components stored as `data[i][j][k]`.
@@ -343,10 +334,10 @@ impl Tensor3 {
     /// Scalar multiplication.
     pub fn scale(&self, s: f64) -> Self {
         let mut out = Self::zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    out.data[i][j][k] = self.data[i][j][k] * s;
+        for (oi, si) in out.data.iter_mut().zip(self.data.iter()) {
+            for (oij, sij) in oi.iter_mut().zip(si.iter()) {
+                for (oijk, sijk) in oij.iter_mut().zip(sij.iter()) {
+                    *oijk = *sijk * s;
                 }
             }
         }
@@ -355,10 +346,14 @@ impl Tensor3 {
     /// Component-wise addition.
     pub fn add(&self, other: &Tensor3) -> Tensor3 {
         let mut out = Self::zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    out.data[i][j][k] = self.data[i][j][k] + other.data[i][j][k];
+        for (oi, (si, xi)) in out
+            .data
+            .iter_mut()
+            .zip(self.data.iter().zip(other.data.iter()))
+        {
+            for (oij, (sij, xij)) in oi.iter_mut().zip(si.iter().zip(xi.iter())) {
+                for (oijk, (sijk, xijk)) in oij.iter_mut().zip(sij.iter().zip(xij.iter())) {
+                    *oijk = *sijk + *xijk;
                 }
             }
         }
@@ -367,10 +362,10 @@ impl Tensor3 {
     /// Contract the last index with a vector: result\[i\]\[j\] = T_ijk * v_k.
     pub fn contract_last(&self, v: &[f64; 3]) -> Tensor2 {
         let mut out = Tensor2::zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    out.data[i][j] += self.data[i][j][k] * v[k];
+        for (oi, si) in out.data.iter_mut().zip(self.data.iter()) {
+            for (oij, sij) in oi.iter_mut().zip(si.iter()) {
+                for (sijk, vk) in sij.iter().zip(v.iter()) {
+                    *oij += *sijk * *vk;
                 }
             }
         }
@@ -379,10 +374,10 @@ impl Tensor3 {
     /// Contract the first index with a vector: result\[j\]\[k\] = v_i * T_ijk.
     pub fn contract_first(&self, v: &[f64; 3]) -> Tensor2 {
         let mut out = Tensor2::zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    out.data[j][k] += v[i] * self.data[i][j][k];
+        for (vi, si) in v.iter().zip(self.data.iter()) {
+            for (j, sij) in si.iter().enumerate() {
+                for (k, sijk) in sij.iter().enumerate() {
+                    out.data[j][k] += *vi * *sijk;
                 }
             }
         }
@@ -391,10 +386,10 @@ impl Tensor3 {
     /// Full contraction with two vectors: result_i = T_ijk * a_j * b_k.
     pub fn contract_two(&self, a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
         let mut out = [0.0f64; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    out[i] += self.data[i][j][k] * a[j] * b[k];
+        for (oi, si) in out.iter_mut().zip(self.data.iter()) {
+            for (sij, aj) in si.iter().zip(a.iter()) {
+                for (sijk, bk) in sij.iter().zip(b.iter()) {
+                    *oi += *sijk * *aj * *bk;
                 }
             }
         }
@@ -409,14 +404,13 @@ impl Tensor3 {
     }
     /// Frobenius norm: sqrt(sum T_ijk^2).
     pub fn norm(&self) -> f64 {
-        let mut s = 0.0f64;
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    s += self.data[i][j][k] * self.data[i][j][k];
-                }
-            }
-        }
+        let s: f64 = self
+            .data
+            .iter()
+            .flat_map(|si| si.iter())
+            .flat_map(|sij| sij.iter())
+            .map(|&v| v * v)
+            .sum();
         s.sqrt()
     }
 }
@@ -436,15 +430,15 @@ impl Tensor4 {
     /// I_sym_ijkl = 0.5 * (δ_ik δ_jl + δ_il δ_jk).
     pub fn identity_sym() -> Self {
         let mut c = Self::zero();
-        for i in 0..3usize {
-            for j in 0..3usize {
-                for k in 0..3usize {
-                    for l in 0..3usize {
+        for (i, ci) in c.data.iter_mut().enumerate() {
+            for (j, cij) in ci.iter_mut().enumerate() {
+                for (k, cijk) in cij.iter_mut().enumerate() {
+                    for (l, cijkl) in cijk.iter_mut().enumerate() {
                         let dik = if i == k { 1.0 } else { 0.0 };
                         let djl = if j == l { 1.0 } else { 0.0 };
                         let dil = if i == l { 1.0 } else { 0.0 };
                         let djk = if j == k { 1.0 } else { 0.0 };
-                        c.data[i][j][k][l] = 0.5 * (dik * djl + dil * djk);
+                        *cijkl = 0.5 * (dik * djl + dil * djk);
                     }
                 }
             }
@@ -455,17 +449,17 @@ impl Tensor4 {
     /// C_ijkl = λ δ_ij δ_kl + μ (δ_ik δ_jl + δ_il δ_jk).
     pub fn isotropic(lambda: f64, mu: f64) -> Self {
         let mut c = Self::zero();
-        for i in 0..3usize {
-            for j in 0..3usize {
-                for k in 0..3usize {
-                    for l in 0..3usize {
+        for (i, ci) in c.data.iter_mut().enumerate() {
+            for (j, cij) in ci.iter_mut().enumerate() {
+                for (k, cijk) in cij.iter_mut().enumerate() {
+                    for (l, cijkl) in cijk.iter_mut().enumerate() {
                         let dij = if i == j { 1.0 } else { 0.0 };
                         let dkl = if k == l { 1.0 } else { 0.0 };
                         let dik = if i == k { 1.0 } else { 0.0 };
                         let djl = if j == l { 1.0 } else { 0.0 };
                         let dil = if i == l { 1.0 } else { 0.0 };
                         let djk = if j == k { 1.0 } else { 0.0 };
-                        c.data[i][j][k][l] = lambda * dij * dkl + mu * (dik * djl + dil * djk);
+                        *cijkl = lambda * dij * dkl + mu * (dik * djl + dil * djk);
                     }
                 }
             }
@@ -476,11 +470,11 @@ impl Tensor4 {
     /// result_ij = Σ_kl C_ijkl A_kl.
     pub fn double_contract_2(&self, t: &Tensor2) -> Tensor2 {
         let mut d = [[0.0f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    for l in 0..3 {
-                        d[i][j] += self.data[i][j][k][l] * t.data[k][l];
+        for (di, si) in d.iter_mut().zip(self.data.iter()) {
+            for (dij, sij) in di.iter_mut().zip(si.iter()) {
+                for (sijk, tk) in sij.iter().zip(t.data.iter()) {
+                    for (sijkl, tkl) in sijk.iter().zip(tk.iter()) {
+                        *dij += *sijkl * *tkl;
                     }
                 }
             }
@@ -492,13 +486,13 @@ impl Tensor4 {
     /// Deviatoric projector: P_dev_ijkl = I_sym_ijkl - (1/3) delta_ij delta_kl.
     pub fn deviatoric_projector() -> Self {
         let mut c = Self::identity_sym();
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    for l in 0..3 {
+        for (i, ci) in c.data.iter_mut().enumerate() {
+            for (j, cij) in ci.iter_mut().enumerate() {
+                for (k, cijk) in cij.iter_mut().enumerate() {
+                    for (l, cijkl) in cijk.iter_mut().enumerate() {
                         let dij = if i == j { 1.0 } else { 0.0 };
                         let dkl = if k == l { 1.0 } else { 0.0 };
-                        c.data[i][j][k][l] -= (1.0 / 3.0) * dij * dkl;
+                        *cijkl -= (1.0 / 3.0) * dij * dkl;
                     }
                 }
             }
@@ -521,11 +515,11 @@ impl Tensor4 {
     /// Scale all components by a scalar.
     pub fn scale(&self, s: f64) -> Self {
         let mut c = Self::zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    for l in 0..3 {
-                        c.data[i][j][k][l] = self.data[i][j][k][l] * s;
+        for (ci, si) in c.data.iter_mut().zip(self.data.iter()) {
+            for (cij, sij) in ci.iter_mut().zip(si.iter()) {
+                for (cijk, sijk) in cij.iter_mut().zip(sij.iter()) {
+                    for (cijkl, sijkl) in cijk.iter_mut().zip(sijk.iter()) {
+                        *cijkl = *sijkl * s;
                     }
                 }
             }
@@ -535,11 +529,16 @@ impl Tensor4 {
     /// Add two fourth-order tensors.
     pub fn add(&self, other: &Tensor4) -> Self {
         let mut c = Self::zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    for l in 0..3 {
-                        c.data[i][j][k][l] = self.data[i][j][k][l] + other.data[i][j][k][l];
+        for (ci, (si, oi)) in c
+            .data
+            .iter_mut()
+            .zip(self.data.iter().zip(other.data.iter()))
+        {
+            for (cij, (sij, oij)) in ci.iter_mut().zip(si.iter().zip(oi.iter())) {
+                for (cijk, (sijk, oijk)) in cij.iter_mut().zip(sij.iter().zip(oij.iter())) {
+                    for (cijkl, (sijkl, oijkl)) in cijk.iter_mut().zip(sijk.iter().zip(oijk.iter()))
+                    {
+                        *cijkl = *sijkl + *oijkl;
                     }
                 }
             }
@@ -552,17 +551,17 @@ impl Tensor4 {
     /// (C::D)_ijmn = Σ_kl C_ijkl D_klmn.
     pub fn double_contract_4(&self, other: &Tensor4) -> Tensor4 {
         let mut result = Tensor4::zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                for m in 0..3 {
-                    for n in 0..3 {
+        for (ri, si) in result.data.iter_mut().zip(self.data.iter()) {
+            for (rij, sij) in ri.iter_mut().zip(si.iter()) {
+                for (m, rijm) in rij.iter_mut().enumerate() {
+                    for (n, rijmn) in rijm.iter_mut().enumerate() {
                         let mut s = 0.0f64;
-                        for k in 0..3 {
-                            for l in 0..3 {
-                                s += self.data[i][j][k][l] * other.data[k][l][m][n];
+                        for (k, sijk) in sij.iter().enumerate() {
+                            for (l, sijkl) in sijk.iter().enumerate() {
+                                s += *sijkl * other.data[k][l][m][n];
                             }
                         }
-                        result.data[i][j][m][n] = s;
+                        *rijmn = s;
                     }
                 }
             }
@@ -575,15 +574,15 @@ impl Tensor4 {
     /// Result is a fourth-order tensor.
     pub fn single_contract_right(&self, a: &Tensor2) -> Tensor4 {
         let mut result = Tensor4::zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    for l in 0..3 {
+        for (ri, si) in result.data.iter_mut().zip(self.data.iter()) {
+            for (rij, sij) in ri.iter_mut().zip(si.iter()) {
+                for (rijk, sijk) in rij.iter_mut().zip(sij.iter()) {
+                    for (l, rijkl) in rijk.iter_mut().enumerate() {
                         let mut s = 0.0f64;
-                        for m in 0..3 {
-                            s += self.data[i][j][k][m] * a.data[m][l];
+                        for (m, sijkm) in sijk.iter().enumerate() {
+                            s += *sijkm * a.data[m][l];
                         }
-                        result.data[i][j][k][l] = s;
+                        *rijkl = s;
                     }
                 }
             }
@@ -594,15 +593,14 @@ impl Tensor4 {
     ///
     /// Returns `true` if both left-minor and right-minor symmetries hold within `tol`.
     pub fn has_minor_symmetry(&self, tol: f64) -> bool {
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    for l in 0..3 {
-                        let c = self.data[i][j][k][l];
-                        if (c - self.data[j][i][k][l]).abs() > tol {
+        for (i, ci) in self.data.iter().enumerate() {
+            for (j, cij) in ci.iter().enumerate() {
+                for (k, cijk) in cij.iter().enumerate() {
+                    for (l, &cijkl) in cijk.iter().enumerate() {
+                        if (cijkl - self.data[j][i][k][l]).abs() > tol {
                             return false;
                         }
-                        if (c - self.data[i][j][l][k]).abs() > tol {
+                        if (cijkl - self.data[i][j][l][k]).abs() > tol {
                             return false;
                         }
                     }
@@ -615,11 +613,11 @@ impl Tensor4 {
     ///
     /// Returns `true` if major symmetry holds within `tol`.
     pub fn has_major_symmetry(&self, tol: f64) -> bool {
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    for l in 0..3 {
-                        if (self.data[i][j][k][l] - self.data[k][l][i][j]).abs() > tol {
+        for (i, ci) in self.data.iter().enumerate() {
+            for (j, cij) in ci.iter().enumerate() {
+                for (k, cijk) in cij.iter().enumerate() {
+                    for (l, &cijkl) in cijk.iter().enumerate() {
+                        if (cijkl - self.data[k][l][i][j]).abs() > tol {
                             return false;
                         }
                     }
@@ -632,11 +630,11 @@ impl Tensor4 {
     /// C_sym_ijkl = 0.25 * (C_ijkl + C_jikl + C_ijlk + C_jilk).
     pub fn symmetrize_minor(&self) -> Tensor4 {
         let mut result = Tensor4::zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    for l in 0..3 {
-                        result.data[i][j][k][l] = 0.25
+        for (i, ri) in result.data.iter_mut().enumerate() {
+            for (j, rij) in ri.iter_mut().enumerate() {
+                for (k, rijk) in rij.iter_mut().enumerate() {
+                    for (l, rijkl) in rijk.iter_mut().enumerate() {
+                        *rijkl = 0.25
                             * (self.data[i][j][k][l]
                                 + self.data[j][i][k][l]
                                 + self.data[i][j][l][k]
@@ -650,12 +648,11 @@ impl Tensor4 {
     /// Enforce major symmetry by averaging: C_sym_ijkl = 0.5*(C_ijkl + C_klij).
     pub fn symmetrize_major(&self) -> Tensor4 {
         let mut result = Tensor4::zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    for l in 0..3 {
-                        result.data[i][j][k][l] =
-                            0.5 * (self.data[i][j][k][l] + self.data[k][l][i][j]);
+        for (i, ri) in result.data.iter_mut().enumerate() {
+            for (j, rij) in ri.iter_mut().enumerate() {
+                for (k, rijk) in rij.iter_mut().enumerate() {
+                    for (l, rijkl) in rijk.iter_mut().enumerate() {
+                        *rijkl = 0.5 * (self.data[i][j][k][l] + self.data[k][l][i][j]);
                     }
                 }
             }
@@ -665,25 +662,25 @@ impl Tensor4 {
     /// Rotate a fourth-order tensor: C'_ijkl = R_ia R_jb R_kc R_ld C_abcd.
     pub fn rotate(&self, r: &Tensor2) -> Tensor4 {
         let mut result = Tensor4::zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    for l in 0..3 {
+        for (i, ri) in result.data.iter_mut().enumerate() {
+            for (j, rij) in ri.iter_mut().enumerate() {
+                for (k, rijk) in rij.iter_mut().enumerate() {
+                    for (l, rijkl) in rijk.iter_mut().enumerate() {
                         let mut s = 0.0f64;
-                        for a in 0..3 {
-                            for b in 0..3 {
-                                for c in 0..3 {
-                                    for d in 0..3 {
+                        for (a, sa) in self.data.iter().enumerate() {
+                            for (b, sab) in sa.iter().enumerate() {
+                                for (c, sabc) in sab.iter().enumerate() {
+                                    for (d, &sabcd) in sabc.iter().enumerate() {
                                         s += r.data[i][a]
                                             * r.data[j][b]
                                             * r.data[k][c]
                                             * r.data[l][d]
-                                            * self.data[a][b][c][d];
+                                            * sabcd;
                                     }
                                 }
                             }
                         }
-                        result.data[i][j][k][l] = s;
+                        *rijkl = s;
                     }
                 }
             }
@@ -694,13 +691,13 @@ impl Tensor4 {
     /// P_vol_ijkl = (1/3) * delta_ij * delta_kl.
     pub fn volumetric_projector() -> Self {
         let mut c = Self::zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    for l in 0..3 {
+        for (i, ci) in c.data.iter_mut().enumerate() {
+            for (j, cij) in ci.iter_mut().enumerate() {
+                for (k, cijk) in cij.iter_mut().enumerate() {
+                    for (l, cijkl) in cijk.iter_mut().enumerate() {
                         let dij = if i == j { 1.0 } else { 0.0 };
                         let dkl = if k == l { 1.0 } else { 0.0 };
-                        c.data[i][j][k][l] = (1.0 / 3.0) * dij * dkl;
+                        *cijkl = (1.0 / 3.0) * dij * dkl;
                     }
                 }
             }
@@ -710,13 +707,13 @@ impl Tensor4 {
     /// The fourth-order identity: I_ijkl = delta_ik * delta_jl.
     pub fn identity() -> Self {
         let mut c = Self::zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    for l in 0..3 {
+        for (i, ci) in c.data.iter_mut().enumerate() {
+            for (j, cij) in ci.iter_mut().enumerate() {
+                for (k, cijk) in cij.iter_mut().enumerate() {
+                    for (l, cijkl) in cijk.iter_mut().enumerate() {
                         let dik = if i == k { 1.0 } else { 0.0 };
                         let djl = if j == l { 1.0 } else { 0.0 };
-                        c.data[i][j][k][l] = dik * djl;
+                        *cijkl = dik * djl;
                     }
                 }
             }
@@ -726,11 +723,16 @@ impl Tensor4 {
     /// Subtract two fourth-order tensors.
     pub fn sub(&self, other: &Tensor4) -> Self {
         let mut c = Self::zero();
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    for l in 0..3 {
-                        c.data[i][j][k][l] = self.data[i][j][k][l] - other.data[i][j][k][l];
+        for (ci, (si, oi)) in c
+            .data
+            .iter_mut()
+            .zip(self.data.iter().zip(other.data.iter()))
+        {
+            for (cij, (sij, oij)) in ci.iter_mut().zip(si.iter().zip(oi.iter())) {
+                for (cijk, (sijk, oijk)) in cij.iter_mut().zip(sij.iter().zip(oij.iter())) {
+                    for (cijkl, (sijkl, oijkl)) in cijk.iter_mut().zip(sijk.iter().zip(oijk.iter()))
+                    {
+                        *cijkl = *sijkl - *oijkl;
                     }
                 }
             }
@@ -739,16 +741,14 @@ impl Tensor4 {
     }
     /// Frobenius norm of the fourth-order tensor: sqrt(Σ C_ijkl^2).
     pub fn norm(&self) -> f64 {
-        let mut s = 0.0f64;
-        for i in 0..3 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    for l in 0..3 {
-                        s += self.data[i][j][k][l] * self.data[i][j][k][l];
-                    }
-                }
-            }
-        }
+        let s: f64 = self
+            .data
+            .iter()
+            .flat_map(|ci| ci.iter())
+            .flat_map(|cij| cij.iter())
+            .flat_map(|cijk| cijk.iter())
+            .map(|&v| v * v)
+            .sum();
         s.sqrt()
     }
 }
@@ -886,9 +886,9 @@ impl KelvinTensor {
     /// Multiply the 6×6 Kelvin stiffness matrix by a Kelvin stress/strain vector.
     pub fn matvec(m: &[[f64; 6]; 6], v: &[f64; 6]) -> [f64; 6] {
         let mut result = [0.0f64; 6];
-        for i in 0..6 {
-            for j in 0..6 {
-                result[i] += m[i][j] * v[j];
+        for (ri, mi) in result.iter_mut().zip(m.iter()) {
+            for (mij, vj) in mi.iter().zip(v.iter()) {
+                *ri += *mij * *vj;
             }
         }
         result
@@ -897,7 +897,6 @@ impl KelvinTensor {
 /// CP (CANDECOMP/PARAFAC) decomposition result.
 ///
 /// A rank-R CP decomposition of a tensor T ≈ Σ_r λ_r (a_r ⊗ b_r ⊗ c_r).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CpDecomposition {
     /// Mode-0 factor matrix: shape (n0, rank).
@@ -911,17 +910,14 @@ pub struct CpDecomposition {
 }
 impl CpDecomposition {
     /// Compute the Frobenius norm of the reconstructed tensor.
-    #[allow(dead_code)]
     pub fn reconstruction_norm(&self) -> f64 {
         cp_reconstruct(self).frobenius_norm()
     }
     /// Return the number of components (CP rank).
-    #[allow(dead_code)]
     pub fn rank(&self) -> usize {
         self.lambdas.len()
     }
     /// Return the rank (number of CP components).
-    #[allow(dead_code)]
     pub fn cp_rank(&self) -> usize {
         self.lambdas.len()
     }
@@ -930,7 +926,6 @@ impl CpDecomposition {
 ///
 /// A d-way tensor T of shape (n_0, …, n_{d-1}) is represented as a product
 /// of 3-way cores G_k of shape (r_{k-1}, n_k, r_k) where r_0 = r_d = 1.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TensorTrain {
     /// The TT cores.  Core k has shape (r_{k-1}, n_k, r_k).
@@ -939,7 +934,6 @@ pub struct TensorTrain {
     /// Mode dimensions n_k.
     pub shape: Vec<usize>,
 }
-#[allow(dead_code)]
 impl TensorTrain {
     /// Evaluate the TT representation at a given multi-index.
     ///
@@ -951,9 +945,9 @@ impl TensorTrain {
         for (k, core) in self.cores.iter().enumerate() {
             let ik = idx[k];
             let mut next = vec![0.0f64; core.r_right];
-            for alpha in 0..core.r_left {
-                for beta in 0..core.r_right {
-                    next[beta] += vec[alpha] * core.get(alpha, ik, beta);
+            for (alpha, &va) in vec.iter().enumerate() {
+                for (beta, nb) in next.iter_mut().enumerate() {
+                    *nb += va * core.get(alpha, ik, beta);
                 }
             }
             vec = next;
@@ -973,8 +967,7 @@ impl TensorTrain {
         let mut c_data = tensor.data.clone();
         let c_cols = total;
         let mut c_shape = (c_rows, c_cols);
-        for k in 0..d - 1 {
-            let nk = shape[k];
+        for &nk in shape.iter().take(d - 1) {
             let rows = c_shape.0 * nk;
             let cols = c_shape.1 / nk;
             let mat: Vec<Vec<f64>> = (0..rows)
@@ -987,8 +980,8 @@ impl TensorTrain {
             let mut core = TtCore::zeros(r_left, nk, r_right);
             for alpha in 0..r_left {
                 for i in 0..nk {
-                    for beta in 0..r_right {
-                        core.set(alpha, i, beta, u[alpha * nk + i][beta]);
+                    for (beta, &uval) in u[alpha * nk + i].iter().enumerate().take(r_right) {
+                        core.set(alpha, i, beta, uval);
                     }
                 }
             }
@@ -1037,13 +1030,11 @@ impl TensorTrain {
     /// Compute the Frobenius norm via contraction of the full TT.
     ///
     /// For small tensors only — reconstructs fully.
-    #[allow(dead_code)]
     pub fn frobenius_norm(&self) -> f64 {
         let dense = self.to_dense();
         dense.frobenius_norm()
     }
     /// Reconstruct to a dense DenseTensor.
-    #[allow(dead_code)]
     pub fn to_dense(&self) -> DenseTensor {
         let d = self.shape.len();
         let total: usize = self.shape.iter().product();
@@ -1054,14 +1045,14 @@ impl TensorTrain {
         }
         let shape_clone = self.shape.clone();
         let d_clone = d;
-        for flat in 0..total {
+        for (flat, dv) in data.iter_mut().enumerate() {
             let mut tmp = flat;
             let mut midx = vec![0usize; d_clone];
-            for k in 0..d_clone {
-                midx[k] = tmp / strides[k];
+            for (k, mk) in midx.iter_mut().enumerate() {
+                *mk = tmp / strides[k];
                 tmp %= strides[k];
             }
-            data[flat] = self.evaluate(&midx);
+            *dv = self.evaluate(&midx);
         }
         let _ = shape_clone;
         DenseTensor {
@@ -1072,7 +1063,6 @@ impl TensorTrain {
     /// Dot product <TT_a, TT_b> between two TensorTrains with the same shape.
     ///
     /// Uses the supercore contraction (quadratic in ranks).
-    #[allow(dead_code)]
     pub fn dot_product(&self, other: &TensorTrain) -> f64 {
         assert_eq!(
             self.shape, other.shape,
@@ -1088,7 +1078,6 @@ impl TensorTrain {
             .sum()
     }
     /// Scale all cores by a scalar.
-    #[allow(dead_code)]
     pub fn scale(&self, s: f64) -> TensorTrain {
         let mut cores = self.cores.clone();
         if !cores.is_empty() {
@@ -1104,7 +1093,6 @@ impl TensorTrain {
 ///
 /// The shape is given as a `Vec`usize` and the flat data length must equal
 /// the product of all dimensions.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DenseTensor {
     /// Shape of the tensor, e.g. `[2, 3, 4]` for a 2×3×4 tensor.
@@ -1112,7 +1100,6 @@ pub struct DenseTensor {
     /// Flat row-major storage.
     pub data: Vec<f64>,
 }
-#[allow(dead_code)]
 impl DenseTensor {
     /// Create a zero tensor with the given shape.
     pub fn zeros(shape: &[usize]) -> Self {
@@ -1226,7 +1213,6 @@ impl DenseTensor {
 }
 impl DenseTensor {
     /// Clone helper (needed since derive(Clone) isn't on the struct).
-    #[allow(dead_code)]
     pub fn clone_tensor(&self) -> DenseTensor {
         DenseTensor {
             shape: self.shape.clone(),
@@ -1234,7 +1220,6 @@ impl DenseTensor {
         }
     }
     /// Scale all elements by a scalar.
-    #[allow(dead_code)]
     pub fn scale(&self, s: f64) -> DenseTensor {
         DenseTensor {
             shape: self.shape.clone(),
@@ -1242,7 +1227,6 @@ impl DenseTensor {
         }
     }
     /// Element-wise addition (shapes must match).
-    #[allow(dead_code)]
     pub fn add_tensor(&self, other: &DenseTensor) -> DenseTensor {
         assert_eq!(
             self.shape, other.shape,
@@ -1260,7 +1244,6 @@ impl DenseTensor {
         }
     }
     /// Element-wise subtraction (shapes must match).
-    #[allow(dead_code)]
     pub fn sub_tensor(&self, other: &DenseTensor) -> DenseTensor {
         assert_eq!(
             self.shape, other.shape,
@@ -1278,7 +1261,6 @@ impl DenseTensor {
         }
     }
     /// Max absolute element.
-    #[allow(dead_code)]
     pub fn max_abs(&self) -> f64 {
         self.data
             .iter()
@@ -1286,17 +1268,14 @@ impl DenseTensor {
             .fold(0.0f64, |acc, x| acc.max(x.abs()))
     }
     /// Sum all elements.
-    #[allow(dead_code)]
     pub fn sum(&self) -> f64 {
         self.data.iter().sum()
     }
     /// Rank (number of modes).
-    #[allow(dead_code)]
     pub fn rank(&self) -> usize {
         self.shape.len()
     }
     /// Total number of elements.
-    #[allow(dead_code)]
     pub fn numel(&self) -> usize {
         self.data.len()
     }
@@ -1348,7 +1327,6 @@ impl TensorBasis {
     }
 }
 /// A single Tensor Train core of shape (r_left, n, r_right).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TtCore {
     /// Left bond dimension r_{k-1}.
@@ -1360,7 +1338,6 @@ pub struct TtCore {
     /// Flat C-order data, length r_left * n * r_right.
     pub data: Vec<f64>,
 }
-#[allow(dead_code)]
 impl TtCore {
     /// Create a zero TT core.
     pub fn zeros(r_left: usize, n: usize, r_right: usize) -> Self {
@@ -1388,7 +1365,6 @@ impl TtCore {
 /// Tucker decomposition result for a 3-way tensor.
 ///
 /// T ≈ G ×₁ U₀ ×₂ U₁ ×₃ U₂  where G is the core tensor (r0×r1×r2).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TuckerDecomposition {
     /// Core tensor of shape (r0, r1, r2).
@@ -1402,12 +1378,10 @@ pub struct TuckerDecomposition {
 }
 impl TuckerDecomposition {
     /// Compute reconstruction Frobenius norm.
-    #[allow(dead_code)]
     pub fn reconstruction_norm(&self) -> f64 {
         tucker_reconstruct(self).frobenius_norm()
     }
     /// Relative error of this Tucker approximation.
-    #[allow(dead_code)]
     pub fn relative_error(&self, original: &DenseTensor) -> f64 {
         let recon = tucker_reconstruct(self);
         let diff = original.sub_tensor(&recon).frobenius_norm();

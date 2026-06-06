@@ -1,12 +1,9 @@
-#![allow(clippy::too_many_arguments)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! MD simulation I/O: metadata, trajectories, PES, AIMD steps, NNP training,
 //! histograms, covariance, parameter sweeps, REMD, free energy, Monte Carlo,
 //! structure factor, dielectric, born charges, and more.
-
-#![allow(dead_code)]
 
 use super::convenience::{count_datasets_recursive, write_f64_dataset};
 use super::file::Hdf5File;
@@ -16,7 +13,6 @@ use super::types::{AttrValue, Hdf5Dtype, Hdf5Error, Hdf5Result};
 
 /// Metadata for an MD run.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct MdRunMetadata {
     /// Run title.
     pub title: String,
@@ -38,7 +34,6 @@ pub struct MdRunMetadata {
 
 impl MdRunMetadata {
     /// Write to file.
-    #[allow(dead_code)]
     pub fn write_to(&self, file: &mut Hdf5File) -> Hdf5Result<()> {
         file.create_group("metadata")?;
         let g = file.open_group_mut("metadata")?;
@@ -54,7 +49,6 @@ impl MdRunMetadata {
     }
 
     /// Read from file.
-    #[allow(dead_code)]
     pub fn read_from(file: &Hdf5File) -> Hdf5Result<Self> {
         let g = file.open_group("metadata")?;
         let title = match g.attributes.get("title") {
@@ -105,7 +99,6 @@ impl MdRunMetadata {
 // ── Multi-frame trajectory ────────────────────────────────────────────────────
 
 /// Append a trajectory frame.
-#[allow(dead_code)]
 pub fn append_trajectory_frame(
     file: &mut Hdf5File,
     traj_group: &str,
@@ -126,7 +119,6 @@ pub fn append_trajectory_frame(
 }
 
 /// Read positions for a trajectory frame.
-#[allow(dead_code)]
 pub fn read_trajectory_frame(
     file: &Hdf5File,
     traj_group: &str,
@@ -141,7 +133,6 @@ pub fn read_trajectory_frame(
 }
 
 /// Count trajectory frames.
-#[allow(dead_code)]
 pub fn count_trajectory_frames(file: &Hdf5File, traj_group: &str) -> usize {
     file.open_group(traj_group)
         .map(|g| g.groups.keys().filter(|k| k.starts_with("frame_")).count())
@@ -151,7 +142,6 @@ pub fn count_trajectory_frames(file: &Hdf5File, traj_group: &str) -> usize {
 // ── PES sampling ──────────────────────────────────────────────────────────────
 
 /// Write PES samples.
-#[allow(dead_code)]
 pub fn write_pes_samples(
     file: &mut Hdf5File,
     group: &str,
@@ -177,7 +167,6 @@ pub fn write_pes_samples(
 // ── AIMD step ─────────────────────────────────────────────────────────────────
 
 /// Write one AIMD step.
-#[allow(dead_code)]
 pub fn write_aimd_step(
     file: &mut Hdf5File,
     group: &str,
@@ -209,7 +198,6 @@ pub fn write_aimd_step(
 // ── NNP training batch ────────────────────────────────────────────────────────
 
 /// Write a NNP training batch.
-#[allow(dead_code)]
 pub fn write_nnp_training_batch(
     file: &mut Hdf5File,
     group: &str,
@@ -239,7 +227,6 @@ pub fn write_nnp_training_batch(
 // ── Histogram I/O ─────────────────────────────────────────────────────────────
 
 /// Write a histogram.
-#[allow(dead_code)]
 pub fn write_histogram(
     file: &mut Hdf5File,
     group: &str,
@@ -255,7 +242,6 @@ pub fn write_histogram(
 // ── Covariance matrix ─────────────────────────────────────────────────────────
 
 /// Write a `[d, d]` covariance matrix.
-#[allow(dead_code)]
 pub fn write_covariance_matrix(
     file: &mut Hdf5File,
     group: &str,
@@ -271,7 +257,6 @@ pub fn write_covariance_matrix(
 // ── Parameter sweep ───────────────────────────────────────────────────────────
 
 /// Write a parameter sweep.
-#[allow(dead_code)]
 pub fn write_parameter_sweep(
     file: &mut Hdf5File,
     group: &str,
@@ -288,7 +273,6 @@ pub fn write_parameter_sweep(
 // ── REMD metadata ─────────────────────────────────────────────────────────────
 
 /// Write REMD metadata.
-#[allow(dead_code)]
 pub fn write_remd_metadata(
     file: &mut Hdf5File,
     group: &str,
@@ -303,7 +287,6 @@ pub fn write_remd_metadata(
 // ── Free energy profile ───────────────────────────────────────────────────────
 
 /// Write a PMF along a reaction coordinate.
-#[allow(dead_code)]
 pub fn write_free_energy_profile(
     file: &mut Hdf5File,
     group: &str,
@@ -318,7 +301,6 @@ pub fn write_free_energy_profile(
 // ── MC run ────────────────────────────────────────────────────────────────────
 
 /// Write Monte Carlo run statistics.
-#[allow(dead_code)]
 pub fn write_mc_run(
     file: &mut Hdf5File,
     group: &str,
@@ -341,7 +323,6 @@ pub fn write_mc_run(
 // ── Structure factor ──────────────────────────────────────────────────────────
 
 /// Write S(q).
-#[allow(dead_code)]
 pub fn write_structure_factor(
     file: &mut Hdf5File,
     group: &str,
@@ -356,7 +337,6 @@ pub fn write_structure_factor(
 // ── Dielectric tensor ─────────────────────────────────────────────────────────
 
 /// Write a 3×3 dielectric tensor.
-#[allow(dead_code)]
 pub fn write_dielectric_tensor(file: &mut Hdf5File, group: &str, eps: &[f64; 9]) -> Hdf5Result<()> {
     file.create_group(group)?;
     let _ = file.create_dataset(group, "dielectric_tensor", vec![3, 3], Hdf5Dtype::Float64);
@@ -367,7 +347,6 @@ pub fn write_dielectric_tensor(file: &mut Hdf5File, group: &str, eps: &[f64; 9])
 // ── Born charges ──────────────────────────────────────────────────────────────
 
 /// Write Born effective charge tensors.
-#[allow(dead_code)]
 pub fn write_born_charges(
     file: &mut Hdf5File,
     group: &str,
@@ -389,7 +368,6 @@ pub fn write_born_charges(
 // ── Virial coefficients ───────────────────────────────────────────────────────
 
 /// Write virial coefficients.
-#[allow(dead_code)]
 pub fn write_virial_coefficients(
     file: &mut Hdf5File,
     group: &str,
@@ -401,7 +379,6 @@ pub fn write_virial_coefficients(
 // ── Order parameter ───────────────────────────────────────────────────────────
 
 /// Write a scalar order parameter series.
-#[allow(dead_code)]
 pub fn write_order_parameter(
     file: &mut Hdf5File,
     group: &str,
@@ -414,7 +391,6 @@ pub fn write_order_parameter(
 // ── Stress tensor series ──────────────────────────────────────────────────────
 
 /// Write a Voigt stress tensor for a step.
-#[allow(dead_code)]
 pub fn write_stress_tensor(
     file: &mut Hdf5File,
     group: &str,
@@ -430,7 +406,6 @@ pub fn write_stress_tensor(
 // ── Fluid dynamics ────────────────────────────────────────────────────────────
 
 /// Write a 2-D velocity field.
-#[allow(dead_code)]
 pub fn write_velocity_field_2d(
     file: &mut Hdf5File,
     group: &str,
@@ -450,7 +425,6 @@ pub fn write_velocity_field_2d(
 }
 
 /// Write a 3-D velocity field.
-#[allow(dead_code)]
 pub fn write_velocity_field_3d(
     file: &mut Hdf5File,
     group: &str,
@@ -474,7 +448,6 @@ pub fn write_velocity_field_3d(
 }
 
 /// Write a pressure field.
-#[allow(dead_code)]
 pub fn write_pressure_field(
     file: &mut Hdf5File,
     group: &str,
@@ -489,7 +462,6 @@ pub fn write_pressure_field(
 }
 
 /// Write a vorticity field.
-#[allow(dead_code)]
 pub fn write_vorticity_field(
     file: &mut Hdf5File,
     group: &str,
@@ -506,7 +478,6 @@ pub fn write_vorticity_field(
 // ── SPH particles ─────────────────────────────────────────────────────────────
 
 /// Write SPH particle data.
-#[allow(dead_code)]
 pub fn write_sph_particles(
     file: &mut Hdf5File,
     group: &str,
@@ -529,7 +500,6 @@ pub fn write_sph_particles(
 // ── FEM mesh ──────────────────────────────────────────────────────────────────
 
 /// Write a FEM mesh.
-#[allow(dead_code)]
 pub fn write_fem_mesh(
     file: &mut Hdf5File,
     group: &str,
@@ -561,7 +531,6 @@ pub fn write_fem_mesh(
 }
 
 /// Write nodal displacements.
-#[allow(dead_code)]
 pub fn write_nodal_displacements(
     file: &mut Hdf5File,
     group: &str,
@@ -576,7 +545,6 @@ pub fn write_nodal_displacements(
 }
 
 /// Write von Mises stresses.
-#[allow(dead_code)]
 pub fn write_von_mises_stress(file: &mut Hdf5File, group: &str, stress: &[f64]) -> Hdf5Result<()> {
     write_f64_dataset(file, group, "von_mises", stress)
 }
@@ -584,7 +552,6 @@ pub fn write_von_mises_stress(file: &mut Hdf5File, group: &str, stress: &[f64]) 
 // ── LBM populations ───────────────────────────────────────────────────────────
 
 /// Write LBM D2Q9 populations.
-#[allow(dead_code)]
 pub fn write_lbm_populations(
     file: &mut Hdf5File,
     group: &str,
@@ -601,7 +568,6 @@ pub fn write_lbm_populations(
 // ── Sensor recording ──────────────────────────────────────────────────────────
 
 /// Write a multi-channel sensor recording.
-#[allow(dead_code)]
 pub fn write_sensor_recording(
     file: &mut Hdf5File,
     group: &str,
@@ -630,7 +596,6 @@ pub fn write_sensor_recording(
 // ── Image stack ───────────────────────────────────────────────────────────────
 
 /// Write an image stack `[n_frames, height, width]`.
-#[allow(dead_code)]
 pub fn write_image_stack(
     file: &mut Hdf5File,
     group: &str,
@@ -653,7 +618,6 @@ pub fn write_image_stack(
 // ── Point cloud ───────────────────────────────────────────────────────────────
 
 /// Write a 3-D point cloud.
-#[allow(dead_code)]
 pub fn write_point_cloud(
     file: &mut Hdf5File,
     group: &str,
@@ -675,7 +639,6 @@ pub fn write_point_cloud(
 // ── Diffusion coefficient ─────────────────────────────────────────────────────
 
 /// Write a diffusion coefficient.
-#[allow(dead_code)]
 pub fn write_diffusion_coefficient(
     file: &mut Hdf5File,
     group: &str,
@@ -696,7 +659,6 @@ pub fn write_diffusion_coefficient(
 // ── Arrhenius data ────────────────────────────────────────────────────────────
 
 /// Write Arrhenius rate data.
-#[allow(dead_code)]
 pub fn write_arrhenius_data(
     file: &mut Hdf5File,
     group: &str,
@@ -715,7 +677,6 @@ pub fn write_arrhenius_data(
 // ── ML feature matrix ─────────────────────────────────────────────────────────
 
 /// Write a feature matrix `[n_samples, n_features]`.
-#[allow(dead_code)]
 pub fn write_feature_matrix(
     file: &mut Hdf5File,
     group: &str,
@@ -744,7 +705,6 @@ pub fn write_feature_matrix(
 // ── MLP weights ───────────────────────────────────────────────────────────────
 
 /// Write MLP layer weights.  Each tuple is `(weights, biases, n_out, n_in)`.
-#[allow(dead_code)]
 pub fn write_mlp_weights(
     file: &mut Hdf5File,
     group: &str,
@@ -765,7 +725,6 @@ pub fn write_mlp_weights(
 }
 
 /// Read a single MLP layer's weights and biases.
-#[allow(dead_code)]
 pub fn read_mlp_layer(
     file: &Hdf5File,
     group: &str,
@@ -780,7 +739,6 @@ pub fn read_mlp_layer(
 // ── Hyperparameter trial ──────────────────────────────────────────────────────
 
 /// Write a hyperparameter search trial.
-#[allow(dead_code)]
 pub fn write_hparam_trial(
     file: &mut Hdf5File,
     group: &str,
@@ -801,7 +759,6 @@ pub fn write_hparam_trial(
 // ── Format version ────────────────────────────────────────────────────────────
 
 /// Write format version info.
-#[allow(dead_code)]
 pub fn write_format_version(
     file: &mut Hdf5File,
     major: u32,
@@ -819,7 +776,6 @@ pub fn write_format_version(
 }
 
 /// Read format version; returns `(major, minor, patch, creator)`.
-#[allow(dead_code)]
 pub fn read_format_version(file: &Hdf5File) -> Hdf5Result<(u32, u32, u32, String)> {
     let g = file.open_group("__version__")?;
     let major = match g.attributes.get("major") {
@@ -844,7 +800,6 @@ pub fn read_format_version(file: &Hdf5File) -> Hdf5Result<(u32, u32, u32, String
 // ── Elastic constants ─────────────────────────────────────────────────────────
 
 /// Write the 6×6 Voigt elastic constant matrix.
-#[allow(dead_code)]
 pub fn write_elastic_constants(
     file: &mut Hdf5File,
     group: &str,
@@ -856,7 +811,6 @@ pub fn write_elastic_constants(
 }
 
 /// Read elastic constants.
-#[allow(dead_code)]
 pub fn read_elastic_constants(file: &Hdf5File, group: &str) -> Hdf5Result<[f64; 36]> {
     let v = file.open_dataset(group, "Cij_GPa")?.read_f64()?;
     if v.len() != 36 {
@@ -870,7 +824,6 @@ pub fn read_elastic_constants(file: &Hdf5File, group: &str) -> Hdf5Result<[f64; 
 // ── Molecular orbitals ────────────────────────────────────────────────────────
 
 /// Write MO energies and occupations.
-#[allow(dead_code)]
 pub fn write_molecular_orbitals(
     file: &mut Hdf5File,
     group: &str,
@@ -883,7 +836,6 @@ pub fn write_molecular_orbitals(
 }
 
 /// Write HOMO-LUMO gap.
-#[allow(dead_code)]
 pub fn write_homo_lumo_gap(file: &mut Hdf5File, group: &str, gap_ev: f64) -> Hdf5Result<()> {
     file.create_group(group)?;
     file.open_group_mut(group)?
@@ -892,7 +844,6 @@ pub fn write_homo_lumo_gap(file: &mut Hdf5File, group: &str, gap_ev: f64) -> Hdf
 }
 
 /// Write partial DOS for a species.
-#[allow(dead_code)]
 pub fn write_pdos(
     file: &mut Hdf5File,
     group: &str,
@@ -909,7 +860,6 @@ pub fn write_pdos(
 // ── Polymer data ──────────────────────────────────────────────────────────────
 
 /// Write polymer end-to-end vectors.
-#[allow(dead_code)]
 pub fn write_polymer_ete(file: &mut Hdf5File, group: &str, ete: &[[f64; 3]]) -> Hdf5Result<()> {
     let flat: Vec<f64> = ete.iter().flat_map(|v| v.iter().copied()).collect();
     file.create_group(group)?;
@@ -918,7 +868,6 @@ pub fn write_polymer_ete(file: &mut Hdf5File, group: &str, ete: &[[f64; 3]]) -> 
 }
 
 /// Write radius of gyration series.
-#[allow(dead_code)]
 pub fn write_radius_of_gyration(file: &mut Hdf5File, group: &str, rg: &[f64]) -> Hdf5Result<()> {
     write_f64_dataset(file, group, "rg", rg)
 }
@@ -926,7 +875,6 @@ pub fn write_radius_of_gyration(file: &mut Hdf5File, group: &str, rg: &[f64]) ->
 // ── Spectroscopy ──────────────────────────────────────────────────────────────
 
 /// Write IR spectrum.
-#[allow(dead_code)]
 pub fn write_ir_spectrum(
     file: &mut Hdf5File,
     group: &str,
@@ -939,7 +887,6 @@ pub fn write_ir_spectrum(
 }
 
 /// Write Raman spectrum.
-#[allow(dead_code)]
 pub fn write_raman_spectrum(
     file: &mut Hdf5File,
     group: &str,
@@ -954,7 +901,6 @@ pub fn write_raman_spectrum(
 // ── GCMC ──────────────────────────────────────────────────────────────────────
 
 /// Write GCMC run data.
-#[allow(dead_code)]
 pub fn write_gcmc_run(
     file: &mut Hdf5File,
     group: &str,
@@ -978,7 +924,6 @@ pub fn write_gcmc_run(
 // ── Thermal conductivity ──────────────────────────────────────────────────────
 
 /// Write thermal conductivity Green-Kubo data.
-#[allow(dead_code)]
 pub fn write_thermal_conductivity(
     file: &mut Hdf5File,
     group: &str,
@@ -1001,13 +946,11 @@ pub fn write_thermal_conductivity(
 // ── Utility ───────────────────────────────────────────────────────────────────
 
 /// Total dataset count across all groups.
-#[allow(dead_code)]
 pub fn total_dataset_count(file: &Hdf5File) -> usize {
     count_datasets_recursive(&file.root)
 }
 
 /// List top-level group names (sorted).
-#[allow(dead_code)]
 pub fn list_top_level_groups(file: &Hdf5File) -> Vec<String> {
     let mut names: Vec<String> = file.root.groups.keys().cloned().collect();
     names.sort();
@@ -1017,7 +960,6 @@ pub fn list_top_level_groups(file: &Hdf5File) -> Vec<String> {
 // ── Surface energy ────────────────────────────────────────────────────────────
 
 /// Write surface energies per facet.
-#[allow(dead_code)]
 pub fn write_surface_energies(
     file: &mut Hdf5File,
     group: &str,

@@ -332,7 +332,6 @@ pub(super) fn mat2_mul_transpose(a: &[[f64; 2]; 2], b: &[[f64; 2]; 2]) -> [[f64;
 /// For a 2×2 system: K = e_2^T Wc^{-1} a_d(A)
 /// where a_d is the desired characteristic polynomial and Wc is the
 /// controllability matrix.
-#[allow(dead_code)]
 pub fn pole_placement_2d(
     a: &[[f64; 2]; 2],
     b: &[f64; 2],
@@ -382,7 +381,6 @@ pub fn pole_placement_2d(
 ///      ≈ dt * B + dt²/2 * A*B + ...
 ///
 /// Uses series expansion truncated at 4 terms.
-#[allow(dead_code)]
 pub fn discretize_zoh(a: &[[f64; 2]; 2], b: &[f64; 2], dt: f64) -> ([[f64; 2]; 2], [f64; 2]) {
     let adt = [[a[0][0] * dt, a[0][1] * dt], [a[1][0] * dt, a[1][1] * dt]];
     let adt2 = mat2_mul(&adt, &adt);
@@ -409,7 +407,6 @@ pub fn discretize_zoh(a: &[[f64; 2]; 2], b: &[f64; 2], dt: f64) -> ([[f64; 2]; 2
 /// Check controllability of a 2-state system.
 ///
 /// Wc = \[B, AB\]; system is controllable if rank(Wc) = 2 (det ≠ 0).
-#[allow(dead_code)]
 pub fn is_controllable_2d(a: &[[f64; 2]; 2], b: &[f64; 2]) -> bool {
     let ab = [
         a[0][0] * b[0] + a[0][1] * b[1],
@@ -421,7 +418,6 @@ pub fn is_controllable_2d(a: &[[f64; 2]; 2], b: &[f64; 2]) -> bool {
 /// Check observability of a 2-state, 1-output system.
 ///
 /// Wo = \[C; CA\]; system is observable if rank(Wo) = 2.
-#[allow(dead_code)]
 pub fn is_observable_2d(a: &[[f64; 2]; 2], c: &[f64; 2]) -> bool {
     let ca = [
         c[0] * a[0][0] + c[1] * a[1][0],
@@ -436,7 +432,6 @@ pub fn is_observable_2d(a: &[[f64; 2]; 2], c: &[f64; 2]) -> bool {
 ///
 /// Solved via Lyapunov equation: A W_c + W_c A^T + B B^T = 0
 /// For 2×2 system, solved analytically.
-#[allow(dead_code)]
 pub fn controllability_gramian(a: &[[f64; 2]; 2], b: &[f64; 2]) -> Option<[[f64; 2]; 2]> {
     let bbt = [[b[0] * b[0], b[0] * b[1]], [b[1] * b[0], b[1] * b[1]]];
     let mat = [
@@ -471,7 +466,6 @@ pub(super) fn solve_3x3(a: &[[f64; 3]; 3], b: &[f64; 3]) -> Option<[f64; 3]> {
     Some([x0, x1, x2])
 }
 /// Frequency response of a second-order system: G(jω) = ωn²/(ωn²-ω²+2jζωnω)
-#[allow(dead_code)]
 pub fn second_order_freq_response(wn: f64, zeta: f64, omega: f64) -> (f64, f64) {
     let re = wn * wn - omega * omega;
     let im = 2.0 * zeta * wn * omega;
@@ -484,7 +478,6 @@ pub fn second_order_freq_response(wn: f64, zeta: f64, omega: f64) -> (f64, f64) 
     (mag, phase)
 }
 /// Compute resonant frequency ωr and peak gain Mr for underdamped system.
-#[allow(dead_code)]
 pub fn resonant_peak(wn: f64, zeta: f64) -> Option<(f64, f64)> {
     if zeta >= 1.0 / 2.0_f64.sqrt() {
         return None;
@@ -634,7 +627,6 @@ mod tests_extended {
 ///
 /// `num` and `den` are polynomial coefficients in descending order
 /// (highest power first), e.g. `[1.0, 2.0]` represents s + 2.
-#[allow(dead_code)]
 pub fn bode_response(num: &[f64], den: &[f64], freqs: &[f64]) -> Vec<BodePoint> {
     freqs
         .iter()
@@ -768,7 +760,6 @@ mod tests_control_theory_extended {
 ///
 /// Searches `freqs`/`magnitudes_db`/`phases_deg` for the crossover points.
 /// Returns `None` if the crossover points cannot be found in the data.
-#[allow(dead_code)]
 pub fn compute_stability_margins(
     freqs: &[f64],
     magnitudes_db: &[f64],
@@ -825,8 +816,6 @@ pub fn compute_stability_margins(
 ///
 /// Returns the steady-state P and LQR gain K = (B^T P B + R)^{-1} B^T P A.
 /// `max_iter` iterations with convergence tolerance `tol`.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn dare_2d(
     a: &[[f64; 2]; 2],
     b: &[f64; 2],
@@ -899,7 +888,6 @@ pub fn dare_2d(
 /// * `relay_amplitude` - Relay output amplitude (d).
 /// * `oscillation_amplitude` - Peak-to-peak amplitude of the output / 2.
 /// * `oscillation_period` - Measured period of the limit cycle (seconds).
-#[allow(dead_code)]
 pub fn relay_feedback_tune(
     relay_amplitude: f64,
     oscillation_amplitude: f64,
@@ -922,7 +910,6 @@ pub fn relay_feedback_tune(
 /// The actual gain margin is therefore infinite for a single-lag system but
 /// finite for a double-lag.  This function returns the approximate gain margin
 /// for a double-lag plant with unit-feedback PID (P-only, gain = kp).
-#[allow(dead_code)]
 pub fn gain_margin_double_lag(k_plant: f64, tau: f64, kp: f64) -> f64 {
     let omega_pc = 3.0_f64.sqrt() / tau;
     let mag_at_pc = k_plant / (1.0 + (omega_pc * tau).powi(2));
@@ -936,7 +923,6 @@ pub fn gain_margin_double_lag(k_plant: f64, tau: f64, kp: f64) -> f64 {
 ///
 /// At gain crossover ωgc:  kp · K / sqrt(1 + (ωgc τ)^2) = 1
 /// Phase margin = 180° + phase(G(jωgc)) = 180° - arctan(ωgc τ)
-#[allow(dead_code)]
 pub fn phase_margin_first_order_p(k_plant: f64, _tau: f64, kp: f64) -> f64 {
     let loop_gain = kp * k_plant;
     if loop_gain <= 1.0 {

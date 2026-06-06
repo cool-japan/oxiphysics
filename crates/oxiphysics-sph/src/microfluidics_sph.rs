@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg, clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,9 +16,6 @@
 //! - Color-gradient SPH for immiscible fluid-interface tension
 //! - Marangoni flow driven by surface-tension gradients
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use rand::RngExt;
 use std::f64::consts::PI;
 
@@ -37,6 +33,7 @@ const EPS_0: f64 = 8.854_187_817e-12;
 const E_CHARGE: f64 = 1.602_176_634e-19;
 
 /// Avogadro's number (mol⁻¹).
+#[cfg(test)]
 const N_AV: f64 = 6.022_140_76e23;
 
 /// Viscosity of water at 25 °C (Pa s).
@@ -217,7 +214,7 @@ pub fn tait_pressure(rho: f64, rho0: f64, c_s: f64, gamma: f64) -> f64 {
 /// the color gradient at each particle using SPH summation.
 ///
 /// `particles` is mutated; the `color_grad` field is updated.
-pub fn compute_color_gradient(particles: &mut Vec<MicroParticle>) {
+pub fn compute_color_gradient(particles: &mut [MicroParticle]) {
     let n = particles.len();
     // Snapshot positions and phases to avoid borrow conflict
     let snap: Vec<([f64; 3], f64, f64, u8)> = particles
@@ -254,7 +251,7 @@ pub fn compute_color_gradient(particles: &mut Vec<MicroParticle>) {
 /// gradient: κ = −∇ · n̂, where n̂ = ∇C / |∇C|.
 ///
 /// `particles` is mutated; `curvature` field is updated.
-pub fn compute_curvature(particles: &mut Vec<MicroParticle>) {
+pub fn compute_curvature(particles: &mut [MicroParticle]) {
     let n = particles.len();
     let snap: Vec<([f64; 3], [f64; 3], f64, f64)> = particles
         .iter()
@@ -290,7 +287,7 @@ pub fn compute_curvature(particles: &mut Vec<MicroParticle>) {
 ///
 /// Adds σ κ ∇C / ρ to the acceleration of each particle, where σ is the
 /// surface tension coefficient (N m⁻¹).
-pub fn apply_csf_force(particles: &mut Vec<MicroParticle>, sigma: f64) {
+pub fn apply_csf_force(particles: &mut [MicroParticle], sigma: f64) {
     for p in particles.iter_mut() {
         let grad_mag = norm3(p.color_grad);
         if grad_mag < 1.0e-20 {
@@ -340,11 +337,7 @@ pub fn young_contact_angle(sigma_sg: f64, sigma_sl: f64, sigma_lg: f64) -> f64 {
 /// The solid wall is at y = 0 (normal in +y direction). Particles within
 /// `wall_dist` are corrected so that the interface satisfies `contact_angle`
 /// (radians).
-pub fn apply_wettability_bc(
-    particles: &mut Vec<MicroParticle>,
-    contact_angle: f64,
-    wall_dist: f64,
-) {
+pub fn apply_wettability_bc(particles: &mut [MicroParticle], contact_angle: f64, wall_dist: f64) {
     for p in particles.iter_mut() {
         if p.pos[1] > wall_dist {
             continue;
@@ -460,7 +453,7 @@ pub fn eof_slip_velocity(zeta: f64, e_field: f64, eps_r: f64, eta: f64) -> f64 {
 ///
 /// Adds f_eof = (ρ_e / ρ) × E_field to particle accelerations.
 /// `e_field_vec` is the applied electric field (V m⁻¹).
-pub fn apply_eof_body_force(particles: &mut Vec<MicroParticle>, e_field_vec: [f64; 3]) {
+pub fn apply_eof_body_force(particles: &mut [MicroParticle], e_field_vec: [f64; 3]) {
     for p in particles.iter_mut() {
         if p.rho_e.abs() < 1.0e-30 {
             continue;
@@ -581,7 +574,7 @@ pub fn mixing_time(l_mix: f64, velocity: f64) -> f64 {
 ///
 /// `amplitude` (m s⁻²), `wavenumber` (m⁻¹), `phase_offset` (rad).
 pub fn apply_herringbone_mixing_force(
-    particles: &mut Vec<MicroParticle>,
+    particles: &mut [MicroParticle],
     amplitude: f64,
     wavenumber: f64,
     phase_offset: f64,
@@ -663,7 +656,7 @@ pub fn marangoni_force(dsigma_dt: f64, grad_t: [f64; 3], rho: f64) -> [f64; 3] {
 
 /// Apply Marangoni acceleration to all particles given a uniform temperature
 /// gradient field `grad_t` (K m⁻¹).
-pub fn apply_marangoni_force(particles: &mut Vec<MicroParticle>, dsigma_dt: f64, grad_t: [f64; 3]) {
+pub fn apply_marangoni_force(particles: &mut [MicroParticle], dsigma_dt: f64, grad_t: [f64; 3]) {
     for p in particles.iter_mut() {
         let f_m = marangoni_force(dsigma_dt, grad_t, p.density);
         p.acc = add3(p.acc, f_m);
@@ -675,7 +668,7 @@ pub fn apply_marangoni_force(particles: &mut Vec<MicroParticle>, dsigma_dt: f64,
 // ---------------------------------------------------------------------------
 
 /// Recompute SPH densities via direct summation W(r_ij, h).
-pub fn compute_densities(particles: &mut Vec<MicroParticle>) {
+pub fn compute_densities(particles: &mut [MicroParticle]) {
     let n = particles.len();
     let snap: Vec<([f64; 3], f64, f64)> = particles.iter().map(|p| (p.pos, p.mass, p.h)).collect();
     for i in 0..n {
@@ -692,14 +685,14 @@ pub fn compute_densities(particles: &mut Vec<MicroParticle>) {
 
 /// Compute Tait pressures for all particles given reference density `rho0`,
 /// reference speed of sound `c_s`, and adiabatic exponent `gamma`.
-pub fn compute_pressures(particles: &mut Vec<MicroParticle>, rho0: f64, c_s: f64, gamma: f64) {
+pub fn compute_pressures(particles: &mut [MicroParticle], rho0: f64, c_s: f64, gamma: f64) {
     for p in particles.iter_mut() {
         p.pressure = tait_pressure(p.density, rho0, c_s, gamma);
     }
 }
 
 /// Apply symmetric SPH pressure gradient acceleration (Morris et al. form).
-pub fn apply_pressure_force(particles: &mut Vec<MicroParticle>) {
+pub fn apply_pressure_force(particles: &mut [MicroParticle]) {
     let n = particles.len();
     let snap: Vec<([f64; 3], f64, f64, f64, f64)> = particles
         .iter()
@@ -731,10 +724,13 @@ pub fn apply_pressure_force(particles: &mut Vec<MicroParticle>) {
     }
 }
 
+/// Snapshot element type for viscosity force computation: (pos, vel, density, mass, h).
+type ViscSnapElem = ([f64; 3], [f64; 3], f64, f64, f64);
+
 /// Apply laminar viscosity force (Morris viscosity model).
-pub fn apply_viscosity_force(particles: &mut Vec<MicroParticle>, eta: f64) {
+pub fn apply_viscosity_force(particles: &mut [MicroParticle], eta: f64) {
     let n = particles.len();
-    let snap: Vec<([f64; 3], [f64; 3], f64, f64, f64)> = particles
+    let snap: Vec<ViscSnapElem> = particles
         .iter()
         .map(|p| (p.pos, p.vel, p.density, p.mass, p.h))
         .collect();
@@ -773,21 +769,21 @@ pub fn apply_viscosity_force(particles: &mut Vec<MicroParticle>, eta: f64) {
 /// Advance positions and velocities by one Verlet half-step (kick-drift-kick).
 ///
 /// Call order: `verlet_half_kick` → update forces → `verlet_half_kick`.
-pub fn verlet_half_kick(particles: &mut Vec<MicroParticle>, dt: f64) {
+pub fn verlet_half_kick(particles: &mut [MicroParticle], dt: f64) {
     for p in particles.iter_mut() {
         p.vel = add3(p.vel, scale3(p.acc, 0.5 * dt));
     }
 }
 
 /// Advance positions by a full step using current velocities.
-pub fn verlet_drift(particles: &mut Vec<MicroParticle>, dt: f64) {
+pub fn verlet_drift(particles: &mut [MicroParticle], dt: f64) {
     for p in particles.iter_mut() {
         p.pos = add3(p.pos, scale3(p.vel, dt));
     }
 }
 
 /// Zero all accelerations before re-computing forces each step.
-pub fn zero_accelerations(particles: &mut Vec<MicroParticle>) {
+pub fn zero_accelerations(particles: &mut [MicroParticle]) {
     for p in particles.iter_mut() {
         p.acc = [0.0; 3];
     }
@@ -880,7 +876,7 @@ impl MicrofluidicsParams {
 /// 8. Apply EOF body force (if electric field non-zero)
 /// 9. Apply wettability boundary condition
 /// 10. Half-velocity kick (complete Verlet step)
-pub fn micro_step(particles: &mut Vec<MicroParticle>, params: &MicrofluidicsParams, dt: f64) {
+pub fn micro_step(particles: &mut [MicroParticle], params: &MicrofluidicsParams, dt: f64) {
     verlet_half_kick(particles, dt);
     verlet_drift(particles, dt);
     zero_accelerations(particles);
@@ -949,7 +945,7 @@ pub fn lattice_particles(
 ///
 /// Draws velocity perturbations from a uniform distribution in \[−amp, amp\]
 /// for each component.
-pub fn add_thermal_noise(particles: &mut Vec<MicroParticle>, amp: f64) {
+pub fn add_thermal_noise(particles: &mut [MicroParticle], amp: f64) {
     let mut rng = rand::rng();
     for p in particles.iter_mut() {
         for v in p.vel.iter_mut() {

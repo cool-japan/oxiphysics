@@ -17,7 +17,6 @@
 ///
 /// Elements are 2-node bar/rod elements. Each element connects two nodes.
 /// Global DOF count equals the number of nodes.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GpuFemMesh {
     /// Node coordinates (one per node).
@@ -162,7 +161,6 @@ pub fn gpu_dot_product(a: &[f64], b: &[f64]) -> f64 {
 ///
 /// Convenience wrapper that collects [`gpu_element_stiffness`] for every
 /// element.
-#[allow(dead_code)]
 pub fn gpu_all_element_stiffness(mesh: &GpuFemMesh) -> Vec<[f64; 4]> {
     (0..mesh.n_elements())
         .map(|e| gpu_element_stiffness(mesh, e))

@@ -3,7 +3,6 @@
 
 //! Internal 3x3 matrix helper functions for FEM computations.
 
-#[allow(dead_code)]
 pub(super) fn edge_matrix_raw(
     p0: [f64; 3],
     p1: [f64; 3],
@@ -17,14 +16,12 @@ pub(super) fn edge_matrix_raw(
     ]
 }
 
-#[allow(dead_code)]
 pub(super) fn det3x3(m: [[f64; 3]; 3]) -> f64 {
     m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
         - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
 }
 
-#[allow(dead_code)]
 pub(super) fn inv3x3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let det = det3x3(m);
     if det.abs() < 1e-30 {
@@ -50,12 +47,10 @@ pub(super) fn inv3x3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     ]
 }
 
-#[allow(dead_code)]
 pub(super) fn inv3x3_transpose(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     transpose3x3(inv3x3(m))
 }
 
-#[allow(dead_code)]
 pub(super) fn transpose3x3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     [
         [m[0][0], m[1][0], m[2][0]],
@@ -64,7 +59,6 @@ pub(super) fn transpose3x3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     ]
 }
 
-#[allow(dead_code)]
 pub(super) fn mul3x3(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut c = [[0.0_f64; 3]; 3];
     for i in 0..3 {
@@ -79,7 +73,6 @@ pub(super) fn mul3x3(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 
 /// Build the 6x6 isotropic linear-elastic constitutive matrix D in Voigt
 /// notation.
-#[allow(dead_code)]
 pub(super) fn isotropic_d_matrix(lambda: f64, mu: f64) -> [[f64; 6]; 6] {
     let l2m = lambda + 2.0 * mu;
     [

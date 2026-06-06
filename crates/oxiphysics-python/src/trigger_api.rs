@@ -5,9 +5,6 @@
 //!
 //! Exposes trigger/sensor volumes (enter/exit/stay events) to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::trigger::{BodyEntry, TriggerEvent, TriggerWorld};
 use pyo3::prelude::*;
 

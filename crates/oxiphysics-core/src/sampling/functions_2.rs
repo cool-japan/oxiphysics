@@ -2,15 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{min_pairwise_dist, rejection_sample_1d};
 use super::types::{LatinHypercube, Lcg, SobolSequence};
 
 #[cfg(test)]
 mod additional_sampling_tests {
-    use super::*;
+    use super::super::*;
 
     use crate::sampling::GibbsSampler;
     use crate::sampling::HaltonSequence;
@@ -521,7 +518,6 @@ mod additional_sampling_tests {
 ///
 /// Applies a deterministic digit-reversal scramble parameterized by `seed`.
 /// This reduces correlation between different bases in a Halton sequence.
-#[allow(dead_code)]
 pub fn van_der_corput_scrambled(mut i: u32, base: u32, seed: u32) -> f64 {
     let mut result = 0.0_f64;
     let mut denom = 1.0_f64;
@@ -539,7 +535,6 @@ pub fn van_der_corput_scrambled(mut i: u32, base: u32, seed: u32) -> f64 {
 /// Scrambled Halton sequence: `n` points in `n_dims` dimensions.
 ///
 /// Uses a deterministic per-dimension scramble to reduce correlation.
-#[allow(dead_code)]
 pub fn halton_scrambled(n: usize, n_dims: usize) -> Vec<Vec<f64>> {
     pub(super) const PRIMES: [u32; 16] =
         [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53];
@@ -562,7 +557,6 @@ pub fn halton_scrambled(n: usize, n_dims: usize) -> Vec<Vec<f64>> {
 ///
 /// Produces a two-dimensional low-discrepancy sequence based on the plastic
 /// constant φ₂ ≈ 1.32471795.  Points lie in `[0,1)²`.
-#[allow(dead_code)]
 pub fn r2_sequence(n: usize) -> Vec<[f64; 2]> {
     let phi2 = 1.324_717_957_244_746_f64;
     let a1 = 1.0 / phi2;
@@ -576,7 +570,6 @@ pub fn r2_sequence(n: usize) -> Vec<[f64; 2]> {
         .collect()
 }
 /// Roberts R2 sequence for `d` dimensions using the plastic constant.
-#[allow(dead_code)]
 pub fn r2_sequence_nd(n: usize, d: usize) -> Vec<Vec<f64>> {
     let phi2 = 1.324_717_957_244_746_f64;
     let alphas: Vec<f64> = (1..=d)
@@ -601,7 +594,6 @@ pub fn r2_sequence_nd(n: usize, d: usize) -> Vec<Vec<f64>> {
 ///
 /// Places one sample at the *center* of each stratum per dimension (no jitter).
 /// This maximises spread but is completely deterministic given `n_samples`.
-#[allow(dead_code)]
 pub fn latin_hypercube_centered(n_samples: usize, n_dims: usize, rng: &mut Lcg) -> Vec<Vec<f64>> {
     let inv_n = 1.0 / n_samples as f64;
     let mut result: Vec<Vec<f64>> = (0..n_samples).map(|_| Vec::with_capacity(n_dims)).collect();
@@ -611,9 +603,9 @@ pub fn latin_hypercube_centered(n_samples: usize, n_dims: usize, rng: &mut Lcg) 
             let j = (rng.next_u64() as usize) % (i + 1);
             perm.swap(i, j);
         }
-        for i in 0..n_samples {
-            let val = (perm[i] as f64 + 0.5) * inv_n;
-            result[i].push(val);
+        for (res, &p) in result.iter_mut().zip(perm.iter()) {
+            let val = (p as f64 + 0.5) * inv_n;
+            res.push(val);
         }
     }
     result
@@ -622,7 +614,6 @@ pub fn latin_hypercube_centered(n_samples: usize, n_dims: usize, rng: &mut Lcg) 
 ///
 /// Generates `n_candidates` LHS designs and returns the one that maximises
 /// the minimum pairwise distance between samples.
-#[allow(dead_code)]
 pub fn latin_hypercube_maximin(
     n_samples: usize,
     n_dims: usize,
@@ -642,34 +633,11 @@ pub fn latin_hypercube_maximin(
     }
     best
 }
-/// Compute the minimum pairwise Euclidean distance among a set of points (maximin variant).
-#[allow(dead_code)]
-pub(super) fn min_pairwise_dist_maximin(pts: &[Vec<f64>]) -> f64 {
-    let n = pts.len();
-    if n < 2 {
-        return f64::INFINITY;
-    }
-    let mut min_d = f64::INFINITY;
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let d2: f64 = pts[i]
-                .iter()
-                .zip(pts[j].iter())
-                .map(|(a, b)| (a - b) * (a - b))
-                .sum();
-            if d2 < min_d {
-                min_d = d2;
-            }
-        }
-    }
-    min_d.sqrt()
-}
 /// Generate `n` stratified samples on the surface of the unit sphere.
 ///
 /// Divides the sphere into an equal-area latitude-longitude grid of
 /// `n_lat × n_lon` cells and places one jittered sample per cell.
 /// Returns unit vectors `[x, y, z]`.
-#[allow(dead_code)]
 pub fn stratified_sphere_samples(n_lat: usize, n_lon: usize, rng: &mut Lcg) -> Vec<[f64; 3]> {
     let mut samples = Vec::with_capacity(n_lat * n_lon);
     let inv_lat = 1.0 / n_lat as f64;
@@ -690,7 +658,6 @@ pub fn stratified_sphere_samples(n_lat: usize, n_lon: usize, rng: &mut Lcg) -> V
 /// CDF, computed numerically on a grid.
 ///
 /// `cdf_vals[i]` = CDF at `x_min + i * dx`.  Draws `n` samples.
-#[allow(dead_code)]
 pub fn inverse_cdf_sample(
     cdf_vals: &[f64],
     x_min: f64,
@@ -725,7 +692,6 @@ pub fn inverse_cdf_sample(
 ///
 /// `pdf_vals[i]` = PDF(x_min + i * dx).  Returns normalized CDF values on the
 /// same grid.
-#[allow(dead_code)]
 pub fn pdf_to_cdf(pdf_vals: &[f64], x_min: f64, x_max: f64) -> Vec<f64> {
     let m = pdf_vals.len();
     if m == 0 {
@@ -754,7 +720,6 @@ pub fn pdf_to_cdf(pdf_vals: &[f64], x_min: f64, x_max: f64) -> Vec<f64> {
 ///
 /// `envelope` must satisfy `f(x) ≤ envelope` for all `x ∈ [a, b]`.
 /// Draws exactly `n` accepted samples. Uses `Lcg` RNG.
-#[allow(dead_code)]
 pub fn rejection_sample_1d_lcg(
     f: impl Fn(f64) -> f64,
     a: f64,
@@ -777,7 +742,6 @@ pub fn rejection_sample_1d_lcg(
 ///
 /// Estimates the maximum of `f` on a grid of `grid_size` points, then
 /// applies standard rejection sampling.
-#[allow(dead_code)]
 pub fn rejection_sample_1d_auto(
     f: impl Fn(f64) -> f64,
     a: f64,
@@ -800,7 +764,6 @@ pub fn rejection_sample_1d_auto(
 ///
 /// Each dimension is XOR-scrambled with a distinct 32-bit seed for better
 /// uniformity.
-#[allow(dead_code)]
 pub fn sobol_scrambled(n: usize, d: usize) -> Vec<Vec<f64>> {
     pub(super) const BITS: usize = 32;
     let n_dims = d.min(3);
@@ -824,7 +787,6 @@ pub fn sobol_scrambled(n: usize, d: usize) -> Vec<Vec<f64>> {
         .collect()
 }
 /// Sample mean of a slice.
-#[allow(dead_code)]
 pub fn sample_mean(xs: &[f64]) -> f64 {
     if xs.is_empty() {
         return 0.0;
@@ -832,7 +794,6 @@ pub fn sample_mean(xs: &[f64]) -> f64 {
     xs.iter().sum::<f64>() / xs.len() as f64
 }
 /// Sample variance (Bessel's corrected, `1/(n-1)`) of a slice.
-#[allow(dead_code)]
 pub fn sample_variance(xs: &[f64]) -> f64 {
     let n = xs.len();
     if n < 2 {
@@ -842,12 +803,10 @@ pub fn sample_variance(xs: &[f64]) -> f64 {
     xs.iter().map(|&x| (x - mean) * (x - mean)).sum::<f64>() / (n - 1) as f64
 }
 /// Sample standard deviation.
-#[allow(dead_code)]
 pub fn sample_std(xs: &[f64]) -> f64 {
     sample_variance(xs).sqrt()
 }
 /// Sample skewness.
-#[allow(dead_code)]
 pub fn sample_skewness(xs: &[f64]) -> f64 {
     let n = xs.len();
     if n < 3 {
@@ -863,7 +822,6 @@ pub fn sample_skewness(xs: &[f64]) -> f64 {
     m3 * (n_f * n_f) / ((n_f - 1.0) * (n_f - 2.0))
 }
 /// Sample excess kurtosis (Fisher's definition, 0 for Gaussian).
-#[allow(dead_code)]
 pub fn sample_kurtosis(xs: &[f64]) -> f64 {
     let n = xs.len();
     if n < 4 {
@@ -882,7 +840,6 @@ pub fn sample_kurtosis(xs: &[f64]) -> f64 {
 ///
 /// `xs` need not be sorted (a copy is sorted internally).  Each value in `qs`
 /// must be in `[0, 1]`.
-#[allow(dead_code)]
 pub fn empirical_quantiles(xs: &[f64], qs: &[f64]) -> Vec<f64> {
     if xs.is_empty() {
         return vec![f64::NAN; qs.len()];
@@ -902,7 +859,6 @@ pub fn empirical_quantiles(xs: &[f64], qs: &[f64]) -> Vec<f64> {
 /// Kolmogorov-Smirnov statistic between two sorted empirical CDFs.
 ///
 /// Computes `sup |F_n(x) - G_m(x)|`.  Both slices must be sorted ascending.
-#[allow(dead_code)]
 pub fn ks_statistic(xs: &[f64], ys: &[f64]) -> f64 {
     let n = xs.len();
     let m = ys.len();
@@ -934,7 +890,6 @@ pub fn ks_statistic(xs: &[f64], ys: &[f64]) -> f64 {
 ///
 /// Uniformly samples `k` items from an iterator of unknown size without
 /// storing the entire sequence.
-#[allow(dead_code)]
 pub fn reservoir_sample<T: Clone>(items: &[T], k: usize, rng: &mut Lcg) -> Vec<T> {
     let n = items.len();
     if k == 0 || n == 0 {
@@ -942,10 +897,11 @@ pub fn reservoir_sample<T: Clone>(items: &[T], k: usize, rng: &mut Lcg) -> Vec<T
     }
     let k_actual = k.min(n);
     let mut reservoir: Vec<T> = items[..k_actual].to_vec();
-    for i in k_actual..n {
+    for (offset, item) in items[k_actual..].iter().enumerate() {
+        let i = k_actual + offset;
         let j = (rng.next_u64() % (i + 1) as u64) as usize;
         if j < k_actual {
-            reservoir[j] = items[i].clone();
+            reservoir[j] = item.clone();
         }
     }
     reservoir
@@ -953,7 +909,6 @@ pub fn reservoir_sample<T: Clone>(items: &[T], k: usize, rng: &mut Lcg) -> Vec<T
 /// Weighted reservoir sample of `k` indices from a weight vector.
 ///
 /// Uses Algorithm A-Res (Efraimidis & Spirakis 2006).
-#[allow(dead_code)]
 pub fn weighted_reservoir_sample(weights: &[f64], k: usize, rng: &mut Lcg) -> Vec<usize> {
     let n = weights.len();
     if k == 0 || n == 0 {
@@ -981,7 +936,7 @@ pub fn weighted_reservoir_sample(weights: &[f64], k: usize, rng: &mut Lcg) -> Ve
 }
 #[cfg(test)]
 mod extended_sampling_tests_v2 {
-    use super::*;
+    use super::super::*;
     use crate::random_processes::sample_mean;
     use crate::random_processes::sample_variance;
     use crate::sample_kurtosis;

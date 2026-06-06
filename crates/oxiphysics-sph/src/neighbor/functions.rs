@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::NeighborPairIterator;
 
 /// Cell key in the spatial hash grid.
@@ -13,7 +12,6 @@ pub(super) type CellKey3 = (i32, i32, i32);
 ///
 /// Returns a `Vec<(usize, usize)>` where each pair `(i, j)` satisfies `i < j`.
 /// Useful for building symmetric SPH force loops that compute each interaction once.
-#[allow(dead_code)]
 pub fn collect_symmetric_pairs(neighbor_lists: &[Vec<usize>]) -> Vec<(usize, usize)> {
     NeighborPairIterator::new(neighbor_lists).collect()
 }
@@ -419,9 +417,9 @@ mod tests {
         let h_vec = vec![h; positions.len()];
         let ans = AdaptiveNeighborSearch::build(&positions, &h_vec);
         let fixed_nls = SpatialHash3D::all_neighbors(&positions, h);
-        for i in 0..positions.len() {
+        for (i, fixed_nl) in fixed_nls.iter().enumerate() {
             let mut adaptive = ans.query(i);
-            let mut fixed = fixed_nls[i].clone();
+            let mut fixed = fixed_nl.clone();
             adaptive.sort_unstable();
             fixed.sort_unstable();
             assert_eq!(
@@ -691,8 +689,8 @@ mod tests_neighbor_new {
         let new_positions = vec![[0.5_f64; 3], [0.6, 0.0, 0.0]];
         vl.rebuild(&new_positions);
         for (i, pos) in new_positions.iter().enumerate() {
-            for k in 0..3 {
-                assert!((vl.ref_positions[i][k] - pos[k]).abs() < 1e-14);
+            for (&rp, &np) in vl.ref_positions[i].iter().zip(pos.iter()) {
+                assert!((rp - np).abs() < 1e-14);
             }
         }
     }
@@ -723,9 +721,9 @@ mod tests_neighbor_new {
     fn linked_cell_list_chain_of_particles() {
         let positions: Vec<[f64; 3]> = (0..10).map(|i| [i as f64 * 0.1, 0.0, 0.0]).collect();
         let all = LinkedCellList::all_neighbors(&positions, 0.15);
-        for i in 1..9 {
+        for (i, neighbors) in all.iter().enumerate().skip(1).take(8) {
             assert!(
-                all[i].len() >= 2,
+                neighbors.len() >= 2,
                 "Interior particle {i} should have ≥2 neighbors"
             );
         }

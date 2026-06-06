@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg, clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -10,9 +9,6 @@
 //! - Momentum integration with external forces
 //!
 //! Uses Wendland C2/C4 kernels for accurate density and gradient estimation.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::collections::HashMap;
 
@@ -475,44 +471,39 @@ impl AlphaCompute {
         neighbor_lists: &[Vec<usize>],
     ) -> Vec<f64> {
         let n = particles.len();
-        let mut alphas = vec![0.0f64; n];
         let density_obj = WcSphDensity::new(self.kernel.clone(), self.h);
 
-        for i in 0..n {
-            let pos_i = particles[i].position;
-            let rho_i = particles[i].density;
-            let mass_i = particles[i].mass;
+        particles
+            .iter()
+            .enumerate()
+            .map(|(i, p_i)| {
+                let pos_i = p_i.position;
+                let rho_i = p_i.density;
 
-            let mut sum_grad_sq = 0.0f64;
-            let mut grad_sum = [0.0f64; 3];
+                let mut sum_grad_sq = 0.0f64;
+                let mut grad_sum = [0.0f64; 3];
 
-            if let Some(neighbors) = neighbor_lists.get(i) {
-                for &j in neighbors {
-                    if j == i {
-                        continue;
+                if let Some(neighbors) = neighbor_lists.get(i) {
+                    for &j in neighbors {
+                        if j == i || j >= n {
+                            continue;
+                        }
+                        let pos_j = particles[j].position;
+                        let mass_j = particles[j].mass;
+                        let r_vec = sub3(pos_i, pos_j);
+                        let g = density_obj.eval_gradient(r_vec);
+                        let contrib = scale3(g, mass_j);
+                        sum_grad_sq += norm_sq3(contrib);
+                        grad_sum[0] += contrib[0];
+                        grad_sum[1] += contrib[1];
+                        grad_sum[2] += contrib[2];
                     }
-                    if j >= n {
-                        continue;
-                    }
-                    let pos_j = particles[j].position;
-                    let mass_j = particles[j].mass;
-                    let r_vec = sub3(pos_i, pos_j);
-                    let g = density_obj.eval_gradient(r_vec);
-                    let contrib = scale3(g, mass_j);
-                    sum_grad_sq += norm_sq3(contrib);
-                    grad_sum[0] += contrib[0];
-                    grad_sum[1] += contrib[1];
-                    grad_sum[2] += contrib[2];
                 }
-            }
 
-            // Self contribution is zero for gradient (r_ij=0)
-            let _ = mass_i;
-
-            let denom = norm_sq3(grad_sum) + sum_grad_sq;
-            alphas[i] = if denom < 1e-20 { 0.0 } else { rho_i / denom };
-        }
-        alphas
+                let denom = norm_sq3(grad_sum) + sum_grad_sq;
+                if denom < 1e-20 { 0.0 } else { rho_i / denom }
+            })
+            .collect()
     }
 }
 
@@ -599,7 +590,7 @@ impl PressureSolveIter {
         pos_i: [f64; 3],
         vel_i: [f64; 3],
         rho_i: f64,
-        neighbors: &[([f64; 3], [f64; 3], f64, f64)], // (pos, vel, mass, rho)
+        neighbors: &[NeighborEntry], // (pos, vel, mass, rho)
     ) -> f64 {
         let density_obj = WcSphDensity::new(self.kernel.clone(), self.h);
         let mut rate = 0.0f64;
@@ -621,7 +612,7 @@ impl PressureSolveIter {
         &self,
         particles: &[DfsphParticle],
         alphas: &[f64],
-        pressures: &mut Vec<f64>,
+        pressures: &mut [f64],
         dt: f64,
         neighbor_lists: &[Vec<usize>],
     ) -> f64 {
@@ -629,11 +620,11 @@ impl PressureSolveIter {
         let density_obj = WcSphDensity::new(self.kernel.clone(), self.h);
         let mut mean_error = 0.0f64;
 
-        for i in 0..n {
-            if particles[i].is_boundary {
+        for (i, (p_i, pressure_i)) in particles.iter().zip(pressures.iter_mut()).enumerate() {
+            if p_i.is_boundary {
                 continue;
             }
-            let rho_i = particles[i].density;
+            let rho_i = p_i.density;
             let density_error = (rho_i - self.rho0) / self.rho0;
             mean_error += density_error.abs();
 
@@ -643,17 +634,16 @@ impl PressureSolveIter {
                 continue;
             }
             let kappa = density_error * self.rho0 / (dt * dt * alpha_i);
-            pressures[i] += self.omega * kappa;
-            pressures[i] = pressures[i].max(0.0); // non-negative pressure
+            *pressure_i += self.omega * kappa;
+            *pressure_i = pressure_i.max(0.0); // non-negative pressure
 
             // Update velocity based on pressure acceleration
             if let Some(neighbors) = neighbor_lists.get(i) {
-                let mut _accel = [0.0f64; 3];
                 for &j in neighbors {
                     if j == i || j >= n {
                         continue;
                     }
-                    let r_vec = sub3(particles[i].position, particles[j].position);
+                    let r_vec = sub3(p_i.position, particles[j].position);
                     let g = density_obj.eval_gradient(r_vec);
                     let _ = g;
                 }
@@ -704,7 +694,7 @@ impl DivergenceSolveIter {
         pos_i: [f64; 3],
         vel_i: [f64; 3],
         rho_i: f64,
-        neighbors: &[([f64; 3], [f64; 3], f64, f64)], // (pos, vel, mass, rho)
+        neighbors: &[NeighborEntry], // (pos, vel, mass, rho)
     ) -> f64 {
         let density_obj = WcSphDensity::new(self.kernel.clone(), self.h);
         let mut div = 0.0f64;
@@ -726,7 +716,7 @@ impl DivergenceSolveIter {
         &self,
         particles: &[DfsphParticle],
         alphas: &[f64],
-        velocities: &mut Vec<[f64; 3]>,
+        velocities: &mut [[f64; 3]],
         dt: f64,
         neighbor_lists: &[Vec<usize>],
     ) -> f64 {
@@ -736,8 +726,8 @@ impl DivergenceSolveIter {
         let mut kappas = vec![0.0f64; n];
 
         // Compute kappa from divergence
-        for i in 0..n {
-            if particles[i].is_boundary {
+        for (i, (p_i, kappa)) in particles.iter().zip(kappas.iter_mut()).enumerate() {
+            if p_i.is_boundary {
                 continue;
             }
             let alpha_i = alphas[i];
@@ -745,14 +735,14 @@ impl DivergenceSolveIter {
                 continue;
             }
 
-            let div_i = particles[i].divergence;
+            let div_i = p_i.divergence;
             mean_div += div_i.abs();
-            kappas[i] = div_i / (dt * alpha_i);
+            *kappa = div_i / (dt * alpha_i);
         }
 
         // Update velocities
-        for i in 0..n {
-            if particles[i].is_boundary {
+        for (i, (p_i, vel_i)) in particles.iter().zip(velocities.iter_mut()).enumerate() {
+            if p_i.is_boundary {
                 continue;
             }
             if let Some(neighbors) = neighbor_lists.get(i) {
@@ -760,7 +750,7 @@ impl DivergenceSolveIter {
                     if j == i || j >= n {
                         continue;
                     }
-                    let r_vec = sub3(particles[i].position, particles[j].position);
+                    let r_vec = sub3(p_i.position, particles[j].position);
                     let g = density_obj.eval_gradient(r_vec);
                     let rho_j = particles[j].density;
                     if rho_j < 1e-15 {
@@ -768,10 +758,10 @@ impl DivergenceSolveIter {
                     }
                     let corr = self.omega
                         * particles[j].mass
-                        * (kappas[i] / particles[i].density.powi(2) + kappas[j] / rho_j.powi(2));
-                    velocities[i][0] -= corr * g[0];
-                    velocities[i][1] -= corr * g[1];
-                    velocities[i][2] -= corr * g[2];
+                        * (kappas[i] / p_i.density.powi(2) + kappas[j] / rho_j.powi(2));
+                    vel_i[0] -= corr * g[0];
+                    vel_i[1] -= corr * g[1];
+                    vel_i[2] -= corr * g[2];
                 }
             }
         }
@@ -783,6 +773,9 @@ impl DivergenceSolveIter {
 // ---------------------------------------------------------------------------
 // VelocityAdvection
 // ---------------------------------------------------------------------------
+
+/// Neighbor data entry: (position, velocity, mass, density).
+pub type NeighborEntry = ([f64; 3], [f64; 3], f64, f64);
 
 /// Semi-Lagrangian advection for DFSPH.
 ///
@@ -818,7 +811,7 @@ impl VelocityAdvection {
         pos_i: [f64; 3],
         vel_i: [f64; 3],
         rho_i: f64,
-        neighbors: &[([f64; 3], [f64; 3], f64, f64)], // (pos, vel, mass, rho)
+        neighbors: &[NeighborEntry], // (pos, vel, mass, rho)
     ) -> [f64; 3] {
         let density_obj = WcSphDensity::new(self.kernel.clone(), self.h);
         let mut accel = [0.0f64; 3];
@@ -847,32 +840,32 @@ impl VelocityAdvection {
     /// v*_i = v_i + dt * (g + a_visc_i)
     pub fn advect_velocity(
         &self,
-        particles: &mut Vec<DfsphParticle>,
-        neighbor_data: &[Vec<([f64; 3], [f64; 3], f64, f64)>],
+        particles: &mut [DfsphParticle],
+        neighbor_data: &[Vec<NeighborEntry>],
         dt: f64,
     ) {
         let n = particles.len();
-        let mut new_velocities = vec![[0.0f64; 3]; n];
-        for i in 0..n {
-            if particles[i].is_boundary {
-                new_velocities[i] = particles[i].velocity;
-                continue;
-            }
-            let pos_i = particles[i].position;
-            let vel_i = particles[i].velocity;
-            let rho_i = particles[i].density;
-            let neighbors = neighbor_data.get(i).map(|v| v.as_slice()).unwrap_or(&[]);
-            let a_visc = self.viscosity_accel(pos_i, vel_i, rho_i, neighbors);
-            let a_total = add3(self.gravity, a_visc);
-            new_velocities[i] = add3(vel_i, scale3(a_total, dt));
+        let new_velocities: Vec<[f64; 3]> = particles
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                if p.is_boundary {
+                    return p.velocity;
+                }
+                let neighbors = neighbor_data.get(i).map(|v| v.as_slice()).unwrap_or(&[]);
+                let a_visc = self.viscosity_accel(p.position, p.velocity, p.density, neighbors);
+                let a_total = add3(self.gravity, a_visc);
+                add3(p.velocity, scale3(a_total, dt))
+            })
+            .collect();
+        for (p, new_vel) in particles.iter_mut().zip(new_velocities.iter()) {
+            p.velocity = *new_vel;
         }
-        for i in 0..n {
-            particles[i].velocity = new_velocities[i];
-        }
+        let _ = n;
     }
 
     /// Advance particle positions by velocity for time dt.
-    pub fn advect_positions(&self, particles: &mut Vec<DfsphParticle>, dt: f64) {
+    pub fn advect_positions(&self, particles: &mut [DfsphParticle], dt: f64) {
         for p in particles.iter_mut() {
             if !p.is_boundary {
                 p.position = add3(p.position, scale3(p.velocity, dt));
@@ -1084,11 +1077,11 @@ impl DfsphSolver {
     pub fn update_densities(&mut self) {
         let h = self.config.smoothing_length;
         let kernel = WcSphDensity::new(KernelType::WendlandC2, h);
-        let n = self.particles.len();
+        let _n = self.particles.len();
         let positions: Vec<_> = self.particles.iter().map(|p| p.position).collect();
         let masses: Vec<_> = self.particles.iter().map(|p| p.mass).collect();
 
-        for i in 0..n {
+        for (i, p_i) in self.particles.iter_mut().enumerate() {
             let mut rho = 0.0f64;
             if let Some(neighbors) = self.neighbor_lists.get(i) {
                 for &j in neighbors {
@@ -1096,7 +1089,7 @@ impl DfsphSolver {
                     rho += masses[j] * kernel.eval_kernel(r);
                 }
             }
-            self.particles[i].density = rho.max(0.1 * self.config.rest_density);
+            p_i.density = rho.max(0.1 * self.config.rest_density);
         }
     }
 
@@ -1158,8 +1151,8 @@ impl DfsphSolver {
 
             let mut total_div = 0.0f64;
             let mut count = 0;
-            for i in 0..n {
-                if self.particles[i].is_boundary {
+            for (i, p_i) in self.particles.iter_mut().enumerate() {
+                if p_i.is_boundary {
                     continue;
                 }
                 let mut div_i = 0.0f64;
@@ -1176,7 +1169,7 @@ impl DfsphSolver {
                         }
                     }
                 }
-                self.particles[i].divergence = div_i;
+                p_i.divergence = div_i;
                 total_div += div_i.abs();
                 count += 1;
             }
@@ -1192,16 +1185,18 @@ impl DfsphSolver {
             }
 
             // Update pressures
-            for i in 0..n {
-                if self.particles[i].is_boundary {
+            for (i, (p_i, pressure_i)) in
+                self.particles.iter().zip(pressures.iter_mut()).enumerate()
+            {
+                if p_i.is_boundary {
                     continue;
                 }
                 let alpha_i = self.alphas.get(i).copied().unwrap_or(0.0);
                 if alpha_i.abs() < 1e-20 {
                     continue;
                 }
-                let kappa = self.particles[i].divergence / (dt * alpha_i);
-                pressures[i] += self.config.omega * kappa;
+                let kappa = p_i.divergence / (dt * alpha_i);
+                *pressure_i += self.config.omega * kappa;
             }
 
             // Apply pressure correction to velocities
@@ -1251,8 +1246,10 @@ impl DfsphSolver {
 
             let mut total_error = 0.0f64;
             let mut count = 0;
-            for i in 0..n {
-                if self.particles[i].is_boundary {
+            for (i, (p_i, pressure_i)) in
+                self.particles.iter().zip(pressures.iter_mut()).enumerate()
+            {
+                if p_i.is_boundary {
                     continue;
                 }
                 let err = (densities[i] - self.config.rest_density) / self.config.rest_density;
@@ -1264,8 +1261,8 @@ impl DfsphSolver {
                     continue;
                 }
                 let kappa = err * self.config.rest_density / (dt * dt * alpha_i);
-                pressures[i] += self.config.omega * kappa;
-                pressures[i] = pressures[i].max(0.0);
+                *pressure_i += self.config.omega * kappa;
+                *pressure_i = pressure_i.max(0.0);
             }
 
             final_error = if count > 0 {
@@ -1536,7 +1533,7 @@ mod tests {
     fn test_velocity_advection_gravity() {
         let adv = VelocityAdvection::new([0.0, -9.81, 0.0], 1e-6, 0.1, KernelType::WendlandC2);
         let mut particles = vec![DfsphParticle::new([0.0; 3], 1.0, 1000.0)];
-        let neighbor_data: Vec<Vec<([f64; 3], [f64; 3], f64, f64)>> = vec![vec![]];
+        let neighbor_data: Vec<Vec<NeighborEntry>> = vec![vec![]];
         let dt = 0.01;
         adv.advect_velocity(&mut particles, &neighbor_data, dt);
         // After dt = 0.01 with g = -9.81: v_y should be -0.0981

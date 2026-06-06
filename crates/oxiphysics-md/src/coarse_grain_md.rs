@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,8 +15,6 @@
 //! References
 //! ----------
 //! Marrink, S. J. et al. (2007) *J. Phys. Chem. B* **111**, 7812–7824.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -693,7 +690,7 @@ impl MsIbi {
         }
         let len = self.combined_potential.len();
         let mut new_pot = self.combined_potential.clone();
-        for k in 0..len {
+        for (k, pot_entry) in new_pot.iter_mut().enumerate().take(len) {
             let mut delta = 0.0f64;
             for (s, &w) in self.states.iter().zip(self.weights.iter()) {
                 let g_sim = s
@@ -705,7 +702,7 @@ impl MsIbi {
                 let g_tgt = s.target_rdf.get(k).map(|x| x.1).unwrap_or(1e-10).max(1e-10);
                 delta += w * s.kbt * (g_sim / g_tgt).ln();
             }
-            new_pot[k].1 += delta;
+            pot_entry.1 += delta;
         }
         self.combined_potential = new_pot.clone();
         for s in &mut self.states {
@@ -798,8 +795,8 @@ mod tests {
         let mol = two_bead_mol(0.60);
         let f = mol.bond_forces();
         // Newton's third law: f[0] + f[1] == 0
-        for k in 0..3 {
-            assert!((f[0][k] + f[1][k]).abs() < 1e-10);
+        for (&f0k, &f1k) in f[0].iter().zip(f[1].iter()) {
+            assert!((f0k + f1k).abs() < 1e-10);
         }
     }
 

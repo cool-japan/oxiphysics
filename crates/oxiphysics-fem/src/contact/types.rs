@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use std::f64::consts::PI;
 
 /// A contact pair between two nodes with gap, normal, and multiplier.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ContactPair {
     /// Index of node A (slave).
@@ -23,7 +20,6 @@ pub struct ContactPair {
 }
 /// 2-D axis-aligned bounding box.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct Aabb2d {
     /// Minimum corner.
     pub min: [f64; 2],
@@ -32,12 +28,10 @@ pub struct Aabb2d {
 }
 impl Aabb2d {
     /// Create from min/max corners.
-    #[allow(dead_code)]
     pub fn new(min: [f64; 2], max: [f64; 2]) -> Self {
         Self { min, max }
     }
     /// Expand box by `margin` on all sides.
-    #[allow(dead_code)]
     pub fn expanded(&self, margin: f64) -> Self {
         Self {
             min: [self.min[0] - margin, self.min[1] - margin],
@@ -45,7 +39,6 @@ impl Aabb2d {
         }
     }
     /// Test overlap with another AABB.
-    #[allow(dead_code)]
     pub fn overlaps(&self, other: &Aabb2d) -> bool {
         self.max[0] >= other.min[0]
             && self.min[0] <= other.max[0]
@@ -53,7 +46,6 @@ impl Aabb2d {
             && self.min[1] <= other.max[1]
     }
     /// Build from a list of 2-D points.
-    #[allow(dead_code)]
     pub fn from_points(pts: &[[f64; 2]]) -> Option<Self> {
         if pts.is_empty() {
             return None;
@@ -77,7 +69,6 @@ impl Aabb2d {
         Some(Self { min: mn, max: mx })
     }
     /// Center of the box.
-    #[allow(dead_code)]
     pub fn center(&self) -> [f64; 2] {
         [
             0.5 * (self.min[0] + self.max[0]),
@@ -90,9 +81,7 @@ impl Aabb2d {
 /// One body is represented as discrete slave nodes; the other as master
 /// segments.  The gap is computed by projecting each slave node onto the
 /// closest master segment.
-#[allow(dead_code)]
 pub struct NodeToSegmentContact;
-#[allow(dead_code)]
 impl NodeToSegmentContact {
     /// Project a 3D slave node onto a master line segment and compute
     /// the signed gap.
@@ -184,7 +173,6 @@ pub struct HertzResult {
 pub struct ContactPenetrationDepth;
 impl ContactPenetrationDepth {
     /// Compute the indentation depth from an applied force for two elastic spheres.
-    #[allow(clippy::too_many_arguments)]
     pub fn from_force_sphere_sphere(
         force: f64,
         r1: f64,
@@ -205,7 +193,6 @@ impl ContactPenetrationDepth {
     }
 }
 /// Simple penalty contact enforcing non-penetration with Coulomb friction.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PenaltyContact {
     /// Normal penalty stiffness.
@@ -213,7 +200,6 @@ pub struct PenaltyContact {
     /// Coulomb friction coefficient.
     pub friction_coeff: f64,
 }
-#[allow(dead_code)]
 impl PenaltyContact {
     /// Normal contact force: f = penalty * max(0, -gap).
     ///
@@ -240,7 +226,6 @@ impl PenaltyContact {
 ///
 /// Uses weighted integrals of shape functions on the contact surface to
 /// enforce contact constraints in a variationally consistent manner.
-#[allow(dead_code)]
 pub struct MortarContact;
 impl MortarContact {
     /// Compute the mortar integral (D matrix entry) between a slave node
@@ -249,7 +234,6 @@ impl MortarContact {
     /// D_ij = integral over master segment of N_slave_i * N_master_j ds
     ///
     /// Simplified: uses trapezoidal rule on a 1D segment.
-    #[allow(dead_code)]
     pub fn mortar_d_integral(slave_xi: f64, segment_length: f64) -> [f64; 2] {
         let n1 = 1.0 - slave_xi;
         let n2 = slave_xi;
@@ -258,7 +242,6 @@ impl MortarContact {
     /// Compute the mortar mass matrix M entry.
     ///
     /// M_ij = integral over slave segment of N_slave_i * N_slave_j ds
-    #[allow(dead_code)]
     pub fn mortar_m_integral(segment_length: f64) -> [[f64; 2]; 2] {
         let l = segment_length;
         [[2.0 * l / 6.0, l / 6.0], [l / 6.0, 2.0 * l / 6.0]]
@@ -268,7 +251,6 @@ impl MortarContact {
     /// Given slave node position and master segment endpoints,
     /// returns the parametric coordinate xi in \[0,1\] on the master segment
     /// and the gap distance.
-    #[allow(dead_code)]
     pub fn project_slave_to_master(
         slave_pos: [f64; 2],
         master_start: [f64; 2],
@@ -293,7 +275,6 @@ impl MortarContact {
     }
 }
 /// Axis-aligned bounding box (AABB) for contact detection.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Aabb {
     /// Minimum corner.
@@ -301,7 +282,6 @@ pub struct Aabb {
     /// Maximum corner.
     pub max: [f64; 3],
 }
-#[allow(dead_code)]
 impl Aabb {
     /// Create a new AABB.
     pub fn new(min: [f64; 3], max: [f64; 3]) -> Self {
@@ -363,9 +343,7 @@ impl Aabb {
 /// Assemble contact stiffness contributions as sparse (row, col, value) triplets.
 ///
 /// For each contact pair the diagonal DOF contributions are added.
-#[allow(dead_code)]
 pub struct ContactStiffness;
-#[allow(dead_code)]
 impl ContactStiffness {
     /// Assemble contact stiffness triplets.
     ///
@@ -402,9 +380,7 @@ impl ContactStiffness {
 /// - a = sqrt(R* * δ)
 /// - F = 4/3 * E* * R*^(1/2) * δ^(3/2)
 /// - p0 = 3F / (2π a²) = (6 F E*² / (π³ R*²))^(1/3)
-#[allow(dead_code)]
 pub struct HertzValidator;
-#[allow(dead_code)]
 impl HertzValidator {
     /// Check the Hertz force-approach relationship: F = 4/3 E* sqrt(R) δ^1.5
     ///
@@ -454,12 +430,10 @@ impl HertzValidator {
     }
 }
 /// Contact detection between two FEM node sets using AABB trees.
-#[allow(dead_code)]
 pub struct FemContactDetector {
     /// Skin distance: a node is a candidate if it is within this distance of the other body.
     pub skin_distance: f64,
 }
-#[allow(dead_code)]
 impl FemContactDetector {
     /// Create a new contact detector.
     pub fn new(skin_distance: f64) -> Self {
@@ -501,7 +475,6 @@ impl FemContactDetector {
 }
 /// Coulomb friction status of a contact pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum FrictionStatus {
     /// No contact (gap >= 0).
     Open,
@@ -515,7 +488,6 @@ pub enum FrictionStatus {
 /// For a general elliptic contact problem, the contact patch is elliptic.
 /// Here we use the simplification that for principal curvatures `kappa1` and `kappa2`
 /// the effective radius is `R* = sqrt(R_x * R_y)` (geometric mean).
-#[allow(dead_code)]
 pub struct EllipticalHertz;
 impl EllipticalHertz {
     /// Approximate elliptical contact from two equivalent radii.
@@ -559,7 +531,6 @@ impl HertzContact {
         1.0 / inv
     }
     /// Solve Hertz contact for two elastic spheres pressed together.
-    #[allow(clippy::too_many_arguments)]
     pub fn sphere_sphere(
         r1: f64,
         r2: f64,
@@ -586,7 +557,6 @@ impl HertzContact {
         }
     }
     /// Solve Hertz contact for an elastic sphere on a flat surface.
-    #[allow(clippy::too_many_arguments)]
     pub fn sphere_flat(r: f64, e1: f64, nu1: f64, e2: f64, nu2: f64, approach: f64) -> HertzResult {
         let e_star = Self::reduced_modulus(e1, nu1, e2, nu2);
         let r_star = r;
@@ -605,7 +575,6 @@ impl HertzContact {
         }
     }
     /// Solve 2D Hertz contact for a cylinder pressed against a flat surface.
-    #[allow(clippy::too_many_arguments)]
     pub fn cylinder_flat_2d(
         r: f64,
         e1: f64,
@@ -635,7 +604,6 @@ impl HertzContact {
 }
 /// Dual (multiplier) state for augmented Lagrangian frictionless contact.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DualContactState {
     /// Lagrange multipliers λ (contact pressure, one per pair).
     pub lambda: Vec<f64>,
@@ -644,7 +612,6 @@ pub struct DualContactState {
 }
 impl DualContactState {
     /// Initialise with zero multipliers.
-    #[allow(dead_code)]
     pub fn new(n_pairs: usize, r: f64) -> Self {
         Self {
             lambda: vec![0.0; n_pairs],
@@ -652,14 +619,12 @@ impl DualContactState {
         }
     }
     /// Uzawa update step: `lambda_{k+1} = max(0, lambda_k + r * g_n)`.
-    #[allow(dead_code)]
     pub fn uzawa_step(&mut self, gaps: &[f64]) {
         for (lam, &g) in self.lambda.iter_mut().zip(gaps.iter()) {
             *lam = (*lam + self.r * g).min(0.0);
         }
     }
     /// Active set: indices where contact is active (lambda < 0).
-    #[allow(dead_code)]
     pub fn active_set(&self) -> Vec<usize> {
         self.lambda
             .iter()
@@ -669,7 +634,6 @@ impl DualContactState {
             .collect()
     }
     /// Contact force contribution `f_c = -lambda * n` at each pair.
-    #[allow(dead_code)]
     pub fn contact_forces(&self, normals: &[[f64; 3]]) -> Vec<[f64; 3]> {
         self.lambda
             .iter()
@@ -680,7 +644,6 @@ impl DualContactState {
 }
 /// Result of an elliptical Hertz contact calculation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct EllipticalHertzResult {
     /// Semi-axis in x-direction `a` (m).
     pub semi_axis_a: f64,
@@ -692,7 +655,6 @@ pub struct EllipticalHertzResult {
     pub approach: f64,
 }
 /// Augmented Lagrangian contact formulation with Uzawa update.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AugmentedLagrangianSolver {
     /// Penalty parameter.
@@ -708,7 +670,6 @@ pub struct AugmentedLagrangianSolver {
 }
 impl AugmentedLagrangianSolver {
     /// Create a new augmented Lagrangian solver for n_pairs contact pairs.
-    #[allow(dead_code)]
     pub fn new(penalty: f64, n_pairs: usize, tol: f64, max_iter: usize) -> Self {
         Self {
             penalty,
@@ -721,7 +682,6 @@ impl AugmentedLagrangianSolver {
     /// Perform Uzawa update for all contact pairs.
     ///
     /// Returns true if converged (max multiplier change < tol).
-    #[allow(dead_code)]
     pub fn uzawa_update(&mut self, gaps: &[f64], slidings: &[f64], friction_coeff: f64) -> bool {
         assert_eq!(gaps.len(), self.lambda_n.len());
         assert_eq!(slidings.len(), self.lambda_t.len());
@@ -739,13 +699,11 @@ impl AugmentedLagrangianSolver {
         max_change < self.tol
     }
     /// Compute the augmented normal force for a contact pair.
-    #[allow(dead_code)]
     pub fn normal_force(&self, pair: usize, gap: f64) -> f64 {
         (self.lambda_n[pair] + self.penalty * gap).min(0.0)
     }
 }
 /// Configuration for penalty-based contact enforcement.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PenaltyParameters {
     /// Normal penalty stiffness (N/m).
@@ -764,7 +722,6 @@ impl PenaltyParameters {
     ///
     /// A common heuristic: penalty stiffness = alpha * E * A / h
     /// where alpha is a scaling factor (typically 10-1000).
-    #[allow(dead_code)]
     pub fn from_material(youngs_modulus: f64, element_size: f64, alpha: f64) -> Self {
         let k_n = alpha * youngs_modulus / element_size;
         Self {
@@ -778,7 +735,6 @@ impl PenaltyParameters {
     /// Compute the adaptive normal penalty stiffness based on current penetration.
     ///
     /// If penetration exceeds max_penetration, the stiffness is increased.
-    #[allow(dead_code)]
     pub fn adaptive_stiffness(&self, penetration: f64) -> f64 {
         if penetration > self.max_penetration {
             self.normal_stiffness * self.scaling_factor
@@ -787,20 +743,17 @@ impl PenaltyParameters {
         }
     }
     /// Compute penalty contact force (normal component).
-    #[allow(dead_code)]
     pub fn normal_force(&self, gap: f64) -> f64 {
         let pen = (-gap).max(0.0);
         let k = self.adaptive_stiffness(pen);
         k * pen
     }
     /// Compute regularized friction force.
-    #[allow(dead_code)]
     pub fn friction_force(&self, normal_force: f64, sliding_vel: f64, friction_coeff: f64) -> f64 {
         friction_coeff * normal_force * (sliding_vel / self.regularization_velocity).tanh()
     }
 }
 /// Augmented Lagrangian contact with per-contact-point multipliers.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AugmentedLagrangianContact {
     /// Penalty parameter.
@@ -808,7 +761,6 @@ pub struct AugmentedLagrangianContact {
     /// Lagrange multipliers (one per contact point).
     pub lambda: Vec<f64>,
 }
-#[allow(dead_code)]
 impl AugmentedLagrangianContact {
     /// Create a new AL contact object with `n` zero multipliers.
     pub fn new(penalty: f64, n: usize) -> Self {
@@ -828,7 +780,6 @@ impl AugmentedLagrangianContact {
     }
 }
 /// Segment-to-segment contact formulation for 2D contact.
-#[allow(dead_code)]
 pub struct SegmentToSegmentContact;
 impl SegmentToSegmentContact {
     /// Compute the minimum distance between two line segments in 2D.
@@ -838,7 +789,6 @@ impl SegmentToSegmentContact {
     ///
     /// Returns (distance, parameter_t1, parameter_t2) where t1, t2 in \[0,1\]
     /// parameterize the closest points on each segment.
-    #[allow(dead_code)]
     pub fn segment_distance(
         p1_start: [f64; 2],
         p1_end: [f64; 2],
@@ -871,7 +821,6 @@ impl SegmentToSegmentContact {
     /// Compute the gap function for segment-to-segment contact.
     ///
     /// Positive gap means separation; negative means penetration.
-    #[allow(dead_code)]
     pub fn gap_function(
         p1_start: [f64; 2],
         p1_end: [f64; 2],

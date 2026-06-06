@@ -11,8 +11,6 @@
 use std::f64::consts::PI;
 
 use super::functions::HBAR_C;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::PauliParams;
 
 impl Default for PauliParams {

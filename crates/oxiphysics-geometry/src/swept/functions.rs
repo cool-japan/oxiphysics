@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{CcdResult, LinearCastResult, SweptSphere};
 
 #[inline]
@@ -62,6 +61,7 @@ pub(super) fn transform_point(m: [[f64; 4]; 4], p: [f64; 3]) -> [f64; 3] {
     [x, y, z]
 }
 /// Apply a 4x4 homogeneous transform (row-major) to a 3-D direction (no translation).
+#[cfg(test)]
 pub(super) fn transform_dir(m: [[f64; 4]; 4], d: [f64; 3]) -> [f64; 3] {
     let x = m[0][0] * d[0] + m[0][1] * d[1] + m[0][2] * d[2];
     let y = m[1][0] * d[0] + m[1][1] * d[1] + m[1][2] * d[2];
@@ -1353,8 +1353,8 @@ mod tests_extended {
         let ss = SweptSphere::new([0.0, 0.0, 0.0], [3.0, 0.0, 0.0], 1.0);
         let env = swept_sphere_compute_envelope(&ss, 6, 8);
         for (i, p) in env.iter().enumerate() {
-            for k in 0..3 {
-                assert!(p[k].is_finite(), "envelope[{i}][{k}] not finite: {}", p[k]);
+            for (k, &pk) in p.iter().enumerate() {
+                assert!(pk.is_finite(), "envelope[{i}][{k}] not finite: {}", pk);
             }
         }
     }

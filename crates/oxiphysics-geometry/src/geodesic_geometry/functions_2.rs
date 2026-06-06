@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -84,7 +82,7 @@ pub fn gaussian_curvature_field(mesh: &GeodesicMesh) -> Vec<f64> {
 pub fn total_angle_defect(mesh: &GeodesicMesh) -> f64 {
     let v2f = mesh.vertex_to_faces();
     let mut total = 0.0;
-    for vi in 0..mesh.num_vertices() {
+    for (vi, _) in v2f.iter().enumerate().take(mesh.num_vertices()) {
         let mut angle_sum = 0.0;
         for &fi in &v2f[vi] {
             let f = mesh.faces[fi];
@@ -141,6 +139,7 @@ pub fn geodesic_distance_matrix(mesh: &GeodesicMesh, vertices: &[usize]) -> Vec<
     matrix
 }
 /// Build a simple tetrahedron mesh for testing.
+#[cfg(test)]
 pub(super) fn build_tetrahedron() -> GeodesicMesh {
     let vertices = vec![
         [0.0, 0.0, 0.0],
@@ -152,6 +151,7 @@ pub(super) fn build_tetrahedron() -> GeodesicMesh {
     GeodesicMesh::new(vertices, faces)
 }
 /// Build a simple flat quad (2 triangles) for testing.
+#[cfg(test)]
 pub(super) fn build_flat_quad() -> GeodesicMesh {
     let vertices = vec![
         [0.0, 0.0, 0.0],
@@ -163,6 +163,7 @@ pub(super) fn build_flat_quad() -> GeodesicMesh {
     GeodesicMesh::new(vertices, faces)
 }
 /// Build a simple planar grid mesh.
+#[cfg(test)]
 pub(super) fn build_grid_mesh(nx: usize, ny: usize, spacing: f64) -> GeodesicMesh {
     let mut vertices = Vec::new();
     for iy in 0..ny {
@@ -184,6 +185,7 @@ pub(super) fn build_grid_mesh(nx: usize, ny: usize, spacing: f64) -> GeodesicMes
     GeodesicMesh::new(vertices, faces)
 }
 /// Build an icosphere-like mesh for testing (octahedron subdivision).
+#[cfg(test)]
 pub(super) fn build_octahedron() -> GeodesicMesh {
     let vertices = vec![
         [1.0, 0.0, 0.0],

@@ -2,11 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// One term of a Prony series: modulus E_i and relaxation time tau_i.
 #[derive(Debug, Clone)]
 pub struct PronyTerm {
@@ -438,7 +434,6 @@ impl StandardLinearSolid {
     }
 }
 /// State at a single integration point: stress vector and internal variables.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ViscoelasticState {
     /// Stress components (Voigt notation).
@@ -449,7 +444,6 @@ pub struct ViscoelasticState {
 impl ViscoelasticState {
     /// Create zeroed state with `n_stress` stress components and `n_prony` Prony arms,
     /// each arm having `n_stress` components.
-    #[allow(dead_code)]
     pub fn new(n_stress: usize, n_prony: usize) -> Self {
         Self {
             stress: vec![0.0; n_stress],
@@ -503,7 +497,7 @@ impl ViscoelasticBeam1D {
         f
     }
     /// Apply Dirichlet boundary conditions by the penalty method.
-    pub fn apply_dirichlet(&self, k: &mut Vec<Vec<f64>>, f: &mut Vec<f64>, dofs: &[(usize, f64)]) {
+    pub fn apply_dirichlet(&self, k: &mut [Vec<f64>], f: &mut [f64], dofs: &[(usize, f64)]) {
         let penalty = {
             let max_k = k
                 .iter()
@@ -658,28 +652,24 @@ impl ViscoelasticElement1D {
 /// WLF (Williams-Landel-Ferry) shift factor parameters.
 ///
 /// log(a_T) = −C1 (T − T_ref) / (C2 + (T − T_ref))
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 #[derive(Debug, Clone)]
 pub struct WLFShift {
     /// WLF constant C1.
-    pub C1: f64,
+    pub c1: f64,
     /// WLF constant C2.
-    pub C2: f64,
+    pub c2: f64,
     /// Reference temperature T_ref.
-    pub T_ref: f64,
+    pub t_ref: f64,
 }
 impl WLFShift {
     /// log10 shift factor: log10(a_T) = −C1 (T − T_ref) / (C2 + (T − T_ref)).
-    #[allow(dead_code)]
-    #[allow(non_snake_case)]
-    pub fn shift_factor(&self, T: f64) -> f64 {
-        let dt = T - self.T_ref;
-        let denom = self.C2 + dt;
+    pub fn shift_factor(&self, temp: f64) -> f64 {
+        let dt = temp - self.t_ref;
+        let denom = self.c2 + dt;
         if denom.abs() < 1e-30 {
             return 0.0;
         }
-        -self.C1 * dt / denom
+        -self.c1 * dt / denom
     }
 }
 /// Arrhenius time-temperature superposition parameters.
@@ -698,25 +688,21 @@ impl ArrheniusParameters {
     }
 }
 /// Prony series relaxation function: E(t) = E_inf + Σ E_i exp(-t/tau_i).
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 #[derive(Debug, Clone)]
 pub struct PronyRelaxation {
     /// Long-term equilibrium modulus.
-    pub E_inf: f64,
+    pub e_inf: f64,
     /// Prony series terms.
     pub elements: Vec<PronyElement>,
 }
 impl PronyRelaxation {
     /// Relaxation modulus E(t) = E_inf + Σ E_i exp(-t/tau_i).
-    #[allow(dead_code)]
-    #[allow(non_snake_case)]
     pub fn relaxation_modulus(&self, t: f64) -> f64 {
-        self.E_inf
+        self.e_inf
             + self
                 .elements
                 .iter()
-                .map(|e| e.E_i * (-t / e.tau_i).exp())
+                .map(|elem| elem.e_i * (-t / elem.tau_i).exp())
                 .sum::<f64>()
     }
 }
@@ -809,17 +795,14 @@ impl MaxwellModel {
     }
 }
 /// A single Prony series term: modulus E_i and relaxation time tau_i.
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 #[derive(Debug, Clone)]
 pub struct PronyElement {
     /// Partial modulus for this Maxwell arm.
-    pub E_i: f64,
+    pub e_i: f64,
     /// Relaxation time tau_i (s).
     pub tau_i: f64,
 }
 /// A 4-node finite element with a Prony-series viscoelastic constitutive law.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PronyFemElement {
     /// Global node indices for the 4 corner nodes.
@@ -833,7 +816,6 @@ pub struct PronyFemElement {
 }
 impl PronyFemElement {
     /// Create a new element with zeroed state.
-    #[allow(dead_code)]
     pub fn new(nodes: [usize; 4], prony: PronyRelaxation, dt: f64) -> Self {
         let n_prony = prony.elements.len();
         let state = ViscoelasticState::new(1, n_prony);
@@ -848,7 +830,6 @@ impl PronyFemElement {
     ///
     /// Uses exact-integration (algorithmic tangent) for the 1-D case per
     /// component.  Returns the updated stress vector.
-    #[allow(dead_code)]
     pub fn update_stresses(&mut self, strain_inc: &[f64]) -> Vec<f64> {
         let n_comp = strain_inc.len();
         if self.state.stress.len() != n_comp {
@@ -866,23 +847,22 @@ impl PronyFemElement {
         for (k, elem) in self.prony.elements.iter().enumerate() {
             let xi = (-dt / elem.tau_i).exp();
             let coeff = if dt.abs() < 1e-15 {
-                elem.E_i
+                elem.e_i
             } else {
-                elem.E_i * (1.0 - xi) * elem.tau_i / dt
+                elem.e_i * (1.0 - xi) * elem.tau_i / dt
             };
-            for c in 0..n_comp {
-                self.state.internal_vars[k][c] =
-                    self.state.internal_vars[k][c] * xi + coeff * strain_inc[c];
+            for (c, iv_c) in self.state.internal_vars[k].iter_mut().enumerate() {
+                *iv_c = *iv_c * xi + coeff * strain_inc[c];
             }
         }
         for c in 0..n_comp {
             let h_sum: f64 = self.state.internal_vars.iter().map(|iv| iv[c]).sum();
-            self.state.stress[c] += self.prony.E_inf * strain_inc[c] + h_sum
+            self.state.stress[c] += self.prony.e_inf * strain_inc[c] + h_sum
                 - self.state.internal_vars.iter().map(|iv| iv[c]).sum::<f64>()
                 + h_sum;
         }
         for c in 0..n_comp {
-            self.state.stress[c] = self.prony.E_inf * strain_inc[c]
+            self.state.stress[c] = self.prony.e_inf * strain_inc[c]
                 + self.state.internal_vars.iter().map(|iv| iv[c]).sum::<f64>();
         }
         self.state.stress.clone()
@@ -890,23 +870,19 @@ impl PronyFemElement {
 }
 /// Kelvin-Voigt creep compliance:
 /// J(t) = J_0 + J_inf (1 − exp(−t/tau))
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 #[derive(Debug, Clone)]
 pub struct Creep {
     /// Instantaneous compliance J_0 = 1/E_0.
-    pub J0: f64,
+    pub j0: f64,
     /// Long-term creep compliance amplitude J_inf.
-    pub J_inf: f64,
+    pub j_inf: f64,
     /// Retardation time tau.
     pub tau: f64,
 }
 impl Creep {
     /// Creep compliance J(t) = J_0 + J_inf (1 − exp(−t/tau)).
-    #[allow(dead_code)]
-    #[allow(non_snake_case)]
     pub fn compliance(&self, t: f64) -> f64 {
-        self.J0 + self.J_inf * (1.0 - (-t / self.tau).exp())
+        self.j0 + self.j_inf * (1.0 - (-t / self.tau).exp())
     }
 }
 /// WLF (Williams-Landel-Ferry) time-temperature superposition parameters.

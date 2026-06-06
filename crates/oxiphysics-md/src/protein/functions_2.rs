@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::ProteinChain;
 
 /// Kabsch algorithm: compute optimal rotation matrix to align two sets of points.
@@ -15,7 +12,6 @@ use super::types::ProteinChain;
 ///
 /// This is a simplified SVD-free implementation using the QR-like approach
 /// (power iteration on the cross-covariance matrix).
-#[allow(dead_code)]
 pub fn kabsch_rotation(coords_ref: &[[f64; 3]], coords_mob: &[[f64; 3]]) -> [[f64; 3]; 3] {
     let n = coords_ref.len().min(coords_mob.len());
     if n == 0 {
@@ -60,7 +56,6 @@ pub fn kabsch_rotation(coords_ref: &[[f64; 3]], coords_mob: &[[f64; 3]]) -> [[f6
     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 }
 /// Translate chain so its centroid coincides with the origin.
-#[allow(dead_code)]
 pub fn center_chain(chain: &mut ProteinChain) {
     let n = chain.residues.len();
     if n == 0 {
@@ -79,7 +74,6 @@ pub fn center_chain(chain: &mut ProteinChain) {
 /// RMSD after optimal superposition using Kabsch algorithm (translation only for simplicity).
 ///
 /// Translates both chains to their centroids and computes RMSD.
-#[allow(dead_code)]
 pub fn rmsd_kabsch(chain_a: &ProteinChain, chain_b: &ProteinChain) -> f64 {
     let n = chain_a.residues.len().min(chain_b.residues.len());
     if n == 0 {
@@ -120,6 +114,7 @@ pub fn rmsd_kabsch(chain_a: &ProteinChain, chain_b: &ProteinChain) -> f64 {
 }
 #[cfg(test)]
 mod tests_extended {
+    use super::super::functions::*;
     use super::super::types::*;
     use super::*;
     fn make_linear_chain(n: usize) -> ProteinChain {
@@ -291,17 +286,17 @@ mod tests_extended {
     fn test_contact_map_diagonal_zero() {
         let chain = make_linear_chain(4);
         let map = binary_contact_map(&chain, 5.0);
-        for i in 0..4 {
-            assert_eq!(map[i][i], 0, "Diagonal must be 0 (self-contact excluded)");
+        for (i, row) in map.iter().enumerate() {
+            assert_eq!(row[i], 0, "Diagonal must be 0 (self-contact excluded)");
         }
     }
     #[test]
     fn test_contact_map_symmetry() {
         let chain = make_linear_chain(4);
         let map = binary_contact_map(&chain, 5.0);
-        for i in 0..4 {
-            for j in 0..4 {
-                assert_eq!(map[i][j], map[j][i], "Contact map must be symmetric");
+        for (i, row) in map.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert_eq!(val, map[j][i], "Contact map must be symmetric");
             }
         }
     }

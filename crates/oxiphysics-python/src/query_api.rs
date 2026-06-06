@@ -5,9 +5,6 @@
 //!
 //! Exposes spatial query API (raycasting, sphere/AABB overlap, k-nearest) to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::query::{QueryFilter, QueryWorld, Ray, RayHit};
 use pyo3::prelude::*;
 

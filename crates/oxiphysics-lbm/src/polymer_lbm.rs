@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -23,8 +22,6 @@
 //! - De = λ / t_p (Deborah number)
 //! - β = η_s / η_0 (solvent-to-total viscosity ratio)
 //! - b = R²_max / R²_eq (FENE extensibility parameter)
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -53,7 +50,6 @@ pub const CONV_TOL: f64 = 1.0e-10;
 /// # Arguments
 /// * `lambda`     – polymer relaxation time \[s\]
 /// * `shear_rate` – characteristic shear rate \[1/s\]
-#[allow(dead_code)]
 pub fn weissenberg_number(lambda: f64, shear_rate: f64) -> f64 {
     lambda * shear_rate
 }
@@ -65,7 +61,6 @@ pub fn weissenberg_number(lambda: f64, shear_rate: f64) -> f64 {
 /// # Arguments
 /// * `lambda`    – polymer relaxation time \[s\]
 /// * `t_process` – characteristic process time \[s\]
-#[allow(dead_code)]
 pub fn deborah_number(lambda: f64, t_process: f64) -> f64 {
     if t_process.abs() < f64::EPSILON {
         return f64::INFINITY;
@@ -78,7 +73,6 @@ pub fn deborah_number(lambda: f64, t_process: f64) -> f64 {
 /// # Arguments
 /// * `eta_total` – total zero-shear viscosity η_0 \[Pa·s\]
 /// * `beta`      – solvent-to-total viscosity ratio β ∈ (0,1)
-#[allow(dead_code)]
 pub fn polymer_viscosity(eta_total: f64, beta: f64) -> f64 {
     eta_total * (1.0 - beta)
 }
@@ -89,7 +83,6 @@ pub fn polymer_viscosity(eta_total: f64, beta: f64) -> f64 {
 ///
 /// # Arguments
 /// * `eta_p` – polymer dynamic viscosity in lattice units
-#[allow(dead_code)]
 pub fn polymer_omega(eta_p: f64) -> f64 {
     1.0 / (3.0 * eta_p + 0.5)
 }
@@ -110,7 +103,6 @@ pub fn polymer_omega(eta_p: f64) -> f64 {
 /// * `n_segments`     – number of Kuhn segments N
 /// * `b`              – segment length \[m\]
 /// * `temperature`    – absolute temperature T \[K\]
-#[allow(dead_code)]
 pub fn rouse_relaxation_time(
     friction_coeff: f64,
     n_segments: f64,
@@ -130,7 +122,6 @@ pub fn rouse_relaxation_time(
 /// * `n_segments` – number of Kuhn segments
 /// * `b`          – segment length \[m\]
 /// * `temperature`– absolute temperature \[K\]
-#[allow(dead_code)]
 pub fn zimm_relaxation_time(eta_s: f64, n_segments: f64, b: f64, temperature: f64) -> f64 {
     let rg_sq = n_segments * b * b / 6.0;
     let rg = rg_sq.sqrt();
@@ -144,7 +135,6 @@ pub fn zimm_relaxation_time(eta_s: f64, n_segments: f64, b: f64, temperature: f6
 /// # Arguments
 /// * `tau_rouse` – the longest (p=1) Rouse relaxation time \[s\]
 /// * `p`         – mode index (p ≥ 1)
-#[allow(dead_code)]
 pub fn rouse_mode_time(tau_rouse: f64, p: usize) -> f64 {
     let pf = p as f64;
     tau_rouse / (pf * pf)
@@ -159,7 +149,6 @@ pub fn rouse_mode_time(tau_rouse: f64, p: usize) -> f64 {
 /// The conformation tensor A = `RR` / R_eq² describes the mean-square
 /// end-to-end vector of the polymer chain normalised by the equilibrium value.
 /// At rest, A = I (identity).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ConformationTensor2D {
     /// (0,0) component A_xx.
@@ -215,7 +204,6 @@ impl ConformationTensor2D {
 }
 
 /// Symmetric 3×3 conformation tensor stored as \[Axx, Ayy, Azz, Axy, Axz, Ayz\].
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ConformationTensor3D {
     /// Component A_xx.
@@ -283,7 +271,6 @@ impl ConformationTensor3D {
 ///
 /// In the Oldroyd-B model the polymer stress is τ_p = (η_p/λ)(A − I)
 /// where A is the conformation tensor and λ is the relaxation time.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct PolymerStress2D {
     /// Normal stress component τ_xx \[Pa\].
@@ -348,8 +335,6 @@ impl PolymerStress2D {
 /// * `dvdy`   – ∂v/∂y
 /// * `lambda` – polymer relaxation time \[lattice units\]
 /// * `dt`     – time step \[lattice units\]
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
 pub fn oldroyd_b_evolve_2d(
     a: &ConformationTensor2D,
     dudx: f64,
@@ -385,7 +370,6 @@ pub fn oldroyd_b_evolve_2d(
 /// # Arguments
 /// * `trace_a` – trace of the conformation tensor tr(A)
 /// * `b`       – FENE extensibility parameter (R²_max / R²_eq)
-#[allow(dead_code)]
 pub fn fene_p_spring(trace_a: f64, b: f64) -> f64 {
     let denom = 1.0 - trace_a / b;
     if denom < f64::EPSILON {
@@ -409,8 +393,6 @@ pub fn fene_p_spring(trace_a: f64, b: f64) -> f64 {
 /// * `lambda` – relaxation time \[lattice units\]
 /// * `b`      – FENE extensibility parameter
 /// * `dt`     – time step
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
 pub fn fene_p_evolve_2d(
     a: &ConformationTensor2D,
     dudx: f64,
@@ -446,7 +428,6 @@ pub fn fene_p_evolve_2d(
 /// * `eta_p`  – polymer viscosity
 /// * `lambda` – relaxation time
 /// * `b`      – extensibility parameter
-#[allow(dead_code)]
 pub fn fene_p_stress_2d(
     conf: &ConformationTensor2D,
     eta_p: f64,
@@ -470,7 +451,6 @@ pub fn fene_p_stress_2d(
 ///
 /// S_ij = <u_i u_j> where u = R/|R|.
 /// For an isotropic distribution S = I/2 (2D) or I/3 (3D).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct OrientationTensor2D {
     /// S_xx component.
@@ -522,7 +502,6 @@ impl OrientationTensor2D {
 ///
 /// # Arguments
 /// * `re` – Reynolds number
-#[allow(dead_code)]
 pub fn virk_mdr_friction(re: f64) -> f64 {
     if re < 1.0 {
         return 1.0;
@@ -536,7 +515,6 @@ pub fn virk_mdr_friction(re: f64) -> f64 {
 ///
 /// # Arguments
 /// * `re` – Reynolds number (turbulent: Re > 4000)
-#[allow(dead_code)]
 pub fn prandtl_karman_friction(re: f64) -> f64 {
     if re < 1.0 {
         return 1.0;
@@ -561,7 +539,6 @@ pub fn prandtl_karman_friction(re: f64) -> f64 {
 /// # Arguments
 /// * `f_newtonian` – Newtonian friction factor
 /// * `f_polymer`   – friction factor with polymer additives
-#[allow(dead_code)]
 pub fn drag_reduction_percent(f_newtonian: f64, f_polymer: f64) -> f64 {
     if f_newtonian.abs() < f64::EPSILON {
         return 0.0;
@@ -584,7 +561,6 @@ pub const COIL_STRETCH_WI_CRITICAL: f64 = 0.5;
 ///
 /// # Arguments
 /// * `wi` – local Weissenberg number Wi = λ ε̇  (extensional rate × relax time)
-#[allow(dead_code)]
 pub fn is_stretched(wi: f64) -> bool {
     wi > COIL_STRETCH_WI_CRITICAL
 }
@@ -596,7 +572,6 @@ pub fn is_stretched(wi: f64) -> bool {
 /// # Arguments
 /// * `trace_a` – trace of the conformation tensor
 /// * `b`       – FENE extensibility parameter
-#[allow(dead_code)]
 pub fn chain_extension_ratio(trace_a: f64, b: f64) -> f64 {
     (trace_a / b).sqrt().min(1.0)
 }
@@ -618,7 +593,6 @@ pub const ELASTIC_TURBULENCE_WI_ONSET: f64 = 1.0;
 /// # Arguments
 /// * `tau_p_rms` – RMS polymer shear stress
 /// * `eta_0`     – total zero-shear viscosity
-#[allow(dead_code)]
 pub fn elastic_stress_amplification(tau_p_rms: f64, eta_0: f64) -> f64 {
     if eta_0.abs() < f64::EPSILON {
         return 0.0;
@@ -631,7 +605,6 @@ pub fn elastic_stress_amplification(tau_p_rms: f64, eta_0: f64) -> f64 {
 // ============================================================================
 
 /// A single LBM grid cell with D2Q9 distribution functions and polymer state.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PolymerCell {
     /// D2Q9 distribution functions f_i for i=0..9.
@@ -739,7 +712,6 @@ pub const D2Q9_OPP: [usize; 9] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
 /// * `omega_s` – solvent BGK relaxation frequency ω_s = 1/(3ν_s + 0.5)
 /// * `eta_p`   – polymer viscosity in lattice units
 /// * `lambda`  – polymer relaxation time in lattice units
-#[allow(dead_code)]
 pub fn bgk_polymer_collision(cell: &mut PolymerCell, omega_s: f64, eta_p: f64, lambda: f64) {
     cell.compute_macroscopic();
     cell.compute_equilibrium();
@@ -773,7 +745,6 @@ pub fn bgk_polymer_collision(cell: &mut PolymerCell, omega_s: f64, eta_p: f64, l
 // ============================================================================
 
 /// 2D polymer LBM simulation grid (Nx × Ny cells).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PolymerLbmGrid2D {
     /// Number of cells in x direction.
@@ -803,7 +774,6 @@ impl PolymerLbmGrid2D {
     /// * `eta_p`    – polymer viscosity (lattice units)
     /// * `lambda`   – polymer relaxation time (lattice units)
     /// * `fene_b`   – FENE extensibility parameter (∞ for Oldroyd-B)
-    #[allow(clippy::too_many_arguments)]
     pub fn new(nx: usize, ny: usize, omega_s: f64, eta_p: f64, lambda: f64, fene_b: f64) -> Self {
         let cells = vec![PolymerCell::new_equilibrium(1.0, 0.0, 0.0); nx * ny];
         Self {
@@ -854,17 +824,17 @@ impl PolymerLbmGrid2D {
         for ix in 0..nx {
             let idx = self.idx(ix, 0);
             // Bounce-back: f_opp[i] <- f[i]
-            for i in 0..9 {
-                let tmp = self.cells[idx].f[i];
-                self.cells[idx].f[opp[i]] = tmp;
+            let f_copy = self.cells[idx].f;
+            for (i, &o) in opp.iter().enumerate() {
+                self.cells[idx].f[o] = f_copy[i];
             }
         }
         // Top wall (iy = ny-1)
         for ix in 0..nx {
             let idx = self.idx(ix, ny - 1);
-            for i in 0..9 {
-                let tmp = self.cells[idx].f[i];
-                self.cells[idx].f[opp[i]] = tmp;
+            let f_copy = self.cells[idx].f;
+            for (i, &o) in opp.iter().enumerate() {
+                self.cells[idx].f[o] = f_copy[i];
             }
         }
     }
@@ -955,7 +925,6 @@ impl PolymerLbmGrid2D {
 /// * `eta_s`  – solvent viscosity \[Pa·s\]
 /// * `eta_p`  – polymer viscosity \[Pa·s\]
 /// * `wi`     – Weissenberg number
-#[allow(dead_code)]
 pub fn effective_viscosity_polymer(eta_s: f64, eta_p: f64, wi: f64) -> f64 {
     eta_s + eta_p / (1.0 + wi * wi)
 }
@@ -968,7 +937,6 @@ pub fn effective_viscosity_polymer(eta_s: f64, eta_p: f64, wi: f64) -> f64 {
 /// * `dp_dx`    – pressure gradient \[Pa/m\]
 /// * `h`        – channel half-height \[m\]
 /// * `eta_eff`  – effective viscosity \[Pa·s\]
-#[allow(dead_code)]
 pub fn polymer_poiseuille_velocity(dp_dx: f64, h: f64, eta_eff: f64) -> f64 {
     if eta_eff.abs() < f64::EPSILON {
         return 0.0;
@@ -985,7 +953,6 @@ pub fn polymer_poiseuille_velocity(dp_dx: f64, h: f64, eta_eff: f64) -> f64 {
 /// * `wi`     – Weissenberg number
 /// * `t`      – time since start-up
 /// * `lambda` – relaxation time
-#[allow(dead_code)]
 pub fn startup_shear_n1(eta_p: f64, wi: f64, t: f64, lambda: f64) -> f64 {
     2.0 * eta_p * wi * wi * (1.0 - (-t / lambda).exp())
 }
@@ -1002,7 +969,6 @@ pub fn startup_shear_n1(eta_p: f64, wi: f64, t: f64, lambda: f64) -> f64 {
 /// * `u_profile` – x-velocity sampled at evenly spaced y-positions
 /// * `dy`        – y-spacing
 /// * `lambda`    – polymer relaxation time
-#[allow(dead_code)]
 pub fn local_weissenberg_field(u_profile: &[f64], dy: f64, lambda: f64) -> Vec<f64> {
     let n = u_profile.len();
     let mut wi = vec![0.0_f64; n];
@@ -1034,7 +1000,6 @@ pub const ELASTIC_TURBULENCE_EXPONENT: f64 = 3.5;
 /// * `k`         – wavenumber \[1/m\]
 /// * `amplitude` – spectral amplitude A
 /// * `alpha`     – spectral exponent (typically 3.5)
-#[allow(dead_code)]
 pub fn elastic_turbulence_spectrum(k: f64, amplitude: f64, alpha: f64) -> f64 {
     if k < f64::EPSILON {
         return 0.0;
@@ -1054,7 +1019,6 @@ pub fn elastic_turbulence_spectrum(k: f64, amplitude: f64, alpha: f64) -> f64 {
 /// * `k`         – Mark-Houwink prefactor
 /// * `mol_weight`– molecular weight \[g/mol\]
 /// * `a`         – Mark-Houwink exponent (0.5–0.8 for good solvents)
-#[allow(dead_code)]
 pub fn mark_houwink_viscosity(k: f64, mol_weight: f64, a: f64) -> f64 {
     k * mol_weight.powf(a)
 }
@@ -1067,7 +1031,6 @@ pub fn mark_houwink_viscosity(k: f64, mol_weight: f64, a: f64) -> f64 {
 /// * `intrinsic_visc` – intrinsic viscosity \[η\]
 /// * `concentration`  – polymer mass concentration \[g/dL\]
 /// * `huggins_k`      – Huggins coefficient k_H (~0.3–0.4 for good solvents)
-#[allow(dead_code)]
 pub fn huggins_relative_viscosity(intrinsic_visc: f64, concentration: f64, huggins_k: f64) -> f64 {
     1.0 + intrinsic_visc * concentration
         + huggins_k * intrinsic_visc * intrinsic_visc * concentration * concentration
@@ -1084,7 +1047,6 @@ pub fn huggins_relative_viscosity(intrinsic_visc: f64, concentration: f64, huggi
 /// * `grad_u`    – velocity gradient tensor \[3×3\] stored row-major
 /// * `lambda`    – polymer relaxation time
 /// * `dt`        – time step
-#[allow(dead_code)]
 pub fn oldroyd_b_evolve_3d(
     a: &ConformationTensor3D,
     grad_u: &[f64; 9],
@@ -1135,7 +1097,6 @@ pub fn oldroyd_b_evolve_3d(
 /// * `du_dy`       – mean velocity gradient \[1/s\]
 /// * `tau_xy_poly` – polymer shear stress contribution \[Pa\]
 /// * `rho`         – fluid density \[kg/m³\]
-#[allow(dead_code)]
 pub fn polymer_modified_reynolds_stress(nu_t: f64, du_dy: f64, tau_xy_poly: f64, rho: f64) -> f64 {
     nu_t * du_dy.abs() - tau_xy_poly / rho.max(f64::EPSILON)
 }
@@ -1145,7 +1106,6 @@ pub fn polymer_modified_reynolds_stress(nu_t: f64, du_dy: f64, tau_xy_poly: f64,
 // ============================================================================
 
 /// Configuration for a polymer channel flow LBM simulation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PolymerChannelConfig {
     /// Grid size in x direction.
@@ -1197,7 +1157,6 @@ impl PolymerChannelConfig {
 ///
 /// # Arguments
 /// * `cfg` – simulation configuration
-#[allow(dead_code)]
 pub fn run_polymer_channel(cfg: &PolymerChannelConfig) -> f64 {
     let mut grid = PolymerLbmGrid2D::new(
         cfg.nx,
@@ -1241,7 +1200,6 @@ pub fn run_polymer_channel(cfg: &PolymerChannelConfig) -> f64 {
 /// * `eta_p`       – polymer viscosity \[Pa·s\]
 /// * `lambda`      – relaxation time \[s\]
 /// * `temperature` – absolute temperature \[K\]
-#[allow(dead_code)]
 pub fn polymer_entropy_production_2d(
     conf: &ConformationTensor2D,
     eta_p: f64,
@@ -1267,7 +1225,6 @@ pub fn polymer_entropy_production_2d(
 /// # Arguments
 /// * `r_eq_sq`   – equilibrium end-to-end distance squared \[m²\]
 /// * `trace_a`   – trace of the conformation tensor
-#[allow(dead_code)]
 pub fn end_to_end_distance_sq(r_eq_sq: f64, trace_a: f64) -> f64 {
     r_eq_sq * trace_a
 }
@@ -1276,7 +1233,6 @@ pub fn end_to_end_distance_sq(r_eq_sq: f64, trace_a: f64) -> f64 {
 ///
 /// # Arguments
 /// * `r_sq` – mean-square end-to-end distance \[m²\]
-#[allow(dead_code)]
 pub fn radius_of_gyration_sq(r_sq: f64) -> f64 {
     r_sq / 6.0
 }
@@ -1528,8 +1484,9 @@ mod tests {
         let u: Vec<f64> = (0..n).map(|i| i as f64 * dy).collect();
         let wi = local_weissenberg_field(&u, dy, 1.0);
         // Interior points should give Wi ≈ 1.0
-        for i in 1..n - 1 {
-            assert!((wi[i] - 1.0).abs() < 1.0e-10, "wi[{i}] = {}", wi[i]);
+        for (offset, &wval) in wi[1..n - 1].iter().enumerate() {
+            let i = offset + 1;
+            assert!((wval - 1.0).abs() < 1.0e-10, "wi[{i}] = {wval}");
         }
     }
 

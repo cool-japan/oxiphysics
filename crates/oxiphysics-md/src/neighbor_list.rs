@@ -1,4 +1,3 @@
-#![allow(clippy::manual_div_ceil)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -232,18 +231,6 @@ impl CellList {
         }
         pairs
     }
-
-    /// Total number of atoms stored in the cell list.
-    #[allow(dead_code)]
-    fn total_atoms(&self) -> usize {
-        self.cells.iter().map(|c| c.len()).sum()
-    }
-
-    /// Number of non-empty cells.
-    #[allow(dead_code)]
-    fn occupied_cells(&self) -> usize {
-        self.cells.iter().filter(|c| !c.is_empty()).count()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -363,7 +350,6 @@ impl VerletList {
 ///
 /// Useful when different interaction types have different cutoff distances
 /// (e.g., LJ at 10 A, electrostatics at 12 A).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MultiCutoffNeighborList {
     /// Cutoff values for each interaction type.
@@ -375,7 +361,6 @@ pub struct MultiCutoffNeighborList {
     box_hi: [f64; 3],
 }
 
-#[allow(dead_code)]
 impl MultiCutoffNeighborList {
     /// Create a new multi-cutoff neighbor list.
     pub fn new(box_lo: [f64; 3], box_hi: [f64; 3], cutoffs: Vec<f64>) -> Self {
@@ -441,14 +426,12 @@ impl MultiCutoffNeighborList {
 ///
 /// This is the standard format for force computation to avoid
 /// double-counting. Includes displacement vectors and distances.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HalfNeighborList {
     /// Pairs: `(i, j, dr, dist)` with `i < j`.
     pairs: Vec<(usize, usize, [f64; 3], f64)>,
 }
 
-#[allow(dead_code)]
 impl HalfNeighborList {
     /// Build a half neighbor list from positions.
     pub fn build(positions: &[[f64; 3]], box_lo: [f64; 3], box_hi: [f64; 3], cutoff: f64) -> Self {
@@ -522,7 +505,6 @@ impl HalfNeighborList {
 /// Compressed sparse row (CSR) format neighbor list.
 ///
 /// More memory-efficient than `Vec<Vec`usize`>` for large systems.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompressedNeighborList {
     /// Row pointers: `offsets[i]..offsets[i+1]` gives the neighbor range for atom i.
@@ -533,7 +515,6 @@ pub struct CompressedNeighborList {
     distances_sq: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl CompressedNeighborList {
     /// Build a compressed neighbor list from a standard neighbor list.
     pub fn from_verlet(vl: &VerletList, positions: &[[f64; 3]], box_len: [f64; 3]) -> Self {
@@ -608,7 +589,6 @@ impl CompressedNeighborList {
 // ---------------------------------------------------------------------------
 
 /// Statistics about a neighbor list.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NeighborStatistics {
     /// Total number of atoms.
@@ -627,7 +607,6 @@ pub struct NeighborStatistics {
     pub isolated_atoms: usize,
 }
 
-#[allow(dead_code)]
 impl NeighborStatistics {
     /// Compute statistics from a Verlet list.
     pub fn from_verlet(vl: &VerletList) -> Self {
@@ -977,7 +956,6 @@ mod tests {
 /// Provides the same O(N) performance as [`CellList`] but also tracks
 /// how many times the list has been rebuilt and supports an optional
 /// padding factor to reduce the number of re-builds.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CellListBuilder {
     /// Underlying cell list.
@@ -990,7 +968,6 @@ pub struct CellListBuilder {
     pub total_atoms_inserted: usize,
 }
 
-#[allow(dead_code)]
 impl CellListBuilder {
     /// Create a new builder.
     ///
@@ -1053,7 +1030,6 @@ impl CellListBuilder {
 /// Wraps [`VerletList`] and adds:
 /// - per-atom displacement tracking for the skin criterion,
 /// - rebuild count and fraction-of-steps-with-rebuild statistics.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VerletListWithSkinRefresh {
     /// Inner Verlet list.
@@ -1066,7 +1042,6 @@ pub struct VerletListWithSkinRefresh {
     pub max_displacement: f64,
 }
 
-#[allow(dead_code)]
 impl VerletListWithSkinRefresh {
     /// Create a new skin-refresh Verlet list.
     pub fn new(box_lo: [f64; 3], box_hi: [f64; 3], cutoff: f64, skin: f64) -> Self {
@@ -1144,7 +1119,6 @@ impl VerletListWithSkinRefresh {
 /// within a given cutoff.
 ///
 /// Useful for three-body potentials (e.g. Stillinger-Weber, Tersoff).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MultiBodyNeighborList {
     /// Cutoff distance.
@@ -1155,7 +1129,6 @@ pub struct MultiBodyNeighborList {
     pub quadruples: Vec<(usize, usize, usize, usize)>,
 }
 
-#[allow(dead_code)]
 impl MultiBodyNeighborList {
     /// Build the multi-body neighbor list.
     pub fn build(
@@ -1268,7 +1241,6 @@ impl MultiBodyNeighborList {
 ///
 /// Contains padded, sorted, and tiled representations suitable for
 /// upload to a GPU buffer (WGPU, CUDA, etc.).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct NeighborListGpuHints {
     /// Row offsets (CSR format): `row_offsets[i]..row_offsets[i+1]` for atom i.
@@ -1285,7 +1257,6 @@ pub struct NeighborListGpuHints {
     pub sorted_by_dist: bool,
 }
 
-#[allow(dead_code)]
 impl NeighborListGpuHints {
     /// Build GPU hints from a Verlet list.
     ///

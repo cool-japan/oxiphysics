@@ -25,7 +25,6 @@ impl TriangleMesh {
     }
 
     /// Surface area: sum of triangle areas.
-    #[allow(dead_code)]
     pub fn surface_area(&self) -> Real {
         let mut total = 0.0;
         for tri in &self.indices {
@@ -40,7 +39,6 @@ impl TriangleMesh {
     }
 
     /// Volume via signed tetrahedral decomposition (divergence theorem).
-    #[allow(dead_code)]
     pub fn volume_explicit(&self) -> Real {
         let mut vol = 0.0;
         for tri in &self.indices {
@@ -53,7 +51,6 @@ impl TriangleMesh {
     }
 
     /// Center of mass via weighted tetrahedral centroids.
-    #[allow(dead_code)]
     pub fn center_of_mass_explicit(&self) -> [f64; 3] {
         if self.indices.is_empty() {
             return [0.0, 0.0, 0.0];
@@ -78,7 +75,6 @@ impl TriangleMesh {
     }
 
     /// Compute per-face normals (unit vectors).
-    #[allow(dead_code)]
     pub fn compute_normals(&self) -> Vec<[f64; 3]> {
         self.indices
             .iter()
@@ -100,7 +96,6 @@ impl TriangleMesh {
     }
 
     /// Ray cast returning (t, face_index, normal) via Moller-Trumbore for all triangles.
-    #[allow(dead_code)]
     pub fn ray_cast_full(
         &self,
         origin: [f64; 3],
@@ -129,7 +124,6 @@ impl TriangleMesh {
     }
 
     /// Check whether the mesh is watertight (every edge is shared by exactly two triangles).
-    #[allow(dead_code)]
     pub fn is_watertight(&self) -> bool {
         let mut edge_count: HashMap<(usize, usize), usize> = HashMap::new();
 
@@ -152,7 +146,6 @@ impl TriangleMesh {
 
     /// Build vertex-to-face adjacency: for each vertex index, the list of
     /// triangle indices that reference it.
-    #[allow(dead_code)]
     pub fn vertex_to_faces(&self) -> Vec<Vec<usize>> {
         let mut v2f = vec![Vec::new(); self.vertices.len()];
         for (fi, tri) in self.indices.iter().enumerate() {
@@ -166,7 +159,6 @@ impl TriangleMesh {
     /// Build face-to-face adjacency via shared edges.
     /// Returns a vec of the same length as `self.indices`. Each entry contains
     /// the indices of adjacent faces (those sharing at least one edge).
-    #[allow(dead_code)]
     pub fn face_adjacency(&self) -> Vec<Vec<usize>> {
         // edge -> list of face indices
         let mut edge_faces: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
@@ -196,7 +188,6 @@ impl TriangleMesh {
     }
 
     /// Return the set of unique edges as sorted (min,max) vertex index pairs.
-    #[allow(dead_code)]
     pub fn unique_edges(&self) -> Vec<(usize, usize)> {
         let mut set: HashSet<(usize, usize)> = HashSet::new();
         for tri in &self.indices {
@@ -213,7 +204,6 @@ impl TriangleMesh {
     }
 
     /// Build vertex-to-vertex adjacency (1-ring neighbours).
-    #[allow(dead_code)]
     pub fn vertex_neighbors(&self) -> Vec<Vec<usize>> {
         let mut nbrs = vec![HashSet::<usize>::new(); self.vertices.len()];
         for tri in &self.indices {
@@ -242,7 +232,6 @@ impl TriangleMesh {
     /// removed.
     ///
     /// Returns `true` if the edge was found and collapsed.
-    #[allow(dead_code)]
     pub fn edge_collapse(&mut self, v0: usize, v1: usize) -> bool {
         // Verify edge exists
         let edge_found = self
@@ -279,7 +268,6 @@ impl TriangleMesh {
 
     /// Compute per-vertex normals by accumulating face normals weighted by the
     /// interior angle at each vertex.
-    #[allow(dead_code)]
     pub fn compute_vertex_normals(&self) -> Vec<[f64; 3]> {
         let mut normals = vec![Vec3::zeros(); self.vertices.len()];
         for tri in &self.indices {
@@ -324,7 +312,6 @@ impl TriangleMesh {
     /// Uniform Laplacian smoothing: move each vertex towards the average of
     /// its 1-ring neighbours by `factor` (0..1). Boundary vertices are not
     /// moved.
-    #[allow(dead_code)]
     pub fn laplacian_smooth(&mut self, factor: f64, iterations: usize) {
         for _ in 0..iterations {
             let nbrs = self.vertex_neighbors();
@@ -353,7 +340,6 @@ impl TriangleMesh {
     /// other vertices using Dijkstra on edge lengths. Returns a vec of
     /// distances indexed by vertex, with `f64::INFINITY` for unreachable
     /// vertices.
-    #[allow(dead_code)]
     pub fn geodesic_distance(&self, source: usize) -> Vec<f64> {
         let nbrs = self.vertex_neighbors();
         let n = self.vertices.len();
@@ -389,7 +375,6 @@ impl TriangleMesh {
     /// Each triangle is split into four by inserting edge midpoints (for
     /// boundary edges) or Loop-weighted edge vertices (for interior edges).
     /// Existing vertices are repositioned using the Loop weighting scheme.
-    #[allow(dead_code)]
     pub fn loop_subdivide(&mut self) {
         let n_verts = self.vertices.len();
 
@@ -536,7 +521,6 @@ impl TriangleMesh {
     // ------------------------------------------------------------------
 
     /// Return boundary edges (edges shared by only one triangle).
-    #[allow(dead_code)]
     pub fn boundary_edges(&self) -> Vec<(usize, usize)> {
         let mut edge_count: HashMap<(usize, usize), usize> = HashMap::new();
         for tri in &self.indices {
@@ -555,7 +539,6 @@ impl TriangleMesh {
     }
 
     /// Compute the Euler characteristic: V - E + F.
-    #[allow(dead_code)]
     pub fn euler_characteristic(&self) -> i64 {
         let v = self.vertices.len() as i64;
         let e = self.unique_edges().len() as i64;
@@ -564,7 +547,6 @@ impl TriangleMesh {
     }
 
     /// Count non-manifold edges (shared by more than 2 triangles).
-    #[allow(dead_code)]
     pub fn non_manifold_edge_count(&self) -> usize {
         let mut edge_count: HashMap<(usize, usize), usize> = HashMap::new();
         for tri in &self.indices {
@@ -590,7 +572,6 @@ impl TriangleMesh {
     ///
     /// This is the standard discretisation used in geometry processing for
     /// Laplace-Beltrami operators on triangulated surfaces.
-    #[allow(dead_code)]
     pub fn compute_laplacian_matrix(&self) -> HashMap<(usize, usize), f64> {
         let mut weights: HashMap<(usize, usize), f64> = HashMap::new();
 
@@ -653,7 +634,6 @@ impl TriangleMesh {
     /// (the diagonal of the stiffness matrix, normalised by the vertex area).
     ///
     /// Returns a `Vec<Vec`f64`>` of shape `[n_vertices][t_values.len()]`.
-    #[allow(dead_code)]
     pub fn compute_heat_kernel_signature(&self, t_values: &[f64]) -> Vec<Vec<f64>> {
         let n = self.vertices.len();
         if n == 0 || t_values.is_empty() {
@@ -715,7 +695,6 @@ impl TriangleMesh {
     /// kept fixed.
     ///
     /// `factor` – step size in \[0, 1\]; `iterations` – number of passes.
-    #[allow(dead_code)]
     pub fn smooth_laplacian(&mut self, factor: f64, iterations: usize) {
         if self.vertices.is_empty() || self.indices.is_empty() {
             return;

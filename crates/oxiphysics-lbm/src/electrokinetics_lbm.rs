@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -18,8 +17,6 @@
 //! References:
 //! - Probstein, R. F. (1994). *Physicochemical Hydrodynamics*.
 //! - Hunter, R. J. (2001). *Foundations of Colloid Science*.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // D2Q9 lattice constants
@@ -264,11 +261,11 @@ pub fn step_electrokinetic(state: &mut ElectrokineticLBM, params: &Electrokineti
             let mut rho = 0.0_f64;
             let mut ux = 0.0_f64;
             let mut uy_val = 0.0_f64;
-            for q in 0..9_usize {
+            for (q, c) in D2Q9_C.iter().enumerate() {
                 let fq = state.f[base + q];
                 rho += fq;
-                ux += D2Q9_C[q][0] * fq;
-                uy_val += D2Q9_C[q][1] * fq;
+                ux += c[0] * fq;
+                uy_val += c[1] * fq;
             }
             if rho > 1e-20 {
                 ux /= rho;
@@ -297,15 +294,16 @@ pub fn step_electrokinetic(state: &mut ElectrokineticLBM, params: &Electrokineti
     // Streaming (periodic)
     for j in 0..ny {
         for i in 0..nx {
-            #[allow(clippy::manual_memcpy)]
-            for q in 0..9_usize {
-                let src_base = (j * nx + i) * 9;
+            for (q, &val) in f_post[(j * nx + i) * 9..(j * nx + i) * 9 + 9]
+                .iter()
+                .enumerate()
+            {
                 let di = D2Q9_C[q][0] as isize;
                 let dj = D2Q9_C[q][1] as isize;
                 let ni = ((i as isize + di).rem_euclid(nx as isize)) as usize;
                 let nj = ((j as isize + dj).rem_euclid(ny as isize)) as usize;
                 let dst_base = (nj * nx + ni) * 9;
-                state.f[dst_base + q] = f_post[src_base + q];
+                state.f[dst_base + q] = val;
             }
         }
     }
@@ -331,11 +329,11 @@ pub fn compute_charge_flux(state: &ElectrokineticLBM) -> Vec<f64> {
             let mut rho = 0.0_f64;
             let mut ux = 0.0_f64;
             let mut uy = 0.0_f64;
-            for q in 0..9_usize {
+            for (q, c) in D2Q9_C.iter().enumerate() {
                 let fq = state.f[base + q];
                 rho += fq;
-                ux += D2Q9_C[q][0] * fq;
-                uy += D2Q9_C[q][1] * fq;
+                ux += c[0] * fq;
+                uy += c[1] * fq;
             }
             if rho > 1e-20 {
                 ux /= rho;

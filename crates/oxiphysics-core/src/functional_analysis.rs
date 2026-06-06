@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,8 +8,6 @@
 //! (Euler-Lagrange, Lagrange multiplier).  Also includes L² inner products,
 //! Gram–Schmidt orthogonalization, Fourier/Chebyshev/Legendre expansions,
 //! Sobolev norms, and operator norm estimation via power iteration.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -1186,8 +1183,8 @@ mod tests {
             .collect();
         let c = chebyshev_expansion(&f, 4);
         assert!((c[0] - 1.0).abs() < 1e-10, "c0 = {}", c[0]);
-        for k in 1..4 {
-            assert!(c[k].abs() < 1e-10, "c{k} = {}", c[k]);
+        for (k, &ck) in c.iter().enumerate().skip(1).take(3) {
+            assert!(ck.abs() < 1e-10, "c{k} = {}", ck);
         }
     }
 

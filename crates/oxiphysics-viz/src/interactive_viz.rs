@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,8 +5,6 @@
 //! picking, and animation timeline.
 //!
 //! No external crates are used; only `std`.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Math helpers (std-only)
@@ -54,6 +51,7 @@ fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 /// Multiply two 4x4 matrices (row-major).
+#[cfg(test)]
 fn mat4_mul(a: [[f64; 4]; 4], b: [[f64; 4]; 4]) -> [[f64; 4]; 4] {
     let mut c = [[0.0_f64; 4]; 4];
     for i in 0..4 {
@@ -864,9 +862,9 @@ mod tests {
     fn test_scene_object_transform_identity() {
         let obj = SceneObject::new(1, "tet", tetrahedron_mesh());
         let eye = mat4_identity();
-        for i in 0..4 {
-            for j in 0..4 {
-                assert!((obj.transform[i][j] - eye[i][j]).abs() < 1e-9);
+        for (i, row) in obj.transform.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - eye[i][j]).abs() < 1e-9);
             }
         }
     }

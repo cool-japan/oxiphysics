@@ -1,4 +1,3 @@
-#![allow(clippy::manual_div_ceil, clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,7 +10,6 @@
 ///
 /// The grid has `nx × ny × nz` cells with uniform spacing `dx` and a user-
 /// supplied `origin`.  Data is stored in C-order (k varies slowest, i fastest).
-#[allow(dead_code)]
 pub struct VectorField {
     /// Number of grid points in the x direction.
     pub nx: usize,
@@ -27,7 +25,6 @@ pub struct VectorField {
     pub data: Vec<[f64; 3]>,
 }
 
-#[allow(dead_code)]
 impl VectorField {
     /// Create a new zero-initialised vector field.
     pub fn new(nx: usize, ny: usize, nz: usize, dx: f64, origin: [f64; 3]) -> Self {
@@ -129,7 +126,6 @@ fn trilinear_vec(
 /// Integration stops when the current position leaves the grid or `max_steps`
 /// steps have been taken.  The returned vector always contains at least the
 /// seed point.
-#[allow(dead_code)]
 pub fn trace_streamline(
     field: &VectorField,
     start: [f64; 3],
@@ -174,7 +170,6 @@ pub fn trace_streamline(
 }
 
 /// Trace multiple streamlines from a slice of seed points.
-#[allow(dead_code)]
 pub fn trace_streamlines(
     field: &VectorField,
     seeds: &[[f64; 3]],
@@ -190,7 +185,6 @@ pub fn trace_streamlines(
 // ─── Scalar Field ─────────────────────────────────────────────────────────────
 
 /// 3-D scalar field on a regular grid (same layout conventions as `VectorField`).
-#[allow(dead_code)]
 pub struct ScalarField {
     /// Number of grid points in the x direction.
     pub nx: usize,
@@ -206,7 +200,6 @@ pub struct ScalarField {
     pub data: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl ScalarField {
     /// Create a new zero-initialised scalar field.
     pub fn new(nx: usize, ny: usize, nz: usize, dx: f64, origin: [f64; 3]) -> Self {
@@ -345,7 +338,6 @@ fn edge_interp(p0: [f64; 3], v0: f64, p1: [f64; 3], v1: f64, threshold: f64) -> 
 /// Returns a flat list of triangle vertices (3 vertices per triangle), with at
 /// most 5 triangles (15 vertices) per cell.  The function implements a
 /// simplified 16-pattern table covering all topologically distinct cases.
-#[allow(dead_code)]
 pub fn marching_cubes_cell(
     values: [f64; 8],
     threshold: f64,
@@ -679,7 +671,6 @@ fn scale3(a: [f64; 3], s: f64) -> [f64; 3] {
 // ─── Screen-space Ambient Occlusion ──────────────────────────────────────────
 
 /// Parameters for screen-space ambient occlusion (SSAO).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SsaoParams {
     /// Sampling radius in view-space units.
@@ -710,7 +701,6 @@ impl Default for SsaoParams {
 /// A value of 0 means fully occluded; 1 means fully unoccluded.
 ///
 /// This is a CPU-side stand-in for the GPU SSAO pass used in debugging.
-#[allow(dead_code)]
 pub fn compute_ssao_sample(
     depth: f64,
     normal: [f64; 3],
@@ -758,7 +748,6 @@ fn vec3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 ///
 /// Returns `n` unit vectors in the upper hemisphere (z > 0) with a
 /// deterministic, low-discrepancy distribution.
-#[allow(dead_code)]
 pub fn generate_ssao_samples(n: usize) -> Vec<[f64; 3]> {
     let mut samples = Vec::with_capacity(n);
     for i in 0..n {
@@ -787,7 +776,6 @@ pub fn generate_ssao_samples(n: usize) -> Vec<[f64; 3]> {
 /// `out = α * current + (1 - α) * history`.
 ///
 /// Typical values: `α ≈ 0.1`.
-#[allow(dead_code)]
 pub fn temporal_aa_blend(
     current: &[[f64; 3]],
     history: &[[f64; 3]],
@@ -810,8 +798,7 @@ pub fn temporal_aa_blend(
 /// For each pixel in `history`, clamps its RGB channels into the AABB defined
 /// by the minimum and maximum values in the 3×3 neighbourhood of `current`.
 /// `width` is the image width in pixels.
-#[allow(dead_code)]
-pub fn taa_clamp_history(current: &[[f64; 3]], history: &mut Vec<[f64; 3]>, width: usize) {
+pub fn taa_clamp_history(current: &[[f64; 3]], history: &mut [[f64; 3]], width: usize) {
     let height = current.len().checked_div(width).unwrap_or(0);
     for y in 0..height {
         for x in 0..width {
@@ -855,9 +842,8 @@ pub fn taa_clamp_history(current: &[[f64; 3]], history: &mut Vec<[f64; 3]>, widt
 ///
 /// `depth_buffer` contains one depth value per pixel.  `pixels` contains one
 /// RGB triple per pixel.  `width` is the image width.
-#[allow(dead_code)]
 pub fn apply_depth_of_field(
-    pixels: &mut Vec<[f64; 3]>,
+    pixels: &mut [[f64; 3]],
     depth_buffer: &[f64],
     width: usize,
     focus_depth: f64,
@@ -869,7 +855,7 @@ pub fn apply_depth_of_field(
         return;
     }
     let height = n / width;
-    let original = pixels.clone();
+    let original = pixels.to_vec();
 
     for y in 0..height {
         for x in 0..width {
@@ -909,8 +895,7 @@ pub fn apply_depth_of_field(
 ///
 /// `strength` controls how many pixels of offset are applied at the edge.
 /// `width` is the image width.  The image is assumed to have no padding.
-#[allow(dead_code)]
-pub fn apply_chromatic_aberration(pixels: &mut Vec<[f64; 3]>, width: usize, strength: f64) {
+pub fn apply_chromatic_aberration(pixels: &mut [[f64; 3]], width: usize, strength: f64) {
     let n = pixels.len();
     if width == 0 || n == 0 {
         return;
@@ -919,7 +904,7 @@ pub fn apply_chromatic_aberration(pixels: &mut Vec<[f64; 3]>, width: usize, stre
     let cx = width as f64 * 0.5;
     let cy = height as f64 * 0.5;
     let max_dist = (cx * cx + cy * cy).sqrt().max(1e-14);
-    let original = pixels.clone();
+    let original = pixels.to_vec();
 
     for y in 0..height {
         for x in 0..width {
@@ -961,7 +946,6 @@ pub fn apply_chromatic_aberration(pixels: &mut Vec<[f64; 3]>, width: usize, stre
 /// The falloff is `1 - smoothstep(inner, outer, r)` where `r` is the
 /// normalised distance from the image centre.  `inner` and `outer` must be in
 /// `[0, 1]`.
-#[allow(dead_code)]
 pub fn apply_vignette(pixels: &mut [[f64; 3]], width: usize, inner: f64, outer: f64) {
     let n = pixels.len();
     if width == 0 || n == 0 {
@@ -979,8 +963,8 @@ pub fn apply_vignette(pixels: &mut [[f64; 3]], width: usize, inner: f64, outer: 
             let dy = (y as f64 - cy) / max_dist;
             let r = (dx * dx + dy * dy).sqrt();
             let vignette = 1.0 - smoothstep(inner, outer, r);
-            for c in 0..3 {
-                pixels[idx][c] *= vignette;
+            for ch in pixels[idx].iter_mut() {
+                *ch *= vignette;
             }
         }
     }
@@ -989,7 +973,6 @@ pub fn apply_vignette(pixels: &mut [[f64; 3]], width: usize, inner: f64, outer: 
 /// Smooth hermite interpolation: maps `t ∈ [lo, hi]` to `[0, 1]` using
 /// the formula `3t² - 2t³`.
 #[inline]
-#[allow(dead_code)]
 fn smoothstep(lo: f64, hi: f64, x: f64) -> f64 {
     let t = ((x - lo) / (hi - lo).max(1e-30)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -1000,25 +983,23 @@ fn smoothstep(lo: f64, hi: f64, x: f64) -> f64 {
 /// Apply Reinhard tone mapping to an HDR pixel buffer.
 ///
 /// `exposure` scales the input luminance; higher values brighten the image.
-#[allow(dead_code)]
 pub fn tonemap_reinhard(pixels: &mut [[f64; 3]], exposure: f64) {
     for p in pixels.iter_mut() {
-        for c in 0..3 {
-            let v = p[c] * exposure;
-            p[c] = v / (1.0 + v);
+        for ch in p.iter_mut() {
+            let v = *ch * exposure;
+            *ch = v / (1.0 + v);
         }
     }
 }
 
 /// Apply ACES filmic tone mapping approximation.
-#[allow(dead_code)]
 pub fn tonemap_aces(pixels: &mut [[f64; 3]], exposure: f64) {
     // Narkowicz 2015 ACES approximation: y = x*(2.51*x+0.03)/(x*(2.43*x+0.59)+0.14)
     for p in pixels.iter_mut() {
-        for c in 0..3 {
-            let x = (p[c] * exposure).max(0.0);
-            p[c] = (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
-            p[c] = p[c].clamp(0.0, 1.0);
+        for ch in p.iter_mut() {
+            let x = (*ch * exposure).max(0.0);
+            *ch = (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
+            *ch = ch.clamp(0.0, 1.0);
         }
     }
 }
@@ -1387,11 +1368,11 @@ mod tests {
         let mut pixels: Vec<[f64; 3]> = vec![[10.0, 5.0, 0.1], [0.5, 0.5, 0.5]];
         tonemap_reinhard(&mut pixels, 1.0);
         for p in &pixels {
-            for c in 0..3 {
+            for &ch in p.iter() {
                 assert!(
-                    p[c] >= 0.0 && p[c] <= 1.0,
+                    (0.0..=1.0).contains(&ch),
                     "Reinhard output out of [0,1]: {}",
-                    p[c]
+                    ch
                 );
             }
         }
@@ -1402,11 +1383,11 @@ mod tests {
         let mut pixels: Vec<[f64; 3]> = vec![[100.0, 0.5, 0.01]];
         tonemap_aces(&mut pixels, 1.0);
         for p in &pixels {
-            for c in 0..3 {
+            for &ch in p.iter() {
                 assert!(
-                    p[c] >= 0.0 && p[c] <= 1.0,
+                    (0.0..=1.0).contains(&ch),
                     "ACES output out of [0,1]: {}",
-                    p[c]
+                    ch
                 );
             }
         }

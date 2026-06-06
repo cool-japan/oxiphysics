@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 pub use nalgebra::{Matrix3, Matrix4, Point3, Unit, UnitQuaternion, Vector3, Vector4};
 
 use super::geometry::{quat_exp, quat_log};
@@ -23,7 +22,6 @@ pub type Quat = UnitQuaternion<Real>;
 /// Create a quaternion from an axis-angle representation.
 ///
 /// `axis` must be a unit vector. `angle` is in radians.
-#[allow(dead_code)]
 pub fn quat_from_axis_angle(axis: &Vec3, angle: Real) -> Quat {
     UnitQuaternion::from_axis_angle(&Unit::new_normalize(*axis), angle)
 }
@@ -31,7 +29,6 @@ pub fn quat_from_axis_angle(axis: &Vec3, angle: Real) -> Quat {
 ///
 /// Uses the ZYX (yaw-pitch-roll) convention.
 /// Returns `(roll, pitch, yaw)`.
-#[allow(dead_code)]
 pub fn quat_to_euler(q: &Quat) -> (Real, Real, Real) {
     let (roll, pitch, yaw) = q.euler_angles();
     (roll, pitch, yaw)
@@ -39,24 +36,20 @@ pub fn quat_to_euler(q: &Quat) -> (Real, Real, Real) {
 /// Create a quaternion from Euler angles (roll, pitch, yaw) in radians.
 ///
 /// Uses the ZYX convention: rotation = Rz(yaw) * Ry(pitch) * Rx(roll).
-#[allow(dead_code)]
 pub fn quat_from_euler(roll: Real, pitch: Real, yaw: Real) -> Quat {
     UnitQuaternion::from_euler_angles(roll, pitch, yaw)
 }
 /// Spherical linear interpolation between two quaternions.
-#[allow(dead_code)]
 pub fn quat_slerp(a: &Quat, b: &Quat, t: Real) -> Quat {
     a.slerp(b, t)
 }
 /// Compute the determinant of a 3x3 matrix.
-#[allow(dead_code)]
 pub fn mat3_determinant(m: &Mat3) -> Real {
     m.determinant()
 }
 /// Compute the inverse of a 3x3 matrix.
 ///
 /// Returns `None` if the matrix is singular.
-#[allow(dead_code)]
 pub fn mat3_inverse(m: &Mat3) -> Option<Mat3> {
     m.try_inverse()
 }
@@ -64,7 +57,6 @@ pub fn mat3_inverse(m: &Mat3) -> Option<Mat3> {
 ///
 /// Returns eigenvalues sorted in ascending order. For non-symmetric matrices
 /// the result is an approximation.
-#[allow(dead_code)]
 pub fn mat3_eigenvalues_symmetric(m: &Mat3) -> [Real; 3] {
     let eigen = m.symmetric_eigen();
     let mut vals = [
@@ -76,23 +68,17 @@ pub fn mat3_eigenvalues_symmetric(m: &Mat3) -> [Real; 3] {
     vals
 }
 /// Compute the trace of a 3x3 matrix.
-#[allow(dead_code)]
 pub fn mat3_trace(m: &Mat3) -> Real {
     m.trace()
 }
 /// Compute the Frobenius norm of a 3x3 matrix.
-#[allow(dead_code)]
 pub fn mat3_frobenius_norm(m: &Mat3) -> Real {
-    let mut sum = 0.0;
-    for i in 0..3 {
-        for j in 0..3 {
-            sum += m[(i, j)] * m[(i, j)];
-        }
-    }
+    let sum: f64 = (0..3)
+        .flat_map(|i| (0..3).map(move |j| m[(i, j)] * m[(i, j)]))
+        .sum();
     sum.sqrt()
 }
 /// Build a skew-symmetric matrix from a vector (for cross product as matrix multiply).
-#[allow(dead_code)]
 pub fn skew_symmetric(v: &Vec3) -> Mat3 {
     Mat3::new(0.0, -v.z, v.y, v.z, 0.0, -v.x, -v.y, v.x, 0.0)
 }
@@ -102,7 +88,6 @@ pub fn skew_symmetric(v: &Vec3) -> Mat3 {
 /// * `aspect` - Width / height ratio.
 /// * `near` - Near clipping plane distance (positive).
 /// * `far` - Far clipping plane distance (positive).
-#[allow(dead_code)]
 pub fn perspective(fov_y: Real, aspect: Real, near: Real, far: Real) -> Mat4 {
     let f = 1.0 / (fov_y / 2.0).tan();
     let nf = 1.0 / (near - far);
@@ -130,7 +115,6 @@ pub fn perspective(fov_y: Real, aspect: Real, near: Real, far: Real) -> Mat4 {
 /// * `eye` - Camera position.
 /// * `target` - Look-at target position.
 /// * `up` - World up direction.
-#[allow(dead_code)]
 pub fn look_at(eye: &Vec3, target: &Vec3, up: &Vec3) -> Mat4 {
     let f = (target - eye).normalize();
     let s = f.cross(up).normalize();
@@ -155,7 +139,6 @@ pub fn look_at(eye: &Vec3, target: &Vec3, up: &Vec3) -> Mat4 {
     )
 }
 /// Create an orthographic projection matrix (right-handed).
-#[allow(dead_code, clippy::too_many_arguments)]
 pub fn orthographic(
     left: Real,
     right: Real,
@@ -187,24 +170,20 @@ pub fn orthographic(
     )
 }
 /// Create a Vec4 from components.
-#[allow(dead_code)]
 pub fn vec4(x: Real, y: Real, z: Real, w: Real) -> Vec4 {
     Vec4::new(x, y, z, w)
 }
 /// Homogeneous point (w=1).
-#[allow(dead_code)]
 pub fn vec4_point(v: &Vec3) -> Vec4 {
     Vec4::new(v.x, v.y, v.z, 1.0)
 }
 /// Homogeneous direction (w=0).
-#[allow(dead_code)]
 pub fn vec4_direction(v: &Vec3) -> Vec4 {
     Vec4::new(v.x, v.y, v.z, 0.0)
 }
 /// Project a Vec4 back to Vec3 by dividing by w.
 ///
 /// Returns `None` if w is near zero.
-#[allow(dead_code)]
 pub fn vec4_to_vec3(v: &Vec4) -> Option<Vec3> {
     if v.w.abs() < 1e-10 {
         return None;
@@ -215,7 +194,6 @@ pub fn vec4_to_vec3(v: &Vec4) -> Option<Vec3> {
 ///
 /// Returns `None` if planes are parallel.
 /// On success, returns `(point_on_line, direction)`.
-#[allow(dead_code)]
 pub fn plane_plane_intersection(a: &Plane, b: &Plane) -> Option<(Vec3, Vec3)> {
     let dir = a.normal.cross(&b.normal);
     let len_sq = dir.norm_squared();
@@ -228,7 +206,6 @@ pub fn plane_plane_intersection(a: &Plane, b: &Plane) -> Option<(Vec3, Vec3)> {
 /// Compute the intersection point of three planes.
 ///
 /// Returns `None` if any two planes are parallel or all three meet in a line.
-#[allow(dead_code)]
 pub fn three_plane_intersection(a: &Plane, b: &Plane, c: &Plane) -> Option<Vec3> {
     let denom = a.normal.dot(&b.normal.cross(&c.normal));
     if denom.abs() < 1e-10 {
@@ -247,7 +224,6 @@ pub fn three_plane_intersection(a: &Plane, b: &Plane, c: &Plane) -> Option<Vec3>
 /// Returns `(R, S)` after convergence or `max_iter` iterations.
 ///
 /// Returns `None` if the matrix is singular.
-#[allow(dead_code)]
 pub fn polar_decomposition(m: &Mat3, max_iter: usize) -> Option<(Mat3, Mat3)> {
     let mut r = *m;
     for _ in 0..max_iter {
@@ -268,7 +244,6 @@ pub fn polar_decomposition(m: &Mat3, max_iter: usize) -> Option<(Mat3, Mat3)> {
 /// Returns `(eigenvalues, eigenvectors)` where each column of `eigenvectors` is
 /// an eigenvector corresponding to the eigenvalue at the same index.
 /// Eigenvalues are *not* sorted.
-#[allow(dead_code)]
 pub fn symmetric_eigen3(m: &Mat3) -> ([Real; 3], Mat3) {
     let mut a = *m;
     let mut v = Mat3::identity();
@@ -325,14 +300,12 @@ pub fn symmetric_eigen3(m: &Mat3) -> ([Real; 3], Mat3) {
 /// Evaluate real spherical harmonic Y_0^0 (degree 0, order 0).
 ///
 /// Y_0^0 = 1 / (2 * sqrt(π))
-#[allow(dead_code)]
 pub fn sh_y00() -> Real {
     0.5 / std::f64::consts::PI.sqrt()
 }
 /// Evaluate real spherical harmonic Y_1^{-1} (degree 1, order -1).
 ///
 /// Y_1^{-1}(θ,φ) = sqrt(3/(4π)) * sin(θ) * sin(φ) = sqrt(3/(4π)) * y/r
-#[allow(dead_code)]
 pub fn sh_y1m1(dir: &Vec3) -> Real {
     let len = dir.norm();
     if len < 1e-12 {
@@ -344,7 +317,6 @@ pub fn sh_y1m1(dir: &Vec3) -> Real {
 /// Evaluate real spherical harmonic Y_1^0 (degree 1, order 0).
 ///
 /// Y_1^0(θ,φ) = sqrt(3/(4π)) * cos(θ) = sqrt(3/(4π)) * z/r
-#[allow(dead_code)]
 pub fn sh_y10(dir: &Vec3) -> Real {
     let len = dir.norm();
     if len < 1e-12 {
@@ -356,7 +328,6 @@ pub fn sh_y10(dir: &Vec3) -> Real {
 /// Evaluate real spherical harmonic Y_1^1 (degree 1, order 1).
 ///
 /// Y_1^1(θ,φ) = sqrt(3/(4π)) * sin(θ) * cos(φ) = sqrt(3/(4π)) * x/r
-#[allow(dead_code)]
 pub fn sh_y11(dir: &Vec3) -> Real {
     let len = dir.norm();
     if len < 1e-12 {
@@ -370,7 +341,6 @@ pub fn sh_y11(dir: &Vec3) -> Real {
 ///
 /// `radiance_fn` takes a unit direction and returns the sampled value.
 /// Directions are constructed from a uniform icosahedron-inspired distribution.
-#[allow(dead_code)]
 pub fn sh_project_l1(radiance_fn: impl Fn(&Vec3) -> Real, n: usize) -> [Real; 4] {
     let golden = (1.0 + 5.0_f64.sqrt()) / 2.0;
     let mut coeffs = [0.0_f64; 4];
@@ -394,13 +364,11 @@ pub fn sh_project_l1(radiance_fn: impl Fn(&Vec3) -> Real, n: usize) -> [Real; 4]
 /// Compute the derivative of `f` at `x` using dual numbers.
 ///
 /// `f` must be a function `Dual -> Dual`.
-#[allow(dead_code)]
 pub fn dual_differentiate(f: impl Fn(Dual) -> Dual, x: Real) -> Real {
     f(Dual::variable(x)).du
 }
 /// Hermite spline interpolation between two points `p0` and `p1` with
 /// tangents `m0` and `m1`.  Parameter `t` runs from 0 (at p0) to 1 (at p1).
-#[allow(dead_code)]
 pub fn hermite_interpolate(p0: &Vec3, m0: &Vec3, p1: &Vec3, m1: &Vec3, t: Real) -> Vec3 {
     let t2 = t * t;
     let t3 = t2 * t;
@@ -414,7 +382,6 @@ pub fn hermite_interpolate(p0: &Vec3, m0: &Vec3, p1: &Vec3, m1: &Vec3, t: Real) 
 ///
 /// Interpolates between `p1` and `p2` using the four control points
 /// `p0, p1, p2, p3`.  `t` ∈ \[0, 1\].
-#[allow(dead_code)]
 pub fn catmull_rom(p0: &Vec3, p1: &Vec3, p2: &Vec3, p3: &Vec3, t: Real) -> Vec3 {
     let m1 = (p2 - p0) * 0.5;
     let m2 = (p3 - p1) * 0.5;
@@ -423,7 +390,6 @@ pub fn catmull_rom(p0: &Vec3, p1: &Vec3, p2: &Vec3, p3: &Vec3, t: Real) -> Vec3 
 /// Cubic Bézier curve.
 ///
 /// Evaluates at parameter `t` ∈ \[0, 1\] given control points `p0..p3`.
-#[allow(dead_code)]
 pub fn bezier_cubic(p0: &Vec3, p1: &Vec3, p2: &Vec3, p3: &Vec3, t: Real) -> Vec3 {
     let mt = 1.0 - t;
     p0 * (mt * mt * mt) + p1 * (3.0 * mt * mt * t) + p2 * (3.0 * mt * t * t) + p3 * (t * t * t)
@@ -432,7 +398,6 @@ pub fn bezier_cubic(p0: &Vec3, p1: &Vec3, p2: &Vec3, p3: &Vec3, t: Real) -> Vec3
 ///
 /// `i` is the span index, `t` ∈ \[0, 1\] within the span.
 /// Returns the four non-zero basis function values `[N_{i-3}, N_{i-2}, N_{i-1}, N_i]`.
-#[allow(dead_code)]
 pub fn bspline_basis3(t: Real) -> [Real; 4] {
     let t2 = t * t;
     let t3 = t2 * t;
@@ -445,7 +410,6 @@ pub fn bspline_basis3(t: Real) -> [Real; 4] {
     ]
 }
 /// Transpose a 3×3 matrix stored as `[[f64;3\];3]` (row-major).
-#[allow(dead_code)]
 pub fn mat3_transpose(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     [
         [m[0][0], m[1][0], m[2][0]],
@@ -454,7 +418,6 @@ pub fn mat3_transpose(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     ]
 }
 /// Multiply a 3×3 matrix by a 3-vector: `m * v`.
-#[allow(dead_code)]
 pub fn mat3_mul_vec3(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     [
         m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
@@ -463,27 +426,24 @@ pub fn mat3_mul_vec3(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     ]
 }
 /// Multiply two 3×3 matrices: `a * b`.
-#[allow(dead_code)]
 pub fn mat3_mul_mat3(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut r = [[0.0_f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, ri) in r.iter_mut().enumerate() {
+        for (j, rij) in ri.iter_mut().enumerate() {
             for k in 0..3 {
-                r[i][j] += a[i][k] * b[k][j];
+                *rij += a[i][k] * b[k][j];
             }
         }
     }
     r
 }
 /// Determinant of a 3×3 matrix.
-#[allow(dead_code)]
 pub fn mat3_det(m: [[f64; 3]; 3]) -> f64 {
     m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
         - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
 }
 /// Inverse of a 3×3 matrix.  Returns `None` if singular (|det| < 1e-14).
-#[allow(dead_code)]
 pub fn mat3_arr_inverse(m: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
     let det = mat3_det(m);
     if det.abs() < 1e-14 {
@@ -509,7 +469,6 @@ pub fn mat3_arr_inverse(m: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
     ])
 }
 /// Build a 3×3 matrix from three column vectors.
-#[allow(dead_code)]
 pub fn mat3_from_cols(c0: [f64; 3], c1: [f64; 3], c2: [f64; 3]) -> [[f64; 3]; 3] {
     [
         [c0[0], c1[0], c2[0]],
@@ -518,7 +477,6 @@ pub fn mat3_from_cols(c0: [f64; 3], c1: [f64; 3], c2: [f64; 3]) -> [[f64; 3]; 3]
     ]
 }
 /// Outer product of two 3-vectors: `a ⊗ b` (a 3×3 matrix).
-#[allow(dead_code)]
 pub fn mat3_outer_product(a: [f64; 3], b: [f64; 3]) -> [[f64; 3]; 3] {
     [
         [a[0] * b[0], a[0] * b[1], a[0] * b[2]],
@@ -529,14 +487,12 @@ pub fn mat3_outer_product(a: [f64; 3], b: [f64; 3]) -> [[f64; 3]; 3] {
 /// Create a unit quaternion `[x, y, z, w]` from an axis-angle pair.
 ///
 /// `axis` should be a unit vector; `angle` is in radians.
-#[allow(dead_code)]
 pub fn quat_arr_from_axis_angle(axis: [f64; 3], angle: f64) -> [f64; 4] {
     let half = angle * 0.5;
     let s = half.sin();
     [axis[0] * s, axis[1] * s, axis[2] * s, half.cos()]
 }
 /// Multiply two quaternions `p * q` (Hamilton product).  Format: `[x, y, z, w]`.
-#[allow(dead_code)]
 pub fn quat_multiply(p: [f64; 4], q: [f64; 4]) -> [f64; 4] {
     let [px, py, pz, pw] = p;
     let [qx, qy, qz, qw] = q;
@@ -548,7 +504,6 @@ pub fn quat_multiply(p: [f64; 4], q: [f64; 4]) -> [f64; 4] {
     ]
 }
 /// Convert a unit quaternion `[x, y, z, w]` to a 3×3 rotation matrix (row-major).
-#[allow(dead_code)]
 pub fn quat_to_mat3(q: [f64; 4]) -> [[f64; 3]; 3] {
     let [x, y, z, w] = q;
     let x2 = x * x;
@@ -567,7 +522,6 @@ pub fn quat_to_mat3(q: [f64; 4]) -> [[f64; 3]; 3] {
     ]
 }
 /// Spherical linear interpolation between two unit quaternions (format: `[x,y,z,w]`).
-#[allow(dead_code)]
 pub fn quat_arr_slerp(p: [f64; 4], q: [f64; 4], t: f64) -> [f64; 4] {
     let dot = p[0] * q[0] + p[1] * q[1] + p[2] * q[2] + p[3] * q[3];
     let (q2, dot2) = if dot < 0.0 {
@@ -599,7 +553,6 @@ pub fn quat_arr_slerp(p: [f64; 4], q: [f64; 4], t: f64) -> [f64; 4] {
     }
 }
 /// Project vector `a` onto `onto`.  Returns the zero vector if `onto` is zero.
-#[allow(dead_code)]
 pub fn vec3_project(a: [f64; 3], onto: [f64; 3]) -> [f64; 3] {
     let denom = onto[0] * onto[0] + onto[1] * onto[1] + onto[2] * onto[2];
     if denom < 1e-30 {
@@ -609,13 +562,11 @@ pub fn vec3_project(a: [f64; 3], onto: [f64; 3]) -> [f64; 3] {
     [onto[0] * s, onto[1] * s, onto[2] * s]
 }
 /// Reflect vector `v` about unit normal `n`: `v - 2*(v·n)*n`.
-#[allow(dead_code)]
 pub fn vec3_reflect(v: [f64; 3], n: [f64; 3]) -> [f64; 3] {
     let dot2 = 2.0 * (v[0] * n[0] + v[1] * n[1] + v[2] * n[2]);
     [v[0] - dot2 * n[0], v[1] - dot2 * n[1], v[2] - dot2 * n[2]]
 }
 /// Linear interpolation between two 3-vectors: `a + t*(b-a)`.
-#[allow(dead_code)]
 pub fn vec3_lerp(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
     [
         a[0] + t * (b[0] - a[0]),
@@ -626,7 +577,6 @@ pub fn vec3_lerp(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
 /// Create a plane `[nx, ny, nz, d]` from a point `p` and unit normal `n`.
 ///
 /// The plane equation is `n·x = d` (equivalently `n·x - d = 0`).
-#[allow(dead_code)]
 pub fn plane_from_point_normal(p: [f64; 3], n: [f64; 3]) -> [f64; 4] {
     let d = n[0] * p[0] + n[1] * p[1] + n[2] * p[2];
     [n[0], n[1], n[2], d]
@@ -634,12 +584,10 @@ pub fn plane_from_point_normal(p: [f64; 3], n: [f64; 3]) -> [f64; 4] {
 /// Signed distance from `point` to the plane `[nx, ny, nz, d]`.
 ///
 /// Positive on the side the normal points toward.
-#[allow(dead_code)]
 pub fn plane_signed_dist(plane: [f64; 4], point: [f64; 3]) -> f64 {
     plane[0] * point[0] + plane[1] * point[1] + plane[2] * point[2] - plane[3]
 }
 /// Arc length of a cubic Bézier curve approximated with `n` segments.
-#[allow(dead_code)]
 pub fn bezier_arc_length(p0: &Vec3, p1: &Vec3, p2: &Vec3, p3: &Vec3, n: usize) -> Real {
     let mut len = 0.0;
     let mut prev = *p0;
@@ -652,7 +600,6 @@ pub fn bezier_arc_length(p0: &Vec3, p1: &Vec3, p2: &Vec3, p3: &Vec3, n: usize) -
     len
 }
 /// Cross product of two 3-vectors: `a × b`.
-#[allow(dead_code)]
 pub fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -663,7 +610,6 @@ pub fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// Scalar triple product: `a · (b × c)`.
 ///
 /// Equals the signed volume of the parallelepiped spanned by `a`, `b`, `c`.
-#[allow(dead_code)]
 pub fn vec3_triple_product(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
     let bc = vec3_cross(b, c);
     a[0] * bc[0] + a[1] * bc[1] + a[2] * bc[2]
@@ -671,7 +617,6 @@ pub fn vec3_triple_product(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
 /// Rotate vector `v` around unit `axis` by `angle` radians (Rodrigues' formula).
 ///
 /// `axis` must be a unit vector; the result has the same magnitude as `v`.
-#[allow(dead_code)]
 pub fn vec3_rotate_by_angle(v: [f64; 3], axis: [f64; 3], angle: f64) -> [f64; 3] {
     let cos_a = angle.cos();
     let sin_a = angle.sin();
@@ -686,7 +631,6 @@ pub fn vec3_rotate_by_angle(v: [f64; 3], axis: [f64; 3], angle: f64) -> [f64; 3]
 /// Adjugate (classical adjoint) of a 3×3 matrix: `adj(M) = det(M) * M^{-1}`.
 ///
 /// The adjugate exists even for singular matrices.
-#[allow(dead_code)]
 pub fn mat3_adjugate(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let c = |r: usize, c_idx: usize| -> f64 {
         let rows: Vec<usize> = (0..3).filter(|&x| x != r).collect();
@@ -710,7 +654,6 @@ pub fn mat3_adjugate(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 ///
 /// Computes `p(M) = M^3 - tr(M)*M^2 + ((tr(M)^2 - tr(M^2))/2)*M - det(M)*I`
 /// and returns the result (should be the zero matrix by Cayley-Hamilton).
-#[allow(dead_code)]
 pub fn mat3_cayley_hamilton(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let i3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     let tr_m = m[0][0] + m[1][1] + m[2][2];
@@ -720,9 +663,18 @@ pub fn mat3_cayley_hamilton(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let c2 = (tr_m * tr_m - tr_m2) * 0.5;
     let det = mat3_det(m);
     let mut result = [[0.0_f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            result[i][j] = m3[i][j] - tr_m * m2[i][j] + c2 * m[i][j] - det * i3[i][j];
+    for (i, (ri, ((m3i, m2i), (mi, i3i)))) in result
+        .iter_mut()
+        .zip(m3.iter().zip(m2.iter()).zip(m.iter().zip(i3.iter())))
+        .enumerate()
+    {
+        for (j, (rij, ((&m3ij, &m2ij), (&mij, &i3ij)))) in ri
+            .iter_mut()
+            .zip(m3i.iter().zip(m2i.iter()).zip(mi.iter().zip(i3i.iter())))
+            .enumerate()
+        {
+            let _ = (i, j);
+            *rij = m3ij - tr_m * m2ij + c2 * mij - det * i3ij;
         }
     }
     result
@@ -731,7 +683,6 @@ pub fn mat3_cayley_hamilton(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 ///
 /// `log(q) = [θ * n̂, 0]` where `θ = acos(w)` and `n̂ = (x,y,z)/sin(θ)`.
 /// For the identity quaternion the result is the zero vector.
-#[allow(dead_code)]
 pub fn quat_arr_log(q: [f64; 4]) -> [f64; 4] {
     let [x, y, z, w] = q;
     let w_clamped = w.clamp(-1.0, 1.0);
@@ -746,7 +697,6 @@ pub fn quat_arr_log(q: [f64; 4]) -> [f64; 4] {
 /// Quaternion exponential for a pure quaternion `v = [x, y, z, 0]`.
 ///
 /// `exp(v) = [sin(|v|)*v̂, cos(|v|)]`.  If `v = 0` the identity is returned.
-#[allow(dead_code)]
 pub fn quat_arr_exp(v: [f64; 4]) -> [f64; 4] {
     let [x, y, z, _] = v;
     let theta = (x * x + y * y + z * z).sqrt();
@@ -759,7 +709,6 @@ pub fn quat_arr_exp(v: [f64; 4]) -> [f64; 4] {
 /// Convert a unit quaternion `[x, y, z, w]` to `(axis, angle)`.
 ///
 /// Returns `([0,1,0], 0)` for the identity quaternion.
-#[allow(dead_code)]
 pub fn quat_to_axis_angle(q: [f64; 4]) -> ([f64; 3], f64) {
     let [x, y, z, w] = q;
     let w_c = w.clamp(-1.0, 1.0);
@@ -774,7 +723,6 @@ pub fn quat_to_axis_angle(q: [f64; 4]) -> ([f64; 3], f64) {
 ///
 /// Interpolates between `q1` and `q2` at parameter `t ∈ [0,1]` using the
 /// surrounding control quaternions `s1` and `s2`.
-#[allow(dead_code)]
 pub fn quat_squad(q1: [f64; 4], q2: [f64; 4], s1: [f64; 4], s2: [f64; 4], t: f64) -> [f64; 4] {
     let slerp_q = quat_arr_slerp(q1, q2, t);
     let slerp_s = quat_arr_slerp(s1, s2, t);
@@ -1378,14 +1326,10 @@ mod tests {
         let m = [[1.0, 2.0, 0.0], [0.0, 1.0, 3.0], [0.0, 0.0, 1.0]];
         let inv = mat3_arr_inverse(m).expect("should be invertible");
         let prod = mat3_mul_mat3(m, inv);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in prod.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (prod[i][j] - expected).abs() < 1e-10,
-                    "prod[{i}][{j}]={}",
-                    prod[i][j]
-                );
+                assert!((val - expected).abs() < 1e-10, "prod[{i}][{j}]={}", val);
             }
         }
     }
@@ -1512,14 +1456,10 @@ mod tests {
     fn test_mat3_adjugate_identity() {
         let m = [[1.0_f64, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let adj = mat3_adjugate(m);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in adj.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let exp = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (adj[i][j] - exp).abs() < 1e-12,
-                    "adj[{i}][{j}]={}",
-                    adj[i][j]
-                );
+                assert!((val - exp).abs() < 1e-12, "adj[{i}][{j}]={}", val);
             }
         }
     }
@@ -1529,13 +1469,13 @@ mod tests {
         let adj = mat3_adjugate(m);
         let det = mat3_det(m);
         let prod = mat3_mul_mat3(m, adj);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in prod.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let exp = if i == j { det } else { 0.0 };
                 assert!(
-                    (prod[i][j] - exp).abs() < 1e-10,
+                    (val - exp).abs() < 1e-10,
                     "prod[{i}][{j}]={}  exp={}",
-                    prod[i][j],
+                    val,
                     exp
                 );
             }
@@ -1545,9 +1485,9 @@ mod tests {
     fn test_cayley_hamilton() {
         let m = [[1.0_f64, 2.0, 3.0], [0.0, 4.0, 5.0], [0.0, 0.0, 6.0]];
         let zero = mat3_cayley_hamilton(m);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(zero[i][j].abs() < 1e-8, "CH[{i}][{j}]={}", zero[i][j]);
+        for (i, row) in zero.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!(val.abs() < 1e-8, "CH[{i}][{j}]={}", val);
             }
         }
     }
@@ -1648,7 +1588,6 @@ mod tests {
 /// Outer product of two Vec3 vectors: `a ⊗ b` as a nalgebra `Mat3`.
 ///
 /// The (i,j) element equals `a[i] * b[j]`.
-#[allow(dead_code)]
 pub fn vec3_outer_product(a: &Vec3, b: &Vec3) -> Mat3 {
     Mat3::new(
         a.x * b.x,
@@ -1666,7 +1605,6 @@ pub fn vec3_outer_product(a: &Vec3, b: &Vec3) -> Mat3 {
 ///
 /// Equivalent to `skew_symmetric` but with an explicit name.
 /// `cross_matrix(v) * w == v.cross(&w)`.
-#[allow(dead_code)]
 pub fn cross_matrix(v: &Vec3) -> Mat3 {
     skew_symmetric(v)
 }
@@ -1678,7 +1616,6 @@ pub fn cross_matrix(v: &Vec3) -> Mat3 {
 /// - `e2` is `v2` minus its projections onto `e0` and `e1`, normalized.
 ///
 /// Returns `None` if any intermediate vector becomes near-zero.
-#[allow(dead_code)]
 pub fn gram_schmidt(v0: &Vec3, v1: &Vec3, v2: &Vec3) -> Option<(Vec3, Vec3, Vec3)> {
     let e0_len = v0.norm();
     if e0_len < 1e-12 {
@@ -1704,7 +1641,6 @@ pub fn gram_schmidt(v0: &Vec3, v1: &Vec3, v2: &Vec3) -> Option<(Vec3, Vec3, Vec3
 /// - `r` = radial distance ≥ 0
 /// - `theta` = polar angle ∈ `[0, π]` (from +Z axis)
 /// - `phi` = azimuthal angle ∈ `(-π, π]` (in XY plane from +X axis)
-#[allow(dead_code)]
 pub fn cartesian_to_spherical(v: &Vec3) -> (Real, Real, Real) {
     let r = v.norm();
     if r < 1e-300 {
@@ -1719,7 +1655,6 @@ pub fn cartesian_to_spherical(v: &Vec3) -> (Real, Real, Real) {
 /// - `r` – radial distance
 /// - `theta` – polar angle from +Z
 /// - `phi` – azimuthal angle from +X in XY plane
-#[allow(dead_code)]
 pub fn spherical_to_cartesian(r: Real, theta: Real, phi: Real) -> Vec3 {
     Vec3::new(
         r * theta.sin() * phi.cos(),
@@ -1732,14 +1667,12 @@ pub fn spherical_to_cartesian(r: Real, theta: Real, phi: Real) -> Vec3 {
 /// - `rho` = radial distance in XY plane
 /// - `phi` = azimuthal angle ∈ `(-π, π]`
 /// - `z`   = height
-#[allow(dead_code)]
 pub fn cartesian_to_cylindrical(v: &Vec3) -> (Real, Real, Real) {
     let rho = (v.x * v.x + v.y * v.y).sqrt();
     let phi = v.y.atan2(v.x);
     (rho, phi, v.z)
 }
 /// Convert cylindrical coordinates `(rho, phi, z)` to Cartesian.
-#[allow(dead_code)]
 pub fn cylindrical_to_cartesian(rho: Real, phi: Real, z: Real) -> Vec3 {
     Vec3::new(rho * phi.cos(), rho * phi.sin(), z)
 }
@@ -1747,7 +1680,6 @@ pub fn cylindrical_to_cartesian(rho: Real, phi: Real, z: Real) -> Vec3 {
 ///
 /// Equivalent to `vec3_rotate_by_angle` but operates on `Vec3` directly.
 /// `axis` must be a unit vector.
-#[allow(dead_code)]
 pub fn rodrigues_rotate(v: &Vec3, axis: &Vec3, angle: Real) -> Vec3 {
     let cos_a = angle.cos();
     let sin_a = angle.sin();
@@ -1761,7 +1693,6 @@ pub fn rodrigues_rotate(v: &Vec3, axis: &Vec3, angle: Real) -> Vec3 {
 /// `exp(S) = I + sin(θ)/θ * S + (1 - cos(θ))/θ² * S²`
 ///
 /// where `θ = |omega|`.  For `θ ≈ 0` returns the identity.
-#[allow(dead_code)]
 pub fn mat3_exp_skew(omega: &Vec3) -> Mat3 {
     let theta = omega.norm();
     if theta < 1e-12 {
@@ -1777,7 +1708,6 @@ pub fn mat3_exp_skew(omega: &Vec3) -> Mat3 {
 /// Returns the skew-symmetric matrix `S` such that `exp(S) = R`.
 /// The returned matrix encodes the axis-angle `theta * n̂` in its entries.
 /// Returns the zero matrix for the identity rotation.
-#[allow(dead_code)]
 pub fn mat3_log_rotation(r: &Mat3) -> Mat3 {
     let trace = r.trace();
     let cos_theta = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0);
@@ -1791,7 +1721,6 @@ pub fn mat3_log_rotation(r: &Mat3) -> Mat3 {
 ///
 /// Faster but less accurate than slerp; the result is normalized to stay
 /// on the unit sphere.
-#[allow(dead_code)]
 pub fn quat_nlerp(a: &Quat, b: &Quat, t: Real) -> Quat {
     let ai = a.into_inner();
     let bi = b.into_inner();
@@ -1803,7 +1732,6 @@ pub fn quat_nlerp(a: &Quat, b: &Quat, t: Real) -> Quat {
 ///
 /// Given three consecutive key quaternions `q_prev`, `q_curr`, `q_next`,
 /// returns `s_i = q_curr * exp( -(log(q_curr^{-1} q_next) + log(q_curr^{-1} q_prev)) / 4 )`.
-#[allow(dead_code)]
 pub fn quat_squad_control(q_prev: &Quat, q_curr: &Quat, q_next: &Quat) -> Quat {
     let qi_inv = q_curr.inverse();
     let log_next = quat_log(&(qi_inv * q_next));
@@ -1815,7 +1743,6 @@ pub fn quat_squad_control(q_prev: &Quat, q_curr: &Quat, q_next: &Quat) -> Quat {
 /// Geodesic (angular) distance between two unit quaternions.
 ///
 /// Returns the minimal angle in `[0, π]` needed to rotate from `a` to `b`.
-#[allow(dead_code)]
 pub fn quat_geodesic_distance(a: &Quat, b: &Quat) -> Real {
     a.angle_to(b)
 }
@@ -1823,7 +1750,6 @@ pub fn quat_geodesic_distance(a: &Quat, b: &Quat) -> Real {
 ///
 /// Returns the component of `v` parallel to `onto_unit`.
 /// `onto_unit` must be a unit vector.
-#[allow(dead_code)]
 pub fn vec3_project_onto(v: &Vec3, onto_unit: &Vec3) -> Vec3 {
     onto_unit * v.dot(onto_unit)
 }
@@ -1831,12 +1757,10 @@ pub fn vec3_project_onto(v: &Vec3, onto_unit: &Vec3) -> Vec3 {
 ///
 /// Returns `v - project_onto(v, onto_unit)`.
 /// `onto_unit` must be a unit vector.
-#[allow(dead_code)]
 pub fn vec3_reject_from(v: &Vec3, onto_unit: &Vec3) -> Vec3 {
     v - vec3_project_onto(v, onto_unit)
 }
 /// Reflect `v` about the unit normal `n`: `v - 2*(v·n)*n`.
-#[allow(dead_code)]
 pub fn vec3_reflect_about(v: &Vec3, n: &Vec3) -> Vec3 {
     v - n * (2.0 * v.dot(n))
 }
@@ -1845,7 +1769,6 @@ pub fn vec3_reflect_about(v: &Vec3, n: &Vec3) -> Vec3 {
 /// `v` must be normalized, `n` must be a unit normal pointing away from the
 /// surface on the same side as `v`.  Returns `None` on total internal
 /// reflection.
-#[allow(dead_code)]
 pub fn vec3_refract(v: &Vec3, n: &Vec3, eta: Real) -> Option<Vec3> {
     let cos_i = -(v.dot(n));
     let sin2_t = eta * eta * (1.0 - cos_i * cos_i);
@@ -1858,7 +1781,6 @@ pub fn vec3_refract(v: &Vec3, n: &Vec3, eta: Real) -> Option<Vec3> {
 /// Angle in radians between two non-zero vectors `a` and `b`.
 ///
 /// Returns a value in `[0, π]`.
-#[allow(dead_code)]
 pub fn vec3_angle_between(a: &Vec3, b: &Vec3) -> Real {
     let denom = a.norm() * b.norm();
     if denom < 1e-300 {
@@ -1867,14 +1789,12 @@ pub fn vec3_angle_between(a: &Vec3, b: &Vec3) -> Real {
     (a.dot(b) / denom).clamp(-1.0, 1.0).acos()
 }
 /// Rotate `v` by quaternion `q`.
-#[allow(dead_code)]
 pub fn vec3_rotate_by_quat(v: &Vec3, q: &Quat) -> Vec3 {
     q.transform_vector(v)
 }
 /// Build a rotation matrix from an `axis` (unit vector) and `angle` (radians).
 ///
 /// Uses the Rodrigues rotation formula.
-#[allow(dead_code)]
 pub fn mat3_from_axis_angle(axis: &Vec3, angle: Real) -> Mat3 {
     let c = angle.cos();
     let s = angle.sin();

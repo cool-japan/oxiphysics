@@ -2,14 +2,7 @@
 //!
 //! Foundation types with no dependencies on other dashboard types.
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use std::collections::VecDeque;
-
 /// Colormap legend data for dashboard rendering.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ColormapLegend {
     /// Minimum scalar value.
@@ -236,7 +229,6 @@ impl SimTrace {
     }
 }
 /// Minimal SVG plot builder.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct SvgPlotBuilder {
     /// Plot elements accumulated.
@@ -330,7 +322,6 @@ impl SvgPlotBuilder {
     }
 }
 /// A single snapshot of simulation state for recording.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SimSnapshot {
     /// Simulation time (s).
@@ -570,7 +561,6 @@ pub enum JointType {
     Spring,
 }
 /// A single parameter sweep result entry.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SweepEntry {
     /// Parameter value.
@@ -847,7 +837,6 @@ impl PanelCell {
     }
 }
 /// Convergence criterion type.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConvergenceCriterion {
     /// Absolute tolerance on residual.
@@ -1200,7 +1189,6 @@ impl PhaseSpaceDiagram {
     }
 }
 /// Panel position in a grid layout.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct PanelPosition {
     /// Row index (0-based).
@@ -1245,7 +1233,6 @@ pub struct ContactSample {
     pub max_force: f64,
 }
 /// Histogram of particle velocity magnitudes.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VelocityHistogram {
     /// Bin counts.
@@ -1320,12 +1307,10 @@ impl VelocityHistogram {
     /// KL divergence from Maxwell-Boltzmann (thermalization check).
     pub fn kl_from_maxwell_boltzmann(&self, kbt: f64, mass: f64) -> f64 {
         let pdf = self.pdf();
-        let n = pdf.len();
         let mut kl = 0.0;
-        for i in 0..n {
+        for (i, &p_data) in pdf.iter().enumerate() {
             let v_mid = 0.5 * (self.edges[i] + self.edges[i + 1]);
             let dv = self.edges[i + 1] - self.edges[i];
-            let p_data = pdf[i];
             let p_mb = Self::maxwell_boltzmann(v_mid, kbt, mass) * dv;
             if p_data > 1e-30 && p_mb > 1e-30 {
                 kl += p_data * dv * (p_data / p_mb).ln();

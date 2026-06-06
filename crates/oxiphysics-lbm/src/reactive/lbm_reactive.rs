@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -224,13 +223,12 @@ impl LbmPassiveScalar {
     /// `[ux, uy]` at each cell in row-major order.
     pub fn collide(&mut self, velocities: &[[f64; 2]]) {
         let omega_s = 1.0 / (self.diffusivity / CS2 + 0.5);
-        let n = self.nx * self.ny;
-        for k in 0..n {
-            let c = self.concentration(k);
+        for (k, g_k) in self.g.iter_mut().enumerate() {
+            let c: f64 = g_k.iter().sum();
             let u = velocities[k];
             let geq = Self::equilibrium(c, u);
-            for i in 0..9 {
-                self.g[k][i] -= omega_s * (self.g[k][i] - geq[i]);
+            for (i, g_ki) in g_k.iter_mut().enumerate() {
+                *g_ki -= omega_s * (*g_ki - geq[i]);
             }
         }
     }
@@ -264,8 +262,8 @@ impl LbmPassiveScalar {
     pub fn initialize_concentration(&mut self, concentrations: &[f64]) {
         let n = self.nx * self.ny;
         assert_eq!(concentrations.len(), n);
-        for k in 0..n {
-            self.g[k] = Self::equilibrium(concentrations[k], [0.0, 0.0]);
+        for (g_k, &c_k) in self.g.iter_mut().zip(concentrations.iter()) {
+            *g_k = Self::equilibrium(c_k, [0.0, 0.0]);
         }
     }
 
@@ -277,11 +275,10 @@ impl LbmPassiveScalar {
 
     /// Apply a source term to the scalar field (adds delta_c at each cell).
     pub fn add_source(&mut self, sources: &[f64]) {
-        let n = self.nx * self.ny;
-        for k in 0..n {
-            // Distribute source equally across all directions (weighted)
-            for i in 0..9 {
-                self.g[k][i] += W[i] * sources[k];
+        // Distribute source equally across all directions (weighted)
+        for (k, g_k) in self.g.iter_mut().enumerate() {
+            for (i, g_ki) in g_k.iter_mut().enumerate() {
+                *g_ki += W[i] * sources[k];
             }
         }
     }
@@ -483,7 +480,7 @@ impl ReactiveLbm {
     pub fn advect_species(&mut self, u: &[[f64; 3]], dt: f64) {
         let nx = self.nx;
         let ny = self.ny;
-        let n = nx * ny;
+        let _n = nx * ny;
         for s in 0..self.species.len() {
             let c_old = self.species[s].clone();
             for j in 0..ny {
@@ -516,9 +513,9 @@ impl ReactiveLbm {
                 }
             }
             // Clamp negatives produced by numerical diffusion.
-            for k in 0..n {
-                if self.species[s][k] < 0.0 {
-                    self.species[s][k] = 0.0;
+            for c in self.species[s].iter_mut() {
+                if *c < 0.0 {
+                    *c = 0.0;
                 }
             }
         }
@@ -534,13 +531,13 @@ impl ReactiveLbm {
     ///
     /// applied per cell, then clamped to non-negative.
     pub fn react_species(&mut self, dt: f64) {
-        let n = self.nx * self.ny;
+        let _n = self.nx * self.ny;
         for &(s, rate, sign) in &self.reactions {
             let r = rate.evaluate();
-            for k in 0..n {
-                self.species[s][k] += sign * r * dt;
-                if self.species[s][k] < 0.0 {
-                    self.species[s][k] = 0.0;
+            for c in self.species[s].iter_mut() {
+                *c += sign * r * dt;
+                if *c < 0.0 {
+                    *c = 0.0;
                 }
             }
         }
@@ -552,9 +549,9 @@ impl ReactiveLbm {
     pub fn compute_mixture_density(&self) -> Vec<f64> {
         let n = self.nx * self.ny;
         let mut rho_mix = vec![0.0; n];
-        for s in 0..self.species.len() {
-            for k in 0..n {
-                rho_mix[k] += self.base_rho * self.species[s][k];
+        for s_conc in &self.species {
+            for (rho_k, &c_k) in rho_mix.iter_mut().zip(s_conc.iter()) {
+                *rho_k += self.base_rho * c_k;
             }
         }
         rho_mix

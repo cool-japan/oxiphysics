@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use std::collections::HashMap;
 
 /// Incomplete Cholesky (ICC) preconditioner for symmetric positive definite
@@ -14,7 +11,6 @@ use std::collections::HashMap;
 /// the sparsity pattern of the lower triangle of `A`.  This is the sparse
 /// counterpart of the dense incomplete Cholesky; suitable for use as a
 /// preconditioner in PCG.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IccPreconditioner {
     /// Lower-triangular Cholesky factor stored in CSR format.
@@ -28,7 +24,6 @@ impl IccPreconditioner {
     ///
     /// Only the lower-triangular pattern (including diagonal) of `a` is used.
     /// Fill-in is dropped (ICC(0) strategy).
-    #[allow(dead_code)]
     pub fn new(a: &CsrMatrix) -> Self {
         assert_eq!(a.nrows, a.ncols, "ICC requires a square matrix");
         let n = a.nrows;
@@ -55,10 +50,7 @@ impl IccPreconditioner {
                 .position(|&c| c == j)
                 .map(|off| j_start + off);
             if let Some(dp) = diag_pos {
-                let mut sum_sq = 0.0f64;
-                for p in j_start..dp {
-                    sum_sq += l_values[p] * l_values[p];
-                }
+                let sum_sq: f64 = l_values[j_start..dp].iter().map(|&v| v * v).sum();
                 let diag_val = l_values[dp] - sum_sq;
                 if diag_val <= 0.0 {
                     l_values[dp] = 1e-30_f64.sqrt();
@@ -108,7 +100,6 @@ impl IccPreconditioner {
     ///
     /// Performs two triangular solves: `L y = r` (forward), then `L^T z = y`
     /// (backward).
-    #[allow(dead_code)]
     pub fn solve(&self, rhs: &[f64]) -> Vec<f64> {
         let n = self.n;
         assert_eq!(rhs.len(), n);
@@ -153,7 +144,6 @@ impl IccPreconditioner {
         z
     }
     /// Return the number of non-zero entries in the factor L.
-    #[allow(dead_code)]
     pub fn nnz(&self) -> usize {
         self.l_values.len()
     }
@@ -162,7 +152,6 @@ impl IccPreconditioner {
 ///
 /// Each node represents a rectangular cell in the mesh.  Leaf nodes
 /// correspond to actual mesh cells; internal nodes have been refined.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct QuadTreeNode {
     /// Lower-left x coordinate.
@@ -184,7 +173,6 @@ pub struct QuadTreeNode {
 }
 impl QuadTreeNode {
     /// Create a root node covering `[x0, x0+width] × [y0, y0+height]`.
-    #[allow(dead_code)]
     pub fn new_root(x0: f64, y0: f64, width: f64, height: f64) -> Self {
         Self {
             x0,
@@ -211,24 +199,20 @@ impl QuadTreeNode {
         }
     }
     /// Return the cell width (same as `self.width`).
-    #[allow(dead_code)]
     pub fn cell_width(&self) -> f64 {
         self.width
     }
     /// Return the cell height (same as `self.height`).
-    #[allow(dead_code)]
     pub fn cell_height(&self) -> f64 {
         self.height
     }
     /// Return `true` if this node has no children (is a leaf).
-    #[allow(dead_code)]
     pub fn is_leaf(&self) -> bool {
         self.children.is_none()
     }
     /// Refine this node into four child cells (SW, SE, NW, NE).
     ///
     /// Does nothing if the node is already refined.
-    #[allow(dead_code)]
     pub fn refine(&mut self) {
         if self.children.is_some() {
             return;
@@ -243,7 +227,6 @@ impl QuadTreeNode {
         self.children = Some(Box::new([sw, se, nw, ne]));
     }
     /// Count the total number of leaf nodes in this subtree.
-    #[allow(dead_code)]
     pub fn leaf_count(&self) -> usize {
         match &self.children {
             None => 1,
@@ -253,7 +236,6 @@ impl QuadTreeNode {
     /// Enumerate leaf nodes and assign sequential cell IDs.
     ///
     /// Returns the number of leaves assigned.
-    #[allow(dead_code)]
     pub fn enumerate_leaves(&mut self, start_id: usize) -> usize {
         match self.children.as_mut() {
             None => {
@@ -270,7 +252,6 @@ impl QuadTreeNode {
         }
     }
     /// Collect all leaf nodes as immutable references.
-    #[allow(dead_code)]
     pub fn collect_leaves<'a>(&'a self, leaves: &mut Vec<&'a QuadTreeNode>) {
         match &self.children {
             None => leaves.push(self),
@@ -282,12 +263,10 @@ impl QuadTreeNode {
         }
     }
     /// Centroid x-coordinate.
-    #[allow(dead_code)]
     pub fn cx(&self) -> f64 {
         self.x0 + 0.5 * self.width
     }
     /// Centroid y-coordinate.
-    #[allow(dead_code)]
     pub fn cy(&self) -> f64 {
         self.y0 + 0.5 * self.height
     }
@@ -300,7 +279,6 @@ impl QuadTreeNode {
 ///
 /// The factorization is stored in CSR format with an extended sparsity pattern
 /// computed via symbolic analysis.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IlukPreconditioner {
     /// L and U factors in combined CSR (L strictly lower, U includes diagonal).
@@ -318,7 +296,6 @@ impl IlukPreconditioner {
     ///
     /// For k=0 this matches ILU(0).  For k≥1 additional fill-in entries
     /// are allowed in the sparsity pattern.
-    #[allow(dead_code)]
     pub fn new(a: &CsrMatrix, k: u32) -> Self {
         assert_eq!(a.nrows, a.ncols, "matrix must be square");
         let n = a.nrows;
@@ -435,7 +412,6 @@ impl IlukPreconditioner {
         }
     }
     /// Apply the ILU(k) preconditioner: solve (LU) z = r.
-    #[allow(dead_code)]
     pub fn solve(&self, rhs: &[f64]) -> Vec<f64> {
         assert_eq!(rhs.len(), self.n);
         let n = self.n;
@@ -470,17 +446,14 @@ impl IlukPreconditioner {
         y
     }
     /// Return the fill level parameter used for this factorization.
-    #[allow(dead_code)]
     pub fn fill_level(&self) -> u32 {
         self.k
     }
     /// Return the number of non-zeros in the extended sparsity pattern.
-    #[allow(dead_code)]
     pub fn nnz(&self) -> usize {
         self.lu_values.len()
     }
     /// Return the fill-in count: entries added beyond the original pattern.
-    #[allow(dead_code)]
     pub fn fill_in_count(&self) -> usize {
         self.fill_levels.iter().filter(|&&lev| lev > 0).count()
     }
@@ -491,7 +464,6 @@ impl IlukPreconditioner {
 ///
 /// The block structure is stored in CSR format on the block level.  Each
 /// block `(i, j)` holds a flat 9-element row-major 3×3 sub-matrix.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BlockCsrMatrix3 {
     /// Row pointer array (block-level, length = n_block_rows + 1).
@@ -507,7 +479,6 @@ pub struct BlockCsrMatrix3 {
 }
 impl BlockCsrMatrix3 {
     /// Create an empty block CSR matrix.
-    #[allow(dead_code)]
     pub fn new(n_block_rows: usize, n_block_cols: usize) -> Self {
         Self {
             row_ptr: vec![0; n_block_rows + 1],
@@ -521,7 +492,6 @@ impl BlockCsrMatrix3 {
     ///
     /// Duplicate block entries at the same `(block_row, block_col)` are summed
     /// element-wise.
-    #[allow(dead_code)]
     pub fn from_block_triplets(
         n_block_rows: usize,
         n_block_cols: usize,
@@ -559,7 +529,6 @@ impl BlockCsrMatrix3 {
     /// Multiply by a dense vector of length `3 * n_block_cols`.
     ///
     /// Returns a dense vector of length `3 * n_block_rows`.
-    #[allow(dead_code)]
     pub fn mul_vec(&self, x: &[f64]) -> Vec<f64> {
         assert_eq!(x.len(), self.n_block_cols * 3);
         let mut y = vec![0.0f64; self.n_block_rows * 3];
@@ -579,13 +548,11 @@ impl BlockCsrMatrix3 {
         y
     }
     /// Return the number of stored blocks.
-    #[allow(dead_code)]
     pub fn n_blocks(&self) -> usize {
         self.blocks.len()
     }
     /// Get a block at `(block_row, block_col)`.  Returns a zero block if not
     /// stored.
-    #[allow(dead_code)]
     pub fn get_block(&self, block_row: usize, block_col: usize) -> [f64; 9] {
         let start = self.row_ptr[block_row];
         let end = self.row_ptr[block_row + 1];
@@ -597,7 +564,6 @@ impl BlockCsrMatrix3 {
         [0.0; 9]
     }
     /// Frobenius norm of the entire block matrix.
-    #[allow(dead_code)]
     pub fn frobenius_norm(&self) -> f64 {
         self.blocks
             .iter()
@@ -607,7 +573,6 @@ impl BlockCsrMatrix3 {
             .sqrt()
     }
     /// Convert to a scalar CSR matrix (expand each 3×3 block into scalar entries).
-    #[allow(dead_code)]
     pub fn to_scalar_csr(&self) -> CsrMatrix {
         let n_scalar_rows = self.n_block_rows * 3;
         let n_scalar_cols = self.n_block_cols * 3;
@@ -798,7 +763,6 @@ impl CsrMatrix {
         self.get(i, i)
     }
     /// Transpose this CSR matrix, returning a new CSR matrix.
-    #[allow(dead_code)]
     pub fn transpose(&self) -> CsrMatrix {
         let mut triplets = Vec::with_capacity(self.nnz());
         for row in 0..self.nrows {
@@ -813,7 +777,6 @@ impl CsrMatrix {
     /// Add two CSR matrices: C = A + B.
     ///
     /// Both matrices must have the same dimensions.
-    #[allow(dead_code)]
     pub fn add(&self, other: &CsrMatrix) -> CsrMatrix {
         assert_eq!(self.nrows, other.nrows, "row dimensions must match");
         assert_eq!(self.ncols, other.ncols, "col dimensions must match");
@@ -835,14 +798,12 @@ impl CsrMatrix {
         CsrMatrix::from_triplets(self.nrows, self.ncols, &triplets)
     }
     /// Scale all values by a scalar: A *= alpha.
-    #[allow(dead_code)]
     pub fn scale(&mut self, alpha: f64) {
         for v in self.values.iter_mut() {
             *v *= alpha;
         }
     }
     /// Return a scaled copy: B = alpha * A.
-    #[allow(dead_code)]
     pub fn scaled(&self, alpha: f64) -> CsrMatrix {
         let mut result = self.clone();
         result.scale(alpha);
@@ -852,25 +813,23 @@ impl CsrMatrix {
     ///
     /// Same as `mul_vec` but with explicit prefetch-friendly ordering.
     /// y = alpha * A * x + beta * y
-    #[allow(dead_code)]
     pub fn mul_vec_axpby(&self, x: &[f64], y: &mut [f64], alpha: f64, beta: f64) {
         assert_eq!(x.len(), self.ncols);
         assert_eq!(y.len(), self.nrows);
-        for row in 0..self.nrows {
+        for (row, y_row) in y.iter_mut().enumerate() {
             let start = self.row_ptr[row];
             let end = self.row_ptr[row + 1];
             let mut sum = 0.0;
             for idx in start..end {
                 sum += self.values[idx] * x[self.col_indices[idx]];
             }
-            y[row] = alpha * sum + beta * y[row];
+            *y_row = alpha * sum + beta * *y_row;
         }
     }
     /// Symmetric sparse matrix-vector multiply (upper triangle only).
     ///
     /// Assumes only the upper triangle is stored. Computes y = A * x
     /// using symmetry: a_ij contributes to both y\[i\] and y\[j\].
-    #[allow(dead_code)]
     pub fn symmetric_mul_vec(&self, x: &[f64]) -> Vec<f64> {
         assert_eq!(x.len(), self.ncols);
         assert_eq!(
@@ -894,17 +853,11 @@ impl CsrMatrix {
         y
     }
     /// Extract diagonal as a vector.
-    #[allow(dead_code)]
     pub fn diagonal_vec(&self) -> Vec<f64> {
         let n = self.nrows.min(self.ncols);
-        let mut diag = vec![0.0; n];
-        for i in 0..n {
-            diag[i] = self.get(i, i);
-        }
-        diag
+        (0..n).map(|i| self.get(i, i)).collect()
     }
     /// Convert this CSR matrix to CSC format.
-    #[allow(dead_code)]
     pub fn to_csc(&self) -> CscMatrix {
         let mut triplets = Vec::with_capacity(self.nnz());
         for row in 0..self.nrows {
@@ -917,7 +870,6 @@ impl CsrMatrix {
         CscMatrix::from_triplets(self.nrows, self.ncols, &triplets)
     }
     /// Frobenius norm: ||A||_F = sqrt(sum of a_ij^2).
-    #[allow(dead_code)]
     pub fn frobenius_norm(&self) -> f64 {
         self.values.iter().map(|v| v * v).sum::<f64>().sqrt()
     }
@@ -960,7 +912,6 @@ impl SparseVector {
         self.data.iter().map(|x| x * x).sum::<f64>().sqrt()
     }
     /// AXPY: self = alpha * self + beta * other
-    #[allow(dead_code)]
     pub fn axpby(&mut self, alpha: f64, other: &SparseVector, beta: f64) {
         assert_eq!(self.data.len(), other.data.len());
         for (a, b) in self.data.iter_mut().zip(other.data.iter()) {
@@ -968,7 +919,6 @@ impl SparseVector {
         }
     }
     /// Scale all entries by a scalar.
-    #[allow(dead_code)]
     pub fn scale(&mut self, alpha: f64) {
         for v in self.data.iter_mut() {
             *v *= alpha;
@@ -979,7 +929,6 @@ impl SparseVector {
 ///
 /// The factorization maintains the same sparsity pattern as the original matrix.
 /// Used as a preconditioner for iterative solvers like CG or GMRES.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Ilu0Preconditioner {
     /// Combined L and U factors stored in CSR format.
@@ -995,7 +944,6 @@ impl Ilu0Preconditioner {
     ///
     /// The factorization uses the same sparsity pattern as A. Elements that
     /// would be fill-in are dropped.
-    #[allow(dead_code)]
     pub fn new(a: &CsrMatrix) -> Self {
         assert_eq!(a.nrows, a.ncols, "matrix must be square");
         let n = a.nrows;
@@ -1049,7 +997,6 @@ impl Ilu0Preconditioner {
     ///
     /// First forward-substitutes L y = r (L has unit diagonal),
     /// then back-substitutes U z = y.
-    #[allow(dead_code)]
     pub fn solve(&self, rhs: &[f64]) -> Vec<f64> {
         assert_eq!(rhs.len(), self.n);
         let n = self.n;
@@ -1088,7 +1035,6 @@ impl Ilu0Preconditioner {
 ///
 /// Stores a sparse matrix in CSC format with column pointers, row indices,
 /// and values arrays. Efficient for column access and certain direct solvers.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CscMatrix {
     /// Column pointer array (length = ncols + 1).
@@ -1106,7 +1052,6 @@ impl CscMatrix {
     /// Build a CSC matrix from coordinate (triplet) format.
     ///
     /// Duplicate entries are summed.
-    #[allow(dead_code)]
     pub fn from_triplets(nrows: usize, ncols: usize, triplets: &[(usize, usize, f64)]) -> Self {
         let mut map: HashMap<(usize, usize), f64> = HashMap::new();
         for &(r, c, v) in triplets {
@@ -1136,7 +1081,6 @@ impl CscMatrix {
         }
     }
     /// Get the value at (row, col).
-    #[allow(dead_code)]
     pub fn get(&self, row: usize, col: usize) -> f64 {
         assert!(row < self.nrows);
         assert!(col < self.ncols);
@@ -1150,19 +1094,16 @@ impl CscMatrix {
         0.0
     }
     /// Number of stored non-zero entries.
-    #[allow(dead_code)]
     pub fn nnz(&self) -> usize {
         self.values.len()
     }
     /// Multiply by a dense vector: y = A * x.
-    #[allow(dead_code)]
     pub fn mul_vec(&self, x: &[f64]) -> Vec<f64> {
         assert_eq!(x.len(), self.ncols, "vector length must equal ncols");
         let mut y = vec![0.0; self.nrows];
-        for col in 0..self.ncols {
+        for (col, &x_col) in x.iter().enumerate().take(self.ncols) {
             let start = self.col_ptr[col];
             let end = self.col_ptr[col + 1];
-            let x_col = x[col];
             for idx in start..end {
                 y[self.row_indices[idx]] += self.values[idx] * x_col;
             }
@@ -1170,7 +1111,6 @@ impl CscMatrix {
         y
     }
     /// Transpose this CSC matrix, returning a new CSC matrix.
-    #[allow(dead_code)]
     pub fn transpose(&self) -> CscMatrix {
         let mut triplets = Vec::with_capacity(self.nnz());
         for col in 0..self.ncols {
@@ -1183,7 +1123,6 @@ impl CscMatrix {
         CscMatrix::from_triplets(self.ncols, self.nrows, &triplets)
     }
     /// Convert to CSR format.
-    #[allow(dead_code)]
     pub fn to_csr(&self) -> CsrMatrix {
         let mut triplets = Vec::with_capacity(self.nnz());
         for col in 0..self.ncols {

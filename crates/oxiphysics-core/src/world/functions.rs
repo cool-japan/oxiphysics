@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 // Auto-generated module
 //
 // 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
@@ -355,7 +354,7 @@ pub fn ccd_sphere_plane(
 /// requiring access to the full `PhysicsWorld`.
 pub fn constraint_islands(n_bodies: usize, constraints: &[(usize, usize)]) -> Vec<Vec<usize>> {
     let mut parent: Vec<usize> = (0..n_bodies).collect();
-    fn find(parent: &mut Vec<usize>, mut x: usize) -> usize {
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
         while parent[x] != x {
             parent[x] = parent[parent[x]];
             x = parent[x];

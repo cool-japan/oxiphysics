@@ -27,7 +27,6 @@ impl Capsule {
     }
 
     /// Volume: cylinder + two hemisphere caps = πr²h + (4/3)πr³.
-    #[allow(dead_code)]
     pub fn volume_explicit(&self) -> Real {
         let r = self.radius;
         let h = 2.0 * self.half_height;
@@ -35,7 +34,6 @@ impl Capsule {
     }
 
     /// Surface area: 2πrh (cylinder lateral) + 4πr² (two hemispheres).
-    #[allow(dead_code)]
     pub fn surface_area(&self) -> Real {
         let r = self.radius;
         let h = 2.0 * self.half_height;
@@ -43,7 +41,6 @@ impl Capsule {
     }
 
     /// Inertia tensor as \[\[f64;3\\];3] row-major.
-    #[allow(dead_code)]
     pub fn inertia_tensor_array(&self, mass: f64) -> [[f64; 3]; 3] {
         let r = self.radius;
         let h = 2.0 * self.half_height;
@@ -71,7 +68,6 @@ impl Capsule {
     }
 
     /// Ray cast returning (t, normal) as plain arrays.
-    #[allow(dead_code)]
     pub fn ray_cast_array(
         &self,
         origin: [f64; 3],
@@ -85,7 +81,6 @@ impl Capsule {
     }
 
     /// GJK support function: farthest point in `direction`.
-    #[allow(dead_code)]
     pub fn support(&self, direction: [f64; 3]) -> [f64; 3] {
         let len = (direction[0] * direction[0]
             + direction[1] * direction[1]
@@ -107,7 +102,6 @@ impl Capsule {
     // ── New methods ──
 
     /// Closest point on the capsule surface to point `p`.
-    #[allow(dead_code)]
     pub fn closest_point(&self, p: [f64; 3]) -> [f64; 3] {
         // Project p onto the medial axis (Y-axis segment from -hh to +hh)
         let clamped_y = p[1].clamp(-self.half_height, self.half_height);
@@ -127,7 +121,6 @@ impl Capsule {
     }
 
     /// Returns true if `p` is inside (or on) the capsule.
-    #[allow(dead_code)]
     pub fn contains_point(&self, p: [f64; 3]) -> bool {
         let clamped_y = p[1].clamp(-self.half_height, self.half_height);
         let dx = p[0];
@@ -138,7 +131,6 @@ impl Capsule {
 
     /// Signed distance from a point to the capsule surface.
     /// Negative if inside, positive if outside.
-    #[allow(dead_code)]
     pub fn signed_distance(&self, p: [f64; 3]) -> f64 {
         let clamped_y = p[1].clamp(-self.half_height, self.half_height);
         let dx = p[0];
@@ -149,19 +141,16 @@ impl Capsule {
     }
 
     /// Medial axis endpoints: the two centers of the hemispherical caps.
-    #[allow(dead_code)]
     pub fn medial_axis_endpoints(&self) -> ([f64; 3], [f64; 3]) {
         ([0.0, self.half_height, 0.0], [0.0, -self.half_height, 0.0])
     }
 
     /// Full length of the capsule (tip to tip along Y).
-    #[allow(dead_code)]
     pub fn full_length(&self) -> f64 {
         2.0 * self.half_height + 2.0 * self.radius
     }
 
     /// Medial axis length (just the cylindrical segment).
-    #[allow(dead_code)]
     pub fn medial_axis_length(&self) -> f64 {
         2.0 * self.half_height
     }
@@ -169,7 +158,6 @@ impl Capsule {
     /// Distance between two segments in 3D.
     /// Segment A: from `a0` to `a1`, Segment B: from `b0` to `b1`.
     /// Returns the minimum distance.
-    #[allow(dead_code)]
     pub fn segment_segment_distance(a0: [f64; 3], a1: [f64; 3], b0: [f64; 3], b1: [f64; 3]) -> f64 {
         let da = [a1[0] - a0[0], a1[1] - a0[1], a1[2] - a0[2]];
         let db = [b1[0] - b0[0], b1[1] - b0[1], b1[2] - b0[2]];
@@ -234,7 +222,6 @@ impl Capsule {
     /// Both capsules are centered at the origin with Y-axis alignment,
     /// but offset by given centers.
     /// Returns the minimum distance between the two capsule surfaces (0 if overlapping).
-    #[allow(dead_code)]
     pub fn capsule_capsule_distance(
         &self,
         center_a: [f64; 3],
@@ -253,7 +240,6 @@ impl Capsule {
     }
 
     /// Check if two capsules overlap.
-    #[allow(dead_code)]
     pub fn capsule_capsule_overlap(
         &self,
         center_a: [f64; 3],
@@ -271,13 +257,11 @@ impl Capsule {
 
     /// Project a point onto the medial axis (the Y-axis segment).
     /// Returns the clamped Y value.
-    #[allow(dead_code)]
     pub fn project_on_medial_axis(&self, p: [f64; 3]) -> f64 {
         p[1].clamp(-self.half_height, self.half_height)
     }
 
     /// Distance from a point to the medial axis.
-    #[allow(dead_code)]
     pub fn distance_to_medial_axis(&self, p: [f64; 3]) -> f64 {
         let clamped_y = p[1].clamp(-self.half_height, self.half_height);
         let dy = p[1] - clamped_y;
@@ -288,7 +272,6 @@ impl Capsule {
 
     /// Inertia tensor (mass-normalized) returned as `[[f64;3\];3]` (identical to
     /// `inertia_tensor_array` but accepts mass separately for the public array API).
-    #[allow(dead_code)]
     pub fn inertia_tensor_raw(&self, mass: f64) -> [[f64; 3]; 3] {
         self.inertia_tensor_array(mass)
     }
@@ -297,7 +280,6 @@ impl Capsule {
     ///
     /// Returns `(pa, pb, seg_dist)` where `pa` and `pb` are the closest points
     /// on the respective medial axes and `seg_dist` is the axis-to-axis distance.
-    #[allow(dead_code)]
     pub fn closest_points_capsule_vs_capsule(
         &self,
         center_a: [f64; 3],
@@ -314,7 +296,6 @@ impl Capsule {
     }
 
     /// Returns the closest points on two 3D segments and the distance between them.
-    #[allow(dead_code)]
     pub fn segment_segment_closest(
         a0: [f64; 3],
         a1: [f64; 3],
@@ -376,8 +357,6 @@ impl Capsule {
     ///
     /// Converts the query to OBB-local space and tests sphere-swept segment
     /// against the OBB using the separating-axis theorem (SAT) with slabs.
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
     pub fn intersects_obb(
         &self,
         capsule_center: [f64; 3],
@@ -474,7 +453,6 @@ impl Capsule {
     ///
     /// Same as `signed_distance` but with a different name to match the
     /// naming convention used in shader / SDF contexts.
-    #[allow(dead_code)]
     pub fn sdf(&self, p: [f64; 3]) -> f64 {
         self.signed_distance(p)
     }
@@ -488,7 +466,6 @@ impl Capsule {
     ///
     /// This is a simple CCD sweep using the Minkowski-sum radius and a
     /// moving-segment vs static-point formulation.
-    #[allow(dead_code)]
     pub fn swept_capsule_vs_sphere(
         &self,
         center_start: [f64; 3],
@@ -522,7 +499,6 @@ impl Capsule {
     }
 
     /// Distance from a point to a segment.
-    #[allow(dead_code)]
     fn point_segment_distance(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
         let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
         let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
@@ -543,7 +519,6 @@ impl Capsule {
     ///
     /// Returns a `Vec` of `[f64;3]` coordinates sampled uniformly on the surface.
     /// Uses a deterministic PRNG seed for reproducibility.
-    #[allow(dead_code)]
     pub fn random_surface_points(&self, n: usize, seed: u64) -> Vec<[f64; 3]> {
         let mut points = Vec::with_capacity(n);
         let r = self.radius;
@@ -601,7 +576,6 @@ impl Capsule {
     /// The capsule is placed at `center` (Y-aligned).  Returns `Some((depth, normal))`
     /// if the capsule penetrates the triangle plane by at least `depth > 0`, where
     /// `normal` points from the triangle towards the capsule center.
-    #[allow(dead_code)]
     pub fn capsule_triangle_contact(
         &self,
         center: [f64; 3],
@@ -648,7 +622,6 @@ impl Capsule {
 ///
 /// Each consecutive pair of control points defines a capsule segment
 /// of the same radius.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CapsuleChain {
     /// Control points of the chain (N points → N-1 segments).
@@ -657,7 +630,6 @@ pub struct CapsuleChain {
     pub radius: f64,
 }
 
-#[allow(dead_code)]
 impl CapsuleChain {
     /// Create a chain from control points with zero radius.
     pub fn new(points: Vec<[f64; 3]>) -> Self {
@@ -719,7 +691,6 @@ impl CapsuleChain {
 ///
 /// Unlike the axis-aligned `Capsule`, this capsule can have its two
 /// hemispherical cap centres at any positions in 3D space.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DeformableCapsule {
     /// First endpoint of the medial axis.
@@ -730,7 +701,6 @@ pub struct DeformableCapsule {
     pub radius: f64,
 }
 
-#[allow(dead_code)]
 impl DeformableCapsule {
     /// Create a new deformable capsule.
     pub fn new(a: [f64; 3], b: [f64; 3], radius: f64) -> Self {
@@ -810,7 +780,6 @@ impl DeformableCapsule {
 ///
 /// The axis runs along Y from `y=0` (radius `r_bottom`) to `y=height` (radius `r_top`).
 /// The radius varies linearly along the axis.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CapsuleFrustum {
     /// Radius at the bottom cap (y=0).
@@ -821,7 +790,6 @@ pub struct CapsuleFrustum {
     pub height: f64,
 }
 
-#[allow(dead_code)]
 impl CapsuleFrustum {
     /// Create a new capsule frustum.
     pub fn new(r_bottom: f64, r_top: f64, height: f64) -> Self {
@@ -875,7 +843,6 @@ impl CapsuleFrustum {
 ///
 /// Each consecutive pair of path points defines a capsule segment.
 /// The shape represents the union of all such capsule segments.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CurvedCapsulePath {
     /// Polyline control points.
@@ -884,7 +851,6 @@ pub struct CurvedCapsulePath {
     pub radius: f64,
 }
 
-#[allow(dead_code)]
 impl CurvedCapsulePath {
     /// Create a new curved capsule path.
     pub fn new(path: Vec<[f64; 3]>, radius: f64) -> Self {

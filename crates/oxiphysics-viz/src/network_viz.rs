@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! Provides force-directed (Fruchterman–Reingold), circular, and hierarchical
 //! layout algorithms, an adjacency-matrix representation, betweenness-centrality
 //! estimation (Brandes), and a simple spring embedder.
-
-#![allow(dead_code)]
 
 // ─── Node and Edge Layout ─────────────────────────────────────────────────────
 
@@ -95,7 +92,6 @@ impl NetworkGraph {
 /// - `iters` — number of iterations.
 /// - `k` — optimal distance between connected nodes (ideally ≈ √(area / n)).
 /// - `repulsion` — scaling factor for the repulsive force between all node pairs.
-#[allow(clippy::too_many_arguments)]
 pub fn force_directed_layout(graph: &mut NetworkGraph, iters: usize, k: f64, repulsion: f64) {
     let n = graph.nodes.len();
     if n < 2 {
@@ -106,7 +102,7 @@ pub fn force_directed_layout(graph: &mut NetworkGraph, iters: usize, k: f64, rep
         let mut disp: Vec<[f64; 2]> = vec![[0.0; 2]; n];
 
         // Repulsive forces (all pairs).
-        for i in 0..n {
+        for (i, disp_i) in disp.iter_mut().enumerate() {
             for j in 0..n {
                 if i == j {
                     continue;
@@ -115,8 +111,8 @@ pub fn force_directed_layout(graph: &mut NetworkGraph, iters: usize, k: f64, rep
                 let dy = graph.nodes[i].position[1] - graph.nodes[j].position[1];
                 let dist = (dx * dx + dy * dy).sqrt().max(1e-6);
                 let force = repulsion * k * k / dist;
-                disp[i][0] += force * dx / dist;
-                disp[i][1] += force * dy / dist;
+                disp_i[0] += force * dx / dist;
+                disp_i[1] += force * dy / dist;
             }
         }
 
@@ -147,13 +143,13 @@ pub fn force_directed_layout(graph: &mut NetworkGraph, iters: usize, k: f64, rep
 
         // Apply displacements (capped to avoid explosions).
         let temperature = k / (_iter as f64 + 1.0).max(1.0);
-        for i in 0..n {
-            let dlen = (disp[i][0] * disp[i][0] + disp[i][1] * disp[i][1])
+        for (i, disp_i) in disp.iter().enumerate() {
+            let dlen = (disp_i[0] * disp_i[0] + disp_i[1] * disp_i[1])
                 .sqrt()
                 .max(1e-12);
             let cap = dlen.min(temperature);
-            graph.nodes[i].position[0] += cap * disp[i][0] / dlen;
-            graph.nodes[i].position[1] += cap * disp[i][1] / dlen;
+            graph.nodes[i].position[0] += cap * disp_i[0] / dlen;
+            graph.nodes[i].position[1] += cap * disp_i[1] / dlen;
         }
     }
 }
@@ -665,8 +661,8 @@ mod tests {
     fn test_spring_embedder_positions_change() {
         let mut positions = vec![[0.0f64, 0.0], [5.0, 0.0], [10.0, 0.0]];
         let mut g = NetworkGraph::new();
-        for i in 0..3 {
-            g.add_node(i, positions[i], 1.0);
+        for (i, &pos) in positions.iter().enumerate() {
+            g.add_node(i, pos, 1.0);
         }
         g.add_edge(0, 1, 1.0);
         g.add_edge(1, 2, 1.0);

@@ -10,8 +10,6 @@
 //! - Explicit Euler time integration
 //! - Stokes terminal (sedimentation) velocity
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -175,7 +173,6 @@ pub fn bilinear_interp(field: &[f64], nx: usize, ny: usize, x: f64, y: f64) -> f
 /// * `mu` — dynamic viscosity
 /// * `gravity` — gravitational acceleration (y-direction)
 /// * `dt` — time step
-#[allow(clippy::too_many_arguments)]
 pub fn advect_particle(
     particle: &mut LbmParticle,
     ux_grid: &[f64],
@@ -225,7 +222,6 @@ pub fn advect_particle(
 /// * `mu` — dynamic viscosity
 /// * `gravity` — gravitational acceleration
 /// * `dt` — time step
-#[allow(clippy::too_many_arguments)]
 pub fn track_particles(
     particles: &mut [LbmParticle],
     ux_grid: &[f64],

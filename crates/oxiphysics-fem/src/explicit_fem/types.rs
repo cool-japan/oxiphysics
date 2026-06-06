@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 /// Failure criterion for element erosion.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -362,7 +360,7 @@ impl WavePropagationFem {
     ///
     /// Returns pressure at given time for a rectangular pulse of duration `duration`.
     pub fn hopkinson_pulse(&self, time: f64, amplitude: f64, duration: f64) -> f64 {
-        if time >= 0.0 && time <= duration {
+        if (0.0..=duration).contains(&time) {
             amplitude
         } else {
             0.0
@@ -670,29 +668,28 @@ impl ExplicitFemSolver {
     pub fn step(&mut self, dt: f64, internal_force_fn: impl Fn(&[f64]) -> Vec<f64>) {
         let n = self.state.n_dof();
         let mut vel_half = vec![0.0; n];
-        for i in 0..n {
+        for (i, vh) in vel_half.iter_mut().enumerate().take(n) {
             if !self.fixed_dof[i] {
-                vel_half[i] = self.state.velocity[i] + 0.5 * dt * self.state.acceleration[i];
+                *vh = self.state.velocity[i] + 0.5 * dt * self.state.acceleration[i];
             }
         }
-        for i in 0..n {
+        for (i, &vh) in vel_half.iter().enumerate().take(n) {
             if !self.fixed_dof[i] {
-                self.state.displacement[i] += dt * vel_half[i];
+                self.state.displacement[i] += dt * vh;
             }
         }
         self.internal_force = internal_force_fn(&self.state.displacement);
-        for i in 0..n {
+        for (i, &vh) in vel_half.iter().enumerate().take(n) {
             if !self.fixed_dof[i] && self.mass[i] > 1e-30 {
-                let f_net =
-                    self.external_force[i] - self.internal_force[i] - self.damping[i] * vel_half[i];
+                let f_net = self.external_force[i] - self.internal_force[i] - self.damping[i] * vh;
                 self.state.acceleration[i] = f_net / self.mass[i];
             } else {
                 self.state.acceleration[i] = 0.0;
             }
         }
-        for i in 0..n {
+        for (i, &vh) in vel_half.iter().enumerate().take(n) {
             if !self.fixed_dof[i] {
-                self.state.velocity[i] = vel_half[i] + 0.5 * dt * self.state.acceleration[i];
+                self.state.velocity[i] = vh + 0.5 * dt * self.state.acceleration[i];
             }
         }
         self.state.time += dt;

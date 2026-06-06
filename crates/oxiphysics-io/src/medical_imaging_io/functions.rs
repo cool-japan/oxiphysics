@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 /// Parses raw voxel bytes into f32 based on NIfTI datatype code.
 pub(super) fn parse_nifti_voxels(data: &[u8], datatype: i16, num_voxels: usize) -> Vec<f32> {
     match datatype {
@@ -82,9 +81,9 @@ pub(super) fn build_gaussian_kernel(sigma: f64, radius: usize) -> Vec<f32> {
     let size = 2 * radius + 1;
     let mut kernel = vec![0.0f32; size];
     let s2 = 2.0 * sigma * sigma;
-    for i in 0..size {
+    for (i, k) in kernel.iter_mut().enumerate() {
         let x = i as f64 - radius as f64;
-        kernel[i] = (-x * x / s2).exp() as f32;
+        *k = (-x * x / s2).exp() as f32;
     }
     let sum: f32 = kernel.iter().sum();
     if sum > 0.0 {
@@ -98,7 +97,7 @@ pub(super) fn build_gaussian_kernel(sigma: f64, radius: usize) -> Vec<f32> {
 ///
 /// Creates a minimal valid DICOM file with preamble, magic number,
 /// and the specified data elements.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn build_test_dicom(elements: &[(u16, u16, &str, &[u8])]) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(&[0u8; 128]);
@@ -121,7 +120,7 @@ pub(super) fn build_test_dicom(elements: &[(u16, u16, &str, &[u8])]) -> Vec<u8> 
     buf
 }
 /// Builds a synthetic NIfTI-1 byte buffer for testing.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn build_test_nifti(dims: [i16; 3], pixdim: [f32; 3], voxel_data: &[f32]) -> Vec<u8> {
     let mut buf = vec![0u8; 352];
     let hdr_size: i32 = 348;

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! Implements classical nucleation theory (CNT), JMAK/Avrami kinetics,
 //! growth kinetics, phase-field crystal models, dendrite growth, grain
 //! orientation and grain growth (coarsening), and Ostwald ripening.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -355,11 +352,10 @@ pub fn avrami_exponent(n: f64, k: f64, t: f64) -> f64 {
 /// Returns 0 if T ≥ T_melt.
 ///
 /// # Arguments
-/// * `t_current` - current temperature (K)
+/// * `t` - current temperature (K)
 /// * `t_melt`    - melting temperature (K)
-#[allow(non_snake_case)]
-pub fn undercooling(T: f64, T_melt: f64) -> f64 {
-    (T_melt - T).max(0.0)
+pub fn undercooling(t: f64, t_melt: f64) -> f64 {
+    (t_melt - t).max(0.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -605,14 +601,14 @@ impl PhaseFieldCrystal {
                 dphi[idx] = mobility * (-mu + lap);
             }
         }
-        for idx in 0..n {
+        for (idx, (phi_val, dphi_val)) in self.phi.iter_mut().zip(dphi.iter()).enumerate().take(n) {
             let noise = if temp_noise > 0.0 {
                 let phase = (idx as f64 * 1.618033988749895).fract();
                 temp_noise * (2.0 * phase - 1.0)
             } else {
                 0.0
             };
-            self.phi[idx] += dt * (dphi[idx] + noise);
+            *phi_val += dt * (dphi_val + noise);
         }
     }
 
@@ -691,9 +687,9 @@ impl CrystalOrientation {
         let r1 = self.rotation_matrix();
         let r2 = other.rotation_matrix();
         let mut trace = 0.0;
-        for i in 0..3 {
-            for j in 0..3 {
-                let r12_ij: f64 = (0..3).map(|k| r1[k][i] * r2[k][j]).sum();
+        for (i, r1_col) in r1.iter().enumerate() {
+            for (j, r2_col) in r2.iter().enumerate() {
+                let r12_ij: f64 = r1_col.iter().zip(r2_col.iter()).map(|(&a, &b)| a * b).sum();
                 if i == j {
                     trace += r12_ij;
                 }
@@ -1135,7 +1131,6 @@ mod tests {
 ///
 /// For small undercooling this linearises to `v ≈ v_0 ΔG / (k_B T)`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WilsonFrenkelGrowth {
     /// Pre-exponential velocity factor v_0 (m/s).
     pub v0: f64,
@@ -1187,7 +1182,6 @@ impl WilsonFrenkelGrowth {
 ///
 /// where σ = (C − C_eq) / C_eq is the relative supersaturation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SpiralGrowth {
     /// Coefficient A (length/time).
     pub a_coeff: f64,
@@ -1239,7 +1233,6 @@ impl SpiralGrowth {
 /// where σ is the supersaturation and B is related to the 2-D nucleation
 /// barrier.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NormalGrowthModel {
     /// Pre-exponential rate constant K (length/time).
     pub k_rate: f64,
@@ -1280,7 +1273,6 @@ impl NormalGrowthModel {
 /// where θ is the angle from the reference direction, δ is the anisotropy
 /// strength, and m is the symmetry order (4 for cubic, 6 for hexagonal).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AnisotropicSurfaceEnergy {
     /// Isotropic surface energy γ_0 (J/m²).
     pub gamma0: f64,
@@ -1330,7 +1322,6 @@ impl AnisotropicSurfaceEnergy {
 /// where φ is the phase field (0 = liquid, 1 = solid), u is the
 /// dimensionless thermal field, λ is the coupling constant.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PhaseFieldSolidification {
     /// Relaxation time τ (s).
     pub tau: f64,
@@ -1346,7 +1337,6 @@ pub struct PhaseFieldSolidification {
 
 impl PhaseFieldSolidification {
     /// Create a new [`PhaseFieldSolidification`] model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         tau: f64,
         interface_width: f64,
@@ -1398,7 +1388,6 @@ impl PhaseFieldSolidification {
 
 /// Crystal defect model: vacancies and interstitials.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CrystalDefects {
     /// Formation energy of a vacancy (eV).
     pub vacancy_formation_energy: f64,
@@ -1464,7 +1453,6 @@ impl CrystalDefects {
 /// * `undercoolings` – slice of undercooling values ΔT (K)
 ///
 /// Returns a `Vec`f64` of growth velocities (m/s).
-#[allow(dead_code)]
 pub fn growth_velocity_vs_undercooling(
     wf: &WilsonFrenkelGrowth,
     delta_h_fus: f64,
@@ -1504,7 +1492,6 @@ pub fn growth_velocity_vs_undercooling(
 ///
 /// # Arguments
 /// * `peclet` – tip Péclet number Pe = R v / (2 D)
-#[allow(dead_code)]
 pub fn ivantsov_function(peclet: f64) -> f64 {
     if peclet <= 0.0 {
         return 0.0;
@@ -1535,7 +1522,6 @@ pub fn ivantsov_function(peclet: f64) -> f64 {
 /// * `theta_mis` – misorientation angle (radians)
 /// * `theta_m`   – cut-off angle for high-angle boundaries (radians, ≈ 15°)
 /// * `gamma_m`   – energy of a high-angle grain boundary (J/m²)
-#[allow(dead_code)]
 pub fn read_shockley_energy(theta_mis: f64, theta_m: f64, gamma_m: f64) -> f64 {
     if theta_mis <= 0.0 || theta_m <= 0.0 {
         return 0.0;

@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     compute_sasa, dist3, hbond_angle, hbond_score, jacobi3, mat3_det, mat3_mul_t,
 };

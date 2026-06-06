@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use super::functions::*;
 use oxiphysics_core::math::Vec3;
 
@@ -140,8 +139,8 @@ impl ParticleSetSoA {
         }
         let mut com = [0.0_f64; 3];
         for i in 0..self.len() {
-            for k in 0..3 {
-                com[k] += self.masses[i] * self.positions[i][k];
+            for (k, ck) in com.iter_mut().enumerate() {
+                *ck += self.masses[i] * self.positions[i][k];
             }
         }
         com[0] /= total_mass;
@@ -169,8 +168,8 @@ impl ParticleSetSoA {
     /// Apply a uniform gravitational acceleration `g` to all particles.
     pub fn apply_gravity_soa(&mut self, g: [f64; 3]) {
         for i in 0..self.len() {
-            for k in 0..3 {
-                self.forces[i][k] += self.masses[i] * g[k];
+            for (k, fk) in self.forces[i].iter_mut().enumerate() {
+                *fk += self.masses[i] * g[k];
             }
         }
     }
@@ -178,15 +177,14 @@ impl ParticleSetSoA {
     pub fn total_momentum(&self) -> [f64; 3] {
         let mut p = [0.0_f64; 3];
         for i in 0..self.len() {
-            for k in 0..3 {
-                p[k] += self.masses[i] * self.velocities[i][k];
+            for (k, pk) in p.iter_mut().enumerate() {
+                *pk += self.masses[i] * self.velocities[i][k];
             }
         }
         p
     }
 }
 /// A tracker that records the history of a single particle's position over time.
-#[allow(dead_code)]
 pub struct ParticleTracker {
     /// Index of the tracked particle in the particle set.
     pub particle_idx: usize,
@@ -249,12 +247,10 @@ impl ParticleTracker {
 /// The filter stores indices into the owning set; iterating gives those
 /// indices.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ParticleFilter {
     /// Indices of the selected particles.
     pub indices: Vec<usize>,
 }
-#[allow(dead_code)]
 impl ParticleFilter {
     /// Select particles from `ps` where `predicate(i) == true`.
     pub fn new<F>(ps: &SphParticleSet, predicate: F) -> Self
@@ -299,12 +295,12 @@ impl ParticleFilter {
         }
         let mut com = [0.0_f64; 3];
         for &i in &self.indices {
-            for k in 0..3 {
-                com[k] += ps.masses[i] * ps.positions[i][k];
+            for (k, ck) in com.iter_mut().enumerate() {
+                *ck += ps.masses[i] * ps.positions[i][k];
             }
         }
-        for k in 0..3 {
-            com[k] /= total_m;
+        for ck in &mut com {
+            *ck /= total_m;
         }
         com
     }
@@ -320,7 +316,6 @@ impl ParticleFilter {
 /// Summary statistics computed across an ensemble of `SphParticleSet`
 /// snapshots (e.g. multiple simulation replicas or consecutive time steps).
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct EnsembleStats {
     /// Number of snapshots accumulated.
     pub count: usize,
@@ -333,7 +328,6 @@ pub struct EnsembleStats {
     /// Rest density reference value.
     pub rho0: f64,
 }
-#[allow(dead_code)]
 impl EnsembleStats {
     /// Create empty stats with given rest density reference.
     pub fn new(rho0: f64) -> Self {
@@ -816,7 +810,7 @@ impl SphParticleSet {
         if k == 0 {
             return result;
         }
-        for i in 0..n {
+        for (i, res_i) in result.iter_mut().enumerate() {
             if self.is_boundary[i] {
                 continue;
             }
@@ -833,7 +827,7 @@ impl SphParticleSet {
                 .collect();
             dists.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let sum: f64 = dists.iter().take(k).sum();
-            result[i] = sum / k as f64;
+            *res_i = sum / k as f64;
         }
         result
     }
@@ -843,7 +837,7 @@ impl SphParticleSet {
         let n = self.len();
         let mut counts = vec![0usize; n];
         let r2 = radius * radius;
-        for i in 0..n {
+        for (i, cnt_i) in counts.iter_mut().enumerate() {
             let pi = &self.positions[i];
             for j in 0..n {
                 if i == j {
@@ -854,7 +848,7 @@ impl SphParticleSet {
                 let dy = pi[1] - pj[1];
                 let dz = pi[2] - pj[2];
                 if dx * dx + dy * dy + dz * dz <= r2 {
-                    counts[i] += 1;
+                    *cnt_i += 1;
                 }
             }
         }
@@ -904,7 +898,7 @@ impl SphParticleSet {
     pub fn velocity_divergence(&self, h: f64) -> Vec<f64> {
         let n = self.len();
         let mut divv = vec![0.0_f64; n];
-        for i in 0..n {
+        for (i, dv_i) in divv.iter_mut().enumerate() {
             if self.is_boundary[i] {
                 continue;
             }
@@ -932,7 +926,7 @@ impl SphParticleSet {
                 let m_over_rho = self.masses[j] / self.densities[j].max(1e-20);
                 d += m_over_rho * (dv_x * rx / r + dv_y * ry / r + dv_z * rz / r) * dw;
             }
-            divv[i] = -d;
+            *dv_i = -d;
         }
         divv
     }
@@ -940,7 +934,7 @@ impl SphParticleSet {
     pub fn vorticity_magnitude(&self, h: f64) -> Vec<f64> {
         let n = self.len();
         let mut omega = vec![0.0_f64; n];
-        for i in 0..n {
+        for (i, om_i) in omega.iter_mut().enumerate() {
             if self.is_boundary[i] {
                 continue;
             }
@@ -969,7 +963,7 @@ impl SphParticleSet {
                 curl[1] += m_over_rho * (dv[2] * gw[0] - dv[0] * gw[2]);
                 curl[2] += m_over_rho * (dv[0] * gw[1] - dv[1] * gw[0]);
             }
-            omega[i] = (curl[0] * curl[0] + curl[1] * curl[1] + curl[2] * curl[2]).sqrt();
+            *om_i = (curl[0] * curl[0] + curl[1] * curl[1] + curl[2] * curl[2]).sqrt();
         }
         omega
     }
@@ -1102,7 +1096,6 @@ impl SphParticleSet {
 impl SphParticleSet {
     /// Compute the Morton code for particle `i` given the particle set's
     /// bounding box.  Returns 0 for an out-of-range particle.
-    #[allow(dead_code)]
     pub fn morton_code(&self, i: usize, box_lo: [f64; 3], box_hi: [f64; 3]) -> u64 {
         let p = &self.positions[i];
         let bits = (1u32 << 21) - 1;
@@ -1121,7 +1114,6 @@ impl SphParticleSet {
     ///
     /// This reorders the SoA arrays so that spatially close particles are also
     /// close in memory, improving cache performance for neighbour loops.
-    #[allow(dead_code)]
     pub fn sort_by_morton(&mut self, box_lo: [f64; 3], box_hi: [f64; 3]) {
         let n = self.len();
         if n == 0 {
@@ -1148,7 +1140,6 @@ impl SphParticleSet {
     /// particles as an immutable slice reference.
     ///
     /// Returns `(i, pos)` where `pos = &self.positions[i]`.
-    #[allow(dead_code)]
     pub fn iter_fluid_positions(&self) -> impl Iterator<Item = (usize, &[f64; 3])> {
         self.positions
             .iter()
@@ -1162,7 +1153,6 @@ impl SphParticleSet {
     ///
     /// `eta` is typically 1.2–1.5.  Returns a vector of smoothing lengths
     /// (one per particle); boundary particles receive the fallback value `h0`.
-    #[allow(dead_code)]
     pub fn adaptive_smoothing_lengths(&self, eta: f64, h0: f64) -> Vec<f64> {
         self.masses
             .iter()
@@ -1189,7 +1179,6 @@ impl SphParticleSet {
     /// This convenience wrapper performs steps 1–2 *and* the final half-kick
     /// using the *current* acceleration, making it suitable for first-order
     /// tests where `a` is held constant.
-    #[allow(dead_code)]
     pub fn leapfrog_full(&mut self, dt: f64) {
         for i in 0..self.len() {
             if self.is_boundary[i] {
@@ -1211,7 +1200,6 @@ impl SphParticleSet {
     /// Performs `r += v*dt + 0.5*a*dt²` then `v += a*dt`.
     /// For variable acceleration problems use `integrate_verlet_half` +
     /// recompute + `finish_verlet` instead.
-    #[allow(dead_code)]
     pub fn verlet_full(&mut self, dt: f64) {
         for i in 0..self.len() {
             if self.is_boundary[i] {
@@ -1229,7 +1217,6 @@ impl SphParticleSet {
     /// Radius of gyration of the particle set about its centre of mass.
     ///
     /// `R_g = sqrt( Σ m_i |r_i - r_com|² / Σ m_i )`
-    #[allow(dead_code)]
     pub fn radius_of_gyration(&self) -> f64 {
         let total_mass: f64 = self.masses.iter().sum();
         if total_mass < 1e-30 {
@@ -1254,7 +1241,6 @@ impl SphParticleSet {
     /// Subtracts the centre-of-mass velocity and returns the mass-weighted
     /// mean squared peculiar speed (units: m²/s²).  Useful as a rough proxy
     /// for granular temperature in granular SPH.
-    #[allow(dead_code)]
     pub fn granular_temperature(&self) -> f64 {
         let n = self.len();
         if n == 0 {
@@ -1286,19 +1272,16 @@ impl SphParticleSet {
     ///
     /// Convenience wrapper that delegates to `add_raw`, recording `h` via a
     /// returned index and setting viscosity to 0.
-    #[allow(dead_code)]
     pub fn add_particle_h(&mut self, pos: [f64; 3], vel: [f64; 3], mass: f64, _h: f64) -> usize {
         let idx = self.len();
         self.add_raw(pos, vel, mass, 0.0, false);
         idx
     }
     /// Remove a particle by index (explicit swap-remove alias for clarity).
-    #[allow(dead_code)]
     pub fn remove_particle(&mut self, index: usize) {
         self.remove(index);
     }
     /// Iterator over all particle indices (fluids and boundaries).
-    #[allow(dead_code)]
     pub fn iter_indices(&self) -> std::ops::Range<usize> {
         0..self.len()
     }
@@ -1307,7 +1290,6 @@ impl SphParticleSet {
     ///   `a_press_i += -Σ_j m_j (P_i/ρ_i² + P_j/ρ_j²) ∇W_ij`
     ///
     /// Accumulates into `self.accelerations` (does *not* clear first).
-    #[allow(dead_code)]
     pub fn accumulate_pressure_acceleration(&mut self, h: f64) {
         let n = self.len();
         for i in 0..n {
@@ -1354,7 +1336,6 @@ impl SphParticleSet {
     /// `a_visc_i += Σ_j m_j * 4 * μ / ((ρ_i + ρ_j) * r²) * (v_ij · r_ij) * ∇W_ij`
     ///
     /// `mu` is the dynamic viscosity \[Pa·s\].  Accumulates into accelerations.
-    #[allow(dead_code)]
     pub fn accumulate_morris_viscosity(&mut self, h: f64, mu: f64) {
         if mu.abs() < 1e-30 {
             return;
@@ -1399,7 +1380,6 @@ impl SphParticleSet {
     ///
     /// `rho0` is the rest density, `B = rho0 * c0² / gamma` is the stiffness,
     /// `c0` is the numerical speed of sound.
-    #[allow(dead_code)]
     pub fn update_wcsph_pressure(&mut self, rho0: f64, c0: f64, gamma: f64) {
         let b = rho0 * c0 * c0 / gamma;
         for i in 0..self.len() {
@@ -1410,12 +1390,10 @@ impl SphParticleSet {
     /// Compute SPH density summation with per-particle smoothing length `h_vec`.
     ///
     /// Each particle `i` uses `h_vec[i]` as its kernel radius.
-    #[allow(dead_code)]
     pub fn compute_density_variable_h(&mut self, h_vec: &[f64]) {
         let n = self.len();
         assert_eq!(h_vec.len(), n, "h_vec length must match particle count");
-        for i in 0..n {
-            let hi = h_vec[i];
+        for (i, &hi) in h_vec.iter().enumerate().take(n) {
             let pi = self.positions[i];
             let mut rho = self.masses[i] * cubic_spline_kernel(0.0, hi);
             for j in 0..n {
@@ -1435,7 +1413,6 @@ impl SphParticleSet {
     /// Compute the CFL-limited time step for this particle set.
     ///
     /// `dt_cfl = cfl * h / (c0 + v_max)` where `v_max` is the maximum speed.
-    #[allow(dead_code)]
     pub fn cfl_timestep(&self, h: f64, c0: f64, cfl: f64) -> f64 {
         let v_max = self.max_speed();
         let denom = c0 + v_max;
@@ -1445,7 +1422,6 @@ impl SphParticleSet {
         cfl * h / denom
     }
     /// Viscous time step limit: `dt_visc = 0.125 * h² / nu`.
-    #[allow(dead_code)]
     pub fn viscous_timestep(&self, h: f64, nu: f64) -> f64 {
         if nu < 1e-30 {
             return f64::MAX;
@@ -1453,7 +1429,6 @@ impl SphParticleSet {
         0.125 * h * h / nu
     }
     /// Combined adaptive time step: `min(dt_cfl, dt_visc)` clamped to `[dt_min, dt_max]`.
-    #[allow(dead_code)]
     pub fn adaptive_timestep(
         &self,
         h: f64,
@@ -1470,7 +1445,6 @@ impl SphParticleSet {
 }
 impl SphParticleSet {
     /// Compute the root-mean-square speed of all fluid particles.
-    #[allow(dead_code)]
     pub fn rms_speed(&self) -> f64 {
         let fluid_count = self.fluid_count();
         if fluid_count == 0 {
@@ -1486,7 +1460,6 @@ impl SphParticleSet {
         (sum_v2 / fluid_count as f64).sqrt()
     }
     /// Mean velocity vector of all fluid particles.
-    #[allow(dead_code)]
     pub fn mean_velocity(&self) -> [f64; 3] {
         let fluid_count = self.fluid_count();
         if fluid_count == 0 {
@@ -1504,7 +1477,6 @@ impl SphParticleSet {
         [sum[0] / n, sum[1] / n, sum[2] / n]
     }
     /// Mean pressure of all fluid particles.
-    #[allow(dead_code)]
     pub fn mean_pressure(&self) -> f64 {
         let fluid_count = self.fluid_count();
         if fluid_count == 0 {
@@ -1520,7 +1492,6 @@ impl SphParticleSet {
         sum / fluid_count as f64
     }
     /// Maximum pressure among all fluid particles.
-    #[allow(dead_code)]
     pub fn max_pressure(&self) -> f64 {
         self.pressures
             .iter()
@@ -1530,7 +1501,6 @@ impl SphParticleSet {
             .fold(f64::NEG_INFINITY, f64::max)
     }
     /// Minimum pressure among all fluid particles.
-    #[allow(dead_code)]
     pub fn min_pressure(&self) -> f64 {
         self.pressures
             .iter()
@@ -1540,7 +1510,6 @@ impl SphParticleSet {
             .fold(f64::INFINITY, f64::min)
     }
     /// Pressure standard deviation among all fluid particles.
-    #[allow(dead_code)]
     pub fn pressure_std(&self) -> f64 {
         let fluid_count = self.fluid_count();
         if fluid_count == 0 {
@@ -1559,7 +1528,6 @@ impl SphParticleSet {
     }
     /// Compute the total (vector) angular momentum about an arbitrary pivot
     /// point `pivot`: Σ mᵢ (rᵢ - pivot) × vᵢ.
-    #[allow(dead_code)]
     pub fn angular_momentum_about(&self, pivot: [f64; 3]) -> [f64; 3] {
         let mut l = [0.0_f64; 3];
         for i in 0..self.len() {
@@ -1577,7 +1545,6 @@ impl SphParticleSet {
         l
     }
     /// Translate all particles by a displacement vector `delta`.
-    #[allow(dead_code)]
     pub fn translate(&mut self, delta: [f64; 3]) {
         for pos in &mut self.positions {
             pos[0] += delta[0];
@@ -1586,7 +1553,6 @@ impl SphParticleSet {
         }
     }
     /// Add a uniform velocity offset to all fluid particles.
-    #[allow(dead_code)]
     pub fn add_velocity_offset(&mut self, dv: [f64; 3]) {
         for (v, &b) in self.velocities.iter_mut().zip(self.is_boundary.iter()) {
             if !b {
@@ -1597,14 +1563,12 @@ impl SphParticleSet {
         }
     }
     /// Set all densities to a uniform value `rho0`.
-    #[allow(dead_code)]
     pub fn set_uniform_density(&mut self, rho0: f64) {
         for d in &mut self.densities {
             *d = rho0;
         }
     }
     /// Set all pressures to zero.
-    #[allow(dead_code)]
     pub fn zero_pressures(&mut self) {
         for p in &mut self.pressures {
             *p = 0.0;
@@ -1613,7 +1577,6 @@ impl SphParticleSet {
     /// Apply a density-weighted Tait EOS pressure update: P = B*((ρ/ρ₀)^γ - 1).
     ///
     /// `b = ρ₀ * c₀² / γ`.
-    #[allow(dead_code)]
     pub fn update_pressures_tait(&mut self, rho0: f64, c0: f64, gamma: f64) {
         let big_b = rho0 * c0 * c0 / gamma;
         for i in 0..self.len() {
@@ -1624,7 +1587,6 @@ impl SphParticleSet {
     ///
     /// Updates `self.densities` in-place using the standard summation
     /// `ρᵢ = Σⱼ mⱼ W(|rᵢ - rⱼ|, h)` with cubic spline kernel.
-    #[allow(dead_code)]
     pub fn compute_density_sph(&mut self, h: f64) {
         let n = self.len();
         for i in 0..n {
@@ -1642,12 +1604,10 @@ impl SphParticleSet {
         }
     }
     /// Count particles in the positive-x half-space (`x > 0`).
-    #[allow(dead_code)]
     pub fn count_positive_x_half(&self) -> usize {
         self.positions.iter().filter(|p| p[0] > 0.0).count()
     }
     /// Count particles in a rectangular sub-box `[lo, hi)`.
-    #[allow(dead_code)]
     pub fn count_in_box(&self, lo: [f64; 3], hi: [f64; 3]) -> usize {
         self.positions
             .iter()
@@ -1665,8 +1625,6 @@ impl SphParticleSet {
     /// at particle `i` summed over all neighbours within `2h`.
     ///
     /// Returns the force vector `[fx, fy, fz]`.
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
     pub fn pressure_gradient_force(&self, i: usize, h: f64) -> [f64; 3] {
         let n = self.len();
         let rho_i = self.densities[i].max(1e-20);
@@ -1705,29 +1663,28 @@ impl SphParticleSet {
     /// Requires the previous position array `prev_positions` (same length).
     /// Updates `self.positions` in place; previous positions are also updated
     /// to `self.positions` (the current step becomes the previous for next time).
-    #[allow(dead_code)]
-    pub fn integrate_verlet_position(&mut self, prev_positions: &mut Vec<[f64; 3]>, dt: f64) {
+    pub fn integrate_verlet_position(&mut self, prev_positions: &mut [[f64; 3]], dt: f64) {
         assert_eq!(
             prev_positions.len(),
             self.len(),
             "prev_positions length mismatch"
         );
-        for i in 0..self.len() {
+        for (i, prev_pos_i) in prev_positions.iter_mut().enumerate() {
             if self.is_boundary[i] {
                 continue;
             }
             let dt2 = dt * dt;
             let new_pos = [
-                2.0 * self.positions[i][0] - prev_positions[i][0] + self.accelerations[i][0] * dt2,
-                2.0 * self.positions[i][1] - prev_positions[i][1] + self.accelerations[i][1] * dt2,
-                2.0 * self.positions[i][2] - prev_positions[i][2] + self.accelerations[i][2] * dt2,
+                2.0 * self.positions[i][0] - prev_pos_i[0] + self.accelerations[i][0] * dt2,
+                2.0 * self.positions[i][1] - prev_pos_i[1] + self.accelerations[i][1] * dt2,
+                2.0 * self.positions[i][2] - prev_pos_i[2] + self.accelerations[i][2] * dt2,
             ];
             self.velocities[i] = [
-                (new_pos[0] - prev_positions[i][0]) / (2.0 * dt),
-                (new_pos[1] - prev_positions[i][1]) / (2.0 * dt),
-                (new_pos[2] - prev_positions[i][2]) / (2.0 * dt),
+                (new_pos[0] - prev_pos_i[0]) / (2.0 * dt),
+                (new_pos[1] - prev_pos_i[1]) / (2.0 * dt),
+                (new_pos[2] - prev_pos_i[2]) / (2.0 * dt),
             ];
-            prev_positions[i] = self.positions[i];
+            *prev_pos_i = self.positions[i];
             self.positions[i] = new_pos;
         }
     }
@@ -1735,7 +1692,6 @@ impl SphParticleSet {
     ///
     /// Particles that cross a wall are reflected and their normal velocity
     /// component is negated with a coefficient of restitution `e ∈ [0, 1]`.
-    #[allow(dead_code)]
     pub fn apply_box_reflection(&mut self, box_lo: [f64; 3], box_hi: [f64; 3], restitution: f64) {
         for i in 0..self.len() {
             if self.is_boundary[i] {
@@ -1756,7 +1712,6 @@ impl SphParticleSet {
     ///
     /// Returns a vector of `(index, distance)` pairs sorted ascending by
     /// distance.
-    #[allow(dead_code)]
     pub fn sorted_by_distance_from(&self, ref_pos: [f64; 3]) -> Vec<(usize, f64)> {
         let mut pairs: Vec<(usize, f64)> = self
             .positions
@@ -1773,7 +1728,6 @@ impl SphParticleSet {
         pairs
     }
     /// Number of particles closer than `r` to a given point `center`.
-    #[allow(dead_code)]
     pub fn count_within_radius(&self, center: [f64; 3], r: f64) -> usize {
         let r2 = r * r;
         self.positions
@@ -1788,7 +1742,6 @@ impl SphParticleSet {
     }
     /// Compute the density-weighted velocity field divergence at particle `i`
     /// using an approximate SPH discretization with cubic-spline kernel.
-    #[allow(dead_code)]
     pub fn divergence_at(&self, i: usize, h: f64) -> f64 {
         let n = self.len();
         let pi = &self.positions[i];
@@ -1822,7 +1775,6 @@ impl SphParticleSet {
     /// `"density"`, `"pressure"`, `"speed"`, or `"mass"`.
     ///
     /// Returns an empty vec on unknown field names.
-    #[allow(dead_code)]
     pub fn argsort_by_field(&self, field: &str) -> Vec<usize> {
         let n = self.len();
         let mut idx: Vec<usize> = (0..n).collect();
@@ -1860,7 +1812,6 @@ impl SphParticleSet {
     /// Verify SoA invariant: all arrays have the same length.
     ///
     /// Returns `Ok(())` if consistent, `Err(msg)` otherwise.
-    #[allow(dead_code)]
     pub fn check_invariant(&self) -> Result<(), String> {
         let n = self.positions.len();
         macro_rules! check {

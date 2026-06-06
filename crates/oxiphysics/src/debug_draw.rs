@@ -42,9 +42,6 @@
 //! }
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 
 /// RGBA colour in linear [0, 1] range.

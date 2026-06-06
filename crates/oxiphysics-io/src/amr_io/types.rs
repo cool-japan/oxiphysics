@@ -5,7 +5,6 @@
 use std::fs::File;
 use std::io::{self, Read, Write};
 
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{CHECKPOINT_MAGIC, CHECKPOINT_VERSION};
 

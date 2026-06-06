@@ -20,7 +20,6 @@ pub const COULOMB_K: f64 = 138.935;
 /// Complementary error function approximation (Abramowitz & Stegun 7.1.26).
 ///
 /// Maximum absolute error ~ 1.5e-7.
-#[allow(dead_code)]
 pub fn erfc_approx(x: f64) -> f64 {
     if x < 0.0 {
         return 2.0 - erfc_approx(-x);
@@ -53,7 +52,6 @@ pub struct EwaldParams {
 }
 
 /// Maximum number of k-vectors per dimension for reciprocal-space sums.
-#[allow(dead_code)]
 pub const DEFAULT_K_MAX: i32 = 5;
 
 impl EwaldParams {
@@ -74,7 +72,6 @@ impl EwaldParams {
     /// Compute optimal alpha for a given real-space cutoff and desired accuracy.
     ///
     /// Uses the heuristic `alpha = sqrt(-ln(accuracy)) / r_cut`.
-    #[allow(dead_code)]
     pub fn optimal_alpha(r_cut: f64, accuracy: f64) -> f64 {
         assert!(r_cut > 0.0, "r_cut must be positive");
         assert!(
@@ -88,7 +85,6 @@ impl EwaldParams {
     ///
     /// Returns `(alpha, k_max)` where k_max is the number of k-vectors
     /// per dimension needed to achieve the desired accuracy.
-    #[allow(dead_code)]
     pub fn optimize(r_cut: f64, box_length: f64, accuracy: f64) -> (f64, i32) {
         let alpha = Self::optimal_alpha(r_cut, accuracy);
         // k_max such that exp(-(pi*k_max/(alpha*L))^2) < accuracy
@@ -99,7 +95,6 @@ impl EwaldParams {
     }
 
     /// Set the dielectric constant.
-    #[allow(dead_code)]
     pub fn with_epsilon_r(mut self, eps: f64) -> Self {
         self.epsilon_r = eps;
         self
@@ -146,7 +141,6 @@ impl EwaldParams {
     /// ```text
     /// Delta_F_real ~ q^2 * erfc(alpha * r_cut) / r_cut^2
     /// ```
-    #[allow(dead_code)]
     pub fn real_space_error_estimate(&self, charge_sum_sq: f64) -> f64 {
         let erfc_val = erfc_approx(self.alpha * self.r_cutoff);
         charge_sum_sq * erfc_val / (self.r_cutoff * self.r_cutoff)
@@ -157,7 +151,6 @@ impl EwaldParams {
     /// ```text
     /// Delta_F_recip ~ q^2 * alpha * exp(-(pi*k_max/(alpha*L))^2)
     /// ```
-    #[allow(dead_code)]
     pub fn reciprocal_space_error_estimate(
         &self,
         charge_sum_sq: f64,
@@ -178,7 +171,6 @@ impl EwaldParams {
 /// Bundles the splitting parameter, k-vector cutoff, and box volume
 /// into a single struct for easy parameter passing.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct EwaldSumConfig {
     /// Ewald splitting parameter alpha (angstrom^-1).
     pub alpha: f64,
@@ -190,7 +182,6 @@ pub struct EwaldSumConfig {
     pub box_len: f64,
 }
 
-#[allow(dead_code)]
 impl EwaldSumConfig {
     /// Create a new config for a cubic box.
     ///
@@ -230,7 +221,6 @@ impl EwaldSumConfig {
 /// and `k_max` for a cubic box, and provides estimates of the resulting
 /// real-space and reciprocal-space errors.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct EwaldAccuracyBudget {
     /// Optimal Ewald alpha (angstrom⁻¹).
     pub alpha: f64,
@@ -242,7 +232,6 @@ pub struct EwaldAccuracyBudget {
     pub recip_error: f64,
 }
 
-#[allow(dead_code)]
 impl EwaldAccuracyBudget {
     /// Compute an accuracy budget for a given system.
     ///
@@ -289,7 +278,6 @@ impl EwaldAccuracyBudget {
 /// Tabulates `erfc(x)` for x ∈ \[0, x_max\] with `n` equal-spaced points.
 /// Linear interpolation is used for values between table entries.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ErfcTable {
     /// Maximum x value in the table.
     pub x_max: f64,
@@ -299,7 +287,6 @@ pub struct ErfcTable {
     pub table: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl ErfcTable {
     /// Build a new erfc lookup table.
     ///
@@ -352,7 +339,6 @@ impl ErfcTable {
 /// The optimal alpha minimises the total computation cost while keeping
 /// the real-space truncation error below `accuracy`.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct AlphaOptimizer {
     /// Real-space cutoff (Å).
     pub r_cut: f64,
@@ -362,7 +348,6 @@ pub struct AlphaOptimizer {
     pub box_len: f64,
 }
 
-#[allow(dead_code)]
 impl AlphaOptimizer {
     /// Create an optimizer with given cutoff, accuracy, and box size.
     pub fn new(r_cut: f64, accuracy: f64, box_len: f64) -> Self {

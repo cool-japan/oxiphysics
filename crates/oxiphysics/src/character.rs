@@ -30,9 +30,6 @@
 //! let _ = result.translation;
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -62,16 +59,6 @@ fn scale(a: [f64; 3], s: f64) -> [f64; 3] {
 #[inline]
 fn len(a: [f64; 3]) -> f64 {
     dot(a, a).sqrt()
-}
-
-#[inline]
-fn normalize(a: [f64; 3]) -> Option<[f64; 3]> {
-    let l = len(a);
-    if l < 1e-12 {
-        None
-    } else {
-        Some(scale(a, 1.0 / l))
-    }
 }
 
 /// Project vector `v` onto the plane defined by `normal` (must be unit length).

@@ -6,8 +6,6 @@
 //! Provides bed-load (Meyer-Peter & Müller), suspended-load (Rouse profile),
 //! Shields parameter, Stokes settling, and a combined total-load model.
 
-#![allow(dead_code)]
-
 // ---------------------------------------------------------------------------
 // SedimentParticle
 // ---------------------------------------------------------------------------

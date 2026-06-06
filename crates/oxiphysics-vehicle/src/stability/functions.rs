@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::too_many_arguments)]
 use super::types::{
     AbsConfig, AbsState, ArcConfig, ArcOutput, EbdConfig, EscConfig, EscIntervention, EscState,
     EspLevel, HandlingBalance, TcsConfig, TcsState, TorqueVectoringOutput,
@@ -172,7 +171,6 @@ pub fn critical_speed_oversteer(wheelbase: f64, kus: f64) -> f64 {
 /// `LTD = (F_outer - F_inner) / (F_outer + F_inner)`
 ///
 /// For a single axle: LTD = m * a_lat * h_cg / (track_width * normal_load)
-#[allow(dead_code)]
 pub fn lateral_load_transfer(
     lateral_accel: f64,
     mass: f64,
@@ -189,7 +187,6 @@ pub fn lateral_load_transfer(
 /// Rollover index (RI) combining lateral load transfer from both axles.
 ///
 /// `RI = max(|LTD_front|, |LTD_rear|)` in \[0, 1\]; 1 indicates impending rollover.
-#[allow(dead_code)]
 pub fn rollover_index(
     lateral_accel: f64,
     mass_front: f64,
@@ -219,7 +216,6 @@ pub fn rollover_index(
 /// Compute active roll control torques to counteract body roll.
 ///
 /// Returns the anti-roll bar torques for front and rear axles.
-#[allow(dead_code)]
 pub fn arc_compute(roll_angle: f64, roll_rate: f64, config: &ArcConfig) -> ArcOutput {
     let total = -(config.roll_gain * roll_angle + config.roll_rate_gain * roll_rate);
     let clamped = total.clamp(-config.max_torque, config.max_torque);
@@ -231,7 +227,6 @@ pub fn arc_compute(roll_angle: f64, roll_rate: f64, config: &ArcConfig) -> ArcOu
 /// Compute ESP intervention level from stability margins.
 ///
 /// Returns the intervention level based on yaw rate error and sideslip.
-#[allow(dead_code)]
 pub fn esp_intervention_level(
     yaw_rate_error: f64,
     sideslip_deg: f64,
@@ -253,7 +248,6 @@ pub fn esp_intervention_level(
 ///
 /// Positive `yaw_error` = oversteer (actual yaw > desired).
 /// Uses a simple proportional strategy.
-#[allow(dead_code)]
 pub fn torque_vectoring(
     yaw_error: f64,
     base_torque: f64,

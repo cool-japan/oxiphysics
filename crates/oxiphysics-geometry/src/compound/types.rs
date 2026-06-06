@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::functions::*;
 use crate::shape::Shape;
 use oxiphysics_core::Transform;
@@ -10,7 +9,6 @@ use std::sync::Arc;
 
 /// Classification of primitive shapes for lightweight compound representations.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub enum ChildShapeKind {
     /// A sphere with given radius.
     Sphere {
@@ -32,7 +30,6 @@ pub enum ChildShapeKind {
 }
 /// A child shape in a lightweight compound, with center position and shape kind.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CompoundChild {
     /// Center position of the child shape.
     pub center: [f64; 3],
@@ -41,7 +38,6 @@ pub struct CompoundChild {
 }
 /// All per-child AABBs plus the merged bounding box.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CompoundAabb {
     /// Individual child AABBs (min, max).
     pub all_aabbs: Vec<([f64; 3], [f64; 3])>,
@@ -55,14 +51,12 @@ pub struct CompoundAabb {
 /// The rotation `rot[i]` is the i-th row of the rotation matrix.
 /// The matrix must be orthonormal; no validation is performed.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct LocalTransform {
     /// Translation vector.
     pub translation: [f64; 3],
     /// Rotation matrix stored row-major: `rot[row][col]`.
     pub rot: [[f64; 3]; 3],
 }
-#[allow(dead_code)]
 impl LocalTransform {
     /// Identity transform (no rotation, no translation).
     pub fn identity() -> Self {
@@ -83,8 +77,8 @@ impl LocalTransform {
     /// `world_p = rot * local_p + translation`
     pub fn local_to_world(&self, p: [f64; 3]) -> [f64; 3] {
         let mut out = self.translation;
-        for i in 0..3 {
-            out[i] += self.rot[i][0] * p[0] + self.rot[i][1] * p[1] + self.rot[i][2] * p[2];
+        for (out_i, rot_row) in out.iter_mut().zip(self.rot.iter()) {
+            *out_i += rot_row[0] * p[0] + rot_row[1] * p[1] + rot_row[2] * p[2];
         }
         out
     }
@@ -123,7 +117,6 @@ impl LocalTransform {
 /// A `CompoundShape` variant that stores each child with an explicit
 /// [`LocalTransform`], enabling full 6-DOF placement (translation + rotation).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CompoundShapeEx {
     /// Children: (transform, shape kind).
     pub children: Vec<(LocalTransform, ChildShapeKind)>,
@@ -133,7 +126,6 @@ impl Default for CompoundShapeEx {
         Self::new()
     }
 }
-#[allow(dead_code)]
 impl CompoundShapeEx {
     /// Create an empty compound shape.
     pub fn new() -> Self {
@@ -238,7 +230,6 @@ impl CompoundShapeEx {
     /// Compute the inertia tensor about the world-origin using the parallel axis theorem.
     ///
     /// Assumes uniform density `density`.
-    #[allow(clippy::too_many_arguments)]
     pub fn inertia_tensor(&self, density: f64) -> [[f64; 3]; 3] {
         let mut i_xx = 0.0f64;
         let mut i_yy = 0.0f64;
@@ -279,7 +270,6 @@ impl Compound {
 /// Unlike `Compound` which uses `Arc<dyn Shape>`, this uses concrete enum
 /// variants for common shapes, avoiding dynamic dispatch and allocations.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CompoundShape {
     /// The child shapes.
     pub children: Vec<CompoundChild>,
@@ -289,7 +279,6 @@ impl Default for CompoundShape {
         Self::new()
     }
 }
-#[allow(dead_code)]
 impl CompoundShape {
     /// Create an empty compound shape.
     pub fn new() -> Self {
@@ -411,12 +400,12 @@ impl CompoundShape {
         let mut com = [0.0; 3];
         for child in &self.children {
             let v = Self::child_volume(&child.shape_kind);
-            for i in 0..3 {
-                com[i] += child.center[i] * v;
+            for (com_i, c_i) in com.iter_mut().zip(child.center.iter()) {
+                *com_i += c_i * v;
             }
         }
-        for i in 0..3 {
-            com[i] /= total_vol;
+        for com_i in com.iter_mut() {
+            *com_i /= total_vol;
         }
         com
     }
@@ -655,7 +644,6 @@ impl CompoundShape {
         hits
     }
 }
-#[allow(dead_code)]
 impl CompoundShape {
     /// Compute merged AABB over all children.
     pub fn merged_aabb(&self) -> ([f64; 3], [f64; 3]) {
@@ -689,12 +677,12 @@ impl CompoundShape {
         let mut com = [0.0f64; 3];
         for (i, child) in self.children.iter().enumerate() {
             let m = if i < masses.len() { masses[i] } else { 0.0 };
-            for k in 0..3 {
-                com[k] += m * child.center[k];
+            for (com_k, c_k) in com.iter_mut().zip(child.center.iter()) {
+                *com_k += m * c_k;
             }
         }
-        for k in 0..3 {
-            com[k] /= total;
+        for com_k in com.iter_mut() {
+            *com_k /= total;
         }
         com
     }
@@ -819,7 +807,6 @@ impl CompoundShape {
         }
     }
 }
-#[allow(dead_code)]
 impl CompoundShape {
     /// Remove the child at the given index.  Panics if `index` is out of range.
     pub fn remove_child(&mut self, index: usize) {
@@ -918,15 +905,15 @@ impl CompoundShape {
             let vol = Self::child_volume(&child.shape_kind);
             let m = rho * vol;
             total_mass += m;
-            for k in 0..3 {
-                com[k] += m * child.center[k];
+            for (com_k, c_k) in com.iter_mut().zip(child.center.iter()) {
+                *com_k += m * c_k;
             }
         }
         if total_mass < 1e-30 {
             return [0.0; 3];
         }
-        for k in 0..3 {
-            com[k] /= total_mass;
+        for com_k in com.iter_mut() {
+            *com_k /= total_mass;
         }
         com
     }

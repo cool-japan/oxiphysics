@@ -5,23 +5,12 @@
 //! tendon compliance, force-velocity/force-length relations, pennation
 //! angle, muscle redundancy solver, and analysis utilities.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // Constants from std::f64 used inline where needed.
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Maximum isometric muscle force scaling factor (dimensionless).
-const DEFAULT_F_MAX: f64 = 1.0;
-/// Optimal fiber length default (m).
-const DEFAULT_L_OPT: f64 = 0.10;
-/// Tendon slack length default (m).
-const DEFAULT_L_SLACK: f64 = 0.20;
-/// Default pennation angle at optimal length (rad).
-const DEFAULT_PENNATION: f64 = 0.0;
 /// Hill constant a/F0 ratio (typical skeletal muscle).
 const DEFAULT_A_REL: f64 = 0.25;
 /// Hill constant b/L_opt ratio (typical skeletal muscle).

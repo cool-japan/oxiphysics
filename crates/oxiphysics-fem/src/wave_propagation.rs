@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -144,7 +143,6 @@ impl DispersionRelation {
 /// FEM solver for transient elastic wave propagation.
 ///
 /// Uses a lumped-mass explicit central-difference scheme.
-#[allow(dead_code)]
 pub struct WavePropagationFem {
     /// Mesh node coordinates: `nodes[i] = [x, y, z]`.
     pub mesh_nodes: Vec<[f64; 3]>,
@@ -200,26 +198,33 @@ impl WavePropagationFem {
 
         // Compute K*u
         let mut ku = vec![0.0f64; n];
-        for i in 0..n {
-            for j in 0..n {
-                ku[i] += self.stiffness_matrix[i * n + j] * self.displacement[j];
-            }
+        for (i, ku_i) in ku.iter_mut().enumerate() {
+            *ku_i = self
+                .displacement
+                .iter()
+                .enumerate()
+                .map(|(j, &d)| self.stiffness_matrix[i * n + j] * d)
+                .sum();
         }
 
         // Compute acceleration a = (F − K*u) / M
         let mut accel = vec![0.0f64; n];
-        for i in 0..n {
+        for (i, (accel_i, &ku_i)) in accel.iter_mut().zip(ku.iter()).enumerate() {
             let fi = if i < len { force[i] } else { 0.0 };
             let m = self.mass_matrix[i];
             if m.abs() > 1e-30 {
-                accel[i] = (fi - ku[i]) / m;
+                *accel_i = (fi - ku_i) / m;
             }
         }
 
         // Update velocity and displacement
-        for i in 0..n {
-            self.velocity[i] += dt * accel[i];
-            self.displacement[i] += dt * self.velocity[i];
+        for (v, (a, d)) in self
+            .velocity
+            .iter_mut()
+            .zip(accel.iter().zip(self.displacement.iter_mut()))
+        {
+            *v += dt * a;
+            *d += dt * *v;
         }
 
         self.time_history.push(self.displacement.clone());

@@ -2,9 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::type_complexity)]
-#![allow(clippy::needless_range_loop)]
 use super::types::{BondOrder, OverCoordParams, OxidationState, ReactiveSite, ReaxFFBond};
+
+/// Atom index pair representing a bond.
+type BondPair = (usize, usize);
 
 /// Morse pair potential.
 ///
@@ -13,7 +14,6 @@ use super::types::{BondOrder, OverCoordParams, OxidationState, ReactiveSite, Rea
 /// ```
 ///
 /// Minimum value -D_e is at r = r0.
-#[allow(dead_code)]
 pub fn morse_potential(r: f64, params: &BondOrder) -> f64 {
     let x = (-params.beta * (r - params.r0)).exp();
     params.d_e * (1.0 - x) * (1.0 - x) - params.d_e
@@ -24,18 +24,15 @@ pub fn morse_potential(r: f64, params: &BondOrder) -> f64 {
 /// ```text
 /// dV/dr = 2 * D_e * beta * exp(-beta*(r-r0)) * (1 - exp(-beta*(r-r0)))
 /// ```
-#[allow(dead_code)]
 pub fn morse_force(r: f64, params: &BondOrder) -> f64 {
     let x = (-params.beta * (r - params.r0)).exp();
     2.0 * params.d_e * params.beta * x * (1.0 - x)
 }
 /// Morse potential weighted by bond order: E = BO * V_morse(r).
-#[allow(dead_code)]
 pub fn morse_potential_weighted(r: f64, params: &BondOrder, bond_order: f64) -> f64 {
     bond_order * morse_potential(r, params)
 }
 /// Morse force weighted by bond order: F = BO * dV/dr.
-#[allow(dead_code)]
 pub fn morse_force_weighted(r: f64, params: &BondOrder, bond_order: f64) -> f64 {
     bond_order * morse_force(r, params)
 }
@@ -44,7 +41,6 @@ pub fn morse_force_weighted(r: f64, params: &BondOrder, bond_order: f64) -> f64 
 /// ```text
 /// E_angle = 0.5 * k_theta * (theta - theta_0)^2
 /// ```
-#[allow(dead_code)]
 pub fn three_body_angle_energy(
     _r_ij: f64,
     _r_jk: f64,
@@ -58,7 +54,6 @@ pub fn three_body_angle_energy(
 /// Cosine-based angle energy: E = k * (1 - cos(theta - theta_0)).
 ///
 /// Smoother than harmonic for large deviations.
-#[allow(dead_code)]
 pub fn cosine_angle_energy(theta: f64, k_theta: f64, theta_0: f64) -> f64 {
     k_theta * (1.0 - (theta - theta_0).cos())
 }
@@ -67,7 +62,6 @@ pub fn cosine_angle_energy(theta: f64, k_theta: f64, theta_0: f64) -> f64 {
 /// ```text
 /// BO(r) = exp(p_bo1 * (r/r0)^p_bo2) + exp(p_bo3 * (r/r0)^p_bo4)
 /// ```
-#[allow(dead_code)]
 pub fn compute_bond_order(r: f64, bond: &ReaxFFBond) -> f64 {
     let rho = r / bond.r0;
     let sigma = (bond.p_bo1 * rho.powf(bond.p_bo2)).exp();
@@ -80,7 +74,6 @@ pub fn compute_bond_order(r: f64, bond: &ReaxFFBond) -> f64 {
 /// dBO/dr = (p_bo1*p_bo2/r0) * (r/r0)^(p_bo2-1) * exp(p_bo1*(r/r0)^p_bo2)
 ///        + (p_bo3*p_bo4/r0) * (r/r0)^(p_bo4-1) * exp(p_bo3*(r/r0)^p_bo4)
 /// ```
-#[allow(dead_code)]
 pub fn bond_order_derivative(r: f64, bond: &ReaxFFBond) -> f64 {
     let rho = r / bond.r0;
     let dsigma = bond.p_bo1 * bond.p_bo2 / bond.r0
@@ -97,7 +90,6 @@ pub fn bond_order_derivative(r: f64, bond: &ReaxFFBond) -> f64 {
 /// ```text
 /// E(r) = D_e * (1 - exp(-beta*(r - r0)))^2 - D_e
 /// ```
-#[allow(dead_code)]
 pub fn compute_reaxff_bond_energy(r: f64, bond: &ReaxFFBond) -> f64 {
     let x = (-bond.beta * (r - bond.r0)).exp();
     bond.d_e * (1.0 - x) * (1.0 - x) - bond.d_e
@@ -110,7 +102,6 @@ pub fn compute_reaxff_bond_energy(r: f64, bond: &ReaxFFBond) -> f64 {
 /// ```
 ///
 /// This ensures bond orders smoothly go to zero above bo_max.
-#[allow(dead_code)]
 pub fn smooth_bond_order(bo: f64, bo_max: f64, n: f64) -> f64 {
     if bo <= 0.0 || bo >= bo_max {
         return 0.0;
@@ -118,7 +109,6 @@ pub fn smooth_bond_order(bo: f64, bo_max: f64, n: f64) -> f64 {
     bo * (1.0 - (bo / bo_max).powf(n))
 }
 /// Build a bond list from atom positions: pairs within `max_bond_dist` are bonded.
-#[allow(dead_code)]
 pub fn topology_from_distances(positions: &[[f64; 3]], max_bond_dist: f64) -> Vec<(usize, usize)> {
     let n = positions.len();
     let mut bonds = Vec::new();
@@ -142,7 +132,6 @@ pub fn topology_from_distances(positions: &[[f64; 3]], max_bond_dist: f64) -> Ve
 ///
 /// For simplicity, we use: q_i = q_ref * (1 - TBO_i / TBO_max)
 /// where TBO_max is the maximum expected total bond order.
-#[allow(dead_code)]
 pub fn redistribute_charges(
     sites: &[ReactiveSite],
     base_charges: &[f64],
@@ -163,7 +152,6 @@ pub fn redistribute_charges(
 ///
 /// For each bond, the more electronegative atom gets a negative contribution,
 /// the less electronegative atom gets a positive contribution, scaled by BO.
-#[allow(dead_code)]
 pub fn update_oxidation_states(
     states: &mut [OxidationState],
     bonds: &[(usize, usize)],
@@ -202,7 +190,6 @@ pub(super) fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// ```
 ///
 /// where `coefficients[n] = (V_n, gamma_n)`.
-#[allow(dead_code)]
 pub fn torsion_energy(phi: f64, coefficients: &[(f64, f64)]) -> f64 {
     coefficients
         .iter()
@@ -213,7 +200,6 @@ pub fn torsion_energy(phi: f64, coefficients: &[(f64, f64)]) -> f64 {
 /// Derivative of the torsion energy with respect to the dihedral angle phi.
 ///
 /// `dE/dphi = Σ_n -V_n/2 * n * sin(n * phi - gamma_n)`
-#[allow(dead_code)]
 pub fn torsion_energy_derivative(phi: f64, coefficients: &[(f64, f64)]) -> f64 {
     coefficients
         .iter()
@@ -231,7 +217,6 @@ pub fn torsion_energy_derivative(phi: f64, coefficients: &[(f64, f64)]) -> f64 {
 /// ```
 ///
 /// A pair-specific scaling factor `scale` (typically 0.5 for 1-4 pairs) is applied.
-#[allow(dead_code)]
 pub fn lj_nonbonded(r: f64, epsilon: f64, sigma: f64, scale: f64) -> f64 {
     if r < 1e-14 {
         return 0.0;
@@ -242,7 +227,6 @@ pub fn lj_nonbonded(r: f64, epsilon: f64, sigma: f64, scale: f64) -> f64 {
 /// Lennard-Jones force magnitude along the bond axis (∂E/∂r).
 ///
 /// Positive values are repulsive.
-#[allow(dead_code)]
 pub fn lj_nonbonded_force(r: f64, epsilon: f64, sigma: f64, scale: f64) -> f64 {
     if r < 1e-14 {
         return 0.0;
@@ -258,14 +242,12 @@ pub fn lj_nonbonded_force(r: f64, epsilon: f64, sigma: f64, scale: f64) -> f64 {
 /// ```text
 /// E_penalty = p_ovun1 * (total_bo - valence)^2 / (total_bo + eps)
 /// ```
-#[allow(dead_code)]
 pub fn reaxff_valence_penalty(total_bo: f64, valence: f64, p_ovun1: f64) -> f64 {
     let eps = 1e-12;
     let delta = total_bo - valence;
     p_ovun1 * delta * delta / (total_bo + eps)
 }
 /// Derivative of the over/under-coordination penalty with respect to `total_bo`.
-#[allow(dead_code)]
 pub fn reaxff_valence_penalty_deriv(total_bo: f64, valence: f64, p_ovun1: f64) -> f64 {
     let eps = 1e-12;
     let delta = total_bo - valence;
@@ -280,7 +262,6 @@ pub fn reaxff_valence_penalty_deriv(total_bo: f64, valence: f64, p_ovun1: f64) -
 /// ```
 /// where `r_mid = (r_inner + r_outer) / 2` and `a` is chosen so that
 /// `S(r_inner) ≈ 1` and `S(r_outer) ≈ 0`.
-#[allow(dead_code)]
 pub fn rebo_switching(r: f64, r_inner: f64, r_outer: f64) -> f64 {
     if r <= r_inner {
         return 1.0;
@@ -294,7 +275,6 @@ pub fn rebo_switching(r: f64, r_inner: f64, r_outer: f64) -> f64 {
     1.0 / (1.0 + (a * (r - r_mid)).exp())
 }
 /// Derivative of the REBO switching function with respect to r.
-#[allow(dead_code)]
 pub fn rebo_switching_derivative(r: f64, r_inner: f64, r_outer: f64) -> f64 {
     if r <= r_inner || r >= r_outer {
         return 0.0;
@@ -314,7 +294,6 @@ pub fn rebo_switching_derivative(r: f64, r_inner: f64, r_outer: f64) -> f64 {
 /// ```text
 /// E_conj = -F_conj * exp(-k * (BO_pi_1 - 0.5)^2) * exp(-k * (BO_pi_2 - 0.5)^2)
 /// ```
-#[allow(dead_code)]
 pub fn conjugation_correction(bo_pi_1: f64, bo_pi_2: f64, f_conj: f64, k: f64) -> f64 {
     -f_conj * (-(k * (bo_pi_1 - 0.5).powi(2))).exp() * (-(k * (bo_pi_2 - 0.5).powi(2))).exp()
 }
@@ -328,7 +307,6 @@ pub fn conjugation_correction(bo_pi_1: f64, bo_pi_2: f64, f_conj: f64, k: f64) -
 ///
 /// Uses a simple Jacobi-style iteration for the equalisation.
 /// Returns updated charges; convergence to `tol` or `max_iter` iterations.
-#[allow(dead_code)]
 pub fn eem_charges(
     positions: &[[f64; 3]],
     electronegativities: &[f64],
@@ -401,7 +379,6 @@ pub fn eem_charges(
 ///
 /// A simplified model: `theta_0` depends on bond orders, approximated as
 /// `theta_0 = pi * (1 - 0.5 * (BO_ij + BO_jk - 2))` (capped to \[0, pi\]).
-#[allow(dead_code)]
 pub fn reaxff_valence_angle_energy(
     theta: f64,
     bo_ij: f64,
@@ -421,7 +398,6 @@ pub fn reaxff_valence_angle_energy(
 /// ```text
 /// E_val_cos = k_ang * (1 - cos(theta - theta_0))
 /// ```
-#[allow(dead_code)]
 pub fn valence_angle_cosine_energy(theta: f64, theta_0: f64, k_ang: f64) -> f64 {
     k_ang * (1.0 - (theta - theta_0).cos())
 }
@@ -431,7 +407,6 @@ pub fn valence_angle_cosine_energy(theta: f64, theta_0: f64, k_ang: f64) -> f64 
 /// ```text
 /// E = V1/2*(1+cos(phi)) + V2/2*(1-cos(2*phi)) + V3/2*(1+cos(3*phi))
 /// ```
-#[allow(dead_code)]
 pub fn opls_torsion_energy(phi: f64, v1: f64, v2: f64, v3: f64) -> f64 {
     v1 / 2.0 * (1.0 + phi.cos())
         + v2 / 2.0 * (1.0 - (2.0 * phi).cos())
@@ -444,7 +419,6 @@ pub fn opls_torsion_energy(phi: f64, v1: f64, v2: f64, v3: f64) -> f64 {
 /// ```
 ///
 /// where `theta` is the donor-H…acceptor angle and `r` is the H…acceptor distance.
-#[allow(dead_code)]
 pub fn hydrogen_bond_energy(r: f64, theta: f64, d_hb: f64, r0: f64, n: u32) -> f64 {
     if r < 1e-14 {
         return 0.0;
@@ -457,7 +431,6 @@ pub fn hydrogen_bond_energy(r: f64, theta: f64, d_hb: f64, r0: f64, n: u32) -> f
 /// Returns true if a hydrogen bond is detected based on distance and angle criteria.
 ///
 /// Standard IUPAC criteria: r(H…A) < 2.5 Å, theta(D-H…A) > 110°.
-#[allow(dead_code)]
 pub fn is_hydrogen_bond(r_ha: f64, theta_dha: f64) -> bool {
     r_ha < 2.5 && theta_dha > 110.0_f64.to_radians()
 }
@@ -465,7 +438,6 @@ pub fn is_hydrogen_bond(r_ha: f64, theta_dha: f64) -> bool {
 ///
 /// Performs one Jacobi update of all atomic charges based on the EEM equations
 /// and returns the updated charges together with the residual (RMS change).
-#[allow(dead_code)]
 pub fn qeq_iteration_step(
     positions: &[[f64; 3]],
     charges: &[f64],
@@ -522,11 +494,10 @@ pub fn qeq_iteration_step(
 /// Determine which bonds have broken or formed by comparing two topology lists.
 ///
 /// Returns `(broken, formed)` where each is a vector of `(atom_i, atom_j)` pairs.
-#[allow(dead_code)]
 pub fn detect_topology_changes(
-    prev_bonds: &[(usize, usize)],
-    curr_bonds: &[(usize, usize)],
-) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+    prev_bonds: &[BondPair],
+    curr_bonds: &[BondPair],
+) -> (Vec<BondPair>, Vec<BondPair>) {
     let broken: Vec<(usize, usize)> = prev_bonds
         .iter()
         .filter(|b| !curr_bonds.contains(b))
@@ -543,7 +514,6 @@ pub fn detect_topology_changes(
 ///
 /// Returns a list of bonded pairs `(i, j)` with `i < j` whose bond order
 /// exceeds `threshold`.
-#[allow(dead_code)]
 pub fn bond_list_from_bond_orders(
     positions: &[[f64; 3]],
     bond: &ReaxFFBond,
@@ -565,7 +535,6 @@ pub fn bond_list_from_bond_orders(
 ///
 /// Returns a vector of length `n_atoms` where each element is the fragment index
 /// of that atom (0-based).
-#[allow(dead_code)]
 pub fn find_molecules(n_atoms: usize, bonds: &[(usize, usize)]) -> Vec<usize> {
     let mut label = (0..n_atoms).collect::<Vec<usize>>();
     fn find(label: &mut Vec<usize>, x: usize) -> usize {
@@ -581,9 +550,10 @@ pub fn find_molecules(n_atoms: usize, bonds: &[(usize, usize)]) -> Vec<usize> {
             label[rj] = ri;
         }
     }
-    for k in 0..n_atoms {
-        let r = find(&mut label, k);
-        label[k] = r;
+    // Path-compression pass: collect all roots first, then flatten labels.
+    let roots: Vec<usize> = (0..n_atoms).map(|k| find(&mut label, k)).collect();
+    for (lbl, &root) in label.iter_mut().zip(roots.iter()) {
+        *lbl = root;
     }
     let mut map = std::collections::HashMap::new();
     let mut next_id = 0_usize;
@@ -599,7 +569,6 @@ pub fn find_molecules(n_atoms: usize, bonds: &[(usize, usize)]) -> Vec<usize> {
     result
 }
 /// Count the number of distinct molecular fragments.
-#[allow(dead_code)]
 pub fn count_molecules(n_atoms: usize, bonds: &[(usize, usize)]) -> usize {
     let frags = find_molecules(n_atoms, bonds);
     frags
@@ -609,7 +578,6 @@ pub fn count_molecules(n_atoms: usize, bonds: &[(usize, usize)]) -> usize {
         .len()
 }
 /// Compute the composition (atom count per fragment) as a sorted vector of fragment sizes.
-#[allow(dead_code)]
 pub fn fragment_sizes(n_atoms: usize, bonds: &[(usize, usize)]) -> Vec<usize> {
     let frags = find_molecules(n_atoms, bonds);
     let mut counts = std::collections::HashMap::<usize, usize>::new();
@@ -633,7 +601,6 @@ pub fn fragment_sizes(n_atoms: usize, bonds: &[(usize, usize)]) -> Vec<usize> {
 /// * `params`  — over-coordination parameters
 ///
 /// Returns the penalty energy (kJ/mol-like units, same as `p_ovun2`).
-#[allow(dead_code)]
 pub fn reaxff_over_coordination_penalty(bo_sum: f64, params: &OverCoordParams) -> f64 {
     let delta = bo_sum - params.val_i;
     if delta <= 0.0 {
@@ -642,7 +609,6 @@ pub fn reaxff_over_coordination_penalty(bo_sum: f64, params: &OverCoordParams) -
     params.p_ovun2 * delta / (1.0 + (params.p_ovun1 * delta).exp())
 }
 /// Derivative of the over-coordination penalty with respect to Δ BO.
-#[allow(dead_code)]
 pub fn reaxff_over_coordination_deriv(bo_sum: f64, params: &OverCoordParams) -> f64 {
     let delta = bo_sum - params.val_i;
     if delta <= 0.0 {
@@ -746,9 +712,9 @@ mod tests {
             pairs: vec![(0, 1)],
         };
         let forces = system.compute_bond_forces();
-        for k in 0..3 {
+        for (k, (&f0, &f1)) in forces[0].iter().zip(forces[1].iter()).enumerate() {
             assert!(
-                (forces[0][k] + forces[1][k]).abs() < 1e-12,
+                (f0 + f1).abs() < 1e-12,
                 "Newton III violated for component {k}"
             );
         }

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,8 +5,6 @@
 //!
 //! Provides root finding, quadrature, finite differences, and special functions
 //! used throughout the OxiPhysics engine.
-
-#![allow(dead_code)]
 
 use std::f64::consts::{FRAC_PI_4, PI};
 
@@ -157,7 +154,6 @@ where
 }
 
 /// Brent's method — robust root finding combining bisection, secant, and inverse quadratic interpolation.
-#[allow(unused_assignments)]
 pub fn brent<F: Fn(f64) -> f64>(
     f: F,
     mut a: f64,
@@ -181,7 +177,7 @@ pub fn brent<F: Fn(f64) -> f64>(
     }
     let mut c = a;
     let mut fc = fa;
-    let mut s = 0.0_f64; // always overwritten before use in loop
+    let mut s: f64;
     let mut mflag = true;
     let mut d = 0.0;
     for i in 0..max_iter {
@@ -1130,8 +1126,8 @@ pub fn bernoulli_numbers(n: usize) -> Vec<f64> {
         let mut sum = 0.0;
         // binomial(m+1, k) for k = 0..m using recurrence C(n,k) = C(n,k-1)*(n-k+1)/k, n=m+1
         let mut binom = 1.0_f64; // C(m+1, 0) = 1
-        for k in 0..m {
-            sum += binom * b[k];
+        for (k, &bk) in b[..m].iter().enumerate() {
+            sum += binom * bk;
             // Advance to C(m+1, k+1) = C(m+1, k) * (m+1 - k) / (k + 1)
             binom *= (m + 1 - k) as f64 / (k + 1) as f64;
         }
@@ -1172,6 +1168,155 @@ pub fn stirling_relative_error(n: f64) -> f64 {
         return (approx - exact).abs();
     }
     (approx - exact).abs() / exact.abs()
+}
+
+// ── Boys function and incomplete gamma (quantum chemistry) ────────────────────
+
+/// Floating-point factorial helper (exact for n ≤ 22, then Stirling-grade f64).
+#[inline]
+fn factorial_f64(n: usize) -> f64 {
+    const TABLE: [f64; 23] = [
+        1.0,
+        1.0,
+        2.0,
+        6.0,
+        24.0,
+        120.0,
+        720.0,
+        5040.0,
+        40320.0,
+        362880.0,
+        3628800.0,
+        39916800.0,
+        479001600.0,
+        6227020800.0,
+        87178291200.0,
+        1307674368000.0,
+        20922789888000.0,
+        355687428096000.0,
+        6402373705728000.0,
+        121645100408832000.0,
+        2432902008176640000.0,
+        51090942171709440000.0,
+        1124000727777607680000.0,
+    ];
+    if n < TABLE.len() {
+        TABLE[n]
+    } else {
+        // Use lgamma for large n: n! = exp(lgamma(n+1))
+        lgamma((n + 1) as f64).exp()
+    }
+}
+
+/// Compute Boys functions F_n(x) for n = 0..=`max_n`.
+///
+/// Boys function: F_n(x) = ∫₀¹ t^{2n} exp(−xt²) dt.
+///
+/// Uses asymptotic expansion with upward recursion for x ≥ 25.0,
+/// and Taylor series for x < 25.0.  Returns a `Vec<f64>` of length
+/// `max_n + 1` with `result[n] = F_n(x)`.
+pub fn boys_fn(x: f64, max_n: usize) -> Vec<f64> {
+    use std::f64::consts::PI;
+    let mut f = vec![0.0_f64; max_n + 1];
+
+    if x >= 25.0 {
+        // Asymptotic regime: compute F_0 exactly, then upward recurrence.
+        // F_0(x) = sqrt(pi / (4x)) * erf(sqrt(x))
+        let sqrt_x = x.sqrt();
+        f[0] = if x >= 100.0 {
+            0.5 * (PI / x).sqrt()
+        } else {
+            0.5 * (PI / x).sqrt() * erf(sqrt_x)
+        };
+        let exp_neg_x = (-x).exp();
+        for n in 0..max_n {
+            // F_{n+1} = [(2n+1)*F_n - exp(-x)] / (2x)
+            f[n + 1] = ((2 * n + 1) as f64 * f[n] - exp_neg_x) / (2.0 * x);
+        }
+    } else {
+        // Taylor series: F_n(x) = Σ_{k=0}^{TERMS} (-x)^k / (k! * (2n+2k+1))
+        const TERMS: usize = 30;
+        for (n, fn_val) in f.iter_mut().enumerate().take(max_n + 1) {
+            let mut sum = 1.0 / (2 * n + 1) as f64; // k=0 term
+            let mut power_neg_x = 1.0_f64;
+            for k in 1..=TERMS {
+                power_neg_x *= -x;
+                let term = power_neg_x / (factorial_f64(k) * (2 * n + 2 * k + 1) as f64);
+                sum += term;
+                if term.abs() < 1e-15 {
+                    break;
+                }
+            }
+            *fn_val = sum;
+        }
+    }
+
+    f
+}
+
+/// Regularized lower incomplete gamma function P(a, x) = γ(a, x) / Γ(a).
+///
+/// Uses series expansion for x < a + 1, continued fraction for x ≥ a + 1.
+/// Returns values in [0, 1].
+pub fn incomplete_gamma_lower(a: f64, x: f64) -> f64 {
+    if a <= 0.0 || x < 0.0 {
+        return 0.0;
+    }
+    if x == 0.0 {
+        return 0.0;
+    }
+
+    if x < a + 1.0 {
+        // Series expansion (Numerical Recipes §6.2)
+        let log_gamma_a = lgamma(a);
+        let mut ap = a;
+        let mut del = 1.0 / a;
+        let mut sum = del;
+        for _ in 1..200 {
+            ap += 1.0;
+            del *= x / ap;
+            sum += del;
+            if del.abs() < sum.abs() * 1e-15 {
+                break;
+            }
+        }
+        let log_val = -x + a * x.ln() - log_gamma_a;
+        sum * log_val.exp()
+    } else {
+        // Continued fraction via Lentz algorithm for upper incomplete gamma Γ(a,x)/Γ(a),
+        // then return 1 − result.
+        let log_gamma_a = lgamma(a);
+        let log_prefix = -x + a * x.ln() - log_gamma_a;
+        let prefix = log_prefix.exp();
+
+        // Lentz CF for Γ(a,x): use the recurrence from Numerical Recipes
+        const FPMIN: f64 = 1.0e-300;
+        let mut b = x + 1.0 - a;
+        let mut c = 1.0 / FPMIN;
+        let mut d = 1.0 / b;
+        let mut h = d;
+        for i in 1_usize..200 {
+            let an = -(i as f64) * (i as f64 - a);
+            b += 2.0;
+            d = an * d + b;
+            if d.abs() < FPMIN {
+                d = FPMIN;
+            }
+            c = b + an / c;
+            if c.abs() < FPMIN {
+                c = FPMIN;
+            }
+            d = 1.0 / d;
+            let delta = d * c;
+            h *= delta;
+            if (delta - 1.0).abs() < 1e-14 {
+                break;
+            }
+        }
+        // h is Γ(a,x) / (exp(-x) * x^a) — multiply by prefix to get Γ(a,x)/Γ(a)
+        let upper = prefix * h;
+        1.0 - upper
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -1788,5 +1933,84 @@ mod tests {
         // derivative at endpoints should be 0 (smootherstep has zero first and second derivative)
         let d = (smootherstep(0.001) - smootherstep(0.0)) / 0.001;
         assert!(d < 0.01, "derivative at 0 should be near 0: {d}");
+    }
+
+    // ── Boys function and incomplete gamma tests ──────────────────────────────
+
+    #[test]
+    fn boys_fn_n0_at_zero() {
+        let f = boys_fn(0.0, 0);
+        assert!((f[0] - 1.0).abs() < 1e-12, "F_0(0) = 1");
+    }
+
+    #[test]
+    fn boys_fn_n1_at_zero() {
+        let f = boys_fn(0.0, 1);
+        assert!((f[1] - 1.0 / 3.0).abs() < 1e-12, "F_1(0) = 1/3");
+    }
+
+    #[test]
+    fn boys_fn_n0_at_one() {
+        // F_0(1) = sqrt(pi/4) * erf(1) ≈ 0.746824132812427
+        let f = boys_fn(1.0, 0);
+        assert!(
+            (f[0] - 0.746824132812427).abs() < 1e-7,
+            "F_0(1) reference value, got {}",
+            f[0]
+        );
+    }
+
+    #[test]
+    fn boys_fn_large_x_asymptotic() {
+        // For large x, F_0 → sqrt(pi/(4x))
+        let x = 50.0_f64;
+        let f = boys_fn(x, 2);
+        let f0_expected = (std::f64::consts::PI / (4.0 * x)).sqrt();
+        assert!(
+            (f[0] - f0_expected).abs() < 1e-6,
+            "F_0(50) asymptotic, got {}",
+            f[0]
+        );
+        assert!(f[1] > 0.0 && f[2] > 0.0, "all boys values positive");
+    }
+
+    #[test]
+    fn boys_fn_recurrence_consistency() {
+        // Check recurrence: (2n+1)*F_n - exp(-x) = 2x * F_{n+1}
+        let x = 2.5;
+        let f = boys_fn(x, 5);
+        for n in 0..5 {
+            let lhs = (2 * n + 1) as f64 * f[n] - (-x).exp();
+            let rhs = 2.0 * x * f[n + 1];
+            assert!((lhs - rhs).abs() < 1e-8, "recurrence at n={n}");
+        }
+    }
+
+    #[test]
+    fn incomplete_gamma_lower_closed_form() {
+        // P(1, x) = 1 - exp(-x) exactly
+        for &x in &[0.5_f64, 1.0, 2.0, 5.0] {
+            let p = incomplete_gamma_lower(1.0, x);
+            let expected = 1.0 - (-x).exp();
+            assert!(
+                (p - expected).abs() < 1e-10,
+                "P(1,{x}) = 1-exp(-{x}), got {p}"
+            );
+        }
+    }
+
+    #[test]
+    fn incomplete_gamma_lower_half_integer() {
+        // P(0.5, x) = erf(sqrt(x)); at x=1: erf(1) ≈ 0.8427007929
+        let p = incomplete_gamma_lower(0.5, 1.0);
+        let expected = 0.8427007929;
+        assert!((p - expected).abs() < 1e-6, "P(0.5,1) ≈ erf(1), got {p}");
+    }
+
+    #[test]
+    fn incomplete_gamma_lower_boundary() {
+        assert_eq!(incomplete_gamma_lower(1.0, 0.0), 0.0);
+        let p_large = incomplete_gamma_lower(2.0, 100.0);
+        assert!((p_large - 1.0).abs() < 1e-6, "P(a,inf) → 1, got {p_large}");
     }
 }

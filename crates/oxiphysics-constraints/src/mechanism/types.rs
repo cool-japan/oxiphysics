@@ -2,13 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
 
 use std::f64::consts::PI;
 
 /// Force analysis result for a slider-crank mechanism.
-#[allow(dead_code)]
 pub struct SliderCrankForces {
     /// Gas/load force on piston (N).
     pub piston_force: f64,
@@ -25,7 +23,6 @@ impl SliderCrankForces {
     /// Compute forces in the slider-crank given piston load and crank geometry.
     ///
     /// `theta` is crank angle (rad), `phi` is connecting-rod angle (rad).
-    #[allow(dead_code)]
     pub fn compute(crank_radius: f64, theta: f64, phi: f64, piston_force: f64) -> Self {
         let rod_force = piston_force / phi.cos().abs().max(1e-9);
         let crankpin_tangential = rod_force * (theta + phi).sin();
@@ -41,7 +38,6 @@ impl SliderCrankForces {
     }
 }
 /// Extended toggle clamp with full kinematics.
-#[allow(dead_code)]
 pub struct ToggleClampExtended {
     /// Crank link length `a` (metres) — driven by input force.
     pub crank_length: f64,
@@ -97,7 +93,6 @@ impl ToggleClampExtended {
     }
 }
 /// A locking mechanism (ratchet or detent).
-#[allow(dead_code)]
 pub struct LockingMechanism {
     /// Kind of locking mechanism.
     pub kind: LockingKind,
@@ -174,7 +169,6 @@ impl LockingMechanism {
     }
 }
 /// Kinematic pair (joint) classification for mobility calculation.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JointClass {
     /// Revolute joint — 1 DOF.
@@ -206,7 +200,6 @@ impl JointClass {
     }
 }
 /// A rotating mass for balancing analysis.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct RotatingMass {
     /// Mass (kg).
@@ -241,7 +234,6 @@ impl RotatingMass {
     }
 }
 /// Spur gear pair.
-#[allow(dead_code)]
 pub struct GearPair {
     /// Number of teeth on drive gear.
     pub teeth_drive: u32,
@@ -300,7 +292,6 @@ impl GearPair {
     }
 }
 /// Disc cam follower types.
-#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CamFollowerType {
     /// Flat-faced follower.
@@ -313,7 +304,6 @@ pub enum CamFollowerType {
 /// Hooke's joint (universal joint / Cardan joint) kinematics.
 ///
 /// Relates the angular velocity ratio between input and output shafts.
-#[allow(dead_code)]
 pub struct HookesJoint {
     /// Angle between the two shaft axes (radians).
     pub shaft_angle: f64,
@@ -377,7 +367,6 @@ impl HookesJoint {
     }
 }
 /// Worm gear set.
-#[allow(dead_code)]
 pub struct WormGear {
     /// Number of worm starts (thread count).
     pub worm_starts: u32,
@@ -423,7 +412,6 @@ impl WormGear {
 /// A planar four-bar linkage (ground – crank – coupler – follower).
 ///
 /// Link lengths: `l1` = ground, `l2` = crank, `l3` = coupler, `l4` = follower.
-#[allow(dead_code)]
 pub struct FourBarLinkage {
     /// Ground link length (metres).
     pub l1: f64,
@@ -493,7 +481,6 @@ impl FourBarLinkage {
     }
 }
 /// Planetary gear set (simple epicyclic).
-#[allow(dead_code)]
 pub struct PlanetaryGear {
     /// Number of teeth on sun gear.
     pub sun_teeth: u32,
@@ -542,7 +529,6 @@ impl PlanetaryGear {
     }
 }
 /// Rack and pinion mechanism.
-#[allow(dead_code)]
 pub struct RackAndPinion {
     /// Pinion pitch radius (metres).
     pub pinion_radius: f64,
@@ -578,7 +564,6 @@ impl RackAndPinion {
     }
 }
 /// Slider-crank mechanism (piston and crank).
-#[allow(dead_code)]
 pub struct SliderCrankMechanism {
     /// Crank radius (metres).
     pub crank_radius: f64,
@@ -627,7 +612,6 @@ impl SliderCrankMechanism {
     }
 }
 /// Over-centre toggle clamp.
-#[allow(dead_code)]
 pub struct ToggleClamp {
     /// Toggle link length (metres).
     pub link_length: f64,
@@ -666,7 +650,6 @@ impl ToggleClamp {
     }
 }
 /// Diamond scissor lift linkage.
-#[allow(dead_code)]
 pub struct ScissorLift {
     /// Arm length (metres).
     pub arm_length: f64,
@@ -705,7 +688,6 @@ impl ScissorLift {
     }
 }
 /// Disc cam and follower model.
-#[allow(dead_code)]
 pub struct CamFollower {
     /// Base circle radius (metres).
     pub base_radius: f64,
@@ -768,7 +750,6 @@ impl CamFollower {
     }
 }
 /// Disc cam profile type.
-#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CamProfileType {
     /// Polynomial (3-4-5) rise profile.
@@ -779,7 +760,6 @@ pub enum CamProfileType {
     Harmonic,
 }
 /// A mechanism described by links and joints for mobility analysis.
-#[allow(dead_code)]
 pub struct MechanismGraph {
     /// Number of links (including ground link).
     pub n_links: u32,
@@ -823,7 +803,6 @@ impl MechanismGraph {
     }
 }
 /// Grashof classification of a four-bar linkage.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GrashofClass {
     /// Grashof: at least one link can rotate fully — crank-rocker.
@@ -842,7 +821,6 @@ pub enum GrashofClass {
 /// Geneva drive (Maltese cross) mechanism.
 ///
 /// Converts continuous rotation into intermittent indexing motion.
-#[allow(dead_code)]
 pub struct GenevaMechanism {
     /// Number of slots on the Geneva wheel.
     pub n_slots: u32,
@@ -914,7 +892,6 @@ impl GenevaMechanism {
     }
 }
 /// Involute gear geometry parameters.
-#[allow(dead_code)]
 pub struct InvoluteGear {
     /// Number of teeth.
     pub teeth: u32,
@@ -975,7 +952,6 @@ impl InvoluteGear {
     }
 }
 /// Ratchet or detent locking mechanism.
-#[allow(dead_code)]
 pub enum LockingKind {
     /// One-way ratchet with pawl.
     Ratchet {
@@ -993,7 +969,6 @@ pub enum LockingKind {
     },
 }
 /// Extended analysis results for a four-bar linkage at a given crank angle.
-#[allow(dead_code)]
 pub struct FourBarAnalysis {
     /// Crank angle (radians).
     pub theta2: f64,
@@ -1016,7 +991,6 @@ impl FourBarAnalysis {
     /// Analyse a four-bar linkage at crank angle `theta2` with crank speed `omega2`.
     ///
     /// Returns `None` if the linkage cannot assemble at this angle.
-    #[allow(dead_code)]
     pub fn analyse(l1: f64, l2: f64, l3: f64, l4: f64, theta2: f64, omega2: f64) -> Option<Self> {
         let (theta3, theta4) = four_bar_angles(l1, l2, l3, l4, theta2)?;
         let omega3 =
@@ -1041,7 +1015,6 @@ impl FourBarAnalysis {
     }
 }
 /// Configuration of an epicyclic (planetary) gear train.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EpicyclicConfig {
     /// Standard planetary: sun input, ring fixed, carrier output.
@@ -1054,7 +1027,6 @@ pub enum EpicyclicConfig {
     Differential,
 }
 /// Epicyclic gear train with sun, planet, ring gears.
-#[allow(dead_code)]
 pub struct EpicyclicGearTrain {
     /// Number of teeth on sun gear.
     pub sun_teeth: u32,

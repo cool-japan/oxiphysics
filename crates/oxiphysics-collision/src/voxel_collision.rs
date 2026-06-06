@@ -23,7 +23,6 @@ use std::collections::HashMap;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Integer voxel coordinate `(ix, iy, iz)`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VoxelCoord {
     /// X index.
@@ -34,7 +33,6 @@ pub struct VoxelCoord {
     pub iz: i32,
 }
 
-#[allow(dead_code)]
 impl VoxelCoord {
     /// Create a new `VoxelCoord`.
     pub fn new(ix: i32, iy: i32, iz: i32) -> Self {
@@ -77,7 +75,6 @@ impl VoxelCoord {
 /// solid, positive values outside, and zero is on the surface.  The world-space
 /// position of voxel `(ix, iy, iz)` is:
 /// `origin + (ix + 0.5, iy + 0.5, iz + 0.5) * cell_size`.
-#[allow(dead_code)]
 pub struct SdfVoxelGrid {
     /// World-space origin of the grid (minimum corner).
     pub origin: [f64; 3],
@@ -93,7 +90,6 @@ pub struct SdfVoxelGrid {
     pub data: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl SdfVoxelGrid {
     /// Create a new grid filled with `f64::INFINITY` (everything outside).
     ///
@@ -298,10 +294,8 @@ impl SdfVoxelGrid {
 ///
 /// Rasterizes a triangle mesh into an `SdfVoxelGrid` using point-to-triangle
 /// distance calculations.
-#[allow(dead_code)]
 pub struct MeshVoxelizer;
 
-#[allow(dead_code)]
 impl MeshVoxelizer {
     /// Compute the squared distance from point `p` to triangle `(a, b, c)`.
     pub fn point_triangle_dist_sq(p: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
@@ -408,10 +402,8 @@ impl MeshVoxelizer {
 ///
 /// Iterates over the grid in 8 alternating sweep directions, propagating the
 /// minimum distance to the nearest seed voxel.
-#[allow(dead_code)]
 pub struct FastSweeping;
 
-#[allow(dead_code)]
 impl FastSweeping {
     /// Compute the unsigned distance field from `seeds` using fast sweeping.
     ///
@@ -563,7 +555,6 @@ impl FastSweeping {
 /// Only occupied (non-default) voxels are stored.  The octree is represented
 /// as a flat `HashMap` mapping `VoxelCoord` to `f64` SDF values plus a level
 /// counter.
-#[allow(dead_code)]
 pub struct SparseVoxelOctree {
     /// Occupied voxels and their SDF values.
     pub cells: HashMap<VoxelCoord, f64>,
@@ -575,7 +566,6 @@ pub struct SparseVoxelOctree {
     pub default_value: f64,
 }
 
-#[allow(dead_code)]
 impl SparseVoxelOctree {
     /// Create an empty sparse octree.
     pub fn new(origin: [f64; 3], cell_size: f64, default_value: f64) -> Self {
@@ -652,7 +642,6 @@ impl SparseVoxelOctree {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Result of a ray-voxel query.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct VoxelRayHit {
     /// Hit voxel coordinates.
@@ -666,10 +655,8 @@ pub struct VoxelRayHit {
 }
 
 /// Ray vs voxel grid intersection queries.
-#[allow(dead_code)]
 pub struct VoxelRayQuery;
 
-#[allow(dead_code)]
 impl VoxelRayQuery {
     /// Cast a ray `origin + t * direction` against `grid` using DDA traversal.
     ///
@@ -770,7 +757,6 @@ impl VoxelRayQuery {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Collision result between a sphere and a voxel SDF grid.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct VoxelSphereContact {
     /// World-space contact point on the surface.
@@ -782,10 +768,8 @@ pub struct VoxelSphereContact {
 }
 
 /// Sphere vs voxel grid SDF collision queries.
-#[allow(dead_code)]
 pub struct VoxelSphereQuery;
 
-#[allow(dead_code)]
 impl VoxelSphereQuery {
     /// Test whether a sphere at `center` with `radius` penetrates the voxel grid.
     ///
@@ -865,7 +849,6 @@ impl VoxelSphereQuery {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// An axis-aligned box (convex shape) for voxel collision queries.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ConvexAabb {
     /// World-space minimum corner.
@@ -874,7 +857,6 @@ pub struct ConvexAabb {
     pub max: [f64; 3],
 }
 
-#[allow(dead_code)]
 impl ConvexAabb {
     /// Create an AABB from min/max corners.
     pub fn new(min: [f64; 3], max: [f64; 3]) -> Self {
@@ -918,10 +900,8 @@ impl ConvexAabb {
 }
 
 /// Convex AABB vs voxel grid collision queries.
-#[allow(dead_code)]
 pub struct VoxelConvexQuery;
 
-#[allow(dead_code)]
 impl VoxelConvexQuery {
     /// Collect all voxels whose centres lie within `aabb`.
     pub fn voxels_in_aabb(grid: &SdfVoxelGrid, aabb: &ConvexAabb) -> Vec<[usize; 3]> {
@@ -973,7 +953,6 @@ impl VoxelConvexQuery {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Result of a voxel collision response calculation.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct VoxelCollisionImpulse {
     /// Impulse magnitude applied to the dynamic body.
@@ -987,10 +966,8 @@ pub struct VoxelCollisionImpulse {
 /// Voxel-based collision response for a sphere against an SDF grid.
 ///
 /// Computes a penalty impulse proportional to the penetration depth.
-#[allow(dead_code)]
 pub struct VoxelCollisionResponse;
 
-#[allow(dead_code)]
 impl VoxelCollisionResponse {
     /// Compute a penalty response impulse for a sphere penetrating the grid.
     ///
@@ -1001,7 +978,6 @@ impl VoxelCollisionResponse {
     /// - `restitution` — coefficient of restitution (0 = fully inelastic)
     ///
     /// Returns the impulse to be applied to the sphere.
-    #[allow(clippy::too_many_arguments)]
     pub fn penalty_impulse(
         contact: &VoxelSphereContact,
         velocity: [f64; 3],
@@ -1053,10 +1029,8 @@ impl VoxelCollisionResponse {
 /// Dynamic voxel update utilities for moving objects.
 ///
 /// Stamps or un-stamps a sphere's occupancy into an SDF grid as it moves.
-#[allow(dead_code)]
 pub struct DynamicVoxelUpdate;
 
-#[allow(dead_code)]
 impl DynamicVoxelUpdate {
     /// Stamp a sphere with `radius` at `center` into `grid`.
     ///

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_strip)]
 use super::types::{GevParameters, MetarReport, MetarWind};
 
 /// Parse the wind group from a METAR token (e.g. `"25015G25KT"` or `"VRB05KT"`).
@@ -78,15 +77,15 @@ pub fn parse_metar(raw: &str) -> Option<MetarReport> {
                 dewpoint = d;
             }
         }
-        if tok.starts_with('A')
-            && tok.len() == 5
-            && let Ok(a) = tok[1..].parse::<f64>()
+        if tok.len() == 5
+            && let Some(rest) = tok.strip_prefix('A')
+            && let Ok(a) = rest.parse::<f64>()
         {
             altimeter = a / 100.0 * 33.8639;
         }
-        if tok.starts_with('Q')
-            && tok.len() >= 4
-            && let Ok(q) = tok[1..].parse::<f64>()
+        if tok.len() >= 4
+            && let Some(rest) = tok.strip_prefix('Q')
+            && let Ok(q) = rest.parse::<f64>()
         {
             altimeter = q;
         }
@@ -106,8 +105,8 @@ pub fn parse_metar(raw: &str) -> Option<MetarReport> {
 }
 /// Parse a METAR temperature token like `"15"` or `"M02"`.
 pub(super) fn parse_metar_temp(s: &str) -> Option<f64> {
-    if s.starts_with('M') {
-        s[1..].parse::<f64>().ok().map(|v| -v)
+    if let Some(rest) = s.strip_prefix('M') {
+        rest.parse::<f64>().ok().map(|v| -v)
     } else {
         s.parse::<f64>().ok()
     }
@@ -381,7 +380,7 @@ mod tests {
     }
     #[test]
     fn test_cf_standard_name_roundtrip() {
-        let name = CfStandardName::from_str("air_temperature");
+        let name = CfStandardName::from_keyword("air_temperature");
         assert_eq!(name.as_str(), "air_temperature");
         assert_eq!(name, CfStandardName::AirTemperature);
     }

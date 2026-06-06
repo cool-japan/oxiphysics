@@ -1,9 +1,6 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use oxiphysics_core::math::{Quat, Real, Vec3};
 
 use super::rigidbody_type::RigidBody;
@@ -18,7 +15,6 @@ pub struct StateInterpolator {
 }
 impl StateInterpolator {
     /// Create a new interpolator with the given sample capacity.
-    #[allow(dead_code)]
     pub fn new(max_samples: usize) -> Self {
         Self {
             samples: Vec::new(),
@@ -26,7 +22,6 @@ impl StateInterpolator {
         }
     }
     /// Record a body state sample.
-    #[allow(dead_code)]
     pub fn push(&mut self, time: Real, position: Vec3, rotation: Quat) {
         if self.samples.len() >= self.max_samples {
             self.samples.remove(0);
@@ -34,13 +29,11 @@ impl StateInterpolator {
         self.samples.push((time, position, rotation));
     }
     /// Push from a `RigidBody` snapshot.
-    #[allow(dead_code)]
     pub fn push_from_body(&mut self, time: Real, body: &RigidBody) {
         self.push(time, body.transform.position, body.transform.rotation);
     }
     /// Linearly interpolate position at an arbitrary time `t`.
     /// Returns `None` if fewer than 2 samples are available or `t` is out of range.
-    #[allow(dead_code)]
     pub fn interpolate_position(&self, t: Real) -> Option<Vec3> {
         if self.samples.len() < 2 {
             return None;
@@ -60,7 +53,6 @@ impl StateInterpolator {
         None
     }
     /// Spherical linear interpolation (slerp) of rotation at time `t`.
-    #[allow(dead_code)]
     pub fn interpolate_rotation(&self, t: Real) -> Option<Quat> {
         if self.samples.len() < 2 {
             return None;
@@ -80,12 +72,10 @@ impl StateInterpolator {
         None
     }
     /// Number of samples stored.
-    #[allow(dead_code)]
     pub fn sample_count(&self) -> usize {
         self.samples.len()
     }
     /// Time range of stored samples `(t_min, t_max)`.
-    #[allow(dead_code)]
     pub fn time_range(&self) -> Option<(Real, Real)> {
         if self.samples.is_empty() {
             return None;
@@ -102,7 +92,6 @@ impl StateInterpolator {
         ))
     }
     /// Clear all samples.
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.samples.clear();
     }
@@ -117,7 +106,6 @@ pub struct CenterOfMassTracker {
 }
 impl CenterOfMassTracker {
     /// Create a tracker with a specified history length.
-    #[allow(dead_code)]
     pub fn new(max_history: usize) -> Self {
         Self {
             history: Vec::new(),
@@ -125,7 +113,6 @@ impl CenterOfMassTracker {
         }
     }
     /// Record the current center of mass.
-    #[allow(dead_code)]
     pub fn record(&mut self, time: Real, position: Vec3) {
         if self.max_history > 0 && self.history.len() >= self.max_history {
             self.history.remove(0);
@@ -133,12 +120,10 @@ impl CenterOfMassTracker {
         self.history.push((time, position));
     }
     /// Most recent recorded position.
-    #[allow(dead_code)]
     pub fn latest(&self) -> Option<Vec3> {
         self.history.last().map(|(_, p)| *p)
     }
     /// Total distance traveled (sum of step-to-step displacements).
-    #[allow(dead_code)]
     pub fn total_path_length(&self) -> Real {
         if self.history.len() < 2 {
             return 0.0;
@@ -149,7 +134,6 @@ impl CenterOfMassTracker {
             .sum()
     }
     /// Average speed over the recorded history (m/s).
-    #[allow(dead_code)]
     pub fn average_speed(&self) -> Real {
         if self.history.len() < 2 {
             return 0.0;
@@ -163,12 +147,10 @@ impl CenterOfMassTracker {
         self.total_path_length() / dt
     }
     /// Number of recorded samples.
-    #[allow(dead_code)]
     pub fn sample_count(&self) -> usize {
         self.history.len()
     }
     /// Clear all history.
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.history.clear();
     }
@@ -382,7 +364,6 @@ pub struct PersistentForce {
 }
 impl PersistentForce {
     /// Create a new enabled persistent force at the center of mass.
-    #[allow(dead_code)]
     pub fn new(label: &str, force: Vec3) -> Self {
         Self {
             label: label.to_string(),
@@ -392,7 +373,6 @@ impl PersistentForce {
         }
     }
     /// Create a persistent force applied at a world-space point.
-    #[allow(dead_code)]
     pub fn at_point(label: &str, force: Vec3, point: Vec3) -> Self {
         Self {
             label: label.to_string(),
@@ -402,12 +382,10 @@ impl PersistentForce {
         }
     }
     /// Disable this force.
-    #[allow(dead_code)]
     pub fn disable(&mut self) {
         self.enabled = false;
     }
     /// Enable this force.
-    #[allow(dead_code)]
     pub fn enable(&mut self) {
         self.enabled = true;
     }
@@ -440,7 +418,6 @@ pub struct BodyConstraint {
 }
 impl BodyConstraint {
     /// Create a new active constraint.
-    #[allow(dead_code)]
     pub fn new(id: u32, constraint_type: ConstraintType, description: &str) -> Self {
         Self {
             id,
@@ -450,12 +427,10 @@ impl BodyConstraint {
         }
     }
     /// Deactivate this constraint.
-    #[allow(dead_code)]
     pub fn deactivate(&mut self) {
         self.active = false;
     }
     /// Activate this constraint.
-    #[allow(dead_code)]
     pub fn activate(&mut self) {
         self.active = true;
     }
@@ -468,12 +443,10 @@ pub struct ConstraintList {
 }
 impl ConstraintList {
     /// Create a new empty constraint list.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
     /// Add a constraint, returning its ID.
-    #[allow(dead_code)]
     pub fn add(&mut self, constraint_type: ConstraintType, description: &str) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
@@ -482,34 +455,28 @@ impl ConstraintList {
         id
     }
     /// Remove constraint by ID.
-    #[allow(dead_code)]
     pub fn remove(&mut self, id: u32) -> bool {
         let before = self.constraints.len();
         self.constraints.retain(|c| c.id != id);
         self.constraints.len() < before
     }
     /// Get a constraint by ID.
-    #[allow(dead_code)]
     pub fn get(&self, id: u32) -> Option<&BodyConstraint> {
         self.constraints.iter().find(|c| c.id == id)
     }
     /// Get all active constraints.
-    #[allow(dead_code)]
     pub fn active_constraints(&self) -> Vec<&BodyConstraint> {
         self.constraints.iter().filter(|c| c.active).collect()
     }
     /// Number of constraints.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.constraints.len()
     }
     /// Whether there are no constraints.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.constraints.is_empty()
     }
     /// Apply active constraints to a body (modifies velocity/angular_velocity).
-    #[allow(dead_code)]
     pub fn apply_to(&self, body: &mut RigidBody) {
         for c in self.constraints.iter().filter(|c| c.active) {
             match c.constraint_type {
@@ -642,22 +609,18 @@ pub struct ForceAccumulator {
 }
 impl ForceAccumulator {
     /// Create a new empty accumulator.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
     /// Add a named persistent force.
-    #[allow(dead_code)]
     pub fn add_persistent(&mut self, force: PersistentForce) {
         self.persistent.push(force);
     }
     /// Remove a persistent force by label.
-    #[allow(dead_code)]
     pub fn remove_persistent(&mut self, label: &str) {
         self.persistent.retain(|f| f.label != label);
     }
     /// Apply a one-shot force for the current step.
-    #[allow(dead_code)]
     pub fn apply_force(&mut self, force: Vec3) {
         self.current_force += force;
         self.total_force_applications += 1;
@@ -667,13 +630,11 @@ impl ForceAccumulator {
         }
     }
     /// Apply a one-shot torque for the current step.
-    #[allow(dead_code)]
     pub fn apply_torque(&mut self, torque: Vec3) {
         self.current_torque += torque;
     }
     /// Collect all active forces (persistent + current) into the body.
     /// Clears one-shot force/torque after accumulation.
-    #[allow(dead_code)]
     pub fn flush(&mut self, body: &mut RigidBody) {
         for pf in &self.persistent {
             if !pf.enabled {
@@ -691,12 +652,10 @@ impl ForceAccumulator {
         self.current_torque = Vec3::zeros();
     }
     /// Number of persistent forces.
-    #[allow(dead_code)]
     pub fn persistent_count(&self) -> usize {
         self.persistent.len()
     }
     /// Number of enabled persistent forces.
-    #[allow(dead_code)]
     pub fn enabled_count(&self) -> usize {
         self.persistent.iter().filter(|f| f.enabled).count()
     }
@@ -709,7 +668,6 @@ pub struct ContactHistory {
 }
 impl ContactHistory {
     /// Create a new contact history with the given capacity.
-    #[allow(dead_code)]
     pub fn new(max_entries: usize) -> Self {
         Self {
             entries: Vec::new(),
@@ -717,7 +675,6 @@ impl ContactHistory {
         }
     }
     /// Record a new contact event.
-    #[allow(dead_code)]
     pub fn record(
         &mut self,
         time: Real,
@@ -738,12 +695,10 @@ impl ContactHistory {
         });
     }
     /// Most recent contact, if any.
-    #[allow(dead_code)]
     pub fn latest(&self) -> Option<&ContactHistoryEntry> {
         self.entries.last()
     }
     /// All contacts with a given body handle.
-    #[allow(dead_code)]
     pub fn contacts_with(&self, handle: u32) -> Vec<&ContactHistoryEntry> {
         self.entries
             .iter()
@@ -751,27 +706,22 @@ impl ContactHistory {
             .collect()
     }
     /// Peak impulse magnitude over all recorded contacts.
-    #[allow(dead_code)]
     pub fn peak_impulse(&self) -> Real {
         self.entries.iter().map(|e| e.impulse).fold(0.0, f64::max)
     }
     /// Total number of recorded contacts.
-    #[allow(dead_code)]
     pub fn count(&self) -> usize {
         self.entries.len()
     }
     /// Whether the history is empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
     /// Clear all history.
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.entries.clear();
     }
     /// Average impulse across all recorded contacts.
-    #[allow(dead_code)]
     pub fn average_impulse(&self) -> Real {
         if self.entries.is_empty() {
             return 0.0;

@@ -16,7 +16,6 @@ pub(super) const R_GAS: f64 = 8.314_462_618;
 /// * `time` - Time (s).
 /// * `n`    - Avrami exponent.
 /// * `k`    - Rate constant (s^-n).
-#[allow(dead_code)]
 pub fn avrami_transformation(time: f64, n: f64, k: f64) -> f64 {
     if time <= 0.0 {
         return 0.0;
@@ -33,8 +32,6 @@ pub fn avrami_transformation(time: f64, n: f64, k: f64) -> f64 {
 /// * `time_0`  - Log-interpolation time at T_start (s).
 /// * `time_f`  - Log-interpolation time at T_end (s).
 /// * `t_ref`   - Reference temperature for interpolation (K).
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn cct_diagram_transformation_time(
     t: f64,
     t_start: f64,
@@ -60,7 +57,6 @@ pub fn cct_diagram_transformation_time(
 /// * `phi` - Order parameter φ.
 /// * `a`   - Coefficient of the φ^2 term (negative for broken symmetry).
 /// * `b`   - Coefficient of the φ^4 term (positive for stability).
-#[allow(dead_code)]
 pub fn landau_free_energy(phi: f64, a: f64, b: f64) -> f64 {
     a / 2.0 * phi * phi - b / 4.0 * phi.powi(4)
 }
@@ -68,7 +64,6 @@ pub fn landau_free_energy(phi: f64, a: f64, b: f64) -> f64 {
 ///
 /// Given overall composition (x_b, x_c), and end-member compositions of
 /// two co-existing phases α and β, returns the fraction of the β phase.
-#[allow(dead_code)]
 pub fn ternary_lever_rule(
     x_b_overall: f64,
     x_c_overall: f64,

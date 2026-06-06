@@ -21,11 +21,9 @@ pub fn len3(a: [f64; 3]) -> f64 {
 pub fn scale3(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
 }
-#[allow(dead_code)]
 pub fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
-#[allow(dead_code)]
 pub fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -284,9 +282,9 @@ mod tests {
         assert_eq!(q, 0.0);
     }
     #[test]
-    #[allow(clippy::assertions_on_constants)]
     fn test_pi_imported() {
-        assert!(PI > 3.0);
+        // PI is used in computation; verify the import is accessible by using it
+        let _ = PI;
     }
     #[test]
     fn test_math_helpers() {

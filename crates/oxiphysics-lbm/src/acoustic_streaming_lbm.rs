@@ -18,9 +18,6 @@
 //! - **Reynolds stress tensor**: acoustic forcing via Lighthill analogy
 //! - **Nyborg body force**: acoustic streaming body force formulation
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ============================================================================
@@ -609,6 +606,21 @@ pub fn particle_focusing_time(radius: f64, k: f64, e_ac: f64, phi: f64, mu: f64)
     numerator / denominator
 }
 
+/// Acoustic fluid and particle material parameters for trajectory calculations.
+#[derive(Debug, Clone, Copy)]
+pub struct AcousticFluidParams {
+    /// Fluid density \[kg/m³\]
+    pub rho0: f64,
+    /// Speed of sound in fluid \[m/s\]
+    pub c0: f64,
+    /// Particle density \[kg/m³\]
+    pub rho_p: f64,
+    /// Speed of sound in particle \[m/s\]
+    pub c_p: f64,
+    /// Dynamic viscosity of fluid \[Pa·s\]
+    pub mu: f64,
+}
+
 /// Particle trajectory in 1-D acoustic focusing (overdamped dynamics).
 ///
 /// Solves m ẋ = F_rad(x) - 6πμR ẋ + F_drag ... simplified as
@@ -621,11 +633,7 @@ pub fn particle_focusing_time(radius: f64, k: f64, e_ac: f64, phi: f64, mu: f64)
 /// * `radius`    – particle radius \[m\]
 /// * `k`         – wavenumber \[rad/m\]
 /// * `p0`        – pressure amplitude \[Pa\]
-/// * `rho0`      – fluid density
-/// * `c0`        – speed of sound
-/// * `rho_p`     – particle density
-/// * `c_p`       – particle sound speed
-/// * `mu`        – viscosity
+/// * `fluid`     – acoustic fluid and particle material parameters
 /// * `t_end`     – final time \[s\]
 /// * `n_steps`   – number of time steps
 pub fn particle_focusing_trajectory(
@@ -633,14 +641,17 @@ pub fn particle_focusing_trajectory(
     radius: f64,
     k: f64,
     p0: f64,
-    rho0: f64,
-    c0: f64,
-    rho_p: f64,
-    c_p: f64,
-    mu: f64,
+    fluid: AcousticFluidParams,
     t_end: f64,
     n_steps: usize,
 ) -> (Vec<f64>, Vec<f64>) {
+    let AcousticFluidParams {
+        rho0,
+        c0,
+        rho_p,
+        c_p,
+        mu,
+    } = fluid;
     let dt = t_end / n_steps as f64;
     let drag = 6.0 * PI * mu * radius;
     let mut t = vec![0.0_f64; n_steps + 1];
@@ -949,32 +960,55 @@ pub fn apply_bounce_back(f: &mut [f64], is_wall: &[bool], nx: usize, ny: usize) 
 // 17. Acoustic Tweezers
 // ============================================================================
 
+/// Grid layout for acoustic pressure fields used by [`acoustic_tweezer_force`].
+#[derive(Debug, Clone, Copy)]
+pub struct AcousticGridParams {
+    /// Number of grid nodes in x
+    pub nx: usize,
+    /// Number of grid nodes in y
+    pub ny: usize,
+    /// Grid spacing in x \[m\]
+    pub dx: f64,
+    /// Grid spacing in y \[m\]
+    pub dy: f64,
+    /// Fluid density \[kg/m³\]
+    pub rho0: f64,
+    /// Speed of sound in fluid \[m/s\]
+    pub c0: f64,
+    /// Particle density \[kg/m³\]
+    pub rho_p: f64,
+    /// Speed of sound in particle \[m/s\]
+    pub c_p: f64,
+}
+
 /// Acoustic tweezer gradient force on a Rayleigh particle (R ≪ λ).
 ///
 /// F_grad = -∇U_gorkov where U is the Gorkov potential.
-/// The gradient is computed numerically using central differences.
+/// The gradient is computed numerically using central differences on the provided
+/// 2-D pressure field. Returns `(fx, fy)` in Newtons.
 ///
 /// # Arguments
-/// * `radius`    – particle radius \[m\]
-/// * `x`, `y`   – particle position \[m\]
-/// * `p_field`  – 2-D pressure amplitude field, length nx*ny
-/// * `nx`, `ny` – grid dimensions
-/// * `dx`, `dy` – grid spacings \[m\]
-/// * `rho0`, `c0`, `rho_p`, `c_p` – material parameters
+/// * `radius`  – particle radius \[m\]
+/// * `x`, `y`  – particle position \[m\]
+/// * `p_field` – 2-D pressure amplitude field, length `grid.nx * grid.ny`
+/// * `grid`    – grid geometry and material parameters (see [`AcousticGridParams`])
 pub fn acoustic_tweezer_force(
     radius: f64,
     x: f64,
     y: f64,
     p_field: &[f64],
-    nx: usize,
-    ny: usize,
-    dx: f64,
-    dy: f64,
-    rho0: f64,
-    c0: f64,
-    rho_p: f64,
-    c_p: f64,
+    grid: AcousticGridParams,
 ) -> (f64, f64) {
+    let AcousticGridParams {
+        nx,
+        ny,
+        dx,
+        dy,
+        rho0,
+        c0,
+        rho_p,
+        c_p,
+    } = grid;
     // Bilinear interpolation helper
     let interpolate = |field: &[f64], px: f64, py: f64| -> f64 {
         let ix = (px / dx).floor() as isize;
@@ -1357,7 +1391,19 @@ mod tests {
         let t_end = 1e-3;
         let n_steps = 100;
         let (_t, x) = particle_focusing_trajectory(
-            x0, radius, k, p0, RHO0_WATER, c0, rho_p, c_p, mu, t_end, n_steps,
+            x0,
+            radius,
+            k,
+            p0,
+            AcousticFluidParams {
+                rho0: RHO0_WATER,
+                c0,
+                rho_p,
+                c_p,
+                mu,
+            },
+            t_end,
+            n_steps,
         );
         // Particle should move (not stay stationary)
         let dx = (x.last().unwrap() - x0).abs();

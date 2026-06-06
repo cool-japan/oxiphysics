@@ -407,51 +407,51 @@ mod tests {
     #[test]
     fn test_vtk_write_and_read_roundtrip() {
         let h = make_two_level_hierarchy();
-        let path = "/tmp/test_amr_roundtrip.vthb";
-        AmrWriter::write_vtk(path, &h).expect("write failed");
-        let h2 = AmrReader::read_vtk(path).expect("read failed");
+        let path = std::env::temp_dir().join("test_amr_roundtrip.vthb");
+        AmrWriter::write_vtk(path.to_str().unwrap_or(""), &h).expect("write failed");
+        let h2 = AmrReader::read_vtk(path.to_str().unwrap_or("")).expect("read failed");
         assert_eq!(h2.num_levels(), h.num_levels());
         assert_eq!(h2.total_cells(), h.total_cells());
     }
     #[test]
     fn test_vtk_write_field_values() {
         let h = make_two_level_hierarchy();
-        let path = "/tmp/test_amr_fields.vthb";
-        AmrWriter::write_vtk(path, &h).expect("write failed");
-        let h2 = AmrReader::read_vtk(path).expect("read failed");
+        let path = std::env::temp_dir().join("test_amr_fields.vthb");
+        AmrWriter::write_vtk(path.to_str().unwrap_or(""), &h).expect("write failed");
+        let h2 = AmrReader::read_vtk(path.to_str().unwrap_or("")).expect("read failed");
         let cell = &h2.levels[0].cells[0];
         assert!((cell.data[0] - 1.0).abs() < 1e-6);
     }
     #[test]
     fn test_vtk_write_creates_file() {
         let h = make_two_level_hierarchy();
-        let path = "/tmp/test_amr_exists.vthb";
-        AmrWriter::write_vtk(path, &h).expect("write failed");
-        assert!(std::path::Path::new(path).exists());
+        let path = std::env::temp_dir().join("test_amr_exists.vthb");
+        AmrWriter::write_vtk(path.to_str().unwrap_or(""), &h).expect("write failed");
+        assert!(path.exists());
     }
     #[test]
     fn test_write_amr_pvd() {
         let h = make_two_level_hierarchy();
-        let path = "/tmp/test_amr.pvd";
-        write_amr_pvd(path, &h).expect("pvd write failed");
-        assert!(std::path::Path::new(path).exists());
+        let path = std::env::temp_dir().join("test_amr.pvd");
+        write_amr_pvd(path.to_str().unwrap_or(""), &h).expect("pvd write failed");
+        assert!(path.exists());
     }
     #[test]
     fn test_pvd_content_has_timestep() {
         let h = make_two_level_hierarchy();
-        let path = "/tmp/test_amr_ts.pvd";
-        write_amr_pvd(path, &h).expect("pvd write failed");
+        let path = std::env::temp_dir().join("test_amr_ts.pvd");
+        write_amr_pvd(path.to_str().unwrap_or(""), &h).expect("pvd write failed");
         let mut raw = String::new();
-        File::open(path).unwrap().read_to_string(&mut raw).unwrap();
+        File::open(&path).unwrap().read_to_string(&mut raw).unwrap();
         assert!(raw.contains("timestep="));
         assert!(raw.contains("1.500000"));
     }
     #[test]
     fn test_checkpoint_write_read_roundtrip() {
         let h = make_two_level_hierarchy();
-        let path = "/tmp/test_amr_checkpoint.amrc";
-        AmrCheckpoint::write(path, &h).expect("checkpoint write failed");
-        let h2 = AmrCheckpoint::read(path).expect("checkpoint read failed");
+        let path = std::env::temp_dir().join("test_amr_checkpoint.amrc");
+        AmrCheckpoint::write(path.to_str().unwrap_or(""), &h).expect("checkpoint write failed");
+        let h2 = AmrCheckpoint::read(path.to_str().unwrap_or("")).expect("checkpoint read failed");
         assert_eq!(h2.num_levels(), h.num_levels());
         assert_eq!(h2.total_cells(), h.total_cells());
         assert!((h2.time - h.time).abs() < 1e-12);
@@ -460,17 +460,17 @@ mod tests {
     #[test]
     fn test_checkpoint_field_names_preserved() {
         let h = make_two_level_hierarchy();
-        let path = "/tmp/test_amr_ckpt_fields.amrc";
-        AmrCheckpoint::write(path, &h).expect("write");
-        let h2 = AmrCheckpoint::read(path).expect("read");
+        let path = std::env::temp_dir().join("test_amr_ckpt_fields.amrc");
+        AmrCheckpoint::write(path.to_str().unwrap_or(""), &h).expect("write");
+        let h2 = AmrCheckpoint::read(path.to_str().unwrap_or("")).expect("read");
         assert_eq!(h2.levels[0].field_names, vec!["pressure", "density"]);
     }
     #[test]
     fn test_checkpoint_cell_data_preserved() {
         let h = make_two_level_hierarchy();
-        let path = "/tmp/test_amr_ckpt_data.amrc";
-        AmrCheckpoint::write(path, &h).expect("write");
-        let h2 = AmrCheckpoint::read(path).expect("read");
+        let path = std::env::temp_dir().join("test_amr_ckpt_data.amrc");
+        AmrCheckpoint::write(path.to_str().unwrap_or(""), &h).expect("write");
+        let h2 = AmrCheckpoint::read(path.to_str().unwrap_or("")).expect("read");
         let orig = &h.levels[0].cells[0].data;
         let restored = &h2.levels[0].cells[0].data;
         assert_eq!(orig.len(), restored.len());
@@ -480,17 +480,17 @@ mod tests {
     }
     #[test]
     fn test_checkpoint_bad_magic() {
-        let path = "/tmp/test_amr_bad_magic.amrc";
-        std::fs::write(path, b"BAAD\x00\x00\x00\x00").unwrap();
-        let result = AmrCheckpoint::read(path);
+        let path = std::env::temp_dir().join("test_amr_bad_magic.amrc");
+        std::fs::write(&path, b"BAAD\x00\x00\x00\x00").unwrap();
+        let result = AmrCheckpoint::read(path.to_str().unwrap_or(""));
         assert!(result.is_err());
     }
     #[test]
     fn test_checkpoint_coords_preserved() {
         let h = make_two_level_hierarchy();
-        let path = "/tmp/test_amr_ckpt_coords.amrc";
-        AmrCheckpoint::write(path, &h).expect("write");
-        let h2 = AmrCheckpoint::read(path).expect("read");
+        let path = std::env::temp_dir().join("test_amr_ckpt_coords.amrc");
+        AmrCheckpoint::write(path.to_str().unwrap_or(""), &h).expect("write");
+        let h2 = AmrCheckpoint::read(path.to_str().unwrap_or("")).expect("read");
         assert_eq!(h2.levels[1].cells[1].coords, [1, 0, 0]);
     }
     #[test]
@@ -532,9 +532,9 @@ mod tests {
     #[test]
     fn test_vtk_roundtrip_preserves_cell_count_per_level() {
         let h = make_two_level_hierarchy();
-        let path = "/tmp/test_amr_roundtrip2.vthb";
-        AmrWriter::write_vtk(path, &h).expect("write");
-        let h2 = AmrReader::read_vtk(path).expect("read");
+        let path = std::env::temp_dir().join("test_amr_roundtrip2.vthb");
+        AmrWriter::write_vtk(path.to_str().unwrap_or(""), &h).expect("write");
+        let h2 = AmrReader::read_vtk(path.to_str().unwrap_or("")).expect("read");
         for (orig_g, restored_g) in h.levels.iter().zip(h2.levels.iter()) {
             assert_eq!(orig_g.cell_count(), restored_g.cell_count());
         }
@@ -715,26 +715,26 @@ mod tests {
     #[test]
     fn test_amr_mesh_export_creates_file() {
         let h = make_two_level_hierarchy();
-        let path = "/tmp/test_amr_export.vtu";
-        AmrMeshExport::write_vtu(path, &h, 0).expect("vtu write failed");
-        assert!(std::path::Path::new(path).exists());
+        let path = std::env::temp_dir().join("test_amr_export.vtu");
+        AmrMeshExport::write_vtu(path.to_str().unwrap_or(""), &h, 0).expect("vtu write failed");
+        assert!(path.exists());
     }
     #[test]
     fn test_amr_mesh_export_vtk_header() {
         let h = make_two_level_hierarchy();
-        let path = "/tmp/test_amr_export_hdr.vtu";
-        AmrMeshExport::write_vtu(path, &h, 0).expect("write");
+        let path = std::env::temp_dir().join("test_amr_export_hdr.vtu");
+        AmrMeshExport::write_vtu(path.to_str().unwrap_or(""), &h, 0).expect("write");
         let mut raw = String::new();
-        File::open(path).unwrap().read_to_string(&mut raw).unwrap();
+        File::open(&path).unwrap().read_to_string(&mut raw).unwrap();
         assert!(raw.contains("UnstructuredGrid"));
     }
     #[test]
     fn test_amr_mesh_export_hex_type() {
         let h = make_two_level_hierarchy();
-        let path = "/tmp/test_amr_export_hex.vtu";
-        AmrMeshExport::write_vtu(path, &h, 0).expect("write");
+        let path = std::env::temp_dir().join("test_amr_export_hex.vtu");
+        AmrMeshExport::write_vtu(path.to_str().unwrap_or(""), &h, 0).expect("write");
         let mut raw = String::new();
-        File::open(path).unwrap().read_to_string(&mut raw).unwrap();
+        File::open(&path).unwrap().read_to_string(&mut raw).unwrap();
         assert!(raw.contains("12"));
     }
     #[test]

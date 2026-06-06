@@ -12,9 +12,6 @@
 //! - \[`cross_validation()`\] — L-curve method for regularization parameter selection
 //! - \[`sensitivity_matrix()`\] — Jacobian of observables w.r.t. parameters
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ── Math helpers ─────────────────────────────────────────────────────────────
 
 /// Compute the dot product of two slices.

@@ -23,8 +23,6 @@
 //! - Chen, F. F. (1984). *Introduction to Plasma Physics and Controlled Fusion*.
 //! - Birdsall, C. K. & Langdon, A. B. (1991). *Plasma Physics via Computer Simulation*.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -307,43 +305,6 @@ impl MagneticField {
 }
 
 // ---------------------------------------------------------------------------
-// FluidField  (helper, not public)
-// ---------------------------------------------------------------------------
-
-/// Internal helper: density + velocity field on an nx × ny grid.
-#[derive(Debug, Clone)]
-struct FluidField {
-    /// Density (m⁻³), length nx * ny.
-    density: Vec<f64>,
-    /// Velocity x-component (m s⁻¹), length nx * ny.
-    vx: Vec<f64>,
-    /// Velocity y-component (m s⁻¹), length nx * ny.
-    vy: Vec<f64>,
-    /// Grid dimension x.
-    nx: usize,
-    /// Grid dimension y.
-    ny: usize,
-}
-
-impl FluidField {
-    fn new(nx: usize, ny: usize, init_density: f64) -> Self {
-        let n = nx * ny;
-        Self {
-            density: vec![init_density; n],
-            vx: vec![0.0; n],
-            vy: vec![0.0; n],
-            nx,
-            ny,
-        }
-    }
-
-    #[inline]
-    fn idx(&self, ix: usize, iy: usize) -> usize {
-        iy * self.nx + ix
-    }
-}
-
-// ---------------------------------------------------------------------------
 // PlasmaLbm
 // ---------------------------------------------------------------------------
 
@@ -423,7 +384,6 @@ impl PlasmaLbm {
     /// * `ion_species`  – ion species parameters
     /// * `elec_species` – electron species parameters
     /// * `bz`           – out-of-plane magnetic field (T)
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         nx: usize,
         ny: usize,

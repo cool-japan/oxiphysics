@@ -26,14 +26,15 @@ pub(super) fn transpose3(m: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     ]
 }
 /// Multiply two 3x3 matrices.
-#[allow(clippy::needless_range_loop)]
 pub(super) fn mat_mul3(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut r = [[0.0; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            for k in 0..3 {
-                r[i][j] += a[i][k] * b[k][j];
-            }
+    for (r_row, a_row) in r.iter_mut().zip(a.iter()) {
+        for (j, r_ij) in r_row.iter_mut().enumerate() {
+            *r_ij = a_row
+                .iter()
+                .zip(b.iter())
+                .map(|(&a_ik, b_col)| a_ik * b_col[j])
+                .sum();
         }
     }
     r
@@ -66,7 +67,6 @@ pub(super) fn invariant_i1(c: &[[f64; 3]; 3]) -> f64 {
     trace3(c)
 }
 /// Invariant I2 = 0.5*(tr(C)^2 - tr(C^2)).
-#[allow(clippy::needless_range_loop)]
 pub(super) fn invariant_i2(c: &[[f64; 3]; 3]) -> f64 {
     let tr_c = trace3(c);
     let c2 = mat_mul3(c, c);
@@ -237,16 +237,14 @@ mod tests {
         );
     }
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_fung_stress_zero_at_identity() {
         let fung = FungHyperelastic::isotropic(100.0, 10.0);
         let s = fung.second_piola_kirchhoff(&identity_f());
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in s.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    s[i][j].abs() < EPS,
-                    "Fung stress at identity should be 0, got S[{i}][{j}]={:.6}",
-                    s[i][j]
+                    val.abs() < EPS,
+                    "Fung stress at identity should be 0, got S[{i}][{j}]={val:.6}"
                 );
             }
         }

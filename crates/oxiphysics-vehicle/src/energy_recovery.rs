@@ -12,9 +12,6 @@
 //! - [`willans_line_efficiency`] — analytical engine efficiency model
 //! - [`optimal_operating_line`] — torque-vs-RPM OOL for minimum fuel
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // BatteryModel
 // ---------------------------------------------------------------------------

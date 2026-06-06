@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use crate::atom::AtomSet;
 use crate::neighbor::PeriodicBox;
 
@@ -266,12 +265,8 @@ mod tests {
     fn test_anisotropic_berendsen_uniform() {
         let baro = AnisotropicBerendsenBarostat::new(1.0, 1.0, 0.01);
         let mu = baro.scale_factors([1.0, 1.0, 1.0], 0.01);
-        for k in 0..3 {
-            assert!(
-                (mu[k] - 1.0).abs() < 1e-12,
-                "axis {k}: mu={}, expected 1.0",
-                mu[k]
-            );
+        for (k, &m) in mu.iter().enumerate() {
+            assert!((m - 1.0).abs() < 1e-12, "axis {k}: mu={}, expected 1.0", m);
         }
     }
     #[test]
@@ -279,8 +274,8 @@ mod tests {
         let baro =
             AnisotropicBerendsenBarostat::anisotropic([1.0, 2.0, 3.0], 1.0, [0.01, 0.01, 0.01]);
         let mu = baro.scale_factors([1.0, 2.0, 3.0], 0.01);
-        for k in 0..3 {
-            assert!((mu[k] - 1.0).abs() < 1e-12, "axis {k}: mu={}", mu[k]);
+        for (k, &m) in mu.iter().enumerate() {
+            assert!((m - 1.0).abs() < 1e-12, "axis {k}: mu={}", m);
         }
     }
     #[test]
@@ -290,12 +285,8 @@ mod tests {
         let mut positions = [[1.0, 1.0, 1.0]];
         let mut box_len = [10.0, 10.0, 10.0];
         baro.apply_anisotropic(&mut positions, &mut box_len, [1.0, 1.0, 1.0], 0.01);
-        for k in 0..3 {
-            assert!(
-                box_len[k] < 10.0,
-                "axis {k}: box should shrink, got {}",
-                box_len[k]
-            );
+        for (k, &b) in box_len.iter().enumerate() {
+            assert!(b < 10.0, "axis {k}: box should shrink, got {}", b);
         }
     }
     #[test]
@@ -420,7 +411,6 @@ pub fn component_pressures(
     ]
 }
 /// Description string for a pressure coupling mode.
-#[allow(dead_code)]
 pub fn pressure_coupling_mode_name(mode: PressureCouplingMode) -> &'static str {
     match mode {
         PressureCouplingMode::None => "none",
@@ -510,10 +500,10 @@ mod extended_barostat_tests {
         let p_current = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let h_before = bt.h;
         bt.advance(&p_current, 0.001);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, (row_h, row_before)) in bt.h.iter().zip(h_before.iter()).enumerate() {
+            for (j, (&h_val, &hb_val)) in row_h.iter().zip(row_before.iter()).enumerate() {
                 assert!(
-                    (bt.h[i][j] - h_before[i][j]).abs() < 1e-12,
+                    (h_val - hb_val).abs() < 1e-12,
                     "H[{i}][{j}] should not change at target pressure"
                 );
             }
@@ -701,11 +691,11 @@ mod extended_barostat_tests {
         let baro = BerendsenBarostat::new(1.0, 1.0, 0.01);
         let mu_vec = baro.compute_scaling_matrix(0.8, 0.01);
         let mu = baro.scale_factor(0.8, 0.01);
-        for k in 0..3 {
+        for (k, &mv) in mu_vec.iter().enumerate() {
             assert!(
-                (mu_vec[k] - mu).abs() < 1e-14,
+                (mv - mu).abs() < 1e-14,
                 "scaling_matrix[{k}] = {}, expected {mu}",
-                mu_vec[k]
+                mv
             );
         }
     }
@@ -714,11 +704,11 @@ mod extended_barostat_tests {
     fn test_berendsen_scaling_matrix_at_target_pressure() {
         let baro = BerendsenBarostat::new(2.0, 1.0, 0.05);
         let mu_vec = baro.compute_scaling_matrix(2.0, 0.01);
-        for k in 0..3 {
+        for (k, &mv) in mu_vec.iter().enumerate() {
             assert!(
-                (mu_vec[k] - 1.0).abs() < 1e-12,
+                (mv - 1.0).abs() < 1e-12,
                 "at target P, scaling_matrix[{k}] must be 1; got {}",
-                mu_vec[k]
+                mv
             );
         }
     }
@@ -727,12 +717,8 @@ mod extended_barostat_tests {
     fn test_berendsen_scaling_matrix_positive() {
         let baro = BerendsenBarostat::new(1.0, 0.5, 0.01);
         let mu_vec = baro.compute_scaling_matrix(10.0, 0.001);
-        for k in 0..3 {
-            assert!(
-                mu_vec[k] > 0.0,
-                "scaling_matrix[{k}] must be positive; got {}",
-                mu_vec[k]
-            );
+        for (k, &mv) in mu_vec.iter().enumerate() {
+            assert!(mv > 0.0, "scaling_matrix[{k}] must be positive; got {}", mv);
         }
     }
     /// At target pressure the cell derivative must be zero.

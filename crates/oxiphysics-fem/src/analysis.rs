@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,8 +8,6 @@
 //! - [`StaticAnalysis`] — standalone dense-matrix static analysis
 //! - [`ModalAnalysis`] — Rayleigh-quotient iteration / power iteration
 //! - [`DynamicAnalysis`] — Newmark-β and Wilson-θ time integration
-
-#![allow(dead_code)]
 
 use oxiphysics_core::math::Vec3;
 
@@ -94,7 +91,6 @@ impl LinearStaticAnalysis {
     }
 
     /// Run the analysis and return the results.
-    #[allow(clippy::too_many_arguments)]
     pub fn solve(
         &self,
         mesh: &TetrahedralMesh,
@@ -691,7 +687,6 @@ impl DynamicAnalysis {
     ///
     /// # Returns
     /// `(u_{n+1}, v_{n+1}, a_{n+1})`
-    #[allow(clippy::too_many_arguments)]
     pub fn newmark_beta_step(
         &self,
         u: &[f64],
@@ -741,7 +736,6 @@ impl DynamicAnalysis {
     ///
     /// # Returns
     /// `(u_{n+1}, v_{n+1}, a_{n+1})`
-    #[allow(clippy::too_many_arguments)]
     pub fn wilson_theta_step(
         &self,
         u: &[f64],
@@ -811,8 +805,6 @@ impl DynamicAnalysis {
 // ---------------------------------------------------------------------------
 
 /// Full 3-D stress state in Voigt notation: \[σ_xx, σ_yy, σ_zz, τ_xy, τ_yz, τ_xz\].
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 #[derive(Debug, Clone, Copy)]
 pub struct StressState {
     /// Voigt stress components.
@@ -826,7 +818,6 @@ impl StressState {
     }
 
     /// Construct from individual components.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(sxx: f64, syy: f64, szz: f64, txy: f64, tyz: f64, txz: f64) -> Self {
         Self {
             sigma: [sxx, syy, szz, txy, tyz, txz],
@@ -955,7 +946,6 @@ impl StressState {
 ///
 /// where σ_a is stress amplitude, σ_ref is reference stress at N_ref cycles,
 /// and m = log(N_ref) / log(σ_uts / σ_ref) (slope exponent).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FatigueLifeEstimator {
     /// Ultimate tensile strength (UTS) \[Pa\].
@@ -1020,7 +1010,6 @@ impl FatigueLifeEstimator {
 ///
 /// D = Σ (n_i / N_i)  where each element is the ratio n_i/N_i.
 /// Failure is predicted when D ≥ 1.
-#[allow(dead_code)]
 pub fn miner_damage(cycle_ratios: &[f64]) -> f64 {
     cycle_ratios.iter().sum()
 }
@@ -1032,7 +1021,6 @@ pub fn miner_damage(cycle_ratios: &[f64]) -> f64 {
 /// Compute element-averaged strains from a displacement field and B-matrices.
 ///
 /// For each element, ε = B · u_local.  Stores result as `[f64; 6]` in Voigt order.
-#[allow(dead_code)]
 pub fn compute_element_strains(
     displacements: &[f64],
     element_dofs: &[Vec<usize>],
@@ -1059,7 +1047,6 @@ pub fn compute_element_strains(
 }
 
 /// Compute element von Mises stresses from a stress field.
-#[allow(dead_code)]
 pub fn von_mises_field(stresses: &[[f64; 6]]) -> Vec<f64> {
     stresses
         .iter()
@@ -1068,7 +1055,6 @@ pub fn von_mises_field(stresses: &[[f64; 6]]) -> Vec<f64> {
 }
 
 /// Compute element safety factors by von Mises criterion.
-#[allow(dead_code)]
 pub fn safety_factor_field(stresses: &[[f64; 6]], yield_stress: f64) -> Vec<f64> {
     stresses
         .iter()
@@ -1080,7 +1066,6 @@ pub fn safety_factor_field(stresses: &[[f64; 6]], yield_stress: f64) -> Vec<f64>
 ///
 /// Useful for stress smoothing after solving (superconvergent patch recovery
 /// approximation via simple neighbor average).
-#[allow(dead_code)]
 pub fn smooth_field(values: &[f64], neighbors: &[Vec<usize>]) -> Vec<f64> {
     values
         .iter()
@@ -1106,7 +1091,6 @@ pub fn smooth_field(values: &[f64], neighbors: &[Vec<usize>]) -> Vec<f64> {
 /// Rayleigh damping: C = α·M + β·K.
 ///
 /// α and β are derived from two modal damping ratios at given frequencies.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct RayleighDamping {
     /// Mass-proportional coefficient.
@@ -1230,8 +1214,8 @@ mod tests {
         let strains = sa.compute_strains(&u, &elements);
         assert_eq!(strains.len(), 1);
         assert!((strains[0][0] - 0.5).abs() < 1e-15);
-        for k in 1..6 {
-            assert_eq!(strains[0][k], 0.0);
+        for (k, &val) in strains[0].iter().enumerate().skip(1) {
+            assert_eq!(val, 0.0, "strains[0][{k}] should be 0");
         }
     }
 

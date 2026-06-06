@@ -2,10 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use oxiphysics_core::math::Vec3;
 
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// XPBD collision (penetration) constraint that projects a particle out of a
@@ -14,7 +12,6 @@ use super::functions::*;
 /// `C = dot(p - point, normal)  ≥  0`
 ///
 /// When violated (`C < 0`), the particle is pushed back along `normal`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct XpbdCollisionConstraint {
     /// Index of the colliding particle.
@@ -26,7 +23,6 @@ pub struct XpbdCollisionConstraint {
     /// XPBD compliance (0 = rigid).
     pub compliance: f64,
 }
-#[allow(dead_code)]
 impl XpbdCollisionConstraint {
     /// Create a collision constraint.
     pub fn new(
@@ -72,14 +68,12 @@ impl XpbdCollisionConstraint {
     }
 }
 /// Monitors convergence of PBD constraint iterations.
-#[allow(dead_code)]
 pub struct PbdConvergenceMonitor {
     /// Error history (max constraint violation per iteration).
     pub history: Vec<f64>,
     /// Convergence threshold.
     pub threshold: f64,
 }
-#[allow(dead_code)]
 impl PbdConvergenceMonitor {
     /// Create a new monitor.
     pub fn new(threshold: f64) -> Self {
@@ -124,7 +118,6 @@ impl PbdConvergenceMonitor {
 /// Particles: `p0, p1` form the shared edge; `p2` is the apex of triangle A;
 /// `p3` is the apex of triangle B.  The rest angle is the dihedral angle
 /// between the two triangles at the shared edge.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct XpbdDihedralBending {
     /// Particle indices: \[edge0, edge1, apex_A, apex_B\].
@@ -134,7 +127,6 @@ pub struct XpbdDihedralBending {
     /// XPBD compliance.
     pub compliance: f64,
 }
-#[allow(dead_code)]
 impl XpbdDihedralBending {
     /// Create a dihedral bending constraint.
     pub fn new(indices: [usize; 4], rest_angle: f64, compliance: f64) -> Self {
@@ -224,7 +216,6 @@ impl PbdSphereCollision {
 ///
 /// The coarse levels provide long-range propagation while fine levels handle
 /// local detail — mimicking multigrid approaches.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HierarchicalPbdSolver {
     /// Resolution levels from coarsest to finest.
@@ -232,7 +223,6 @@ pub struct HierarchicalPbdSolver {
     /// Global time-step.
     pub dt: f64,
 }
-#[allow(dead_code)]
 impl HierarchicalPbdSolver {
     /// Create a hierarchical solver.
     pub fn new(dt: f64) -> Self {
@@ -266,12 +256,10 @@ impl HierarchicalPbdSolver {
 ///
 /// Accumulates all corrections and applies them at once.
 /// This is less accurate per iteration but parallelizable.
-#[allow(dead_code)]
 pub struct ParallelPbd {
     /// Number of iterations.
     pub iterations: usize,
 }
-#[allow(dead_code)]
 impl ParallelPbd {
     /// Create a new parallel PBD solver.
     pub fn new(iterations: usize) -> Self {
@@ -302,9 +290,9 @@ impl ParallelPbd {
                 counts[c.a] += 1;
                 counts[c.b] += 1;
             }
-            for i in 0..n {
+            for (i, particle) in particles.iter_mut().enumerate() {
                 if counts[i] > 0 {
-                    particles[i].position += deltas[i] / counts[i] as f64;
+                    particle.position += deltas[i] / counts[i] as f64;
                 }
             }
         }
@@ -363,7 +351,6 @@ impl PbdBendingConstraint {
 ///
 /// Higher priority constraints are solved more often and before lower priority
 /// ones, ensuring critical constraints (e.g., collision) are satisfied first.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PbdConstraintPriority {
     /// Lowest priority: cosmetic (e.g., cloth bending).
@@ -488,34 +475,50 @@ impl PbdSimulation {
             p.prev_position = p.position;
             p.position += p.velocity * dt;
         }
+        // Clone constraint parameters to avoid borrow conflicts with self.particles
+        let dist_snapshots: Vec<(usize, usize, f64, f64)> = self
+            .distance_constraints
+            .iter()
+            .map(|c| (c.a, c.b, c.rest_length, c.stiffness))
+            .collect();
+        let bend_snapshots: Vec<(usize, usize, usize, f64, f64)> = self
+            .bending_constraints
+            .iter()
+            .map(|c| (c.a, c.b, c.c, c.rest_length_ac, c.stiffness))
+            .collect();
+        let sphere_snapshots: Vec<(usize, Vec3, f64, f64)> = self
+            .sphere_collisions
+            .iter()
+            .map(|c| (c.particle, c.sphere_center, c.sphere_radius, c.restitution))
+            .collect();
         for _ in 0..n_iterations {
-            for i in 0..self.distance_constraints.len() {
-                let constraint = PbdDistanceConstraint {
-                    a: self.distance_constraints[i].a,
-                    b: self.distance_constraints[i].b,
-                    rest_length: self.distance_constraints[i].rest_length,
-                    stiffness: self.distance_constraints[i].stiffness,
-                };
-                constraint.project(&mut self.particles);
+            for &(a, b, rest_length, stiffness) in &dist_snapshots {
+                PbdDistanceConstraint {
+                    a,
+                    b,
+                    rest_length,
+                    stiffness,
+                }
+                .project(&mut self.particles);
             }
-            for i in 0..self.bending_constraints.len() {
-                let constraint = PbdBendingConstraint {
-                    a: self.bending_constraints[i].a,
-                    b: self.bending_constraints[i].b,
-                    c: self.bending_constraints[i].c,
-                    rest_length_ac: self.bending_constraints[i].rest_length_ac,
-                    stiffness: self.bending_constraints[i].stiffness,
-                };
-                constraint.project(&mut self.particles);
+            for &(a, b, c, rest_length_ac, stiffness) in &bend_snapshots {
+                PbdBendingConstraint {
+                    a,
+                    b,
+                    c,
+                    rest_length_ac,
+                    stiffness,
+                }
+                .project(&mut self.particles);
             }
-            for i in 0..self.sphere_collisions.len() {
-                let constraint = PbdSphereCollision {
-                    particle: self.sphere_collisions[i].particle,
-                    sphere_center: self.sphere_collisions[i].sphere_center,
-                    sphere_radius: self.sphere_collisions[i].sphere_radius,
-                    restitution: self.sphere_collisions[i].restitution,
-                };
-                constraint.project(&mut self.particles);
+            for &(particle, sphere_center, sphere_radius, restitution) in &sphere_snapshots {
+                PbdSphereCollision {
+                    particle,
+                    sphere_center,
+                    sphere_radius,
+                    restitution,
+                }
+                .project(&mut self.particles);
             }
         }
         if dt > 0.0 {
@@ -585,10 +588,10 @@ impl PbdSimulation {
         stiffness: f64,
     ) -> Vec<Vec<usize>> {
         let mut grid = vec![vec![0usize; nx]; ny];
-        for iy in 0..ny {
-            for ix in 0..nx {
+        for (iy, g_row) in grid.iter_mut().enumerate() {
+            for (ix, g_cell) in g_row.iter_mut().enumerate() {
                 let pos = origin + Vec3::new(spacing * ix as f64, spacing * iy as f64, 0.0);
-                grid[iy][ix] = self.add_particle(pos, mass);
+                *g_cell = self.add_particle(pos, mass);
             }
         }
         for iy in 0..ny {
@@ -640,14 +643,12 @@ impl PbdSimulation {
     }
 }
 /// A PBD distance constraint with a priority level.
-#[allow(dead_code)]
 pub struct PrioritizedConstraint {
     /// The underlying distance constraint.
     pub constraint: PbdDistanceConstraint,
     /// Priority level.
     pub priority: ConstraintPriority,
 }
-#[allow(dead_code)]
 impl PrioritizedConstraint {
     /// Create a new prioritized constraint.
     pub fn new(
@@ -664,7 +665,6 @@ impl PrioritizedConstraint {
     }
 }
 /// XPBD distance constraint with compliance (inverse stiffness).
-#[allow(dead_code)]
 pub struct XpbdDistanceConstraint {
     /// Index of particle A.
     pub a: usize,
@@ -677,7 +677,6 @@ pub struct XpbdDistanceConstraint {
     /// Accumulated Lagrange multiplier (reset each sub-step).
     pub lambda: f64,
 }
-#[allow(dead_code)]
 impl XpbdDistanceConstraint {
     /// Create a new XPBD constraint.
     pub fn new(a: usize, b: usize, rest_length: f64, compliance: f64) -> Self {
@@ -722,7 +721,6 @@ impl XpbdDistanceConstraint {
 ///
 /// Adds a global volume term: `C = V - V_rest`, where `V` is the current
 /// volume approximated from a single tetrahedron.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct XpbdPressureConstraint {
     /// Indices of the four tetrahedron vertices.
@@ -732,7 +730,6 @@ pub struct XpbdPressureConstraint {
     /// XPBD compliance.
     pub compliance: f64,
 }
-#[allow(dead_code)]
 impl XpbdPressureConstraint {
     /// Create a pressure constraint.
     pub fn new(tet_indices: [usize; 4], rest_volume: f64, compliance: f64) -> Self {
@@ -846,7 +843,6 @@ impl PbdDistanceConstraint {
     }
 }
 /// Priority level for PBD constraints.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConstraintPriority {
     /// Low priority (cosmetic, can be violated).
@@ -862,7 +858,6 @@ pub enum ConstraintPriority {
 ///
 /// Nodes are particle indices; edges indicate that two particles share
 /// a constraint.
-#[allow(dead_code)]
 pub struct PbdConstraintGraph {
     /// Number of particles (nodes).
     pub n_particles: usize,
@@ -871,7 +866,6 @@ pub struct PbdConstraintGraph {
     /// Constraint count per particle.
     pub degree: Vec<usize>,
 }
-#[allow(dead_code)]
 impl PbdConstraintGraph {
     /// Create a new empty constraint graph.
     pub fn new(n_particles: usize) -> Self {
@@ -924,7 +918,6 @@ impl PbdConstraintGraph {
     }
 }
 /// XPBD volume (tetrahedral) constraint for four particles.
-#[allow(dead_code)]
 pub struct XpbdVolumeConstraint {
     /// Indices of the four tet particles.
     pub indices: [usize; 4],
@@ -933,7 +926,6 @@ pub struct XpbdVolumeConstraint {
     /// Compliance α.
     pub compliance: f64,
 }
-#[allow(dead_code)]
 impl XpbdVolumeConstraint {
     /// Create a new volume constraint.
     pub fn new(indices: [usize; 4], rest_volume: f64, compliance: f64) -> Self {
@@ -996,12 +988,10 @@ impl XpbdVolumeConstraint {
 ///
 /// Processes constraints one at a time; later constraints can use
 /// corrections from earlier ones in the same iteration.
-#[allow(dead_code)]
 pub struct SequentialPbd {
     /// Number of iterations per time step.
     pub iterations: usize,
 }
-#[allow(dead_code)]
 impl SequentialPbd {
     /// Create a new sequential PBD solver.
     pub fn new(iterations: usize) -> Self {
@@ -1019,7 +1009,7 @@ impl SequentialPbd {
     pub fn solve_priority(
         &self,
         particles: &mut [PbdParticle],
-        constraints: &mut Vec<PrioritizedConstraint>,
+        constraints: &mut [PrioritizedConstraint],
     ) {
         constraints.sort_by_key(|b| std::cmp::Reverse(b.priority));
         for _ in 0..self.iterations {
@@ -1035,7 +1025,6 @@ impl SequentialPbd {
 /// With `compliance = 0` it degenerates to the rigid PBD distance constraint.
 /// Non-zero compliance allows stiffness tuning independently of iteration
 /// count.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct XpbdStretchConstraint {
     /// Index of the first particle.
@@ -1047,7 +1036,6 @@ pub struct XpbdStretchConstraint {
     /// XPBD compliance α (inverse stiffness in m/N·s²).  Zero = rigid.
     pub compliance: f64,
 }
-#[allow(dead_code)]
 impl XpbdStretchConstraint {
     /// Create a stretch constraint.
     pub fn new(i: usize, j: usize, rest_length: f64, compliance: f64) -> Self {
@@ -1094,7 +1082,6 @@ impl XpbdStretchConstraint {
     }
 }
 /// XPBD distance constraint operating on raw `[f64;3]` position arrays.
-#[allow(dead_code)]
 pub struct XpbdDistanceConstraintRaw {
     /// Index of particle 1.
     pub p1: usize,
@@ -1105,7 +1092,6 @@ pub struct XpbdDistanceConstraintRaw {
     /// Compliance α (inverse stiffness, m²/N).
     pub compliance: f64,
 }
-#[allow(dead_code)]
 impl XpbdDistanceConstraintRaw {
     /// Create a new raw distance constraint.
     pub fn new(p1: usize, p2: usize, rest_length: f64, compliance: f64) -> Self {
@@ -1190,7 +1176,6 @@ impl PbdParticle {
     }
 }
 /// A tagged constraint with its priority level.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PrioritizedPbdConstraint {
     /// Priority tier.
@@ -1200,7 +1185,6 @@ pub struct PrioritizedPbdConstraint {
     /// Additional weight applied during solving (1.0 = normal).
     pub weight: f64,
 }
-#[allow(dead_code)]
 impl PrioritizedPbdConstraint {
     /// Create a prioritized constraint entry.
     pub fn new(priority: PbdConstraintPriority, constraint_index: usize, weight: f64) -> Self {
@@ -1212,13 +1196,11 @@ impl PrioritizedPbdConstraint {
     }
 }
 /// Sorts and groups constraints by priority for staged solving.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct PbdConstraintScheduler {
     /// All constraints, will be sorted by priority descending.
     pub constraints: Vec<PrioritizedPbdConstraint>,
 }
-#[allow(dead_code)]
 impl PbdConstraintScheduler {
     /// Create an empty scheduler.
     pub fn new() -> Self {
@@ -1254,7 +1236,6 @@ impl PbdConstraintScheduler {
 ///
 /// Indices: `[0, 1, 2, 3]` where (0,1,2) and (0,2,3) form the two triangles.
 /// This constraint penalises deviation from the rest shape's mean curvature.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IsometricBending {
     /// Particle indices for the quad \[a, b, c, d\].
@@ -1264,7 +1245,6 @@ pub struct IsometricBending {
     /// Pre-computed rest-pose cotangent weights \[w01, w02, w03, w12, w13, w23\].
     pub cot_weights: [f64; 6],
 }
-#[allow(dead_code)]
 impl IsometricBending {
     /// Create an isometric bending constraint for a flat rest pose quad.
     ///
@@ -1388,7 +1368,6 @@ impl PbdVolumeConstraint {
     }
 }
 /// XPBD bending constraint between three particles p1–p2–p3.
-#[allow(dead_code)]
 pub struct XpbdBendingConstraint {
     /// Index of the first end particle.
     pub p1: usize,
@@ -1401,8 +1380,6 @@ pub struct XpbdBendingConstraint {
     /// Compliance α.
     pub compliance: f64,
 }
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
 impl XpbdBendingConstraint {
     /// Create a new bending constraint.
     pub fn new(p1: usize, p2: usize, p3: usize, rest_angle: f64, compliance: f64) -> Self {
@@ -1456,14 +1433,12 @@ impl XpbdBendingConstraint {
     }
 }
 /// A simple PBD sub-step solver that runs multiple sub-steps per frame.
-#[allow(dead_code)]
 pub struct PbdSubstepSolver {
     /// Number of sub-steps per frame.
     pub substeps: usize,
     /// Full frame timestep (sub-step dt = dt / substeps).
     pub dt: f64,
 }
-#[allow(dead_code)]
 impl PbdSubstepSolver {
     /// Create a new sub-step solver.
     pub fn new(substeps: usize, dt: f64) -> Self {
@@ -1491,7 +1466,6 @@ impl PbdSubstepSolver {
 }
 /// Level-of-detail descriptor for one resolution level in a hierarchical PBD
 /// simulation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HierarchyLevel {
     /// Number of solver iterations at this level.
@@ -1501,7 +1475,6 @@ pub struct HierarchyLevel {
     /// Compliance multiplier for constraints at this level.
     pub compliance_scale: f64,
 }
-#[allow(dead_code)]
 impl HierarchyLevel {
     /// Create a hierarchy level.
     pub fn new(iterations: u32, coarsening: u32, compliance_scale: f64) -> Self {

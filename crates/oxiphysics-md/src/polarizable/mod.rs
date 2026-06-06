@@ -1,11 +1,11 @@
 //! Auto-generated module structure
 
-pub mod functions;
+mod functions;
 pub mod pointdipolemodel_traits;
 pub mod qeqsolver_traits;
 pub mod shellmodel_traits;
 pub mod swm4ndpparams_traits;
-pub mod types;
+mod types;
 
 // Re-export all types
 pub use functions::*;

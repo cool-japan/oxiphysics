@@ -7,9 +7,6 @@
 //! polymer model, DNA origami scaffolding, and Coxeter helix geometry.
 //! Includes nearest-neighbour stacking energies and hydrogen-bond potentials.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -504,6 +501,7 @@ pub fn hydrogen_bond_energy(bp_distance: f64) -> f64 {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Compute the distance between two positions in Å.
+#[cfg(test)]
 fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];

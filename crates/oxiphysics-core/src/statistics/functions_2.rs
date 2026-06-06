@@ -2,13 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::types::*;
 #[cfg(test)]
 mod tests_new_statistics {
-    use super::*;
+    use super::super::*;
     #[test]
     fn test_mad_known_value() {
         let data = [1.0, 2.0, 3.0, 4.0, 5.0];

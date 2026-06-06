@@ -1,4 +1,3 @@
-#![allow(clippy::too_many_arguments)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! phase field, percolation, heat equation, nucleation, molecular graph,
 //! fragmentation, ionic conductivity, and final utility helpers.
 
-#![allow(dead_code)]
-
 use super::convenience::{write_f64_dataset, write_vlen_strings};
 use super::file::Hdf5File;
 use super::types::{AttrValue, Hdf5Dtype, Hdf5Error, Hdf5Result};
@@ -16,7 +13,6 @@ use super::types::{AttrValue, Hdf5Dtype, Hdf5Error, Hdf5Result};
 // ── Cluster expansion ─────────────────────────────────────────────────────────
 
 /// Write cluster expansion ECIs (effective cluster interactions).
-#[allow(dead_code)]
 pub fn write_cluster_expansion_eci(
     file: &mut Hdf5File,
     group: &str,
@@ -32,7 +28,6 @@ pub fn write_cluster_expansion_eci(
 // ── Structure enumeration ─────────────────────────────────────────────────────
 
 /// Write enumerated structures and their formation energies.
-#[allow(dead_code)]
 pub fn write_enumerated_structures(
     file: &mut Hdf5File,
     group: &str,
@@ -51,7 +46,6 @@ pub fn write_enumerated_structures(
 // ── Equation of state ─────────────────────────────────────────────────────────
 
 /// Write Birch-Murnaghan EOS fit results.
-#[allow(dead_code)]
 pub fn write_eos_fit(
     file: &mut Hdf5File,
     group: &str,
@@ -79,7 +73,6 @@ pub fn write_eos_fit(
 // ── Convex hull ───────────────────────────────────────────────────────────────
 
 /// Write convex hull stability data.
-#[allow(dead_code)]
 pub fn write_convex_hull(
     file: &mut Hdf5File,
     group: &str,
@@ -101,7 +94,6 @@ pub fn write_convex_hull(
 // ── Solvation energy ──────────────────────────────────────────────────────────
 
 /// Write implicit solvation energies for a set of solvents.
-#[allow(dead_code)]
 pub fn write_solvation_energies(
     file: &mut Hdf5File,
     group: &str,
@@ -116,7 +108,6 @@ pub fn write_solvation_energies(
 // ── Excited states ────────────────────────────────────────────────────────────
 
 /// Write TDDFT excitation energies and oscillator strengths.
-#[allow(dead_code)]
 pub fn write_excitations(
     file: &mut Hdf5File,
     group: &str,
@@ -136,7 +127,6 @@ pub fn write_excitations(
 // ── NMR chemical shifts ───────────────────────────────────────────────────────
 
 /// Write NMR shielding tensors (isotropic + anisotropy).
-#[allow(dead_code)]
 pub fn write_nmr_shielding(
     file: &mut Hdf5File,
     group: &str,
@@ -151,7 +141,6 @@ pub fn write_nmr_shielding(
 // ── Hyperfine coupling ────────────────────────────────────────────────────────
 
 /// Write isotropic hyperfine coupling constants.
-#[allow(dead_code)]
 pub fn write_hyperfine_coupling(
     file: &mut Hdf5File,
     group: &str,
@@ -163,7 +152,6 @@ pub fn write_hyperfine_coupling(
 // ── NICS aromaticity ──────────────────────────────────────────────────────────
 
 /// Write NICS (nucleus-independent chemical shift) values.
-#[allow(dead_code)]
 pub fn write_nics(
     file: &mut Hdf5File,
     group: &str,
@@ -178,7 +166,6 @@ pub fn write_nics(
 // ── Charge flow matrix ────────────────────────────────────────────────────────
 
 /// Write atomic charge fluctuation matrix `δQ[i,j]`.
-#[allow(dead_code)]
 pub fn write_charge_flow_matrix(
     file: &mut Hdf5File,
     group: &str,
@@ -194,7 +181,6 @@ pub fn write_charge_flow_matrix(
 // ── Fukui functions ───────────────────────────────────────────────────────────
 
 /// Write Fukui reactivity indicators.
-#[allow(dead_code)]
 pub fn write_fukui_functions(
     file: &mut Hdf5File,
     group: &str,
@@ -214,7 +200,6 @@ pub fn write_fukui_functions(
 // ── Microstructure simulation ─────────────────────────────────────────────────
 
 /// Write phase field order parameter on a 2-D grid.
-#[allow(dead_code)]
 pub fn write_phase_field_2d(
     file: &mut Hdf5File,
     group: &str,
@@ -231,7 +216,6 @@ pub fn write_phase_field_2d(
 }
 
 /// Write Cahn-Hilliard chemical potential field.
-#[allow(dead_code)]
 pub fn write_chemical_potential_field(
     file: &mut Hdf5File,
     group: &str,
@@ -254,7 +238,6 @@ pub fn write_chemical_potential_field(
 // ── Percolation analysis ──────────────────────────────────────────────────────
 
 /// Write percolation cluster statistics.
-#[allow(dead_code)]
 pub fn write_percolation_stats(
     file: &mut Hdf5File,
     group: &str,
@@ -277,7 +260,6 @@ pub fn write_percolation_stats(
 // ── Heat equation finite difference ──────────────────────────────────────────
 
 /// Write temperature field from a heat diffusion simulation.
-#[allow(dead_code)]
 pub fn write_heat_field(
     file: &mut Hdf5File,
     group: &str,
@@ -296,7 +278,6 @@ pub fn write_heat_field(
 // ── Reaction-diffusion ────────────────────────────────────────────────────────
 
 /// Write a 2-D concentration field from reaction-diffusion simulation.
-#[allow(dead_code)]
 pub fn write_concentration_field(
     file: &mut Hdf5File,
     group: &str,
@@ -316,7 +297,6 @@ pub fn write_concentration_field(
 // ── Nucleation theory ─────────────────────────────────────────────────────────
 
 /// Write classical nucleation theory data.
-#[allow(dead_code)]
 pub fn write_nucleation_data(
     file: &mut Hdf5File,
     group: &str,
@@ -338,7 +318,6 @@ pub fn write_nucleation_data(
 /// Write a multi-dimensional dataset suitable for parallel-coordinates plots.
 ///
 /// `data` shape `[n_samples, n_vars]`.
-#[allow(dead_code)]
 pub fn write_parallel_coordinates(
     file: &mut Hdf5File,
     group: &str,
@@ -357,7 +336,6 @@ pub fn write_parallel_coordinates(
 // ── Simulation convergence log ────────────────────────────────────────────────
 
 /// Write a convergence log (e.g. SCF iterations).
-#[allow(dead_code)]
 pub fn write_convergence_log(
     file: &mut Hdf5File,
     group: &str,
@@ -377,7 +355,6 @@ pub fn write_convergence_log(
 // ── Optimization trajectory ───────────────────────────────────────────────────
 
 /// Write geometry optimization step data.
-#[allow(dead_code)]
 pub fn write_geopt_step(
     file: &mut Hdf5File,
     group: &str,
@@ -410,7 +387,6 @@ pub fn write_geopt_step(
 // ── Population analysis ───────────────────────────────────────────────────────
 
 /// Write Mulliken population analysis.
-#[allow(dead_code)]
 pub fn write_mulliken_charges(
     file: &mut Hdf5File,
     group: &str,
@@ -430,7 +406,6 @@ pub fn write_mulliken_charges(
 // ── Molecular graph ───────────────────────────────────────────────────────────
 
 /// Write a molecular graph (adjacency list) with bond orders.
-#[allow(dead_code)]
 pub fn write_molecular_graph(
     file: &mut Hdf5File,
     group: &str,
@@ -447,7 +422,6 @@ pub fn write_molecular_graph(
 // ── Fragmentation map ─────────────────────────────────────────────────────────
 
 /// Write a fragmentation map: atom-to-fragment assignments.
-#[allow(dead_code)]
 pub fn write_fragmentation_map(
     file: &mut Hdf5File,
     group: &str,
@@ -458,7 +432,6 @@ pub fn write_fragmentation_map(
 }
 
 /// Write fragment masses.
-#[allow(dead_code)]
 pub fn write_fragment_masses(file: &mut Hdf5File, group: &str, masses: &[f64]) -> Hdf5Result<()> {
     write_f64_dataset(file, group, "fragment_masses", masses)
 }
@@ -468,7 +441,6 @@ pub fn write_fragment_masses(file: &mut Hdf5File, group: &str, masses: &[f64]) -
 // ── Bulk transport properties ─────────────────────────────────────────────────
 
 /// Write ionic conductivity vs temperature.
-#[allow(dead_code)]
 pub fn write_ionic_conductivity(
     file: &mut Hdf5File,
     group: &str,
@@ -481,7 +453,6 @@ pub fn write_ionic_conductivity(
 }
 
 /// Write heat capacity data.
-#[allow(dead_code)]
 pub fn write_heat_capacity(
     file: &mut Hdf5File,
     group: &str,
@@ -498,7 +469,6 @@ pub fn write_heat_capacity(
 // ── Miscellaneous final helpers ───────────────────────────────────────────────
 
 /// Write a named scalar value with units.
-#[allow(dead_code)]
 pub fn write_scalar_with_units(
     file: &mut Hdf5File,
     group: &str,
@@ -511,7 +481,6 @@ pub fn write_scalar_with_units(
 }
 
 /// Read a named scalar value.
-#[allow(dead_code)]
 pub fn read_scalar(file: &Hdf5File, group: &str, name: &str) -> Hdf5Result<f64> {
     let v = file.open_dataset(group, name)?.read_f64()?;
     v.into_iter()
@@ -520,13 +489,11 @@ pub fn read_scalar(file: &Hdf5File, group: &str, name: &str) -> Hdf5Result<f64> 
 }
 
 /// Return the number of groups directly under the file root.
-#[allow(dead_code)]
 pub fn root_group_count(file: &Hdf5File) -> usize {
     file.root.groups.len()
 }
 
 /// Return `true` if the file root has no datasets or subgroups.
-#[allow(dead_code)]
 pub fn is_empty_file(file: &Hdf5File) -> bool {
     file.root.groups.is_empty() && file.root.datasets.is_empty()
 }

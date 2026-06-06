@@ -1,5 +1,3 @@
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -13,9 +11,6 @@
 //! - [`CastingSimulation`]: Mould filling, solidification shrinkage, porosity prediction.
 //! - [`CrystalGrowthLbm`]: Crystal orientation, growth anisotropy, grain competition.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -23,18 +18,8 @@ use std::f64::consts::PI;
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[inline]
-fn add2(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
-    [a[0] + b[0], a[1] + b[1]]
-}
-
-#[inline]
 fn sub2(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     [a[0] - b[0], a[1] - b[1]]
-}
-
-#[inline]
-fn scale2(v: [f64; 2], s: f64) -> [f64; 2] {
-    [v[0] * s, v[1] * s]
 }
 
 #[inline]
@@ -252,12 +237,6 @@ impl PhaseChangeLbm {
         }
     }
 
-    /// Linear index from (x, y).
-    #[inline]
-    fn idx(&self, x: usize, y: usize) -> usize {
-        y * self.params.nx + x
-    }
-
     /// Update liquid fraction and temperature from enthalpy (mushy-zone model).
     pub fn update_phase_from_enthalpy(&mut self) {
         let p = &self.params;
@@ -310,19 +289,19 @@ impl PhaseChangeLbm {
             let temp = self.temperature[i];
             // Fluid BGK
             let feq0 = feq(rho, ux, uy);
-            for q in 0..NQ {
-                self.f[i * NQ + q] += -(self.f[i * NQ + q] - feq0[q]) / p.tau_f;
+            for (q, f_iq) in self.f[i * NQ..i * NQ + NQ].iter_mut().enumerate() {
+                *f_iq += -(*f_iq - feq0[q]) / p.tau_f;
             }
             // Darcy drag source (add to f)
             let drag = self.darcy_drag(i, 1.0);
-            for q in 0..NQ {
+            for (q, f_iq) in self.f[i * NQ..i * NQ + NQ].iter_mut().enumerate() {
                 let cu = CX[q] * drag[0] + CY[q] * drag[1];
-                self.f[i * NQ + q] += W[q] * rho * cu / CS2;
+                *f_iq += W[q] * rho * cu / CS2;
             }
             // Thermal BGK
             let geq = feq(temp, ux, uy);
-            for q in 0..NQ {
-                self.g[i * NQ + q] += -(self.g[i * NQ + q] - geq[q]) / p.tau_t;
+            for (q, g_iq) in self.g[i * NQ..i * NQ + NQ].iter_mut().enumerate() {
+                *g_iq += -(*g_iq - geq[q]) / p.tau_t;
             }
         }
     }
@@ -358,14 +337,13 @@ impl PhaseChangeLbm {
         for y in 0..ny {
             let i = y * nx; // x = 0
             // Bounce-back fluid
-            for q in 0..NQ {
-                let oq = OPP[q];
+            for (q, &oq) in OPP.iter().enumerate() {
                 self.f.swap(i * NQ + q, i * NQ + oq);
             }
             // Dirichlet temperature = T_wall
             let geq = feq(t_wall, 0.0, 0.0);
-            for q in 0..NQ {
-                self.g[i * NQ + q] = geq[q];
+            for (g_iq, &geq_q) in self.g[i * NQ..i * NQ + NQ].iter_mut().zip(geq.iter()) {
+                *g_iq = geq_q;
             }
         }
     }
@@ -745,10 +723,10 @@ impl EutecticSolidification {
         let d = self.params.diffusivity_liq;
         let n = self.field_width;
         let mut new_c = self.composition_liquid.clone();
-        for i in 1..n - 1 {
+        for (new_c_i, i) in new_c[1..n - 1].iter_mut().zip(1..n - 1) {
             let lap = self.composition_liquid[i + 1] - 2.0 * self.composition_liquid[i]
                 + self.composition_liquid[i - 1];
-            new_c[i] += d * dt * lap;
+            *new_c_i += d * dt * lap;
         }
         self.composition_liquid = new_c;
     }
@@ -1234,7 +1212,10 @@ mod tests {
         solver.run(20);
         // Wall cooling should have produced some solid
         let sf = solver.solid_fraction_global();
-        assert!(sf >= 0.0 && sf <= 1.0, "Solid fraction must be in [0, 1]");
+        assert!(
+            (0.0..=1.0).contains(&sf),
+            "Solid fraction must be in [0, 1]"
+        );
     }
 
     #[test]

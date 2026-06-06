@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// Chebyshev spectral collocation differentiation matrix.
@@ -39,9 +37,14 @@ impl ChebyshevDiffMatrix {
                     (ci / cj) * (if (i + j) % 2 == 0 { 1.0 } else { -1.0 }) / (nodes[i] - nodes[j]);
             }
         }
-        for i in 0..np1 {
-            let sum: f64 = (0..np1).filter(|&j| j != i).map(|j| d[i][j]).sum();
-            d[i][i] = -sum;
+        for (i, row) in d.iter_mut().enumerate() {
+            let sum: f64 = row
+                .iter()
+                .enumerate()
+                .filter(|&(j, _)| j != i)
+                .map(|(_, &v)| v)
+                .sum();
+            row[i] = -sum;
         }
         d[0][0] = (2.0 * (n as f64) * (n as f64) + 1.0) / 6.0;
         d[n][n] = -(2.0 * (n as f64) * (n as f64) + 1.0) / 6.0;
@@ -55,9 +58,9 @@ impl ChebyshevDiffMatrix {
     pub fn differentiate(&self, u: &[f64]) -> Vec<f64> {
         let n = self.n_nodes;
         let mut du = vec![0.0; n];
-        for i in 0..n {
-            for j in 0..n {
-                du[i] += self.d_matrix[i][j] * u[j];
+        for (i, du_i) in du.iter_mut().enumerate() {
+            for (j, &u_j) in u.iter().enumerate() {
+                *du_i += self.d_matrix[i][j] * u_j;
             }
         }
         du
@@ -138,20 +141,18 @@ impl SpectralElement2D {
                 }
             }
         }
-        for i in 0..n {
-            for j_idx in 0..n {
+        for (i, kx_row) in kx.iter().enumerate() {
+            for (j_idx, &w_jidx) in self.weights_1d.iter().enumerate() {
                 let row = i * n + j_idx;
-                for kk in 0..n {
-                    for l in 0..n {
+                for (kk, &kx_ikk) in kx_row.iter().enumerate() {
+                    for (l, &ky_jl) in ky[j_idx].iter().enumerate() {
                         let col = kk * n + l;
-                        let term_x = (jy / jx)
-                            * kx[i][kk]
-                            * self.weights_1d[j_idx]
-                            * (if j_idx == l { 1.0 } else { 0.0 });
+                        let term_x =
+                            (jy / jx) * kx_ikk * w_jidx * (if j_idx == l { 1.0 } else { 0.0 });
                         let term_y = (jx / jy)
                             * self.weights_1d[i]
                             * (if i == kk { 1.0 } else { 0.0 })
-                            * ky[j_idx][l];
+                            * ky_jl;
                         k[row][col] = (term_x + term_y) * jac / (jx * jy);
                     }
                 }
@@ -271,14 +272,16 @@ impl ChebyshevSpectral {
         let n = self.n_modes;
         let np1 = n + 1;
         let mut coeff = vec![0.0; np1];
-        for k in 0..np1 {
-            let mut sum = 0.0;
-            for j in 0..np1 {
-                let wj = if j == 0 || j == n { 0.5 } else { 1.0 };
-                sum +=
-                    wj * values[j] * (k as f64 * std::f64::consts::PI * j as f64 / n as f64).cos();
-            }
-            coeff[k] = 2.0 / n as f64 * sum;
+        for (k, coeff_k) in coeff.iter_mut().enumerate() {
+            let sum: f64 = values
+                .iter()
+                .enumerate()
+                .map(|(j, &vj)| {
+                    let wj = if j == 0 || j == n { 0.5 } else { 1.0 };
+                    wj * vj * (k as f64 * std::f64::consts::PI * j as f64 / n as f64).cos()
+                })
+                .sum();
+            *coeff_k = 2.0 / n as f64 * sum;
         }
         coeff
     }
@@ -290,14 +293,15 @@ impl ChebyshevSpectral {
         let n = self.n_modes;
         let np1 = n + 1;
         let mut values = vec![0.0; np1];
-        for j in 0..np1 {
-            let mut sum = 0.0;
-            for k in 0..np1 {
-                let wk = if k == 0 || k == n { 0.5 } else { 1.0 };
-                sum +=
-                    wk * coeff[k] * (k as f64 * std::f64::consts::PI * j as f64 / n as f64).cos();
-            }
-            values[j] = sum;
+        for (j, val_j) in values.iter_mut().enumerate() {
+            *val_j = coeff
+                .iter()
+                .enumerate()
+                .map(|(k, &ck)| {
+                    let wk = if k == 0 || k == n { 0.5 } else { 1.0 };
+                    wk * ck * (k as f64 * std::f64::consts::PI * j as f64 / n as f64).cos()
+                })
+                .sum();
         }
         values
     }
@@ -327,10 +331,10 @@ impl ChebyshevSpectral {
     /// Aliasing dealiasing filter: zero-out modes above a threshold fraction.
     ///
     /// Common choice: retain the lower 2/3 of modes (2/3 rule).
-    pub fn dealias_filter(&self, coeff: &mut Vec<f64>, retain_fraction: f64) {
+    pub fn dealias_filter(&self, coeff: &mut [f64], retain_fraction: f64) {
         let keep = ((self.n_modes as f64 * retain_fraction) as usize).min(self.n_modes);
-        for k in keep..coeff.len() {
-            coeff[k] = 0.0;
+        for c in coeff.iter_mut().skip(keep) {
+            *c = 0.0;
         }
     }
 }
@@ -363,18 +367,18 @@ impl SpectralHelmholtz {
         a
     }
     /// Apply Dirichlet boundary conditions by zeroing rows/columns at endpoints.
-    pub fn apply_dirichlet(&self, a: &mut Vec<Vec<f64>>, rhs: &mut Vec<f64>) {
+    pub fn apply_dirichlet(&self, a: &mut [Vec<f64>], rhs: &mut [f64]) {
         let n = a.len();
         if n == 0 {
             return;
         }
-        for j in 0..n {
-            a[0][j] = 0.0;
+        for v in a[0].iter_mut() {
+            *v = 0.0;
         }
         a[0][0] = 1.0;
         rhs[0] = 0.0;
-        for j in 0..n {
-            a[n - 1][j] = 0.0;
+        for v in a[n - 1].iter_mut() {
+            *v = 0.0;
         }
         a[n - 1][n - 1] = 1.0;
         rhs[n - 1] = 0.0;
@@ -404,12 +408,11 @@ impl SemEllipticSolver {
         for e in 0..mesh.n_elem() {
             let elem = SpectralElement1D::new(mesh.degrees[e], mesh.lengths[e]);
             let k_loc = elem.stiffness_matrix();
-            let n_loc = elem.nodes.len();
-            for i in 0..n_loc {
+            for (i, k_loc_row) in k_loc.iter().enumerate() {
                 let gi = mapping.conn[e][i];
-                for j in 0..n_loc {
+                for (j, &k_loc_ij) in k_loc_row.iter().enumerate() {
                     let gj = mapping.conn[e][j];
-                    k_global[gi][gj] += k_loc[i][j];
+                    k_global[gi][gj] += k_loc_ij;
                 }
             }
         }
@@ -423,13 +426,13 @@ impl SemEllipticSolver {
         }
     }
     /// Apply Dirichlet BC at DOF `idx` (zero value).
-    fn apply_dirichlet_bc(k: &mut Vec<Vec<f64>>, rhs: &mut Vec<f64>, idx: usize) {
-        let n = k.len();
-        for j in 0..n {
-            k[idx][j] = 0.0;
+    fn apply_dirichlet_bc(k: &mut [Vec<f64>], rhs: &mut [f64], idx: usize) {
+        for v in k[idx].iter_mut() {
+            *v = 0.0;
         }
         k[idx][idx] = 1.0;
         rhs[idx] = 0.0;
+        let n = k.len();
         for i in 0..n {
             if i != idx {
                 rhs[i] -= k[i][idx] * rhs[idx];
@@ -445,12 +448,12 @@ impl SemEllipticSolver {
         for e in 0..self.mesh.n_elem() {
             let elem = SpectralElement1D::new(self.mesh.degrees[e], self.mesh.lengths[e]);
             let j = elem.jacobian();
-            let n_loc = elem.nodes.len();
+            let _n_loc = elem.nodes.len();
             let m_diag = elem.mass_matrix_diagonal();
-            for i in 0..n_loc {
-                let x_phys = x_offset + (elem.nodes[i] + 1.0) / 2.0 * self.mesh.lengths[e];
+            for (i, (&node, &mdi)) in elem.nodes.iter().zip(m_diag.iter()).enumerate() {
+                let x_phys = x_offset + (node + 1.0) / 2.0 * self.mesh.lengths[e];
                 let gi = self.mapping.conn[e][i];
-                self.rhs[gi] += m_diag[i] / j * f(x_phys);
+                self.rhs[gi] += mdi / j * f(x_phys);
             }
             x_offset += self.mesh.lengths[e];
         }
@@ -469,9 +472,9 @@ impl SemEllipticSolver {
         for col in 0..n {
             let mut pivot_row = col;
             let mut max_val = a[col][col].abs();
-            for row in col + 1..n {
-                if a[row][col].abs() > max_val {
-                    max_val = a[row][col].abs();
+            for (row, a_row) in a.iter().enumerate().skip(col + 1) {
+                if a_row[col].abs() > max_val {
+                    max_val = a_row[col].abs();
                     pivot_row = row;
                 }
             }
@@ -481,10 +484,11 @@ impl SemEllipticSolver {
             if diag.abs() < 1e-14 {
                 continue;
             }
+            let col_slice: Vec<f64> = a[col][col..].to_vec();
             for row in col + 1..n {
                 let factor = a[row][col] / diag;
-                for j in col..n {
-                    a[row][j] -= factor * a[col][j];
+                for (off, &cv) in col_slice.iter().enumerate() {
+                    a[row][col + off] -= factor * cv;
                 }
                 b[row] -= factor * b[col];
             }
@@ -652,12 +656,12 @@ impl SpectralBoundaryIntegral {
     pub fn h_matrix(&self) -> Vec<Vec<f64>> {
         let n = self.nodes.len();
         let mut h = vec![vec![0.0; n]; n];
-        for i in 0..n {
-            for j in 0..n {
+        for (i, h_row) in h.iter_mut().enumerate() {
+            for (j, h_ij) in h_row.iter_mut().enumerate() {
                 if i == j {
                     continue;
                 }
-                h[i][j] = green_normal_derivative_2d(self.nodes[i], self.nodes[j], self.normals[j]);
+                *h_ij = green_normal_derivative_2d(self.nodes[i], self.nodes[j], self.normals[j]);
             }
         }
         h
@@ -666,12 +670,12 @@ impl SpectralBoundaryIntegral {
     pub fn g_matrix(&self) -> Vec<Vec<f64>> {
         let n = self.nodes.len();
         let mut g = vec![vec![0.0; n]; n];
-        for i in 0..n {
-            for j in 0..n {
+        for (i, g_row) in g.iter_mut().enumerate() {
+            for (j, g_ij) in g_row.iter_mut().enumerate() {
                 if i == j {
                     continue;
                 }
-                g[i][j] = green_function_2d(self.nodes[i], self.nodes[j]);
+                *g_ij = green_function_2d(self.nodes[i], self.nodes[j]);
             }
         }
         g
@@ -827,11 +831,11 @@ impl ModalNodalTransform {
         let (nodes, weights) = gll_nodes_weights(degree);
         let n = nodes.len();
         let mut vandermonde = vec![vec![0.0; n]; n];
-        for i in 0..n {
-            for k in 0..n {
-                let pk = legendre_pn(k, nodes[i]);
+        for (v_row, &node_i) in vandermonde.iter_mut().zip(nodes.iter()) {
+            for (k, v_ik) in v_row.iter_mut().enumerate() {
+                let pk = legendre_pn(k, node_i);
                 let norm = ((2 * k + 1) as f64 / 2.0).sqrt();
-                vandermonde[i][k] = pk * norm;
+                *v_ik = pk * norm;
             }
         }
         ModalNodalTransform {
@@ -847,13 +851,16 @@ impl ModalNodalTransform {
     pub fn nodal_to_modal(&self, u_nodal: &[f64]) -> Vec<f64> {
         let n = self.nodes.len();
         let mut modal = vec![0.0; n];
-        for k in 0..n {
+        for (k, modal_k) in modal.iter_mut().enumerate() {
             let norm_sq = 2.0 / (2 * k + 1) as f64;
-            let mut sum = 0.0;
-            for i in 0..n {
-                sum += self.weights[i] * legendre_pn(k, self.nodes[i]) * u_nodal[i];
-            }
-            modal[k] = sum / norm_sq;
+            let sum: f64 = self
+                .weights
+                .iter()
+                .zip(self.nodes.iter())
+                .zip(u_nodal.iter())
+                .map(|((&w, &node), &u)| w * legendre_pn(k, node) * u)
+                .sum();
+            *modal_k = sum / norm_sq;
         }
         modal
     }
@@ -861,10 +868,12 @@ impl ModalNodalTransform {
     pub fn modal_to_nodal(&self, modal: &[f64]) -> Vec<f64> {
         let n = self.nodes.len();
         let mut nodal = vec![0.0; n];
-        for i in 0..n {
-            for k in 0..n {
-                nodal[i] += modal[k] * legendre_pn(k, self.nodes[i]);
-            }
+        for (nodal_i, &node_i) in nodal.iter_mut().zip(self.nodes.iter()) {
+            *nodal_i = modal
+                .iter()
+                .enumerate()
+                .map(|(k, &m)| m * legendre_pn(k, node_i))
+                .sum();
         }
         nodal
     }
@@ -911,27 +920,30 @@ impl SpectralElement1D {
         let n = self.nodes.len();
         let j = self.jacobian();
         let mut k = vec![vec![0.0; n]; n];
-        for i in 0..n {
-            for j_idx in 0..n {
-                let mut kij = 0.0;
-                for q in 0..n {
-                    kij += self.weights[q] * self.d_matrix[q][i] * self.d_matrix[q][j_idx];
-                }
-                k[i][j_idx] = kij / j;
+        for (i, k_row) in k.iter_mut().enumerate() {
+            for (j_idx, k_ij) in k_row.iter_mut().enumerate() {
+                let kij: f64 = self
+                    .weights
+                    .iter()
+                    .zip(self.d_matrix.iter())
+                    .map(|(&w, d_q)| w * d_q[i] * d_q[j_idx])
+                    .sum();
+                *k_ij = kij / j;
             }
         }
         k
     }
     /// Differentiate nodal values `u` at the GLL nodes.
     pub fn differentiate(&self, u: &[f64]) -> Vec<f64> {
-        let n = self.nodes.len();
         let j = self.jacobian();
-        let mut du = vec![0.0; n];
-        for i in 0..n {
-            for jj in 0..n {
-                du[i] += self.d_matrix[i][jj] * u[jj];
-            }
-            du[i] /= j;
+        let mut du = vec![0.0; self.nodes.len()];
+        for (du_i, d_row) in du.iter_mut().zip(self.d_matrix.iter()) {
+            *du_i = d_row
+                .iter()
+                .zip(u.iter())
+                .map(|(&d, &u_j)| d * u_j)
+                .sum::<f64>()
+                / j;
         }
         du
     }

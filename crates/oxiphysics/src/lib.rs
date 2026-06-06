@@ -72,7 +72,6 @@
 //! `core::stability` for details and the `core::stability::HasStability`
 //! trait for programmatic queries. Stable APIs follow semver; unstable and
 //! experimental APIs may change across minor releases.
-#![warn(missing_docs)]
 
 /// Core types, traits, and abstractions.
 pub use oxiphysics_core as core;
@@ -555,7 +554,6 @@ mod tests {
     // 8. Materials: MooneyRivlin near-zero stress at identity deformation
     // -----------------------------------------------------------------------
     #[test]
-    #[allow(clippy::needless_range_loop)]
     fn test_materials_hyperelastic_identity() {
         use oxiphysics_materials::MooneyRivlin;
 
@@ -563,12 +561,12 @@ mod tests {
         let identity = [[1.0_f64, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let p = mr.first_piola_kirchhoff_stress(&identity);
 
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in p.iter().enumerate() {
+            for (j, val) in row.iter().enumerate() {
                 assert!(
-                    p[i][j].abs() < 1.0,
+                    val.abs() < 1.0,
                     "MooneyRivlin P[{i}][{j}] = {} should be near zero at identity deformation",
-                    p[i][j]
+                    val
                 );
             }
         }

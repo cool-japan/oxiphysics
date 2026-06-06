@@ -2,14 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use std::f64::consts::PI;
 
 /// Common geometry correction factors for standard crack configurations.
-#[allow(dead_code)]
 pub struct GeometryFactors;
-#[allow(dead_code)]
 impl GeometryFactors {
     /// Central through-crack in an infinite plate: F = 1.0.
     pub fn infinite_plate() -> f64 {
@@ -37,7 +33,6 @@ impl GeometryFactors {
     }
 }
 /// A single point on the J-integral contour path.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct JIntegralPoint {
     /// Stress tensor components \[sigma_xx, sigma_yy, tau_xy\] at this point.
@@ -60,7 +55,6 @@ pub enum SifMode {
     ModeIII,
 }
 /// Plane-strain fracture toughness test configuration (compact tension, CT).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompactTensionSpec {
     /// Width W (m) — from load line to back face.
@@ -70,7 +64,6 @@ pub struct CompactTensionSpec {
     /// Specimen thickness B (m).
     pub thickness: f64,
 }
-#[allow(dead_code)]
 impl CompactTensionSpec {
     /// Create a compact tension specimen.
     pub fn new(width: f64, crack_length: f64, thickness: f64) -> Self {
@@ -108,7 +101,6 @@ impl CompactTensionSpec {
     }
 }
 /// A quadrature point for the domain J-integral (equivalent domain integral).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DomainPoint {
     /// Stress tensor \[sigma_xx, sigma_yy, tau_xy\].
@@ -125,7 +117,6 @@ pub struct DomainPoint {
     pub area: f64,
 }
 /// Bilinear traction-separation law evaluator.
-#[allow(dead_code)]
 pub struct CzmBilinear;
 impl CzmBilinear {
     /// Normal traction for a given normal opening `delta_n`.
@@ -201,7 +192,6 @@ impl CzmBilinear {
         (g_c_i / delta_n_c) * zeta * (-zeta).exp()
     }
     /// Crack opening work per unit area up to opening `delta_n` (trapezoidal integration).
-    #[allow(clippy::too_many_arguments)]
     pub fn crack_opening_work(p: &CzmBilinearParams, steps: usize) -> f64 {
         let h = p.delta_n_c / steps as f64;
         let mut work = 0.0;
@@ -224,7 +214,6 @@ impl CzmBilinear {
 /// ```
 ///
 /// This struct computes contributions up to order N for Mode-I.
-#[allow(dead_code)]
 pub struct WilliamsExpansion {
     /// Stress intensity factor K_I (Pa sqrt(m)).
     pub k_i: f64,
@@ -254,7 +243,6 @@ impl WilliamsExpansion {
     /// - Order 2 (r^0): T-stress
     /// - Order 3 (r^{1/2}): sub-singular term
     /// - Order 4 (r^1): linear term
-    #[allow(clippy::too_many_arguments)]
     pub fn compute_higher_order_terms(&self, r: f64, theta: f64) -> [f64; 3] {
         if r < 1e-20 {
             return [f64::INFINITY, f64::INFINITY, 0.0];
@@ -351,7 +339,6 @@ impl LinearFracture {
         c * delta_k.powf(m)
     }
     /// Integrate the Paris law to estimate fatigue life in cycles.
-    #[allow(clippy::too_many_arguments)]
     pub fn fatigue_life_cycles(
         a_initial: f64,
         a_final: f64,
@@ -385,7 +372,6 @@ impl LinearFracture {
 ///
 /// K_I = (E* / 2) * I^{(1,a_I)}   (auxiliary = Mode-I unit field)
 /// K_II = (E* / 2) * I^{(1,a_II)} (auxiliary = Mode-II unit field)
-#[allow(dead_code)]
 pub struct SifMixed {
     /// Young's modulus (Pa).
     pub e: f64,
@@ -491,7 +477,6 @@ impl CzmBilinearParams {
     }
 }
 /// A single integration point for the domain integral.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DomainIntegralPoint {
     /// Stress tensor \[sxx, syy, sxy\] (Pa).
@@ -506,7 +491,6 @@ pub struct DomainIntegralPoint {
     pub dv: f64,
 }
 /// Three-point bending fracture toughness specimen (SENB).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ThreePointBendSpec {
     /// Span S (m).
@@ -518,7 +502,6 @@ pub struct ThreePointBendSpec {
     /// Thickness B (m).
     pub thickness: f64,
 }
-#[allow(dead_code)]
 impl ThreePointBendSpec {
     /// Create a three-point bending specimen.
     pub fn new(span: f64, width: f64, crack_length: f64, thickness: f64) -> Self {
@@ -546,7 +529,6 @@ impl ThreePointBendSpec {
     }
 }
 /// Mixed-mode fracture criterion type.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MixedModeCriterion {
     /// Maximum Energy Release Rate (MERR).
@@ -558,7 +540,6 @@ pub enum MixedModeCriterion {
 }
 /// Traction-separation law type for cohesive zone modelling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum CzmLaw {
     /// Bilinear (linear softening).
     Bilinear,
@@ -570,7 +551,6 @@ pub enum CzmLaw {
     Ppr,
 }
 /// A single integration point for the interaction integral.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct InteractionIntegralPoint {
     /// Stress from the actual (FEM) field \[sxx, syy, sxy\] (Pa).
@@ -598,7 +578,6 @@ pub struct InteractionIntegralPoint {
 /// J = integral_Omega (sigma_ij du_i/dx1 - W delta_1j) dq/dx_j dV
 ///
 /// where q is a smooth weight function (=1 near crack tip, =0 far away).
-#[allow(dead_code)]
 pub struct JIntegral {
     /// Young's modulus (Pa).
     pub e: f64,

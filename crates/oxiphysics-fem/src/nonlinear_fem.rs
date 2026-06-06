@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,12 +6,6 @@
 //! arc-length method (Riks), load stepping, consistent tangent moduli, large
 //! deformation kinematics (F, B, C tensors), volumetric locking prevention
 //! (F-bar, B-bar), enhanced assumed strain, and mixed formulations.
-
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(clippy::too_many_arguments)]
-
-use std::f64::consts::PI;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // § 1  LARGE DEFORMATION KINEMATICS
@@ -423,14 +416,14 @@ impl J2Material {
 
         // Elastic tangent (isotropic)
         let mut c = [[0.0f64; 6]; 6];
-        for i in 0..3 {
-            for j in 0..3 {
-                c[i][j] = lam;
+        for (i, row) in c.iter_mut().enumerate().take(3) {
+            for cell in row.iter_mut().take(3) {
+                *cell = lam;
             }
-            c[i][i] += 2.0 * g;
+            row[i] += 2.0 * g;
         }
-        for i in 3..6 {
-            c[i][i] = g;
+        for (i, row) in c.iter_mut().enumerate().skip(3) {
+            row[i] = g;
         }
 
         if delta_gamma <= 0.0 {
@@ -562,9 +555,9 @@ fn solve_linear_system(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
 
         for row in col + 1..n {
             let factor = aug[row][col] / pivot;
-            for k in col..=n {
-                let val = aug[col][k] * factor;
-                aug[row][k] -= val;
+            let aug_col_slice: Vec<f64> = aug[col][col..=n].to_vec();
+            for (off, &val_c) in aug_col_slice.iter().enumerate() {
+                aug[row][col + off] -= val_c * factor;
             }
         }
     }
@@ -958,9 +951,9 @@ impl EasQ4Element {
     pub fn enhanced_strain(&self, xi: f64, eta: f64) -> [f64; 3] {
         let m = self.eas_matrix(xi, eta);
         let mut eps = [0.0f64; 3];
-        for i in 0..3 {
-            for j in 0..self.n_eas {
-                eps[i] += m[i][j] * self.alpha[j];
+        for (i, eps_i) in eps.iter_mut().enumerate() {
+            for (j, &mij) in m[i].iter().enumerate().take(self.n_eas) {
+                *eps_i += mij * self.alpha[j];
             }
         }
         eps
@@ -1501,9 +1494,9 @@ mod tests {
     fn mat3_mul_identity() {
         let a = [[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]];
         let c = mat3_mul(&a, &EYE3);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((c[i][j] - a[i][j]).abs() < 1e-10);
+        for (i, row) in c.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - a[i][j]).abs() < 1e-10);
             }
         }
     }
@@ -1516,9 +1509,9 @@ mod tests {
     #[test]
     fn mat3_inv_of_identity() {
         let inv = mat3_inv(&EYE3);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((inv[i][j] - EYE3[i][j]).abs() < 1e-10);
+        for (i, row) in inv.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - EYE3[i][j]).abs() < 1e-10);
             }
         }
     }
@@ -1528,13 +1521,13 @@ mod tests {
         let a = [[2., 1., 0.], [1., 3., 1.], [0., 1., 4.]];
         let inv = mat3_inv(&a);
         let prod = mat3_mul(&a, &inv);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in prod.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (prod[i][j] - expected).abs() < 1e-8,
+                    (val - expected).abs() < 1e-8,
                     "A·A⁻¹[{i}][{j}] = {} != {}",
-                    prod[i][j],
+                    val,
                     expected
                 );
             }
@@ -1545,9 +1538,9 @@ mod tests {
     fn mat3_transpose_symmetry() {
         let a = [[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]];
         let at = mat3_transpose(&a);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((at[i][j] - a[j][i]).abs() < 1e-10);
+        for (i, row) in at.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - a[j][i]).abs() < 1e-10);
             }
         }
     }
@@ -1662,12 +1655,12 @@ mod tests {
         let sigma_tr = [100e6; 6];
         let state_n = PlasticState::new();
         let c = mat.consistent_tangent(0.0, &sigma_tr, &state_n);
-        for i in 0..6 {
-            for j in 0..6 {
+        for (i, row) in c.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (c[i][j] - c[j][i]).abs() < 1.0,
+                    (val - c[j][i]).abs() < 1.0,
                     "tangent not symmetric at [{i}][{j}]: {} vs {}",
-                    c[i][j],
+                    val,
                     c[j][i]
                 );
             }

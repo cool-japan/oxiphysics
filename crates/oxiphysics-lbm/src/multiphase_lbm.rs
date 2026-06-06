@@ -17,7 +17,6 @@
 ///
 /// The interaction strength `g_coupling` drives phase separation when
 /// it exceeds a critical value dependent on the pseudo-potential.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ShanChenModel {
     /// Interaction coupling constant G (negative = attractive).
@@ -65,7 +64,6 @@ impl ShanChenModel {
     ///   (ordered: E, N, W, S, NE, NW, SW, SE)
     ///
     /// Returns `(fx, fy)`.
-    #[allow(clippy::too_many_arguments)]
     pub fn shan_chen_force(&self, psi_center: f64, psi_neighbors: &[f64; 8]) -> (f64, f64) {
         shan_chen_force_d2q9(self.g_coupling, psi_center, psi_neighbors)
     }
@@ -74,19 +72,16 @@ impl ShanChenModel {
 /// Shan-Chen exponential pseudo-potential.
 ///
 /// `psi(rho) = rho_0 * (1 - exp(-rho / rho_0))`
-#[allow(dead_code)]
 pub fn psi_exponential(rho: f64, rho_0: f64) -> f64 {
     rho_0 * (1.0 - (-rho / rho_0.max(1e-30)).exp())
 }
 
 /// Shan-Chen linear pseudo-potential: psi(rho) = rho.
-#[allow(dead_code)]
 pub fn psi_linear(rho: f64) -> f64 {
     rho
 }
 
 /// Sukop-Thorne pseudo-potential: psi(rho) = exp(-rho_0 / rho).
-#[allow(dead_code)]
 pub fn psi_sukop_thorne(rho: f64, rho_0: f64) -> f64 {
     (-rho_0 / rho.max(1e-30)).exp()
 }
@@ -109,7 +104,6 @@ pub fn psi_sukop_thorne(rho: f64, rho_0: f64) -> f64 {
 /// - `psi_nb`: psi at 8 neighbors in the order above
 ///
 /// Returns `(fx, fy)`.
-#[allow(dead_code)]
 pub fn shan_chen_force_d2q9(g: f64, psi_c: f64, psi_nb: &[f64; 8]) -> (f64, f64) {
     // Velocity directions: (ex, ey, weight)
     let dirs: [(f64, f64, f64); 8] = [
@@ -141,7 +135,6 @@ pub fn shan_chen_force_d2q9(g: f64, psi_c: f64, psi_nb: &[f64; 8]) -> (f64, f64)
 /// Free-energy multiphase LBM model parameters.
 ///
 /// Based on the van der Waals / Swift *et al.* free-energy model.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FreeEnergyModel {
     /// Surface tension coefficient kappa (controls interface energy).
@@ -188,7 +181,6 @@ impl FreeEnergyModel {
 ///
 /// `f(rho) = a*(rho - rho_c)^2 + b*(rho - rho_c)^4` with rho_c = 0
 /// `mu = df/d(rho) = 2*a*rho + 4*b*rho^3`
-#[allow(dead_code)]
 pub fn chemical_potential_landau(rho: f64, a: f64, b: f64) -> f64 {
     2.0 * a * rho + 4.0 * b * rho * rho * rho
 }
@@ -199,7 +191,6 @@ pub fn chemical_potential_landau(rho: f64, a: f64, b: f64) -> f64 {
 ///
 /// Returns `mu = integral(dp/rho)` simplified:
 /// `mu = T * ln(rho/(1-rho*b)) + T*b*rho/(1-rho*b) - 2*a*rho`
-#[allow(dead_code)]
 pub fn chemical_potential_vdw(rho: f64, temperature: f64, a: f64, b: f64) -> f64 {
     let denom = 1.0 - rho * b;
     if denom <= 1e-12 || rho <= 1e-30 {
@@ -211,7 +202,6 @@ pub fn chemical_potential_vdw(rho: f64, temperature: f64, a: f64, b: f64) -> f64
 /// Van der Waals equation of state pressure.
 ///
 /// `p = rho * T / (1 - rho*b) - a * rho^2`
-#[allow(dead_code)]
 pub fn vdw_pressure(rho: f64, temperature: f64, a: f64, b: f64) -> f64 {
     let denom = 1.0 - rho * b;
     if denom <= 1e-12 {
@@ -223,7 +213,6 @@ pub fn vdw_pressure(rho: f64, temperature: f64, a: f64, b: f64) -> f64 {
 /// Interface width parameter xi = sqrt(kappa / |a|).
 ///
 /// For a tanh interface profile: the width is proportional to xi.
-#[allow(dead_code)]
 pub fn interface_width(kappa: f64, a: f64) -> f64 {
     if a.abs() < 1e-30 {
         return f64::INFINITY;
@@ -244,7 +233,6 @@ pub fn interface_width(kappa: f64, a: f64) -> f64 {
 /// - `n_points`: resolution for integration
 ///
 /// Returns `(rho_vapor, rho_liquid)` or `(f64::NAN, f64::NAN)` if not found.
-#[allow(dead_code)]
 pub fn phase_diagram(temperature: f64, a: f64, b: f64, n_points: usize) -> (f64, f64) {
     // Critical density rho_c = 1/(3b), critical temperature T_c = 8a/(27b)
     let rho_c = 1.0 / (3.0 * b.max(1e-30));

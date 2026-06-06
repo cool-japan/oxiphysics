@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -39,7 +38,6 @@ const EY: [i32; 9] = [0, 0, 1, 0, -1, 1, 1, -1, -1];
 ///
 /// Evolves an order parameter field φ using two distribution functions
 /// (`f_dist` for φ and `g_dist` for μ) with BGK collision on each.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CahnHilliardLBM {
     /// Number of lattice nodes in the x-direction.
@@ -74,7 +72,6 @@ impl CahnHilliardLBM {
     /// - `mobility`: mobility M
     /// - `kappa`: interface energy coefficient κ
     /// - `a`: double-well coefficient a
-    #[allow(dead_code)]
     pub fn new(nx: usize, ny: usize, mobility: f64, kappa: f64, a: f64) -> Self {
         let n = nx * ny;
         let phi = vec![0.0; n];
@@ -101,14 +98,12 @@ impl CahnHilliardLBM {
     }
 
     /// Flat index for node (i, j).
-    #[allow(dead_code)]
     #[inline]
     pub fn index(&self, i: usize, j: usize) -> usize {
         i * self.ny + j
     }
 
     /// Flat index for distribution function at node (i, j), direction q.
-    #[allow(dead_code)]
     #[inline]
     pub fn fi(&self, i: usize, j: usize, q: usize) -> usize {
         (i * self.ny + j) * 9 + q
@@ -119,7 +114,6 @@ impl CahnHilliardLBM {
     /// # Arguments
     /// - `phi0`: mean order parameter
     /// - `noise`: amplitude of random perturbation
-    #[allow(dead_code)]
     pub fn init_random_phase(&mut self, phi0: f64, noise: f64) {
         use rand::RngExt;
         let mut rng = rand::rng();
@@ -145,7 +139,6 @@ impl CahnHilliardLBM {
     }
 
     /// Initialize φ with a striped pattern (cos wave along x).
-    #[allow(dead_code)]
     pub fn init_stripe_phase(&mut self) {
         use std::f64::consts::PI;
         let nx = self.nx;
@@ -172,7 +165,6 @@ impl CahnHilliardLBM {
     }
 
     /// Compute the chemical potential μ = a·φ·(φ²-1) - κ·∇²φ at all nodes.
-    #[allow(dead_code)]
     pub fn chemical_potential(&mut self) {
         let nx = self.nx;
         let ny = self.ny;
@@ -194,7 +186,6 @@ impl CahnHilliardLBM {
     /// Compute the finite-difference Laplacian of φ at node (i, j) with periodic BC.
     ///
     /// Uses the standard D2Q9 isotropic Laplacian stencil.
-    #[allow(dead_code)]
     pub fn laplacian_phi(&self, i: usize, j: usize) -> f64 {
         let nx = self.nx;
         let ny = self.ny;
@@ -218,7 +209,6 @@ impl CahnHilliardLBM {
     ///
     /// The chemical potential gradient drives phase separation through the
     /// collision operator: non-equilibrium corrections carry the diffusive flux.
-    #[allow(dead_code)]
     pub fn equilibrium_f(&self, phi: f64, _mu: f64, q: usize) -> f64 {
         W[q] * phi
     }
@@ -226,7 +216,6 @@ impl CahnHilliardLBM {
     /// Equilibrium distribution for the μ field.
     ///
     /// `g_eq(q) = w_q * μ`
-    #[allow(dead_code)]
     pub fn equilibrium_g(&self, mu: f64, q: usize) -> f64 {
         W[q] * mu
     }
@@ -239,7 +228,6 @@ impl CahnHilliardLBM {
     /// The chemical potential μ acts as a source in the f collision:
     /// after streaming, f_dist populations carry mobility-driven flux
     /// that amplifies phase separation.
-    #[allow(dead_code)]
     pub fn collide_stream(&mut self) {
         let nx = self.nx;
         let ny = self.ny;
@@ -257,9 +245,9 @@ impl CahnHilliardLBM {
                 let idx = i * ny + j;
                 let phi_val = self.phi[idx];
                 let mu_val = self.mu[idx];
-                for q in 0..9 {
+                for (q, w_q) in W.iter().enumerate() {
                     let base = idx * 9;
-                    let feq = W[q] * phi_val;
+                    let feq = w_q * phi_val;
                     let geq = self.equilibrium_g(mu_val, q);
                     // Source term: mobility * w_q * mu drives diffusion
                     // For q!=0: source = +mobility * w_q * mu_val
@@ -267,7 +255,7 @@ impl CahnHilliardLBM {
                     let source = if q == 0 {
                         -mobility * (1.0 - W[0]) * mu_val * omega_phi
                     } else {
-                        mobility * W[q] * mu_val * omega_phi
+                        mobility * w_q * mu_val * omega_phi
                     };
                     self.f_dist[base + q] += omega_phi * (feq - self.f_dist[base + q]) + source;
                     self.g_dist[base + q] += omega_mu * (geq - self.g_dist[base + q]);
@@ -295,7 +283,6 @@ impl CahnHilliardLBM {
     }
 
     /// Update the order parameter φ from the zeroth moment of f_dist.
-    #[allow(dead_code)]
     pub fn update_phi(&mut self) {
         let nx = self.nx;
         let ny = self.ny;
@@ -333,7 +320,6 @@ impl CahnHilliardLBM {
     ///
     /// The f_dist and g_dist distributions are maintained in local equilibrium
     /// with the current φ and μ fields.
-    #[allow(dead_code)]
     pub fn step(&mut self) {
         let nx = self.nx;
         let ny = self.ny;
@@ -367,13 +353,11 @@ impl CahnHilliardLBM {
     }
 
     /// Total (summed) order parameter — a conservation diagnostic.
-    #[allow(dead_code)]
     pub fn total_phi(&self) -> f64 {
         self.phi.iter().sum()
     }
 
     /// Variance of the φ field — grows during spinodal decomposition.
-    #[allow(dead_code)]
     pub fn phi_variance(&self) -> f64 {
         let n = self.phi.len() as f64;
         if n == 0.0 {
@@ -388,7 +372,6 @@ impl CahnHilliardLBM {
     /// `F = Σ [ a/4*(φ²-1)² + κ/2*|∇φ|² ]`
     ///
     /// Uses finite-difference gradients with periodic BC.
-    #[allow(dead_code)]
     pub fn free_energy(&self) -> f64 {
         let nx = self.nx;
         let ny = self.ny;

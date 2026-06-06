@@ -1,15 +1,11 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#![allow(clippy::needless_range_loop)]
 /// Dot product of two 3-vectors.
-#[allow(dead_code)]
 pub(super) fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 /// Cross product of two 3-vectors.
-#[allow(dead_code)]
 pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -18,12 +14,10 @@ pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 /// Length of a 3-vector.
-#[allow(dead_code)]
 pub(super) fn len3(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 /// Normalize a 3-vector. Returns zero vector if length < eps.
-#[allow(dead_code)]
 pub(super) fn normalize3(v: [f64; 3]) -> [f64; 3] {
     let l = len3(v);
     if l < 1e-15 {
@@ -33,22 +27,18 @@ pub(super) fn normalize3(v: [f64; 3]) -> [f64; 3] {
     }
 }
 /// Add two 3-vectors.
-#[allow(dead_code)]
 pub(super) fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 /// Subtract two 3-vectors (a - b).
-#[allow(dead_code)]
 pub(super) fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 /// Scale a 3-vector.
-#[allow(dead_code)]
 pub(super) fn scale3(v: [f64; 3], s: f64) -> [f64; 3] {
     [v[0] * s, v[1] * s, v[2] * s]
 }
 /// 3x3 matrix-vector multiply.
-#[allow(dead_code)]
 pub(super) fn mat_vec3(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     [
         m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
@@ -57,7 +47,6 @@ pub(super) fn mat_vec3(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     ]
 }
 /// 3x3 matrix multiply.
-#[allow(dead_code)]
 pub(super) fn mat_mul3(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut r = [[0.0; 3]; 3];
     for i in 0..3 {
@@ -69,27 +58,15 @@ pub(super) fn mat_mul3(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     }
     r
 }
-/// 3x3 matrix transpose.
-#[allow(dead_code)]
-pub(super) fn transpose3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
-    [
-        [m[0][0], m[1][0], m[2][0]],
-        [m[0][1], m[1][1], m[2][1]],
-        [m[0][2], m[1][2], m[2][2]],
-    ]
-}
 /// 3x3 identity matrix.
-#[allow(dead_code)]
 pub(super) fn identity3() -> [[f64; 3]; 3] {
     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 }
 /// Skew-symmetric matrix from a 3-vector.
-#[allow(dead_code)]
 pub(super) fn skew3(v: [f64; 3]) -> [[f64; 3]; 3] {
     [[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]]
 }
 /// Matrix + matrix (3x3).
-#[allow(dead_code)]
 pub(super) fn mat_add3(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut r = [[0.0; 3]; 3];
     for i in 0..3 {
@@ -100,7 +77,6 @@ pub(super) fn mat_add3(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     r
 }
 /// Matrix scale (3x3).
-#[allow(dead_code)]
 pub(super) fn mat_scale3(m: [[f64; 3]; 3], s: f64) -> [[f64; 3]; 3] {
     let mut r = [[0.0; 3]; 3];
     for i in 0..3 {
@@ -111,14 +87,12 @@ pub(super) fn mat_scale3(m: [[f64; 3]; 3], s: f64) -> [[f64; 3]; 3] {
     r
 }
 /// Determinant of a 3x3 matrix.
-#[allow(dead_code)]
 pub(super) fn det3(m: [[f64; 3]; 3]) -> f64 {
     m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
         - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
 }
 /// Inverse of a 3x3 matrix. Returns identity if singular.
-#[allow(dead_code)]
 pub(super) fn inv3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let d = det3(m);
     if d.abs() < 1e-30 {
@@ -144,7 +118,6 @@ pub(super) fn inv3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     ]
 }
 /// Outer product of two 3-vectors.
-#[allow(dead_code)]
 pub(super) fn outer3(a: [f64; 3], b: [f64; 3]) -> [[f64; 3]; 3] {
     [
         [a[0] * b[0], a[0] * b[1], a[0] * b[2]],
@@ -157,7 +130,6 @@ pub(super) fn outer3(a: [f64; 3], b: [f64; 3]) -> [[f64; 3]; 3] {
 /// exp(theta * hat(a)) = I + sin(theta)*hat(a) + (1-cos(theta))*hat(a)^2
 ///
 /// where hat(a) is the skew-symmetric matrix of axis a, theta = |v|.
-#[allow(dead_code)]
 pub fn exp_so3(v: [f64; 3]) -> [[f64; 3]; 3] {
     let theta = len3(v);
     if theta < 1e-14 {
@@ -173,7 +145,6 @@ pub fn exp_so3(v: [f64; 3]) -> [[f64; 3]; 3] {
 /// Logarithmic map from SO(3) to so(3).
 ///
 /// Returns the rotation vector v such that exp(hat(v)) = R.
-#[allow(dead_code)]
 pub fn log_so3(r: [[f64; 3]; 3]) -> [f64; 3] {
     let trace = r[0][0] + r[1][1] + r[2][2];
     let cos_theta = (trace - 1.0) * 0.5;
@@ -232,19 +203,19 @@ mod tests {
     fn test_skew_antisymmetric() {
         let v = [1.0, 2.0, 3.0];
         let s = skew3(v);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((s[i][j] + s[j][i]).abs() < 1e-10);
+        for (i, row) in s.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val + s[j][i]).abs() < 1e-10);
             }
         }
     }
     #[test]
     fn test_inv3_identity() {
         let inv = inv3(identity3());
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in inv.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((inv[i][j] - expected).abs() < 1e-10);
+                assert!((val - expected).abs() < 1e-10);
             }
         }
     }
@@ -374,10 +345,10 @@ mod tests {
     #[test]
     fn test_exp_so3_identity() {
         let r = exp_so3([0.0; 3]);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in r.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((r[i][j] - expected).abs() < 1e-10);
+                assert!((val - expected).abs() < 1e-10);
             }
         }
     }

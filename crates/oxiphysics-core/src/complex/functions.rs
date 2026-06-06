@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{Complex, ComplexMat2};
 use std::f64::consts::PI;
 
@@ -618,13 +617,12 @@ mod tests {
 /// Compute the N×N DFT matrix W where W\[j\]\[k\] = exp(-2πi·j·k/N).
 ///
 /// The matrix form of the DFT: X = W·x.
-#[allow(dead_code)]
 pub fn dft_matrix(n: usize) -> Vec<Vec<Complex>> {
     let mut mat = vec![vec![Complex::zero(); n]; n];
-    for j in 0..n {
-        for k in 0..n {
+    for (j, row) in mat.iter_mut().enumerate() {
+        for (k, cell) in row.iter_mut().enumerate() {
             let angle = -2.0 * PI * (j * k) as f64 / n as f64;
-            mat[j][k] = Complex::from_polar(1.0, angle);
+            *cell = Complex::from_polar(1.0, angle);
         }
     }
     mat
@@ -632,7 +630,6 @@ pub fn dft_matrix(n: usize) -> Vec<Vec<Complex>> {
 /// Apply the DFT matrix to a vector (O(N²) naive DFT).
 ///
 /// Returns X\[k\] = Σ x\[n\] · exp(-2πi·k·n/N).
-#[allow(dead_code)]
 pub fn naive_dft(xs: &[Complex]) -> Vec<Complex> {
     let n = xs.len();
     (0..n)
@@ -647,14 +644,12 @@ pub fn naive_dft(xs: &[Complex]) -> Vec<Complex> {
         .collect()
 }
 /// Returns the N-th roots of unity: exp(2πi·k/N) for k=0,…,N-1.
-#[allow(dead_code)]
 pub fn roots_of_unity(n: usize) -> Vec<Complex> {
     (0..n)
         .map(|k| Complex::from_polar(1.0, 2.0 * PI * k as f64 / n as f64))
         .collect()
 }
 /// Returns the primitive N-th root of unity: exp(2πi/N).
-#[allow(dead_code)]
 pub fn primitive_root_of_unity(n: usize) -> Complex {
     Complex::from_polar(1.0, 2.0 * PI / n as f64)
 }
@@ -662,7 +657,6 @@ pub fn primitive_root_of_unity(n: usize) -> Complex {
 /// centered at `center`, using `n_points` quadrature points.
 ///
 /// Returns ∮_C f(z) dz ≈ Σ f(z_k) · Δz_k.
-#[allow(dead_code)]
 pub fn contour_integral_circle(
     f: &impl Fn(Complex) -> Complex,
     center: Complex,
@@ -683,7 +677,6 @@ pub fn contour_integral_circle(
 /// Numerically compute the residue of `f` at `pole` using the contour integral.
 ///
 /// For a simple pole: Res(f, z0) = (1/(2πi)) ∮_{|z-z0|=r} f(z) dz.
-#[allow(dead_code)]
 pub fn residue_by_contour(
     f: &impl Fn(Complex) -> Complex,
     pole: Complex,
@@ -701,7 +694,6 @@ pub fn residue_by_contour(
 ///
 /// `coeffs` should have length `n` (for a degree-n polynomial with leading coeff 1).
 /// Returns `n` approximate roots.
-#[allow(dead_code)]
 pub fn durand_kerner_roots(coeffs: &[Complex], max_iter: usize) -> Vec<Complex> {
     let n = coeffs.len();
     if n == 0 {
@@ -712,9 +704,9 @@ pub fn durand_kerner_roots(coeffs: &[Complex], max_iter: usize) -> Vec<Complex> 
         .map(|k| omega.pow_f64(k as f64) * Complex::new(0.4, 0.0))
         .collect();
     let r0 = (coeffs[0].norm() + 1.0).powf(1.0 / n as f64).max(0.5);
-    for k in 0..n {
+    for (k, root) in roots.iter_mut().enumerate() {
         let angle = 2.0 * PI * k as f64 / n as f64 + 0.1;
-        roots[k] = Complex::from_polar(r0, angle);
+        *root = Complex::from_polar(r0, angle);
     }
     let eval_poly = |z: Complex| -> Complex {
         let mut result = Complex::one();
@@ -747,7 +739,6 @@ pub fn durand_kerner_roots(coeffs: &[Complex], max_iter: usize) -> Vec<Complex> 
 ///
 /// `a` is an N×N matrix in row-major format (Vec of rows).
 /// Returns the solution vector `x`, or `None` if the system is singular.
-#[allow(dead_code)]
 pub fn complex_gaussian_elimination(a: &[Vec<Complex>], b: &[Complex]) -> Option<Vec<Complex>> {
     let n = b.len();
     assert_eq!(a.len(), n, "complex_gaussian_elimination: A must be n×n");
@@ -772,17 +763,15 @@ pub fn complex_gaussian_elimination(a: &[Vec<Complex>], b: &[Complex]) -> Option
         }
         mat.swap(col, pivot_row);
         let pivot = mat[col][col];
-        for j in col..=n {
-            let v = mat[col][j];
-            mat[col][j] = v / pivot;
+        for cell in mat[col][col..=n].iter_mut() {
+            *cell = *cell / pivot;
         }
         for row in 0..n {
             if row != col {
                 let factor = mat[row][col];
-                for j in col..=n {
-                    let v = mat[col][j] * factor;
-                    let old = mat[row][j];
-                    mat[row][j] = old - v;
+                let col_slice: Vec<Complex> = mat[col][col..=n].to_vec();
+                for (cell, &cv) in mat[row][col..=n].iter_mut().zip(col_slice.iter()) {
+                    *cell = *cell - cv * factor;
                 }
             }
         }
@@ -1208,7 +1197,6 @@ mod tests_new_complex {
 ///
 /// Returns a `Vec<Vec`Complex`>` where each inner Vec is the FFT of one frame.
 /// The outer dimension is time (frames), inner is frequency.
-#[allow(dead_code)]
 pub fn stft(
     signal: &[f64],
     window_size: usize,
@@ -1246,7 +1234,6 @@ pub fn stft(
 /// Generate a Hann window of length `n`.
 ///
 /// `w[k] = sin²(π k / (n-1))` for k = 0..n-1.
-#[allow(dead_code)]
 pub fn hann_window(n: usize) -> Vec<f64> {
     if n == 0 {
         return Vec::new();
@@ -1264,7 +1251,6 @@ pub fn hann_window(n: usize) -> Vec<f64> {
 /// Generate a Hamming window of length `n`.
 ///
 /// `w[k] = 0.54 - 0.46 cos(2π k / (n-1))`
-#[allow(dead_code)]
 pub fn hamming_window(n: usize) -> Vec<f64> {
     if n == 0 {
         return Vec::new();
@@ -1277,7 +1263,6 @@ pub fn hamming_window(n: usize) -> Vec<f64> {
         .collect()
 }
 /// Generate a rectangular (boxcar) window of length `n`.
-#[allow(dead_code)]
 pub fn rectangular_window(n: usize) -> Vec<f64> {
     vec![1.0; n]
 }
@@ -1289,7 +1274,6 @@ pub fn rectangular_window(n: usize) -> Vec<f64> {
 /// * `window_fn` – the same window used for analysis (for proper reconstruction).
 ///
 /// Returns the reconstructed real signal.
-#[allow(dead_code)]
 pub fn istft(frames: &[Vec<Complex>], hop_size: usize, window_fn: &[f64]) -> Vec<f64> {
     if frames.is_empty() {
         return Vec::new();
@@ -1313,9 +1297,9 @@ pub fn istft(frames: &[Vec<Complex>], hop_size: usize, window_fn: &[f64]) -> Vec
             }
         }
     }
-    for i in 0..signal.len() {
-        if weight[i] > 1e-12 {
-            signal[i] /= weight[i];
+    for (s, w) in signal.iter_mut().zip(weight.iter()) {
+        if *w > 1e-12 {
+            *s /= *w;
         }
     }
     signal
@@ -1325,7 +1309,6 @@ pub fn istft(frames: &[Vec<Complex>], hop_size: usize, window_fn: &[f64]) -> Vec
 /// `X[k] = 2 Σ_{n=0}^{N-1} x[n] cos(π(2n+1)k / (2N))`
 ///
 /// Uses a naive O(N²) implementation.
-#[allow(dead_code)]
 pub fn dct_ii(xs: &[f64]) -> Vec<f64> {
     let n = xs.len();
     if n == 0 {
@@ -1346,7 +1329,6 @@ pub fn dct_ii(xs: &[f64]) -> Vec<f64> {
 /// Compute the inverse DCT-II (DCT-III).
 ///
 /// `x[n] = (1/N) (X[0]/2 + Σ_{k=1}^{N-1} X[k] cos(π(2n+1)k / (2N)))`
-#[allow(dead_code)]
 pub fn idct_ii(xs: &[f64]) -> Vec<f64> {
     let n = xs.len();
     if n == 0 {
@@ -1368,7 +1350,6 @@ pub fn idct_ii(xs: &[f64]) -> Vec<f64> {
 /// `X[k] = x[0] + (-1)^k x[N-1] + 2 Σ_{n=1}^{N-2} x[n] cos(π n k / (N-1))`
 ///
 /// The DCT-I is its own inverse (when normalized).
-#[allow(dead_code)]
 pub fn dct_i(xs: &[f64]) -> Vec<f64> {
     let n = xs.len();
     if n < 2 {
@@ -1379,8 +1360,8 @@ pub fn dct_i(xs: &[f64]) -> Vec<f64> {
     (0..n)
         .map(|k| {
             let mut sum = xs[0] + if k % 2 == 0 { xs[n - 1] } else { -xs[n - 1] };
-            for m in 1..(n - 1) {
-                sum += 2.0 * xs[m] * (pi * m as f64 * k as f64 / nm1).cos();
+            for (m, &xm) in xs[1..(n - 1)].iter().enumerate().map(|(i, v)| (i + 1, v)) {
+                sum += 2.0 * xm * (pi * m as f64 * k as f64 / nm1).cos();
             }
             sum
         })
@@ -1394,7 +1375,6 @@ pub fn dct_i(xs: &[f64]) -> Vec<f64> {
 ///
 /// For 2×2 matrices the decomposition is computed directly from eigenvalues.
 /// Returns `None` if the matrix is degenerate.
-#[allow(dead_code)]
 pub fn schur_2x2(m: &ComplexMat2) -> Option<(ComplexMat2, ComplexMat2)> {
     let (l1, l2) = m.eigenvalues();
     let al1 = ComplexMat2::new(m.a - l1, m.b, m.c, m.d - l1);
@@ -1422,7 +1402,6 @@ pub fn schur_2x2(m: &ComplexMat2) -> Option<(ComplexMat2, ComplexMat2)> {
 /// Compute the power spectral density (PSD) of a real signal.
 ///
 /// Returns `|X[k]|²` for k = 0..N/2+1.
-#[allow(dead_code)]
 pub fn power_spectral_density(xs: &[f64]) -> Vec<f64> {
     let freq = rfft(xs);
     freq.iter().map(|z| z.norm_sq()).collect()
@@ -1430,7 +1409,6 @@ pub fn power_spectral_density(xs: &[f64]) -> Vec<f64> {
 /// Compute the magnitude spectrum of a real signal.
 ///
 /// Returns `|X[k]|` for k = 0..N/2+1.
-#[allow(dead_code)]
 pub fn magnitude_spectrum(xs: &[f64]) -> Vec<f64> {
     let freq = rfft(xs);
     freq.iter().map(|z| z.norm()).collect()
@@ -1438,7 +1416,6 @@ pub fn magnitude_spectrum(xs: &[f64]) -> Vec<f64> {
 /// Compute the phase spectrum of a real signal.
 ///
 /// Returns `arg(X[k])` for k = 0..N/2+1.
-#[allow(dead_code)]
 pub fn phase_spectrum(xs: &[f64]) -> Vec<f64> {
     let freq = rfft(xs);
     freq.iter().map(|z| z.arg()).collect()
@@ -1446,7 +1423,6 @@ pub fn phase_spectrum(xs: &[f64]) -> Vec<f64> {
 /// Convolve two real signals using FFT.
 ///
 /// Returns the linear convolution `a * b` of length `a.len() + b.len() - 1`.
-#[allow(dead_code)]
 pub fn fft_convolve(a: &[f64], b: &[f64]) -> Vec<f64> {
     if a.is_empty() || b.is_empty() {
         return Vec::new();
@@ -1467,7 +1443,6 @@ pub fn fft_convolve(a: &[f64], b: &[f64]) -> Vec<f64> {
 /// Compute Parseval's theorem check: sum of |x\[n\]|² == (1/N) sum |X\[k\]|².
 ///
 /// Returns `(time_energy, freq_energy)`.  These should be approximately equal.
-#[allow(dead_code)]
 pub fn parseval_check(xs: &[f64]) -> (f64, f64) {
     let time_energy: f64 = xs.iter().map(|&x| x * x).sum();
     let complex_in: Vec<Complex> = xs.iter().map(|&x| Complex::new(x, 0.0)).collect();
@@ -1479,7 +1454,6 @@ pub fn parseval_check(xs: &[f64]) -> (f64, f64) {
 /// Evaluate a polynomial with complex coefficients at complex point `z`.
 ///
 /// Coefficients are in descending order: `coeffs[0] z^n + ... + coeffs[n]`.
-#[allow(dead_code)]
 pub fn poly_eval(coeffs: &[Complex], z: Complex) -> Complex {
     if coeffs.is_empty() {
         return Complex::zero();
@@ -1493,7 +1467,6 @@ pub fn poly_eval(coeffs: &[Complex], z: Complex) -> Complex {
 /// Compute the derivative of a polynomial with complex coefficients.
 ///
 /// Returns the derivative coefficients (one fewer term).
-#[allow(dead_code)]
 pub fn poly_derivative(coeffs: &[Complex]) -> Vec<Complex> {
     if coeffs.len() <= 1 {
         return Vec::new();
@@ -1506,7 +1479,6 @@ pub fn poly_derivative(coeffs: &[Complex]) -> Vec<Complex> {
 /// Multiply two polynomials with complex coefficients.
 ///
 /// Coefficients in descending order.
-#[allow(dead_code)]
 pub fn poly_multiply(a: &[Complex], b: &[Complex]) -> Vec<Complex> {
     if a.is_empty() || b.is_empty() {
         return Vec::new();
@@ -1524,7 +1496,6 @@ pub fn poly_multiply(a: &[Complex], b: &[Complex]) -> Vec<Complex> {
 /// Evaluate the Z-transform of a finite-length sequence at complex frequency `z`.
 ///
 /// `X(z) = Σ_{n=0}^{N-1} x[n] z^{-n}`
-#[allow(dead_code)]
 pub fn z_transform_eval(xs: &[f64], z: Complex) -> Complex {
     let mut result = Complex::zero();
     let mut zn = Complex::one();
@@ -1543,7 +1514,6 @@ pub fn z_transform_eval(xs: &[f64], z: Complex) -> Complex {
 /// `f(t) = x * exp(-alpha * t)` at complex frequency `s`.
 ///
 /// `F(s) = x / (s + alpha)` for `Re(s + alpha) > 0`.
-#[allow(dead_code)]
 pub fn laplace_exp_decay(amplitude: f64, alpha: f64, s: Complex) -> Complex {
     let denom = s + Complex::new(alpha, 0.0);
     if denom.norm_sq() < 1e-24 {

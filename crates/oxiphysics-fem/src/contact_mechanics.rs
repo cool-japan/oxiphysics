@@ -5,8 +5,6 @@
 //! loading/unloading hysteresis, Greenwood-Williamson rough surface contact,
 //! and flash temperature (Jaeger's formula).
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

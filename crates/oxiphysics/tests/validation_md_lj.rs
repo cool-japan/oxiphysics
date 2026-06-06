@@ -43,8 +43,6 @@
 //!     --release -- --ignored --nocapture
 //! ```
 
-#![allow(missing_docs)]
-
 #[path = "regression_harness.rs"]
 mod harness;
 

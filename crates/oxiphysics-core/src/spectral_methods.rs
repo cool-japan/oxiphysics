@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,9 +7,6 @@
 //! nodes and weights, Cooley-Tukey FFT/IFFT, pseudo-spectral differentiation,
 //! Chebyshev collocation for 1D boundary value problems, and Haar wavelet
 //! multi-level decomposition/reconstruction.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -57,10 +53,6 @@ impl Cx {
             re: self.re * rhs.re - self.im * rhs.im,
             im: self.re * rhs.im + self.im * rhs.re,
         }
-    }
-    #[inline]
-    fn abs(self) -> f64 {
-        self.re.hypot(self.im)
     }
     #[inline]
     fn scale(self, s: f64) -> Self {
@@ -162,7 +154,7 @@ impl ChebyshevPolynomial {
         let n = vals.len() - 1;
         let m = n + 1;
         let mut coeffs = vec![0.0f64; m];
-        for k in 0..m {
+        for (k, ck) in coeffs.iter_mut().enumerate() {
             let norm = if k == 0 || k == n {
                 n as f64
             } else {
@@ -174,7 +166,7 @@ impl ChebyshevPolynomial {
                     w * vals[j] * (k as f64 * j as f64 * PI / n as f64).cos()
                 })
                 .sum();
-            coeffs[k] = sum / norm;
+            *ck = sum / norm;
         }
         coeffs
     }
@@ -382,7 +374,7 @@ impl FourierSeries {
 }
 
 /// In-place Cooley-Tukey FFT (radix-2 DIT).
-fn fft_inplace(buf: &mut Vec<Cx>, inverse: bool) {
+fn fft_inplace(buf: &mut [Cx], inverse: bool) {
     let n = buf.len();
     // Bit-reversal permutation
     let mut j = 0usize;
@@ -440,15 +432,15 @@ impl SpectralDiff {
 
         // Multiply by i*k (wavenumber)
         let dk = 2.0 * PI / l;
-        for k in 0..n {
+        for (k, bk) in buf.iter_mut().enumerate() {
             let kk = if k <= n / 2 {
                 k as f64
             } else {
                 k as f64 - n as f64
             };
             let freq = kk * dk;
-            let (re, im) = (buf[k].re, buf[k].im);
-            buf[k] = Cx::new(-freq * im, freq * re);
+            let (re, im) = (bk.re, bk.im);
+            *bk = Cx::new(-freq * im, freq * re);
         }
 
         fft_inplace(&mut buf, true);
@@ -465,14 +457,14 @@ impl SpectralDiff {
         fft_inplace(&mut buf, false);
 
         let dk = 2.0 * PI / l;
-        for k in 0..n {
+        for (k, bk) in buf.iter_mut().enumerate() {
             let kk = if k <= n / 2 {
                 k as f64
             } else {
                 k as f64 - n as f64
             };
             let freq2 = -(kk * dk).powi(2);
-            buf[k] = buf[k].scale(freq2);
+            *bk = bk.scale(freq2);
         }
 
         fft_inplace(&mut buf, true);
@@ -554,9 +546,11 @@ impl ChebyshevCollocation {
         let mut d2 = vec![vec![0.0f64; m]; m];
         for i in 0..m {
             for j in 0..m {
-                for k in 0..m {
-                    d2[i][j] += d[i][k] * d[k][j];
-                }
+                d2[i][j] = d[i]
+                    .iter()
+                    .zip(d.iter())
+                    .map(|(&dik, dk)| dik * dk[j])
+                    .sum();
             }
         }
 
@@ -565,14 +559,14 @@ impl ChebyshevCollocation {
 
         // Enforce boundary conditions (nodes are ordered x[0]=1, x[m-1]=-1)
         // Overwrite first row: u(x[0]) = bc_right (x[0] = cos(0) = 1)
-        for j in 0..m {
-            d2[0][j] = if j == 0 { 1.0 } else { 0.0 };
+        for (j, v) in d2[0].iter_mut().enumerate() {
+            *v = if j == 0 { 1.0 } else { 0.0 };
         }
         rhs[0] = bc_right;
 
         // Overwrite last row: u(x[m-1]) = bc_left (x[m-1] = cos(pi) = -1)
-        for j in 0..m {
-            d2[m - 1][j] = if j == m - 1 { 1.0 } else { 0.0 };
+        for (j, v) in d2[m - 1].iter_mut().enumerate() {
+            *v = if j == m - 1 { 1.0 } else { 0.0 };
         }
         rhs[m - 1] = bc_left;
 
@@ -584,13 +578,13 @@ impl ChebyshevCollocation {
 /// Solve `A x = b` in-place via Gaussian elimination with partial pivoting.
 ///
 /// Modifies `a` and `b`; returns the solution vector.
-fn gauss_solve(a: &mut Vec<Vec<f64>>, b: &mut Vec<f64>) -> Vec<f64> {
+fn gauss_solve(a: &mut [Vec<f64>], b: &mut [f64]) -> Vec<f64> {
     let n = b.len();
     for col in 0..n {
         // Partial pivot
         let mut max_row = col;
         let mut max_val = a[col][col].abs();
-        for row in (col + 1)..n {
+        for (row, _) in a.iter().enumerate().take(n).skip(col + 1) {
             if a[row][col].abs() > max_val {
                 max_val = a[row][col].abs();
                 max_row = row;
@@ -605,9 +599,12 @@ fn gauss_solve(a: &mut Vec<Vec<f64>>, b: &mut Vec<f64>) -> Vec<f64> {
         }
         for row in (col + 1)..n {
             let factor = a[row][col] / pivot;
-            for k in col..n {
-                let sub = factor * a[col][k];
-                a[row][k] -= sub;
+            let (col_row, a_row) = {
+                let (left, right) = a.split_at_mut(row);
+                (&left[col][col..], &mut right[0][col..])
+            };
+            for (av, &cv) in a_row.iter_mut().zip(col_row.iter()) {
+                *av -= factor * cv;
             }
             b[row] -= factor * b[col];
         }
@@ -645,9 +642,8 @@ impl WaveletTransform {
         let s2i = 1.0 / std::f64::consts::SQRT_2;
         let mut approx = Vec::with_capacity(n);
         let mut detail = Vec::with_capacity(n);
-        for i in 0..n {
-            let a = signal[2 * i];
-            let b = signal[2 * i + 1];
+        for chunk in signal.chunks_exact(2) {
+            let (a, b) = (chunk[0], chunk[1]);
             approx.push((a + b) * s2i);
             detail.push((a - b) * s2i);
         }
@@ -661,9 +657,12 @@ impl WaveletTransform {
         let n = approx.len().min(detail.len());
         let s2i = 1.0 / std::f64::consts::SQRT_2;
         let mut out = vec![0.0f64; 2 * n];
-        for i in 0..n {
-            out[2 * i] = (approx[i] + detail[i]) * s2i;
-            out[2 * i + 1] = (approx[i] - detail[i]) * s2i;
+        for (chunk, (&a, &d)) in out
+            .chunks_exact_mut(2)
+            .zip(approx.iter().zip(detail.iter()))
+        {
+            chunk[0] = (a + d) * s2i;
+            chunk[1] = (a - d) * s2i;
         }
         out
     }
@@ -707,7 +706,7 @@ impl WaveletTransform {
     ///
     /// Applies the soft-threshold function `sign(x) * max(|x| - lambda, 0)`
     /// to each detail coefficient in `coeffs[1..]`.
-    pub fn soft_threshold(coeffs: &mut Vec<Vec<f64>>, lambda: f64) {
+    pub fn soft_threshold(coeffs: &mut [Vec<f64>], lambda: f64) {
         for sub in coeffs.iter_mut().skip(1) {
             for v in sub.iter_mut() {
                 let s = v.signum();
@@ -768,8 +767,8 @@ mod tests {
     fn test_cheb_eval_all_consistency() {
         let x = 0.4;
         let all = ChebyshevPolynomial::eval_all(5, x);
-        for k in 0..=5 {
-            assert!((all[k] - ChebyshevPolynomial::eval(k, x)).abs() < 1e-12);
+        for (k, &val) in all.iter().enumerate() {
+            assert!((val - ChebyshevPolynomial::eval(k, x)).abs() < 1e-12);
         }
     }
 
@@ -858,8 +857,8 @@ mod tests {
     fn test_legendre_eval_all_consistency() {
         let x = 0.7;
         let all = LegendrePolynomial::eval_all(4, x);
-        for k in 0..=4 {
-            assert!((all[k] - LegendrePolynomial::eval(k, x)).abs() < 1e-12);
+        for (k, &val) in all.iter().enumerate() {
+            assert!((val - LegendrePolynomial::eval(k, x)).abs() < 1e-12);
         }
     }
 
@@ -923,8 +922,8 @@ mod tests {
         let spec = FourierSeries::fft(&data);
         assert!((spec[0].0 - 3.0 * n as f64).abs() < 1e-10);
         // All other bins should be ~0
-        for k in 1..n {
-            assert!(spec[k].0.abs() < 1e-10 && spec[k].1.abs() < 1e-10);
+        for s in spec.iter().skip(1) {
+            assert!(s.0.abs() < 1e-10 && s.1.abs() < 1e-10);
         }
     }
 

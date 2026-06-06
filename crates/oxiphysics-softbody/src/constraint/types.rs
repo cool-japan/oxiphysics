@@ -136,7 +136,6 @@ impl SurfaceTensionConstraint {
 /// Preserves the shape of a group of particles by computing the optimal
 /// rotation from the rest shape to the current configuration.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ShapeMatchingConstraint {
     /// Indices of the particles in this shape.
     pub indices: Vec<usize>,
@@ -149,7 +148,6 @@ pub struct ShapeMatchingConstraint {
 }
 impl ShapeMatchingConstraint {
     /// Create a shape matching constraint from the current configuration.
-    #[allow(dead_code)]
     pub fn from_particles(
         indices: Vec<usize>,
         particles: &[SoftParticle],
@@ -273,7 +271,6 @@ impl ShapeMatchingConstraint {
 /// Limits the maximum stretch and compression of a triangle to prevent
 /// excessive deformation. Based on principal strain analysis.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct StrainLimitingConstraint {
     /// Indices of the three vertices.
     pub indices: [usize; 3],
@@ -290,7 +287,6 @@ pub struct StrainLimitingConstraint {
 }
 impl StrainLimitingConstraint {
     /// Create a strain limiting constraint from the current configuration.
-    #[allow(dead_code)]
     pub fn from_particles(
         indices: [usize; 3],
         particles: &[SoftParticle],
@@ -312,7 +308,6 @@ impl StrainLimitingConstraint {
         }
     }
     /// Reset the Lagrange multiplier.
-    #[allow(dead_code)]
     pub fn reset_lambda(&mut self) {
         self.lambda = 0.0;
     }
@@ -369,7 +364,6 @@ pub struct NeoHookeanConstraint {
     /// Accumulated Lagrange multiplier (hydrostatic).
     pub(super) lambda_vol: Real,
 }
-#[allow(clippy::too_many_arguments)]
 impl NeoHookeanConstraint {
     /// Build constraint from current particle positions.
     pub fn from_particles(
@@ -431,7 +425,6 @@ impl NeoHookeanConstraint {
 ///
 /// Preserves the area of a triangle formed by three particles.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AreaConstraint {
     /// Indices of the three vertices.
     pub indices: [usize; 3],
@@ -444,7 +437,6 @@ pub struct AreaConstraint {
 }
 impl AreaConstraint {
     /// Create an area constraint with an explicit rest area.
-    #[allow(dead_code)]
     pub fn new(indices: [usize; 3], rest_area: Real, compliance: Real) -> Self {
         Self {
             indices,
@@ -454,7 +446,6 @@ impl AreaConstraint {
         }
     }
     /// Build an area constraint from the current configuration.
-    #[allow(dead_code)]
     pub fn from_particles(
         indices: [usize; 3],
         particles: &[SoftParticle],
@@ -468,7 +459,6 @@ impl AreaConstraint {
         Self::new(indices, area, compliance)
     }
     /// Reset the Lagrange multiplier.
-    #[allow(dead_code)]
     pub fn reset_lambda(&mut self) {
         self.lambda = 0.0;
     }
@@ -687,7 +677,6 @@ impl DistanceConstraint {
 /// `C = (p0*Q[0] + p1*Q[1] + p2*Q[2] + p3*Q[3])`
 /// where Q are cotangent-weighted coefficients.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct IsometricBendingConstraint {
     /// Indices of the four particles: shared edge (i0, i1), wing vertices (i2, i3).
     pub indices: [usize; 4],
@@ -702,7 +691,6 @@ pub struct IsometricBendingConstraint {
 }
 impl IsometricBendingConstraint {
     /// Create an isometric bending constraint from the current configuration.
-    #[allow(dead_code)]
     pub fn from_particles(
         indices: [usize; 4],
         particles: &[SoftParticle],
@@ -723,7 +711,6 @@ impl IsometricBendingConstraint {
         }
     }
     /// Reset the Lagrange multiplier.
-    #[allow(dead_code)]
     pub fn reset_lambda(&mut self) {
         self.lambda = 0.0;
     }

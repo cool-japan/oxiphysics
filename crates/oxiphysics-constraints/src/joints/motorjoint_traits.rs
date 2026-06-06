@@ -12,8 +12,6 @@ use crate::traits::Constraint;
 use oxiphysics_core::BodyHandle;
 use oxiphysics_rigid::RigidBodySet;
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{apply_angular_impulse, read_body};
 use super::types::MotorJoint;
 

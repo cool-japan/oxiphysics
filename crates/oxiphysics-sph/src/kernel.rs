@@ -1,5 +1,3 @@
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -383,7 +381,6 @@ impl SphKernel for SpikyKernel {
 /// W_corrected(r_ij) = W(r_ij) / Σ_j (m_j/ρ_j) * W(r_ij)
 ///
 /// Returns the correction factor for particle i.
-#[allow(dead_code)]
 pub fn shepard_correction(kernel_values: &[f64], masses: &[f64], densities: &[f64]) -> f64 {
     let mut sum = 0.0_f64;
     for (idx, &w) in kernel_values.iter().enumerate() {
@@ -402,7 +399,6 @@ pub fn shepard_correction(kernel_values: &[f64], masses: &[f64], densities: &[f6
 ///
 /// The moment matrix is M = Σ_j (m_j/ρ_j) * W_ij * p_j * p_j^T
 /// where p = \[1, x-xi, y-yi, z-zi\].
-#[allow(dead_code)]
 pub fn mls_moment_matrix(
     pos_i: [f64; 3],
     neighbor_positions: &[[f64; 3]],
@@ -438,7 +434,6 @@ pub fn mls_moment_matrix(
 /// L_i = (Σ_j V_j ∇W_ij ⊗ r_ij)^(-1)
 ///
 /// Returns the 3x3 correction matrix L.
-#[allow(dead_code)]
 pub fn gradient_correction_matrix(
     pos_i: [f64; 3],
     neighbor_positions: &[[f64; 3]],
@@ -466,7 +461,6 @@ pub fn gradient_correction_matrix(
 }
 
 /// Invert a 3x3 matrix. Returns identity if singular.
-#[allow(dead_code)]
 fn invert_3x3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
         - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
@@ -503,7 +497,6 @@ fn invert_3x3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 /// Compare two kernels by computing their values at several sample points.
 ///
 /// Returns `(max_abs_diff, max_rel_diff)` between the two kernels.
-#[allow(dead_code)]
 pub fn compare_kernels(
     k1: &dyn SphKernel,
     k2: &dyn SphKernel,
@@ -536,7 +529,6 @@ pub fn compare_kernels(
 }
 
 /// Compute the effective support radius of a kernel (where W drops below threshold).
-#[allow(dead_code)]
 pub fn effective_support_radius(kernel: &dyn SphKernel, h: f64, threshold: f64) -> f64 {
     let n = 1000;
     let max_r = 3.0 * h;
@@ -593,19 +585,16 @@ pub fn wendland_c2_grad(r_vec: [f64; 3], h: f64) -> [f64; 3] {
 }
 
 /// Evaluate the Wendland C4 kernel value at scalar distance `r`.
-#[allow(dead_code)]
 pub fn wendland_c4_eval(r: f64, h: f64) -> f64 {
     WendlandC4Kernel.w(r, h)
 }
 
 /// Evaluate the Wendland C6 kernel value at scalar distance `r`.
-#[allow(dead_code)]
 pub fn wendland_c6_eval(r: f64, h: f64) -> f64 {
     WendlandC6Kernel.w(r, h)
 }
 
 /// Evaluate the super-Gaussian kernel value at scalar distance `r`.
-#[allow(dead_code)]
 pub fn super_gaussian_eval(r: f64, h: f64) -> f64 {
     SuperGaussianKernel.w(r, h)
 }
@@ -980,13 +969,13 @@ mod tests {
     fn test_invert_3x3_identity() {
         let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let inv = invert_3x3(id);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in inv.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (inv[i][j] - expected).abs() < 1e-12,
+                    (val - expected).abs() < 1e-12,
                     "inv[{i}][{j}] = {}, expected {expected}",
-                    inv[i][j]
+                    val
                 );
             }
         }
@@ -1050,7 +1039,6 @@ mod tests {
 /// σ = 78 / (7 π h³)
 ///
 /// This variant keeps h as the support radius instead of the smoothing length.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QuinticWendlandC6Kernel;
 
@@ -1104,7 +1092,6 @@ impl SphKernel for QuinticWendlandC6Kernel {
 /// σ = 1 / (π^(3/2) h³)
 ///
 /// Technically has infinite support; values below machine epsilon at q > 3.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GaussianKernel;
 
@@ -1158,7 +1145,6 @@ impl SphKernel for GaussianKernel {
 ///
 /// Compact support at `r/h = 3`.
 /// Higher-order accuracy than the cubic spline.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QuinticSplineKernel;
 
@@ -1208,7 +1194,6 @@ impl SphKernel for QuinticSplineKernel {
 /// `L_i = (Σ_j V_j ∇W_ij ⊗ r_ij)^(-1)`
 ///
 /// The corrected gradient is then: `∇^*W_ij = L_i · ∇W_ij`
-#[allow(dead_code)]
 pub fn ksph_corrected_gradient(grad_w: [f64; 3], correction_matrix: [[f64; 3]; 3]) -> [f64; 3] {
     let mut result = [0.0_f64; 3];
     for i in 0..3 {
@@ -1222,7 +1207,6 @@ pub fn ksph_corrected_gradient(grad_w: [f64; 3], correction_matrix: [[f64; 3]; 3
 /// Apply KSPH gradient correction to all neighbor gradient vectors.
 ///
 /// Returns the corrected gradient vectors as a `Vec<[f64; 3]>`.
-#[allow(dead_code)]
 pub fn ksph_correct_all_gradients(
     gradients: &[[f64; 3]],
     correction_matrix: [[f64; 3]; 3],
@@ -1239,7 +1223,6 @@ pub fn ksph_correct_all_gradients(
 /// `M2 = Σ_j V_j W_ij r_ij ⊗ r_ij`
 ///
 /// This is used in higher-order SPH schemes (e.g., RK-SPH).
-#[allow(dead_code)]
 pub fn second_moment_matrix(
     pos_i: [f64; 3],
     neighbor_positions: &[[f64; 3]],
@@ -1276,7 +1259,6 @@ pub fn second_moment_matrix(
 ///
 /// This is the zeroth-order (Shepard) consistency correction.
 /// Returns the scale factor; multiply all kernel values by this factor.
-#[allow(dead_code)]
 pub fn renormalize_kernel(kernel_values: &[f64], volumes: &[f64]) -> f64 {
     let sum: f64 = kernel_values
         .iter()
@@ -1289,7 +1271,6 @@ pub fn renormalize_kernel(kernel_values: &[f64], volumes: &[f64]) -> f64 {
 /// Renormalize kernel values in place for a set of neighbor interactions.
 ///
 /// After renormalization, `Σ V_j W_ij = 1`.
-#[allow(dead_code)]
 pub fn apply_renormalization(kernel_values: &mut [f64], volumes: &[f64]) {
     let scale = renormalize_kernel(kernel_values, volumes);
     for w in kernel_values.iter_mut() {
@@ -1301,7 +1282,6 @@ pub fn apply_renormalization(kernel_values: &mut [f64], volumes: &[f64]) {
 ///
 /// This variant uses `m_j / ρ_j` as the volume estimate, consistent with
 /// standard SPH notation.
-#[allow(dead_code)]
 pub fn kernel_renorm_factor(kernel_values: &[f64], masses: &[f64], densities: &[f64]) -> f64 {
     shepard_correction(kernel_values, masses, densities)
 }
@@ -1314,7 +1294,6 @@ pub fn kernel_renorm_factor(kernel_values: &[f64], masses: &[f64], densities: &[
 /// approximation through the kernel Laplacian.
 ///
 /// `∇²f ≈ 2 * Σ_j (m_j / ρ_j) * (f_j - f_i) * (dW/dr) / r`
-#[allow(dead_code)]
 pub fn sph_laplacian_1d(
     f_i: f64,
     f_neighbors: &[f64],
@@ -1344,7 +1323,6 @@ pub fn sph_laplacian_1d(
 /// Compute the SPH gradient in 3D at particle i.
 ///
 /// `∇f_i ≈ Σ_j (m_j / ρ_j) * (f_j - f_i) * ∇W_ij`
-#[allow(dead_code)]
 pub fn sph_gradient_3d(
     f_i: f64,
     f_neighbors: &[f64],
@@ -1386,25 +1364,21 @@ pub fn sph_gradient_3d(
 // ---------------------------------------------------------------------------
 
 /// Evaluate the Quintic Wendland C6 kernel at scalar distance `r`.
-#[allow(dead_code)]
 pub fn quintic_wendland_c6_eval(r: f64, h: f64) -> f64 {
     QuinticWendlandC6Kernel.w(r, h)
 }
 
 /// Evaluate the Gaussian kernel at scalar distance `r`.
-#[allow(dead_code)]
 pub fn gaussian_eval(r: f64, h: f64) -> f64 {
     GaussianKernel.w(r, h)
 }
 
 /// Evaluate the Quintic Spline kernel at scalar distance `r`.
-#[allow(dead_code)]
 pub fn quintic_spline_eval(r: f64, h: f64) -> f64 {
     QuinticSplineKernel.w(r, h)
 }
 
 /// Evaluate the Gaussian gradient given displacement vector `r_vec`.
-#[allow(dead_code)]
 pub fn gaussian_grad(r_vec: [f64; 3], h: f64) -> [f64; 3] {
     grad(&GaussianKernel, r_vec, h)
 }
@@ -1617,12 +1591,12 @@ mod tests_extended {
         let masses = vec![1.0, 1.0];
         let densities = vec![1.0, 1.0];
         let m = second_moment_matrix(pos_i, &neighbors, &w_vals, &masses, &densities);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in m.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (m[i][j] - m[j][i]).abs() < 1e-12,
+                    (val - m[j][i]).abs() < 1e-12,
                     "Second moment matrix should be symmetric: m[{i}][{j}]={} != m[{j}][{i}]={}",
-                    m[i][j],
+                    val,
                     m[j][i]
                 );
             }

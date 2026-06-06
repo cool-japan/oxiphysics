@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -20,8 +19,6 @@
 //! - Er = γ L² / K  (Ericksen number: viscous vs. elastic)
 //! - Pe = v L / D   (Péclet number: advection vs. diffusion)
 //! - ξ = √(K / |a|) (nematic coherence length)
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -85,7 +82,6 @@ pub const W9: [f64; Q9] = [
 /// Stored as `[q11, q12]`; the full tensor is
 /// Q = ⎡ q11  q12 ⎤
 ///     ⎣ q12 -q11 ⎦
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QTensor2 {
     /// Component Q₁₁.
@@ -98,7 +94,6 @@ impl QTensor2 {
     /// Construct Q from director angle θ and scalar order parameter S.
     ///
     /// Q = S (n⊗n − I/2) where n = (cos θ, sin θ).
-    #[allow(dead_code)]
     pub fn from_director(theta: f64, s: f64) -> Self {
         let (c, sn) = (theta.cos(), theta.sin());
         Self {
@@ -110,19 +105,16 @@ impl QTensor2 {
     /// Extract the scalar order parameter S = 2√(Q₁₁² + Q₁₂²).
     ///
     /// This follows from Q = S(n⊗n − I/2) in 2-D where Q₁₁² + Q₁₂² = S²/4.
-    #[allow(dead_code)]
     pub fn order_parameter(&self) -> f64 {
         2.0 * (self.q11 * self.q11 + self.q12 * self.q12).sqrt()
     }
 
     /// Extract the director angle θ ∈ \[0, π\).
-    #[allow(dead_code)]
     pub fn director_angle(&self) -> f64 {
         0.5 * self.q12.atan2(self.q11)
     }
 
     /// Add two Q-tensors.
-    #[allow(dead_code)]
     pub fn add(&self, other: &QTensor2) -> Self {
         Self {
             q11: self.q11 + other.q11,
@@ -131,7 +123,6 @@ impl QTensor2 {
     }
 
     /// Scale Q-tensor by a scalar.
-    #[allow(dead_code)]
     pub fn scale(&self, f: f64) -> Self {
         Self {
             q11: self.q11 * f,
@@ -140,7 +131,6 @@ impl QTensor2 {
     }
 
     /// Frobenius norm ‖Q‖_F = √(Tr Q²).
-    #[allow(dead_code)]
     pub fn norm(&self) -> f64 {
         (self.q11 * self.q11 + self.q12 * self.q12).sqrt()
     }
@@ -158,7 +148,6 @@ impl QTensor2 {
 /// * `q`   – Q-tensor field, dimensions `[nx][ny]`
 /// * `k`   – Frank elastic constant K \[Pa\]
 /// * `dx`  – lattice spacing \[m\]
-#[allow(dead_code)]
 pub fn frank_elastic_density(q: &[Vec<QTensor2>], k: f64, dx: f64) -> Vec<Vec<f64>> {
     let nx = q.len();
     let ny = q[0].len();
@@ -188,8 +177,6 @@ pub fn frank_elastic_density(q: &[Vec<QTensor2>], k: f64, dx: f64) -> Vec<Vec<f6
 /// * `a`, `b_coeff`, `c_coeff` – Landau bulk coefficients
 /// * `k`   – Frank constant
 /// * `dx`  – lattice spacing
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn molecular_field(
     q: &[Vec<QTensor2>],
     a: f64,
@@ -230,7 +217,6 @@ pub fn molecular_field(
 // ============================================================================
 
 /// Parameters for the Beris-Edwards / Leslie-Ericksen Q-tensor dynamics.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct LiquidCrystalParams {
     /// Rotational viscosity γ₁ \[Pa·s\].
@@ -253,7 +239,6 @@ pub struct LiquidCrystalParams {
 
 impl LiquidCrystalParams {
     /// Construct with physically reasonable defaults (lattice units).
-    #[allow(dead_code)]
     pub fn default_lattice() -> Self {
         Self {
             gamma1: 0.1,
@@ -268,13 +253,11 @@ impl LiquidCrystalParams {
     }
 
     /// Compute the Ericksen number Er = γ₁ v L / K.
-    #[allow(dead_code)]
     pub fn ericksen_number(&self, velocity: f64, length: f64) -> f64 {
         self.gamma1 * velocity * length / self.frank_k
     }
 
     /// Compute the nematic coherence length ξ_n = √(K / |a|).
-    #[allow(dead_code)]
     pub fn coherence_length(&self) -> f64 {
         if self.landau_a.abs() < f64::EPSILON {
             f64::INFINITY
@@ -291,8 +274,7 @@ impl LiquidCrystalParams {
 /// # Arguments
 /// * `q`      – mutable Q-tensor field `[nx][ny]`
 /// * `params` – `LiquidCrystalParams`
-#[allow(dead_code)]
-pub fn relax_qtensor(q: &mut Vec<Vec<QTensor2>>, params: &LiquidCrystalParams) {
+pub fn relax_qtensor(q: &mut [Vec<QTensor2>], params: &LiquidCrystalParams) {
     let h = molecular_field(
         q,
         params.landau_a,
@@ -324,10 +306,8 @@ pub fn relax_qtensor(q: &mut Vec<Vec<QTensor2>>, params: &LiquidCrystalParams) {
 /// * `ux`   – x-velocity `[nx][ny]`
 /// * `uy`   – y-velocity `[nx][ny]`
 /// * `params` – LC parameters
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn beris_edwards_step(
-    q: &mut Vec<Vec<QTensor2>>,
+    q: &mut [Vec<QTensor2>],
     ux: &[Vec<f64>],
     uy: &[Vec<f64>],
     params: &LiquidCrystalParams,
@@ -383,7 +363,6 @@ pub fn beris_edwards_step(
 // ============================================================================
 
 /// Lyotropic liquid crystal state at a single lattice site.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct LyotropicSite {
     /// Surfactant / polymer concentration c ∈ \[0,1\].
@@ -400,7 +379,6 @@ pub struct LyotropicSite {
 
 impl LyotropicSite {
     /// Construct an isotropic (disordered) site.
-    #[allow(dead_code)]
     pub fn isotropic(conc: f64) -> Self {
         Self {
             concentration: conc,
@@ -414,7 +392,6 @@ impl LyotropicSite {
     /// Equilibrium scalar order parameter S_eq(c) = max(0, 2c − 1).
     ///
     /// Simple Onsager-type threshold at c* = 0.5.
-    #[allow(dead_code)]
     pub fn equilibrium_order(&self) -> f64 {
         (2.0 * self.concentration - 1.0).max(0.0)
     }
@@ -426,17 +403,14 @@ impl LyotropicSite {
 /// * `sites` – 2-D grid of `LyotropicSite`
 /// * `tau_q` – orientational relaxation time
 /// * `dt`    – time step
-#[allow(dead_code)]
-pub fn lyotropic_relax(sites: &mut Vec<Vec<LyotropicSite>>, tau_q: f64, dt: f64) {
-    let nx = sites.len();
-    let ny = sites[0].len();
-    for i in 0..nx {
-        for j in 0..ny {
-            let s_eq = sites[i][j].equilibrium_order();
+pub fn lyotropic_relax(sites: &mut [Vec<LyotropicSite>], tau_q: f64, dt: f64) {
+    let relax = dt / tau_q;
+    for row in sites.iter_mut() {
+        for site in row.iter_mut() {
+            let s_eq = site.equilibrium_order();
             let q_eq = QTensor2::from_director(0.0, s_eq);
-            let relax = dt / tau_q;
-            sites[i][j].qtensor.q11 += relax * (q_eq.q11 - sites[i][j].qtensor.q11);
-            sites[i][j].qtensor.q12 += relax * (q_eq.q12 - sites[i][j].qtensor.q12);
+            site.qtensor.q11 += relax * (q_eq.q11 - site.qtensor.q11);
+            site.qtensor.q12 += relax * (q_eq.q12 - site.qtensor.q12);
         }
     }
 }
@@ -446,7 +420,6 @@ pub fn lyotropic_relax(sites: &mut Vec<Vec<LyotropicSite>>, tau_q: f64, dt: f64)
 // ============================================================================
 
 /// A single colloidal particle in 2-D.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ColloidParticle {
     /// Centre-of-mass position (x, y) in lattice units.
@@ -463,7 +436,6 @@ pub struct ColloidParticle {
 
 impl ColloidParticle {
     /// Construct a stationary particle at a given position.
-    #[allow(dead_code)]
     pub fn new_stationary(x: f64, y: f64, radius: f64, mass: f64, charge: f64) -> Self {
         Self {
             position: [x, y],
@@ -480,7 +452,6 @@ impl ColloidParticle {
     /// * `ex`, `ey` – electric field components
     /// * `bz`       – out-of-plane magnetic field component
     /// * `dt`       – time step
-    #[allow(dead_code)]
     pub fn apply_lorentz_force(&mut self, ex: f64, ey: f64, bz: f64, dt: f64) {
         let vx = self.velocity[0];
         let vy = self.velocity[1];
@@ -491,7 +462,6 @@ impl ColloidParticle {
     }
 
     /// Advance particle position with Euler integration.
-    #[allow(dead_code)]
     pub fn advance(&mut self, dt: f64) {
         self.position[0] += dt * self.velocity[0];
         self.position[1] += dt * self.velocity[1];
@@ -501,7 +471,6 @@ impl ColloidParticle {
     ///
     /// Returns (fx, fy) acting on `self` due to `other`.
     /// Uses a steeply repulsive WCA-style potential: U = ε (σ/r)^12.
-    #[allow(dead_code)]
     pub fn excluded_volume_force(&self, other: &ColloidParticle, epsilon: f64) -> [f64; 2] {
         let dx = self.position[0] - other.position[0];
         let dy = self.position[1] - other.position[1];
@@ -527,7 +496,6 @@ impl ColloidParticle {
 /// * `particles` – list of colloidal particles
 /// * `nx`, `ny`  – grid dimensions
 /// * `bz`        – out-of-plane magnetic field
-#[allow(dead_code)]
 pub fn colloidal_body_force(
     particles: &[ColloidParticle],
     nx: usize,
@@ -567,7 +535,6 @@ pub fn colloidal_body_force(
 // ============================================================================
 
 /// Bond in the gel network.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct GelBond {
     /// Index of the first node.
@@ -588,7 +555,6 @@ impl GelBond {
     /// Compute elastic force on node A (force on node B is opposite).
     ///
     /// Returns `[fx, fy]` acting on node A.
-    #[allow(dead_code)]
     pub fn elastic_force(&self, pos_a: [f64; 2], pos_b: [f64; 2]) -> [f64; 2] {
         if !self.intact {
             return [0.0, 0.0];
@@ -605,7 +571,6 @@ impl GelBond {
     }
 
     /// Check and apply bond breakage criterion.
-    #[allow(dead_code)]
     pub fn check_breakage(&mut self, pos_a: [f64; 2], pos_b: [f64; 2]) {
         if !self.intact {
             return;
@@ -621,7 +586,6 @@ impl GelBond {
 }
 
 /// A node in the gel network carrying position and velocity.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct GelNode {
     /// Position \[lattice units\].
@@ -634,7 +598,6 @@ pub struct GelNode {
 
 impl GelNode {
     /// Advance the node using Euler integration.
-    #[allow(dead_code)]
     pub fn advance(&mut self, fx: f64, fy: f64, dt: f64) {
         self.velocity[0] += dt * fx / self.mass;
         self.velocity[1] += dt * fy / self.mass;
@@ -649,7 +612,6 @@ impl GelNode {
 /// * `nodes` – mutable slice of gel nodes
 /// * `bonds` – mutable slice of gel bonds
 /// * `dt`    – time step
-#[allow(dead_code)]
 pub fn gel_network_step(nodes: &mut [GelNode], bonds: &mut [GelBond], dt: f64) {
     let mut forces = vec![[0.0_f64; 2]; nodes.len()];
     for bond in bonds.iter_mut() {
@@ -675,7 +637,6 @@ pub fn gel_network_step(nodes: &mut [GelNode], bonds: &mut [GelBond], dt: f64) {
 // ============================================================================
 
 /// Properties of a lipid bilayer membrane.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct LipidBilayerParams {
     /// Bending rigidity κ \[J = Pa·m³\].
@@ -692,7 +653,6 @@ pub struct LipidBilayerParams {
 
 impl LipidBilayerParams {
     /// Default DPPC-like bilayer (in SI units at 323 K).
-    #[allow(dead_code)]
     pub fn dppc() -> Self {
         Self {
             bending_rigidity: 20.0 * K_B * 323.0,
@@ -706,7 +666,6 @@ impl LipidBilayerParams {
     /// Helfrich bending energy for a spherical vesicle of radius R.
     ///
     /// E_bend = 4π(2κ + κ̄) (closed surface, no edges).
-    #[allow(dead_code)]
     pub fn spherical_bending_energy(&self) -> f64 {
         4.0 * PI * (2.0 * self.bending_rigidity + self.saddle_splay)
     }
@@ -720,7 +679,6 @@ impl LipidBilayerParams {
 /// # Arguments
 /// * `x`, `y`  – membrane node positions
 /// * `kappa`   – bending rigidity κ
-#[allow(dead_code)]
 pub fn helfrich_force(x: &[f64], y: &[f64], kappa: f64) -> Vec<[f64; 2]> {
     let n = x.len();
     let mut force = vec![[0.0_f64; 2]; n];
@@ -752,7 +710,6 @@ pub fn helfrich_force(x: &[f64], y: &[f64], kappa: f64) -> Vec<[f64; 2]> {
 // ============================================================================
 
 /// Parameters for the Cates worm-like micelle model.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct WormLikeMicelleParams {
     /// Plateau modulus G₀ \[Pa\].
@@ -767,19 +724,16 @@ pub struct WormLikeMicelleParams {
 
 impl WormLikeMicelleParams {
     /// Maxwell relaxation time τ_R = √(τ_rep · τ_break).
-    #[allow(dead_code)]
     pub fn maxwell_time(&self) -> f64 {
         (self.tau_rep * self.tau_break).sqrt()
     }
 
     /// Zero-shear viscosity η₀ = G₀ τ_R.
-    #[allow(dead_code)]
     pub fn zero_shear_viscosity(&self) -> f64 {
         self.plateau_modulus * self.maxwell_time()
     }
 
     /// Storage modulus G'(ω) for single-mode Maxwell model.
-    #[allow(dead_code)]
     pub fn storage_modulus(&self, omega: f64) -> f64 {
         let tr = self.maxwell_time();
         let w2 = (omega * tr) * (omega * tr);
@@ -787,7 +741,6 @@ impl WormLikeMicelleParams {
     }
 
     /// Loss modulus G''(ω).
-    #[allow(dead_code)]
     pub fn loss_modulus(&self, omega: f64) -> f64 {
         let tr = self.maxwell_time();
         let wt = omega * tr;
@@ -796,7 +749,6 @@ impl WormLikeMicelleParams {
     }
 
     /// Cole-Cole half-circle radius = G₀/2.
-    #[allow(dead_code)]
     pub fn cole_cole_radius(&self) -> f64 {
         self.plateau_modulus / 2.0
     }
@@ -811,8 +763,6 @@ impl WormLikeMicelleParams {
 /// * `dxx`, `dxy`, `dyy`               – strain-rate components \[1/s\]
 /// * `params`                           – micelle parameters
 /// * `dt`                               – time step \[s\]
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn maxwell_stress_step(
     sigma_xx: &mut f64,
     sigma_xy: &mut f64,
@@ -835,7 +785,6 @@ pub fn maxwell_stress_step(
 // ============================================================================
 
 /// Parameters for the Ohta-Kawasaki block copolymer model.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct OhtaKawasakiParams {
     /// Interaction parameter χN (Flory-Huggins × chain length).
@@ -856,13 +805,11 @@ pub struct OhtaKawasakiParams {
 
 impl OhtaKawasakiParams {
     /// Mean-field spinodal at f_A = 0.5: χN_s = 2 / (2 f_A (1-f_A)) = 2 for symmetric.
-    #[allow(dead_code)]
     pub fn spinodal_chin(&self) -> f64 {
         2.0 / (2.0 * self.f_a * (1.0 - self.f_a))
     }
 
     /// Lamellar period estimate L* ≈ 2π ε / √(α).
-    #[allow(dead_code)]
     pub fn lamellar_period(&self) -> f64 {
         if self.alpha < f64::EPSILON {
             f64::INFINITY
@@ -875,14 +822,12 @@ impl OhtaKawasakiParams {
 /// Local Ohta-Kawasaki free energy density.
 ///
 /// f = (χN/4)(φ - f_A)² (1 - (φ - f_A)²) − approximation for Flory-Huggins
-#[allow(dead_code)]
 pub fn ohta_kawasaki_bulk_density(phi: f64, f_a: f64, chi_n: f64) -> f64 {
     let m = phi - f_a;
     0.25 * chi_n * m * m * (1.0 - m * m)
 }
 
 /// Chemical potential μ = df/dφ + long-range term (local part only).
-#[allow(dead_code)]
 pub fn ohta_kawasaki_mu(phi: f64, f_a: f64, chi_n: f64) -> f64 {
     let m = phi - f_a;
     chi_n * m * (0.5 - m * m)
@@ -895,8 +840,7 @@ pub fn ohta_kawasaki_mu(phi: f64, f_a: f64, chi_n: f64) -> f64 {
 /// # Arguments
 /// * `phi`    – composition field `[nx][ny]`
 /// * `params` – OK parameters
-#[allow(dead_code)]
-pub fn block_copolymer_step(phi: &mut Vec<Vec<f64>>, params: &OhtaKawasakiParams) {
+pub fn block_copolymer_step(phi: &mut [Vec<f64>], params: &OhtaKawasakiParams) {
     let nx = phi.len();
     let ny = phi[0].len();
     let dx2 = params.dx * params.dx;
@@ -935,7 +879,6 @@ pub fn block_copolymer_step(phi: &mut Vec<Vec<f64>>, params: &OhtaKawasakiParams
 // ============================================================================
 
 /// A self-propelled particle (SPP) with polar alignment.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ActiveParticle {
     /// Position (x, y) in lattice units.
@@ -952,7 +895,6 @@ pub struct ActiveParticle {
 
 impl ActiveParticle {
     /// Create a new active particle.
-    #[allow(dead_code)]
     pub fn new(x: f64, y: f64, theta: f64) -> Self {
         Self {
             position: [x, y],
@@ -964,7 +906,6 @@ impl ActiveParticle {
     }
 
     /// Self-propulsion velocity vector.
-    #[allow(dead_code)]
     pub fn propulsion_velocity(&self) -> [f64; 2] {
         [self.speed * self.theta.cos(), self.speed * self.theta.sin()]
     }
@@ -975,7 +916,6 @@ impl ActiveParticle {
     /// * `fx`, `fy` – external force
     /// * `torque`   – external torque on orientation
     /// * `dt`       – time step
-    #[allow(dead_code)]
     pub fn advance(&mut self, fx: f64, fy: f64, torque: f64, dt: f64) {
         let v = self.propulsion_velocity();
         self.position[0] += dt * (v[0] + fx / self.friction);
@@ -994,7 +934,6 @@ impl ActiveParticle {
 /// * `i`         – index of the focal particle
 /// * `r_align`   – alignment radius
 /// * `j_align`   – coupling strength
-#[allow(dead_code)]
 pub fn vicsek_alignment_torque(
     particles: &[ActiveParticle],
     i: usize,
@@ -1030,7 +969,6 @@ pub fn vicsek_alignment_torque(
 }
 
 /// Measure the global polar order parameter Φ = |⟨e^{iθ}⟩|.
-#[allow(dead_code)]
 pub fn polar_order_parameter(particles: &[ActiveParticle]) -> f64 {
     if particles.is_empty() {
         return 0.0;
@@ -1042,7 +980,6 @@ pub fn polar_order_parameter(particles: &[ActiveParticle]) -> f64 {
 }
 
 /// Measure the nematic order parameter S = |⟨cos 2θ⟩|.
-#[allow(dead_code)]
 pub fn nematic_order_parameter(particles: &[ActiveParticle]) -> f64 {
     if particles.is_empty() {
         return 0.0;
@@ -1065,13 +1002,12 @@ pub fn nematic_order_parameter(particles: &[ActiveParticle]) -> f64 {
 /// * `rho` – fluid density
 /// * `ux`  – x-velocity
 /// * `uy`  – y-velocity
-#[allow(dead_code)]
 pub fn equilibrium_d2q9(rho: f64, ux: f64, uy: f64) -> [f64; Q9] {
     let u2 = ux * ux + uy * uy;
     let mut feq = [0.0_f64; Q9];
-    for i in 0..Q9 {
-        let cu = CX[i] * ux + CY[i] * uy;
-        feq[i] = W9[i] * rho * (1.0 + cu / CS2 + cu * cu / (2.0 * CS2 * CS2) - u2 / (2.0 * CS2));
+    for (feq_i, ((&cx, &cy), &w)) in feq.iter_mut().zip(CX.iter().zip(CY.iter()).zip(W9.iter())) {
+        let cu = cx * ux + cy * uy;
+        *feq_i = w * rho * (1.0 + cu / CS2 + cu * cu / (2.0 * CS2 * CS2) - u2 / (2.0 * CS2));
     }
     feq
 }
@@ -1086,25 +1022,23 @@ pub fn equilibrium_d2q9(rho: f64, ux: f64, uy: f64) -> [f64; Q9] {
 /// * `rho` – density
 /// * `ux`  – x-velocity
 /// * `uy`  – y-velocity
-#[allow(dead_code)]
 pub fn bgk_collide(f: &mut [f64; Q9], tau: f64, rho: f64, ux: f64, uy: f64) {
     let feq = equilibrium_d2q9(rho, ux, uy);
-    for i in 0..Q9 {
-        f[i] -= (f[i] - feq[i]) / tau;
+    for (f_i, &feq_i) in f.iter_mut().zip(feq.iter()) {
+        *f_i -= (*f_i - feq_i) / tau;
     }
 }
 
 /// Compute macroscopic density and velocity from distribution functions.
 ///
 /// ρ = Σ f_i,   ρ u = Σ f_i c_i
-#[allow(dead_code)]
 pub fn macroscopic_d2q9(f: &[f64; Q9]) -> (f64, f64, f64) {
     let rho: f64 = f.iter().sum();
     let mut rho_ux = 0.0;
     let mut rho_uy = 0.0;
-    for i in 0..Q9 {
-        rho_ux += f[i] * CX[i];
-        rho_uy += f[i] * CY[i];
+    for ((&f_i, &cx), &cy) in f.iter().zip(CX.iter()).zip(CY.iter()) {
+        rho_ux += f_i * cx;
+        rho_uy += f_i * cy;
     }
     let ux = if rho > f64::EPSILON {
         rho_ux / rho
@@ -1124,7 +1058,6 @@ pub fn macroscopic_d2q9(f: &[f64; Q9]) -> (f64, f64, f64) {
 // ============================================================================
 
 /// A 2-D soft-matter LBM grid coupling fluid, Q-tensor, and active particles.
-#[allow(dead_code)]
 pub struct SoftMatterGrid {
     /// Grid width (x).
     pub nx: usize,
@@ -1147,7 +1080,6 @@ impl SoftMatterGrid {
     /// * `nx`, `ny`   – grid dimensions
     /// * `tau`        – fluid relaxation time
     /// * `lc_params`  – liquid crystal parameters
-    #[allow(dead_code)]
     pub fn new(nx: usize, ny: usize, tau: f64, lc_params: LiquidCrystalParams) -> Self {
         let feq = equilibrium_d2q9(1.0, 0.0, 0.0);
         let f = vec![vec![feq; ny]; nx];
@@ -1167,17 +1099,15 @@ impl SoftMatterGrid {
     /// # Arguments
     /// * `theta_field` – angle field `[nx][ny]`
     /// * `s0`          – uniform initial order parameter
-    #[allow(dead_code)]
     pub fn set_director(&mut self, theta_field: &[Vec<f64>], s0: f64) {
-        for i in 0..self.nx {
-            for j in 0..self.ny {
-                self.q_field[i][j] = QTensor2::from_director(theta_field[i][j], s0);
+        for (q_row, theta_row) in self.q_field.iter_mut().zip(theta_field.iter()) {
+            for (q_ij, &theta) in q_row.iter_mut().zip(theta_row.iter()) {
+                *q_ij = QTensor2::from_director(theta, s0);
             }
         }
     }
 
     /// Perform one full LBM time step (collision → streaming → Q-tensor relax).
-    #[allow(dead_code)]
     pub fn step(&mut self) {
         // BGK collision
         for i in 0..self.nx {
@@ -1203,7 +1133,6 @@ impl SoftMatterGrid {
     }
 
     /// Compute average scalar order parameter ⟨S⟩ over the grid.
-    #[allow(dead_code)]
     pub fn mean_order_parameter(&self) -> f64 {
         let total: f64 = self
             .q_field
@@ -1215,7 +1144,6 @@ impl SoftMatterGrid {
     }
 
     /// Compute average fluid speed ⟨|u|⟩.
-    #[allow(dead_code)]
     pub fn mean_speed(&self) -> f64 {
         let total: f64 = self
             .f
@@ -1290,9 +1218,9 @@ mod tests {
         let ny = 5;
         let q = vec![vec![QTensor2::from_director(0.0, 0.6); ny]; nx];
         let f = frank_elastic_density(&q, 1.0, 1.0);
-        for i in 1..nx - 1 {
-            for j in 1..ny - 1 {
-                assert!(f[i][j].abs() < 1e-12, "non-zero at ({i},{j})");
+        for (i, row) in f[1..nx - 1].iter().enumerate().map(|(ii, r)| (ii + 1, r)) {
+            for (j, &val) in row[1..ny - 1].iter().enumerate().map(|(jj, v)| (jj + 1, v)) {
+                assert!(val.abs() < 1e-12, "non-zero at ({i},{j})");
             }
         }
     }
@@ -1304,9 +1232,9 @@ mod tests {
         let ny = 5;
         let q = vec![vec![QTensor2 { q11: 0.0, q12: 0.0 }; ny]; nx];
         let h = molecular_field(&q, 0.0, 1.0, 1.0, 1.0, 1.0);
-        for i in 1..nx - 1 {
-            for j in 1..ny - 1 {
-                assert!(h[i][j].q11.abs() < 1e-12);
+        for row in h[1..nx - 1].iter() {
+            for val in row[1..ny - 1].iter() {
+                assert!(val.q11.abs() < 1e-12);
             }
         }
     }
@@ -1474,10 +1402,10 @@ mod tests {
         let x: Vec<f64> = (0..n).map(|i| i as f64).collect();
         let y: Vec<f64> = vec![0.0; n];
         let f = helfrich_force(&x, &y, 1.0);
-        for i in 1..n - 1 {
+        for &fi in f[1..n - 1].iter() {
             assert!(
-                f[i][0].abs() < 1e-10 && f[i][1].abs() < 1e-10,
-                "non-zero at {i}"
+                fi[0].abs() < 1e-10 && fi[1].abs() < 1e-10,
+                "non-zero helfrich force at interior node"
             );
         }
     }
@@ -1660,8 +1588,8 @@ mod tests {
         let mut f = feq; // start at equilibrium
         bgk_collide(&mut f, 0.8, rho, ux, uy);
         // should remain at equilibrium
-        for i in 0..Q9 {
-            assert!((f[i] - feq[i]).abs() < 1e-12);
+        for (&f_i, &feq_i) in f.iter().zip(feq.iter()) {
+            assert!((f_i - feq_i).abs() < 1e-12);
         }
     }
 

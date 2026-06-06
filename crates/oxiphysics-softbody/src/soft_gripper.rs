@@ -7,9 +7,6 @@
 //! distance and bending stiffness.  Provides contact detection, grasp-force
 //! estimation, workspace sampling, and a lightweight single-step integrator.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

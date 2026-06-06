@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,8 +10,6 @@
 //! - Rigid moving objects (`MovingIbmObject`) with velocity/rotation update.
 //! - Flexible elastic filaments (`FlexibleIbmFiber`) with bending and tension.
 //! - Force/torque statistics (`IbmCouplingStats`) with drag/lift and power.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -444,11 +441,10 @@ pub fn compute_elastic_force(markers: &mut [IbmMarker], k_spring: f64) {
 /// 3. Spread forces to Eulerian grid.
 /// 4. Interpolate Eulerian velocity to markers.
 /// 5. Advance marker positions with explicit Euler.
-#[allow(clippy::too_many_arguments)]
 pub fn ib_lbm_step(
-    markers: &mut Vec<IbmMarker>,
-    fx_grid: &mut Vec<f64>,
-    fy_grid: &mut Vec<f64>,
+    markers: &mut [IbmMarker],
+    fx_grid: &mut [f64],
+    fy_grid: &mut [f64],
     ux_grid: &[f64],
     uy_grid: &[f64],
     nx: usize,

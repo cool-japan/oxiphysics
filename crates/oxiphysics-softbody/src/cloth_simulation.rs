@@ -6,9 +6,6 @@
 //! Provides a standalone cloth mesh with stretch, shear, and bend constraints
 //! using plain `[f64; 3]` arrays (no external math dependencies).
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Vector helpers
 // ---------------------------------------------------------------------------

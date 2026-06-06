@@ -13,9 +13,6 @@
 //! - Skop & Balasubramanian (1997). J. Fluids Struct. 11, 301.
 //! - Faltinsen (1990). Sea Loads on Ships and Offshore Structures. Cambridge.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

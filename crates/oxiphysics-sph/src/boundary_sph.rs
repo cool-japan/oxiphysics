@@ -1,8 +1,3 @@
-#![allow(
-    clippy::needless_range_loop,
-    clippy::ptr_arg,
-    clippy::too_many_arguments
-)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -97,7 +92,6 @@ impl BoundarySet {
 ///
 /// Each particle carries a position, outward normal, representative volume,
 /// and an instantaneous velocity (for moving boundaries).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RigidBoundaryParticle {
     /// World-space position.
@@ -110,7 +104,6 @@ pub struct RigidBoundaryParticle {
     pub velocity: [f64; 3],
 }
 
-#[allow(dead_code)]
 impl RigidBoundaryParticle {
     /// Create a new rigid boundary particle.
     pub fn new(position: [f64; 3], normal: [f64; 3], volume: f64) -> Self {
@@ -132,14 +125,12 @@ impl RigidBoundaryParticle {
 // ── RigidBoundarySet ──────────────────────────────────────────────────────────
 
 /// Collection of `RigidBoundaryParticle`s with a simple grid-based query.
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct RigidBoundarySet {
     /// All particles.
     pub particles: Vec<RigidBoundaryParticle>,
 }
 
-#[allow(dead_code)]
 impl RigidBoundarySet {
     /// Create an empty set.
     pub fn new() -> Self {
@@ -183,7 +174,6 @@ impl RigidBoundarySet {
 ///
 /// Uses the mirrored-pressure approximation: the boundary pressure equals
 /// the fluid pressure plus a hydrostatic correction.
-#[allow(dead_code)]
 pub fn compute_boundary_pressure(
     fluid_pressure: f64,
     fluid_density: f64,
@@ -202,7 +192,6 @@ pub fn compute_boundary_pressure(
 
 /// Generates mirror (ghost) particles by reflecting fluid particles across a
 /// plane defined by a normal and a signed distance from the origin.
-#[allow(dead_code)]
 pub struct MirrorBoundary {
     /// Unit outward normal of the plane.
     pub plane_normal: [f64; 3],
@@ -210,7 +199,6 @@ pub struct MirrorBoundary {
     pub plane_d: f64,
 }
 
-#[allow(dead_code)]
 impl MirrorBoundary {
     /// Create a new mirror boundary.
     pub fn new(plane_normal: [f64; 3], plane_d: f64) -> Self {
@@ -275,7 +263,6 @@ impl MirrorBoundary {
 // ── DynamicBoundary ───────────────────────────────────────────────────────────
 
 /// A moving boundary that updates the positions of its particles each step.
-#[allow(dead_code)]
 pub struct DynamicBoundary {
     /// Underlying particle set.
     pub particles: RigidBoundarySet,
@@ -287,7 +274,6 @@ impl Default for DynamicBoundary {
     }
 }
 
-#[allow(dead_code)]
 impl DynamicBoundary {
     /// Create a new empty dynamic boundary.
     pub fn new() -> Self {
@@ -321,7 +307,6 @@ impl DynamicBoundary {
 /// `F(r) = 4 * epsilon * (12 * sigma^12 / r^13 - 6 * sigma^6 / r^7)`
 ///
 /// The result is positive (repulsive) when `r < sigma * 2^(1/6)`.
-#[allow(dead_code)]
 pub fn compute_lennard_jones_force(r: f64, epsilon: f64, sigma: f64) -> f64 {
     if r < 1e-14 {
         return f64::MAX * 0.5; // avoid singularity
@@ -409,7 +394,6 @@ pub fn apply_boundary_forces(
 ///
 /// Returns `(positions, velocities)` of the ghost particles.  Ghost
 /// velocities are the mirror-image of the fluid velocity (no-slip).
-#[allow(dead_code)]
 pub fn generate_ghost_particles(
     fluid_positions: &[[f64; 3]],
     fluid_velocities: &[[f64; 3]],
@@ -436,7 +420,6 @@ pub fn generate_ghost_particles(
 ///
 /// The tangential velocity component is preserved; only the normal
 /// component is negated.
-#[allow(dead_code)]
 pub fn generate_ghost_particles_free_slip(
     fluid_positions: &[[f64; 3]],
     fluid_velocities: &[[f64; 3]],
@@ -472,7 +455,6 @@ pub fn generate_ghost_particles_free_slip(
 ///
 /// The force is purely repulsive and goes to zero exactly at the cutoff
 /// distance `r_cut = sigma * 2^(1/6)`.
-#[allow(dead_code)]
 pub fn compute_wca_force(r: f64, epsilon: f64, sigma: f64) -> f64 {
     let r_cut = sigma * 2.0_f64.powf(1.0 / 6.0);
     if r >= r_cut || r < 1e-14 {
@@ -490,7 +472,6 @@ pub fn compute_wca_force(r: f64, epsilon: f64, sigma: f64) -> f64 {
 ///
 /// `F(r) = 4ε (12σ^12/(r² + α²)^6.5 - 6σ^6/(r² + α²)^3.5) * r`
 /// where α is a softening parameter (typically 0.1 * sigma).
-#[allow(dead_code)]
 pub fn compute_softcore_lj_force(r: f64, epsilon: f64, sigma: f64, alpha: f64) -> f64 {
     let r2_eff = r * r + alpha * alpha;
     let s2 = sigma * sigma;
@@ -506,7 +487,6 @@ pub fn compute_softcore_lj_force(r: f64, epsilon: f64, sigma: f64, alpha: f64) -
 /// the SPH gradient of the indicator function.
 ///
 /// n_i ≈ -h Σ_j (V_j ∇W_ij)  (sum over boundary neighbours only).
-#[allow(dead_code)]
 pub fn compute_boundary_normals(
     boundary_positions: &[[f64; 3]],
     volumes: &[f64],
@@ -560,7 +540,6 @@ pub fn compute_boundary_normals(
 
 /// A dummy boundary particle (Adami et al. 2012 style) that extrapolates
 /// fluid pressure and velocity to maintain a smooth kernel support near walls.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DummyParticle {
     /// Position.
@@ -578,7 +557,6 @@ pub struct DummyParticle {
 ///
 /// `n_layers` layers of dummy particles are placed at spacings of `dx`
 /// behind the plane.
-#[allow(dead_code)]
 pub fn generate_dummy_particles(
     fluid_positions: &[[f64; 3]],
     fluid_pressures: &[f64],
@@ -624,7 +602,6 @@ pub fn generate_dummy_particles(
 ///
 /// Given a rotation centre, angular velocity vector, and linear velocity,
 /// update all particles by `dt`.
-#[allow(dead_code)]
 pub fn update_rotating_boundary(
     particles: &mut RigidBoundarySet,
     center: [f64; 3],
@@ -654,7 +631,6 @@ pub fn update_rotating_boundary(
 ///
 /// ρ_boundary_i = m_i * Σ_j W(r_ij, h) / Σ_j (m_j/ρ_j) W(r_ij, h)
 /// This is a simplified Shepard-corrected density for boundary particles.
-#[allow(dead_code)]
 pub fn boundary_shepard_density(
     boundary_pos: [f64; 3],
     fluid_positions: &[[f64; 3]],
@@ -1062,7 +1038,6 @@ mod tests {
 // ── Inflow/outflow boundary ────────────────────────────────────────────────────
 
 /// Defines an inflow plane that injects particles at a given rate.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct InflowBoundary {
     /// Position of the inflow plane center.
@@ -1079,7 +1054,6 @@ pub struct InflowBoundary {
     pub particle_spacing: f64,
 }
 
-#[allow(dead_code)]
 impl InflowBoundary {
     /// Create a new inflow boundary.
     pub fn new(
@@ -1132,7 +1106,6 @@ impl InflowBoundary {
 }
 
 /// Outflow boundary that removes particles that leave the domain.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OutflowBoundary {
     /// Position of the outflow plane.
@@ -1141,7 +1114,6 @@ pub struct OutflowBoundary {
     pub normal: [f64; 3],
 }
 
-#[allow(dead_code)]
 impl OutflowBoundary {
     /// Create a new outflow boundary.
     pub fn new(position: [f64; 3], normal: [f64; 3]) -> Self {
@@ -1182,7 +1154,6 @@ impl OutflowBoundary {
 /// Periodic box boundary condition for SPH.
 ///
 /// Wraps particle positions into the box domain `[min, max]^3`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PeriodicBox {
     /// Minimum corner.
@@ -1191,7 +1162,6 @@ pub struct PeriodicBox {
     pub max: [f64; 3],
 }
 
-#[allow(dead_code)]
 impl PeriodicBox {
     /// Create a new periodic box.
     pub fn new(min: [f64; 3], max: [f64; 3]) -> Self {
@@ -1201,16 +1171,16 @@ impl PeriodicBox {
     /// Wrap a single position into the periodic box.
     pub fn wrap(&self, pos: [f64; 3]) -> [f64; 3] {
         let mut p = pos;
-        for k in 0..3 {
-            let size = self.max[k] - self.min[k];
+        for ((pk, &mn), &mx) in p.iter_mut().zip(self.min.iter()).zip(self.max.iter()) {
+            let size = mx - mn;
             if size <= 0.0 {
                 continue;
             }
-            while p[k] < self.min[k] {
-                p[k] += size;
+            while *pk < mn {
+                *pk += size;
             }
-            while p[k] >= self.max[k] {
-                p[k] -= size;
+            while *pk >= mx {
+                *pk -= size;
             }
         }
         p
@@ -1223,23 +1193,23 @@ impl PeriodicBox {
             pos_b[1] - pos_a[1],
             pos_b[2] - pos_a[2],
         ];
-        for k in 0..3 {
-            let size = self.max[k] - self.min[k];
+        for ((dk, &mn), &mx) in d.iter_mut().zip(self.min.iter()).zip(self.max.iter()) {
+            let size = mx - mn;
             if size <= 0.0 {
                 continue;
             }
-            if d[k] > 0.5 * size {
-                d[k] -= size;
+            if *dk > 0.5 * size {
+                *dk -= size;
             }
-            if d[k] < -0.5 * size {
-                d[k] += size;
+            if *dk < -0.5 * size {
+                *dk += size;
             }
         }
         d
     }
 
     /// Wrap all positions in a vector in place.
-    pub fn wrap_all(&self, positions: &mut Vec<[f64; 3]>) {
+    pub fn wrap_all(&self, positions: &mut [[f64; 3]]) {
         for pos in positions.iter_mut() {
             *pos = self.wrap(*pos);
         }
@@ -1261,7 +1231,6 @@ impl PeriodicBox {
 ///
 /// Ghost particles are placed at the boundary with extrapolated pressure
 /// to impose a fixed pressure condition.
-#[allow(dead_code)]
 pub struct PressureBoundary {
     /// Target pressure at the boundary.
     pub pressure: f64,
@@ -1273,7 +1242,6 @@ pub struct PressureBoundary {
     pub plane_point: [f64; 3],
 }
 
-#[allow(dead_code)]
 impl PressureBoundary {
     /// Create a new pressure boundary.
     pub fn new(pressure: f64, rho_ref: f64, normal: [f64; 3], plane_point: [f64; 3]) -> Self {
@@ -1342,7 +1310,6 @@ impl PressureBoundary {
 /// - `r0` is the reference distance
 /// - `q = r / h`
 /// - `f(q) = 1 - q` for q < 1, else 0
-#[allow(dead_code)]
 pub fn apply_monaghan_boundary_force(
     fluid_pos: [f64; 3],
     boundary_pos: [f64; 3],
@@ -1374,7 +1341,6 @@ pub fn apply_monaghan_boundary_force(
 ///
 /// A particle is considered a free-surface particle if its density is below
 /// a fraction `threshold` of the reference density.
-#[allow(dead_code)]
 pub fn detect_free_surface(densities: &[f64], rest_density: f64, threshold: f64) -> Vec<bool> {
     densities
         .iter()
@@ -1384,7 +1350,6 @@ pub fn detect_free_surface(densities: &[f64], rest_density: f64, threshold: f64)
 
 /// Compute the surface normal for a free-surface particle using the
 /// color function gradient (Morris 2000 approximation).
-#[allow(dead_code)]
 pub fn free_surface_normal(
     fluid_positions: &[[f64; 3]],
     fluid_densities: &[f64],

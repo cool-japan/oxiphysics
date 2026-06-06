@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -27,7 +26,6 @@ const CS2: f64 = 1.0 / 3.0;
 ///
 /// Stores both the hydrodynamic distributions `f` and the temperature
 /// distributions `g` for the D2Q9 velocity set.
-#[allow(dead_code)]
 pub struct ThermalLbmCell {
     /// Hydrodynamic distribution functions f\[q\] for q = 0..9.
     pub f: [f64; 9],
@@ -54,9 +52,9 @@ impl ThermalLbmCell {
             uy,
             temperature,
         };
-        for i in 0..9 {
-            cell.f[i] = feq(i, rho, ux, uy);
-            cell.g[i] = geq(i, temperature, ux, uy);
+        for (i, (fi, gi)) in cell.f.iter_mut().zip(cell.g.iter_mut()).enumerate() {
+            *fi = feq(i, rho, ux, uy);
+            *gi = geq(i, temperature, ux, uy);
         }
         cell
     }
@@ -79,11 +77,9 @@ impl ThermalLbmCell {
         }
         let mut ux = 0.0;
         let mut uy = 0.0;
-        for i in 0..9 {
-            let cx = D2Q9_VELOCITIES[i][0] as f64;
-            let cy = D2Q9_VELOCITIES[i][1] as f64;
-            ux += cx * self.f[i];
-            uy += cy * self.f[i];
+        for (&f_i, c) in self.f.iter().zip(D2Q9_VELOCITIES.iter()) {
+            ux += c[0] as f64 * f_i;
+            uy += c[1] as f64 * f_i;
         }
         (ux / rho, uy / rho)
     }
@@ -140,7 +136,6 @@ impl ThermalD2Q9 {
     /// * `beta` — thermal expansion coefficient
     /// * `t_ref` — reference temperature
     /// * `gravity` — gravitational acceleration (y-direction)
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         nx: usize,
         ny: usize,
@@ -254,13 +249,13 @@ impl ThermalD2Q9 {
             let mut ux = 0.0;
             let mut uy = 0.0;
             let mut temp = 0.0;
-            for i in 0..9 {
-                rho += self.f[node][i];
+            for (i, (&fi, &gi)) in self.f[node].iter().zip(self.g[node].iter()).enumerate() {
+                rho += fi;
                 let cx = D2Q9_VELOCITIES[i][0] as f64;
                 let cy = D2Q9_VELOCITIES[i][1] as f64;
-                ux += cx * self.f[node][i];
-                uy += cy * self.f[node][i];
-                temp += self.g[node][i];
+                ux += cx * fi;
+                uy += cy * fi;
+                temp += gi;
             }
             if rho > f64::EPSILON {
                 ux /= rho;
@@ -317,8 +312,8 @@ pub fn feq(i: usize, rho: f64, ux: f64, uy: f64) -> f64 {
 /// Compute uniform f_eq array at given (rho, ux, uy).
 fn feq_uniform(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
     let mut out = [0.0; 9];
-    for i in 0..9 {
-        out[i] = feq(i, rho, ux, uy);
+    for (i, out_i) in out.iter_mut().enumerate() {
+        *out_i = feq(i, rho, ux, uy);
     }
     out
 }
@@ -336,8 +331,8 @@ pub fn geq(i: usize, temperature: f64, ux: f64, uy: f64) -> f64 {
 /// Compute uniform g_eq array at given (temperature, ux, uy).
 fn geq_uniform(temperature: f64, ux: f64, uy: f64) -> [f64; 9] {
     let mut out = [0.0; 9];
-    for i in 0..9 {
-        out[i] = geq(i, temperature, ux, uy);
+    for (i, out_i) in out.iter_mut().enumerate() {
+        *out_i = geq(i, temperature, ux, uy);
     }
     out
 }

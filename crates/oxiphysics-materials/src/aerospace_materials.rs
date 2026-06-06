@@ -13,9 +13,6 @@
 //!
 //! All computations use plain `f64` — no external linear-algebra dependency.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

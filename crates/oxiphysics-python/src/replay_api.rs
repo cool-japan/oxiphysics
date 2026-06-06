@@ -5,9 +5,6 @@
 //!
 //! Exposes deterministic simulation record/replay functionality to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::replay::{ReplayRecord, SimRecorder, SimReplayer};
 use pyo3::prelude::*;
 

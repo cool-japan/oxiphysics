@@ -2,15 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::field_reassign_with_default)]
-
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use crate::obj::types::*;
 #[cfg(test)]
 mod tests_expanded {
-    use super::*;
+    use crate::obj::*;
     #[test]
     fn test_vertex_color_lerp() {
         let c0 = ObjVertexColor::rgb(0.0, 0.0, 0.0);
@@ -74,8 +68,10 @@ mod tests_expanded {
     }
     #[test]
     fn test_weld_vertices_exact() {
-        let mut mesh = ObjMesh::default();
-        mesh.vertices = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let mut mesh = ObjMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            ..Default::default()
+        };
         mesh.faces.push(ObjFace {
             vertex_indices: vec![0, 1, 2],
             normal_indices: None,
@@ -88,8 +84,10 @@ mod tests_expanded {
     }
     #[test]
     fn test_weld_vertices_no_duplicates() {
-        let mut mesh = ObjMesh::default();
-        mesh.vertices = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let mut mesh = ObjMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            ..Default::default()
+        };
         mesh.faces.push(ObjFace {
             vertex_indices: vec![0, 1, 2],
             normal_indices: None,
@@ -102,8 +100,10 @@ mod tests_expanded {
     }
     #[test]
     fn test_weld_vertices_tolerance() {
-        let mut mesh = ObjMesh::default();
-        mesh.vertices = vec![[0.0, 0.0, 0.0], [0.0001, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let mut mesh = ObjMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [0.0001, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            ..Default::default()
+        };
         mesh.faces.push(ObjFace {
             vertex_indices: vec![0, 1, 2],
             normal_indices: None,
@@ -116,17 +116,21 @@ mod tests_expanded {
     }
     #[test]
     fn test_merge_obj_meshes_vertex_count() {
-        let mut a = ObjMesh::default();
-        a.vertices = vec![[0.0; 3]; 3];
-        a.faces.push(ObjFace {
-            vertex_indices: vec![0, 1, 2],
-            normal_indices: None,
-            uv_indices: None,
-            smoothing_group: 0,
-            material: None,
-        });
-        let mut b = ObjMesh::default();
-        b.vertices = vec![[1.0; 3]; 4];
+        let a = ObjMesh {
+            vertices: vec![[0.0; 3]; 3],
+            faces: vec![ObjFace {
+                vertex_indices: vec![0, 1, 2],
+                normal_indices: None,
+                uv_indices: None,
+                smoothing_group: 0,
+                material: None,
+            }],
+            ..Default::default()
+        };
+        let mut b = ObjMesh {
+            vertices: vec![[1.0; 3]; 4],
+            ..Default::default()
+        };
         b.faces.push(ObjFace {
             vertex_indices: vec![0, 1, 2],
             normal_indices: None,
@@ -142,15 +146,19 @@ mod tests_expanded {
     #[test]
     fn test_merge_obj_meshes_empty_a() {
         let a = ObjMesh::default();
-        let mut b = ObjMesh::default();
-        b.vertices = vec![[1.0, 2.0, 3.0]];
+        let b = ObjMesh {
+            vertices: vec![[1.0, 2.0, 3.0]],
+            ..Default::default()
+        };
         let merged = merge_obj_meshes(&a, &b);
         assert_eq!(merged.vertices.len(), 1);
     }
     #[test]
     fn test_recompute_normals_flat_triangle() {
-        let mut mesh = ObjMesh::default();
-        mesh.vertices = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let mut mesh = ObjMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            ..Default::default()
+        };
         mesh.faces.push(ObjFace {
             vertex_indices: vec![0, 1, 2],
             normal_indices: None,
@@ -166,8 +174,10 @@ mod tests_expanded {
     }
     #[test]
     fn test_recompute_normals_sets_face_indices() {
-        let mut mesh = ObjMesh::default();
-        mesh.vertices = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let mut mesh = ObjMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            ..Default::default()
+        };
         mesh.faces.push(ObjFace {
             vertex_indices: vec![0, 1, 2],
             normal_indices: None,
@@ -238,8 +248,10 @@ mod tests_expanded {
     }
     #[test]
     fn test_lod_decimate_keeps_target() {
-        let mut mesh = ObjMesh::default();
-        mesh.vertices = vec![[0.0; 3]; 6];
+        let mut mesh = ObjMesh {
+            vertices: vec![[0.0; 3]; 6],
+            ..Default::default()
+        };
         for i in 0..6 {
             mesh.faces.push(ObjFace {
                 vertex_indices: vec![i % 3, (i + 1) % 3, (i + 2) % 3],
@@ -254,8 +266,10 @@ mod tests_expanded {
     }
     #[test]
     fn test_lod_decimate_no_change_if_under_target() {
-        let mut mesh = ObjMesh::default();
-        mesh.vertices = vec![[0.0; 3]; 3];
+        let mut mesh = ObjMesh {
+            vertices: vec![[0.0; 3]; 3],
+            ..Default::default()
+        };
         mesh.faces.push(ObjFace {
             vertex_indices: vec![0, 1, 2],
             normal_indices: None,
@@ -273,8 +287,10 @@ mod tests_expanded {
     #[test]
     fn test_scene_add_mesh() {
         let mut scene = ObjScene::new();
-        let mut mesh = ObjMesh::default();
-        mesh.vertices = vec![[0.0; 3]; 3];
+        let mesh = ObjMesh {
+            vertices: vec![[0.0; 3]; 3],
+            ..Default::default()
+        };
         let idx = scene.add_mesh(mesh);
         assert_eq!(idx, 0);
         assert_eq!(scene.meshes.len(), 1);
@@ -282,10 +298,14 @@ mod tests_expanded {
     #[test]
     fn test_scene_total_vertices() {
         let mut scene = ObjScene::new();
-        let mut m1 = ObjMesh::default();
-        m1.vertices = vec![[0.0; 3]; 4];
-        let mut m2 = ObjMesh::default();
-        m2.vertices = vec![[1.0; 3]; 6];
+        let m1 = ObjMesh {
+            vertices: vec![[0.0; 3]; 4],
+            ..Default::default()
+        };
+        let m2 = ObjMesh {
+            vertices: vec![[1.0; 3]; 6],
+            ..Default::default()
+        };
         scene.add_mesh(m1);
         scene.add_mesh(m2);
         assert_eq!(scene.total_vertices(), 10);
@@ -293,8 +313,10 @@ mod tests_expanded {
     #[test]
     fn test_scene_flatten() {
         let mut scene = ObjScene::new();
-        let mut mesh = ObjMesh::default();
-        mesh.vertices = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let mut mesh = ObjMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            ..Default::default()
+        };
         mesh.faces.push(ObjFace {
             vertex_indices: vec![0, 1, 2],
             normal_indices: None,
@@ -319,8 +341,10 @@ mod tests_expanded {
     }
     #[test]
     fn test_compute_mesh_stats_basic() {
-        let mut mesh = ObjMesh::default();
-        mesh.vertices = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let mut mesh = ObjMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            ..Default::default()
+        };
         mesh.faces.push(ObjFace {
             vertex_indices: vec![0, 1, 2],
             normal_indices: None,
@@ -336,8 +360,10 @@ mod tests_expanded {
     }
     #[test]
     fn test_compute_mesh_stats_materials() {
-        let mut mesh = ObjMesh::default();
-        mesh.vertices = vec![[0.0; 3]; 4];
+        let mut mesh = ObjMesh {
+            vertices: vec![[0.0; 3]; 4],
+            ..Default::default()
+        };
         mesh.faces.push(ObjFace {
             vertex_indices: vec![0, 1, 2],
             normal_indices: None,
@@ -357,8 +383,10 @@ mod tests_expanded {
     }
     #[test]
     fn test_compute_mesh_stats_bbox() {
-        let mut mesh = ObjMesh::default();
-        mesh.vertices = vec![[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]];
+        let mesh = ObjMesh {
+            vertices: vec![[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]],
+            ..Default::default()
+        };
         let stats = compute_mesh_stats(&mesh);
         let (min, max) = stats.bbox.unwrap();
         assert!((min[0] - (-1.0)).abs() < 1e-10);
@@ -367,7 +395,7 @@ mod tests_expanded {
     #[test]
     fn test_vcmesh_parse_basic() {
         let data = "v 0 0 0 1.0 0.0 0.0\nv 1 0 0 0.0 1.0 0.0\nv 0 1 0 0.0 0.0 1.0\nf 1 2 3\n";
-        let vcm = ObjVertexColorMesh::from_str(data).unwrap();
+        let vcm = ObjVertexColorMesh::parse(data).unwrap();
         assert_eq!(vcm.mesh.vertices.len(), 3);
         assert_eq!(vcm.colors.len(), 3);
         assert!((vcm.colors[0].r - 1.0).abs() < 1e-10);
@@ -377,16 +405,16 @@ mod tests_expanded {
     #[test]
     fn test_vcmesh_roundtrip() {
         let data = "v 0.0 0.0 0.0 0.5 0.5 0.5\nv 1.0 0.0 0.0 0.5 0.5 0.5\nv 0.0 1.0 0.0 0.5 0.5 0.5\nf 1 2 3\n";
-        let vcm = ObjVertexColorMesh::from_str(data).unwrap();
+        let vcm = ObjVertexColorMesh::parse(data).unwrap();
         let s = vcm.to_obj_str();
-        let reparsed = ObjVertexColorMesh::from_str(&s).unwrap();
+        let reparsed = ObjVertexColorMesh::parse(&s).unwrap();
         assert_eq!(reparsed.mesh.vertices.len(), 3);
         assert_eq!(reparsed.mesh.faces.len(), 1);
     }
     #[test]
     fn test_vcmesh_no_color_defaults_white() {
         let data = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
-        let vcm = ObjVertexColorMesh::from_str(data).unwrap();
+        let vcm = ObjVertexColorMesh::parse(data).unwrap();
         assert_eq!(vcm.colors.len(), 3);
         assert!((vcm.colors[0].r - 1.0).abs() < 1e-10);
         assert!((vcm.colors[0].g - 1.0).abs() < 1e-10);
@@ -394,8 +422,10 @@ mod tests_expanded {
     }
     #[test]
     fn test_instantiate_mesh_translation() {
-        let mut mesh = ObjMesh::default();
-        mesh.vertices = vec![[0.0, 0.0, 0.0]];
+        let mesh = ObjMesh {
+            vertices: vec![[0.0, 0.0, 0.0]],
+            ..Default::default()
+        };
         let inst = MeshInstance {
             name: "inst1".into(),
             transform: MeshTransform::from_translation(5.0, 6.0, 7.0),
@@ -407,8 +437,10 @@ mod tests_expanded {
     }
     #[test]
     fn test_instantiate_mesh_preserves_face_count() {
-        let mut mesh = ObjMesh::default();
-        mesh.vertices = vec![[0.0; 3]; 3];
+        let mut mesh = ObjMesh {
+            vertices: vec![[0.0; 3]; 3],
+            ..Default::default()
+        };
         mesh.faces.push(ObjFace {
             vertex_indices: vec![0, 1, 2],
             normal_indices: None,

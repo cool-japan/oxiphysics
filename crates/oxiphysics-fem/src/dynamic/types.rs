@@ -2,14 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     compute_rayleigh_coefficients, modal_truncation_correction, rayleigh_damping_matrix,
 };
-#[allow(unused_imports)]
-use super::functions_2::*;
 use crate::sparse::CsrMatrix;
 
 /// State for the Bathe two-sub-step implicit time integrator.
@@ -21,7 +16,6 @@ use crate::sparse::CsrMatrix;
 ///
 /// Reference: Bathe & Baig (2005) "On a composite implicit time integration
 /// procedure for nonlinear dynamics", *Computers & Structures* 83, 2513–2524.
-#[allow(dead_code)]
 pub struct BatheIntegrator {
     /// Number of DOF.
     pub n_dof: usize,
@@ -55,7 +49,6 @@ impl BatheIntegrator {
     /// * `c_diag`  – diagonal damping vector (length n_dof)
     /// * `f`       – force vector at time t + Δt
     /// * `dt`      – full step size Δt
-    #[allow(clippy::too_many_arguments)]
     pub fn step_diagonal(
         &mut self,
         m_diag: &[f64],
@@ -106,7 +99,6 @@ impl BatheIntegrator {
 /// Newmark linear acceleration parameters (β = 1/6, γ = 1/2).
 ///
 /// Conditionally stable: Δt ≤ √3 / ω_max.
-#[allow(dead_code)]
 pub struct NewmarkLinearAcceleration;
 impl NewmarkLinearAcceleration {
     /// Single SDOF step using linear acceleration assumption.
@@ -161,7 +153,6 @@ impl NewmarkLinearAcceleration {
 /// ```
 ///
 /// Requires a diagonal (lumped) mass matrix for efficiency.
-#[allow(dead_code)]
 pub struct CentralDifferenceState {
     /// Current displacements.
     pub u: Vec<f64>,
@@ -174,7 +165,6 @@ pub struct CentralDifferenceState {
     /// Diagonal of the lumped mass matrix (inverse).
     pub inv_m_diag: Vec<f64>,
 }
-#[allow(dead_code)]
 impl CentralDifferenceState {
     /// Create a new central difference state with zero initial conditions.
     ///
@@ -197,12 +187,12 @@ impl CentralDifferenceState {
         }
         let dt2 = dt * dt;
         let mut u_new = vec![0.0; n];
-        for i in 0..n {
-            u_new[i] = 2.0 * self.u[i] - self.u_prev[i] + dt2 * self.a[i];
+        for (i, u_new_i) in u_new.iter_mut().enumerate().take(n) {
+            *u_new_i = 2.0 * self.u[i] - self.u_prev[i] + dt2 * self.a[i];
         }
         let inv_2dt = 0.5 / dt;
-        for i in 0..n {
-            self.v[i] = (u_new[i] - self.u_prev[i]) * inv_2dt;
+        for (i, v_i) in self.v.iter_mut().enumerate().take(n) {
+            *v_i = (u_new[i] - self.u_prev[i]) * inv_2dt;
         }
         for &dof in fixed_dofs {
             u_new[dof] = 0.0;
@@ -219,7 +209,6 @@ impl CentralDifferenceState {
 /// spectral radius parameter `rho_inf` in `[0, 1]`:
 /// - `rho_inf = 1.0`: no dissipation (equivalent to Newmark trapezoidal rule)
 /// - `rho_inf = 0.0`: asymptotic annihilation of highest mode
-#[allow(dead_code)]
 pub struct GeneralizedAlphaState {
     /// Current displacements.
     pub u: Vec<f64>,
@@ -236,7 +225,6 @@ pub struct GeneralizedAlphaState {
     /// Newmark gamma.
     pub gamma: f64,
 }
-#[allow(dead_code)]
 impl GeneralizedAlphaState {
     /// Create a new generalized-alpha state from the spectral radius
     /// at infinity `rho_inf` in `[0, 1]`.
@@ -357,7 +345,6 @@ impl GeneralizedAlphaState {
 /// The Wilson-θ method evaluates equilibrium at time t + θ Δt (θ ≥ 1.37
 /// for unconditional stability) and interpolates back.  It is first-order
 /// accurate in damping but preserves low-frequency content well.
-#[allow(dead_code)]
 pub struct WilsonThetaState {
     /// Number of DOF.
     pub n_dof: usize,
@@ -416,8 +403,8 @@ impl WilsonThetaState {
             };
             a_th[i] = (u_th - self.u[i]) * a0 - 3.0 * a1 * self.v[i] - 2.0 * self.a[i];
         }
-        for i in 0..n {
-            let a_new = self.a[i] + (a_th[i] - self.a[i]) / th;
+        for (i, a_th_i) in a_th.iter().enumerate().take(n) {
+            let a_new = self.a[i] + (a_th_i - self.a[i]) / th;
             let v_new = self.v[i] + dt / 2.0 * (a_new + self.a[i]);
             let u_new = self.u[i] + dt * self.v[i] + dt * dt / 6.0 * (2.0 * self.a[i] + a_new);
             self.a[i] = a_new;
@@ -431,7 +418,6 @@ impl WilsonThetaState {
 /// In seismic analysis, the equation of motion is expressed in relative coordinates:
 /// `u = u_abs - u_g`
 /// where `u_g` is the ground displacement.
-#[allow(dead_code)]
 pub struct SeismicState {
     /// Relative displacements (m).
     pub u_rel: Vec<f64>,
@@ -442,7 +428,6 @@ pub struct SeismicState {
     /// Ground displacement history.
     pub u_ground: Vec<f64>,
 }
-#[allow(dead_code)]
 impl SeismicState {
     /// Create a new seismic state with zero initial conditions.
     pub fn new(n_dof: usize) -> Self {
@@ -467,9 +452,7 @@ impl SeismicState {
 /// This method is conditionally stable with:
 /// Ω_crit = sqrt(3) ≈ 1.732
 /// (where Ω = ω * dt)
-#[allow(dead_code)]
 pub struct NewmarkLinearAccelerationParams;
-#[allow(dead_code)]
 impl NewmarkLinearAccelerationParams {
     /// Beta parameter for linear acceleration.
     pub const BETA: f64 = 1.0 / 6.0;
@@ -494,7 +477,6 @@ impl NewmarkLinearAccelerationParams {
 /// M*a_{n+1} + (1+alpha)*C*v_{n+1} - alpha*C*v_n
 ///   + (1+alpha)*K*u_{n+1} - alpha*K*u_n = (1+alpha)*F_{n+1} - alpha*F_n
 /// ```
-#[allow(dead_code)]
 pub struct HhtAlphaState {
     /// Current displacements.
     pub u: Vec<f64>,
@@ -509,7 +491,6 @@ pub struct HhtAlphaState {
     /// Newmark gamma parameter (derived from alpha).
     pub gamma: f64,
 }
-#[allow(dead_code)]
 impl HhtAlphaState {
     /// Create a new HHT-alpha state with optimal dissipation parameters.
     ///
@@ -745,7 +726,6 @@ impl NewmarkState {
     }
 }
 /// Input for a multi-mode response spectrum analysis.
-#[allow(dead_code)]
 pub struct ResponseSpectrumInput {
     /// Natural frequencies \[rad/s\].
     pub omega_n: Vec<f64>,
@@ -761,7 +741,6 @@ pub struct ResponseSpectrumInput {
     pub sa: Vec<f64>,
 }
 /// Result of a modal superposition analysis.
-#[allow(dead_code)]
 pub struct ModalSuperpositionResult {
     /// Time history of displacement for each DOF: `disp[time_step][dof]`.
     pub disp: Vec<Vec<f64>>,
@@ -769,7 +748,6 @@ pub struct ModalSuperpositionResult {
     pub modal_coords: Vec<Vec<f64>>,
 }
 /// Lightweight dynamic solver that wraps state vectors for time integration.
-#[allow(dead_code)]
 pub struct DynamicSolver {
     /// Number of DOF.
     pub n_dof: usize,
@@ -780,7 +758,6 @@ pub struct DynamicSolver {
     /// Acceleration vector.
     pub a: Vec<f64>,
 }
-#[allow(dead_code)]
 impl DynamicSolver {
     /// Create a new solver with zero initial conditions.
     pub fn new(n_dof: usize) -> Self {
@@ -800,7 +777,6 @@ impl DynamicSolver {
     /// * `rho_inf` – spectral radius at infinity ∈ \[0, 1\].
     ///   - `rho_inf = 1.0`: no dissipation (Newmark average acceleration).
     ///   - `rho_inf = 0.0`: maximum dissipation.
-    #[allow(clippy::too_many_arguments)]
     pub fn generalized_alpha(
         &mut self,
         mass: &CsrMatrix,
@@ -828,26 +804,26 @@ impl DynamicSolver {
         let scale_m = (1.0 - alpha_m) * c0;
         let scale_k = 1.0 - alpha_f;
         let mut k_eff_diag = vec![0.0_f64; n];
-        for row in 0..mass.nrows {
+        for (row, k_diag_row) in k_eff_diag.iter_mut().enumerate().take(mass.nrows) {
             for idx in mass.row_ptr[row]..mass.row_ptr[row + 1] {
                 if mass.col_indices[idx] == row {
-                    k_eff_diag[row] += scale_m * mass.values[idx];
+                    *k_diag_row += scale_m * mass.values[idx];
                 }
             }
         }
-        for row in 0..stiffness.nrows {
+        for (row, k_diag_row) in k_eff_diag.iter_mut().enumerate().take(stiffness.nrows) {
             for idx in stiffness.row_ptr[row]..stiffness.row_ptr[row + 1] {
                 if stiffness.col_indices[idx] == row {
-                    k_eff_diag[row] += scale_k * stiffness.values[idx];
+                    *k_diag_row += scale_k * stiffness.values[idx];
                 }
             }
         }
         let mut f_eff = force.to_vec();
-        for row in 0..mass.nrows {
+        for (row, f_eff_row) in f_eff.iter_mut().enumerate().take(mass.nrows) {
             for idx in mass.row_ptr[row]..mass.row_ptr[row + 1] {
                 let col = mass.col_indices[idx];
                 let m_val = mass.values[idx];
-                f_eff[row] += m_val * (c0 * u_pred[col] + c2 * v_pred[col] + c3 * self.a[col]);
+                *f_eff_row += m_val * (c0 * u_pred[col] + c2 * v_pred[col] + c3 * self.a[col]);
             }
         }
         let mut u_new = vec![0.0_f64; n];
@@ -899,12 +875,10 @@ impl DynamicSolver {
 /// Monitor energy conservation over a sequence of time steps.
 ///
 /// Returns a vector of `(time, kinetic_energy, strain_energy, total_energy)`.
-#[allow(dead_code)]
 pub struct EnergyMonitor {
     /// History: `(time, T, U, T+U)`.
     pub history: Vec<(f64, f64, f64, f64)>,
 }
-#[allow(dead_code)]
 impl EnergyMonitor {
     /// Create a new energy monitor.
     pub fn new() -> Self {

@@ -58,7 +58,6 @@ pub fn tet_centroid(positions: &[[f64; 3]; 4]) -> [f64; 3] {
 /// Compute the work done by internal pressure during a volume change.
 ///
 /// W = p * (V_current - V_rest)
-#[allow(dead_code)]
 pub fn pressure_volume_work(pressure: f64, v_current: f64, v_rest: f64) -> f64 {
     pressure * (v_current - v_rest)
 }
@@ -67,7 +66,6 @@ pub fn pressure_volume_work(pressure: f64, v_current: f64, v_rest: f64) -> f64 {
 /// p = n R T / V  →  p = p0 * V0 / V  (isothermal)
 ///
 /// where `p0` and `v0` are the reference pressure and volume.
-#[allow(dead_code)]
 pub fn ideal_gas_pressure(p0: f64, v0: f64, v_current: f64) -> f64 {
     if v_current.abs() < 1e-15 {
         return f64::MAX * 0.5;
@@ -79,7 +77,6 @@ pub fn ideal_gas_pressure(p0: f64, v0: f64, v_current: f64) -> f64 {
 /// p = p0 * (V0/V)^γ
 ///
 /// where γ is the heat capacity ratio (1.4 for diatomic gas).
-#[allow(dead_code)]
 pub fn adiabatic_gas_pressure(p0: f64, v0: f64, v_current: f64, gamma: f64) -> f64 {
     if v_current.abs() < 1e-15 {
         return f64::MAX * 0.5;
@@ -90,7 +87,6 @@ pub fn adiabatic_gas_pressure(p0: f64, v0: f64, v_current: f64, gamma: f64) -> f
 ///
 /// Returns the four gradient vectors `dV/dp_i` for each vertex.
 /// These are the cross-product normals of opposite faces, scaled by 1/6.
-#[allow(dead_code)]
 pub fn tet_volume_gradient(
     p0: [f64; 3],
     p1: [f64; 3],
@@ -111,7 +107,6 @@ pub fn tet_volume_gradient(
 /// lambda = -stiffness * C / (Σ w_i |g_i|²)
 ///
 /// where C = V_current - V_rest.
-#[allow(dead_code)]
 pub fn volume_constraint_lambda(
     gradients: &[[f64; 3]; 4],
     inv_masses: &[f64; 4],
@@ -129,7 +124,6 @@ pub fn volume_constraint_lambda(
     -stiffness * constraint / denom
 }
 /// Compute the surface area of a tetrahedron (sum of 4 triangle face areas).
-#[allow(dead_code)]
 pub fn tet_surface_area(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3], p3: [f64; 3]) -> f64 {
     let triangle_area = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| -> f64 {
         let ab = sub3(b, a);
@@ -142,7 +136,6 @@ pub fn tet_surface_area(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3], p3: [f64; 3]) 
         + triangle_area(p1, p2, p3)
 }
 /// Compute the inradius of a tetrahedron: r = 3V / A.
-#[allow(dead_code)]
 pub fn tet_inradius(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3], p3: [f64; 3]) -> f64 {
     let vol = tet_volume_signed(p0, p1, p2, p3).abs();
     let area = tet_surface_area(p0, p1, p2, p3);
@@ -153,7 +146,6 @@ pub fn tet_inradius(p0: [f64; 3], p1: [f64; 3], p2: [f64; 3], p3: [f64; 3]) -> f
 }
 /// Compute the total signed volume of a closed triangulated surface using the
 /// divergence theorem. Each triangle contributes `(v0 · (v1 × v2)) / 6`.
-#[allow(dead_code)]
 pub fn signed_surface_volume(triangles: &[[usize; 3]], positions: &[[f64; 3]]) -> f64 {
     let mut vol = 0.0_f64;
     for tri in triangles {
@@ -167,7 +159,6 @@ pub fn signed_surface_volume(triangles: &[[usize; 3]], positions: &[[f64; 3]]) -
 }
 /// Gradient of the signed surface volume with respect to vertex `idx`.
 /// Used in pressurized constraint corrections.
-#[allow(dead_code)]
 pub fn signed_surface_volume_gradient(
     idx: usize,
     triangles: &[[usize; 3]],
@@ -204,8 +195,6 @@ pub fn signed_surface_volume_gradient(
 /// `stiffness`    – constraint stiffness in \[0, 1\]
 /// `inv_masses`   – inverse masses of each vertex
 /// `positions`    – mutable vertex positions
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn solve_pressurized_volume_constraint(
     triangles: &[[usize; 3]],
     rest_volume: f64,
@@ -244,7 +233,6 @@ pub fn solve_pressurized_volume_constraint(
 }
 /// Energy of the volume preservation penalty:
 /// `E = 0.5 * k * (V - V0)^2`
-#[allow(dead_code)]
 pub fn volume_preservation_energy(
     tetrahedra: &[[usize; 4]],
     rest_volumes: &[f64],
@@ -267,7 +255,6 @@ pub fn volume_preservation_energy(
 }
 /// Gradient of the volume preservation penalty energy with respect to each vertex.
 /// Returns a vector of per-vertex force vectors (negative gradient).
-#[allow(dead_code)]
 pub fn volume_preservation_gradient(
     tetrahedra: &[[usize; 4]],
     rest_volumes: &[f64],
@@ -307,7 +294,6 @@ pub fn volume_preservation_gradient(
 /// Boyle's law spring force: gas inside a deformable volume.
 /// Returns the pressure given current and rest volume, and rest pressure.
 /// `P * V = P0 * V0`  →  `P = P0 * V0 / V`
-#[allow(dead_code)]
 pub fn boyle_pressure(rest_pressure: f64, rest_volume: f64, current_volume: f64) -> f64 {
     if current_volume.abs() < 1e-30 {
         return 0.0;
@@ -316,7 +302,6 @@ pub fn boyle_pressure(rest_pressure: f64, rest_volume: f64, current_volume: f64)
 }
 /// Adiabatic gas law spring:
 /// `P * V^γ = const`  →  `P = P0 * (V0/V)^γ`
-#[allow(dead_code)]
 pub fn adiabatic_pressure(
     rest_pressure: f64,
     rest_volume: f64,
@@ -331,7 +316,6 @@ pub fn adiabatic_pressure(
 /// Apply Boyle's law gas pressure as a surface force to a closed triangle mesh.
 /// Each triangle face receives an outward normal force proportional to pressure.
 /// `positions` are updated in-place; `inv_masses` are per-vertex.
-#[allow(dead_code)]
 pub fn apply_gas_pressure_force(
     triangles: &[[usize; 3]],
     rest_pressure: f64,
@@ -370,7 +354,6 @@ pub fn apply_gas_pressure_force(
 /// proportional to penetration depth.
 ///
 /// `stiffness` – penalty spring stiffness (force per unit penetration per unit mass)
-#[allow(dead_code)]
 pub fn resolve_plane_collision(
     plane: &CollisionPlane,
     stiffness: f64,
@@ -407,7 +390,6 @@ pub fn resolve_plane_collision(
     }
 }
 /// Resolve soft collision between particles and a solid sphere.
-#[allow(dead_code)]
 pub fn resolve_sphere_collision(
     sphere: &CollisionSphere,
     stiffness: f64,
@@ -443,7 +425,6 @@ pub fn resolve_sphere_collision(
     }
 }
 /// Resolve soft collision between all pairs of particles with a given radius.
-#[allow(dead_code)]
 pub fn resolve_particle_collisions(
     particle_radius: f64,
     stiffness: f64,

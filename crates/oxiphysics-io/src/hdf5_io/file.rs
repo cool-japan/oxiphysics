@@ -3,8 +3,6 @@
 
 //! HDF5 file: root container, superblock, named types, path utilities.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use super::dataset::Hdf5Dataset;
@@ -244,7 +242,6 @@ impl Hdf5File {
     // -- dataset access --
 
     /// Create a dataset at `group_path/dataset_name`.
-    #[allow(clippy::too_many_arguments)]
     pub fn create_dataset(
         &mut self,
         group_path: &str,

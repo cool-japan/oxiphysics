@@ -2,16 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
 use crate::simulation::types_sim::*;
 use oxiphysics_core::math::Vec3;
 
 /// Phase descriptor for multi-phase SPH simulations.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SphPhase {
     /// Rest density of the phase \[kg/m³\].
     pub rest_density: f64,
@@ -22,7 +17,6 @@ pub struct SphPhase {
     /// Human-readable label.
     pub name: String,
 }
-#[allow(dead_code)]
 impl SphPhase {
     /// Preset: liquid water at 20 °C.
     pub fn water() -> Self {
@@ -64,7 +58,6 @@ impl SphPhase {
 /// forces, masses) and runs a simple density → pressure → forces → integrate
 /// pipeline each step.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SphSim {
     /// Simulation configuration.
     pub config: SphSimConfig,
@@ -83,7 +76,6 @@ pub struct SphSim {
     /// Simulation state (time, step counter).
     pub state: SphSimState,
 }
-#[allow(dead_code)]
 impl SphSim {
     /// Create a new simulator with `n_particles` particles uniformly distributed
     /// in a unit cube `[0,1)^3` with the given configuration.
@@ -316,7 +308,6 @@ impl SphSim {
     /// where `kappa` is the interface curvature and `n_i` the unit outward
     /// normal, both estimated from the colour-function gradient (here we use
     /// density as a proxy).
-    #[allow(dead_code)]
     pub fn compute_surface_tension_forces(&mut self) {
         let n = self.len();
         let h = self.config.kernel_radius;
@@ -326,7 +317,7 @@ impl SphSim {
             return;
         }
         let mut grad_c = vec![[0.0_f64; 3]; n];
-        for i in 0..n {
+        for (i, gc_i) in grad_c.iter_mut().enumerate().take(n) {
             let rhoi = self.densities[i].max(1e-14);
             for j in 0..n {
                 if j == i {
@@ -342,8 +333,8 @@ impl SphSim {
                 let cj = rhoj / self.config.rest_density;
                 let grad_w = Self::cubic_grad_w(r, h);
                 let factor = self.masses[j] / rhoj * (cj - ci) * grad_w / r;
-                for k in 0..3 {
-                    grad_c[i][k] += factor * (self.positions[j][k] - self.positions[i][k]);
+                for (k, gck) in gc_i.iter_mut().enumerate().take(3) {
+                    *gck += factor * (self.positions[j][k] - self.positions[i][k]);
                 }
             }
         }
@@ -362,7 +353,7 @@ impl SphSim {
             ];
             let rhoi = self.densities[i].max(1e-14);
             let mut kappa = 0.0_f64;
-            for j in 0..n {
+            for (j, gc_j) in grad_c.iter().enumerate().take(n) {
                 if j == i {
                     continue;
                 }
@@ -372,18 +363,12 @@ impl SphSim {
                 }
                 let r = d2.sqrt();
                 let rhoj = self.densities[j].max(1e-14);
-                let gc_j_mag2 = grad_c[j][0] * grad_c[j][0]
-                    + grad_c[j][1] * grad_c[j][1]
-                    + grad_c[j][2] * grad_c[j][2];
+                let gc_j_mag2 = gc_j[0] * gc_j[0] + gc_j[1] * gc_j[1] + gc_j[2] * gc_j[2];
                 if gc_j_mag2 < 1e-20 {
                     continue;
                 }
                 let gc_j_mag = gc_j_mag2.sqrt();
-                let n_hat_j = [
-                    grad_c[j][0] / gc_j_mag,
-                    grad_c[j][1] / gc_j_mag,
-                    grad_c[j][2] / gc_j_mag,
-                ];
+                let n_hat_j = [gc_j[0] / gc_j_mag, gc_j[1] / gc_j_mag, gc_j[2] / gc_j_mag];
                 let grad_w = Self::cubic_grad_w(r, h);
                 let mut dn_dot_r = 0.0_f64;
                 for k in 0..3 {
@@ -394,14 +379,13 @@ impl SphSim {
             }
             let m_i = self.masses[i];
             let force_scale = sigma * kappa * gc_mag * m_i / rhoi;
-            for k in 0..3 {
-                self.forces[i][k] += force_scale * n_hat[k];
+            for (k, nk) in n_hat.iter().enumerate() {
+                self.forces[i][k] += force_scale * nk;
             }
         }
     }
     /// Run one full step including surface tension:
     /// density → pressure → forces → surface tension → integrate.
-    #[allow(dead_code)]
     pub fn step_with_surface_tension(&mut self) {
         self.compute_density_sum();
         self.compute_pressures_tait();
@@ -416,7 +400,6 @@ impl SphSim {
 }
 impl SphSim {
     /// Compute the gravitational potential energy Σ m_i * g_y * y_i.
-    #[allow(dead_code)]
     pub fn potential_energy(&self) -> f64 {
         let g_mag = (self.config.gravity[0].powi(2)
             + self.config.gravity[1].powi(2)
@@ -429,12 +412,10 @@ impl SphSim {
             .sum()
     }
     /// Total mechanical energy: KE + PE.
-    #[allow(dead_code)]
     pub fn total_mechanical_energy(&self) -> f64 {
         self.kinetic_energy() + self.potential_energy()
     }
     /// Total linear momentum.
-    #[allow(dead_code)]
     pub fn linear_momentum(&self) -> [f64; 3] {
         let mut p = [0.0_f64; 3];
         for (v, &m) in self.velocities.iter().zip(self.masses.iter()) {
@@ -447,7 +428,6 @@ impl SphSim {
     /// Mean particle spacing: `V^(1/3) / n^(1/3)` where V = box volume.
     ///
     /// Assumes a unit box `[0,1)^3`.
-    #[allow(dead_code)]
     pub fn mean_particle_spacing(&self) -> f64 {
         let n = self.len();
         if n == 0 {
@@ -456,7 +436,6 @@ impl SphSim {
         (1.0 / n as f64).cbrt()
     }
     /// Return the positions as a flat `Vec`f64` in `\[x0, y0, z0, x1, y1, z1, ...\]` order.
-    #[allow(dead_code)]
     pub fn flat_positions(&self) -> Vec<f64> {
         self.positions
             .iter()
@@ -464,7 +443,6 @@ impl SphSim {
             .collect()
     }
     /// Compute the maximum inter-particle distance (brute-force O(n²)).
-    #[allow(dead_code)]
     pub fn max_inter_particle_distance(&self) -> f64 {
         let n = self.len();
         let mut max_d = 0.0_f64;
@@ -483,7 +461,6 @@ impl SphSim {
     }
     /// Apply a reflective floor boundary at `y_floor` with coefficient of
     /// restitution `e`: particles below the floor are reflected upward.
-    #[allow(dead_code)]
     pub fn apply_floor_reflection(&mut self, y_floor: f64, restitution: f64) {
         for i in 0..self.len() {
             if self.positions[i][1] < y_floor {
@@ -493,14 +470,12 @@ impl SphSim {
         }
     }
     /// Scale all particle masses by `factor`.
-    #[allow(dead_code)]
     pub fn scale_masses(&mut self, factor: f64) {
         for m in &mut self.masses {
             *m *= factor;
         }
     }
     /// Mean pressure across all particles.
-    #[allow(dead_code)]
     pub fn mean_pressure(&self) -> f64 {
         let n = self.len();
         if n == 0 {
@@ -509,14 +484,12 @@ impl SphSim {
         self.pressures.iter().sum::<f64>() / n as f64
     }
     /// Number of particles with negative pressure.
-    #[allow(dead_code)]
     pub fn count_negative_pressure(&self) -> usize {
         self.pressures.iter().filter(|&&p| p < 0.0).count()
     }
 }
 /// Tracks kinetic and potential energy samples over a simulation run.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct EnergyTracker {
     /// Sampled kinetic energies.
     pub kinetic: Vec<f64>,
@@ -525,7 +498,6 @@ pub struct EnergyTracker {
     /// Sampled simulation times.
     pub times: Vec<f64>,
 }
-#[allow(dead_code)]
 impl EnergyTracker {
     /// Create an empty tracker.
     pub fn new() -> Self {
@@ -567,7 +539,6 @@ impl EnergyTracker {
 }
 /// Fluent builder for [`WcSphSim`].
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WcSphSimBuilder {
     pub(super) h: f64,
     pub(super) rho0: f64,
@@ -577,7 +548,6 @@ pub struct WcSphSimBuilder {
     pub(super) sigma: f64,
     pub(super) gravity: [f64; 3],
 }
-#[allow(dead_code)]
 impl WcSphSimBuilder {
     /// Start with water-like defaults (ρ₀ = 1000, c₀ = 100, γ = 7).
     pub fn water() -> Self {
@@ -636,7 +606,6 @@ impl WcSphSimBuilder {
 }
 /// A lightweight harness for benchmarking [`SphSim`] step performance.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct BenchmarkHarness {
     /// Number of warm-up steps (not counted in timing).
     pub warmup_steps: usize,
@@ -647,7 +616,6 @@ pub struct BenchmarkHarness {
     /// Number of timing runs performed.
     pub runs: usize,
 }
-#[allow(dead_code)]
 impl BenchmarkHarness {
     /// Create a new harness.
     pub fn new(warmup_steps: usize, timed_steps: usize) -> Self {
@@ -680,7 +648,6 @@ impl BenchmarkHarness {
 }
 /// A lightweight snapshot of simulation state for output callbacks.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SimSnapshot {
     /// Current simulation time.
     pub time: f64,
@@ -693,7 +660,6 @@ pub struct SimSnapshot {
     /// Particle densities at the time of snapshot.
     pub densities: Vec<f64>,
 }
-#[allow(dead_code)]
 impl SimSnapshot {
     /// Create a snapshot from a [`SphSim`].
     pub fn from_sim(sim: &SphSim) -> Self {
@@ -732,7 +698,6 @@ impl SimSnapshot {
 /// Runs a [`SphSim`] for a prescribed number of steps, collecting statistics
 /// and snapshots at user-defined intervals.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct SphRunner {
     /// The embedded simulation.
     pub sim: SphSim,
@@ -743,7 +708,6 @@ pub struct SphRunner {
     /// Output every this many steps (0 = disabled).
     pub snapshot_every: u64,
 }
-#[allow(dead_code)]
 impl SphRunner {
     /// Create a runner wrapping an existing [`SphSim`].
     pub fn new(sim: SphSim, snapshot_every: u64) -> Self {
@@ -809,7 +773,6 @@ pub struct SphSimulationParams {
 /// This is useful for studying convergence, statistical reproducibility, and
 /// sensitivity to initial conditions.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct EnsembleSimulation {
     /// Number of replicas.
     pub n_replicas: usize,
@@ -824,7 +787,6 @@ pub struct EnsembleSimulation {
     /// Final total momenta (x-component) per replica.
     pub final_mom_x: Vec<f64>,
 }
-#[allow(dead_code)]
 impl EnsembleSimulation {
     /// Create a new ensemble runner.
     pub fn new(
@@ -902,7 +864,6 @@ impl EnsembleSimulation {
 /// A particle set that carries per-particle phase identifiers, enabling
 /// multi-phase SPH simulations.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct MultiPhaseParticleSet {
     /// Particle positions.
     pub positions: Vec<[f64; 3]>,
@@ -919,7 +880,6 @@ pub struct MultiPhaseParticleSet {
     /// Registered phases.
     pub phases: Vec<SphPhase>,
 }
-#[allow(dead_code)]
 impl MultiPhaseParticleSet {
     /// Create an empty multi-phase particle set.
     pub fn new() -> Self {
@@ -1010,7 +970,6 @@ impl MultiPhaseParticleSet {
 /// This is independent of the higher-level [`SphSimulationParams`] and is
 /// intended for quick prototyping and educational use with [`SphSim`].
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SphSimConfig {
     /// Smoothing / kernel radius (m).
     pub kernel_radius: f64,
@@ -1025,7 +984,6 @@ pub struct SphSimConfig {
     /// Time step size (s).
     pub dt: f64,
 }
-#[allow(dead_code)]
 impl SphSimConfig {
     /// Create a default water-like configuration.
     pub fn default_water() -> Self {
@@ -1061,14 +1019,12 @@ pub enum SolverType {
 }
 /// Tracks the current time and step number for a simulation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SphSimState {
     /// Current simulation time (s).
     pub time: f64,
     /// Current step number.
     pub step: u64,
 }
-#[allow(dead_code)]
 impl SphSimState {
     /// Create a fresh state at t = 0, step = 0.
     pub fn new() -> Self {
@@ -1082,7 +1038,6 @@ impl SphSimState {
 }
 /// Adaptive timestep controller that tracks step history and adjusts `dt`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AdaptiveTimestep {
     /// Current timestep.
     pub dt: f64,
@@ -1097,7 +1052,6 @@ pub struct AdaptiveTimestep {
     /// History of accepted steps.
     pub history: Vec<f64>,
 }
-#[allow(dead_code)]
 impl AdaptiveTimestep {
     /// Create a new adaptive timestep controller.
     pub fn new(dt_initial: f64, dt_min: f64, dt_max: f64) -> Self {
@@ -1148,7 +1102,6 @@ impl AdaptiveTimestep {
 }
 /// Statistics collected during an SPH simulation run.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct SimulationStats {
     /// Number of timesteps executed.
     pub num_steps: u64,
@@ -1163,7 +1116,6 @@ pub struct SimulationStats {
     /// Last recorded maximum particle speed.
     pub last_max_speed: f64,
 }
-#[allow(dead_code)]
 impl SimulationStats {
     /// Create a fresh statistics record.
     pub fn new() -> Self {

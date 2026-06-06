@@ -2,10 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use std::f64::consts::PI;
 
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{NUCLEON_MASS, RHO_0};
 
@@ -183,14 +181,14 @@ impl NuclearClusterFinder {
     pub fn find_clusters(&self, particles: &[NuclearParticle]) -> Vec<usize> {
         let n = particles.len();
         let mut parent: Vec<usize> = (0..n).collect();
-        fn find(parent: &mut Vec<usize>, mut x: usize) -> usize {
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
             while parent[x] != x {
                 parent[x] = parent[parent[x]];
                 x = parent[x];
             }
             x
         }
-        fn union(parent: &mut Vec<usize>, a: usize, b: usize) {
+        fn union(parent: &mut [usize], a: usize, b: usize) {
             let ra = find(parent, a);
             let rb = find(parent, b);
             if ra != rb {
@@ -214,14 +212,14 @@ impl NuclearClusterFinder {
         let mut label_map = std::collections::HashMap::new();
         let mut next_label = 0usize;
         let mut labels = vec![0usize; n];
-        for i in 0..n {
+        for (i, lbl) in labels.iter_mut().enumerate().take(n) {
             let root = find(&mut parent, i);
             let label = *label_map.entry(root).or_insert_with(|| {
                 let l = next_label;
                 next_label += 1;
                 l
             });
-            labels[i] = label;
+            *lbl = label;
         }
         labels
     }

@@ -2,10 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::should_implement_trait)]
-#[allow(unused_imports)]
+// TODO(P4): public API churn
 use super::functions::*;
 use rand::{Rng, RngExt};
+use std::ops::{Add, Sub};
 
 /// A detected radar target.
 #[derive(Debug, Clone, Copy)]
@@ -196,11 +196,11 @@ impl Mpc {
             let mut state = initial_state;
             let mut cost = 0.0;
             states.push(state);
-            for k in 0..h {
+            for (_k, ref_k) in reference.iter().enumerate().take(h) {
                 let steer: f64 = rng.random_range(-self.max_steer..self.max_steer);
                 let accel: f64 = rng.random_range(-self.max_accel..self.max_accel);
                 state = state.step(steer, accel, self.wheelbase, self.dt);
-                let ref_k = reference[k];
+                let ref_k = *ref_k;
                 let dx = state.x - ref_k.x;
                 let dy = state.y - ref_k.y;
                 let dv = state.v - ref_k.v;
@@ -379,16 +379,6 @@ impl Vec2 {
     pub fn cross2(self, rhs: Self) -> f64 {
         self.x * rhs.y - self.y * rhs.x
     }
-    /// Add.
-    #[inline]
-    pub fn add(self, rhs: Self) -> Self {
-        Self::new(self.x + rhs.x, self.y + rhs.y)
-    }
-    /// Subtract.
-    #[inline]
-    pub fn sub(self, rhs: Self) -> Self {
-        Self::new(self.x - rhs.x, self.y - rhs.y)
-    }
     /// Scale.
     #[inline]
     pub fn scale(self, s: f64) -> Self {
@@ -397,7 +387,21 @@ impl Vec2 {
     /// Distance to another point.
     #[inline]
     pub fn dist(self, rhs: Self) -> f64 {
-        self.sub(rhs).norm()
+        (Self::new(self.x - rhs.x, self.y - rhs.y)).norm()
+    }
+}
+impl std::ops::Add for Vec2 {
+    type Output = Self;
+    #[inline]
+    fn add(self, rhs: Self) -> Self {
+        Self::new(self.x + rhs.x, self.y + rhs.y)
+    }
+}
+impl std::ops::Sub for Vec2 {
+    type Output = Self;
+    #[inline]
+    fn sub(self, rhs: Self) -> Self {
+        Self::new(self.x - rhs.x, self.y - rhs.y)
     }
 }
 /// Particle-filter SLAM.
@@ -1011,16 +1015,6 @@ impl Vec3 {
             Self::new(self.x / n, self.y / n, self.z / n)
         }
     }
-    /// Add.
-    #[inline]
-    pub fn add(self, rhs: Self) -> Self {
-        Self::new(self.x + rhs.x, self.y + rhs.y, self.z + rhs.z)
-    }
-    /// Subtract.
-    #[inline]
-    pub fn sub(self, rhs: Self) -> Self {
-        Self::new(self.x - rhs.x, self.y - rhs.y, self.z - rhs.z)
-    }
     /// Scale.
     #[inline]
     pub fn scale(self, s: f64) -> Self {
@@ -1035,6 +1029,20 @@ impl Vec3 {
     #[inline]
     pub fn xy(self) -> Vec2 {
         Vec2::new(self.x, self.y)
+    }
+}
+impl std::ops::Add for Vec3 {
+    type Output = Self;
+    #[inline]
+    fn add(self, rhs: Self) -> Self {
+        Self::new(self.x + rhs.x, self.y + rhs.y, self.z + rhs.z)
+    }
+}
+impl std::ops::Sub for Vec3 {
+    type Output = Self;
+    #[inline]
+    fn sub(self, rhs: Self) -> Self {
+        Self::new(self.x - rhs.x, self.y - rhs.y, self.z - rhs.z)
     }
 }
 /// Rapidly-exploring Random Tree planner.

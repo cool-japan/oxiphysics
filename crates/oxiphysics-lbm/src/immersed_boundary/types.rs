@@ -2,11 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::f64::consts::PI;
+
+use super::functions::{compute_elastic_forces, spread_force};
 
 /// A Lagrangian marker point on an immersed boundary.
 #[derive(Clone, Debug, PartialEq)]
@@ -127,7 +125,6 @@ impl MultiIbSystem {
 /// F_k = α_f * (U_target - U_marker) + β_f * ∫(U_target - U_marker) dt
 ///
 /// This struct accumulates the integral term.
-#[allow(dead_code)]
 pub struct FeedbackForcing {
     /// Proportional gain α_f.
     pub alpha_f: f64,
@@ -138,7 +135,6 @@ pub struct FeedbackForcing {
 }
 impl FeedbackForcing {
     /// Create a new FeedbackForcing with given gains and `n` markers.
-    #[allow(dead_code)]
     pub fn new(alpha_f: f64, beta_f: f64, n: usize) -> Self {
         Self {
             alpha_f,
@@ -149,7 +145,6 @@ impl FeedbackForcing {
     /// Compute forcing for each marker given interpolated and target velocities.
     ///
     /// Also updates the integral accumulator.
-    #[allow(dead_code)]
     pub fn compute(
         &mut self,
         u_interp: &[[f64; 2]],
@@ -168,7 +163,6 @@ impl FeedbackForcing {
         forces
     }
     /// Reset integral accumulators to zero.
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         for s in self.integral.iter_mut() {
             *s = [0.0; 2];
@@ -176,7 +170,6 @@ impl FeedbackForcing {
     }
 }
 /// A 3D Lagrangian marker for immersed boundary method.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct IbMarker3D {
     /// Position \[x, y, z\]
@@ -188,7 +181,6 @@ pub struct IbMarker3D {
 }
 impl IbMarker3D {
     /// Create a new 3D IBM marker at position with zero velocity and force.
-    #[allow(dead_code)]
     pub fn new(x: f64, y: f64, z: f64) -> Self {
         Self {
             position: [x, y, z],
@@ -197,7 +189,6 @@ impl IbMarker3D {
         }
     }
     /// Distance from this marker to another marker.
-    #[allow(dead_code)]
     pub fn distance_to(&self, other: &IbMarker3D) -> f64 {
         let dx = self.position[0] - other.position[0];
         let dy = self.position[1] - other.position[1];
@@ -229,7 +220,6 @@ impl IbmConfig {
 ///
 /// Tracks body centroid position, velocity, orientation, angular velocity,
 /// and accumulates forces and torques from the IBM coupling.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct IbmBody {
     /// Centroid position \[x, y\]
@@ -251,7 +241,6 @@ pub struct IbmBody {
 }
 impl IbmBody {
     /// Create a new IbmBody centred at `(cx, cy)` with given mass and inertia.
-    #[allow(dead_code)]
     pub fn new(cx: f64, cy: f64, mass: f64, moment: f64) -> Self {
         Self {
             centroid: [cx, cy],
@@ -265,13 +254,11 @@ impl IbmBody {
         }
     }
     /// Add a surface marker at offset `(dx, dy)` from centroid in body frame.
-    #[allow(dead_code)]
     pub fn add_surface_point(&mut self, dx: f64, dy: f64) {
         self.surface_offsets.push([dx, dy]);
         self.surface_forces.push([0.0, 0.0]);
     }
     /// Get world-frame positions of all surface markers.
-    #[allow(dead_code)]
     pub fn surface_positions(&self) -> Vec<[f64; 2]> {
         let cos_a = self.angle.cos();
         let sin_a = self.angle.sin();
@@ -285,7 +272,6 @@ impl IbmBody {
             .collect()
     }
     /// Get surface marker velocities (body + rotational contribution).
-    #[allow(dead_code)]
     pub fn surface_velocities(&self) -> Vec<[f64; 2]> {
         let cos_a = self.angle.cos();
         let sin_a = self.angle.sin();
@@ -302,14 +288,12 @@ impl IbmBody {
             .collect()
     }
     /// Compute net force on the body from surface forces.
-    #[allow(dead_code)]
     pub fn net_force(&self) -> [f64; 2] {
         self.surface_forces
             .iter()
             .fold([0.0, 0.0], |acc, &f| [acc[0] + f[0], acc[1] + f[1]])
     }
     /// Compute net torque about centroid from surface forces.
-    #[allow(dead_code)]
     pub fn net_torque(&self) -> f64 {
         let cos_a = self.angle.cos();
         let sin_a = self.angle.sin();
@@ -328,7 +312,6 @@ impl IbmBody {
     /// F = m * a  →  v += (F/m) * dt
     /// τ = I * α  →  ω += (τ/I) * dt
     /// x += v * dt,  θ += ω * dt
-    #[allow(dead_code)]
     pub fn advance(&mut self, dt: f64) {
         let [fx, fy] = self.net_force();
         self.velocity[0] += fx / self.mass * dt;
@@ -340,7 +323,6 @@ impl IbmBody {
         self.angle += self.angular_velocity * dt;
     }
     /// Create a circular IbmBody with `n` surface points.
-    #[allow(dead_code)]
     pub fn circle(cx: f64, cy: f64, r: f64, n: usize, rho_body: f64) -> Self {
         let area = PI * r * r;
         let mass = rho_body * area;
@@ -392,7 +374,6 @@ impl IbCircle {
 ///
 /// Implements the virtual boundary method with proportional-integral control:
 ///   F_k = α * (U_B - U_f) + β * ∫(U_B - U_f) dt
-#[allow(dead_code)]
 pub struct GoldsteinForcing {
     /// Proportional gain α (large, ~10⁴ to 10⁶)
     pub alpha: f64,
@@ -403,7 +384,6 @@ pub struct GoldsteinForcing {
 }
 impl GoldsteinForcing {
     /// Create a new Goldstein forcing controller for `n` markers.
-    #[allow(dead_code)]
     pub fn new(alpha: f64, beta: f64, n: usize) -> Self {
         Self {
             alpha,
@@ -414,7 +394,6 @@ impl GoldsteinForcing {
     /// Compute feedback forces given desired and interpolated velocities.
     ///
     /// Updates integral accumulators and returns forces per marker.
-    #[allow(dead_code)]
     pub fn compute_forces(
         &mut self,
         u_desired: &[[f64; 2]],
@@ -436,7 +415,6 @@ impl GoldsteinForcing {
         forces
     }
     /// Reset error integral to zero.
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         for s in self.error_integral.iter_mut() {
             *s = [0.0; 2];

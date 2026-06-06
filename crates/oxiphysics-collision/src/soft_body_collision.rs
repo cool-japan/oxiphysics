@@ -15,9 +15,6 @@
 //! - Tearing and cutting along collision boundaries (conceptual)
 //! - GPU-friendly flat collision data structures
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::collections::HashMap;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -208,7 +205,6 @@ pub fn detect_vertex_triangle_contacts(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Spatial hash for cloth vertex pairs, used for self-collision detection.
-#[allow(dead_code)]
 pub struct ClothSpatialHash {
     /// Cell size.
     pub cell_size: f64,
@@ -512,7 +508,6 @@ pub fn batch_edge_edge_ccd(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Penalty spring configuration for interpenetration resolution.
-#[allow(dead_code)]
 pub struct PenaltySpring {
     /// Spring stiffness (force per unit penetration depth).
     pub stiffness: f64,
@@ -653,7 +648,6 @@ impl BvhNode {
 }
 
 /// A BVH built over a triangle mesh (flat array representation).
-#[allow(dead_code)]
 pub struct SoftBodyBvh {
     /// Flat array of nodes (root = index 0).
     pub nodes: Vec<BvhNode>,
@@ -795,7 +789,6 @@ pub struct SoftContact {
 }
 
 /// Contact manifold for a soft body.
-#[allow(dead_code)]
 pub struct SoftContactManifold {
     /// All active contact points.
     pub contacts: Vec<SoftContact>,
@@ -927,7 +920,6 @@ pub fn apply_collision_stress(
 ///
 /// All data is stored in structure-of-arrays (SoA) layout for coalesced
 /// GPU memory access.
-#[allow(dead_code)]
 pub struct GpuClothBuffer {
     /// X positions of all vertices.
     pub pos_x: Vec<f32>,
@@ -998,7 +990,6 @@ impl GpuClothBuffer {
 /// GPU-friendly flat contact buffer (SoA layout).
 ///
 /// Suitable for uploading to a GPU for parallel impulse resolution.
-#[allow(dead_code)]
 pub struct GpuContactBuffer {
     /// Vertex indices for each contact.
     pub vertex_indices: Vec<u32>,
@@ -1055,7 +1046,6 @@ impl Default for GpuContactBuffer {
 }
 
 /// GPU-friendly edge buffer (SoA) for CCD.
-#[allow(dead_code)]
 pub struct GpuEdgeBuffer {
     /// Start vertex indices.
     pub start: Vec<u32>,

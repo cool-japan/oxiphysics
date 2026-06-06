@@ -12,8 +12,6 @@
 //!
 //! Reference value: M = 1.7475645946 (Madelung constant for NaCl structure).
 
-#![allow(missing_docs)]
-
 #[path = "regression_harness.rs"]
 mod harness;
 

@@ -15,9 +15,6 @@
 //! - [`coolant_temperature_ode`] — lumped capacitance thermal ODE step.
 //! - [`fan_curve`] — fan pressure rise vs volumetric flow rate.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // CoolingLoop
 // ─────────────────────────────────────────────────────────────────────────────

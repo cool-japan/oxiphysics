@@ -7,44 +7,35 @@
 //! collision response, guide interpolation, shading models, clustering, grooming,
 //! and aerodynamics.
 
-#[allow(unused_imports)]
-use std::f64::consts::PI;
-
 // ---------------------------------------------------------------------------
 // Small vector helpers (no nalgebra)
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 #[inline]
 fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-#[allow(dead_code)]
 #[inline]
 fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-#[allow(dead_code)]
 #[inline]
 fn scale3(v: [f64; 3], s: f64) -> [f64; 3] {
     [v[0] * s, v[1] * s, v[2] * s]
 }
 
-#[allow(dead_code)]
 #[inline]
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-#[allow(dead_code)]
 #[inline]
 fn len3(v: [f64; 3]) -> f64 {
     dot3(v, v).sqrt()
 }
 
-#[allow(dead_code)]
 #[inline]
 fn norm3(v: [f64; 3]) -> [f64; 3] {
     let l = len3(v);
@@ -55,7 +46,6 @@ fn norm3(v: [f64; 3]) -> [f64; 3] {
     }
 }
 
-#[allow(dead_code)]
 #[inline]
 fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
@@ -72,7 +62,6 @@ fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// A single hair strand composed of linked segments.
 ///
 /// Segments are stored in root-to-tip order.
-#[allow(dead_code)]
 pub struct SimHairStrand {
     /// World-space positions of each particle along the strand.
     pub positions: Vec<[f64; 3]>,
@@ -138,7 +127,6 @@ impl SimHairStrand {
 // ---------------------------------------------------------------------------
 
 /// Root attachment point for a hair strand on the scalp mesh.
-#[allow(dead_code)]
 pub struct HairFollicle {
     /// World-space position of the follicle on the scalp.
     pub position: [f64; 3],
@@ -175,7 +163,6 @@ impl HairFollicle {
 // ---------------------------------------------------------------------------
 
 /// Hair constraint types.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum HairConstraintKind {
     /// Distance (stretch) constraint between two particles.
@@ -187,7 +174,6 @@ pub enum HairConstraintKind {
 }
 
 /// A single hair constraint.
-#[allow(dead_code)]
 pub struct HairConstraint {
     /// Constraint type.
     pub kind: HairConstraintKind,
@@ -241,7 +227,6 @@ impl HairConstraint {
 // ---------------------------------------------------------------------------
 
 /// Capsule-vs-strand collision detector.
-#[allow(dead_code)]
 pub struct HairCollision {
     /// Capsule axis start.
     pub capsule_a: [f64; 3],
@@ -313,7 +298,6 @@ impl HairCollision {
 // ---------------------------------------------------------------------------
 
 /// Full hair simulation: all strands, gravity, wind, damping.
-#[allow(dead_code)]
 pub struct HairSimulation {
     /// All hair strands.
     pub strands: Vec<SimHairStrand>,
@@ -397,7 +381,6 @@ impl Default for HairSimulation {
 ///
 /// Simulates a smaller set of guide hairs and interpolates the full
 /// resolution from them using barycentric blending.
-#[allow(dead_code)]
 pub struct HairGuideInterp {
     /// Guide strands (simulated at full fidelity).
     pub guides: Vec<SimHairStrand>,
@@ -457,7 +440,6 @@ impl HairGuideInterp {
 // ---------------------------------------------------------------------------
 
 /// Kajiya-Kay shading model parameters for hair.
-#[allow(dead_code)]
 pub struct HairShading {
     /// Diffuse scatter coefficient.
     pub diffuse: f64,
@@ -512,7 +494,6 @@ impl HairShading {
 }
 
 /// Compute Kajiya-Kay specular highlight.
-#[allow(dead_code)]
 pub fn kajiya_kay_highlight(
     light_dir: [f64; 3],
     view_dir: [f64; 3],
@@ -534,7 +515,6 @@ pub fn kajiya_kay_highlight(
 // ---------------------------------------------------------------------------
 
 /// Hair clustering for LOD and wind stiffness.
-#[allow(dead_code)]
 pub struct HairClustering {
     /// Cluster centres (world-space XZ position of cluster root).
     pub cluster_centres: Vec<[f64; 2]>,
@@ -631,7 +611,6 @@ fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Grooming operator for hair strands.
-#[allow(dead_code)]
 pub struct HairGroom {
     /// Comb direction field (one direction per cluster or control point).
     pub comb_directions: Vec<[f64; 3]>,
@@ -706,7 +685,6 @@ use std::f64::consts::TAU;
 // ---------------------------------------------------------------------------
 
 /// Per-strand aerodynamics using drag and lift on each segment.
-#[allow(dead_code)]
 pub struct HairAerodynamics {
     /// Drag coefficient.
     pub drag_coeff: f64,
@@ -782,7 +760,6 @@ impl HairAerodynamics {
 // ---------------------------------------------------------------------------
 
 /// Compute the stretch (potential) energy of a strand.
-#[allow(dead_code)]
 pub fn strand_stretch_energy(strand: &SimHairStrand, stiffness: f64) -> f64 {
     let mut energy = 0.0;
     for i in 0..strand.positions.len().saturating_sub(1) {
@@ -794,7 +771,6 @@ pub fn strand_stretch_energy(strand: &SimHairStrand, stiffness: f64) -> f64 {
 }
 
 /// Compute the bend angle between three consecutive particles.
-#[allow(dead_code)]
 pub fn bend_angle(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
     let v1 = norm3(sub3(a, b));
     let v2 = norm3(sub3(c, b));
@@ -804,7 +780,6 @@ pub fn bend_angle(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
 /// Build a local frame for a hair segment given `tangent`.
 ///
 /// Returns `[tangent, normal, binormal]`.
-#[allow(dead_code)]
 pub fn local_frame_hair(tangent: [f64; 3]) -> [[f64; 3]; 3] {
     let t = norm3(tangent);
     let up = if t[1].abs() < 0.9 {
@@ -824,6 +799,7 @@ pub fn local_frame_hair(tangent: [f64; 3]) -> [[f64; 3]; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::PI;
 
     // 1. SimHairStrand: correct number of particles
     #[test]

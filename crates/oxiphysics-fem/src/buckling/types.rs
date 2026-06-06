@@ -2,15 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::f64::consts::PI;
 
 /// Dense n×n geometric stiffness matrix.
-#[allow(dead_code)]
 pub struct GeometricStiffness {
     pub(super) data: Vec<f64>,
     pub(super) n: usize,
@@ -33,36 +28,30 @@ impl GeometricStiffness {
     }
 }
 /// Euler column buckling: P_cr = π² E I / (K L)²
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub struct EulerBuckling {
     /// Young's modulus (Pa).
-    pub E: f64,
+    pub e: f64,
     /// Second moment of area (m⁴).
-    pub I: f64,
+    pub i: f64,
     /// Column length (m).
-    pub L: f64,
+    pub l: f64,
     /// Effective length factor K (1.0 = pinned-pinned, 0.5 = fixed-fixed, 2.0 = fixed-free).
-    pub K: f64,
+    pub k: f64,
 }
 impl EulerBuckling {
     /// Critical load P_cr = π² E I / (K L)²
-    #[allow(dead_code)]
     pub fn critical_load(&self) -> f64 {
-        PI * PI * self.E * self.I / (self.K * self.L).powi(2)
+        PI * PI * self.e * self.i / (self.k * self.l).powi(2)
     }
     /// Slenderness ratio λ = L_eff / r where L_eff = K * L.
     ///
     /// `_a` – cross-sectional area (unused here, kept for API completeness)
     /// `r`  – radius of gyration
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
     pub fn slenderness_ratio(&self, _a: f64, r: f64) -> f64 {
-        (self.K * self.L) / r
+        (self.k * self.l) / r
     }
 }
 /// Buckling eigenvalue problem: find lambda such that (K - lambda*Kg)*phi = 0.
-#[allow(dead_code)]
 pub struct BucklingProblem {
     pub(super) k: StiffnessMatrix,
     pub(super) kg: GeometricStiffness,
@@ -117,9 +106,9 @@ impl BucklingProblem {
         let mut lambda = sigma + 1.0;
         for _ in 0..max_iter {
             let mut w = vec![0.0f64; n];
-            for i in 0..n {
-                for j in 0..n {
-                    w[i] += self.kg.get(i, j) * v[j];
+            for (i, w_i) in w.iter_mut().enumerate().take(n) {
+                for (j, v_j) in v.iter().enumerate().take(n) {
+                    *w_i += self.kg.get(i, j) * v_j;
                 }
             }
             let z = match gaussian_solve(&a, &w, n) {
@@ -131,9 +120,9 @@ impl BucklingProblem {
             for i in 0..n {
                 let mut kv_i = 0.0f64;
                 let mut kgv_i = 0.0f64;
-                for j in 0..n {
-                    kv_i += self.k.get(i, j) * z[j];
-                    kgv_i += self.kg.get(i, j) * z[j];
+                for (j, z_j) in z.iter().enumerate().take(n) {
+                    kv_i += self.k.get(i, j) * z_j;
+                    kgv_i += self.kg.get(i, j) * z_j;
                 }
                 num += z[i] * kv_i;
                 den += z[i] * kgv_i;
@@ -164,7 +153,6 @@ impl BucklingProblem {
 /// where ξ is the buckling mode amplitude, and a, b are Koiter coefficients.
 ///
 /// For symmetric structures a = 0, and the behavior is governed by b.
-#[allow(dead_code)]
 pub struct KoiterExpansion {
     /// Critical load factor λ_c.
     pub lambda_c: f64,
@@ -175,21 +163,18 @@ pub struct KoiterExpansion {
 }
 impl KoiterExpansion {
     /// Create a new Koiter expansion.
-    #[allow(dead_code)]
     pub fn new(lambda_c: f64, a: f64, b: f64) -> Self {
         Self { lambda_c, a, b }
     }
     /// Load factor at mode amplitude ξ.
     ///
     /// λ(ξ) = λ_c + a·ξ + b·ξ²
-    #[allow(dead_code)]
     pub fn load_factor(&self, xi: f64) -> f64 {
         self.lambda_c + self.a * xi + self.b * xi * xi
     }
     /// Sensitivity to imperfections (stable vs unstable post-buckling).
     ///
     /// Returns `true` if the post-buckling path is stable (b > 0 for symmetric).
-    #[allow(dead_code)]
     pub fn is_stable(&self) -> bool {
         if self.a.abs() > 1e-14 {
             false
@@ -207,7 +192,6 @@ impl KoiterExpansion {
     /// For asymmetric structures (a ≠ 0):
     ///
     ///   λ_max ≈ λ_c − (a · δ)^{2/3} / (6b)^{1/3}  (approximate)
-    #[allow(dead_code)]
     pub fn max_load_with_imperfection(&self, delta: f64, c: f64) -> f64 {
         if self.a.abs() < 1e-14 {
             if self.b < 0.0 {
@@ -226,7 +210,6 @@ impl KoiterExpansion {
     ///
     /// Solves λ = λ_c + b·ξ² for symmetric case (a = 0).
     /// Returns None if b ≤ 0 (unstable) or λ < λ_c.
-    #[allow(dead_code)]
     pub fn equilibrium_amplitude(&self, lambda: f64) -> Option<f64> {
         if self.a.abs() < 1e-14 {
             if self.b <= 0.0 || lambda < self.lambda_c {
@@ -266,25 +249,21 @@ impl StiffnessMatrix {
 ///
 /// Stores (row, col, value) triplets for both the elastic and geometric
 /// stiffness matrices.
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub struct BucklingAnalysis {
     /// Number of global degrees of freedom.
     pub n_dof: usize,
     /// Elastic stiffness triplets (row, col, value).
-    pub K_global: Vec<(usize, usize, f64)>,
+    pub k_global: Vec<(usize, usize, f64)>,
     /// Geometric stiffness triplets (row, col, value).
-    pub Kg_global: Vec<(usize, usize, f64)>,
+    pub kg_global: Vec<(usize, usize, f64)>,
 }
 impl BucklingAnalysis {
     /// Create a new analysis with `n_dof` degrees of freedom.
-    #[allow(dead_code)]
-    #[allow(non_snake_case)]
     pub fn new(n_dof: usize) -> Self {
         Self {
             n_dof,
-            K_global: Vec::new(),
-            Kg_global: Vec::new(),
+            k_global: Vec::new(),
+            kg_global: Vec::new(),
         }
     }
     /// Assemble the 4×4 consistent geometric stiffness for the beam element
@@ -292,10 +271,8 @@ impl BucklingAnalysis {
     /// and having length `L`.
     ///
     /// Each node contributes 2 DOFs: \[2*node, 2*node+1\].
-    #[allow(dead_code)]
-    #[allow(non_snake_case)]
-    pub fn add_geometric_stiffness(&mut self, element_nodes: [usize; 2], N: f64, L: f64) {
-        let kge = geometric_stiffness_beam(N, L);
+    pub fn add_geometric_stiffness(&mut self, element_nodes: [usize; 2], n: f64, l: f64) {
+        let kge = geometric_stiffness_beam(n, l);
         let dofs = [
             2 * element_nodes[0],
             2 * element_nodes[0] + 1,
@@ -304,7 +281,7 @@ impl BucklingAnalysis {
         ];
         for a in 0..4 {
             for b in 0..4 {
-                self.Kg_global.push((dofs[a], dofs[b], kge[a][b]));
+                self.kg_global.push((dofs[a], dofs[b], kge[a][b]));
             }
         }
     }
@@ -312,17 +289,16 @@ impl BucklingAnalysis {
     ///
     /// Assembles dense matrices from triplets and returns
     /// (v^T K v) / (v^T Kg v) for the uniform vector v = \[1, 1, …, 1\].
-    #[allow(dead_code)]
     pub fn critical_load_factor_estimate(&self) -> f64 {
         let n = self.n_dof;
         let mut k_dense = vec![0.0f64; n * n];
         let mut kg_dense = vec![0.0f64; n * n];
-        for &(r, c, v) in &self.K_global {
+        for &(r, c, v) in &self.k_global {
             if r < n && c < n {
                 k_dense[r * n + c] += v;
             }
         }
-        for &(r, c, v) in &self.Kg_global {
+        for &(r, c, v) in &self.kg_global {
             if r < n && c < n {
                 kg_dense[r * n + c] += v;
             }
@@ -348,7 +324,6 @@ impl BucklingAnalysis {
     }
 }
 /// Buckling mode: load factor and associated mode shape.
-#[allow(dead_code)]
 pub struct BucklingMode {
     /// The buckling load factor (eigenvalue).
     pub load_factor: f64,
@@ -359,7 +334,6 @@ pub struct BucklingMode {
 /// * Short:  λ < λ_c → failure by yielding
 /// * Medium: λ_c ≤ λ < λ_E → inelastic buckling (Johnson range)
 /// * Long:   λ ≥ λ_E → elastic Euler buckling
-#[allow(dead_code)]
 pub enum SlendernessClass {
     /// Short column, failure by yielding.
     Short,
@@ -369,7 +343,6 @@ pub enum SlendernessClass {
     Long,
 }
 /// Buckling mode from an eigenvalue analysis: mode number, eigenvalue, and shape.
-#[allow(dead_code)]
 pub struct BucklingModeResult {
     /// Mode number (1-based).
     pub mode_num: usize,

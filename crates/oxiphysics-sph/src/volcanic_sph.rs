@@ -15,9 +15,6 @@
 //! - Volatile degassing and exsolution
 //! - Lava tube formation and conduit flow
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

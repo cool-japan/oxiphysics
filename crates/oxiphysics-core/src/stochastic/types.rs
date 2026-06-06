@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::functions::*;
 use rand::RngExt;
 use std::f64::consts::PI;
@@ -25,7 +24,6 @@ impl EmpiricalFirstPassageTime {
     /// * `t_max`   - Maximum simulation time.
     /// * `n_paths` - Number of Monte Carlo paths.
     /// * `seed`    - Base random seed.
-    #[allow(clippy::too_many_arguments)]
     pub fn estimate_ou(
         ou: &OrnsteinUhlenbeck,
         x0: f64,
@@ -71,7 +69,6 @@ impl EmpiricalFirstPassageTime {
 ///
 /// where theta(t) is calibrated to fit the initial term structure.
 /// Here we use a constant theta for simplicity.
-#[allow(dead_code)]
 pub struct HullWhiteModel {
     /// Mean-reversion speed a.
     pub a: f64,
@@ -253,27 +250,24 @@ impl LangevinDynamics {
 /// dx/dt = v
 /// m*dv/dt = F - gamma*v + sqrt(2*gamma*kT/m) * ξ(t)
 /// ```
-#[allow(non_snake_case)]
 pub struct KleinmanKramers {
     /// Friction coefficient γ.
     pub gamma: f64,
     /// Particle mass m.
     pub m: f64,
     /// Thermal energy k_B * T.
-    pub kT: f64,
+    pub k_t: f64,
 }
 impl KleinmanKramers {
     /// Create a new `KleinmanKramers` integrator.
-    #[allow(non_snake_case)]
-    pub fn new(gamma: f64, m: f64, kT: f64) -> Self {
-        Self { gamma, m, kT }
+    pub fn new(gamma: f64, m: f64, k_t: f64) -> Self {
+        Self { gamma, m, k_t }
     }
     /// Euler-Maruyama step for underdamped Langevin.
     ///
     /// Returns `(new_x, new_v)`.
-    #[allow(non_snake_case)]
-    pub fn step(&self, x: f64, v: f64, F: f64, dt: f64, rng: &mut impl rand::Rng) -> (f64, f64) {
-        let noise_amp = (2.0 * self.gamma * self.kT / self.m * dt).sqrt();
+    pub fn step(&self, x: f64, v: f64, f: f64, dt: f64, rng: &mut impl rand::Rng) -> (f64, f64) {
+        let noise_amp = (2.0 * self.gamma * self.k_t / self.m * dt).sqrt();
         let u1: f64 = loop {
             let val: f64 = rng.random();
             if val > 0.0 {
@@ -282,7 +276,7 @@ impl KleinmanKramers {
         };
         let u2: f64 = rng.random();
         let z = (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos();
-        let dv = (F / self.m - self.gamma / self.m * v) * dt + noise_amp * z;
+        let dv = (f / self.m - self.gamma / self.m * v) * dt + noise_amp * z;
         let v_new = v + dv;
         let x_new = x + v * dt;
         (x_new, v_new)
@@ -294,7 +288,6 @@ impl KleinmanKramers {
 /// X(t) = theta * G(t) + sigma * W(G(t))
 ///
 /// where G(t) is a Gamma process with mean `t` and variance `nu * t`.
-#[allow(dead_code)]
 pub struct VarianceGammaProcess {
     /// Drift of the Brownian motion θ.
     pub theta: f64,
@@ -379,7 +372,6 @@ impl VarianceGammaProcess {
 /// Corr(dW_1, dW_2) = rho
 ///
 /// Used for interest rate derivatives and FX options.
-#[allow(dead_code)]
 pub struct SabrModel {
     /// Initial forward rate F_0.
     pub f0: f64,
@@ -394,7 +386,6 @@ pub struct SabrModel {
 }
 impl SabrModel {
     /// Create a new SABR model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(f0: f64, alpha0: f64, beta: f64, nu: f64, rho: f64) -> Self {
         Self {
             f0,
@@ -645,7 +636,6 @@ impl MertonJumpDiffusion {
 ///
 /// Uses the Chambers-Mallows-Stuck algorithm to generate Lévy-stable variates
 /// with stability index `alpha ∈ (0, 2]` and scale `c`.
-#[allow(dead_code)]
 pub struct LevyFlight {
     /// Stability index α ∈ (0, 2]. α=2 is Gaussian, α=1 is Cauchy.
     pub alpha: f64,
@@ -769,7 +759,6 @@ impl MetropolisHastings {
 /// dX = kappa*(theta - X)*dt + sigma*sqrt(X)*dW
 ///
 /// Used for interest rate modeling and variance processes.
-#[allow(dead_code)]
 pub struct CirProcess {
     /// Mean-reversion speed κ.
     pub kappa: f64,
@@ -921,7 +910,6 @@ impl HestonModel {
     /// Simulates asset price and variance paths.
     ///
     /// Returns `(prices, variances)` vectors.
-    #[allow(clippy::too_many_arguments)]
     pub fn simulate(
         &self,
         s0: f64,
@@ -959,23 +947,21 @@ impl HestonModel {
 /// Uses the Davies-Harte (circulant embedding) approximation via the
 /// Cholesky decomposition of the covariance matrix for exact sampling.
 /// For simplicity this implementation uses the Hosking method (exact covariance).
-#[allow(non_snake_case)]
 pub struct FractionalBrownianMotion {
-    /// Hurst exponent: 0 < H < 1.  H=0.5 is standard Brownian motion.
-    pub H: f64,
+    /// Hurst exponent: 0 < h < 1.  h=0.5 is standard Brownian motion.
+    pub h: f64,
     /// Time step size.
     pub dt: f64,
 }
 impl FractionalBrownianMotion {
     /// Create a new `FractionalBrownianMotion`.
-    #[allow(non_snake_case)]
-    pub fn new(H: f64, dt: f64) -> Self {
-        Self { H, dt }
+    pub fn new(h: f64, dt: f64) -> Self {
+        Self { h, dt }
     }
     /// Autocovariance of fBm increments at lag `k`:
-    /// `γ(k) = 0.5 * (|k+1|^{2H} - 2|k|^{2H} + |k-1|^{2H}) * dt^{2H}`
+    /// `γ(k) = 0.5 * (|k+1|^{2h} - 2|k|^{2h} + |k-1|^{2h}) * dt^{2h}`
     fn autocov(&self, k: usize) -> f64 {
-        let h2 = 2.0 * self.H;
+        let h2 = 2.0 * self.h;
         let k = k as f64;
         0.5 * ((k + 1.0).powf(h2) - 2.0 * k.powf(h2) + (k - 1.0).abs().powf(h2)) * self.dt.powf(h2)
     }
@@ -1019,28 +1005,25 @@ impl FractionalBrownianMotion {
 ///
 /// Solves `dx/dt = F / (gamma * m) + sqrt(2 * kT / (gamma * m)) * ξ(t)`
 /// where `ξ(t)` is Gaussian white noise.
-#[allow(non_snake_case)]
 pub struct LangevinIntegrator {
     /// Friction coefficient γ.
     pub gamma: f64,
     /// Thermal energy k_B * T.
-    pub kT: f64,
+    pub k_t: f64,
     /// Particle mass.
     pub m: f64,
 }
 impl LangevinIntegrator {
     /// Create a new `LangevinIntegrator`.
-    #[allow(non_snake_case)]
-    pub fn new(gamma: f64, kT: f64, m: f64) -> Self {
-        Self { gamma, kT, m }
+    pub fn new(gamma: f64, k_t: f64, m: f64) -> Self {
+        Self { gamma, k_t, m }
     }
     /// Perform a single Euler-Maruyama step.
     ///
     /// Returns the new position.
-    #[allow(non_snake_case)]
-    pub fn step(&self, x: f64, F: f64, dt: f64, rng: &mut impl rand::Rng) -> f64 {
+    pub fn step(&self, x: f64, f: f64, dt: f64, rng: &mut impl rand::Rng) -> f64 {
         let mobility = 1.0 / (self.gamma * self.m);
-        let noise_amp = (2.0 * self.kT * mobility * dt).sqrt();
+        let noise_amp = (2.0 * self.k_t * mobility * dt).sqrt();
         let u1: f64 = loop {
             let v: f64 = rng.random();
             if v > 0.0 {
@@ -1049,7 +1032,7 @@ impl LangevinIntegrator {
         };
         let u2: f64 = rng.random();
         let z = (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos();
-        x + mobility * F * dt + noise_amp * z
+        x + mobility * f * dt + noise_amp * z
     }
 }
 /// Ornstein-Uhlenbeck (OU) process: mean-reverting stochastic process.
@@ -1227,8 +1210,8 @@ impl RandomWalk {
         let mut pos = vec![0.0_f64; self.dimension];
         positions.push(pos.clone());
         for _ in 0..n_steps {
-            for d in 0..self.dimension {
-                pos[d] += rng.next_normal() * self.step_size;
+            for p in pos.iter_mut() {
+                *p += rng.next_normal() * self.step_size;
             }
             positions.push(pos.clone());
         }
@@ -1244,8 +1227,8 @@ impl RandomWalk {
         (0..n)
             .map(|i| {
                 let mut sq = 0.0_f64;
-                for d in 0..dim {
-                    sq += path[i][d] * path[i][d];
+                for &v in path[i].iter().take(dim) {
+                    sq += v * v;
                 }
                 sq
             })

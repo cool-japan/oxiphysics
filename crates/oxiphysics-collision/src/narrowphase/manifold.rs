@@ -4,13 +4,8 @@
 //! manifold construction via reference/incident face identification and
 //! polygon clipping, and manifold reduction to a bounded contact set.
 
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
-#![allow(dead_code)]
-
-#[allow(unused_imports)]
-use super::functions::*;
 
 // ─── ContactPoint ────────────────────────────────────────────────────────────
 
@@ -249,15 +244,6 @@ fn translation(t: [[f64; 4]; 4]) -> [f64; 3] {
     [t[0][3], t[1][3], t[2][3]]
 }
 
-/// Transform a local-space point by a 4×4 homogeneous matrix.
-fn transform_point(m: [[f64; 4]; 4], p: [f64; 3]) -> [f64; 3] {
-    [
-        m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2] + m[0][3],
-        m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2] + m[1][3],
-        m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2] + m[2][3],
-    ]
-}
-
 /// Return the face of a box (given its world axes and half-extents) whose
 /// outward normal is most aligned with `dir`.  Returns the face normal and
 /// the four world-space corner vertices.
@@ -271,8 +257,8 @@ fn best_face(
     let mut best_dot = -f64::INFINITY;
     let mut best_axis = 0usize;
     let mut best_sign = 1.0_f64;
-    for i in 0..3 {
-        let d = dot3(axes[i], dir);
+    for (i, axis) in axes.iter().enumerate() {
+        let d = dot3(*axis, dir);
         if d.abs() > best_dot {
             best_dot = d.abs();
             best_axis = i;
@@ -316,7 +302,6 @@ fn best_face(
 /// The transform matrices are **row-major** 4×4 homogeneous matrices where
 /// `transform[row][col]`.  Translation is stored in the last column
 /// (`transform[row][3]`).
-#[allow(clippy::too_many_arguments)]
 pub fn build_box_manifold(
     half_extents_a: [f64; 3],
     transform_a: [[f64; 4]; 4],
@@ -360,18 +345,17 @@ pub fn build_box_manifold(
     // For simplicity we use the reference face corners projected into 2-D.
     let ref_face_normal_world = ref_normal;
     // Recompute reference face corners for clipping
-    let best_axis_idx = {
-        let mut best = 0usize;
-        let mut best_d = -f64::INFINITY;
-        for i in 0..3 {
-            let d = dot3(axes_a[i], ref_face_normal_world).abs();
-            if d > best_d {
-                best_d = d;
-                best = i;
-            }
-        }
-        best
-    };
+    let best_axis_idx = axes_a
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| {
+            dot3(**a, ref_face_normal_world)
+                .abs()
+                .partial_cmp(&dot3(**b, ref_face_normal_world).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(0);
     let u_idx = (best_axis_idx + 1) % 3;
     let w_idx = (best_axis_idx + 2) % 3;
 
@@ -1017,16 +1001,17 @@ pub fn manifold_quality(manifold: &ContactManifold) -> f64 {
     }
 
     // Spread score: max pairwise distance among contact points
-    let mut max_dist_sq = 0.0f64;
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let d = sub3(manifold.contacts[i].point, manifold.contacts[j].point);
-            let dsq = dot3(d, d);
-            if dsq > max_dist_sq {
-                max_dist_sq = dsq;
-            }
-        }
-    }
+    let max_dist_sq = manifold
+        .contacts
+        .iter()
+        .enumerate()
+        .flat_map(|(i, a)| {
+            manifold.contacts[i + 1..].iter().map(move |b| {
+                let d = sub3(a.point, b.point);
+                dot3(d, d)
+            })
+        })
+        .fold(0.0f64, f64::max);
     let spread_score = (max_dist_sq.sqrt() / (max_dist_sq.sqrt() + 1.0)).min(1.0);
 
     (depth_score + spread_score) * 0.5

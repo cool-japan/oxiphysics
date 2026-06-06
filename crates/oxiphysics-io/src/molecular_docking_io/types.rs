@@ -2,10 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
 use std::fmt::Write as _;
 /// A virtual screening results collection.
 #[derive(Debug, Clone)]
@@ -266,7 +263,6 @@ pub struct VirtualScreeningResult {
 }
 impl VirtualScreeningResult {
     /// Create a new `VirtualScreeningResult`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         compound_id: &str,
         smiles: &str,
@@ -769,7 +765,6 @@ pub struct Mol2Atom {
 }
 impl Mol2Atom {
     /// Create a new `Mol2Atom`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         atom_id: u32,
         atom_name: &str,
@@ -839,13 +834,10 @@ impl GridBox {
     }
     /// Check whether a position lies within the grid box.
     pub fn contains(&self, pos: [f64; 3]) -> bool {
-        for i in 0..3 {
-            let half = self.size[i] * 0.5;
-            if (pos[i] - self.center[i]).abs() > half {
-                return false;
-            }
-        }
-        true
+        pos.iter()
+            .zip(self.center.iter())
+            .zip(self.size.iter())
+            .all(|((&p, &c), &s)| (p - c).abs() <= s * 0.5)
     }
     /// Write as an AutoGrid gpf-style configuration.
     pub fn to_gpf_string(&self, receptor_name: &str, ligand_types: &[&str]) -> String {
@@ -945,7 +937,6 @@ pub struct PdbqtAtom {
 }
 impl PdbqtAtom {
     /// Create a new `PdbqtAtom` with all fields specified.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         serial: u32,
         name: &str,

@@ -1,5 +1,3 @@
-#[allow(unused_imports)]
-use super::functions::*;
 // # Body - Trait Implementations
 //
 // This module contains trait implementations for `Body`.

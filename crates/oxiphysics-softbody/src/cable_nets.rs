@@ -11,9 +11,6 @@
 //! - [`FormFinding`]: dynamic relaxation method to find equilibrium shapes.
 //! - Free functions: [`cable_sag_parabolic`], [`taut_string_frequency`].
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Helper math on [f64; 3]   (no nalgebra — softbody rule)
 // ---------------------------------------------------------------------------

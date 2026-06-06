@@ -1,11 +1,8 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! Signal analysis: autocorrelation, cross-correlation, PSD, Hilbert transform,
 //! empirical mode decomposition, peak detection, and signal filtering.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -55,7 +52,7 @@ impl std::ops::Mul for C64 {
     }
 }
 
-fn fft(a: &mut Vec<C64>, invert: bool) {
+fn fft(a: &mut [C64], invert: bool) {
     let n = a.len();
     // Bit-reverse permutation
     let mut j = 0usize;
@@ -381,14 +378,14 @@ impl HilbertTransform {
         fft(&mut buf, false);
 
         // Apply the one-sided filter: H[k] = 2 for 1..N/2, 1 at DC and Nyquist, 0 otherwise
-        for k in 0..n_fft {
+        for (k, v) in buf.iter_mut().enumerate() {
             if k == 0 || (n_fft.is_multiple_of(2) && k == n_fft / 2) {
                 // keep as-is
             } else if k < n_fft / 2 {
-                buf[k].re *= 2.0;
-                buf[k].im *= 2.0;
+                v.re *= 2.0;
+                v.im *= 2.0;
             } else {
-                buf[k] = C64::new(0.0, 0.0);
+                *v = C64::new(0.0, 0.0);
             }
         }
         fft(&mut buf, true); // IFFT
@@ -437,8 +434,9 @@ impl HilbertTransform {
             }
         }
         let mut freq = vec![0.0_f64; n];
-        for i in 1..(n - 1) {
-            freq[i] = (unwrapped[i + 1] - unwrapped[i - 1]) * fs / (4.0 * PI);
+        for (i, fi) in freq[1..n - 1].iter_mut().enumerate() {
+            let i = i + 1;
+            *fi = (unwrapped[i + 1] - unwrapped[i - 1]) * fs / (4.0 * PI);
         }
         freq[0] = freq[1];
         freq[n - 1] = freq[n - 2];
@@ -498,8 +496,8 @@ impl EMD {
                     .map(|(u, l)| (u + l) / 2.0)
                     .collect();
                 let prev = h.clone();
-                for i in 0..n {
-                    h[i] -= mean_env[i];
+                for (hi, &me) in h.iter_mut().zip(mean_env.iter()) {
+                    *hi -= me;
                 }
                 // SD stopping criterion
                 let sd: f64 = prev
@@ -512,8 +510,8 @@ impl EMD {
                     break;
                 }
             }
-            for i in 0..n {
-                residual[i] -= h[i];
+            for (ri, &hi) in residual.iter_mut().zip(h.iter()) {
+                *ri -= hi;
             }
             imfs.push(h);
         }
@@ -588,7 +586,7 @@ fn cubic_spline_envelope(signal: &[f64], extrema_idx: &[usize], upper: bool) -> 
 
     // Piecewise linear interpolation
     let mut env = vec![0.0_f64; n];
-    for i in 0..n {
+    for (i, ev) in env.iter_mut().enumerate() {
         let xi = i as f64;
         // Find surrounding xs
         let mut lo = 0usize;
@@ -605,7 +603,7 @@ fn cubic_spline_envelope(signal: &[f64], extrema_idx: &[usize], upper: bool) -> 
         } else {
             (xi - xs[lo]) / (xs[hi] - xs[lo])
         };
-        env[i] = ys[lo] + t * (ys[hi] - ys[lo]);
+        *ev = ys[lo] + t * (ys[hi] - ys[lo]);
     }
     env
 }
@@ -805,7 +803,7 @@ impl SignalFilter {
         let poly_order = poly_order.min(window - 1);
 
         let mut out = vec![0.0_f64; n];
-        for i in 0..n {
+        for (i, o) in out.iter_mut().enumerate() {
             let lo = i.saturating_sub(hw);
             let hi = (i + hw + 1).min(n);
             let seg = &signal[lo..hi];
@@ -814,7 +812,7 @@ impl SignalFilter {
             // Build Vandermonde matrix and solve for central coefficient
             // Using a simple analytical approximation: weighted polynomial fit
             let xs: Vec<f64> = (0..m).map(|k| k as f64 - center).collect();
-            out[i] = poly_fit_center(seg, &xs, poly_order);
+            *o = poly_fit_center(seg, &xs, poly_order);
         }
         out
     }
@@ -872,19 +870,19 @@ fn poly_fit_center(ys: &[f64], xs: &[f64], p: usize) -> f64 {
     let mut vt: Vec<Vec<f64>> = vec![vec![0.0; m]; deg];
     for (j, &x) in xs.iter().enumerate() {
         let mut xp = 1.0_f64;
-        for i in 0..deg {
-            vt[i][j] = xp;
+        for vi in vt.iter_mut() {
+            vi[j] = xp;
             xp *= x;
         }
     }
     // Compute V^T V and V^T y
     let mut vtv = vec![vec![0.0_f64; deg]; deg];
     let mut vty = vec![0.0_f64; deg];
-    for i in 0..deg {
-        for k in 0..m {
-            vty[i] += vt[i][k] * ys[k];
-            for j in 0..deg {
-                vtv[i][j] += vt[i][k] * vt[j][k];
+    for (i, (vty_i, vti)) in vty.iter_mut().zip(vt.iter()).enumerate() {
+        for (k, (&yk, &vtik)) in ys.iter().zip(vti.iter()).enumerate() {
+            *vty_i += vtik * yk;
+            for (j, vtv_ij) in vtv[i].iter_mut().enumerate() {
+                *vtv_ij += vtik * vt[j][k];
             }
         }
     }
@@ -895,7 +893,7 @@ fn poly_fit_center(ys: &[f64], xs: &[f64], p: usize) -> f64 {
 }
 
 /// Gaussian elimination for Ax = b (modifies A and b in place).
-fn gaussian_elimination(a: &mut Vec<Vec<f64>>, b: &mut Vec<f64>) -> Vec<f64> {
+fn gaussian_elimination(a: &mut [Vec<f64>], b: &mut [f64]) -> Vec<f64> {
     let n = b.len();
     for col in 0..n {
         // Partial pivot
@@ -915,9 +913,12 @@ fn gaussian_elimination(a: &mut Vec<Vec<f64>>, b: &mut Vec<f64>) -> Vec<f64> {
         let diag = a[col][col];
         for row in (col + 1)..n {
             let factor = a[row][col] / diag;
-            for k in col..n {
-                let v = a[col][k];
-                a[row][k] -= factor * v;
+            let (col_row, a_row) = {
+                let (left, right) = a.split_at_mut(row);
+                (&left[col][col..], &mut right[0][col..])
+            };
+            for (av, cv) in a_row.iter_mut().zip(col_row.iter()) {
+                *av -= factor * cv;
             }
             let bv = b[col];
             b[row] -= factor * bv;

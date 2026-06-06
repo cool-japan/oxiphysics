@@ -31,8 +31,6 @@
 //! - Large-file offset simulation (64-bit)
 //! - Parallel HDF5 metadata (mock)
 
-#![allow(dead_code)]
-
 // --- Sub-modules ---
 pub mod compound;
 pub mod convenience;

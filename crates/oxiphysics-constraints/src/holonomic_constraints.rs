@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -30,9 +29,6 @@
 //!   reduction and a simple BDF-1 (backward Euler) integrator.
 //! - **Penalty method vs Lagrange multiplier comparison** utilities.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Primitive linear algebra (no nalgebra — plain f64 arrays)
 // ---------------------------------------------------------------------------
@@ -40,13 +36,6 @@
 /// Dot product of two slices (must have the same length).
 fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
-}
-
-/// Scale a vector in-place.
-fn scale(v: &mut [f64], s: f64) {
-    for x in v.iter_mut() {
-        *x *= s;
-    }
 }
 
 /// Add `s * b` to `a` in-place.
@@ -575,9 +564,9 @@ impl ConstraintJacobian {
     /// Compute `J^T λ` (constraint forces) given a Lagrange multiplier vector.
     pub fn mul_lambda(&self, lambda: &[f64]) -> Vec<f64> {
         let mut result = vec![0.0; self.num_dofs];
-        for row in 0..self.num_constraints {
-            for col in 0..self.num_dofs {
-                result[col] += self.get(row, col) * lambda[row];
+        for (row, lam_row) in lambda.iter().enumerate() {
+            for (col, res_col) in result.iter_mut().enumerate() {
+                *res_col += self.get(row, col) * lam_row;
             }
         }
         result
@@ -590,13 +579,13 @@ impl ConstraintJacobian {
         let nc = self.num_constraints;
         let nd = self.num_dofs;
         let mut result = vec![vec![0.0; nc]; nc];
-        for i in 0..nc {
-            for j in 0..nc {
+        for (i, res_row) in result.iter_mut().enumerate() {
+            for (j, res_ij) in res_row.iter_mut().enumerate() {
                 let mut sum = 0.0;
-                for k in 0..nd {
-                    sum += self.get(i, k) * inv_mass[k] * self.get(j, k);
+                for (k, inv_m_k) in inv_mass.iter().enumerate().take(nd) {
+                    sum += self.get(i, k) * inv_m_k * self.get(j, k);
                 }
-                result[i][j] = sum;
+                *res_ij = sum;
             }
         }
         result
@@ -606,12 +595,12 @@ impl ConstraintJacobian {
     /// along axis direction `n` at constraint row `row`.
     pub fn add_distance_row(&mut self, row: usize, dof_a: usize, dof_b: usize, n: [f64; 3]) {
         // J_a = -n, J_b = +n (assumes linear DOFs are packed as [x,y,z])
-        for d in 0..3 {
+        for (d, n_d) in n.iter().enumerate() {
             if dof_a + d < self.num_dofs {
-                self.set(row, dof_a + d, -n[d]);
+                self.set(row, dof_a + d, -n_d);
             }
             if dof_b + d < self.num_dofs {
-                self.set(row, dof_b + d, n[d]);
+                self.set(row, dof_b + d, *n_d);
             }
         }
     }
@@ -676,7 +665,7 @@ pub fn dae_step_index1(
     bparams: BaumgarteParams,
     dt: f64,
 ) {
-    let nd = state.q.len();
+    let _nd = state.q.len();
     let nc = jac.num_constraints;
 
     // Compute velocity-level errors Ċ = J v
@@ -718,15 +707,15 @@ pub fn dae_step_index1(
     let constraint_forces = jac.mul_lambda(&lambda);
 
     // Update velocities: v += dt * M^{-1} * (F + J^T λ)
-    for k in 0..nd {
+    for (k, (v_k, inv_m_k)) in state.v.iter_mut().zip(inv_mass.iter()).enumerate() {
         let total_force = forces.get(k).copied().unwrap_or(0.0)
             + constraint_forces.get(k).copied().unwrap_or(0.0);
-        state.v[k] += dt * inv_mass[k] * total_force;
+        *v_k += dt * inv_m_k * total_force;
     }
 
     // Update positions: q += dt * v
-    for k in 0..nd {
-        state.q[k] += dt * state.v[k];
+    for (q_k, v_k) in state.q.iter_mut().zip(state.v.iter()) {
+        *q_k += dt * v_k;
     }
 }
 
@@ -754,10 +743,10 @@ pub fn dae_bdf1_step(
     let scaled_inv_mass: Vec<f64> = inv_mass.iter().map(|m| m * dt).collect();
 
     // Unconstrained velocity predictor: v* = v + dt * M^{-1} * F
-    let nd = state.q.len();
+    let _nd = state.q.len();
     let mut v_pred: Vec<f64> = state.v.clone();
-    for k in 0..nd {
-        v_pred[k] +=
+    for (k, vp_k) in v_pred.iter_mut().enumerate() {
+        *vp_k +=
             dt * inv_mass.get(k).copied().unwrap_or(0.0) * forces.get(k).copied().unwrap_or(0.0);
     }
 
@@ -796,13 +785,13 @@ pub fn dae_bdf1_step(
 
     let constraint_forces = jac.mul_lambda(&lambda);
 
-    for k in 0..nd {
-        state.v[k] = v_pred[k]
+    for (k, (v_k, vp_k)) in state.v.iter_mut().zip(v_pred.iter()).enumerate() {
+        *v_k = vp_k
             + scaled_inv_mass.get(k).copied().unwrap_or(0.0)
                 * constraint_forces.get(k).copied().unwrap_or(0.0);
     }
-    for k in 0..nd {
-        state.q[k] += dt * state.v[k];
+    for (q_k, v_k) in state.q.iter_mut().zip(state.v.iter()) {
+        *q_k += dt * v_k;
     }
 }
 
@@ -1421,14 +1410,10 @@ mod tests {
     #[test]
     fn test_rotation_matrix_identity() {
         let rm = rotation_matrix([0.0, 0.0, 1.0], 0.0);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in rm.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (rm[i][j] - expected).abs() < EPS,
-                    "rm[{i}][{j}]={}",
-                    rm[i][j]
-                );
+                assert!((val - expected).abs() < EPS, "rm[{i}][{j}]={val}",);
             }
         }
     }

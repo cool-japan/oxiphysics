@@ -18,7 +18,6 @@ use super::coulomb::COULOMB_K;
 ///
 /// References: MacKerell & Roux, J. Comput. Chem. 2003.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DrudeOscillator {
     /// Spring constant k_D (kJ mol^-1 Å^-2).
     pub k_drude: f64,
@@ -26,7 +25,6 @@ pub struct DrudeOscillator {
     pub q_drude: f64,
 }
 
-#[allow(dead_code)]
 impl DrudeOscillator {
     /// Create a new Drude oscillator.
     pub fn new(k_drude: f64, q_drude: f64) -> Self {
@@ -90,7 +88,6 @@ impl DrudeOscillator {
 ///
 /// Reference: Rappé & Goddard, J. Phys. Chem. 95, 3358 (1991).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ChargeEquilibration {
     /// Electronegativity chi_i for each atom (kJ mol^-1 e^-1).
     pub chi: Vec<f64>,
@@ -100,7 +97,6 @@ pub struct ChargeEquilibration {
     pub total_charge: f64,
 }
 
-#[allow(dead_code)]
 impl ChargeEquilibration {
     /// Create a new QEq solver.
     pub fn new(chi: Vec<f64>, eta: Vec<f64>, total_charge: f64) -> Self {
@@ -124,7 +120,6 @@ impl ChargeEquilibration {
             "positions and chi must have equal length"
         );
         let mut j = vec![vec![0.0_f64; n]; n];
-        #[allow(clippy::needless_range_loop)]
         for i in 0..n {
             j[i][i] = 2.0 * self.eta[i];
             for k in (i + 1)..n {
@@ -197,7 +192,6 @@ impl ChargeEquilibration {
 /// Solves self-consistently: mu_i = alpha_i * (E_ext_i + sum_{j≠i} T_ij * mu_j)
 /// where T_ij is the dipole-dipole interaction tensor.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct InducedDipoleSolver {
     /// Atomic polarizabilities alpha_i (Å^3).
     pub polarizabilities: Vec<f64>,
@@ -207,7 +201,6 @@ pub struct InducedDipoleSolver {
     pub tol: f64,
 }
 
-#[allow(dead_code)]
 impl InducedDipoleSolver {
     /// Create a new solver.
     pub fn new(polarizabilities: Vec<f64>, max_iter: usize, tol: f64) -> Self {

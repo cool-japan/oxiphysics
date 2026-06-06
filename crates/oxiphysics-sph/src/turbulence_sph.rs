@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg, clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +7,6 @@
 //! LES subgrid models, Reynolds stress tensor computation, turbulent
 //! kinetic energy tracking, and energy spectrum estimation for use
 //! with smoothed-particle hydrodynamics.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Math helpers
@@ -86,6 +83,7 @@ fn kernel_gradient(r_ij: [f64; 3], h: f64) -> [f64; 3] {
 }
 
 /// Kernel value W(r, h) using cubic spline.
+#[cfg(test)]
 fn kernel_value(r: f64, h: f64) -> f64 {
     if h < 1e-12 {
         return 0.0;
@@ -387,7 +385,7 @@ impl SmagorinskyModel {
 
     /// Updates the `eddy_viscosity` field of every particle using a simplified
     /// single-particle strain rate (velocity magnitude / h as a proxy).
-    pub fn update_particles(&self, particles: &mut Vec<TurbulentParticle>) {
+    pub fn update_particles(&self, particles: &mut [TurbulentParticle]) {
         for p in particles.iter_mut() {
             let h = p.smoothing_length;
             // Simple proxy: |S| ≈ |v| / h (no neighbor loop to keep self-contained)
@@ -440,8 +438,8 @@ impl WaleModel {
         let mut g2 = [[0.0f64; 3]; 3];
         for i in 0..3 {
             for j in 0..3 {
-                for k in 0..3 {
-                    g2[i][j] += grad_v[i][k] * grad_v[k][j];
+                for (k, &gv_ik) in grad_v[i].iter().enumerate() {
+                    g2[i][j] += gv_ik * grad_v[k][j];
                 }
             }
         }
@@ -454,8 +452,8 @@ impl WaleModel {
         }
         // Subtract trace/3
         let trace = sd[0][0] + sd[1][1] + sd[2][2];
-        for i in 0..3 {
-            sd[i][i] -= trace / 3.0;
+        for (i, sd_i) in sd.iter_mut().enumerate() {
+            sd_i[i] -= trace / 3.0;
         }
         sd
     }
@@ -473,9 +471,9 @@ impl WaleModel {
 
         // |S^d|² = S^d_ij S^d_ij
         let mut sd_sq = 0.0f64;
-        for i in 0..3 {
-            for j in 0..3 {
-                sd_sq += sd[i][j] * sd[i][j];
+        for row in &sd {
+            for &v in row.iter() {
+                sd_sq += v * v;
             }
         }
 
@@ -518,9 +516,9 @@ impl VremanModel {
 
         // alpha_ij * alpha_ij
         let mut alpha_sq = 0.0f64;
-        for i in 0..3 {
-            for j in 0..3 {
-                alpha_sq += alpha[i][j] * alpha[i][j];
+        for row in &alpha {
+            for &v in row.iter() {
+                alpha_sq += v * v;
             }
         }
 
@@ -532,8 +530,8 @@ impl VremanModel {
         let mut beta = [[0.0f64; 3]; 3];
         for i in 0..3 {
             for j in 0..3 {
-                for k in 0..3 {
-                    beta[i][j] += alpha[k][i] * alpha[k][j];
+                for alpha_k in alpha.iter() {
+                    beta[i][j] += alpha_k[i] * alpha_k[j];
                 }
             }
         }
@@ -576,8 +574,8 @@ impl SigmaModel {
         let mut g = [[0.0f64; 3]; 3];
         for i in 0..3 {
             for j in 0..3 {
-                for k in 0..3 {
-                    g[i][j] += grad_v[k][i] * grad_v[k][j];
+                for gv_k in grad_v.iter() {
+                    g[i][j] += gv_k[i] * gv_k[j];
                 }
             }
         }
@@ -741,7 +739,6 @@ impl KepsilonModel {
     }
 
     /// Full update step for k and epsilon with diffusion terms.
-    #[allow(clippy::too_many_arguments)]
     pub fn full_step(
         &self,
         k: f64,
@@ -856,6 +853,9 @@ impl DynamicSmagorinskyModel {
 // Turbulent viscosity force
 // ---------------------------------------------------------------------------
 
+/// Snapshot entry: (position, velocity, density, eddy_viscosity, smoothing_length).
+type TurbParticleSnapshot = ([f64; 3], [f64; 3], f64, f64, f64);
+
 /// Applies a turbulent viscosity inter-particle force to all particles.
 pub struct TurbulentViscosityForce;
 
@@ -865,10 +865,10 @@ impl TurbulentViscosityForce {
     /// F_turb_i = Σ_j m_j (ν_t_i + ν_t_j) (v_j − v_i) / (ρ_ij r_ij) · ∇W
     ///
     /// Updates particle velocities in-place.
-    pub fn apply(particles: &mut Vec<TurbulentParticle>, h: f64, dt: f64) {
+    pub fn apply(particles: &mut [TurbulentParticle], h: f64, dt: f64) {
         let n = particles.len();
         // Collect data first to avoid borrow issues
-        let snapshot: Vec<([f64; 3], [f64; 3], f64, f64, f64)> = particles
+        let snapshot: Vec<TurbParticleSnapshot> = particles
             .iter()
             .map(|p| {
                 (
@@ -885,11 +885,10 @@ impl TurbulentViscosityForce {
 
         for i in 0..n {
             let (pos_i, vel_i, rho_i, nut_i, _) = snapshot[i];
-            for j in 0..n {
+            for (j, &(pos_j, vel_j, rho_j, nut_j, h_j)) in snapshot.iter().enumerate().take(n) {
                 if i == j {
                     continue;
                 }
-                let (pos_j, vel_j, rho_j, nut_j, h_j) = snapshot[j];
                 let r_ij = sub(pos_i, pos_j);
                 let r = length(r_ij);
                 if r > 2.0 * h || r < 1e-12 {
@@ -922,7 +921,7 @@ impl TurbulentViscosityForce {
         vel_i: [f64; 3],
         rho_i: f64,
         nut_i: f64,
-        neighbors: &[([f64; 3], [f64; 3], f64, f64, f64)],
+        neighbors: &[TurbParticleSnapshot],
         h: f64,
     ) -> [f64; 3] {
         let mut acc = [0.0f64; 3];

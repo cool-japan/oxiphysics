@@ -2,10 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::too_many_arguments)]
 use std::f64::consts::PI;
 
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{ELEM_CHARGE, EPS0, J_TO_KJMOL};
 

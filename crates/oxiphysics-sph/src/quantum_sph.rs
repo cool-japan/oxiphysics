@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -35,8 +34,6 @@
 //! - Madelung, E. (1927). Quantentheorie in hydrodynamischer Form. *Z. Phys.*, 40, 322.
 //! - Feynman, R.P. & Hibbs, A.R. (1965). *Quantum Mechanics and Path Integrals*.
 //! - Bohm, D. (1952). A Suggested Interpretation of Quantum Theory. *Phys. Rev.*, 85, 166.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -214,10 +211,10 @@ impl QuantumSPH {
         let n = self.particles.len();
         let mass = self.mass;
         let mut densities = vec![0.0f64; n];
-        for i in 0..n {
+        for (i, rho_i) in densities.iter_mut().enumerate() {
             for j in 0..n {
                 let r = self.distance(i, j);
-                densities[i] += mass * self.kernel(r);
+                *rho_i += mass * self.kernel(r);
             }
         }
         for (p, rho) in self.particles.iter_mut().zip(densities.iter()) {
@@ -247,7 +244,7 @@ impl QuantumSPH {
         let n = self.particles.len();
         let h = self.smoothing_length;
         let mut q_pot = vec![0.0f64; n];
-        for i in 0..n {
+        for (i, qp_i) in q_pot.iter_mut().enumerate() {
             let rho_i = self.particles[i].density.max(1e-30);
             let sqrt_rho_i = rho_i.sqrt();
             let mut laplacian = 0.0f64;
@@ -265,7 +262,7 @@ impl QuantumSPH {
                 };
                 laplacian += (self.mass / rho_j) * (sqrt_rho_j - sqrt_rho_i) * w_lapl;
             }
-            q_pot[i] = if sqrt_rho_i > 1e-15 {
+            *qp_i = if sqrt_rho_i > 1e-15 {
                 -(self.hbar * self.hbar / (2.0 * self.mass)) * laplacian / sqrt_rho_i
             } else {
                 0.0
@@ -306,19 +303,19 @@ impl QuantumSPH {
         let mut wf = vec![vec![0.0f64; np]; nx];
         let dx = 2.0 * xmax / nx as f64;
         let dp = 2.0 * pmax / np as f64;
-        for ix in 0..nx {
+        for (ix, wf_row) in wf.iter_mut().enumerate() {
             let x = -xmax + ix as f64 * dx;
             // Estimate ψ(x) from nearest particle
             let psi_r = self.interpolate_psi_r(x);
             let psi_i = self.interpolate_psi_i(x);
-            for ip in 0..np {
+            for (ip, wf_cell) in wf_row.iter_mut().enumerate() {
                 let p_val = -pmax + ip as f64 * dp;
                 // Simplified: W(x,p) ≈ |ψ(x)|² δ(p − mẋ) → Gaussian in p
                 let rho_x = psi_r * psi_r + psi_i * psi_i;
                 let p_mean = self.interpolate_velocity_x(x) * self.mass;
                 let sigma_p = (self.hbar / (2.0 * self.smoothing_length)).max(1e-30);
                 let dp_val = p_val - p_mean;
-                wf[ix][ip] =
+                *wf_cell =
                     rho_x / (PI.sqrt() * sigma_p) * (-dp_val * dp_val / (sigma_p * sigma_p)).exp();
             }
         }
@@ -378,15 +375,15 @@ impl QuantumSPH {
         self.compute_density();
         let q_forces = self.compute_bohm_forces();
         let n = self.particles.len();
-        for i in 0..n {
+        for (i, qf) in q_forces.iter().enumerate().take(n) {
             // Update velocity
-            for d in 0..3 {
-                self.particles[i].vel[d] += q_forces[i][d] * dt;
+            for (d, vd) in self.particles[i].vel.iter_mut().enumerate() {
+                *vd += qf[d] * dt;
             }
             // Update position
             let vel = self.particles[i].vel;
-            for d in 0..3 {
-                self.particles[i].pos[d] += vel[d] * dt;
+            for (pd, vd) in self.particles[i].pos.iter_mut().zip(vel.iter()) {
+                *pd += vd * dt;
             }
         }
     }
@@ -413,9 +410,9 @@ impl QuantumSPH {
                 let dq = q_pot[j] - q_pot[i];
                 let dw_dr = self.kernel_gradient_mag(r);
                 // Gradient direction: (r_a − r_b) / |r_a − r_b|
-                for d in 0..3 {
+                for (d, fd) in forces[i].iter_mut().enumerate() {
                     let dr = (self.particles[i].pos[d] - self.particles[j].pos[d]) / r;
-                    forces[i][d] += -self.mass * (self.mass / rho_j.max(rho_i)) * dq * dw_dr * dr;
+                    *fd += -self.mass * (self.mass / rho_j.max(rho_i)) * dq * dw_dr * dr;
                 }
             }
         }
@@ -699,6 +696,7 @@ impl DeBroglieWavelength {
 }
 
 /// Mass of a ⁴He atom (kg) — for test convenience.
+#[cfg(test)]
 const HELIUM4_MASS: f64 = 6.646_477_208_8e-27;
 
 // ---------------------------------------------------------------------------

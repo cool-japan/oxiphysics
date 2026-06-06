@@ -88,7 +88,6 @@ pub struct PipelineStats {
 
 impl PipelineStats {
     /// Average time (wall-clock) per stage per step, or zero if no steps taken.
-    #[allow(dead_code)]
     pub fn avg_stage_time(&self, stage: &str) -> Duration {
         if self.step_count == 0 {
             return Duration::ZERO;
@@ -264,23 +263,18 @@ pub struct PhysicsPipeline {
     /// Broadphase algorithm.
     broadphase: SweepAndPrune,
     /// Warmstarting cache: accumulated normal impulse per contact pair from the previous frame.
-    #[allow(dead_code)]
     contact_cache: HashMap<ContactKey, f64>,
     /// Rolling statistics collected during simulation.
     pub stats: PipelineStats,
     /// Optional debug callback invoked after each stage.
-    #[allow(dead_code)]
     stage_callback: Option<StageCallback>,
     /// Per-stage profile history (bounded ring-buffer of the last N records).
-    #[allow(dead_code)]
     profile_history: Vec<StageProfile>,
     /// Maximum number of stage profile records to retain.
-    #[allow(dead_code)]
     profile_history_limit: usize,
     /// Whether per-stage profiling is enabled.
     pub profiling_enabled: bool,
     /// Active SPH-rigid coupling parameters, if any.
-    #[allow(dead_code)]
     sph_rigid_coupling: Option<SphRigidCouplingParams>,
 }
 
@@ -594,7 +588,6 @@ impl PhysicsPipeline {
 
     /// For each broadphase pair, compute swept AABBs and run CCD.
     /// Returns `(ToiResult, collider_index_a, collider_index_b)` for hits.
-    #[allow(dead_code)]
     fn detect_collisions_ccd(
         &self,
         dt: Real,
@@ -1262,7 +1255,6 @@ impl Default for PipelineBuilder {
 /// querying SPH densities at each body's centroid.
 ///
 /// `g_magnitude` – magnitude of gravitational acceleration \[m/s²\].
-#[allow(dead_code)]
 pub fn apply_buoyancy_impulse(
     bodies: &mut RigidBodySet,
     coupling: &SphRigidCouplingParams,
@@ -1297,7 +1289,6 @@ pub fn apply_buoyancy_impulse(
 }
 
 /// Estimate the total kinetic energy of all dynamic bodies in a set.
-#[allow(dead_code)]
 pub fn total_kinetic_energy(bodies: &RigidBodySet) -> Real {
     let mut ek = 0.0;
     for (_, body) in bodies.iter() {
@@ -1314,7 +1305,6 @@ pub fn total_kinetic_energy(bodies: &RigidBodySet) -> Real {
 }
 
 /// Count how many dynamic bodies are currently awake (not sleeping).
-#[allow(dead_code)]
 pub fn count_awake_bodies(bodies: &RigidBodySet) -> usize {
     bodies
         .iter()

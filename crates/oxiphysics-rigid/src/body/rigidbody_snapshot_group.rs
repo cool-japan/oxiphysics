@@ -3,16 +3,12 @@
 //! This module contains method implementations for `RigidBody`.
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::{BodySnapshot, BodyState, BodyType};
 
 use super::rigidbody_type::RigidBody;
 
 impl RigidBody {
     /// Capture the body state as a serializable snapshot.
-    #[allow(dead_code)]
     pub fn snapshot(&self) -> BodySnapshot {
         let q = self.transform.rotation.as_vector();
         let body_type_str = match self.body_type {

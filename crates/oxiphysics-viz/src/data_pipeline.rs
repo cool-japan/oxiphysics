@@ -10,9 +10,6 @@
 //! [`TimeSeriesStats`] for statistical summaries, and standalone filter /
 //! peak-detection helpers.
 
-#![allow(dead_code)]
-#![allow(clippy::needless_range_loop)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -124,8 +121,8 @@ impl DataSeries {
         // Backward difference at right boundary
         dy[n - 1] = (self.y[n - 1] - self.y[n - 2]) / (self.x[n - 1] - self.x[n - 2]).max(1e-300);
         // Central differences for interior
-        for i in 1..n - 1 {
-            dy[i] = (self.y[i + 1] - self.y[i - 1]) / (self.x[i + 1] - self.x[i - 1]).max(1e-300);
+        for (i, dy_i) in dy.iter_mut().enumerate().skip(1).take(n - 2) {
+            *dy_i = (self.y[i + 1] - self.y[i - 1]) / (self.x[i + 1] - self.x[i - 1]).max(1e-300);
         }
         Self::new(&self.name, self.x.clone(), dy)
     }
@@ -164,15 +161,15 @@ impl DataSeries {
         let m = other.y.len();
         let out_len = n + m - 1;
         let mut out = vec![0.0; out_len];
-        for lag in 0..out_len {
+        for (lag, out_lag) in out.iter_mut().enumerate() {
             let mut acc = 0.0;
-            for i in 0..n {
+            for (i, y_i) in self.y.iter().enumerate() {
                 let j = lag as isize - (n as isize - 1) + i as isize;
                 if j >= 0 && (j as usize) < m {
-                    acc += self.y[i] * other.y[j as usize];
+                    acc += y_i * other.y[j as usize];
                 }
             }
-            out[lag] = acc;
+            *out_lag = acc;
         }
         out
     }
@@ -262,7 +259,7 @@ impl ScatterData {
         for _ in 0..max_iter {
             // Assignment step
             let mut changed = false;
-            for i in 0..n {
+            for (i, label_i) in labels.iter_mut().enumerate() {
                 let best = (0..k)
                     .min_by(|&a, &b| {
                         let da = (self.x[i] - cx[a]).powi(2) + (self.y[i] - cy[a]).powi(2);
@@ -270,8 +267,8 @@ impl ScatterData {
                         da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
                     })
                     .unwrap_or(0);
-                if labels[i] != best {
-                    labels[i] = best;
+                if *label_i != best {
+                    *label_i = best;
                     changed = true;
                 }
             }
@@ -283,8 +280,7 @@ impl ScatterData {
             let mut sum_x = vec![0.0; k];
             let mut sum_y = vec![0.0; k];
             let mut count = vec![0usize; k];
-            for i in 0..n {
-                let c = labels[i];
+            for (i, &c) in labels.iter().enumerate() {
                 sum_x[c] += self.x[i];
                 sum_y[c] += self.y[i];
                 count[c] += 1;
@@ -417,8 +413,8 @@ impl HeatmapData {
         for c in 0..ncols {
             let col: Vec<f64> = (0..nrows).map(|r| self.data[r][c]).collect();
             let normalized = normalize_vec(&col);
-            for r in 0..nrows {
-                out[r][c] = normalized[r];
+            for (r, out_row) in out.iter_mut().enumerate() {
+                out_row[c] = normalized[r];
             }
         }
         Self::new(out, self.row_labels.clone(), self.col_labels.clone())
@@ -429,9 +425,9 @@ impl HeatmapData {
         let nrows = self.data.len();
         let ncols = if nrows == 0 { 0 } else { self.data[0].len() };
         let mut out = vec![vec![0.0; nrows]; ncols];
-        for r in 0..nrows {
-            for c in 0..ncols {
-                out[c][r] = self.data[r][c];
+        for (r, data_row) in self.data.iter().enumerate() {
+            for (c, val) in data_row.iter().enumerate() {
+                out[c][r] = *val;
             }
         }
         Self::new(out, self.col_labels.clone(), self.row_labels.clone())

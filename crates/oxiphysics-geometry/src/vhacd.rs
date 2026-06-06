@@ -16,8 +16,6 @@
 //!    enough, split along the longest axis at the median and recurse.
 //! 4. Each leaf cluster becomes one `ConvexPart`.
 
-#![allow(clippy::needless_range_loop)]
-
 use oxiphysics_core::math::Vec3;
 
 use crate::convex_decomposition::{ConvexPart, ConvexParts};

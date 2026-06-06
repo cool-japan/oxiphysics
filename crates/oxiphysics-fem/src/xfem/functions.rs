@@ -370,7 +370,6 @@ mod tests {
 /// u^h(x) += N_I(x) * (H(x) - H(x_I)) * a_I
 ///
 /// where H is the Heaviside function and a_I is the enrichment DOF.
-#[allow(dead_code)]
 pub fn heaviside_enriched_shape(
     shape_fn: f64,
     heaviside_at_point: f64,
@@ -381,7 +380,6 @@ pub fn heaviside_enriched_shape(
 /// Crack-tip enriched shape functions: N_I * \[F_k(x) - F_k(x_I)\] for k=1..4.
 ///
 /// This is the shifted (partition-of-unity) form for crack-tip enrichment.
-#[allow(dead_code)]
 pub fn crack_tip_enriched_shapes(
     shape_fn: f64,
     r: f64,
@@ -406,7 +404,6 @@ pub fn crack_tip_enriched_shapes(
 ///
 /// For pure mode I (KII = 0) the crack grows straight ahead (θ_c = 0).
 /// For pure mode II (KI = 0) the crack deflects at ≈ ±70.5°.
-#[allow(dead_code)]
 pub fn max_hoop_stress_angle(ki: f64, kii: f64) -> f64 {
     if kii.abs() < 1e-30 {
         return 0.0;
@@ -427,7 +424,6 @@ pub fn max_hoop_stress_angle(ki: f64, kii: f64) -> f64 {
 /// where aij depend on elastic constants and angle θ.
 ///
 /// Returns the angle θ that minimizes S (crack propagation direction).
-#[allow(dead_code)]
 pub fn min_strain_energy_density_angle(ki: f64, kii: f64, nu: f64) -> f64 {
     let n_pts = 360;
     let mut min_s = f64::MAX;
@@ -459,7 +455,6 @@ pub fn min_strain_energy_density_angle(ki: f64, kii: f64, nu: f64) -> f64 {
 /// * `m` - Paris exponent
 ///
 /// Returns da/dN in meters per cycle.
-#[allow(dead_code)]
 pub fn paris_law(delta_k: f64, c: f64, m: f64) -> f64 {
     if delta_k <= 0.0 {
         return 0.0;
@@ -468,7 +463,6 @@ pub fn paris_law(delta_k: f64, c: f64, m: f64) -> f64 {
 }
 /// Walker equation (modified Paris law for R-ratio effects):
 /// da/dN = C * (ΔK / (1-R)^(1-n))^m
-#[allow(dead_code)]
 pub fn walker_law(delta_k: f64, r_ratio: f64, c: f64, m: f64, n_exp: f64) -> f64 {
     if delta_k <= 0.0 {
         return 0.0;
@@ -674,7 +668,6 @@ pub fn bifurcation_angle_max_hoop(k1: f64, k2: f64) -> f64 {
 /// * `displacement_jump_iii` – displacement jump in mode III
 /// * `e_prime` – plane strain modulus E / (1 - ν²)
 /// * `shear_modulus` – μ = E / (2(1+ν))
-#[allow(clippy::too_many_arguments)]
 pub fn mcci_mixed_mode(
     delta_a: f64,
     f_close_i: f64,
@@ -989,7 +982,6 @@ pub fn crack_mouth_opening_displacement(
 /// CTOD = 4 * K_I / E' * sqrt(r / (2 π))   (plane strain)
 ///
 /// where E' = E / (1 - ν²).
-#[allow(clippy::too_many_arguments)]
 pub fn ctod_irwin(k1: f64, young_modulus: f64, poisson: f64, r: f64) -> f64 {
     if r < 0.0 {
         return 0.0;

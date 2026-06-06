@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -12,8 +11,6 @@
 //! - Doo–Sabin subdivision: dual approximating scheme.
 //! - Simple quad midpoint subdivision.
 //! - Adaptive subdivision based on element quality thresholds.
-
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 
@@ -39,15 +36,6 @@ fn scale3(a: [f64; 3], s: f64) -> [f64; 3] {
 #[inline]
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-#[inline]
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 #[inline]
@@ -848,11 +836,11 @@ mod tests {
         let m = equilateral_tri_mesh();
         let nbrs = m.vertex_neighbours();
         assert_eq!(nbrs.len(), 3);
-        for v in 0..3 {
+        for (v, nb) in nbrs.iter().enumerate() {
             assert_eq!(
-                nbrs[v].len(),
+                nb.len(),
                 2,
-                "each vertex in triangle should have 2 neighbours"
+                "each vertex in triangle should have 2 neighbours (vertex {v})"
             );
         }
     }

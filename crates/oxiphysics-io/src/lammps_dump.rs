@@ -1,4 +1,3 @@
-#![allow(clippy::should_implement_trait)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -49,7 +48,6 @@ pub struct LammpsDumpFrame {
 
 impl LammpsDumpFrame {
     /// Extract positions for atoms of a given type.
-    #[allow(dead_code)]
     pub fn positions_by_type(&self, atom_type: u32) -> Vec<[f64; 3]> {
         self.types
             .iter()
@@ -65,13 +63,11 @@ impl LammpsDumpFrame {
     }
 
     /// Count atoms of a given type.
-    #[allow(dead_code)]
     pub fn count_by_type(&self, atom_type: u32) -> usize {
         self.types.iter().filter(|&&t| t == atom_type).count()
     }
 
     /// Get the box dimensions \[lx, ly, lz\].
-    #[allow(dead_code)]
     pub fn box_dimensions(&self) -> [f64; 3] {
         [
             self.box_bounds[0][1] - self.box_bounds[0][0],
@@ -81,7 +77,6 @@ impl LammpsDumpFrame {
     }
 
     /// Get the box center \[cx, cy, cz\].
-    #[allow(dead_code)]
     pub fn box_center(&self) -> [f64; 3] {
         [
             (self.box_bounds[0][0] + self.box_bounds[0][1]) * 0.5,
@@ -91,14 +86,12 @@ impl LammpsDumpFrame {
     }
 
     /// Get box volume (orthogonal case).
-    #[allow(dead_code)]
     pub fn box_volume(&self) -> f64 {
         let dims = self.box_dimensions();
         dims[0] * dims[1] * dims[2]
     }
 
     /// Compute the center of mass (equal-mass atoms).
-    #[allow(dead_code)]
     pub fn center_of_mass(&self) -> [f64; 3] {
         if self.positions.is_empty() {
             return [0.0; 3];
@@ -114,7 +107,6 @@ impl LammpsDumpFrame {
     }
 
     /// Get a custom property by name.
-    #[allow(dead_code)]
     pub fn get_custom_property(&self, name: &str) -> Option<&[f64]> {
         self.custom_properties
             .iter()
@@ -123,7 +115,6 @@ impl LammpsDumpFrame {
     }
 
     /// Get all distinct atom types in this frame.
-    #[allow(dead_code)]
     pub fn atom_types(&self) -> Vec<u32> {
         let mut types: Vec<u32> = self.types.clone();
         types.sort_unstable();
@@ -358,7 +349,6 @@ impl LammpsDumpReader {
     }
 
     /// Read all frames from a `BufRead` source.
-    #[allow(dead_code)]
     pub fn read_all_frames(content: &str) -> Result<Vec<LammpsDumpFrame>, String> {
         let mut frames = Vec::new();
         // Split by "ITEM: TIMESTEP" to get individual frame chunks
@@ -380,7 +370,6 @@ impl LammpsDumpReader {
     }
 
     /// Extract all timesteps from a dump content without fully parsing frames.
-    #[allow(dead_code)]
     pub fn extract_timesteps(content: &str) -> Vec<u64> {
         let mut timesteps = Vec::new();
         let mut lines = content.lines();
@@ -462,7 +451,6 @@ impl LammpsDumpWriter {
     }
 
     /// Write multiple frames to a single `Write` sink.
-    #[allow(dead_code)]
     pub fn write_frames(writer: impl Write, frames: &[LammpsDumpFrame]) -> Result<(), String> {
         let mut writer = writer;
         for frame in frames {
@@ -473,7 +461,6 @@ impl LammpsDumpWriter {
 }
 
 /// Compute the number density (atoms / volume) for a frame.
-#[allow(dead_code)]
 pub fn number_density(frame: &LammpsDumpFrame) -> f64 {
     let vol = frame.box_volume();
     if vol.abs() < 1e-30 {
@@ -484,7 +471,6 @@ pub fn number_density(frame: &LammpsDumpFrame) -> f64 {
 
 /// Compute mean kinetic energy per atom (assuming unit mass).
 /// KE = 0.5 * v^2 per atom.
-#[allow(dead_code)]
 pub fn mean_kinetic_energy(frame: &LammpsDumpFrame) -> Option<f64> {
     let vels = frame.velocities.as_ref()?;
     if vels.is_empty() {
@@ -503,7 +489,6 @@ pub fn mean_kinetic_energy(frame: &LammpsDumpFrame) -> Option<f64> {
 ///
 /// LAMMPS may output the 6 independent Voigt components:
 /// `c_stress[1..6]` or `sxx syy szz sxy sxz syz`.
-#[allow(dead_code)]
 pub fn extract_stress_tensor(frame: &LammpsDumpFrame) -> Option<Vec<[f64; 6]>> {
     // Try Voigt-named properties
     let names = ["sxx", "syy", "szz", "sxy", "sxz", "syz"];
@@ -530,7 +515,6 @@ pub fn extract_stress_tensor(frame: &LammpsDumpFrame) -> Option<Vec<[f64; 6]>> {
 }
 
 /// Compute the von Mises stress from a Voigt stress tensor \[s11,s22,s33,s12,s13,s23\].
-#[allow(dead_code)]
 pub fn von_mises_stress(s: [f64; 6]) -> f64 {
     let [s11, s22, s33, s12, s13, s23] = s;
     (0.5 * ((s11 - s22).powi(2) + (s22 - s33).powi(2) + (s33 - s11).powi(2))
@@ -539,7 +523,6 @@ pub fn von_mises_stress(s: [f64; 6]) -> f64 {
 }
 
 /// Hydrostatic pressure from a Voigt stress tensor: p = -(s11 + s22 + s33) / 3.
-#[allow(dead_code)]
 pub fn hydrostatic_pressure(s: [f64; 6]) -> f64 {
     -(s[0] + s[1] + s[2]) / 3.0
 }
@@ -554,56 +537,41 @@ pub struct DumpTimeSeries {
 
 impl DumpTimeSeries {
     /// Construct from a vector of frames.
-    #[allow(dead_code)]
     pub fn new(frames: Vec<LammpsDumpFrame>) -> Self {
         Self { frames }
     }
 
-    /// Parse from a multi-frame dump string.
-    #[allow(dead_code)]
-    pub fn from_str(content: &str) -> Result<Self, String> {
-        let frames = LammpsDumpReader::read_all_frames(content)?;
-        Ok(Self { frames })
-    }
-
     /// Number of frames.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.frames.len()
     }
 
     /// Whether there are no frames.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.frames.is_empty()
     }
 
     /// Extract all timesteps in order.
-    #[allow(dead_code)]
     pub fn timesteps(&self) -> Vec<u64> {
         self.frames.iter().map(|f| f.timestep).collect()
     }
 
     /// Extract mean kinetic energy per frame.
-    #[allow(dead_code)]
     pub fn mean_ke_series(&self) -> Vec<Option<f64>> {
         self.frames.iter().map(mean_kinetic_energy).collect()
     }
 
     /// Extract number density per frame.
-    #[allow(dead_code)]
     pub fn number_density_series(&self) -> Vec<f64> {
         self.frames.iter().map(number_density).collect()
     }
 
     /// Get the frame at a given timestep, if present.
-    #[allow(dead_code)]
     pub fn frame_at_timestep(&self, ts: u64) -> Option<&LammpsDumpFrame> {
         self.frames.iter().find(|f| f.timestep == ts)
     }
 
     /// Mean position of atom type `atom_type` averaged over all frames.
-    #[allow(dead_code)]
     pub fn mean_position_by_type(&self, atom_type: u32) -> Option<[f64; 3]> {
         let mut sum = [0.0f64; 3];
         let mut count = 0usize;
@@ -626,11 +594,18 @@ impl DumpTimeSeries {
     }
 }
 
+impl std::str::FromStr for DumpTimeSeries {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let frames = LammpsDumpReader::read_all_frames(s)?;
+        Ok(Self { frames })
+    }
+}
+
 // ─── LAMMPS atom styles ────────────────────────────────────────────────────────
 
 /// Supported LAMMPS atom styles for dump parsing.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 pub enum LammpsAtomStyle {
     /// Positions only (atomic style).
     Atomic,
@@ -643,7 +618,6 @@ pub enum LammpsAtomStyle {
 }
 
 /// Parse the atom style from the ITEM: ATOMS header line.
-#[allow(dead_code)]
 pub fn detect_atom_style(header: &str) -> LammpsAtomStyle {
     let lower = header.to_lowercase();
     let has_q = lower.contains(" q ");
@@ -664,7 +638,6 @@ pub fn detect_atom_style(header: &str) -> LammpsAtomStyle {
 ///
 /// Only considers atoms of `type_a` (centre) and `type_b` (neighbours).
 /// Use `type_a = type_b = 0` to include all atoms.
-#[allow(dead_code)]
 pub fn radial_distribution_function(
     frame: &LammpsDumpFrame,
     type_a: u32,
@@ -736,7 +709,6 @@ pub fn radial_distribution_function(
 // ─── Per-atom force extraction ────────────────────────────────────────────────
 
 /// Extract per-atom force vectors from custom properties `fx`, `fy`, `fz`.
-#[allow(dead_code)]
 pub fn extract_forces(frame: &LammpsDumpFrame) -> Option<Vec<[f64; 3]>> {
     let fx = frame.get_custom_property("fx")?;
     let fy = frame.get_custom_property("fy")?;
@@ -747,7 +719,6 @@ pub fn extract_forces(frame: &LammpsDumpFrame) -> Option<Vec<[f64; 3]>> {
 }
 
 /// Mean force magnitude per atom.
-#[allow(dead_code)]
 pub fn mean_force_magnitude(frame: &LammpsDumpFrame) -> Option<f64> {
     let forces = extract_forces(frame)?;
     if forces.is_empty() {
@@ -770,7 +741,6 @@ pub fn mean_force_magnitude(frame: &LammpsDumpFrame) -> Option<f64> {
 /// a = \[lx,  0,  0\]
 /// b = \[xy, ly,  0\]
 /// c = \[xz, yz, lz\]
-#[allow(dead_code)]
 pub fn triclinic_lattice_vectors(
     box_bounds: [[f64; 2]; 3],
     tilts: [f64; 3],
@@ -786,7 +756,6 @@ pub fn triclinic_lattice_vectors(
 }
 
 /// Triclinic box volume from lattice vectors.
-#[allow(dead_code)]
 pub fn triclinic_volume(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
     // V = a · (b × c)
     let bc = [
@@ -1256,7 +1225,7 @@ mod tests {
             LammpsDumpWriter::write_frame(&mut buf, &make_frame(i * 10, false)).unwrap();
         }
         let content = String::from_utf8(buf).unwrap();
-        let ts = DumpTimeSeries::from_str(&content).unwrap();
+        let ts = content.parse::<DumpTimeSeries>().unwrap();
         assert_eq!(ts.len(), 3);
         assert_eq!(ts.timesteps(), vec![0, 10, 20]);
     }

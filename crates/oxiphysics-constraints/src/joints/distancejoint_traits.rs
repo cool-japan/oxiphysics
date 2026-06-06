@@ -8,16 +8,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::if_same_then_else)]
 use crate::traits::Constraint;
 use oxiphysics_core::BodyHandle;
 use oxiphysics_core::math::Vec3;
 use oxiphysics_rigid::RigidBodySet;
 
-use super::functions::JOINT_BAUMGARTE;
-#[allow(unused_imports)]
-use super::functions::*;
-use super::functions::{apply_pair_impulse, linear_effective_mass, read_body};
+use super::functions::{JOINT_BAUMGARTE, apply_pair_impulse, linear_effective_mass, read_body};
 use super::types::DistanceJoint;
 
 impl Constraint for DistanceJoint {
@@ -66,18 +62,8 @@ impl Constraint for DistanceJoint {
         let world_a = a.position + self.r_a;
         let world_b = b.position + self.r_b;
         let dist = (world_b - world_a).norm();
-        let active;
-        let target_v;
-        if dist < self.min_distance {
-            active = true;
-            target_v = 0.0;
-        } else if dist > self.max_distance {
-            active = true;
-            target_v = 0.0;
-        } else {
-            active = false;
-            target_v = 0.0;
-        }
+        let active = dist < self.min_distance || dist > self.max_distance;
+        let target_v = 0.0_f64;
         if active && self.eff_mass > 1e-12 {
             let lambda = (target_v - rel_v) * self.eff_mass;
             let impulse = self.constraint_dir * lambda;

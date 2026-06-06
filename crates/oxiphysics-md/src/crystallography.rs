@@ -20,7 +20,6 @@ use std::f64::consts::PI;
 /// Crystallographic unit cell defined by lattice parameters.
 ///
 /// Angles `alpha`, `beta`, `gamma` are in **radians**.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnitCell {
     /// Lattice parameter a (Å).
@@ -42,7 +41,6 @@ impl UnitCell {
     ///
     /// Uses the general triclinic formula:
     /// V = abc√(1 - cos²α - cos²β - cos²γ + 2cosα cosβ cosγ)
-    #[allow(dead_code)]
     pub fn volume(&self) -> f64 {
         let ca = self.alpha.cos();
         let cb = self.beta.cos();
@@ -55,7 +53,6 @@ impl UnitCell {
     ///
     /// Returns `[[a*_x, a*_y, a*_z\], [b*_x, ...], [c*_x, ...]]`.
     /// For a cubic cell this simplifies to 2π/a · I.
-    #[allow(dead_code)]
     pub fn reciprocal_vectors(&self) -> [[f64; 3]; 3] {
         // Build direct lattice vectors in Cartesian coordinates
         let a_vec = [self.a, 0.0, 0.0];
@@ -94,7 +91,6 @@ impl UnitCell {
 // ---------------------------------------------------------------------------
 
 /// Miller index notation (h, k, l) for crystallographic planes.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MillerIndex {
     /// h index.
@@ -107,7 +103,6 @@ pub struct MillerIndex {
 
 impl MillerIndex {
     /// Create a new Miller index.
-    #[allow(dead_code)]
     pub fn new(h: i32, k: i32, l: i32) -> Self {
         Self { h, k, l }
     }
@@ -116,7 +111,6 @@ impl MillerIndex {
     ///
     /// `d = a / √(h²+k²+l²)` for cubic; general triclinic uses the
     /// full metric tensor calculation.
-    #[allow(dead_code)]
     pub fn d_spacing(&self, cell: &UnitCell) -> f64 {
         // General triclinic d-spacing via reciprocal metric tensor
         // d* = |h·a* + k·b* + l·c*|
@@ -136,7 +130,6 @@ impl MillerIndex {
     }
 
     /// Compute the angle (in radians) between two sets of planes.
-    #[allow(dead_code)]
     pub fn angle_between(a: &MillerIndex, b: &MillerIndex, cell: &UnitCell) -> f64 {
         let recip = cell.reciprocal_vectors();
         let q_vec = |m: &MillerIndex| -> [f64; 3] {
@@ -166,7 +159,6 @@ impl MillerIndex {
 // ---------------------------------------------------------------------------
 
 /// A single Bragg diffraction peak.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BraggPeak {
     /// Momentum transfer |q| = 2π/d (Å⁻¹).
@@ -185,7 +177,6 @@ pub struct BraggPeak {
 ///
 /// Solves `2·d·sin(θ) = n·λ` for n = 1..=5.
 /// Returns θ values (in radians) for which a solution exists (sin θ ≤ 1).
-#[allow(dead_code)]
 pub fn bragg_condition(d_spacing: f64, wavelength: f64) -> Vec<f64> {
     (1..=5)
         .filter_map(|n| {
@@ -207,7 +198,6 @@ pub fn bragg_condition(d_spacing: f64, wavelength: f64) -> Vec<f64> {
 ///
 /// Atoms are given as fractional coordinates `[x, y, z]`.
 /// Returns `(Re F, Im F)`.
-#[allow(dead_code)]
 pub fn structure_factor(atoms: &[[f64; 3]], miller: &MillerIndex, _cell: &UnitCell) -> (f64, f64) {
     let hf = miller.h as f64;
     let kf = miller.k as f64;
@@ -231,7 +221,6 @@ pub fn structure_factor(atoms: &[[f64; 3]], miller: &MillerIndex, _cell: &UnitCe
 /// Enumerates all (h,k,l) with |h|,|k|,|l| ≤ `hkl_max`,
 /// computes d-spacing and Bragg condition, then returns a list of
 /// [`BraggPeak`]s with intensity = |F(hkl)|².
-#[allow(dead_code)]
 pub fn powder_diffraction(
     atoms: &[[f64; 3]],
     cell: &UnitCell,
@@ -281,7 +270,6 @@ pub fn powder_diffraction(
 // ---------------------------------------------------------------------------
 
 /// Crystal system classification.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CrystalSystem {
     /// a=b=c, α=β=γ=90°.
@@ -301,7 +289,6 @@ pub enum CrystalSystem {
 }
 
 /// Crystal symmetry information.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CrystalSymmetry {
     /// The crystal system.
@@ -313,7 +300,6 @@ pub struct CrystalSymmetry {
 /// Detect the crystal system from lattice parameters.
 ///
 /// Uses tolerance `tol` for comparing lengths and angles (in radians).
-#[allow(dead_code)]
 pub fn detect_crystal_system(cell: &UnitCell, tol: f64) -> CrystalSystem {
     let deg90 = PI / 2.0;
     let deg120 = 2.0 * PI / 3.0;
@@ -352,7 +338,6 @@ pub fn detect_crystal_system(cell: &UnitCell, tol: f64) -> CrystalSystem {
 ///
 /// Uses a simple histogram with `n_bins` bins from 0 to `box_size/2`.
 /// Returns `(r, g(r))` pairs, normalized so that g→1 at large r.
-#[allow(dead_code)]
 pub fn radial_distribution_function(
     atoms: &[[f64; 3]],
     box_size: f64,
@@ -407,7 +392,6 @@ pub fn radial_distribution_function(
 /// Count the number of neighbors within `cutoff` distance for each atom.
 ///
 /// Uses periodic boundary conditions with box of size `box_size` (cubic).
-#[allow(dead_code)]
 pub fn coordination_number(atoms: &[[f64; 3]], cutoff: f64) -> Vec<usize> {
     let n = atoms.len();
     let mut coord = vec![0usize; n];
@@ -435,7 +419,6 @@ pub fn coordination_number(atoms: &[[f64; 3]], cutoff: f64) -> Vec<usize> {
 /// Compute the bond angle distribution for all triplets i-j-k within cutoff.
 ///
 /// Returns `(angle_deg, count)` histogram with `n_bins` bins from 0° to 180°.
-#[allow(dead_code)]
 pub fn bond_angle_distribution(atoms: &[[f64; 3]], cutoff: f64, n_bins: usize) -> Vec<(f64, f64)> {
     let n = atoms.len();
     let mut hist = vec![0u64; n_bins];
@@ -504,7 +487,6 @@ pub fn bond_angle_distribution(atoms: &[[f64; 3]], cutoff: f64, n_bins: usize) -
 /// `(0,0,0)`, `(a/2,a/2,0)`, `(a/2,0,a/2)`, `(0,a/2,a/2)`.
 ///
 /// Returns atom positions in Cartesian coordinates (Å).
-#[allow(dead_code)]
 pub fn fcc_lattice(a: f64, n: usize) -> Vec<[f64; 3]> {
     let basis = [
         [0.0, 0.0, 0.0],
@@ -535,7 +517,6 @@ pub fn fcc_lattice(a: f64, n: usize) -> Vec<[f64; 3]> {
 /// `(0,0,0)` and `(a/2,a/2,a/2)`.
 ///
 /// Returns atom positions in Cartesian coordinates (Å).
-#[allow(dead_code)]
 pub fn bcc_lattice(a: f64, n: usize) -> Vec<[f64; 3]> {
     let basis = [[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]];
     let mut atoms = Vec::new();

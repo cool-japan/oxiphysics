@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,9 +13,6 @@
 //! - Legacy types: [`UncertaintyBand`], [`ErrorBar`], [`ConfidenceEllipse`],
 //!   [`SensitivityPlot`] plus free functions [`fan_chart`], [`reliability_diagram`],
 //!   [`calibration_error`], [`ensemble_spread`].
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -113,7 +109,7 @@ fn quantile(data: &[f64], p: f64) -> f64 {
 }
 
 /// Sort a vec in place.
-fn sort_vec(v: &mut Vec<f64>) {
+fn sort_vec(v: &mut [f64]) {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 }
 

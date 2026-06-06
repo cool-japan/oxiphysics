@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
 use std::f64::consts::PI;
 
@@ -270,7 +269,6 @@ impl CorneaModel {
     }
 }
 /// Failure mode of a biological tissue.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum FailureMode {
     /// No failure predicted.
@@ -561,7 +559,6 @@ impl LigamentWrapModel {
 /// - Tsai-Wu criterion (anisotropic composite analog for fibrous tissues)
 /// - Bone fracture criterion based on stress intensity factor KI
 /// - Soft tissue tear criterion based on critical energy release rate Gc
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TissueFailureCriteria {
     /// Ultimate tensile strength \[Pa\].
@@ -937,20 +934,20 @@ impl FiberReinforcedTissue {
         w_matrix + w_fiber
     }
     /// Compute the effective I4 = a0 . C . a0 given deformation gradient F.
-    #[allow(clippy::needless_range_loop)]
     pub fn compute_i4(&self, f: &[[f64; 3]; 3]) -> f64 {
         let c = right_cauchy_green(f);
         let mut ca = [0.0f64; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                ca[i] += c[i][j] * self.a0[j];
-            }
+        for (ca_i, c_row) in ca.iter_mut().zip(c.iter()) {
+            *ca_i = c_row
+                .iter()
+                .zip(self.a0.iter())
+                .map(|(&c_ij, &a_j)| c_ij * a_j)
+                .sum();
         }
-        let mut i4 = 0.0;
-        for i in 0..3 {
-            i4 += self.a0[i] * ca[i];
-        }
-        i4
+        ca.iter()
+            .zip(self.a0.iter())
+            .map(|(&ca_i, &a0_i)| a0_i * ca_i)
+            .sum()
     }
 }
 /// Cardiac muscle constitutive model (passive + active).
@@ -961,7 +958,6 @@ impl FiberReinforcedTissue {
 /// - **Active**: time-varying elastance model (Sagawa) for systolic force.
 ///
 /// Fiber direction is assumed to be aligned with the local e₁ axis.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CardiacMuscleModel {
     /// Passive stiffness parameter C \[Pa\].
@@ -1108,7 +1104,6 @@ impl BoneModel {
 /// Rate constants:
 /// - Attachment: `f(x)` = `f1` if 0 < x < h, 0 otherwise.
 /// - Detachment: `g(x)` = `g1` if 0 < x < h, `g2` if x < 0.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HuxleyModel {
     /// Stiffness of a single crossbridge \[N/m\].

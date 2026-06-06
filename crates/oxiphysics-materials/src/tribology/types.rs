@@ -3,8 +3,6 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::erfc;
-#[allow(unused_imports)]
-use super::functions::*;
 use std::f64::consts::PI;
 
 /// Archard's wear model: Q = K * W / H * s (volume loss).
@@ -309,7 +307,6 @@ pub struct HertzElliptical {
 impl HertzElliptical {
     /// Create elliptical contact from two bodies' principal radii.
     /// R1a, R1b = principal radii of body 1; R2a, R2b = principal radii of body 2.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         e1: f64,
         nu1: f64,

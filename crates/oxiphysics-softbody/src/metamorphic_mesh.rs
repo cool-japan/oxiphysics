@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -29,9 +28,6 @@
 //!   per-vertex bone weights.
 //! - **Pose-space deformation (PSD)** – corrective blend shapes driven by
 //!   joint angles (pose parameters).
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ---------------------------------------------------------------------------
 // Helper math (pure f64 arrays — no nalgebra)
@@ -82,16 +78,6 @@ fn v3_normalize(a: [f64; 3]) -> [f64; 3] {
     } else {
         v3_scale(a, 1.0 / n)
     }
-}
-
-/// Cross product.
-#[inline]
-fn v3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 /// Centroid of a point cloud.
@@ -225,8 +211,8 @@ fn polar_decomp_r(m: Mat3, max_iter: usize) -> Mat3 {
     }
     // Ensure positive determinant
     if mat3_det(r) < 0.0 {
-        for j in 0..3 {
-            r[0][j] = -r[0][j];
+        for r_j in r[0].iter_mut() {
+            *r_j = -*r_j;
         }
     }
     r
@@ -309,8 +295,8 @@ impl BlendShapeController {
                 continue;
             }
             let delta_len = t.deltas.len().min(n);
-            for i in 0..delta_len {
-                out[i] = v3_add(out[i], v3_scale(t.deltas[i], w));
+            for (out_i, delta_i) in out.iter_mut().zip(t.deltas.iter()).take(delta_len) {
+                *out_i = v3_add(*out_i, v3_scale(*delta_i, w));
             }
         }
         out
@@ -624,8 +610,8 @@ impl CageDeformer {
                 total += w;
             }
             if total > 1e-20 {
-                for k in 0..nc {
-                    weights[i][k] /= total;
+                for w_k in weights[i].iter_mut().take(nc) {
+                    *w_k /= total;
                 }
             }
         }
@@ -643,8 +629,8 @@ impl CageDeformer {
         (0..self.num_interior)
             .map(|i| {
                 let mut pos = [0.0; 3];
-                for k in 0..nc {
-                    pos = v3_add(pos, v3_scale(cage[k], self.weights[i][k]));
+                for (cage_k, w_k) in cage.iter().zip(self.weights[i].iter()).take(nc) {
+                    pos = v3_add(pos, v3_scale(*cage_k, *w_k));
                 }
                 pos
             })
@@ -1239,8 +1225,8 @@ impl PsdDeformer {
                 continue;
             }
             let dl = corr.deltas.len().min(n);
-            for i in 0..dl {
-                positions[i] = v3_add(positions[i], v3_scale(corr.deltas[i], w));
+            for (pos_i, delta_i) in positions.iter_mut().zip(corr.deltas.iter()).take(dl) {
+                *pos_i = v3_add(*pos_i, v3_scale(*delta_i, w));
             }
         }
         positions
@@ -1614,14 +1600,10 @@ mod tests {
     fn test_polar_decomp_identity() {
         let i = mat3_identity();
         let r = polar_decomp_r(i, 10);
-        for ri in 0..3 {
-            for ci in 0..3 {
+        for (ri, r_row) in r.iter().enumerate() {
+            for (ci, &rv) in r_row.iter().enumerate() {
                 let expected = if ri == ci { 1.0 } else { 0.0 };
-                assert!(
-                    (r[ri][ci] - expected).abs() < 1e-6,
-                    "R[{ri}][{ci}]={}",
-                    r[ri][ci]
-                );
+                assert!((rv - expected).abs() < 1e-6, "R[{ri}][{ci}]={}", rv);
             }
         }
     }

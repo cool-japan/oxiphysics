@@ -26,8 +26,6 @@
 //! assert_eq!(buf.bytes.len(), 320 * 240 * 4);
 //! ```
 
-#![allow(dead_code)]
-
 // ── CanvasConfig ──────────────────────────────────────────────────────────────
 
 /// Configuration for a canvas rendering target.

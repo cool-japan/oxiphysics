@@ -38,9 +38,6 @@
 //! assert!((table.contact_restitution(ice, ice) - 0.05).abs() < 1e-9);
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 // ============================================================================
@@ -82,7 +79,6 @@ pub struct MaterialDef {
 
 impl MaterialDef {
     /// Creates a fully specified material definition.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: impl Into<String>,
         density: f64,
@@ -246,7 +242,6 @@ impl MaterialTable {
     }
 
     /// Convenience wrapper for registering by individual fields.
-    #[allow(clippy::too_many_arguments)]
     pub fn register_named(
         &mut self,
         name: impl Into<String>,

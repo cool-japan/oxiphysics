@@ -6,9 +6,6 @@
 //! Provides a complete CPU-side particle simulation designed for WASM export.
 //! Uses plain `f64`/`f32` arrays — no nalgebra or heavy dependencies.
 
-#![allow(dead_code)]
-#![allow(missing_docs)]
-
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 

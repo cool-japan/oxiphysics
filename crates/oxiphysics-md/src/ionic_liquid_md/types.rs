@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::f64::consts::PI;
 
 use super::functions::R_GAS;
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// Parameters for the Born-Mayer-Huggins (BMH) potential.

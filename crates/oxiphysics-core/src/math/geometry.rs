@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::linear_algebra::*;
 #[cfg(test)]
 use super::types::*;
@@ -13,7 +12,6 @@ use super::types::*;
 /// [`quat_to_euler`].
 ///
 /// Assumes the matrix is a proper rotation (no scaling / reflection).
-#[allow(dead_code)]
 pub fn mat3_to_euler_zyx(m: &Mat3) -> (Real, Real, Real) {
     let pitch = (-m[(2, 0)]).clamp(-1.0, 1.0).asin();
     let cos_pitch = pitch.cos();
@@ -30,7 +28,6 @@ pub fn mat3_to_euler_zyx(m: &Mat3) -> (Real, Real, Real) {
 /// Build a rotation matrix from ZYX Euler angles (roll, pitch, yaw) in radians.
 ///
 /// Equivalent to `Rz(yaw) * Ry(pitch) * Rx(roll)`.
-#[allow(dead_code)]
 pub fn mat3_from_euler_zyx(roll: Real, pitch: Real, yaw: Real) -> Mat3 {
     let (cr, sr) = (roll.cos(), roll.sin());
     let (cp, sp) = (pitch.cos(), pitch.sin());
@@ -50,7 +47,6 @@ pub fn mat3_from_euler_zyx(roll: Real, pitch: Real, yaw: Real) -> Mat3 {
 /// Cofactor matrix of a 3×3 matrix.
 ///
 /// `C[i][j] = (-1)^{i+j} * M_{ij}` where `M_{ij}` is the (i,j) minor.
-#[allow(dead_code)]
 pub fn mat3_cofactor(m: &Mat3) -> Mat3 {
     let c = |r: usize, c_idx: usize| -> Real {
         let rows: [usize; 2] = match r {
@@ -87,7 +83,6 @@ pub fn mat3_cofactor(m: &Mat3) -> Mat3 {
 /// Adjugate of a nalgebra `Mat3` (transpose of the cofactor matrix).
 ///
 /// `adj(M) = cofactor(M)^T = det(M) * M^{-1}` when M is invertible.
-#[allow(dead_code)]
 pub fn mat3_adjugate_na(m: &Mat3) -> Mat3 {
     mat3_cofactor(m).transpose()
 }
@@ -95,7 +90,6 @@ pub fn mat3_adjugate_na(m: &Mat3) -> Mat3 {
 ///
 /// Both `from` and `to` must be unit vectors.  Returns the identity for
 /// anti-parallel inputs (180° rotation around a perpendicular axis).
-#[allow(dead_code)]
 pub fn quat_from_two_vectors(from: &Vec3, to: &Vec3) -> Quat {
     let dot = from.dot(to).clamp(-1.0, 1.0);
     if dot > 1.0 - 1e-10 {
@@ -120,7 +114,6 @@ pub fn quat_from_two_vectors(from: &Vec3, to: &Vec3) -> Quat {
 ///
 /// Returns a pure quaternion `[θ*nx, θ*ny, θ*nz, 0]` where `θ*n̂` is the
 /// rotation axis-angle.
-#[allow(dead_code)]
 pub fn quat_log(q: &Quat) -> nalgebra::Quaternion<Real> {
     let w = q.w.clamp(-1.0, 1.0);
     let theta = w.acos();
@@ -134,7 +127,6 @@ pub fn quat_log(q: &Quat) -> nalgebra::Quaternion<Real> {
 /// Quaternion exponential of a pure quaternion `v` (w component ignored).
 ///
 /// Returns a unit quaternion `exp(v) = [sin(|v|)*v̂, cos(|v|)]`.
-#[allow(dead_code)]
 pub fn quat_exp(v: &nalgebra::Quaternion<Real>) -> Quat {
     let norm = (v.i * v.i + v.j * v.j + v.k * v.k).sqrt();
     if norm < 1e-15 {
@@ -150,7 +142,6 @@ pub fn quat_exp(v: &nalgebra::Quaternion<Real>) -> Quat {
 }
 /// Ensure double-cover consistency: negate `q` if its w < 0 so that the
 /// canonical representative always has w ≥ 0.
-#[allow(dead_code)]
 pub fn quat_double_cover_fix(q: Quat) -> Quat {
     if q.w < 0.0 {
         UnitQuaternion::new_normalize(-q.into_inner())
@@ -162,7 +153,6 @@ pub fn quat_double_cover_fix(q: Quat) -> Quat {
 ///
 /// Interpolates between `q1` and `q2` at `t ∈ [0,1]` using the
 /// inner control quaternions `s1` and `s2` for C1 continuity.
-#[allow(dead_code)]
 pub fn quat_squad_na(q1: &Quat, q2: &Quat, s1: &Quat, s2: &Quat, t: Real) -> Quat {
     let slerp_q = q1.slerp(q2, t);
     let slerp_s = s1.slerp(s2, t);
@@ -400,8 +390,8 @@ mod extended_math_tests {
         let aabb = Aabb::new([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]);
         let p = [2.0, 2.0, 2.0];
         let cp = aabb.closest_point(p);
-        for i in 0..3 {
-            assert!((cp[i] - 2.0).abs() < 1e-12);
+        for &cp_i in cp.iter() {
+            assert!((cp_i - 2.0).abs() < 1e-12);
         }
     }
     #[test]
@@ -850,18 +840,15 @@ mod new_math_tests {
 ///
 /// `onto_unit` is assumed to be normalised; the caller is responsible for
 /// ensuring that is the case.
-#[allow(dead_code)]
 pub fn vec3_project_onto_unit(v: &Vec3, onto_unit: &Vec3) -> Vec3 {
     onto_unit * v.dot(onto_unit)
 }
 /// Reject (orthogonal complement) of `v` with respect to unit direction `u`:
 /// `reject(v, u) = v - project(v, u)`.
-#[allow(dead_code)]
 pub fn vec3_reject(v: &Vec3, onto_unit: &Vec3) -> Vec3 {
     v - vec3_project_onto_unit(v, onto_unit)
 }
 /// Reflect vector `v` about unit normal `n`: `v - 2*(v·n)*n`.
-#[allow(dead_code)]
 pub fn vec3_reflect_about_normal(v: &Vec3, n: &Vec3) -> Vec3 {
     v - n * (2.0 * v.dot(n))
 }
@@ -869,7 +856,6 @@ pub fn vec3_reflect_about_normal(v: &Vec3, n: &Vec3) -> Vec3 {
 ///
 /// `eta_ratio = eta_i / eta_t`.  Returns `None` for total internal reflection.
 /// This variant uses the `eta_ratio` parameter name convention.
-#[allow(dead_code)]
 pub fn vec3_refract_ratio(v: &Vec3, n: &Vec3, eta_ratio: Real) -> Option<Vec3> {
     let cos_i = -v.dot(n);
     let sin2_t = eta_ratio * eta_ratio * (1.0 - cos_i * cos_i);
@@ -880,22 +866,18 @@ pub fn vec3_refract_ratio(v: &Vec3, n: &Vec3, eta_ratio: Real) -> Option<Vec3> {
     Some(v * eta_ratio + n * (eta_ratio * cos_i - cos_t))
 }
 /// Component-wise minimum of two `Vec3` values.
-#[allow(dead_code)]
 pub fn vec3_min(a: &Vec3, b: &Vec3) -> Vec3 {
     Vec3::new(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z))
 }
 /// Component-wise maximum of two `Vec3` values.
-#[allow(dead_code)]
 pub fn vec3_max(a: &Vec3, b: &Vec3) -> Vec3 {
     Vec3::new(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z))
 }
 /// Component-wise clamp of `v` to `[lo, hi]`.
-#[allow(dead_code)]
 pub fn vec3_clamp(v: &Vec3, lo: Real, hi: Real) -> Vec3 {
     Vec3::new(v.x.clamp(lo, hi), v.y.clamp(lo, hi), v.z.clamp(lo, hi))
 }
 /// Absolute value of each component of `v`.
-#[allow(dead_code)]
 pub fn vec3_abs(v: &Vec3) -> Vec3 {
     Vec3::new(v.x.abs(), v.y.abs(), v.z.abs())
 }
@@ -903,7 +885,6 @@ pub fn vec3_abs(v: &Vec3) -> Vec3 {
 ///
 /// All three vectors should be unit vectors; `axis` must be perpendicular to
 /// both `a` and `b` for the result to be meaningful.
-#[allow(dead_code)]
 pub fn vec3_signed_angle(a: &Vec3, b: &Vec3, axis: &Vec3) -> Real {
     let cross = a.cross(b);
     let sin_angle = cross.dot(axis);
@@ -915,7 +896,6 @@ pub fn vec3_signed_angle(a: &Vec3, b: &Vec3, axis: &Vec3) -> Real {
 ///
 /// Uses the Frisvad / Duff–Burgess–Christensen (2017) numerically stable
 /// construction.
-#[allow(dead_code)]
 pub fn build_orthonormal_basis(n: &Vec3) -> (Vec3, Vec3, Vec3) {
     let sign = if n.z >= 0.0 { 1.0 } else { -1.0 };
     let a = -1.0 / (sign + n.z);
@@ -928,37 +908,31 @@ pub fn build_orthonormal_basis(n: &Vec3) -> (Vec3, Vec3, Vec3) {
 /// (which must be a unit vector).
 ///
 /// Returns `(parallel, perpendicular)` such that `parallel + perpendicular == v`.
-#[allow(dead_code)]
 pub fn vec3_decompose(v: &Vec3, axis: &Vec3) -> (Vec3, Vec3) {
     let parallel = vec3_project_onto_unit(v, axis);
     let perp = v - parallel;
     (parallel, perp)
 }
 /// Scalar triple product `a · (b × c)`.
-#[allow(dead_code)]
 pub fn vec3_scalar_triple(a: &Vec3, b: &Vec3, c: &Vec3) -> Real {
     a.dot(&b.cross(c))
 }
 /// Vector triple product `a × (b × c) = b*(a·c) - c*(a·b)`.
-#[allow(dead_code)]
 pub fn vec3_vector_triple(a: &Vec3, b: &Vec3, c: &Vec3) -> Vec3 {
     b * a.dot(c) - c * a.dot(b)
 }
 /// Distance from point `p` to the line defined by `origin` and unit `dir`.
-#[allow(dead_code)]
 pub fn point_to_line_distance(p: &Vec3, origin: &Vec3, dir: &Vec3) -> Real {
     let dp = p - origin;
     vec3_reject(&dp, dir).norm()
 }
 /// Closest point on line (`origin` + t * `dir`) to point `p`.
 /// `dir` should be a unit vector.
-#[allow(dead_code)]
 pub fn closest_point_on_line(p: &Vec3, origin: &Vec3, dir: &Vec3) -> Vec3 {
     let t = (p - origin).dot(dir);
     origin + dir * t
 }
 /// Closest point on segment `a`–`b` to point `p`.
-#[allow(dead_code)]
 pub fn closest_point_on_segment(p: &Vec3, a: &Vec3, b: &Vec3) -> Vec3 {
     let ab = b - a;
     let ab_len2 = ab.norm_squared();
@@ -969,7 +943,6 @@ pub fn closest_point_on_segment(p: &Vec3, a: &Vec3, b: &Vec3) -> Vec3 {
     a + ab * t
 }
 /// Distance from point `p` to segment `a`–`b`.
-#[allow(dead_code)]
 pub fn point_to_segment_distance(p: &Vec3, a: &Vec3, b: &Vec3) -> Real {
     (p - closest_point_on_segment(p, a, b)).norm()
 }
@@ -978,7 +951,6 @@ pub fn point_to_segment_distance(p: &Vec3, a: &Vec3, b: &Vec3) -> Real {
 /// Uses Rodrigues' formula via the cross-product axis.
 /// For anti-parallel vectors it returns a 180° rotation about an arbitrary
 /// perpendicular axis.
-#[allow(dead_code)]
 pub fn mat3_rotation_from_to(from: &Vec3, to: &Vec3) -> Mat3 {
     let dot = from.dot(to).clamp(-1.0, 1.0);
     if (dot - 1.0).abs() < 1e-12 {
@@ -1008,7 +980,6 @@ pub fn mat3_rotation_from_to(from: &Vec3, to: &Vec3) -> Mat3 {
 /// Extract the rotation angle from a 3×3 rotation matrix.
 ///
 /// Returns the angle in `[0, π]`.
-#[allow(dead_code)]
 pub fn mat3_rotation_angle(r: &Mat3) -> Real {
     let tr = r.trace().clamp(-1.0, 3.0);
     ((tr - 1.0) / 2.0).clamp(-1.0, 1.0).acos()
@@ -1017,7 +988,6 @@ pub fn mat3_rotation_angle(r: &Mat3) -> Real {
 ///
 /// Returns `None` for identity or 180° rotations where the axis is
 /// ill-defined; otherwise returns the normalised axis.
-#[allow(dead_code)]
 pub fn mat3_rotation_axis(r: &Mat3) -> Option<Vec3> {
     let s = Vec3::new(
         r[(2, 1)] - r[(1, 2)],
@@ -1031,14 +1001,12 @@ pub fn mat3_rotation_axis(r: &Mat3) -> Option<Vec3> {
     Some(s / len)
 }
 /// Compose two rotation matrices: `r_total = r2 * r1` (first apply r1, then r2).
-#[allow(dead_code)]
 pub fn mat3_compose_rotations(r1: &Mat3, r2: &Mat3) -> Mat3 {
     r2 * r1
 }
 /// Interpolate between two rotation matrices using matrix slerp.
 ///
 /// Computes `r1 * exp(t * log(r1^T * r2))`.
-#[allow(dead_code)]
 pub fn mat3_slerp(r1: &Mat3, r2: &Mat3, t: Real) -> Mat3 {
     let r_rel = r1.transpose() * r2;
     let log_r_rel = mat3_log_rotation(&r_rel);
@@ -1048,7 +1016,6 @@ pub fn mat3_slerp(r1: &Mat3, r2: &Mat3, t: Real) -> Mat3 {
 }
 /// Compute the average of multiple rotation matrices using the iterative
 /// geodesic mean (Moakher 2002).  `weights` must be non-negative and sum to 1.
-#[allow(dead_code)]
 pub fn mat3_weighted_mean(rotations: &[Mat3], weights: &[f64], max_iter: usize) -> Mat3 {
     assert_eq!(rotations.len(), weights.len());
     if rotations.is_empty() {
@@ -1070,12 +1037,10 @@ pub fn mat3_weighted_mean(rotations: &[Mat3], weights: &[f64], max_iter: usize) 
     r_mean
 }
 /// Convert a unit quaternion `[x,y,z,w]` to its conjugate.
-#[allow(dead_code)]
 pub fn quat_arr_conjugate(q: [f64; 4]) -> [f64; 4] {
     [-q[0], -q[1], -q[2], q[3]]
 }
 /// Normalize a quaternion `[x,y,z,w]` to unit length.
-#[allow(dead_code)]
 pub fn quat_arr_normalize(q: [f64; 4]) -> [f64; 4] {
     let len = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
     if len < 1e-30 {
@@ -1084,12 +1049,10 @@ pub fn quat_arr_normalize(q: [f64; 4]) -> [f64; 4] {
     [q[0] / len, q[1] / len, q[2] / len, q[3] / len]
 }
 /// Dot product of two quaternions (as 4-vectors).
-#[allow(dead_code)]
 pub fn quat_arr_dot(p: [f64; 4], q: [f64; 4]) -> f64 {
     p[0] * q[0] + p[1] * q[1] + p[2] * q[2] + p[3] * q[3]
 }
 /// Power of a unit quaternion: `q^t = exp(t * log(q))`.
-#[allow(dead_code)]
 pub fn quat_arr_pow(q: [f64; 4], t: f64) -> [f64; 4] {
     let log_q = quat_arr_log(q);
     let scaled = [log_q[0] * t, log_q[1] * t, log_q[2] * t, 0.0];
@@ -1097,7 +1060,6 @@ pub fn quat_arr_pow(q: [f64; 4], t: f64) -> [f64; 4] {
 }
 /// Rotate a 3-vector by a unit quaternion `q = [x,y,z,w]` using
 /// the sandwich product `q * v * q^*`.
-#[allow(dead_code)]
 pub fn quat_arr_rotate_vec3(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
     let [qx, qy, qz, qw] = q;
     let [vx, vy, vz] = v;
@@ -1116,7 +1078,6 @@ pub fn quat_arr_rotate_vec3(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
 /// control point `s` such that the curve is C1 at `q_curr`.
 ///
 /// `s = q_curr * exp(-0.25 * (log(conj(q_curr)*q_next) + log(conj(q_curr)*q_prev)))`
-#[allow(dead_code)]
 pub fn quat_arr_squad_control(q_prev: [f64; 4], q_curr: [f64; 4], q_next: [f64; 4]) -> [f64; 4] {
     let conj_curr = quat_arr_conjugate(q_curr);
     let log_a = quat_arr_log(quat_multiply(conj_curr, q_next));
@@ -1134,7 +1095,6 @@ pub fn quat_arr_squad_control(q_prev: [f64; 4], q_curr: [f64; 4], q_next: [f64; 
 /// Returns a new vector of orthonormal vectors.  Linearly-dependent vectors
 /// produce a near-zero output and are replaced by a vector from the standard
 /// basis so the output always spans the same subspace dimension.
-#[allow(dead_code)]
 pub fn gram_schmidt_vectors(vecs: &[Vec3]) -> Vec<Vec3> {
     let mut result: Vec<Vec3> = Vec::with_capacity(vecs.len());
     for v in vecs {
@@ -1170,7 +1130,6 @@ pub fn gram_schmidt_vectors(vecs: &[Vec3]) -> Vec<Vec3> {
 ///
 /// Returns an orthonormal `Mat3` whose columns span the same space as the input
 /// (assuming the input is full-rank).  Returns `None` if the matrix is rank-deficient.
-#[allow(dead_code)]
 pub fn mat3_gram_schmidt(m: &Mat3) -> Option<Mat3> {
     let c0 = Vec3::new(m[(0, 0)], m[(1, 0)], m[(2, 0)]);
     let c1 = Vec3::new(m[(0, 1)], m[(1, 1)], m[(2, 1)]);
@@ -1181,7 +1140,6 @@ pub fn mat3_gram_schmidt(m: &Mat3) -> Option<Mat3> {
 /// Project a `Vec3` onto a plane defined by its unit normal `n`.
 ///
 /// Returns the vector with its component along `n` removed.
-#[allow(dead_code)]
 pub fn vec3_project_onto_plane(v: &Vec3, plane_normal: &Vec3) -> Vec3 {
     v - plane_normal * v.dot(plane_normal)
 }
@@ -1189,7 +1147,6 @@ pub fn vec3_project_onto_plane(v: &Vec3, plane_normal: &Vec3) -> Vec3 {
 ///
 /// Equivalent to `vec3_reflect_about_normal` but uses the physics
 /// convention where `d` points *toward* the surface.
-#[allow(dead_code)]
 pub fn reflect_direction(d: &Vec3, n: &Vec3) -> Vec3 {
     d - n * (2.0 * d.dot(n))
 }
@@ -1197,7 +1154,6 @@ pub fn reflect_direction(d: &Vec3, n: &Vec3) -> Vec3 {
 ///
 /// Returns `(u, v, w)` such that `p = u*a + v*b + w*c` and `u+v+w = 1`.
 /// Returns `None` if the triangle is degenerate.
-#[allow(dead_code)]
 pub fn barycentric_coords(p: &Vec3, a: &Vec3, b: &Vec3, c: &Vec3) -> Option<(Real, Real, Real)> {
     let ab = b - a;
     let ac = c - a;
@@ -1213,7 +1169,6 @@ pub fn barycentric_coords(p: &Vec3, a: &Vec3, b: &Vec3, c: &Vec3) -> Option<(Rea
     Some((u, v, w))
 }
 /// Test whether point `p` lies inside triangle `(a, b, c)`.
-#[allow(dead_code)]
 pub fn point_in_triangle(p: &Vec3, a: &Vec3, b: &Vec3, c: &Vec3) -> bool {
     match barycentric_coords(p, a, b, c) {
         None => false,
@@ -1224,20 +1179,17 @@ pub fn point_in_triangle(p: &Vec3, a: &Vec3, b: &Vec3, c: &Vec3) -> bool {
 ///
 /// Equivalent to `skew_symmetric` but named for clarity in the context of the
 /// cross-product-as-linear-map interpretation.
-#[allow(dead_code)]
 pub fn cross_product_matrix(a: &Vec3) -> Mat3 {
     skew_symmetric(a)
 }
 /// Double cross product `a × (a × b)` expressed as a matrix times `b`:
 /// the matrix is `-[a]×² = a*aᵀ - (a·a)*I`.
-#[allow(dead_code)]
 pub fn double_cross_matrix(a: &Vec3) -> Mat3 {
     let aa = a.norm_squared();
     a * a.transpose() - Mat3::identity() * aa
 }
 /// Spin matrix for angular velocity `omega`: the time-derivative of a rotation
 /// matrix R satisfies `Ṙ = omega_hat * R` where `omega_hat = skew(omega)`.
-#[allow(dead_code)]
 pub fn spin_matrix(omega: &Vec3) -> Mat3 {
     skew_symmetric(omega)
 }
@@ -1245,7 +1197,6 @@ pub fn spin_matrix(omega: &Vec3) -> Mat3 {
 ///
 /// Given a unit quaternion `q` and angular velocity `omega` (body frame),
 /// integrates `q̇ = 0.5 * q ⊗ [omega, 0]` forward by `dt`.
-#[allow(dead_code)]
 pub fn quat_integrate_rk4(q: &Quat, omega: &Vec3, dt: Real) -> Quat {
     let half_dt = dt * 0.5;
     let omega_quat = |q_in: &Quat| -> Quat {
@@ -1265,28 +1216,24 @@ pub fn quat_integrate_rk4(q: &Quat, omega: &Vec3, dt: Real) -> Quat {
     UnitQuaternion::new_normalize(q.as_ref() + sum * (dt / 6.0))
 }
 /// Linear blending of two quaternions followed by renormalization (NLerp).
-#[allow(dead_code)]
 pub fn quat_blend(q1: &Quat, q2: &Quat, t: Real) -> Quat {
     q1.slerp(q2, t)
 }
 /// Convert a Cartesian 3-vector to cylindrical coordinates `(rho, phi, z)`.
 ///
 /// `rho` ≥ 0, `phi ∈ (-π, π]`, `z` is unchanged.
-#[allow(dead_code)]
 pub fn vec3_to_cylindrical(v: &Vec3) -> (Real, Real, Real) {
     let rho = (v.x * v.x + v.y * v.y).sqrt();
     let phi = v.y.atan2(v.x);
     (rho, phi, v.z)
 }
 /// Convert cylindrical `(rho, phi, z)` to a Cartesian `Vec3`.
-#[allow(dead_code)]
 pub fn cylindrical_to_vec3(rho: Real, phi: Real, z: Real) -> Vec3 {
     Vec3::new(rho * phi.cos(), rho * phi.sin(), z)
 }
 /// Convert a Cartesian `Vec3` to spherical coordinates `(r, theta, phi)`.
 ///
 /// `r` ≥ 0, `theta ∈ [0, π]` (polar/colatitude), `phi ∈ (-π, π]` (azimuth).
-#[allow(dead_code)]
 pub fn vec3_to_spherical(v: &Vec3) -> (Real, Real, Real) {
     let r = v.norm();
     if r < 1e-30 {
@@ -1297,7 +1244,6 @@ pub fn vec3_to_spherical(v: &Vec3) -> (Real, Real, Real) {
     (r, theta, phi)
 }
 /// Convert spherical `(r, theta, phi)` to a Cartesian `Vec3`.
-#[allow(dead_code)]
 pub fn spherical_to_vec3(r: Real, theta: Real, phi: Real) -> Vec3 {
     Vec3::new(
         r * theta.sin() * phi.cos(),
@@ -1309,7 +1255,6 @@ pub fn spherical_to_vec3(r: Real, theta: Real, phi: Real) -> Vec3 {
 /// uniform random numbers `u1, u2 ∈ [0, 1)`.
 ///
 /// Returns a unit vector `(x, y, z)` with `z ≥ 0`.
-#[allow(dead_code)]
 pub fn sample_hemisphere_uniform(u1: Real, u2: Real) -> Vec3 {
     let cos_theta = u1;
     let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
@@ -1319,7 +1264,6 @@ pub fn sample_hemisphere_uniform(u1: Real, u2: Real) -> Vec3 {
 /// Cosine-weighted sample on the unit hemisphere (z ≥ 0).
 ///
 /// Returns a unit vector; the PDF is `cos(theta) / π`.
-#[allow(dead_code)]
 pub fn sample_hemisphere_cosine(u1: Real, u2: Real) -> Vec3 {
     let r = u1.sqrt();
     let phi = 2.0 * std::f64::consts::PI * u2;
@@ -1332,7 +1276,6 @@ pub fn sample_hemisphere_cosine(u1: Real, u2: Real) -> Vec3 {
 ///
 /// Uses Shirley's concentric-disk mapping for low distortion.
 /// Returns `(x, y)` with `x² + y² ≤ 1`.
-#[allow(dead_code)]
 pub fn sample_unit_disk_concentric(u1: Real, u2: Real) -> (Real, Real) {
     let a = 2.0 * u1 - 1.0;
     let b = 2.0 * u2 - 1.0;

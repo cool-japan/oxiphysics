@@ -1,14 +1,10 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::types::*;
 #[cfg(test)]
 mod tests_dynamics_ext {
-    use super::*;
+    use super::super::functions::*;
+    use super::super::types::*;
     #[test]
     fn test_spatial_inertia6_thin_rod_mass() {
         let si = SpatialInertia6::thin_rod_x(2.0, 1.0);

@@ -1,5 +1,3 @@
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::if_same_then_else)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +6,6 @@
 //! This module provides pure CPU-side data structures and algorithms for
 //! preparing geometry, instances, particles, and render pipelines ready for
 //! upload to a GPU via WebGPU / wgpu. No actual GPU calls are made here.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // GpuVertex
@@ -511,8 +507,8 @@ impl TransferFunction {
             (t - lo.value) / range
         };
         let mut out = [0.0f32; 4];
-        for i in 0..4 {
-            out[i] = lo.color[i] + alpha * (hi.color[i] - lo.color[i]);
+        for (o, (lc, hc)) in out.iter_mut().zip(lo.color.iter().zip(hi.color.iter())) {
+            *o = lc + alpha * (hc - lc);
         }
         out
     }
@@ -972,7 +968,6 @@ impl FrustumCull {
     /// - `camera_pos` — camera world position (frustum apex).
     /// - `forward` — normalized camera forward direction.
     /// - `up` — normalized camera up direction.
-    #[allow(clippy::too_many_arguments)]
     pub fn from_perspective(
         near: f32,
         far: f32,
@@ -1222,12 +1217,8 @@ mod tests {
         // Two materials: 1 and 2
         assert_eq!(batches.len(), 2);
         // Material 1 has 2 calls, material 2 has 2 calls
-        for (mid, calls) in &batches {
-            if *mid == 1 {
-                assert_eq!(calls.len(), 2);
-            } else if *mid == 2 {
-                assert_eq!(calls.len(), 2);
-            }
+        for (_mid, calls) in &batches {
+            assert_eq!(calls.len(), 2);
         }
     }
 
@@ -1348,11 +1339,11 @@ mod tests {
         tf.add(0.0, [0.0, 0.0, 0.0, 0.0]);
         tf.add(1.0, [1.0, 1.0, 1.0, 1.0]);
         let c = tf.sample(0.5);
-        for i in 0..4 {
+        for (i, &ci) in c.iter().enumerate() {
             assert!(
-                (c[i] - 0.5).abs() < 1e-5,
+                (ci - 0.5).abs() < 1e-5,
                 "component {i} should be ~0.5, got {}",
-                c[i]
+                ci
             );
         }
     }

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -29,13 +28,11 @@
 // ── tiny linear-algebra helpers (f64 arrays only, no nalgebra) ──────────────
 
 /// 3-component dot product.
-#[allow(dead_code)]
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// 3-component cross product.
-#[allow(dead_code)]
 fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -45,13 +42,11 @@ fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 /// Length of a 3-vector.
-#[allow(dead_code)]
 fn vec3_len(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
 /// Normalize a 3-vector; returns `[0,0,0]` if near-zero.
-#[allow(dead_code)]
 fn vec3_normalize(v: [f64; 3]) -> [f64; 3] {
     let l = vec3_len(v);
     if l < 1e-15 {
@@ -62,43 +57,21 @@ fn vec3_normalize(v: [f64; 3]) -> [f64; 3] {
 }
 
 /// Scale a 3-vector.
-#[allow(dead_code)]
 fn vec3_scale(v: [f64; 3], s: f64) -> [f64; 3] {
     [v[0] * s, v[1] * s, v[2] * s]
 }
 
-/// Add two 3-vectors.
-#[allow(dead_code)]
-fn vec3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
 /// Subtract two 3-vectors.
-#[allow(dead_code)]
 fn vec3_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 /// Negate a 3-vector.
-#[allow(dead_code)]
 fn vec3_neg(v: [f64; 3]) -> [f64; 3] {
     [-v[0], -v[1], -v[2]]
 }
 
-/// Multiply a 6x6 matrix (row-major flat) by a 6-vector.
-#[allow(dead_code)]
-fn mat6_vec6_mul(m: &[f64; 36], v: &[f64; 6]) -> [f64; 6] {
-    let mut out = [0.0; 6];
-    for i in 0..6 {
-        for j in 0..6 {
-            out[i] += m[i * 6 + j] * v[j];
-        }
-    }
-    out
-}
-
 /// Dot product of two 6-vectors.
-#[allow(dead_code)]
 fn dot6(a: &[f64; 6], b: &[f64; 6]) -> f64 {
     let mut s = 0.0;
     for i in 0..6 {
@@ -108,7 +81,6 @@ fn dot6(a: &[f64; 6], b: &[f64; 6]) -> f64 {
 }
 
 /// Length of a 6-vector.
-#[allow(dead_code)]
 fn vec6_len(v: &[f64; 6]) -> f64 {
     dot6(v, v).sqrt()
 }
@@ -116,7 +88,6 @@ fn vec6_len(v: &[f64; 6]) -> f64 {
 // ── Tangent basis construction ──────────────────────────────────────────────
 
 /// Build an orthonormal tangent pair `(t1, t2)` for a given normal `n`.
-#[allow(dead_code)]
 fn tangent_basis(n: [f64; 3]) -> ([f64; 3], [f64; 3]) {
     let ax = n[0].abs();
     let ay = n[1].abs();
@@ -139,7 +110,6 @@ fn tangent_basis(n: [f64; 3]) -> ([f64; 3], [f64; 3]) {
 
 /// A single frictional contact point.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct ContactPoint {
     /// Position of the contact in world frame.
     pub position: [f64; 3],
@@ -169,7 +139,6 @@ pub type Wrench = [f64; 6];
 /// * `normal` - Contact normal (unit vector).
 /// * `mu` - Coulomb friction coefficient (>= 0).
 /// * `num_sides` - Number of sides for the polyhedral approximation.
-#[allow(dead_code)]
 pub fn linearise_coulomb_cone(normal: [f64; 3], mu: f64, num_sides: usize) -> Vec<[f64; 3]> {
     let (t1, t2) = tangent_basis(normal);
     let mut edges = Vec::with_capacity(num_sides);
@@ -191,7 +160,6 @@ pub fn linearise_coulomb_cone(normal: [f64; 3], mu: f64, num_sides: usize) -> Ve
 /// Interior approximation error for a linearised Coulomb cone with `n` sides.
 ///
 /// The ratio of the inscribed to the circumscribed polygon is `cos(pi/n)`.
-#[allow(dead_code)]
 pub fn cone_linearisation_error(num_sides: usize) -> f64 {
     let n = num_sides.max(3) as f64;
     1.0 - (std::f64::consts::PI / n).cos()
@@ -205,7 +173,6 @@ pub fn cone_linearisation_error(num_sides: usize) -> f64 {
 /// `f` applied at `position`.
 ///
 /// wrench = \[f, position x f\]
-#[allow(dead_code)]
 pub fn contact_wrench(position: [f64; 3], force: [f64; 3]) -> Wrench {
     let torque = cross3(position, force);
     [
@@ -217,7 +184,6 @@ pub fn contact_wrench(position: [f64; 3], force: [f64; 3]) -> Wrench {
 ///
 /// Each edge of the linearised friction cone is turned into a unit wrench
 /// about the origin.
-#[allow(dead_code)]
 pub fn primitive_contact_wrenches(contact: &ContactPoint, num_cone_sides: usize) -> Vec<Wrench> {
     let edges = linearise_coulomb_cone(contact.normal, contact.mu, num_cone_sides);
     edges
@@ -230,7 +196,6 @@ pub fn primitive_contact_wrenches(contact: &ContactPoint, num_cone_sides: usize)
 ///
 /// The returned matrix has dimensions `N x 6` stored as a `Vec`Wrench`
 /// where `N = num_contacts * num_cone_sides`.
-#[allow(dead_code)]
 pub fn multi_contact_wrench_set(contacts: &[ContactPoint], num_cone_sides: usize) -> Vec<Wrench> {
     let mut wrenches = Vec::new();
     for c in contacts {
@@ -255,7 +220,6 @@ pub fn multi_contact_wrench_set(contacts: &[ContactPoint], num_cone_sides: usize
 ///
 /// For a rigorous test the full 6-D convex-hull check is required;
 /// this heuristic is fast and conservative.
-#[allow(dead_code)]
 pub fn force_closure_test(wrenches: &[Wrench]) -> bool {
     if wrenches.is_empty() {
         return false;
@@ -288,7 +252,6 @@ pub fn force_closure_test(wrenches: &[Wrench]) -> bool {
 /// For each of six canonical wrench directions we check whether a
 /// non-negative combination of primitive wrenches can produce it.
 /// Returns `true` only if all six directions are achievable.
-#[allow(dead_code)]
 pub fn force_closure_test_full(wrenches: &[Wrench]) -> bool {
     if wrenches.len() < 7 {
         // At least 7 wrenches needed for a 6-D interior point
@@ -336,7 +299,6 @@ pub fn force_closure_test_full(wrenches: &[Wrench]) -> bool {
 /// the convex-hull boundary by taking `min(|w|)` over all primitive
 /// wrenches.  For a more accurate result the full wrench-space convex
 /// hull is required.
-#[allow(dead_code)]
 pub fn grasp_quality_q1(wrenches: &[Wrench]) -> f64 {
     if wrenches.is_empty() {
         return 0.0;
@@ -358,7 +320,6 @@ pub fn grasp_quality_q1(wrenches: &[Wrench]) -> f64 {
 ///
 /// This function normalises each wrench to unit length before computing
 /// the minimum distance.
-#[allow(dead_code)]
 pub fn grasp_quality_epsilon(wrenches: &[Wrench]) -> f64 {
     if wrenches.is_empty() {
         return 0.0;
@@ -391,7 +352,6 @@ pub fn grasp_quality_epsilon(wrenches: &[Wrench]) -> f64 {
 ///
 /// For large wrench sets this is expensive; here we use a bounding
 /// approximation based on axis-aligned extent.
-#[allow(dead_code)]
 pub fn grasp_quality_volume(wrenches: &[Wrench]) -> f64 {
     if wrenches.is_empty() {
         return 0.0;
@@ -425,14 +385,12 @@ pub fn grasp_quality_volume(wrenches: &[Wrench]) -> f64 {
 /// is a convex hull in counter-clockwise order.
 ///
 /// Returns the polygon vertices as `(x, y)` pairs.
-#[allow(dead_code)]
 pub fn support_polygon(contacts: &[[f64; 3]]) -> Vec<(f64, f64)> {
     let mut pts: Vec<(f64, f64)> = contacts.iter().map(|c| (c[0], c[1])).collect();
     convex_hull_2d(&mut pts)
 }
 
 /// Andrew's monotone-chain convex hull algorithm.
-#[allow(dead_code)]
 fn convex_hull_2d(points: &mut [(f64, f64)]) -> Vec<(f64, f64)> {
     let n = points.len();
     if n < 2 {
@@ -476,7 +434,6 @@ fn convex_hull_2d(points: &mut [(f64, f64)]) -> Vec<(f64, f64)> {
 }
 
 /// 2-D cross product for convex hull.
-#[allow(dead_code)]
 fn cross_2d(o: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
     (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
 }
@@ -484,7 +441,6 @@ fn cross_2d(o: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
 /// Test whether a 2-D point lies inside a convex polygon (CCW ordered).
 ///
 /// Uses the cross-product winding test.
-#[allow(dead_code)]
 pub fn point_in_convex_polygon(point: (f64, f64), polygon: &[(f64, f64)]) -> bool {
     let n = polygon.len();
     if n < 3 {
@@ -501,7 +457,6 @@ pub fn point_in_convex_polygon(point: (f64, f64), polygon: &[(f64, f64)]) -> boo
 }
 
 /// Compute the signed area of a convex polygon (CCW = positive).
-#[allow(dead_code)]
 pub fn polygon_area(polygon: &[(f64, f64)]) -> f64 {
     let n = polygon.len();
     if n < 3 {
@@ -516,7 +471,6 @@ pub fn polygon_area(polygon: &[(f64, f64)]) -> f64 {
 }
 
 /// Compute the centroid of a convex polygon.
-#[allow(dead_code)]
 pub fn polygon_centroid(polygon: &[(f64, f64)]) -> (f64, f64) {
     let n = polygon.len();
     if n == 0 {
@@ -565,7 +519,6 @@ pub fn polygon_centroid(polygon: &[(f64, f64)]) -> (f64, f64) {
 /// * `com` - Centre of mass `\[x, y, z\]`.
 /// * `acc` - Linear acceleration of the CoM `\[ax, ay, az\]`.
 /// * `gravity` - Gravitational acceleration vector `\[gx, gy, gz\]`.
-#[allow(dead_code)]
 pub fn compute_zmp(com: [f64; 3], acc: [f64; 3], gravity: [f64; 3]) -> Option<(f64, f64)> {
     let denom = acc[2] - gravity[2];
     if denom.abs() < 1e-10 {
@@ -584,7 +537,6 @@ pub fn compute_zmp(com: [f64; 3], acc: [f64; 3], gravity: [f64; 3]) -> Option<(f
 /// ```
 ///
 /// `force` and `torque` are about the world origin.
-#[allow(dead_code)]
 pub fn compute_zmp_from_forces(force: [f64; 3], torque: [f64; 3]) -> Option<(f64, f64)> {
     if force[2].abs() < 1e-10 {
         return None;
@@ -614,7 +566,6 @@ pub struct TippingResult {
 /// nearest edge of a convex polygon).
 ///
 /// Positive = inside, negative = outside.
-#[allow(dead_code)]
 pub fn stability_margin(point: (f64, f64), polygon: &[(f64, f64)]) -> f64 {
     let n = polygon.len();
     if n < 3 {
@@ -647,7 +598,6 @@ pub fn stability_margin(point: (f64, f64), polygon: &[(f64, f64)]) -> f64 {
 /// * `acc` - Linear acceleration of the CoM.
 /// * `gravity` - Gravitational acceleration.
 /// * `contact_positions` - Positions of ground contacts.
-#[allow(dead_code)]
 pub fn tipping_analysis(
     com: [f64; 3],
     acc: [f64; 3],
@@ -674,7 +624,6 @@ pub fn tipping_analysis(
 
 /// Simplified tipping test: project CoM onto XY and check if it is inside
 /// the support polygon (static case, zero acceleration).
-#[allow(dead_code)]
 pub fn is_statically_stable(com: [f64; 3], contact_positions: &[[f64; 3]]) -> bool {
     let poly = support_polygon(contact_positions);
     if poly.len() < 3 {
@@ -705,7 +654,6 @@ pub struct FrictionPolyhedron {
 
 impl FrictionPolyhedron {
     /// Create a new friction polyhedron.
-    #[allow(dead_code)]
     pub fn new(position: [f64; 3], normal: [f64; 3], mu: f64, num_sides: usize) -> Self {
         let edges = linearise_coulomb_cone(normal, mu, num_sides);
         Self {
@@ -718,13 +666,11 @@ impl FrictionPolyhedron {
     }
 
     /// Maximum tangential force for a given normal force magnitude.
-    #[allow(dead_code)]
     pub fn max_tangential_force(&self, normal_force: f64) -> f64 {
         self.mu * normal_force
     }
 
     /// Test if a force vector lies within the friction cone.
-    #[allow(dead_code)]
     pub fn contains_force(&self, force: [f64; 3]) -> bool {
         let fn_mag = dot3(force, self.normal);
         if fn_mag < -1e-10 {
@@ -736,7 +682,6 @@ impl FrictionPolyhedron {
     }
 
     /// Compute the wrench set for this friction polyhedron.
-    #[allow(dead_code)]
     pub fn wrench_set(&self) -> Vec<Wrench> {
         self.edges
             .iter()
@@ -746,7 +691,6 @@ impl FrictionPolyhedron {
 }
 
 /// Build friction polyhedra for all contacts.
-#[allow(dead_code)]
 pub fn build_friction_polyhedra(
     contacts: &[ContactPoint],
     num_sides: usize,
@@ -758,7 +702,6 @@ pub fn build_friction_polyhedra(
 }
 
 /// Aggregate wrench set from multiple friction polyhedra.
-#[allow(dead_code)]
 pub fn aggregate_wrench_set(polyhedra: &[FrictionPolyhedron]) -> Vec<Wrench> {
     let mut wrenches = Vec::new();
     for p in polyhedra {
@@ -779,14 +722,12 @@ pub fn aggregate_wrench_set(polyhedra: &[FrictionPolyhedron]) -> Vec<Wrench> {
 /// - `gap * f_n = 0` (complementarity)
 ///
 /// Returns the residual `|gap * f_n|`.
-#[allow(dead_code)]
 pub fn normal_complementarity_residual(gap: f64, f_n: f64) -> f64 {
     (gap * f_n).abs()
 }
 
 /// Check if normal complementarity conditions are satisfied within a
 /// tolerance.
-#[allow(dead_code)]
 pub fn check_normal_complementarity(gap: f64, f_n: f64, tol: f64) -> bool {
     gap >= -tol && f_n >= -tol && (gap * f_n).abs() < tol
 }
@@ -799,7 +740,6 @@ pub fn check_normal_complementarity(gap: f64, f_n: f64, tol: f64) -> bool {
 ///
 /// Returns a non-negative residual measuring how badly the condition is
 /// violated.
-#[allow(dead_code)]
 pub fn friction_complementarity_residual(f_t_mag: f64, mu: f64, f_n: f64, v_t_mag: f64) -> f64 {
     let cone_slack = mu * f_n - f_t_mag;
     (cone_slack * v_t_mag).abs()
@@ -809,7 +749,6 @@ pub fn friction_complementarity_residual(f_t_mag: f64, mu: f64, f_n: f64, v_t_ma
 ///
 /// Returns `true` if the contact satisfies normal and friction
 /// complementarity within the given tolerance.
-#[allow(dead_code)]
 pub fn check_contact_complementarity(
     gap: f64,
     f_n: f64,
@@ -836,8 +775,6 @@ pub fn check_contact_complementarity(
 /// Given vectors of gaps, normal forces, tangential force magnitudes,
 /// friction coefficients, and tangential sliding speeds, compute the
 /// total complementarity residual.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn total_complementarity_residual(
     gaps: &[f64],
     f_ns: &[f64],
@@ -860,7 +797,6 @@ pub fn total_complementarity_residual(
 
 /// A contact entry for the LCP formulation.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct LcpContact {
     /// Penetration gap (negative = penetrating).
     pub gap: f64,
@@ -879,14 +815,12 @@ pub struct LcpContact {
 }
 
 /// Project a normal force to satisfy non-negativity: `f_n = max(0, f_n)`.
-#[allow(dead_code)]
 pub fn project_normal_force(f_n: f64) -> f64 {
     f_n.max(0.0)
 }
 
 /// Project a tangential force to satisfy the friction cone:
 /// `|f_t| <= mu * f_n`.
-#[allow(dead_code)]
 pub fn project_friction_force(f_t: f64, mu: f64, f_n: f64) -> f64 {
     let limit = mu * f_n;
     f_t.max(-limit).min(limit)
@@ -896,7 +830,6 @@ pub fn project_friction_force(f_t: f64, mu: f64, f_n: f64) -> f64 {
 ///
 /// Updates forces in place.  Returns the sum of absolute force changes
 /// (useful for convergence checks).
-#[allow(dead_code)]
 pub fn lcp_gauss_seidel_step(contacts: &mut [LcpContact], bias_factor: f64) -> f64 {
     let mut delta_sum = 0.0;
     for c in contacts.iter_mut() {
@@ -919,7 +852,6 @@ pub fn lcp_gauss_seidel_step(contacts: &mut [LcpContact], bias_factor: f64) -> f
 /// Solve the contact LCP using projected Gauss-Seidel.
 ///
 /// Returns the number of iterations performed.
-#[allow(dead_code)]
 pub fn solve_contact_lcp(
     contacts: &mut [LcpContact],
     bias_factor: f64,
@@ -943,7 +875,6 @@ pub fn solve_contact_lcp(
 /// contact wrenches with non-negative coefficients.
 ///
 /// Uses a simple iterative projection approach.
-#[allow(dead_code)]
 pub fn can_balance_wrench(
     external_wrench: &Wrench,
     contact_wrenches: &[Wrench],
@@ -1024,7 +955,6 @@ pub fn can_balance_wrench(
 /// where `[p_i]_x` is the skew-symmetric matrix of `p_i`.
 ///
 /// Returns a `6x3` matrix stored as `\[\[f64; 3\\]; 6]` (row-major).
-#[allow(dead_code)]
 pub fn grasp_matrix_block(position: [f64; 3]) -> [[f64; 3]; 6] {
     let [px, py, pz] = position;
     [
@@ -1040,7 +970,6 @@ pub fn grasp_matrix_block(position: [f64; 3]) -> [[f64; 3]; 6] {
 /// Compute the full grasp matrix for multiple contacts.
 ///
 /// Returns a matrix of shape `6 x (3*n)` stored as `Vec<Vec`f64`>`.
-#[allow(dead_code)]
 pub fn grasp_matrix(positions: &[[f64; 3]]) -> Vec<Vec<f64>> {
     let n = positions.len();
     let cols = 3 * n;
@@ -1061,7 +990,6 @@ pub fn grasp_matrix(positions: &[[f64; 3]]) -> Vec<Vec<f64>> {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Compute the gravity wrench for a body with given mass and CoM.
-#[allow(dead_code)]
 pub fn gravity_wrench(mass: f64, com: [f64; 3], gravity: [f64; 3]) -> Wrench {
     let f = vec3_scale(gravity, mass);
     let tau = cross3(com, f);
@@ -1069,7 +997,6 @@ pub fn gravity_wrench(mass: f64, com: [f64; 3], gravity: [f64; 3]) -> Wrench {
 }
 
 /// Compute the centrifugal wrench contribution.
-#[allow(dead_code)]
 pub fn centrifugal_wrench(mass: f64, com: [f64; 3], omega: [f64; 3]) -> Wrench {
     // Centripetal acceleration: a = omega x (omega x r)
     let omega_cross_r = cross3(omega, com);
@@ -1080,7 +1007,6 @@ pub fn centrifugal_wrench(mass: f64, com: [f64; 3], omega: [f64; 3]) -> Wrench {
 }
 
 /// Sum multiple wrenches.
-#[allow(dead_code)]
 pub fn sum_wrenches(wrenches: &[Wrench]) -> Wrench {
     let mut total = [0.0; 6];
     for w in wrenches {
@@ -1103,7 +1029,6 @@ pub fn sum_wrenches(wrenches: &[Wrench]) -> Wrench {
 /// 3. Stability margin normalised by the polygon diameter.
 ///
 /// Higher is more stable.
-#[allow(dead_code)]
 pub fn multi_contact_stability_score(
     contacts: &[ContactPoint],
     com: [f64; 3],
@@ -1145,7 +1070,6 @@ pub fn multi_contact_stability_score(
 }
 
 /// Compute the diameter of a polygon (maximum distance between vertices).
-#[allow(dead_code)]
 pub fn polygon_diameter(polygon: &[(f64, f64)]) -> f64 {
     let n = polygon.len();
     let mut max_d = 0.0;
@@ -1172,7 +1096,6 @@ pub fn polygon_diameter(polygon: &[(f64, f64)]) -> f64 {
 /// Distributes the required total normal force equally among `n` contacts.
 ///
 /// Returns `None` if no contacts or if the required force is tensile.
-#[allow(dead_code)]
 pub fn equal_distribution_normal_forces(
     total_normal_force: f64,
     num_contacts: usize,
@@ -1186,7 +1109,6 @@ pub fn equal_distribution_normal_forces(
 
 /// Compute contact normal forces proportional to the distance from the
 /// CoM to each contact (closer contacts bear more load).
-#[allow(dead_code)]
 pub fn distance_weighted_normal_forces(
     total_normal_force: f64,
     com_2d: (f64, f64),
@@ -1220,7 +1142,6 @@ pub fn distance_weighted_normal_forces(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Check if a force is inside the Coulomb friction cone.
-#[allow(dead_code)]
 pub fn is_in_friction_cone(force: [f64; 3], normal: [f64; 3], mu: f64) -> bool {
     let fn_component = dot3(force, normal);
     if fn_component < -1e-10 {
@@ -1234,7 +1155,6 @@ pub fn is_in_friction_cone(force: [f64; 3], normal: [f64; 3], mu: f64) -> bool {
 /// Compute the angle between a force and the friction cone boundary.
 ///
 /// Positive means inside the cone, negative means outside.
-#[allow(dead_code)]
 pub fn friction_cone_angle(force: [f64; 3], normal: [f64; 3], mu: f64) -> f64 {
     let f_len = vec3_len(force);
     if f_len < 1e-15 {
@@ -1265,7 +1185,6 @@ pub struct ContactWrenchCone {
 
 impl ContactWrenchCone {
     /// Build a CWC from contact points.
-    #[allow(dead_code)]
     pub fn new(contacts: &[ContactPoint], num_facets: usize) -> Self {
         let rays = multi_contact_wrench_set(contacts, num_facets);
         Self {
@@ -1276,25 +1195,21 @@ impl ContactWrenchCone {
     }
 
     /// Check force closure.
-    #[allow(dead_code)]
     pub fn is_force_closure(&self) -> bool {
         force_closure_test(&self.rays)
     }
 
     /// Q1 quality.
-    #[allow(dead_code)]
     pub fn quality_q1(&self) -> f64 {
         grasp_quality_q1(&self.rays)
     }
 
     /// Epsilon quality.
-    #[allow(dead_code)]
     pub fn quality_epsilon(&self) -> f64 {
         grasp_quality_epsilon(&self.rays)
     }
 
     /// Check if an external wrench can be balanced.
-    #[allow(dead_code)]
     pub fn can_resist(&self, wrench: &Wrench, max_iter: usize, tol: f64) -> bool {
         can_balance_wrench(wrench, &self.rays, max_iter, tol)
     }
@@ -1310,7 +1225,6 @@ impl ContactWrenchCone {
 /// gravitational force, returns the torque about the edge axis.
 ///
 /// Positive torque = restoring (stable), negative = tipping.
-#[allow(dead_code)]
 pub fn tipping_edge_torque(
     com: [f64; 3],
     edge_a: [f64; 3],
@@ -1328,7 +1242,6 @@ pub fn tipping_edge_torque(
 ///
 /// Returns `(edge_index, torque)` where `edge_index` is the index of the
 /// polygon edge with the smallest restoring torque.
-#[allow(dead_code)]
 pub fn critical_tipping_edge(
     com: [f64; 3],
     contact_positions: &[[f64; 3]],
@@ -1364,7 +1277,6 @@ pub fn critical_tipping_edge(
 /// ```
 ///
 /// Returns `None` if not tipping or angular acceleration is zero.
-#[allow(dead_code)]
 pub fn time_to_tip(angle_margin_rad: f64, angular_accel: f64) -> Option<f64> {
     if angular_accel <= 0.0 || angle_margin_rad <= 0.0 {
         return None;
@@ -1398,7 +1310,6 @@ pub struct ContactStabilityReport {
 }
 
 /// Perform a comprehensive contact stability analysis.
-#[allow(dead_code)]
 pub fn analyse_contact_stability(
     contacts: &[ContactPoint],
     com: [f64; 3],
@@ -1755,8 +1666,8 @@ mod tests {
         let w1 = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let w2 = [6.0, 5.0, 4.0, 3.0, 2.0, 1.0];
         let s = sum_wrenches(&[w1, w2]);
-        for i in 0..6 {
-            assert!((s[i] - 7.0).abs() < 1e-10);
+        for (i, &si) in s.iter().enumerate() {
+            assert!((si - 7.0).abs() < 1e-10, "s[{i}]={si}");
         }
     }
 

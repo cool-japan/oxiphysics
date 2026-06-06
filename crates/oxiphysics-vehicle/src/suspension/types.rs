@@ -10,7 +10,6 @@ use oxiphysics_core::math::Real;
 ///
 /// This extends the basic `AntiRollBar` with a nonlinear stiffness curve.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AntiRollBarNonlinear {
     /// Linear stiffness (N·m/rad).
     pub linear_rate: f64,
@@ -19,7 +18,6 @@ pub struct AntiRollBarNonlinear {
     /// Maximum effective torque (N·m) — clipped at this value.
     pub max_torque: f64,
 }
-#[allow(dead_code)]
 impl AntiRollBarNonlinear {
     /// Construct from rates and torque limit.
     pub fn new(linear_rate: f64, cubic_rate: f64, max_torque: f64) -> Self {
@@ -46,7 +44,6 @@ impl AntiRollBarNonlinear {
 /// Asymmetric damper with different compression and rebound coefficients.
 ///
 /// Optionally supports a piecewise-linear high-speed knee point.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AsymmetricDamper {
     /// Low-speed compression damping coefficient (N*s/m).
@@ -63,7 +60,6 @@ pub struct AsymmetricDamper {
     /// High-speed rebound coefficient (N*s/m).
     pub rebound_high: f64,
 }
-#[allow(dead_code)]
 impl AsymmetricDamper {
     /// Create a simple asymmetric damper with no high-speed transition.
     pub fn new(compression: f64, rebound: f64) -> Self {
@@ -77,7 +73,6 @@ impl AsymmetricDamper {
         }
     }
     /// Create a damper with high-speed knee points.
-    #[allow(clippy::too_many_arguments)]
     pub fn with_knee(
         compression: f64,
         rebound: f64,
@@ -135,7 +130,6 @@ impl AsymmetricDamper {
 /// Connected by:
 /// - Suspension spring `ks` (N/m) + damper `cs` (N·s/m)
 /// - Tyre stiffness `kt` (N/m, no tyre damping)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct QuarterCarModel {
     /// Sprung mass (kg).
@@ -151,7 +145,6 @@ pub struct QuarterCarModel {
 }
 impl QuarterCarModel {
     /// Create a new quarter-car model.
-    #[allow(dead_code)]
     pub fn new(ms: f64, mu: f64, ks: f64, kt: f64, cs: f64) -> Self {
         Self { ms, mu, ks, kt, cs }
     }
@@ -159,7 +152,6 @@ impl QuarterCarModel {
     ///
     /// Returns `(xs_static, xu_static)` — the static compressions of the
     /// suspension spring and tyre spring respectively.
-    #[allow(dead_code)]
     pub fn static_equilibrium(&self, g: f64) -> (f64, f64) {
         let xs = (self.ms + self.mu) * g / self.ks;
         let xu = (self.ms + self.mu) * g / self.kt;
@@ -168,7 +160,6 @@ impl QuarterCarModel {
     /// Natural frequency of the ride mode (sprung mass on suspension), Hz.
     ///
     /// `f_ride = (1/2π) * √(ks / ms)`
-    #[allow(dead_code)]
     pub fn ride_frequency(&self) -> f64 {
         if self.ms <= 0.0 || self.ks <= 0.0 {
             return 0.0;
@@ -178,7 +169,6 @@ impl QuarterCarModel {
     /// Natural frequency of the wheel-hop mode (unsprung mass on tyre), Hz.
     ///
     /// `f_hop = (1/2π) * √((ks + kt) / mu)`
-    #[allow(dead_code)]
     pub fn wheel_hop_frequency(&self) -> f64 {
         if self.mu <= 0.0 {
             return 0.0;
@@ -189,7 +179,6 @@ impl QuarterCarModel {
     /// Damping ratio of the sprung-mass mode.
     ///
     /// `ζ = cs / (2 * √(ks * ms))`
-    #[allow(dead_code)]
     pub fn damping_ratio_sprung(&self) -> f64 {
         let c_crit = 2.0 * (self.ks * self.ms).sqrt();
         if c_crit < 1e-15 {
@@ -204,7 +193,6 @@ impl QuarterCarModel {
     ///
     /// This is computed numerically via the equations of motion in the
     /// frequency domain.  The result is the ratio |Xs / Xr|.
-    #[allow(dead_code)]
     pub fn sprung_mass_transmissibility(&self, omega: f64) -> f64 {
         let ms = self.ms;
         let mu = self.mu;
@@ -238,7 +226,6 @@ impl QuarterCarModel {
     /// * `state`        – mutable state (velocities and positions)
     /// * `dt`           – time step (s)
     /// * `road_velocity` – velocity of the road input at the tyre contact (m/s)
-    #[allow(dead_code)]
     pub fn step(&self, state: &mut QuarterCarState, dt: f64, road_velocity: f64) {
         let f_susp = self.ks * (state.xu - state.xs) + self.cs * (state.vu - state.vs);
         let f_tyre = self.kt * state.xu;
@@ -272,7 +259,6 @@ impl ProgressiveSuspension {
 /// mass (as if damping against the sky, not the road).  When the absolute and
 /// relative velocities have the same sign the sky-hook force is used; otherwise
 /// the passive damper is used to avoid energy injection.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SkyhookDamper {
     /// Sky-hook damping coefficient (N·s/m).
@@ -282,7 +268,6 @@ pub struct SkyhookDamper {
 }
 impl SkyhookDamper {
     /// Create a skyhook damper.
-    #[allow(dead_code)]
     pub fn new(c_skyhook: f64, c_passive: f64) -> Self {
         Self {
             c_skyhook,
@@ -297,7 +282,6 @@ impl SkyhookDamper {
     ///
     /// # Returns
     /// The controlled damping force (N).  Positive = pushing sprung mass up.
-    #[allow(dead_code)]
     pub fn force(&self, abs_velocity: f64, rel_velocity: f64) -> f64 {
         if abs_velocity.abs() < 1e-12 {
             return 0.0;
@@ -312,7 +296,6 @@ impl SkyhookDamper {
 /// Progressive bump stop that engages softly and hardens with further
 /// compression, with an optional velocity-softening factor.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ProgressiveBumpStop {
     /// Travel (m) at which the bump stop engages (measured from design position).
     pub engage_travel: f64,
@@ -323,7 +306,6 @@ pub struct ProgressiveBumpStop {
     /// Travel over which the rate transitions from soft to hard (m).
     pub transition_length: f64,
 }
-#[allow(dead_code)]
 impl ProgressiveBumpStop {
     /// Construct from engagement parameters.
     pub fn new(engage_travel: f64, soft_rate: f64, hard_rate: f64, transition_length: f64) -> Self {
@@ -360,7 +342,6 @@ impl ProgressiveBumpStop {
 ///
 /// The bump stop engages when jounce exceeds a gap distance and provides
 /// a sharply rising force.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BumpStop {
     /// Distance from rest before the bump stop engages (m).
@@ -370,7 +351,6 @@ pub struct BumpStop {
     /// Progressive exponent: F = k * (penetration)^exponent.
     pub exponent: f64,
 }
-#[allow(dead_code)]
 impl BumpStop {
     /// Create a bump stop with the given gap, stiffness, and exponent.
     pub fn new(gap: f64, stiffness: f64, exponent: f64) -> Self {
@@ -408,7 +388,6 @@ impl BumpStop {
 ///
 /// A simpler, scalar representation suitable for calculating camber gain
 /// without full 3-D geometry.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DoubleWishboneSimple {
     /// Length of the upper A-arm (m).
@@ -422,7 +401,6 @@ pub struct DoubleWishboneSimple {
     /// Static camber angle (radians; negative = top tilted inward).
     pub camber_angle: f64,
 }
-#[allow(dead_code)]
 impl DoubleWishboneSimple {
     /// Create a new scalar double-wishbone model.
     pub fn new(
@@ -454,7 +432,6 @@ impl DoubleWishboneSimple {
     }
 }
 /// Double-wishbone suspension geometry.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DoubleWishbone {
     /// Pivot point of the upper A-arm (body frame, metres).
@@ -468,7 +445,6 @@ pub struct DoubleWishbone {
 }
 impl DoubleWishbone {
     /// Create a double-wishbone with zero static camber.
-    #[allow(dead_code)]
     pub fn new(upper: [f64; 3], lower: [f64; 3], wheel: [f64; 3]) -> Self {
         Self {
             upper_a_arm: upper,
@@ -478,14 +454,12 @@ impl DoubleWishbone {
         }
     }
     /// Simplified camber gain: camber change (radians) per metre of jounce.
-    #[allow(dead_code)]
     pub fn compute_camber_gain(&self, jounce: f64) -> f64 {
         let arm_spread = (self.upper_a_arm[1] - self.lower_a_arm[1]).abs().max(1e-6);
         let gain_per_metre = -1.0 / arm_spread;
         self.camber_angle + gain_per_metre * jounce
     }
     /// Return the wheel-centre position in body frame at a given jounce.
-    #[allow(dead_code)]
     pub fn wheel_center_at_jounce(&self, jounce: f64) -> [f64; 3] {
         let camber = self.compute_camber_gain(jounce);
         [
@@ -499,12 +473,10 @@ impl DoubleWishbone {
     /// For a symmetric double-wishbone, the roll centre is at the intersection
     /// of the lines from the tyre contact patch through the instant centre.
     /// This simplified model returns the average Z of the two arm pivots.
-    #[allow(dead_code)]
     pub fn roll_center_height(&self) -> f64 {
         (self.upper_a_arm[2] + self.lower_a_arm[2]) * 0.5
     }
     /// Effective arm length ratio (upper / lower).
-    #[allow(dead_code)]
     pub fn arm_length_ratio(&self) -> f64 {
         let upper_len = ((self.upper_a_arm[0] - self.wheel_center[0]).powi(2)
             + (self.upper_a_arm[1] - self.wheel_center[1]).powi(2)
@@ -524,7 +496,6 @@ impl DoubleWishbone {
 /// Simplified vehicle roll model combining front and rear suspension anti-roll
 /// bars and lateral load transfer.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct VehicleRollModel {
     /// Front anti-roll bar stiffness (N·m/rad).
     pub front_arb_rate: f64,
@@ -541,10 +512,8 @@ pub struct VehicleRollModel {
     /// Front track width (m).
     pub track: f64,
 }
-#[allow(dead_code)]
 impl VehicleRollModel {
     /// Construct from vehicle and suspension parameters.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         front_arb_rate: f64,
         rear_arb_rate: f64,
@@ -612,7 +581,6 @@ impl VehicleRollModel {
     }
 }
 /// Parameters for a spring-damper suspension unit.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SuspensionParams {
     /// Spring stiffness (N/m).
@@ -630,7 +598,6 @@ pub struct SuspensionParams {
 }
 impl SuspensionParams {
     /// Create suspension parameters with sensible defaults.
-    #[allow(dead_code)]
     pub fn new(stiffness: f64, damping: f64, rest_length: f64) -> Self {
         Self {
             spring_stiffness: stiffness,
@@ -643,7 +610,6 @@ impl SuspensionParams {
     }
 }
 /// Describes the state of a wheel's contact with the ground.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WheelContact {
     /// Contact point in world space (metres).
@@ -664,7 +630,6 @@ pub struct WheelContact {
 /// Models the strut as a single pivot at the lower control arm and a top mount.
 /// The wheel centre moves along the strut axis; camber change comes from the
 /// angle between the strut axis and the vertical.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct McPhersonStrut {
     /// Lower ball-joint position (body frame, metres).
@@ -676,7 +641,6 @@ pub struct McPhersonStrut {
     /// Static camber angle (radians; negative = top tilted inward).
     pub static_camber: f64,
 }
-#[allow(dead_code)]
 impl McPhersonStrut {
     /// Create a McPherson strut with zero static camber.
     pub fn new(lower: [f64; 3], top: [f64; 3], wheel: [f64; 3]) -> Self {
@@ -732,7 +696,6 @@ impl McPhersonStrut {
     }
 }
 /// Represents an anti-roll (stabiliser) bar connecting left and right wheels.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AntiRollBar {
     /// Torsional stiffness (N/m).
@@ -742,7 +705,6 @@ impl AntiRollBar {
     /// Compute the anti-roll forces acting on each side.
     ///
     /// Returns `(left_force, right_force)` which are equal and opposite.
-    #[allow(dead_code)]
     pub fn compute_force(&self, left_travel: f64, right_travel: f64) -> (f64, f64) {
         let f = self.stiffness * (left_travel - right_travel);
         (f, -f)
@@ -750,7 +712,6 @@ impl AntiRollBar {
     /// Compute the anti-roll moment (N*m) about the roll axis.
     ///
     /// `M = k * track_width * (left_travel - right_travel)`
-    #[allow(dead_code)]
     pub fn roll_moment(&self, left_travel: f64, right_travel: f64, track_width: f64) -> f64 {
         self.stiffness * track_width * (left_travel - right_travel)
     }
@@ -759,7 +720,6 @@ impl AntiRollBar {
     /// Anti-roll moment (N·m) for given left and right suspension travels.
     ///
     /// `M = k * (left_travel − right_travel)`
-    #[allow(dead_code)]
     pub fn moment(&self, left_travel: f64, right_travel: f64) -> f64 {
         self.stiffness * (left_travel - right_travel)
     }
@@ -767,7 +727,6 @@ impl AntiRollBar {
 /// Dynamic state for the quarter-car 2-DOF model.
 ///
 /// Positions are measured from the static equilibrium position.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct QuarterCarState {
     /// Sprung mass displacement from equilibrium (m, positive = up).
@@ -781,7 +740,6 @@ pub struct QuarterCarState {
 }
 impl QuarterCarState {
     /// Create state at rest at the static equilibrium position.
-    #[allow(dead_code)]
     pub fn at_equilibrium(model: &QuarterCarModel, _g: f64) -> Self {
         let _ = model;
         Self {
@@ -796,7 +754,6 @@ impl QuarterCarState {
 ///
 /// Captures the spring rate, damping, rest length, caster angle, and
 /// kingpin inclination as scalar parameters.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct McPhersonSuspension {
     /// Spring stiffness (N/m).
@@ -810,7 +767,6 @@ pub struct McPhersonSuspension {
     /// Kingpin inclination angle (radians).
     pub kingpin_inclination: f64,
 }
-#[allow(dead_code)]
 impl McPhersonSuspension {
     /// Create a new McPherson suspension unit.
     pub fn new(
@@ -846,7 +802,6 @@ impl McPhersonSuspension {
 /// Tracks the strut mount point, lower ball joint, wheel centre, and the
 /// spring/damper aligned along the strut axis.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct McPhersonKinematic {
     /// Strut mount point on the body (unloaded position), m.
     pub mount_body: [f64; 3],
@@ -861,7 +816,6 @@ pub struct McPhersonKinematic {
     /// Damper rate (N·s/m).
     pub damper_c: f64,
 }
-#[allow(dead_code)]
 impl McPhersonKinematic {
     /// Construct from geometric and compliance parameters.
     pub fn new(
@@ -942,7 +896,6 @@ impl McPhersonKinematic {
 #[derive(Debug, Clone, Default)]
 pub struct LinearSuspension;
 /// Geometric kinematics parameters derived from suspension geometry.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SuspensionKinematics {
     /// Roll-centre height above the ground plane (m).
@@ -953,7 +906,6 @@ pub struct SuspensionKinematics {
     pub caster_trail: f64,
 }
 /// Runtime state of a single suspension unit.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SuspensionState {
     /// Current length of the spring (m).
@@ -967,7 +919,6 @@ pub struct SuspensionState {
 ///
 /// Uses a simplified quasi-static model based on the centre of mass height,
 /// track width, and front/rear axle distances.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PitchRollDistributor {
     /// Total vehicle mass (kg).
@@ -985,7 +936,6 @@ pub struct PitchRollDistributor {
 }
 impl PitchRollDistributor {
     /// Create a new distributor.
-    #[allow(dead_code)]
     pub fn new(mass: f64, h_cg: f64, track_f: f64, l_f: f64, l_r: f64, g: f64) -> Self {
         Self {
             mass,
@@ -999,14 +949,12 @@ impl PitchRollDistributor {
     /// Pitch moment (N·m) due to longitudinal acceleration.
     ///
     /// `M_pitch = m * a_long * h_cg`
-    #[allow(dead_code)]
     pub fn pitch_moment(&self, long_accel: f64) -> f64 {
         self.mass * long_accel * self.h_cg
     }
     /// Roll moment (N·m) due to lateral acceleration.
     ///
     /// `M_roll = m * a_lat * h_cg`
-    #[allow(dead_code)]
     pub fn roll_moment(&self, lat_accel: f64) -> f64 {
         self.mass * lat_accel.abs() * self.h_cg
     }
@@ -1016,7 +964,6 @@ impl PitchRollDistributor {
     ///
     /// - Front axle gains load during braking (negative `long_accel`).
     /// - Rear axle gains load during acceleration.
-    #[allow(dead_code)]
     pub fn front_rear_load_transfer_pitch(&self, long_accel: f64) -> (f64, f64) {
         let wb = self.l_f + self.l_r;
         if wb < 1e-12 {
@@ -1030,7 +977,6 @@ impl PitchRollDistributor {
     /// Left/right load transfer due to roll (lateral acceleration).
     ///
     /// Returns `(delta_left_N, delta_right_N)` where positive = additional load.
-    #[allow(dead_code)]
     pub fn left_right_load_transfer_roll(&self, lat_accel: f64) -> (f64, f64) {
         if self.track_f <= 0.0 {
             return (0.0, 0.0);
@@ -1045,7 +991,6 @@ impl PitchRollDistributor {
 /// Tracks upper and lower control arms, their inboard pivot points, and the
 /// wheel spindle location.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DoubleWishboneKinematic {
     /// Upper inboard pivot (body side), m.
     pub upper_inboard: [f64; 3],
@@ -1064,10 +1009,8 @@ pub struct DoubleWishboneKinematic {
     /// Damper rate (N·s/m).
     pub damper_c: f64,
 }
-#[allow(dead_code)]
 impl DoubleWishboneKinematic {
     /// Construct from geometry and compliance data.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         upper_inboard: [f64; 3],
         upper_outboard: [f64; 3],
@@ -1156,7 +1099,6 @@ impl DoubleWishboneKinematic {
 ///
 /// The force engages as soon as compression exceeds zero (preload already
 /// present), rising linearly at `rate` until it reaches `max_force`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BumpStopLinear {
     /// Pre-load force present at zero compression (N).
@@ -1166,7 +1108,6 @@ pub struct BumpStopLinear {
     /// Maximum force clamp (N).
     pub max_force: f64,
 }
-#[allow(dead_code)]
 impl BumpStopLinear {
     /// Create a new linear bump stop.
     pub fn new(preload: f64, rate: f64, max_force: f64) -> Self {

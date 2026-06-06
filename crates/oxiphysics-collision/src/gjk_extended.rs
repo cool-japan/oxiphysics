@@ -8,9 +8,6 @@
 //! 2-D GJK, ray-cast GJK, time-of-impact via bilateral advancement, and feature
 //! pair generation.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Vector math helpers
 // ---------------------------------------------------------------------------

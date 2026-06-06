@@ -5,8 +5,6 @@
 //! ring-buffer trajectories, merge helpers, snapshot utilities, and
 //! extendable datasets.
 
-#![allow(dead_code)]
-
 use super::convenience::{
     list_datasets_recursive, read_vlen_strings, write_f64_dataset, write_matrix_f64,
     write_vlen_strings,

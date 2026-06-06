@@ -7,14 +7,10 @@
 //! - `ComputeKernel`
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use crate::compute::ComputeKernel;
 
 use super::types::LennardJonesKernel;
 
-#[allow(clippy::needless_range_loop)]
 impl ComputeKernel for LennardJonesKernel {
     fn name(&self) -> &str {
         "LennardJonesKernel"

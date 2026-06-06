@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,9 +10,6 @@
 //! - [`MembraneProtein`] — transmembrane proteins, curvature sensing, protein clustering
 //! - [`VesicleSimulation`] — closed membrane, volume conservation, area conservation, shape transitions
 //! - [`CellMechanics`] — AFM stiffness, deformability index, membrane tension, turgor pressure
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -57,12 +53,6 @@ fn normalize3(v: Vec3) -> Vec3 {
     }
 }
 
-/// Element-wise addition.
-#[inline]
-fn add3(a: Vec3, b: Vec3) -> Vec3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
 /// Element-wise subtraction.
 #[inline]
 fn sub3(a: Vec3, b: Vec3) -> Vec3 {
@@ -91,6 +81,7 @@ fn triangle_normal(p0: Vec3, p1: Vec3, p2: Vec3) -> Vec3 {
 
 /// Mean curvature at a vertex using the cotangent-weight Laplace–Beltrami operator.
 /// Inputs: vertex position, one-ring neighbours (in order), corresponding areas.
+#[cfg(test)]
 fn mean_curvature_laplace(v: Vec3, ring: &[Vec3], areas: &[f64]) -> f64 {
     // Simplified discrete approximation: sum over edges of (cotangent weights × displacement).
     let n = ring.len();
@@ -122,8 +113,8 @@ fn mean_curvature_laplace(v: Vec3, ring: &[Vec3], areas: &[f64]) -> f64 {
             laplace[k] += w * e[k];
         }
     }
-    for k in 0..3 {
-        laplace[k] /= 2.0 * total_area;
+    for l in laplace.iter_mut() {
+        *l /= 2.0 * total_area;
     }
     norm3(laplace) * 0.5 // H = |ΔB x| / 2
 }
@@ -491,11 +482,16 @@ impl RedBloodCellModel {
             }
         }
         let mass = 1e-15; // effective node mass (kg)
-        for i in 0..n {
-            let a = scale3(forces[i], 1.0 / mass);
-            for k in 0..3 {
-                self.nodes[i].velocity[k] += a[k] * dt;
-                self.nodes[i].position[k] += self.nodes[i].velocity[k] * dt;
+        for (i, (node, force)) in self.nodes.iter_mut().zip(forces.iter()).enumerate() {
+            let _ = i;
+            let a = scale3(*force, 1.0 / mass);
+            for (v, (a_k, p)) in node
+                .velocity
+                .iter_mut()
+                .zip(a.iter().zip(node.position.iter_mut()))
+            {
+                *v += a_k * dt;
+                *p += *v * dt;
             }
         }
     }

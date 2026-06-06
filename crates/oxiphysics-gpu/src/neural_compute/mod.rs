@@ -1,10 +1,10 @@
 //! Auto-generated module structure
 
 pub mod feedforwardnet_traits;
-pub mod functions;
+mod functions;
 pub mod inferencepipeline_traits;
 pub mod messagepassingnet_traits;
-pub mod types;
+mod types;
 
 // Re-export all types
 pub use functions::*;

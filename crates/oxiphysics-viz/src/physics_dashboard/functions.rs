@@ -2,14 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::types::*;
-#[allow(unused_imports)]
-use super::types_core::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::physics_dashboard::*;
     #[test]
     fn test_sim_dashboard_total_energy() {
         let mut d = SimDashboard::new();
@@ -324,7 +319,7 @@ mod tests {
 }
 #[cfg(test)]
 mod expanded_dashboard_tests {
-    use super::*;
+    use crate::physics_dashboard::*;
     #[test]
     fn test_snapshot_buffer_ring() {
         let mut buf = SnapshotBuffer::new(3);

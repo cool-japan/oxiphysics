@@ -6,7 +6,6 @@ use super::functions::*;
 
 /// Interpolation weight for SPH-FEM data transfer.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SphFemWeight {
     /// SPH particle index.
     pub sph_idx: usize,
@@ -31,7 +30,6 @@ pub enum RegionType {
 /// Provides methods for computing interface normals and transferring
 /// stress tensors between SPH particles and FEM nodes at their boundary.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FemSphCoupling {
     /// Positions of the FEM interface nodes.
     pub fem_node_positions: Vec<[f64; 3]>,
@@ -44,7 +42,6 @@ pub struct FemSphCoupling {
     /// Force accumulated at each FEM node from stress transfer.
     pub nodal_forces: Vec<[f64; 3]>,
 }
-#[allow(dead_code)]
 impl FemSphCoupling {
     /// Create a new FEM-SPH interface coupling.
     ///
@@ -72,7 +69,6 @@ impl FemSphCoupling {
     ///
     /// The sign convention is such that `n_k` points **from** the SPH fluid
     /// domain **into** the FEM solid domain.
-    #[allow(clippy::needless_range_loop)]
     pub fn compute_interface_normal(&mut self, sph_positions: &[[f64; 3]]) {
         let h = self.smoothing_length;
         let n_nodes = self.fem_node_positions.len();
@@ -120,7 +116,6 @@ impl FemSphCoupling {
     /// `[σxx, σyy, σzz, τxy, τyz, τxz]`.
     ///
     /// The result is stored in `self.nodal_forces`.
-    #[allow(clippy::needless_range_loop)]
     pub fn transfer_stress(&mut self, sph_positions: &[[f64; 3]], sph_stress: &[[f64; 6]]) {
         let h = self.smoothing_length;
         let n_nodes = self.fem_node_positions.len();
@@ -161,7 +156,6 @@ impl FemSphCoupling {
 /// buoyancy, drag, added-mass, and pressure-gradient forces on a rigid body
 /// from SPH particle data.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FluidStructureInteraction {
     /// Fluid density (kg m⁻³).
     pub fluid_density: f64,
@@ -172,7 +166,6 @@ pub struct FluidStructureInteraction {
     /// Added-mass coefficient C_m.
     pub cm: f64,
 }
-#[allow(dead_code)]
 impl FluidStructureInteraction {
     /// Create a new FSI object.
     pub fn new(fluid_density: f64, gravity: f64, cd: f64, cm: f64) -> Self {
@@ -203,7 +196,6 @@ impl FluidStructureInteraction {
     ///
     /// # Returns
     /// Total force vector (N).
-    #[allow(clippy::too_many_arguments)]
     pub fn total_force(
         &self,
         body_pos: [f64; 3],
@@ -281,7 +273,6 @@ impl FluidStructureInteraction {
 /// - Each DEM particle is treated as a moving boundary.
 /// - Reaction forces on fluid use the conservative momentum exchange form.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DemSphCoupling {
     /// Fluid density (kg m⁻³).
     pub fluid_density: f64,
@@ -294,7 +285,6 @@ pub struct DemSphCoupling {
     /// SPH smoothing length (m).
     pub h: f64,
 }
-#[allow(dead_code)]
 impl DemSphCoupling {
     /// Create a new DEM-SPH coupling object.
     pub fn new(fluid_density: f64, gravity: [f64; 3], cd: f64, cm: f64, h: f64) -> Self {
@@ -327,7 +317,6 @@ impl DemSphCoupling {
     ///
     /// # Returns
     /// Hydrodynamic force on the DEM particle (N).
-    #[allow(clippy::too_many_arguments)]
     pub fn hydro_force_on_dem(
         &self,
         dem: &DemSphParticle,
@@ -400,7 +389,6 @@ impl DemSphCoupling {
     ///
     /// # Returns
     /// Per-particle force corrections (same length as `sph_positions`).
-    #[allow(clippy::too_many_arguments)]
     pub fn reaction_forces_on_sph(
         &self,
         dem: &DemSphParticle,
@@ -440,7 +428,6 @@ impl DemSphCoupling {
 }
 /// Sub-stepping strategy for coupled systems.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum SubstepStrategy {
     /// Both systems share the same time step.
     Monolithic,
@@ -561,7 +548,6 @@ impl RigidBody {
 }
 /// FEM element type used in weak coupling.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum FemElementType {
     /// Linear tetrahedral element (4 nodes).
     Tet4,
@@ -580,7 +566,6 @@ pub enum FemElementType {
 /// Reference: Akinci et al. (2012), "Versatile Rigid-Fluid Coupling for
 /// Incompressible SPH".
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TwoWayCouplingForce {
     /// Fluid density (kg m⁻³).
     pub fluid_density: f64,
@@ -589,7 +574,6 @@ pub struct TwoWayCouplingForce {
     /// Drag coefficient (dimensionless).
     pub cd: f64,
 }
-#[allow(dead_code)]
 impl TwoWayCouplingForce {
     /// Create a new two-way coupling force calculator.
     pub fn new(fluid_density: f64, h: f64, cd: f64) -> Self {
@@ -619,7 +603,6 @@ impl TwoWayCouplingForce {
     ///
     /// # Returns
     /// Force vector on the rigid body (N).
-    #[allow(clippy::too_many_arguments)]
     pub fn body_force_from_fluid(
         &self,
         body_pos: [f64; 3],
@@ -648,7 +631,6 @@ impl TwoWayCouplingForce {
     ///
     /// # Returns
     /// Vector of per-particle force corrections (same length as `sph_positions`).
-    #[allow(clippy::too_many_arguments)]
     pub fn fluid_reaction_forces(
         &self,
         body_pos: [f64; 3],
@@ -730,16 +712,14 @@ impl InterfaceTracker {
     /// Compute the interface normal at a particle position.
     ///
     /// n = -∇C / |∇C| where C is the color field.
-    #[allow(clippy::needless_range_loop)]
     pub fn interface_normal(&self, idx: usize, positions: &[[f64; 3]], h: f64) -> [f64; 3] {
-        let n = positions.len();
         let pos_i = positions[idx];
         let mut grad_c = [0.0_f64; 3];
-        for j in 0..n {
+        for (j, pos_j) in positions.iter().enumerate() {
             let rij = [
-                pos_i[0] - positions[j][0],
-                pos_i[1] - positions[j][1],
-                pos_i[2] - positions[j][2],
+                pos_i[0] - pos_j[0],
+                pos_i[1] - pos_j[1],
+                pos_i[2] - pos_j[2],
             ];
             let r = (rij[0] * rij[0] + rij[1] * rij[1] + rij[2] * rij[2]).sqrt();
             if r < 1e-14 || r > 2.0 * h {
@@ -747,9 +727,9 @@ impl InterfaceTracker {
             }
             let dw_dr = cubic_kernel_grad(r, h);
             let fac = dw_dr / r * (self.colors[j] - self.colors[idx]);
-            grad_c[0] += fac * rij[0];
-            grad_c[1] += fac * rij[1];
-            grad_c[2] += fac * rij[2];
+            for (gc, &rij_d) in grad_c.iter_mut().zip(rij.iter()) {
+                *gc += fac * rij_d;
+            }
         }
         let mag = (grad_c[0] * grad_c[0] + grad_c[1] * grad_c[1] + grad_c[2] * grad_c[2]).sqrt();
         if mag < 1e-14 {
@@ -764,7 +744,6 @@ impl InterfaceTracker {
 /// The boundary particle mirrors the velocity of the wall and applies a
 /// repulsion force to prevent fluid particles from penetrating.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SphBoundaryParticle {
     /// Position of the dummy particle.
     pub position: [f64; 3],
@@ -777,7 +756,6 @@ pub struct SphBoundaryParticle {
     /// Volume of the dummy particle.
     pub volume: f64,
 }
-#[allow(dead_code)]
 impl SphBoundaryParticle {
     /// Create a new boundary particle.
     pub fn new(
@@ -804,7 +782,6 @@ impl SphBoundaryParticle {
     /// `fluid_positions`, `fluid_pressures`, `fluid_densities` are for nearby
     /// fluid particles; `a_wall` is the wall acceleration; `h` is the kernel
     /// smoothing length.
-    #[allow(clippy::too_many_arguments)]
     pub fn update_pressure_adami(
         &mut self,
         fluid_positions: &[[f64; 3]],
@@ -991,7 +968,6 @@ impl BridgingDomainMethod {
 /// Damping:      F_d = -γ_n * ṙ_n   (linear dashpot)
 /// Tangential:   F_t = min(μ F_n, k_t * δ_t)  (Coulomb friction limit)
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DemContactForce {
     /// Normal stiffness coefficient (N m⁻³/²).
     pub k_n: f64,
@@ -1002,7 +978,6 @@ pub struct DemContactForce {
     /// Friction coefficient μ.
     pub mu: f64,
 }
-#[allow(dead_code)]
 impl DemContactForce {
     /// Create a new Hertz contact force model.
     pub fn new(k_n: f64, gamma_n: f64, k_t: f64, mu: f64) -> Self {
@@ -1023,7 +998,6 @@ impl DemContactForce {
     /// # Returns
     /// Force on particle i from particle j (N). Force on j is the negative.
     /// Returns `[0;3]` if particles are not in contact.
-    #[allow(clippy::too_many_arguments)]
     pub fn normal_contact_force(
         &self,
         pos_i: [f64; 3],
@@ -1054,7 +1028,6 @@ impl DemContactForce {
     /// maintained by the caller across time steps).
     ///
     /// Returns the tangential force on particle i.
-    #[allow(clippy::too_many_arguments)]
     pub fn tangential_force(
         &self,
         pos_i: [f64; 3],
@@ -1098,7 +1071,6 @@ impl DemContactForce {
 /// - Work done by fluid on body (from SPH boundary forces).
 /// - Work done by body on fluid (reaction).
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct CoupledEnergyBalance {
     /// Total energy transferred from fluid to rigid body.
     pub fluid_to_body: f64,
@@ -1107,7 +1079,6 @@ pub struct CoupledEnergyBalance {
     /// Accumulated kinetic energy of rigid body over time.
     pub rigid_ke_integral: f64,
 }
-#[allow(dead_code)]
 impl CoupledEnergyBalance {
     /// Create a new energy balance tracker.
     pub fn new() -> Self {
@@ -1185,7 +1156,6 @@ impl SphRigidImmersedBoundary {
     /// For each boundary marker, sum the pressure contributions from nearby
     /// fluid particles:
     ///   f_k = Σ_j  W(r_kj, h) · p_j · n_k
-    #[allow(clippy::needless_range_loop)]
     pub fn compute_reaction_forces(
         &self,
         fluid_particles: &[[f64; 3]],
@@ -1194,20 +1164,21 @@ impl SphRigidImmersedBoundary {
     ) -> Vec<[f64; 3]> {
         let nb = self.boundary_particles.len();
         let mut forces = vec![[0.0_f64; 3]; nb];
-        for k in 0..nb {
-            let bp = self.boundary_particles[k];
-            let n = self.normals[k];
+        for (force, (bp, nrm)) in forces
+            .iter_mut()
+            .zip(self.boundary_particles.iter().zip(self.normals.iter()))
+        {
             let mut p_sum = 0.0_f64;
-            for (j, &fp) in fluid_particles.iter().enumerate() {
+            for (&fp, &pj) in fluid_particles.iter().zip(pressures.iter()) {
                 let rij = [bp[0] - fp[0], bp[1] - fp[1], bp[2] - fp[2]];
                 let r = (rij[0] * rij[0] + rij[1] * rij[1] + rij[2] * rij[2]).sqrt();
                 if r > 2.0 * h {
                     continue;
                 }
                 let w = cubic_kernel(r, h);
-                p_sum += w * pressures[j];
+                p_sum += w * pj;
             }
-            forces[k] = [p_sum * n[0], p_sum * n[1], p_sum * n[2]];
+            *force = [p_sum * nrm[0], p_sum * nrm[1], p_sum * nrm[2]];
         }
         forces
     }
@@ -1215,7 +1186,6 @@ impl SphRigidImmersedBoundary {
 /// State of a single DEM (Discrete Element Method) particle immersed in an
 /// SPH fluid domain.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DemSphParticle {
     /// Particle position (m).
     pub position: [f64; 3],
@@ -1232,7 +1202,6 @@ pub struct DemSphParticle {
     /// Material density (kg m⁻³).
     pub density: f64,
 }
-#[allow(dead_code)]
 impl DemSphParticle {
     /// Create a new DEM-SPH particle (spherical, mass and inertia computed
     /// automatically from radius and density).
@@ -1330,7 +1299,6 @@ impl SphFemCoupling {
 }
 /// Full 6-DOF (6 degrees of freedom) rigid body state.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct RigidBody6Dof {
     /// Centre of mass position.
     pub position: [f64; 3],
@@ -1345,7 +1313,6 @@ pub struct RigidBody6Dof {
     /// Moment of inertia in body frame (diagonal, kg·m²).
     pub inertia: [f64; 3],
 }
-#[allow(dead_code)]
 impl RigidBody6Dof {
     /// Create a new rigid body at rest.
     pub fn new(mass: f64, inertia: [f64; 3], position: [f64; 3]) -> Self {
@@ -1359,24 +1326,27 @@ impl RigidBody6Dof {
         }
     }
     /// Integrate linear motion: v += F/m * dt,  x += v * dt.
-    #[allow(clippy::needless_range_loop)]
     pub fn integrate_linear(&mut self, force: [f64; 3], dt: f64) {
         let inv_m = 1.0 / self.mass.max(1e-30);
-        for i in 0..3 {
-            self.velocity[i] += force[i] * inv_m * dt;
-            self.position[i] += self.velocity[i] * dt;
+        for ((v, p), &f) in self
+            .velocity
+            .iter_mut()
+            .zip(self.position.iter_mut())
+            .zip(force.iter())
+        {
+            *v += f * inv_m * dt;
+            *p += *v * dt;
         }
     }
     /// Integrate angular motion: ω += I⁻¹ τ dt,  q += ½ Ω q dt.
-    #[allow(clippy::needless_range_loop)]
     pub fn integrate_angular(&mut self, torque: [f64; 3], dt: f64) {
         let alpha = [
             torque[0] / self.inertia[0].max(1e-30),
             torque[1] / self.inertia[1].max(1e-30),
             torque[2] / self.inertia[2].max(1e-30),
         ];
-        for i in 0..3 {
-            self.angular_velocity[i] += alpha[i] * dt;
+        for (av, &al) in self.angular_velocity.iter_mut().zip(alpha.iter()) {
+            *av += al * dt;
         }
         let [w, qx, qy, qz] = self.quaternion;
         let [wx, wy, wz] = self.angular_velocity;
@@ -1523,7 +1493,6 @@ impl CouplingBuffer {
 }
 /// Coupled time-stepper state for an SPH-rigid body system.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CoupledTimeStepper {
     /// Physical time elapsed.
     pub time: f64,
@@ -1538,7 +1507,6 @@ pub struct CoupledTimeStepper {
     /// Number of coupling cycles completed.
     pub cycles: usize,
 }
-#[allow(dead_code)]
 impl CoupledTimeStepper {
     /// Create a new coupled time-stepper.
     pub fn new(dt: f64, strategy: SubstepStrategy) -> Self {
@@ -1595,7 +1563,6 @@ impl CoupledTimeStepper {
 ///
 /// Reference: Lamb (1932), "Hydrodynamics", §§72–91.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AddedMass {
     /// Added-mass coefficient (0.5 for a sphere).
     pub cm: f64,
@@ -1604,7 +1571,6 @@ pub struct AddedMass {
     /// Volume of the rigid body (m³).
     pub body_volume: f64,
 }
-#[allow(dead_code)]
 impl AddedMass {
     /// Create a new added-mass model.
     pub fn new(cm: f64, fluid_density: f64, body_volume: f64) -> Self {
@@ -1646,14 +1612,12 @@ impl AddedMass {
 /// Impulse-based coupling: when a rigid body hits an SPH free surface or
 /// internal region, an impulse is exchanged to conserve momentum.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FluidImpulseTransfer {
     /// Restitution coefficient (0 = fully inelastic, 1 = elastic).
     pub restitution: f64,
     /// Fluid density (kg m⁻³).
     pub fluid_density: f64,
 }
-#[allow(dead_code)]
 impl FluidImpulseTransfer {
     /// Create a new impulse transfer model.
     pub fn new(restitution: f64, fluid_density: f64) -> Self {
@@ -1682,7 +1646,6 @@ impl FluidImpulseTransfer {
     ///
     /// # Returns
     /// Impulse vector on the body (N·s).
-    #[allow(clippy::too_many_arguments)]
     pub fn compute_impulse(
         &self,
         m_body: f64,
@@ -1708,7 +1671,6 @@ impl FluidImpulseTransfer {
 /// The buoyancy torque arises when the centre of buoyancy (CoB) does not
 /// coincide with the centre of mass (CoM): τ = r_CoB × F_buoyancy.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct RigidSphCoupling {
     /// Centre of mass of the rigid body in world frame.
     pub centre_of_mass: [f64; 3],
@@ -1717,7 +1679,6 @@ pub struct RigidSphCoupling {
     /// Gravitational acceleration magnitude (m s⁻²), positive downward.
     pub gravity: f64,
 }
-#[allow(dead_code)]
 impl RigidSphCoupling {
     /// Create a new rigid-SPH coupling.
     ///
@@ -1756,7 +1717,6 @@ impl RigidSphCoupling {
     ///
     /// # Returns
     /// Buoyancy torque vector τ (N·m) in the world frame.
-    #[allow(clippy::needless_range_loop)]
     pub fn compute_buoyancy_torque(
         &self,
         sph_positions: &[[f64; 3]],
@@ -1787,7 +1747,6 @@ impl RigidSphCoupling {
     ///
     /// # Returns
     /// Buoyancy force vector F_b (N) — directed along +z (upward).
-    #[allow(clippy::needless_range_loop)]
     pub fn compute_buoyancy_force(
         &self,
         sph_positions: &[[f64; 3]],
@@ -1813,7 +1772,6 @@ impl RigidSphCoupling {
 ///
 /// The wall is defined by a point `p0` on the wall and an inward normal `n`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DemWallContact {
     /// A point on the wall.
     pub wall_point: [f64; 3],
@@ -1824,7 +1782,6 @@ pub struct DemWallContact {
     /// Damping coefficient (N s m⁻¹).
     pub gamma_n: f64,
 }
-#[allow(dead_code)]
 impl DemWallContact {
     /// Create a new DEM-wall contact model.
     pub fn new(wall_point: [f64; 3], wall_normal: [f64; 3], k_n: f64, gamma_n: f64) -> Self {

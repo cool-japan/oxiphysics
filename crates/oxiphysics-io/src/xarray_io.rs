@@ -13,7 +13,6 @@ use std::io::{BufRead, BufReader, Write};
 // ── Coordinate ───────────────────────────────────────────────────────────────
 
 /// A labeled coordinate axis.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct XarrayCoordinate {
     /// Coordinate name (e.g. `"time"`, `"lat"`).
@@ -38,7 +37,6 @@ impl XarrayCoordinate {
 // ── DataArray ─────────────────────────────────────────────────────────────────
 
 /// A labeled N-dimensional array (mirrors `xarray.DataArray`).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct XarrayDataArray {
     /// Variable name.
@@ -104,7 +102,6 @@ impl XarrayDataArray {
 // ── Dataset ───────────────────────────────────────────────────────────────────
 
 /// A collection of `XarrayDataArray` variables (mirrors `xarray.Dataset`).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct XarrayDataset {
     /// Dataset name / title.
@@ -645,8 +642,13 @@ mod tests {
         arr.set(&[0, 1], 3.125);
         arr.set(&[1, 2], 2.72);
         ds.add_variable(arr);
-        let path = "/tmp/xarray_test_roundtrip";
-        write_csv_xarray(&ds, path).expect("write failed");
+        let tmpdir = std::env::temp_dir();
+        let path = tmpdir
+            .join("xarray_test_roundtrip")
+            .to_str()
+            .unwrap_or("")
+            .to_string();
+        write_csv_xarray(&ds, &path).expect("write failed");
         let loaded = read_csv_xarray(&format!("{path}_temperature.csv")).expect("read failed");
         assert!((loaded.get(&[0, 1]) - 3.125).abs() < 1e-9);
         assert!((loaded.get(&[1, 2]) - 2.72).abs() < 1e-9);
@@ -656,8 +658,14 @@ mod tests {
     fn test_write_csv_creates_file() {
         let mut ds = XarrayDataset::new("test2");
         ds.add_variable(XarrayDataArray::new("v", vec!["x".into()], vec![3]));
-        write_csv_xarray(&ds, "/tmp/xarray_test2").expect("write failed");
-        assert!(std::path::Path::new("/tmp/xarray_test2_v.csv").exists());
+        let base = std::env::temp_dir()
+            .join("xarray_test2")
+            .to_str()
+            .unwrap_or("")
+            .to_string();
+        write_csv_xarray(&ds, &base).expect("write failed");
+        let expected = std::env::temp_dir().join("xarray_test2_v.csv");
+        assert!(expected.exists());
     }
 
     // ── VTK export test ───────────────────────────────────────────────────
@@ -671,9 +679,9 @@ mod tests {
             vec![2, 2, 2],
         );
         ds.add_variable(arr);
-        xarray_to_vtk_structured(&ds, "pressure", "/tmp/xarray_test_pressure.vtk")
-            .expect("vtk failed");
-        assert!(std::path::Path::new("/tmp/xarray_test_pressure.vtk").exists());
+        let path = std::env::temp_dir().join("xarray_test_pressure.vtk");
+        xarray_to_vtk_structured(&ds, "pressure", path.to_str().unwrap_or("")).expect("vtk failed");
+        assert!(path.exists());
     }
 
     #[test]
@@ -681,7 +689,8 @@ mod tests {
         let mut ds = XarrayDataset::new("vtk_test2");
         let arr = XarrayDataArray::new("u2d", vec!["x".into(), "y".into()], vec![2, 2]);
         ds.add_variable(arr);
-        let res = xarray_to_vtk_structured(&ds, "u2d", "/tmp/xarray_test_u2d.vtk");
+        let path = std::env::temp_dir().join("xarray_test_u2d.vtk");
+        let res = xarray_to_vtk_structured(&ds, "u2d", path.to_str().unwrap_or(""));
         assert!(res.is_err());
     }
 

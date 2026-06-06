@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -33,9 +32,6 @@
 //! - Lee & Liu (2010), *J. Comput. Phys.* **229**, 8045-8063.
 //! - Liang et al. (2014), *Phys. Rev. E* **89**, 053320.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // D2Q9 lattice constants
 // ─────────────────────────────────────────────────────────────────────────────
@@ -60,10 +56,8 @@ const CX: [i32; 9] = [0, 1, 0, -1, 0, 1, -1, -1, 1];
 const CY: [i32; 9] = [0, 0, 1, 0, -1, 1, 1, -1, -1];
 
 /// Opposite direction indices for bounce-back.
+#[cfg(test)]
 const OPP: [usize; 9] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
-
-/// Speed of sound squared for D2Q9: cs^2 = 1/3.
-const CS2: f64 = 1.0 / 3.0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mobility types
@@ -710,7 +704,7 @@ impl CahnHilliardLbm {
                 let mu = self.chemical_potential[idx];
                 let m = eval_mobility(self.mobility_type, c, self.mobility);
 
-                for q in 0..9 {
+                for (q, w9_q) in W9.iter().enumerate() {
                     let base = idx * 9 + q;
                     let feq = self.feq(c, q);
                     let geq = self.geq(mu, q);
@@ -718,7 +712,7 @@ impl CahnHilliardLbm {
                     let source = if q == 0 {
                         -m * (1.0 - W9[0]) * mu * omega_c
                     } else {
-                        m * W9[q] * mu * omega_c
+                        m * w9_q * mu * omega_c
                     };
 
                     self.f_dist[base] += omega_c * (feq - self.f_dist[base]) + source;
@@ -872,8 +866,8 @@ pub fn mrt_transform_matrix() -> [f64; 81] {
     // Standard D2Q9 MRT transformation matrix
     let mut m = [0.0_f64; 81];
     // Row 0: density (rho)
-    for q in 0..9 {
-        m[q] = 1.0;
+    for m_q in m[0..9].iter_mut() {
+        *m_q = 1.0;
     }
     // Row 1: energy (e)
     let e_row = [-4.0, -1.0, -1.0, -1.0, -1.0, 2.0, 2.0, 2.0, 2.0];
@@ -1376,8 +1370,8 @@ mod tests {
     #[test]
     fn test_mrt_transform_first_row_all_ones() {
         let m = mrt_transform_matrix();
-        for q in 0..9 {
-            assert!((m[q] - 1.0).abs() < 1e-14);
+        for &m_q in m[0..9].iter() {
+            assert!((m_q - 1.0).abs() < 1e-14);
         }
     }
 
@@ -1445,9 +1439,9 @@ mod tests {
         let c_val = 0.8;
         for i in 0..4 {
             for j in 0..4 {
-                for q in 0..9 {
+                for (q, &w9_q) in W9.iter().enumerate() {
                     let fidx = s.fidx(i, j, q);
-                    s.f_dist[fidx] = W9[q] * c_val;
+                    s.f_dist[fidx] = w9_q * c_val;
                 }
             }
         }

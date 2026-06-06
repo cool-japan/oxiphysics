@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::too_many_arguments)]
 use super::types::{
     BSplineTrajectory, BoundaryConditions, CostFunction, DynamicsModel, KeepOutZone,
     ShootingResult, SqpStepResult, Trajectory, TrajectoryKnot, TrustRegionConfig,
@@ -47,6 +46,7 @@ pub(super) fn mat_vec(mat: &[f64], x: &[f64], n: usize) -> Vec<f64> {
     y
 }
 /// Multiply two n x n row-major matrices.
+#[cfg(test)]
 pub(super) fn mat_mul(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
     let mut c = vec![0.0; n * n];
     for i in 0..n {
@@ -70,6 +70,7 @@ pub(super) fn mat_transpose(a: &[f64], n: usize) -> Vec<f64> {
     t
 }
 /// Identity n x n matrix (row-major).
+#[cfg(test)]
 pub(super) fn mat_eye(n: usize) -> Vec<f64> {
     let mut m = vec![0.0; n * n];
     for i in 0..n {
@@ -77,20 +78,9 @@ pub(super) fn mat_eye(n: usize) -> Vec<f64> {
     }
     m
 }
-/// Add two n x n matrices.
-pub(super) fn mat_add(a: &[f64], b: &[f64]) -> Vec<f64> {
-    a.iter().zip(b.iter()).map(|(x, y)| x + y).collect()
-}
-/// Subtract two n x n matrices.
-pub(super) fn mat_sub(a: &[f64], b: &[f64]) -> Vec<f64> {
-    a.iter().zip(b.iter()).map(|(x, y)| x - y).collect()
-}
-/// Scale a matrix.
-pub(super) fn mat_scale(a: &[f64], s: f64) -> Vec<f64> {
-    a.iter().map(|x| x * s).collect()
-}
 /// Solve a small n x n linear system Ax = b via Gaussian elimination with
 /// partial pivoting. Returns `None` if singular.
+#[cfg(test)]
 pub(super) fn solve_linear(a: &[f64], b: &[f64], n: usize) -> Option<Vec<f64>> {
     let mut aug = vec![0.0; n * (n + 1)];
     for i in 0..n {

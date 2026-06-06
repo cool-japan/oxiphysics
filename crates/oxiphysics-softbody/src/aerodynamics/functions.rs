@@ -2,14 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::helpers::*;
 use super::types::*;
 /// Compute the total wind force on a set of panels given a common wind
 /// velocity and air density.
 ///
 /// Equivalent to [`AeroSurface::total_force`] but accepts a slice directly.
-#[allow(dead_code)]
 pub fn wind_force(panels: &[AeroPanel], wind_velocity: [f64; 3], air_density: f64) -> [f64; 3] {
     let mut total = [0.0_f64; 3];
     for panel in panels {
@@ -23,7 +21,6 @@ pub fn wind_force(panels: &[AeroPanel], wind_velocity: [f64; 3], air_density: f6
 /// ```text
 /// F = rho * pi * r^3 * (omega x velocity)
 /// ```
-#[allow(dead_code)]
 pub fn magnus_force(omega: [f64; 3], velocity: [f64; 3], radius: f64, density: f64) -> [f64; 3] {
     let cross = v3_cross(omega, velocity);
     let coeff = density * std::f64::consts::PI * radius * radius * radius;
@@ -34,7 +31,6 @@ pub fn magnus_force(omega: [f64; 3], velocity: [f64; 3], radius: f64, density: f
 /// ```text
 /// F_b = -fluid_density * volume * gravity
 /// ```
-#[allow(dead_code)]
 pub fn buoyancy_force(volume: f64, fluid_density: f64, gravity: [f64; 3]) -> [f64; 3] {
     v3_scale(gravity, -fluid_density * volume)
 }
@@ -44,7 +40,6 @@ pub fn buoyancy_force(volume: f64, fluid_density: f64, gravity: [f64; 3]) -> [f6
 /// `q = 0.5 * rho * v^2 * Cd * cos(alpha)`
 ///
 /// Returns the force vector normal to the panel surface.
-#[allow(dead_code)]
 pub fn wind_load_force(
     panel_normal: [f64; 3],
     panel_area: f64,
@@ -68,7 +63,6 @@ pub fn wind_load_force(
     v3_scale(panel_normal, sign * force_mag)
 }
 /// Compute the total wind load on multiple structural panels.
-#[allow(dead_code)]
 pub fn total_wind_load(
     normals: &[[f64; 3]],
     areas: &[f64],
@@ -91,7 +85,6 @@ pub fn total_wind_load(
 /// where `A` is the panel area and `r` is the distance from panel center to `p`.
 ///
 /// Returns the velocity induced at `field_point` by the panel (gradient of phi).
-#[allow(dead_code)]
 pub fn source_panel_velocity(
     panel_center: [f64; 3],
     _panel_normal: [f64; 3],
@@ -112,7 +105,6 @@ pub fn source_panel_velocity(
 ///
 /// This is a simplified O(N^2) approach: the influence matrix A_ij represents
 /// the normal velocity at panel i due to unit source strength on panel j.
-#[allow(dead_code)]
 pub fn solve_panel_method(
     centers: &[[f64; 3]],
     normals: &[[f64; 3]],
@@ -139,7 +131,6 @@ pub fn solve_panel_method(
     gauss_solve(&mut a_mat, &mut rhs, n)
 }
 /// Simple Gauss elimination for a dense N x N system.
-#[allow(dead_code)]
 pub(super) fn gauss_solve(a: &mut [f64], b: &mut [f64], n: usize) -> Vec<f64> {
     for col in 0..n {
         let mut max_row = col;
@@ -187,7 +178,6 @@ pub(super) fn gauss_solve(a: &mut [f64], b: &mut [f64], n: usize) -> Vec<f64> {
 /// ```text
 /// v = (gamma / 4*pi) * (r1 x r2) / |r1 x r2|^2 * r0 . (r1/|r1| - r2/|r2|)
 /// ```
-#[allow(dead_code)]
 pub fn biot_savart_filament(a: [f64; 3], b: [f64; 3], p: [f64; 3], gamma: f64) -> [f64; 3] {
     super::helpers::biot_savart_filament(a, b, p, gamma)
 }
@@ -196,7 +186,6 @@ pub fn biot_savart_filament(a: [f64; 3], b: [f64; 3], p: [f64; 3], gamma: f64) -
 /// A horseshoe vortex consists of:
 /// 1. A bound vortex from p1 to p2
 /// 2. Two semi-infinite trailing vortices extending downstream (along +X)
-#[allow(dead_code)]
 pub fn horseshoe_induced_velocity(vortex: &HorseshoeVortex, field_point: [f64; 3]) -> [f64; 3] {
     let v_bound = biot_savart_filament(vortex.p1, vortex.p2, field_point, vortex.gamma);
     let trail_dist = 1000.0;
@@ -209,7 +198,6 @@ pub fn horseshoe_induced_velocity(vortex: &HorseshoeVortex, field_point: [f64; 3
 /// Compute pressure coefficient Cp from velocity ratio.
 ///
 /// `Cp = 1 - (v_local / v_inf)^2` (incompressible Bernoulli).
-#[allow(dead_code)]
 pub fn pressure_coefficient(v_local: f64, v_inf: f64) -> f64 {
     if v_inf.abs() < 1e-30 {
         return 0.0;
@@ -222,7 +210,6 @@ pub fn pressure_coefficient(v_local: f64, v_inf: f64) -> f64 {
 /// `F = sum_i( -Cp_i * q_inf * A_i * n_i )`
 ///
 /// where `q_inf = 0.5 * rho * v_inf^2`.
-#[allow(dead_code)]
 pub fn pressure_force_from_cp(
     cp_values: &[f64],
     normals: &[[f64; 3]],
@@ -238,7 +225,6 @@ pub fn pressure_force_from_cp(
     force
 }
 /// Compute dynamic pressure q = 0.5 * rho * v^2.
-#[allow(dead_code)]
 pub fn dynamic_pressure(air_density: f64, velocity: f64) -> f64 {
     0.5 * air_density * velocity * velocity
 }
@@ -255,7 +241,6 @@ pub fn dynamic_pressure(air_density: f64, velocity: f64) -> f64 {
 /// ```text
 /// v = (gamma / 4π) * (r1→P × r2→P) / |r1→P × r2→P|²  * r0 · (r̂1 - r̂2)
 /// ```
-#[allow(dead_code)]
 pub fn biot_savart_velocity(r1: [f64; 3], r2: [f64; 3], gamma: f64, eval: [f64; 3]) -> [f64; 3] {
     super::helpers::biot_savart_velocity(r1, r2, gamma, eval)
 }
@@ -1092,7 +1077,6 @@ mod tests {
 /// `i`'s collocation point by a unit circulation on panel `j`.
 ///
 /// Returns a flat row-major vector of length `n*n`.
-#[allow(dead_code)]
 pub fn build_vlm_aic_matrix(panels: &[VortexRingPanel]) -> Vec<f64> {
     let n = panels.len();
     let mut aic = vec![0.0_f64; n * n];
@@ -1111,7 +1095,6 @@ pub fn build_vlm_aic_matrix(panels: &[VortexRingPanel]) -> Vec<f64> {
 /// right-hand side (normal component of free-stream velocity at each panel).
 ///
 /// Returns a `Vec`f64` of circulation strengths Γ_j.
-#[allow(dead_code)]
 pub fn solve_vlm_circulations(aic: &[f64], rhs: &[f64]) -> Vec<f64> {
     let n = rhs.len();
     let mut a = aic.to_vec();
@@ -1128,7 +1111,6 @@ pub fn solve_vlm_circulations(aic: &[f64], rhs: &[f64]) -> Vec<f64> {
 /// where Δs_j is the bound-vortex span vector of panel j.
 ///
 /// Returns a `Vec<\[f64; 3\]>` of force vectors (one per panel).
-#[allow(dead_code)]
 pub fn kutta_joukowski_lift(
     panels: &[VortexRingPanel],
     gammas: &[f64],
@@ -1150,7 +1132,6 @@ pub fn kutta_joukowski_lift(
 ///
 /// Uses the trailing-vortex induced velocity at each panel's collocation point.
 /// Returns a `Vec`f64` of induced drag magnitudes (N) per panel.
-#[allow(dead_code)]
 pub fn induced_drag_per_panel(
     panels: &[VortexRingPanel],
     gammas: &[f64],
@@ -1197,7 +1178,6 @@ pub fn induced_drag_per_panel(
 /// `chord`: mean chord (m).
 ///
 /// Returns the Oswald efficiency factor.
-#[allow(dead_code)]
 pub fn prandtl_span_efficiency(
     cl_distribution: &[f64],
     dy_distribution: &[f64],
@@ -1235,7 +1215,6 @@ pub fn prandtl_span_efficiency(
 /// 3. Integrates the Kutta-Joukowski forces.
 ///
 /// Returns `(lift_vec_N, induced_drag_N)` where both are 3-component vectors.
-#[allow(dead_code)]
 pub fn vlm_total_forces(
     panels: &[VortexRingPanel],
     v_inf: [f64; 3],
@@ -1276,7 +1255,6 @@ pub fn vlm_total_forces(
 ///   ε = (2 * CL) / (π * AR)
 ///
 /// where CL is the wing lift coefficient and AR is the aspect ratio.
-#[allow(dead_code)]
 pub fn downwash_angle(cl_wing: f64, aspect_ratio: f64) -> f64 {
     if aspect_ratio < 1e-6 {
         return 0.0;
@@ -1288,7 +1266,6 @@ pub fn downwash_angle(cl_wing: f64, aspect_ratio: f64) -> f64 {
 ///
 /// `alpha_tail_geometric`: geometric (physical) angle of attack of the tail (rad).
 /// `epsilon`: downwash angle from the wing (rad).
-#[allow(dead_code)]
 pub fn tail_effective_alpha(alpha_tail_geometric: f64, epsilon: f64) -> f64 {
     alpha_tail_geometric - epsilon
 }
@@ -1587,8 +1564,8 @@ mod aero_extended_tests {
             gamma: 0.0,
         };
         let (_lift, drag) = vlm_total_forces(&[panel], [30.0, 0.0, 0.0], 1.225);
-        for d in 0..3 {
-            assert!(drag[d].is_finite(), "drag[{d}] should be finite");
+        for (d, &dv) in drag.iter().enumerate() {
+            assert!(dv.is_finite(), "drag[{d}] should be finite");
         }
     }
     #[test]

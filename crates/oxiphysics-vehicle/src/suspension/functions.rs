@@ -29,7 +29,6 @@ pub trait SuspensionModel {
     ) -> Real;
 }
 /// Compute the spring-damper force for a suspension unit.
-#[allow(dead_code)]
 pub fn spring_force(params: &SuspensionParams, state: &SuspensionState) -> f64 {
     let displacement = params.rest_length - state.current_length;
     let raw = params.spring_stiffness * displacement - params.damper_coeff * state.velocity;
@@ -37,7 +36,6 @@ pub fn spring_force(params: &SuspensionParams, state: &SuspensionState) -> f64 {
     raw.clamp(0.0, max_force)
 }
 /// Step the suspension simulation forward by `dt` seconds.
-#[allow(dead_code)]
 pub fn suspension_step(
     params: &SuspensionParams,
     state: &mut SuspensionState,
@@ -56,21 +54,18 @@ pub fn suspension_step(
     state.force = spring_force(params, state);
 }
 /// Compute the longitudinal slip ratio.
-#[allow(dead_code)]
 pub fn compute_slip_ratio(wheel_angular_vel: f64, wheel_radius: f64, vehicle_speed: f64) -> f64 {
     let wheel_speed = wheel_angular_vel * wheel_radius;
     let denom = vehicle_speed.abs().max(0.01);
     (wheel_speed - vehicle_speed) / denom
 }
 /// Compute the lateral slip angle (radians).
-#[allow(dead_code)]
 pub fn compute_slip_angle(lateral_vel: f64, forward_vel: f64) -> f64 {
     lateral_vel.atan2(forward_vel.abs())
 }
 /// Compute static ride height given vehicle mass, spring stiffness, and rest length.
 ///
 /// At static equilibrium: m*g = k * deflection, so ride_height = rest_length - m*g/k.
-#[allow(dead_code)]
 pub fn static_ride_height(
     mass_on_corner: f64,
     spring_stiffness: f64,
@@ -86,7 +81,6 @@ pub fn static_ride_height(
 /// Compute the natural frequency of a spring-mass system (Hz).
 ///
 /// f_n = (1 / 2*pi) * sqrt(k / m)
-#[allow(dead_code)]
 pub fn natural_frequency(stiffness: f64, mass: f64) -> f64 {
     if mass <= 0.0 || stiffness <= 0.0 {
         return 0.0;
@@ -96,7 +90,6 @@ pub fn natural_frequency(stiffness: f64, mass: f64) -> f64 {
 /// Compute the damping ratio (dimensionless).
 ///
 /// zeta = c / (2 * sqrt(k * m))
-#[allow(dead_code)]
 pub fn damping_ratio(damping: f64, stiffness: f64, mass: f64) -> f64 {
     let critical = 2.0 * (stiffness * mass).sqrt();
     if critical > 1e-10 {
@@ -108,14 +101,12 @@ pub fn damping_ratio(damping: f64, stiffness: f64, mass: f64) -> f64 {
 /// Compute the wheel rate from the spring rate and motion ratio.
 ///
 /// wheel_rate = spring_rate * motion_ratio^2
-#[allow(dead_code)]
 pub fn wheel_rate(spring_rate: f64, motion_ratio: f64) -> f64 {
     spring_rate * motion_ratio * motion_ratio
 }
 /// Compute the load transfer during cornering.
 ///
 /// delta_Fz = (m * a_lat * h_cg) / track_width
-#[allow(dead_code)]
 pub fn lateral_load_transfer(
     mass: f64,
     lateral_accel: f64,
@@ -134,7 +125,6 @@ pub fn lateral_load_transfer(
 /// `h_rc = lower_a * upper_a / (lower_a + upper_a) * track / 2`
 ///
 /// (a simplified geometric approximation; not a full instant-centre method).
-#[allow(dead_code)]
 pub fn compute_roll_center_height(lower_a: f64, upper_a: f64, track: f64) -> f64 {
     let sum = lower_a + upper_a;
     if sum < 1e-12 {
@@ -145,7 +135,6 @@ pub fn compute_roll_center_height(lower_a: f64, upper_a: f64, track: f64) -> f64
 /// Natural (undamped) frequency of a spring-mass system (Hz).
 ///
 /// `f_n = (1 / 2π) * √(k / m)`
-#[allow(dead_code)]
 pub fn suspension_frequency(spring_rate: f64, unsprung_mass: f64) -> f64 {
     if spring_rate <= 0.0 || unsprung_mass <= 0.0 {
         return 0.0;
@@ -155,7 +144,6 @@ pub fn suspension_frequency(spring_rate: f64, unsprung_mass: f64) -> f64 {
 /// Critical damping coefficient for a spring-mass system (N·s/m).
 ///
 /// `c_crit = 2 * √(k * m)`
-#[allow(dead_code)]
 pub fn critical_damping(spring_rate: f64, mass: f64) -> f64 {
     if spring_rate <= 0.0 || mass <= 0.0 {
         return 0.0;
@@ -693,21 +681,18 @@ mod tests {
 /// Compute the amplitude of a sinusoidal road profile at position `x`.
 ///
 /// Road profile: `z(x) = amplitude * sin(2π * x / wavelength)`.
-#[allow(dead_code)]
 pub fn sinusoidal_road_amplitude(amplitude: f64, _wavelength: f64, _x: f64) -> f64 {
     amplitude
 }
 /// RMS value of a sinusoidal signal with the given amplitude.
 ///
 /// `rms = amplitude / √2`
-#[allow(dead_code)]
 pub fn sinusoidal_road_rms(amplitude: f64) -> f64 {
     amplitude / 2.0_f64.sqrt()
 }
 /// Evaluate the road height profile (sinusoidal) at position `x`.
 ///
 /// `z(x) = amplitude * sin(2π * x / wavelength)`
-#[allow(dead_code)]
 pub fn road_height_sinusoidal(x: f64, amplitude: f64, wavelength: f64) -> f64 {
     if wavelength <= 0.0 {
         return 0.0;
@@ -717,7 +702,6 @@ pub fn road_height_sinusoidal(x: f64, amplitude: f64, wavelength: f64) -> f64 {
 /// Velocity of the sinusoidal road at a wheel moving at constant speed `v`.
 ///
 /// `dz/dt = dz/dx * v = amplitude * (2π/λ) * cos(2π * x / λ) * v`
-#[allow(dead_code)]
 pub fn road_velocity_sinusoidal(
     x: f64,
     amplitude: f64,
@@ -738,7 +722,6 @@ pub fn road_velocity_sinusoidal(
 /// * `spring_force` – spring force already computed (N)
 /// * `jounce_stop`  – jounce bump-stop model
 /// * `rebound_stop` – rebound bump-stop model
-#[allow(dead_code)]
 pub fn total_corner_force(
     travel: f64,
     spring_force: f64,
@@ -766,7 +749,6 @@ pub(super) fn norm3(v: [f64; 3]) -> f64 {
 /// - Above `knee_velocity`, slope = `high_speed_rate`.
 ///
 /// Positive velocity = extension (rebound).
-#[allow(dead_code)]
 pub fn digressive_damper_force(
     velocity: f64,
     knee_velocity: f64,
@@ -785,14 +767,12 @@ pub fn digressive_damper_force(
 /// Compute a progressive spring force with a cubic hardening term.
 ///
 /// `F = k * x + k3 * x^3`
-#[allow(dead_code)]
 pub fn progressive_spring_force(x: f64, k: f64, k3: f64) -> f64 {
     k * x + k3 * x.powi(3)
 }
 /// Compute the ride frequency (Hz) for a given spring rate and sprung mass.
 ///
 /// `f = (1/(2π)) * sqrt(k/m)`
-#[allow(dead_code)]
 pub fn ride_frequency_hz(spring_rate: f64, sprung_mass: f64) -> f64 {
     if sprung_mass < 1e-6 {
         return 0.0;
@@ -802,7 +782,6 @@ pub fn ride_frequency_hz(spring_rate: f64, sprung_mass: f64) -> f64 {
 /// Compute the critical damping coefficient for a given spring rate and mass.
 ///
 /// `c_crit = 2 * sqrt(k * m)`
-#[allow(dead_code)]
 pub fn critical_damping_coefficient(spring_rate: f64, mass: f64) -> f64 {
     2.0 * (spring_rate * mass).sqrt()
 }
@@ -810,7 +789,6 @@ pub fn critical_damping_coefficient(spring_rate: f64, mass: f64) -> f64 {
 /// and natural frequency.
 ///
 /// `τ = 1 / (ζ * ω_n)`
-#[allow(dead_code)]
 pub fn settling_time_constant(damping_ratio: f64, natural_freq_rad: f64) -> f64 {
     if damping_ratio.abs() < 1e-9 || natural_freq_rad.abs() < 1e-9 {
         return f64::INFINITY;

@@ -1,12 +1,8 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! Low-level geometry primitives: Ray, AABB, Sphere, Plane, Triangle, Capsule,
 //! OrientedBox, Frustum, convex polyhedron, and barycentric coordinates.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -578,7 +574,7 @@ impl OrientedBox {
     /// Return the 8 corners of the OBB in world space.
     pub fn corners(&self) -> [[f64; 3]; 8] {
         let mut corners = [[0.0; 3]; 8];
-        for i in 0..8 {
+        for (i, corner) in corners.iter_mut().enumerate() {
             let sx = if i & 1 == 0 { 1.0 } else { -1.0 };
             let sy = if i & 2 == 0 { 1.0 } else { -1.0 };
             let sz = if i & 4 == 0 { 1.0 } else { -1.0 };
@@ -589,7 +585,7 @@ impl OrientedBox {
                 ),
                 scale(self.axes[2], sz * self.half_extents[2]),
             );
-            corners[i] = add(self.center, offset);
+            *corner = add(self.center, offset);
         }
         corners
     }
@@ -845,10 +841,6 @@ pub fn frustum_from_vp(m: &[[f64; 4]; 4]) -> Frustum {
     ];
     Frustum::new(planes)
 }
-
-/// Use PI for any angle-related computations.
-#[allow(dead_code)]
-const HALF_PI: f64 = PI / 2.0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests

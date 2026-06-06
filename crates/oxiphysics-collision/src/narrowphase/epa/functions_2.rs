@@ -2,19 +2,16 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{epa_dot3, epa_negate3, epa_scale3, epa_sub3};
 use super::types::{EpaFaceRaw, EpaPenetration, EpaPolytope, EpaWitness};
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn epa_add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 /// Run EPA but stop if the polytope exceeds `max_faces` faces.
 ///
 /// This prevents unbounded growth in pathological cases.
-#[allow(dead_code)]
 pub fn epa_penetration_capped<F>(
     mut support_fn: F,
     initial_simplex: &[[f64; 3]; 4],
@@ -71,7 +68,6 @@ where
 /// `support_a(dir)` returns the support of shape A.
 /// `support_b(dir)` returns the support of shape B.
 /// `epa_result` is the converged EPA penetration.
-#[allow(dead_code)]
 pub fn epa_extract_witness<FA, FB>(
     mut support_a: FA,
     mut support_b: FB,
@@ -96,7 +92,6 @@ where
 ///
 /// This is useful as a "polytope reduction" step to limit memory usage
 /// when the polytope grows too large after many expansions.
-#[allow(dead_code)]
 pub fn epa_keep_closest_faces(polytope: &EpaPolytope, max_faces: usize) -> EpaPolytope {
     if polytope.faces.len() <= max_faces {
         return polytope.clone();
@@ -147,7 +142,6 @@ pub fn epa_keep_closest_faces(polytope: &EpaPolytope, max_faces: usize) -> EpaPo
 /// by expanding the polytope up to `max_steps` times.
 ///
 /// Returns `(final_depth, converged)`.
-#[allow(dead_code)]
 pub fn epa_refine_depth<F>(
     mut support_fn: F,
     polytope: &mut EpaPolytope,
@@ -188,7 +182,6 @@ where
 /// The EPA result typically gives a single contact point (from the closest face).
 /// This function returns up to `max_contacts` contact points by also sampling
 /// neighboring faces close to the minimum distance.
-#[allow(dead_code)]
 pub fn epa_contact_manifold(
     polytope: &EpaPolytope,
     max_contacts: usize,
@@ -224,7 +217,7 @@ pub fn epa_contact_manifold(
 }
 #[cfg(test)]
 mod tests_epa_extended {
-    use super::*;
+    use super::super::*;
     use crate::narrowphase::EpaFaceQueue;
     fn make_tetrahedron() -> [[f64; 3]; 4] {
         [

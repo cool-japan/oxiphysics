@@ -24,7 +24,7 @@
 //!
 //! // Extract per-frame instance data (positions, rotations, …)
 //! let frame = WebGlBridge::extract_render_frame(&engine);
-//! assert_eq!(frame.body_count as usize, frame.positions.len() / 3);
+//! assert_eq!(frame.body_count as usize, frame.positions().len() / 3);
 //! ```
 
 use wasm_bindgen::prelude::*;

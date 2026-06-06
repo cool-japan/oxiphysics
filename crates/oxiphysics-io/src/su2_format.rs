@@ -1,4 +1,3 @@
-#![allow(clippy::manual_div_ceil, clippy::manual_strip)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -334,12 +333,7 @@ pub fn read_su2<R: BufRead>(reader: R) -> io::Result<Su2Mesh> {
 
 /// Parse a `KEY=value` line and return the value string if the key matches.
 fn parse_kv<'a>(line: &'a str, key: &str) -> Option<&'a str> {
-    let trimmed = line.trim();
-    if trimmed.starts_with(key) {
-        Some(trimmed[key.len()..].trim())
-    } else {
-        None
-    }
+    line.trim().strip_prefix(key).map(str::trim)
 }
 
 /// Parse one element line: `vtk_type` `node0` `node1` ... [global_id]`.

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{BSplineBasis, RbfKernel};
 
 /// Linear interpolation between two scalars.
@@ -203,24 +202,38 @@ pub fn bilinear_grid(
     let v = fy - r0 as f64;
     bilinear(grid[r0][c0], grid[r0][c1], grid[r1][c0], grid[r1][c1], u, v)
 }
+/// Parameters for a regular 3-D rectilinear grid.
+#[derive(Debug, Clone, Copy)]
+pub struct Grid3Params {
+    /// Minimum x coordinate.
+    pub x_min: f64,
+    /// Minimum y coordinate.
+    pub y_min: f64,
+    /// Minimum z coordinate.
+    pub z_min: f64,
+    /// Grid spacing in x.
+    pub dx: f64,
+    /// Grid spacing in y.
+    pub dy: f64,
+    /// Grid spacing in z.
+    pub dz: f64,
+}
+
 /// Trilinear interpolation on a regular 3-D grid.
 ///
 /// `grid[z][y][x]` holds the value at grid index `(x, y, z)`.
-/// Grid coordinates start at `(x_min, y_min, z_min)` with steps `(dx, dy, dz)`.
+/// Grid coordinates start at `(params.x_min, params.y_min, params.z_min)`
+/// with steps `(params.dx, params.dy, params.dz)`.
 /// Clamps to the grid boundary.
-#[allow(clippy::too_many_arguments)]
-pub fn trilinear_grid(
-    grid: &[Vec<Vec<f64>>],
-    x_min: f64,
-    y_min: f64,
-    z_min: f64,
-    dx: f64,
-    dy: f64,
-    dz: f64,
-    x: f64,
-    y: f64,
-    z: f64,
-) -> f64 {
+pub fn trilinear_grid(grid: &[Vec<Vec<f64>>], params: &Grid3Params, x: f64, y: f64, z: f64) -> f64 {
+    let Grid3Params {
+        x_min,
+        y_min,
+        z_min,
+        dx,
+        dy,
+        dz,
+    } = *params;
     let nz = grid.len();
     if nz == 0 {
         return 0.0;
@@ -476,8 +489,8 @@ pub fn rbf_tps_fit(centers: &[[f64; 2]], values: &[f64]) -> Result<Vec<f64>, Str
         mat.swap(col, pivot);
         rhs.swap(col, pivot);
         let diag = mat[col][col];
-        for j in col..n {
-            mat[col][j] /= diag;
+        for cell in mat[col][col..].iter_mut() {
+            *cell /= diag;
         }
         rhs[col] /= diag;
         for row in 0..n {
@@ -485,9 +498,9 @@ pub fn rbf_tps_fit(centers: &[[f64; 2]], values: &[f64]) -> Result<Vec<f64>, Str
                 continue;
             }
             let f = mat[row][col];
-            for j in col..n {
-                let v = mat[col][j] * f;
-                mat[row][j] -= v;
+            let col_vals: Vec<f64> = mat[col][col..].to_vec();
+            for (cell, &cv) in mat[row][col..].iter_mut().zip(col_vals.iter()) {
+                *cell -= cv * f;
             }
             let rv = rhs[col] * f;
             rhs[row] -= rv;
@@ -637,8 +650,8 @@ pub fn rbf_fit(
         mat.swap(col, pivot);
         rhs.swap(col, pivot);
         let diag = mat[col][col];
-        for j in col..n {
-            mat[col][j] /= diag;
+        for cell in mat[col][col..].iter_mut() {
+            *cell /= diag;
         }
         rhs[col] /= diag;
         for row in 0..n {
@@ -646,9 +659,9 @@ pub fn rbf_fit(
                 continue;
             }
             let f = mat[row][col];
-            for j in col..n {
-                let v = mat[col][j] * f;
-                mat[row][j] -= v;
+            let col_vals: Vec<f64> = mat[col][col..].to_vec();
+            for (cell, &cv) in mat[row][col..].iter_mut().zip(col_vals.iter()) {
+                *cell -= cv * f;
             }
             let rv = rhs[col] * f;
             rhs[row] -= rv;
@@ -688,7 +701,7 @@ pub fn barycentric_rational(xs: &[f64], ys: &[f64], d: usize, x: f64) -> f64 {
         }
     }
     let mut weights = vec![0.0_f64; n];
-    for i in 0..n {
+    for (i, w) in weights.iter_mut().enumerate() {
         let j_lo = i.saturating_sub(d);
         let j_hi = (i + 1).min(n - d);
         let sign = if i % 2 == 0 { 1.0_f64 } else { -1.0_f64 };
@@ -701,7 +714,7 @@ pub fn barycentric_rational(xs: &[f64], ys: &[f64], d: usize, x: f64) -> f64 {
             }
             s += c;
         }
-        weights[i] = sign * s;
+        *w = sign * s;
     }
     let mut num = 0.0_f64;
     let mut den = 0.0_f64;
@@ -946,14 +959,16 @@ mod tests {
             vec![vec![1.0, 2.0], vec![3.0, 4.0]],
             vec![vec![5.0, 6.0], vec![7.0, 8.0]],
         ];
-        assert!(approx(
-            trilinear_grid(&grid, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0),
-            1.0
-        ));
-        assert!(approx(
-            trilinear_grid(&grid, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
-            8.0
-        ));
+        let gp = Grid3Params {
+            x_min: 0.0,
+            y_min: 0.0,
+            z_min: 0.0,
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        };
+        assert!(approx(trilinear_grid(&grid, &gp, 0.0, 0.0, 0.0), 1.0));
+        assert!(approx(trilinear_grid(&grid, &gp, 1.0, 1.0, 1.0), 8.0));
     }
     #[test]
     fn test_bicubic_at_integer_coords() {
@@ -1380,9 +1395,17 @@ mod tests {
             vec![vec![0.0, 0.0], vec![0.0, 0.0]],
             vec![vec![1.0, 1.0], vec![1.0, 1.0]],
         ];
+        let gp = Grid3Params {
+            x_min: 0.0,
+            y_min: 0.0,
+            z_min: 0.0,
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        };
         for i in 0..=10 {
             let z = i as f64 / 10.0;
-            let v = trilinear_grid(&grid, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.5, 0.5, z);
+            let v = trilinear_grid(&grid, &gp, 0.5, 0.5, z);
             assert!((v - z).abs() < 1e-12, "trilinear z-linear at z={z}: {v}");
         }
     }

@@ -2,10 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_range_contains)]
-#[allow(unused_imports)]
-use super::functions::*;
+use super::functions::{poiseuille_profile, zou_he_inlet_left};
 use crate::lattice::{D3Q19_VELOCITIES, D3Q19_WEIGHTS};
 
 /// Apply a Poiseuille velocity profile as a Zou-He left inlet for D2Q9.
@@ -18,11 +15,10 @@ use crate::lattice::{D3Q19_VELOCITIES, D3Q19_WEIGHTS};
 /// * `h`       – total channel height in lattice units
 /// * `u_max`   – peak velocity
 pub fn apply_poiseuille_inlet_d2q9(f_cells: &mut [[f64; 9]], h: f64, u_max: f64) {
-    let ny = f_cells.len();
-    for j in 0..ny {
+    for (j, cell) in f_cells.iter_mut().enumerate() {
         let y = j as f64 + 0.5;
         let ux = poiseuille_profile(y, h, u_max);
-        zou_he_inlet_left(&mut f_cells[j], ux);
+        zou_he_inlet_left(cell, ux);
     }
 }
 /// Half-way bounce-back with moving wall velocity for D3Q19 top face.
@@ -111,7 +107,7 @@ pub fn verify_momentum_constraint_d3q19(f: &[f64; 19], rho: f64, ux: f64, tol: f
 }
 #[cfg(test)]
 mod tests_advanced_zou_he {
-    use super::*;
+    use super::super::*;
     fn rest_d2q9() -> [f64; 9] {
         d2q9_equilibrium(1.0, 0.0, 0.0)
     }
@@ -460,8 +456,8 @@ mod tests_advanced_zou_he {
     fn test_tanh_shear_profile_range() {
         let u_low = tanh_shear_profile(0.0, 5.0, 1.0, 0.1);
         let u_high = tanh_shear_profile(10.0, 5.0, 1.0, 0.1);
-        assert!(u_low >= 0.0 && u_low <= 0.05, "Tanh low: {u_low}");
-        assert!(u_high >= 0.05 && u_high <= 0.1, "Tanh high: {u_high}");
+        assert!((0.0..=0.05).contains(&u_low), "Tanh low: {u_low}");
+        assert!((0.05..=0.1).contains(&u_high), "Tanh high: {u_high}");
     }
     #[test]
     fn test_mass_flux_left_d2q9_at_rest() {

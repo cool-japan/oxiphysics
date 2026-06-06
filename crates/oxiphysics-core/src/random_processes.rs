@@ -1,12 +1,8 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! Random processes: Brownian motion, Poisson processes, Markov chains,
 //! continuous-time Markov chains, Lévy processes, and SDE solvers.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -39,10 +35,6 @@ impl Lcg {
         let u1 = self.uniform().max(1e-300);
         let u2 = self.uniform();
         (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
-    }
-    /// Normal N(mu, sigma).
-    fn normal_ms(&mut self, mu: f64, sigma: f64) -> f64 {
-        mu + sigma * self.normal()
     }
 }
 
@@ -107,18 +99,18 @@ impl BrownianMotion {
         }
         // DFT of c (eigenvalues of circulant — real for symmetric c)
         let mut eigvals = vec![0.0f64; m];
-        for j in 0..m {
+        for (j, ev) in eigvals.iter_mut().enumerate() {
             let mut sum = 0.0;
-            for k in 0..m {
-                sum += c[k] * (2.0 * PI * j as f64 * k as f64 / m as f64).cos();
+            for (k, &ck) in c.iter().enumerate() {
+                sum += ck * (2.0 * PI * j as f64 * k as f64 / m as f64).cos();
             }
-            eigvals[j] = sum / m as f64;
+            *ev = sum / m as f64;
         }
         let mut rng = Lcg::new(seed);
         // Generate complex white noise in frequency domain
         let mut w_real = vec![0.0f64; m];
         let mut w_imag = vec![0.0f64; m];
-        for k in 0..m {
+        for (k, (wr, wi)) in w_real.iter_mut().zip(w_imag.iter_mut()).enumerate() {
             let z1 = rng.normal();
             let z2 = rng.normal();
             let s = if eigvals[k] > 0.0 {
@@ -126,18 +118,18 @@ impl BrownianMotion {
             } else {
                 0.0
             };
-            w_real[k] = s * z1;
-            w_imag[k] = s * z2;
+            *wr = s * z1;
+            *wi = s * z2;
         }
         // Inverse DFT (real part only)
         let mut path = vec![0.0f64; n + 1];
-        for i in 1..=n {
+        for (i, p) in path[1..].iter_mut().enumerate().map(|(i, p)| (i + 1, p)) {
             let mut sum = 0.0;
             for k in 0..m {
                 sum += w_real[k] * (2.0 * PI * i as f64 * k as f64 / m as f64).cos()
                     - w_imag[k] * (2.0 * PI * i as f64 * k as f64 / m as f64).sin();
             }
-            path[i] = sum;
+            *p = sum;
         }
         // Cumulative sum to get fBm increments
         for i in 1..=n {

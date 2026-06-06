@@ -2,12 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(
-    clippy::needless_range_loop,
-    clippy::ptr_arg,
-    clippy::too_many_arguments
-)]
-#[allow(unused_imports)]
 use super::functions::*;
 
 use crate::kernel::{CubicSplineKernel, SphKernel};
@@ -170,14 +164,12 @@ impl DensityRatioMultiphase {
 ///
 /// In practice we advance one pseudo-timestep `dtau` using a finite SPH
 /// approximation, returning the new color values.
-#[allow(dead_code)]
 pub struct InterfaceSharpening {
     /// Interface width parameter ε (m).
     pub epsilon: f64,
     /// Smoothing length h (m).
     pub h: f64,
 }
-#[allow(dead_code)]
 impl InterfaceSharpening {
     /// Create a new interface sharpening operator.
     pub fn new(epsilon: f64, h: f64) -> Self {
@@ -275,7 +267,6 @@ impl InterfaceSharpening {
 /// ```
 /// where θ is the equilibrium contact angle, σ_SG the solid–gas surface energy,
 /// σ_SL the solid–liquid surface energy, and σ_LG the liquid–gas surface tension.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ContactAngleModel {
     /// Solid–gas surface energy (J/m²).
@@ -285,7 +276,6 @@ pub struct ContactAngleModel {
     /// Liquid–gas surface tension (J/m²).
     pub sigma_lg: f64,
 }
-#[allow(dead_code)]
 impl ContactAngleModel {
     /// Create a new contact-angle model.
     ///
@@ -537,7 +527,6 @@ pub struct FluidPhase {
 /// ```
 /// and appears in the early-time linear growth rate `σ = sqrt(A g k)`, where
 /// `g` is gravitational acceleration and `k` is the perturbation wavenumber.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RayleighTaylorAnalyzer {
     /// Density of the heavy fluid (kg/m³).
@@ -547,7 +536,6 @@ pub struct RayleighTaylorAnalyzer {
     /// Gravitational acceleration magnitude (m/s²).
     pub g: f64,
 }
-#[allow(dead_code)]
 impl RayleighTaylorAnalyzer {
     /// Create a new analyser.
     pub fn new(rho_heavy: f64, rho_light: f64, g: f64) -> Self {
@@ -728,19 +716,19 @@ impl MultiphaseSystem {
         let n = self.particles.len();
         let h = self.h;
         let mut densities = vec![0.0_f64; n];
-        for i in 0..n {
-            for j in 0..n {
+        for (i, d_i) in densities.iter_mut().enumerate() {
+            for pj in self.particles.iter() {
                 let dx = [
-                    self.particles[i].position[0] - self.particles[j].position[0],
-                    self.particles[i].position[1] - self.particles[j].position[1],
-                    self.particles[i].position[2] - self.particles[j].position[2],
+                    self.particles[i].position[0] - pj.position[0],
+                    self.particles[i].position[1] - pj.position[1],
+                    self.particles[i].position[2] - pj.position[2],
                 ];
                 let r = (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt();
-                densities[i] += self.particles[j].mass * cubic_spline_w(r, h);
+                *d_i += pj.mass * cubic_spline_w(r, h);
             }
         }
-        for i in 0..n {
-            self.particles[i].density = densities[i];
+        for (p, d) in self.particles.iter_mut().zip(densities.iter()) {
+            p.density = *d;
         }
     }
     /// Compute pressure via Tait EOS: p = (ρ₀ c₀² / 7) · ((ρ/ρ₀)⁷ − 1).
@@ -765,37 +753,34 @@ impl MultiphaseSystem {
         let n = self.particles.len();
         let h = self.h;
         let mut normals = vec![[0.0_f64; 3]; n];
-        for i in 0..n {
+        for (i, ni) in normals.iter_mut().enumerate() {
             let phase_i = self.particles[i].phase_id;
-            for j in 0..n {
+            for pj in self.particles.iter() {
                 let dx = [
-                    self.particles[i].position[0] - self.particles[j].position[0],
-                    self.particles[i].position[1] - self.particles[j].position[1],
-                    self.particles[i].position[2] - self.particles[j].position[2],
+                    self.particles[i].position[0] - pj.position[0],
+                    self.particles[i].position[1] - pj.position[1],
+                    self.particles[i].position[2] - pj.position[2],
                 ];
                 let r = (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt();
                 if r < 1e-14 {
                     continue;
                 }
-                let c_j = if self.particles[j].phase_id == phase_i {
+                let c_j = if pj.phase_id == phase_i {
                     1.0_f64
                 } else {
                     -1.0_f64
                 };
                 let grad = kernel_grad(dx, r, h);
-                let vol_j = self.particles[j].mass / self.particles[j].density.max(1e-10);
-                normals[i][0] += c_j * vol_j * grad[0];
-                normals[i][1] += c_j * vol_j * grad[1];
-                normals[i][2] += c_j * vol_j * grad[2];
+                let vol_j = pj.mass / pj.density.max(1e-10);
+                ni[0] += c_j * vol_j * grad[0];
+                ni[1] += c_j * vol_j * grad[1];
+                ni[2] += c_j * vol_j * grad[2];
             }
         }
-        for i in 0..n {
-            self.particles[i].normal = normals[i];
-            let mag = (normals[i][0] * normals[i][0]
-                + normals[i][1] * normals[i][1]
-                + normals[i][2] * normals[i][2])
-                .sqrt();
-            self.particles[i].curvature = mag;
+        for (p, ni) in self.particles.iter_mut().zip(normals.iter()) {
+            p.normal = *ni;
+            let mag = (ni[0] * ni[0] + ni[1] * ni[1] + ni[2] * ni[2]).sqrt();
+            p.curvature = mag;
         }
     }
     /// Compute per-particle accelerations: pressure + viscosity + gravity + surface tension.
@@ -805,7 +790,7 @@ impl MultiphaseSystem {
         let n = self.particles.len();
         let h = self.h;
         let mut acc = vec![[0.0_f64; 3]; n];
-        for i in 0..n {
+        for (i, acc_i) in acc.iter_mut().enumerate() {
             let pi = &self.particles[i];
             let rho_i = pi.density.max(1e-10);
             let p_i = pi.pressure;
@@ -814,11 +799,10 @@ impl MultiphaseSystem {
             } else {
                 0.0
             };
-            for j in 0..n {
+            for (j, pj) in self.particles.iter().enumerate() {
                 if i == j {
                     continue;
                 }
-                let pj = &self.particles[j];
                 let rho_j = pj.density.max(1e-10);
                 let p_j = pj.pressure;
                 let mu_j = if pj.phase_id < self.phases.len() {
@@ -838,9 +822,9 @@ impl MultiphaseSystem {
                 }
                 let grad = kernel_grad(dx, r, h);
                 let pres_coeff = -pj.mass * (p_i / (rho_i * rho_i) + p_j / (rho_j * rho_j));
-                acc[i][0] += pres_coeff * grad[0];
-                acc[i][1] += pres_coeff * grad[1];
-                acc[i][2] += pres_coeff * grad[2];
+                acc_i[0] += pres_coeff * grad[0];
+                acc_i[1] += pres_coeff * grad[1];
+                acc_i[2] += pres_coeff * grad[2];
                 let mu_ij = if mu_i + mu_j > 1e-30 {
                     2.0 * mu_i * mu_j / (mu_i + mu_j)
                 } else {
@@ -853,9 +837,9 @@ impl MultiphaseSystem {
                 ];
                 let v_dot_r = dv[0] * dx[0] + dv[1] * dx[1] + dv[2] * dx[2];
                 let visc_scale = mu_ij * pj.mass * v_dot_r / (rho_i * rho_j * (r2 + 0.01 * h * h));
-                acc[i][0] += visc_scale * grad[0];
-                acc[i][1] += visc_scale * grad[1];
-                acc[i][2] += visc_scale * grad[2];
+                acc_i[0] += visc_scale * grad[0];
+                acc_i[1] += visc_scale * grad[1];
+                acc_i[2] += visc_scale * grad[2];
                 if pi.phase_id != pj.phase_id {
                     let n_phases = self.phases.len();
                     let sigma = if pi.phase_id < n_phases && pj.phase_id < n_phases {
@@ -866,15 +850,15 @@ impl MultiphaseSystem {
                     if sigma > 0.0 {
                         let st = InterphaseTension::surface_tension_force(pi, pj, sigma, h);
                         let inv_m = 1.0 / pi.mass.max(1e-30);
-                        acc[i][0] += st[0] * inv_m;
-                        acc[i][1] += st[1] * inv_m;
-                        acc[i][2] += st[2] * inv_m;
+                        acc_i[0] += st[0] * inv_m;
+                        acc_i[1] += st[1] * inv_m;
+                        acc_i[2] += st[2] * inv_m;
                     }
                 }
             }
-            acc[i][0] += self.gravity[0];
-            acc[i][1] += self.gravity[1];
-            acc[i][2] += self.gravity[2];
+            acc_i[0] += self.gravity[0];
+            acc_i[1] += self.gravity[1];
+            acc_i[2] += self.gravity[2];
         }
         acc
     }
@@ -886,14 +870,13 @@ impl MultiphaseSystem {
         self.compute_pressure();
         self.compute_interface_normals();
         let acc = self.compute_forces();
-        let n = self.particles.len();
-        for i in 0..n {
-            self.particles[i].velocity[0] += acc[i][0] * dt;
-            self.particles[i].velocity[1] += acc[i][1] * dt;
-            self.particles[i].velocity[2] += acc[i][2] * dt;
-            self.particles[i].position[0] += self.particles[i].velocity[0] * dt;
-            self.particles[i].position[1] += self.particles[i].velocity[1] * dt;
-            self.particles[i].position[2] += self.particles[i].velocity[2] * dt;
+        for (p, a) in self.particles.iter_mut().zip(acc.iter()) {
+            p.velocity[0] += a[0] * dt;
+            p.velocity[1] += a[1] * dt;
+            p.velocity[2] += a[2] * dt;
+            p.position[0] += p.velocity[0] * dt;
+            p.position[1] += p.velocity[1] * dt;
+            p.position[2] += p.velocity[2] * dt;
         }
     }
     /// Phase-separation index in \[0, 1\]: 0 = fully mixed, 1 = fully separated.
@@ -1015,13 +998,11 @@ impl InterphaseTension {
 /// Groups particles of the same phase into spatially connected clusters using
 /// a union-find data structure.  Two same-phase particles are considered
 /// connected if their separation is ≤ `h`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PhaseMorphologyAnalyzer {
     /// Smoothing length used for connectivity (m).
     pub h: f64,
 }
-#[allow(dead_code)]
 impl PhaseMorphologyAnalyzer {
     /// Create a new analyser with the given connectivity radius.
     pub fn new(h: f64) -> Self {
@@ -1035,7 +1016,7 @@ impl PhaseMorphologyAnalyzer {
     pub fn label_components(&self, positions: &[[f64; 3]], phase_ids: &[usize]) -> Vec<usize> {
         let n = positions.len();
         let mut parent: Vec<usize> = (0..n).collect();
-        fn find(parent: &mut Vec<usize>, mut x: usize) -> usize {
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
             while parent[x] != x {
                 parent[x] = parent[parent[x]];
                 x = parent[x];
@@ -1064,14 +1045,13 @@ impl PhaseMorphologyAnalyzer {
             std::collections::HashMap::new();
         let mut next_label = 0usize;
         let mut labels = vec![0usize; n];
-        for i in 0..n {
+        for (i, label_i) in labels.iter_mut().enumerate() {
             let root = find(&mut parent, i);
-            let label = *root_to_label.entry(root).or_insert_with(|| {
+            *label_i = *root_to_label.entry(root).or_insert_with(|| {
                 let l = next_label;
                 next_label += 1;
                 l
             });
-            labels[i] = label;
         }
         labels
     }
@@ -1152,12 +1132,10 @@ impl PhaseMorphologyAnalyzer {
 /// Two droplets are deemed candidates for coalescence when the gap between
 /// their surfaces is smaller than `threshold`.  The gap is
 /// `|c_i − c_j| − r_i − r_j`.
-#[allow(dead_code)]
 pub struct CoalescenceDetector {
     /// Gap threshold below which coalescence is triggered (m).
     pub gap_threshold: f64,
 }
-#[allow(dead_code)]
 impl CoalescenceDetector {
     /// Create a new detector with the given gap threshold.
     pub fn new(gap_threshold: f64) -> Self {
@@ -1205,7 +1183,6 @@ impl CoalescenceDetector {
 ///
 /// Each droplet is characterised by its centre of mass, radius of gyration,
 /// and particle count.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DropletInfo {
     /// Droplet label (component ID at the current time step).
@@ -1223,7 +1200,6 @@ pub struct DropletInfo {
 ///
 /// where `v = 1/ρ` is the specific volume.  This is solved for pressure given
 /// density and temperature.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VanDerWaalsEos {
     /// Attraction parameter a (Pa·m⁶/kg²).
@@ -1233,7 +1209,6 @@ pub struct VanDerWaalsEos {
     /// Specific gas constant R_s = R/M (J/(kg·K)).
     pub r_specific: f64,
 }
-#[allow(dead_code)]
 impl VanDerWaalsEos {
     /// Construct a vdW EOS for a given substance.
     ///
@@ -1284,7 +1259,6 @@ impl VanDerWaalsEos {
     }
 }
 /// Wetting regime classification based on contact angle.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WettingRegime {
     /// θ < 10°: complete or near-complete wetting.

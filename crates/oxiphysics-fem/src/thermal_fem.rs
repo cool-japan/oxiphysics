@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,9 +6,6 @@
 //! Provides steady-state and transient (explicit Euler) thermal analysis with
 //! Dirichlet boundary conditions, heat-flux computation, and thermo-elastic
 //! strain coupling.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § 1  Data structures
@@ -220,11 +216,11 @@ pub fn assemble_thermal_stiffness(
 /// Apply Dirichlet (prescribed-temperature) boundary conditions in place.
 ///
 /// For each Dirichlet node i: zero row i and column i, set K\[i\]\[i\]=1, f\[i\]=T_prescribed.
-pub fn apply_thermal_dirichlet(k: &mut Vec<Vec<f64>>, f: &mut Vec<f64>, nodes: &[ThermalNode]) {
+pub fn apply_thermal_dirichlet(k: &mut [Vec<f64>], f: &mut [f64], nodes: &[ThermalNode]) {
     let n = nodes.len();
-    for i in 0..n {
-        if nodes[i].is_dirichlet {
-            let t_p = nodes[i].prescribed_temp;
+    for (i, node) in nodes.iter().enumerate() {
+        if node.is_dirichlet {
+            let t_p = node.prescribed_temp;
             // Modify RHS to account for off-diagonal terms already zeroed
             for j in 0..n {
                 if j != i {
@@ -262,9 +258,9 @@ pub fn solve_thermal_steady(k: &[Vec<f64>], f: &[f64]) -> Vec<f64> {
         // Partial pivot
         let mut max_val = aug[col][col].abs();
         let mut max_row = col;
-        for row in col + 1..n {
-            if aug[row][col].abs() > max_val {
-                max_val = aug[row][col].abs();
+        for (row, aug_row) in aug.iter().enumerate().skip(col + 1) {
+            if aug_row[col].abs() > max_val {
+                max_val = aug_row[col].abs();
                 max_row = row;
             }
         }
@@ -274,11 +270,11 @@ pub fn solve_thermal_steady(k: &[Vec<f64>], f: &[f64]) -> Vec<f64> {
         if pivot.abs() < 1e-30 {
             continue;
         }
-        for row in col + 1..n {
-            let factor = aug[row][col] / pivot;
-            for c in col..=n {
-                let delta = aug[col][c] * factor;
-                aug[row][c] -= delta;
+        let col_slice: Vec<f64> = aug[col][col..=n].to_vec();
+        for aug_row in aug[col + 1..].iter_mut() {
+            let factor = aug_row[col] / pivot;
+            for (off, &cv) in col_slice.iter().enumerate() {
+                aug_row[col + off] -= cv * factor;
             }
         }
     }
@@ -508,12 +504,9 @@ mod tests {
     fn test_tet_ke_symmetric() {
         let nodes = unit_tet_nodes();
         let ke = tet_thermal_conductivity_matrix(&nodes, [1.0, 1.0, 1.0]);
-        for i in 0..4 {
-            for j in 0..4 {
-                assert!(
-                    (ke[i][j] - ke[j][i]).abs() < 1e-12,
-                    "asymmetry at ({i},{j})"
-                );
+        for (i, row) in ke.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - ke[j][i]).abs() < 1e-12, "asymmetry at ({i},{j})");
             }
         }
     }
@@ -523,8 +516,8 @@ mod tests {
         // Rows of K sum to zero (constant temperature gives zero heat flux)
         let nodes = unit_tet_nodes();
         let ke = tet_thermal_conductivity_matrix(&nodes, [1.0, 1.0, 1.0]);
-        for i in 0..4 {
-            let row_sum: f64 = ke[i].iter().sum();
+        for (i, row) in ke.iter().enumerate() {
+            let row_sum: f64 = row.iter().sum();
             assert!(row_sum.abs() < 1e-10, "row {i} sum = {row_sum}");
         }
     }
@@ -546,9 +539,9 @@ mod tests {
         let nodes = unit_tet_nodes();
         let ke1 = tet_thermal_conductivity_matrix(&nodes, [1.0, 1.0, 1.0]);
         let ke2 = tet_thermal_conductivity_matrix(&nodes, [2.0, 2.0, 2.0]);
-        for i in 0..4 {
-            for j in 0..4 {
-                assert!((ke2[i][j] - 2.0 * ke1[i][j]).abs() < 1e-12);
+        for (i, row2) in ke2.iter().enumerate() {
+            for (j, &v2) in row2.iter().enumerate() {
+                assert!((v2 - 2.0 * ke1[i][j]).abs() < 1e-12);
             }
         }
     }
@@ -567,9 +560,9 @@ mod tests {
         let k = assemble_thermal_stiffness(&elements, &nodes);
         assert_eq!(k.len(), 4);
         // Symmetry check
-        for i in 0..4 {
-            for j in 0..4 {
-                assert!((k[i][j] - k[j][i]).abs() < 1e-12);
+        for (i, row) in k.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - k[j][i]).abs() < 1e-12);
             }
         }
     }
@@ -737,8 +730,8 @@ mod tests {
     fn test_tet_ke_positive_diagonal() {
         let nodes = unit_tet_nodes();
         let ke = tet_thermal_conductivity_matrix(&nodes, [1.0, 1.0, 1.0]);
-        for i in 0..4 {
-            assert!(ke[i][i] >= 0.0, "diagonal [{i}] is negative");
+        for (i, row) in ke.iter().enumerate() {
+            assert!(row[i] >= 0.0, "diagonal [{i}] is negative");
         }
     }
 
@@ -919,9 +912,9 @@ pub fn tet_consistent_heat_capacity(
     let vol = det_j.abs() / 6.0_f64;
     let factor = params.volumetric_heat_capacity() * vol / 20.0_f64;
     let mut m = [[0.0_f64; 4]; 4];
-    for i in 0..4 {
-        for j in 0..4 {
-            m[i][j] = factor * if i == j { 2.0_f64 } else { 1.0_f64 };
+    for (i, row) in m.iter_mut().enumerate() {
+        for (j, val) in row.iter_mut().enumerate() {
+            *val = factor * if i == j { 2.0_f64 } else { 1.0_f64 };
         }
     }
     m
@@ -1012,7 +1005,7 @@ impl ThermalBc {
 /// - Dirichlet: penalty / elimination method.
 /// - Neumann: add flux to load vector.
 /// - Robin: add h_conv to diagonal of K, add h_conv * T_inf to f.
-pub fn apply_thermal_bcs(k: &mut Vec<Vec<f64>>, f: &mut Vec<f64>, bcs: &[ThermalBc]) {
+pub fn apply_thermal_bcs(k: &mut [Vec<f64>], f: &mut [f64], bcs: &[ThermalBc]) {
     let n = f.len();
     for bc in bcs {
         let i = bc.node_index;
@@ -1185,7 +1178,7 @@ impl RadiationBoundary {
     }
 
     /// Apply linearised radiation BC to node `i` of the global system.
-    pub fn apply_to_node(&self, k: &mut Vec<Vec<f64>>, f: &mut Vec<f64>, node: usize, t_surf: f64) {
+    pub fn apply_to_node(&self, k: &mut [Vec<f64>], f: &mut [f64], node: usize, t_surf: f64) {
         if node >= f.len() {
             return;
         }
@@ -1806,9 +1799,9 @@ mod tests_extended {
         ];
         let elements = vec![ThermalElement::isotropic([0, 1, 2, 3], 1.0_f64)];
         let c = assemble_lumped_capacity(&elements, &nodes, &params);
-        for i in 0..4 {
+        for (i, row) in c.iter().enumerate() {
             assert!(
-                c[i][i] > 0.0_f64,
+                row[i] > 0.0_f64,
                 "lumped capacity diagonal must be positive"
             );
         }

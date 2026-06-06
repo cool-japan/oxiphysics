@@ -7,9 +7,6 @@
 //! - `Display`
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::GpuError;
 
 impl std::fmt::Display for GpuError {

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::ptr_arg)]
 use std::f64::consts::PI;
 
 use super::types::{ColorParticle, MultiphaseFluidParticle, MultiphaseParticle};
@@ -10,7 +9,7 @@ use super::types::{ColorParticle, MultiphaseFluidParticle, MultiphaseParticle};
 /// Compute the smoothed color function gradient for all particles using SPH.
 ///
 /// ∇C_i = Σⱼ (mⱼ/ρⱼ) · (Cⱼ − Cᵢ) · ∇W_ij
-pub fn compute_color_gradients(particles: &mut Vec<ColorParticle>, h: f64) {
+pub fn compute_color_gradients(particles: &mut [ColorParticle], h: f64) {
     let n = particles.len();
     let positions: Vec<[f64; 2]> = particles.iter().map(|p| p.pos).collect();
     let colors: Vec<f64> = particles.iter().map(|p| p.color).collect();
@@ -685,7 +684,6 @@ mod tests {
         }
     }
 }
-#[allow(dead_code)]
 pub(super) fn cubic_kernel_3d(r: f64, h: f64) -> f64 {
     let q = r / h;
     let alpha = 1.0 / (PI * h * h * h);
@@ -697,7 +695,6 @@ pub(super) fn cubic_kernel_3d(r: f64, h: f64) -> f64 {
         0.0
     }
 }
-#[allow(dead_code)]
 pub(super) fn cubic_kernel_grad_3d(rij: [f64; 3], r: f64, h: f64) -> [f64; 3] {
     if r < 1e-30 {
         return [0.0; 3];

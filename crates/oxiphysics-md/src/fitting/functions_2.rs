@@ -2,15 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::types::*;
 /// Orientational order parameter P₂ for a set of bond vectors.
 ///
 /// Same as nematic_order_parameter.
-#[allow(dead_code)]
 pub fn p2_order_parameter(vectors: &[[f64; 3]], director: [f64; 3]) -> f64 {
     if vectors.is_empty() {
         return 0.0;
@@ -37,7 +32,6 @@ pub fn p2_order_parameter(vectors: &[[f64; 3]], director: [f64; 3]) -> f64 {
 /// d₀ = 1.24 * (N - 15)^(1/3) - 1.8 (empirical).
 ///
 /// Score = 1/N * Σ_i 1/(1 + (dᵢ/d₀)²)
-#[allow(dead_code)]
 pub fn tm_score_simplified(
     coords_a: &[[f64; 3]],
     coords_b: &[[f64; 3]],
@@ -67,7 +61,6 @@ pub fn tm_score_simplified(
 /// GDT_TS (Global Distance Test, Total Score) — simplified version.
 ///
 /// Fraction of Cα atoms within cutoff distances 1, 2, 4, 8 Å.
-#[allow(dead_code)]
 pub fn gdt_ts(coords_a: &[[f64; 3]], coords_b: &[[f64; 3]]) -> f64 {
     let n = coords_a.len().min(coords_b.len());
     if n == 0 {
@@ -92,7 +85,6 @@ pub fn gdt_ts(coords_a: &[[f64; 3]], coords_b: &[[f64; 3]]) -> f64 {
     scores.iter().sum::<f64>() / 4.0
 }
 /// MaxSub score: fraction of atoms within 3.5 Å.
-#[allow(dead_code)]
 pub fn maxsub_score(coords_a: &[[f64; 3]], coords_b: &[[f64; 3]]) -> f64 {
     let n = coords_a.len().min(coords_b.len());
     if n == 0 {
@@ -110,7 +102,6 @@ pub fn maxsub_score(coords_a: &[[f64; 3]], coords_b: &[[f64; 3]]) -> f64 {
     within as f64 / n as f64
 }
 /// Compute RMSD of each frame in a trajectory relative to the first frame.
-#[allow(dead_code)]
 pub fn trajectory_rmsd(trajectory: &[Vec<[f64; 3]>]) -> Vec<f64> {
     if trajectory.is_empty() {
         return vec![];
@@ -122,7 +113,6 @@ pub fn trajectory_rmsd(trajectory: &[Vec<[f64; 3]>]) -> Vec<f64> {
         .collect()
 }
 /// Running average of RMSD trajectory (smoothing).
-#[allow(dead_code)]
 pub fn rmsd_running_average(rmsds: &[f64], window: usize) -> Vec<f64> {
     if rmsds.is_empty() || window == 0 {
         return vec![];
@@ -134,7 +124,6 @@ pub fn rmsd_running_average(rmsds: &[f64], window: usize) -> Vec<f64> {
         .collect()
 }
 /// Plateau RMSD: mean of last N frames.
-#[allow(dead_code)]
 pub fn plateau_rmsd(rmsds: &[f64], n_tail: usize) -> f64 {
     if rmsds.is_empty() || n_tail == 0 {
         return 0.0;
@@ -150,7 +139,6 @@ pub fn plateau_rmsd(rmsds: &[f64], n_tail: usize) -> f64 {
 ///
 /// Given energy values for N components across M frames,
 /// returns N×N covariance matrix.
-#[allow(dead_code)]
 pub fn energy_covariance_matrix(energy_matrix: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let m = energy_matrix.len();
     if m == 0 {
@@ -494,11 +482,10 @@ mod tests_extended {
             .map(|i| vec![i as f64, (i as f64).sin(), (i as f64).cos()])
             .collect();
         let cov = energy_covariance_matrix(&data);
-        let n = cov.len();
-        for i in 0..n {
-            for j in 0..n {
+        for (i, row) in cov.iter().enumerate() {
+            for (j, &cij) in row.iter().enumerate() {
                 assert!(
-                    (cov[i][j] - cov[j][i]).abs() < 1e-10,
+                    (cij - cov[j][i]).abs() < 1e-10,
                     "Covariance matrix must be symmetric at ({i},{j})"
                 );
             }

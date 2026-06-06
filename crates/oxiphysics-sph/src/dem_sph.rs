@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //!
 //! Provides Hertz contact mechanics, rigid-body DEM integration, and
 //! fluid-particle coupling via drag and buoyancy forces.
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -41,6 +38,7 @@ fn vec3_norm(a: [f64; 3]) -> f64 {
     vec3_dot(a, a).sqrt()
 }
 
+#[cfg(test)]
 #[inline]
 fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
@@ -249,9 +247,9 @@ impl DemSimulation {
             let fn_vec = vec3_scale(normal, fn_mag);
 
             // Apply Newton's third law
-            for k in 0..3 {
-                self.forces[i][k] -= fn_vec[k];
-                self.forces[j][k] += fn_vec[k];
+            for (k, &fv) in fn_vec.iter().enumerate() {
+                self.forces[i][k] -= fv;
+                self.forces[j][k] += fv;
             }
         }
     }

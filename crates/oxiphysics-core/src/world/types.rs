@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Auto-generated module
 //
 // 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
@@ -218,8 +217,8 @@ impl Body {
             return;
         }
         let inv_m = self.inv_mass;
-        for k in 0..3 {
-            self.velocity.linear[k] += (self.force[k] * inv_m + gravity[k]) * dt;
+        for (k, vl) in self.velocity.linear.iter_mut().enumerate() {
+            *vl += (self.force[k] * inv_m + gravity[k]) * dt;
         }
         let inv_i = if self.inertia > 0.0 {
             1.0 / self.inertia
@@ -780,7 +779,7 @@ impl BodyArena {
             };
             let new_gen = prev_gen.wrapping_add(1);
             self.slots[idx] = BodySlot::Occupied {
-                body,
+                body: Box::new(body),
                 generation: new_gen,
             };
             self.free_head = next;
@@ -789,7 +788,10 @@ impl BodyArena {
         } else {
             let idx = self.slots.len();
             let generation = 0u32;
-            self.slots.push(BodySlot::Occupied { body, generation });
+            self.slots.push(BodySlot::Occupied {
+                body: Box::new(body),
+                generation,
+            });
             self.count += 1;
             BodyHandle::new(idx as u32, generation)
         }
@@ -815,7 +817,7 @@ impl BodyArena {
         self.free_head = Some(idx);
         self.count -= 1;
         match old {
-            BodySlot::Occupied { body, .. } => Some(body),
+            BodySlot::Occupied { body, .. } => Some(*body),
             _ => unreachable!(),
         }
     }
@@ -824,7 +826,7 @@ impl BodyArena {
         let idx = handle.index as usize;
         match self.slots.get(idx)? {
             BodySlot::Occupied { body, generation } if *generation == handle.generation => {
-                Some(body)
+                Some(body.as_ref())
             }
             _ => None,
         }
@@ -834,7 +836,7 @@ impl BodyArena {
         let idx = handle.index as usize;
         match self.slots.get_mut(idx)? {
             BodySlot::Occupied { body, generation } if *generation == handle.generation => {
-                Some(body)
+                Some(body.as_mut())
             }
             _ => None,
         }
@@ -858,7 +860,7 @@ impl BodyArena {
     pub fn iter(&self) -> impl Iterator<Item = (usize, BodyHandle, &Body)> + '_ {
         self.slots.iter().enumerate().filter_map(|(i, s)| match s {
             BodySlot::Occupied { body, generation } => {
-                Some((i, BodyHandle::new(i as u32, *generation), body))
+                Some((i, BodyHandle::new(i as u32, *generation), body.as_ref()))
             }
             _ => None,
         })
@@ -1114,8 +1116,8 @@ impl PhysicsWorld {
     pub fn total_momentum(&self) -> [Real; 3] {
         let mut p = [0.0; 3];
         for (_, _, body) in self.bodies.iter() {
-            for k in 0..3 {
-                p[k] += body.mass * body.velocity.linear[k];
+            for (k, pk) in p.iter_mut().enumerate() {
+                *pk += body.mass * body.velocity.linear[k];
             }
         }
         p
@@ -1435,15 +1437,23 @@ pub struct WorldDiagnostics {
     pub total_kinetic_energy: Real,
 }
 /// Slot in the generational body arena.
+///
+/// The `Occupied` variant boxes the body to avoid the `large_enum_variant`
+/// penalty: `Body` is ~200 bytes while `Free` is only ~16 bytes.
 #[derive(Debug, Clone)]
-#[allow(clippy::large_enum_variant)]
 pub(super) enum BodySlot {
+    /// A live body occupying this slot.
     Occupied {
-        body: Body,
+        /// The boxed body data.
+        body: Box<Body>,
+        /// Generation counter for handle validation.
         generation: u32,
     },
+    /// A free slot in the generational arena.
     Free {
+        /// Next free slot index, or `None` if this is the last.
         next_free: Option<usize>,
+        /// Generation counter carried across free/occupy cycles.
         generation: u32,
     },
 }

@@ -2,11 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 
 /// Thermodynamic integration with statistical error propagation.
 pub struct ThermoIntegration {
@@ -59,7 +55,6 @@ impl ThermoIntegration {
     }
 }
 /// Extended umbrella-sampling window descriptor.
-#[allow(dead_code)]
 pub struct UmbrellaWindow {
     /// Equilibrium position of the harmonic bias (same units as ξ).
     pub xi_ref: f64,
@@ -72,7 +67,6 @@ pub struct UmbrellaWindow {
 }
 impl UmbrellaWindow {
     /// Create a new umbrella-sampling window.
-    #[allow(dead_code)]
     pub fn new(xi_ref: f64, k_spring: f64, temperature: f64) -> Self {
         Self {
             xi_ref,
@@ -82,17 +76,14 @@ impl UmbrellaWindow {
         }
     }
     /// Add a sample.
-    #[allow(dead_code)]
     pub fn push(&mut self, xi: f64) {
         self.samples.push(xi);
     }
     /// Compute the harmonic bias potential (energy).
-    #[allow(dead_code)]
     pub fn bias(&self, xi: f64) -> f64 {
         0.5 * self.k_spring * (xi - self.xi_ref).powi(2)
     }
     /// Mean ξ from samples.
-    #[allow(dead_code)]
     pub fn mean_xi(&self) -> Option<f64> {
         let n = self.samples.len();
         if n == 0 {
@@ -101,7 +92,6 @@ impl UmbrellaWindow {
         Some(self.samples.iter().sum::<f64>() / n as f64)
     }
     /// Variance of ξ samples.
-    #[allow(dead_code)]
     pub fn var_xi(&self) -> Option<f64> {
         let n = self.samples.len();
         if n < 2 {
@@ -117,7 +107,6 @@ impl UmbrellaWindow {
         )
     }
     /// Effective spring constant from fluctuations: k_eff = kT / ⟨δξ²⟩.
-    #[allow(dead_code)]
     pub fn effective_spring_constant(&self, kt: f64) -> Option<f64> {
         let var = self.var_xi()?;
         if var < 1e-300 {
@@ -127,7 +116,6 @@ impl UmbrellaWindow {
     }
 }
 /// Two-dimensional WHAM window for a 2-D PMF calculation.
-#[allow(dead_code)]
 pub struct WhamWindow2D {
     /// Reference positions of the bias (xi1_ref, xi2_ref).
     pub xi_ref: [f64; 2],
@@ -140,7 +128,6 @@ pub struct WhamWindow2D {
 }
 impl WhamWindow2D {
     /// Create a new 2D WHAM window.
-    #[allow(dead_code)]
     pub fn new(xi_ref: [f64; 2], k_bias: [f64; 2]) -> Self {
         Self {
             xi_ref,
@@ -150,14 +137,12 @@ impl WhamWindow2D {
         }
     }
     /// Harmonic bias energy at 2-D position `xi` (dimensionless).
-    #[allow(dead_code)]
     pub fn bias_energy_2d(&self, xi: [f64; 2], kt: f64) -> f64 {
         let e1 = 0.5 * self.k_bias[0] * (xi[0] - self.xi_ref[0]).powi(2);
         let e2 = 0.5 * self.k_bias[1] * (xi[1] - self.xi_ref[1]).powi(2);
         (e1 + e2) / kt
     }
     /// Add a sample.
-    #[allow(dead_code)]
     pub fn add_sample_2d(&mut self, xi: [f64; 2]) {
         self.samples.push(xi);
     }
@@ -166,7 +151,6 @@ impl WhamWindow2D {
 ///
 /// Stores the reduced potential energies of the samples from this state
 /// evaluated at every other state (the "u_kn" matrix).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MbarState {
     /// State index.
@@ -179,7 +163,6 @@ pub struct MbarState {
 }
 impl MbarState {
     /// Create a new MBAR state.
-    #[allow(dead_code)]
     pub fn new(index: usize) -> Self {
         Self {
             index,
@@ -198,7 +181,6 @@ impl KlDivergence {
     ///
     /// Terms where p_i = 0 are skipped (0 · ln(0) = 0 by convention).
     /// Returns `f64::INFINITY` if any q_i = 0 while p_i > 0.
-    #[allow(dead_code)]
     pub fn kl_divergence(p: &[f64], q: &[f64]) -> f64 {
         let n = p.len().min(q.len());
         let mut sum = 0.0;
@@ -218,7 +200,6 @@ impl KlDivergence {
     /// JS(P ‖ Q) = ½ D_KL(P ‖ M) + ½ D_KL(Q ‖ M),  M = ½(P + Q).
     ///
     /// Always finite and symmetric; values in \[0, ln 2\].
-    #[allow(dead_code)]
     pub fn js_divergence(p: &[f64], q: &[f64]) -> f64 {
         let n = p.len().min(q.len());
         let m: Vec<f64> = (0..n).map(|i| 0.5 * (p[i] + q[i])).collect();
@@ -229,7 +210,6 @@ impl KlDivergence {
 ///
 /// Stores the λ value, the ΔU samples collected at this λ, and optional
 /// overlap statistics with the adjacent window.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LambdaWindow {
     /// λ value (0 = fully coupled, 1 = fully decoupled, or vice-versa).
@@ -241,7 +221,6 @@ pub struct LambdaWindow {
 }
 impl LambdaWindow {
     /// Create a new empty λ-window.
-    #[allow(dead_code)]
     pub fn new(lambda: f64) -> Self {
         Self {
             lambda,
@@ -250,33 +229,27 @@ impl LambdaWindow {
         }
     }
     /// Add a forward ΔU sample.
-    #[allow(dead_code)]
     pub fn add_forward(&mut self, du: f64) {
         self.du_forward.push(du);
     }
     /// Add a backward ΔU sample.
-    #[allow(dead_code)]
     pub fn add_backward(&mut self, du: f64) {
         self.du_backward.push(du);
     }
     /// Zwanzig estimate for this window (forward direction).
-    #[allow(dead_code)]
     pub fn zwanzig_forward(&self, kt: f64) -> f64 {
         fep_zwanzig(&self.du_forward, kt)
     }
     /// BAR estimate between this window and the next.
-    #[allow(dead_code)]
     pub fn bar_estimate(&self, next_window: &LambdaWindow, kt: f64) -> f64 {
         fep_bar(&self.du_forward, &next_window.du_backward, kt, 1e-10)
     }
     /// Number of samples.
-    #[allow(dead_code)]
     pub fn n_samples(&self) -> usize {
         self.du_forward.len().max(self.du_backward.len())
     }
 }
 /// Staged alchemical transformation result.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AlchemicalResult {
     /// Free energy of decharging stage.
@@ -344,8 +317,8 @@ impl Mbar {
                     .wrapping_mul(6364136223846793005)
                     .wrapping_add(1442695040888963407);
                 let idx = (lcg >> 33) as usize % n_total;
-                for ki in 0..k {
-                    boot_u[ki].push(self.u_kn[ki].get(idx).copied().unwrap_or(0.0));
+                for (ki, bu) in boot_u.iter_mut().enumerate().take(k) {
+                    bu.push(self.u_kn[ki].get(idx).copied().unwrap_or(0.0));
                 }
             }
             let f_boot = mbar_free_energies(&boot_u, &self.n_k, tol, max_iter);
@@ -372,7 +345,6 @@ impl Mbar {
 ///
 /// The window contains a harmonic bias potential applied at reference position
 /// `xi_ref` with spring constant `k_bias`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WhamWindow {
     /// Reference position of the bias potential (reaction-coordinate units).
@@ -386,7 +358,6 @@ pub struct WhamWindow {
 }
 impl WhamWindow {
     /// Create a new WHAM window.
-    #[allow(dead_code)]
     pub fn new(xi_ref: f64, k_bias: f64) -> Self {
         Self {
             xi_ref,
@@ -396,12 +367,10 @@ impl WhamWindow {
         }
     }
     /// Harmonic bias energy at position `xi` (dimensionless / kT).
-    #[allow(dead_code)]
     pub fn bias_energy(&self, xi: f64, kt: f64) -> f64 {
         0.5 * self.k_bias * (xi - self.xi_ref).powi(2) / kt
     }
     /// Add a sample to this window.
-    #[allow(dead_code)]
     pub fn add_sample(&mut self, xi: f64) {
         self.samples.push(xi);
     }

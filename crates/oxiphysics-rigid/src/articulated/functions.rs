@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use oxiphysics_core::Transform;
 use oxiphysics_core::math::{Quat, Unit, Vec3};
 
@@ -44,7 +43,6 @@ pub fn simple_pendulum_period(length: f64, g: f64) -> f64 {
 /// One RK4 step of a double pendulum.
 ///
 /// Returns `(theta1_new, omega1_new, theta2_new, omega2_new)`.
-#[allow(clippy::too_many_arguments)]
 pub fn double_pendulum_step(
     theta1: f64,
     omega1: f64,
@@ -502,7 +500,6 @@ mod tests {
 /// This is a simplified 1-DOF (revolute-z) version for `n` links.
 ///
 /// Returns `Vec`f64` of joint torques.
-#[allow(clippy::too_many_arguments)]
 pub fn rnea_revolute_chain(
     n: usize,
     masses: &[f64],
@@ -720,7 +717,6 @@ mod tests_featherstone {
 /// * `gravity` – gravitational acceleration vector [gx, gy, gz] (m/s²)
 ///
 /// Returns `Vec`f64` of joint accelerations (rad/s²).
-#[allow(clippy::too_many_arguments)]
 pub fn aba_revolute_chain(
     n: usize,
     inertias: &[f64],
@@ -796,7 +792,6 @@ pub fn joint_space_inertia_matrix(n: usize, inertias: &[f64]) -> Vec<f64> {
 ///
 /// where `g_perp_j` is the component of gravity perpendicular to the
 /// link j axis, and `r_{ij}` is the distance from joint i to the COM of link j.
-#[allow(clippy::too_many_arguments)]
 pub fn gravity_compensation_torques(
     n: usize,
     masses: &[f64],
@@ -827,7 +822,6 @@ pub fn gravity_compensation_torques(
 ///
 /// External forces are projected onto the joint axis and added to the
 /// applied torques before running the ABA.
-#[allow(clippy::too_many_arguments)]
 pub fn forward_dynamics_with_external(
     n: usize,
     inertias: &[f64],
@@ -971,7 +965,6 @@ pub fn dls_ik_step_2d(jacobian: &[[f64; 2]], dx: [f64; 2], lambda: f64) -> Vec<f
 /// Newton-Euler recursive algorithm in 3-D (revolute about z).
 ///
 /// Returns joint torques.
-#[allow(clippy::too_many_arguments)]
 pub fn rnea_3d_revolute_z(
     n: usize,
     masses: &[f64],
@@ -1408,7 +1401,6 @@ pub fn abi_backward_pass(n: usize, inertias: &[f64], masses: &[f64], lengths: &[
 /// Useful for isolating the Coriolis / centrifugal bias vector `C(q, q_dot)`.
 ///
 /// Returns `Vec`f64` of bias forces (length `n`).
-#[allow(clippy::too_many_arguments)]
 pub fn coriolis_bias_forces(
     n: usize,
     masses: &[f64],
@@ -1453,7 +1445,6 @@ pub fn coriolis_bias_forces(
 /// Solves by computing H, C, G and inverting H (scalar chain → diagonal solve).
 ///
 /// Returns joint accelerations `q_ddot`.
-#[allow(clippy::too_many_arguments)]
 pub fn forward_dynamics_full(
     n: usize,
     inertias: &[f64],
@@ -1564,9 +1555,9 @@ pub fn link_tip_velocities(
         let tip = origins[i + 1];
         let mut vx = 0.0_f64;
         let mut vy = 0.0_f64;
-        for j in 0..=i {
-            let dx = tip[0] - origins[j][0];
-            let dy = tip[1] - origins[j][1];
+        for (j, orig_j) in origins.iter().enumerate().take(i + 1) {
+            let dx = tip[0] - orig_j[0];
+            let dy = tip[1] - orig_j[1];
             let qd_j = qd.get(j).copied().unwrap_or(0.0);
             vx += -dy * qd_j;
             vy += dx * qd_j;

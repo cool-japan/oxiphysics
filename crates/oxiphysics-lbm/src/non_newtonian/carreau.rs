@@ -14,7 +14,6 @@ use super::{CS2, LocalViscosityModel, MU_MAX, MU_MIN, NonNewtonianFluid, NonNewt
 /// ```text
 /// mu(gamma) = eta_inf + (eta_0 - eta_inf) * (1 + (lambda * gamma)^2)^((n-1)/2)
 /// ```
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct CarreauFluid {
     /// Zero-shear-rate viscosity.
@@ -27,7 +26,6 @@ pub struct CarreauFluid {
     pub n: f64,
 }
 
-#[allow(dead_code)]
 impl CarreauFluid {
     /// Create a new Carreau fluid.
     pub fn new(eta_0: f64, eta_inf: f64, lambda: f64, n: f64) -> Self {
@@ -65,7 +63,6 @@ impl LocalViscosityModel for CarreauFluid {
 ///
 /// The Cross model is an alternative to the Carreau model that provides
 /// a better fit for some polymer solutions.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct CrossFluid {
     /// Zero-shear-rate viscosity.
@@ -78,7 +75,6 @@ pub struct CrossFluid {
     pub m: f64,
 }
 
-#[allow(dead_code)]
 impl CrossFluid {
     /// Create a new Cross fluid.
     pub fn new(eta_0: f64, eta_inf: f64, k: f64, m: f64) -> Self {
@@ -111,7 +107,6 @@ impl CrossFluid {
 /// ```
 ///
 /// Used for blood and some food products.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct CassonFluid {
     /// Yield stress tau_y.
@@ -120,7 +115,6 @@ pub struct CassonFluid {
     pub mu_inf: f64,
 }
 
-#[allow(dead_code)]
 impl CassonFluid {
     /// Create a new Casson fluid.
     pub fn new(tau_y: f64, mu_inf: f64) -> Self {
@@ -151,7 +145,6 @@ impl CassonFluid {
 /// Carreau shear-thinning fluid -- short-named variant.
 ///
 /// `mu(gamma) = mu_inf + (mu_0 - mu_inf) * (1 + (lambda*gamma)^2)^((n-1)/2)`
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Carreau {
     /// Zero-shear-rate viscosity mu_0.
@@ -164,7 +157,6 @@ pub struct Carreau {
     pub n: f64,
 }
 
-#[allow(dead_code)]
 impl Carreau {
     /// Create a new Carreau fluid.
     pub fn new(mu_0: f64, mu_inf: f64, lambda: f64, n: f64) -> Self {
@@ -210,7 +202,6 @@ impl NonNewtonianModel for Carreau {
 ///
 /// Setting `a = 2` recovers the standard Carreau model.
 /// The Carreau-Yasuda model is widely used for polymer melts and blood.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct CarreauYasudaFluid {
     /// Zero-shear-rate viscosity eta_0.
@@ -225,7 +216,6 @@ pub struct CarreauYasudaFluid {
     pub n: f64,
 }
 
-#[allow(dead_code)]
 impl CarreauYasudaFluid {
     /// Create a new Carreau-Yasuda fluid.
     pub fn new(eta_0: f64, eta_inf: f64, lambda: f64, a: f64, n: f64) -> Self {

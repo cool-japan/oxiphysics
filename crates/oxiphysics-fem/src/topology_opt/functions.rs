@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 #[cfg(test)]
 use super::types::OcOptimizer;
 use super::types::{BesoParams, SimpParams, TopologyGrid};
@@ -140,12 +139,11 @@ pub fn filter_sensitivities_gaussian(
     let n = grid.elements.len();
     let sigma = radius / 3.0;
     let mut filtered = vec![0.0f64; n];
-    for i in 0..n {
+    for (i, filt_i) in filtered.iter_mut().enumerate() {
         let ei = &grid.elements[i];
         let mut num = 0.0f64;
         let mut den = 0.0f64;
-        for j in 0..n {
-            let ej = &grid.elements[j];
+        for (j, ej) in grid.elements.iter().enumerate() {
             let dist_sq = (ei.x0 - ej.x0).powi(2) + (ei.y0 - ej.y0).powi(2);
             if dist_sq < (radius * radius) {
                 let w = (-dist_sq / (2.0 * sigma * sigma)).exp();
@@ -153,7 +151,7 @@ pub fn filter_sensitivities_gaussian(
                 den += w * ej.rho;
             }
         }
-        filtered[i] = if den.abs() > 1e-30 {
+        *filt_i = if den.abs() > 1e-30 {
             num / den
         } else {
             sensitivities[i]
@@ -758,7 +756,7 @@ mod tests {
         assert_eq!(final_dens.len(), n);
         assert!(!vf_history.is_empty());
         let final_vf = vf_history.last().unwrap();
-        assert!(*final_vf <= 1.0 && *final_vf >= 0.0);
+        assert!((0.0..=1.0).contains(final_vf));
     }
     #[test]
     fn test_level_set_new_uniform_volume_fraction() {
@@ -769,8 +767,8 @@ mod tests {
     #[test]
     fn test_level_set_half_domain() {
         let mut phi = vec![-1.0; 16];
-        for i in 0..8 {
-            phi[i] = 1.0;
+        for p in phi.iter_mut().take(8) {
+            *p = 1.0;
         }
         let ls = LevelSetField::from_sdf(4, 4, 1.0, 1.0, phi);
         let vf = ls.volume_fraction();
@@ -882,7 +880,6 @@ mod tests {
 /// Filter sensitivities using a weighted average over elements within radius r_min.
 ///
 /// `mesh` is a list of element centroid (x, y) coordinates.
-#[allow(dead_code)]
 pub fn filter_sensitivities_mesh(
     sensitivities: &[f64],
     mesh: &[(f64, f64)],
@@ -916,7 +913,6 @@ pub fn filter_sensitivities_mesh(
 ///
 /// `K_global` is a list of `(row, col, value)` sparse matrix triplets.
 /// `u` is the displacement vector; `_f` is accepted for API consistency.
-#[allow(dead_code)]
 pub fn compliance_objective_sparse(k_global: &[(usize, usize, f64)], u: &[f64], _f: &[f64]) -> f64 {
     let n = u.len();
     let mut c = 0.0_f64;
@@ -930,7 +926,6 @@ pub fn compliance_objective_sparse(k_global: &[(usize, usize, f64)], u: &[f64], 
 /// Total (weighted) volume of the design domain.
 ///
 /// V = sum_i (densities\[i\] * element_volumes\[i\])
-#[allow(dead_code)]
 pub fn total_volume(densities: &[f64], element_volumes: &[f64]) -> f64 {
     assert_eq!(densities.len(), element_volumes.len());
     densities
@@ -943,7 +938,6 @@ pub fn total_volume(densities: &[f64], element_volumes: &[f64]) -> f64 {
 /// with respect to density.
 ///
 /// Returns `∂V/∂ρₑ = vₑ / V_total` for each element.
-#[allow(dead_code)]
 pub fn volume_constraint_gradient(element_volumes: &[f64], total_volume: f64) -> Vec<f64> {
     assert!(total_volume > 0.0);
     element_volumes.iter().map(|&v| v / total_volume).collect()
@@ -952,7 +946,6 @@ pub fn volume_constraint_gradient(element_volumes: &[f64], total_volume: f64) ->
 ///
 /// `g(ρ) = V(ρ) - V_target` is the constraint violation.
 /// Returns `λ * g + (ρ_aug / 2) * g²`.
-#[allow(dead_code)]
 pub fn augmented_lagrangian_volume_penalty(
     current_vf: f64,
     target_vf: f64,
@@ -966,7 +959,6 @@ pub fn augmented_lagrangian_volume_penalty(
 ///
 /// Prevents numerical issues when sensitivities span many orders of magnitude.
 /// Returns a zero vector if all sensitivities are zero.
-#[allow(dead_code)]
 pub fn normalize_sensitivities(sensitivities: &[f64]) -> Vec<f64> {
     let max_abs = sensitivities
         .iter()
@@ -981,7 +973,6 @@ pub fn normalize_sensitivities(sensitivities: &[f64]) -> Vec<f64> {
 ///
 /// Useful when the OC update requires sensitivities summing to the
 /// number of design variables.
-#[allow(dead_code)]
 pub fn scale_sensitivities_to_sum(sensitivities: &[f64]) -> Vec<f64> {
     let n = sensitivities.len();
     if n == 0 {

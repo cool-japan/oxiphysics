@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,8 +15,6 @@
 //! - **CoarseningStrategy**: safe coarsening of over-refined regions.
 //! - **ParallelAdaptiveRefinement**: work-stealing parallel h-refinement skeleton.
 //! - **AdaptiveFemDriver**: top-level adaptive loop controller.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Math helpers (plain arrays, no nalgebra)
@@ -257,10 +254,10 @@ impl ZzErrorEstimator {
                 }
             }
         }
-        for n in 0..self.n_nodes {
-            let c = count[n].max(1) as f64;
-            self.recovered_grad[n][0] /= c;
-            self.recovered_grad[n][1] /= c;
+        for (grad_n, &cnt) in self.recovered_grad.iter_mut().zip(count.iter()) {
+            let c = cnt.max(1) as f64;
+            grad_n[0] /= c;
+            grad_n[1] /= c;
         }
     }
 
@@ -399,7 +396,6 @@ pub struct HRefinementResult {
 ///
 /// `nodes` are the current nodal coordinates, `elements` are triangles,
 /// `degrees` is per-element polynomial degree, `marked` are element indices to refine.
-#[allow(clippy::too_many_arguments)]
 pub fn h_refine_longest_edge(
     nodes: &[[f64; 3]],
     elements: &[[usize; 3]],
@@ -675,9 +671,9 @@ impl AdaptiveQuadrature {
         let half = 0.5 * (b - a);
         let center = 0.5 * (a + b);
         let mut sum = 0.0;
-        for i in 0..5 {
-            let x = center + half * GL_POINTS_5[i];
-            sum += GL_WEIGHTS_5[i] * f(x);
+        for (&pt, &wt) in GL_POINTS_5.iter().zip(GL_WEIGHTS_5.iter()) {
+            let x = center + half * pt;
+            sum += wt * f(x);
             self.n_evals += 1;
         }
         sum * half
@@ -807,10 +803,15 @@ impl RefinementIndicator {
             .cloned()
             .fold(0.0f64, f64::max)
             .max(1e-14);
-        for e in 0..self.n_elements {
-            let sg_norm = self.stress_grad[e] / sg_max;
-            let ee_norm = self.energy_error[e] / ee_max;
-            self.indicator[e] = self.alpha * sg_norm + (1.0 - self.alpha) * ee_norm;
+        for ((ind_e, &sg_e), &ee_e) in self
+            .indicator
+            .iter_mut()
+            .zip(self.stress_grad.iter())
+            .zip(self.energy_error.iter())
+        {
+            let sg_norm = sg_e / sg_max;
+            let ee_norm = ee_e / ee_max;
+            *ind_e = self.alpha * sg_norm + (1.0 - self.alpha) * ee_norm;
         }
     }
 
@@ -1140,11 +1141,11 @@ impl RecoveredStress {
                 }
             }
         }
-        for n in 0..self.n_nodes {
-            let c = count[n].max(1) as f64;
-            self.sigma[n][0] /= c;
-            self.sigma[n][1] /= c;
-            self.sigma[n][2] /= c;
+        for (sigma_n, &cnt) in self.sigma.iter_mut().zip(count.iter()) {
+            let c = cnt.max(1) as f64;
+            sigma_n[0] /= c;
+            sigma_n[1] /= c;
+            sigma_n[2] /= c;
         }
     }
 

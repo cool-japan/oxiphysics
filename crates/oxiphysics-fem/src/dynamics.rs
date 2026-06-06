@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,8 +8,6 @@
 //!
 //! Also includes the Bathe composite method, mass matrix lumping,
 //! Rayleigh damping assembly, and energy balance monitoring.
-
-#![allow(dead_code)]
 
 // ──────────────────────────────────────────────────────────────────────────────
 // DynamicsSystem
@@ -69,8 +66,8 @@ impl DynamicsSystem {
             // α*M part (diagonal mass)
             result[i] += self.damping_alpha * self.mass_diag[i] * velocity[i];
             // β*K part
-            for j in 0..self.n_dof {
-                result[i] += self.damping_beta * self.stiffness[i][j] * velocity[j];
+            for (j, &vel_j) in velocity.iter().enumerate().take(self.n_dof) {
+                result[i] += self.damping_beta * self.stiffness[i][j] * vel_j;
             }
         }
         result
@@ -82,9 +79,9 @@ impl DynamicsSystem {
     pub fn internal_force(&self, displacement: &[f64]) -> Vec<f64> {
         assert_eq!(displacement.len(), self.n_dof);
         let mut result = vec![0.0; self.n_dof];
-        for i in 0..self.n_dof {
-            for j in 0..self.n_dof {
-                result[i] += self.stiffness[i][j] * displacement[j];
+        for (i, result_i) in result.iter_mut().enumerate().take(self.n_dof) {
+            for (j, &disp_j) in displacement.iter().enumerate().take(self.n_dof) {
+                *result_i += self.stiffness[i][j] * disp_j;
             }
         }
         result
@@ -658,13 +655,7 @@ impl CentralDifferenceHalfStep {
     /// * `v_half`     - half-step velocity v_{n-1/2} (updated to v_{n+1/2})
     /// * `f_ext`      - external force at t_n
     /// * `dt`         - time step
-    pub fn step(
-        sys: &DynamicsSystem,
-        u: &mut Vec<f64>,
-        v_half: &mut Vec<f64>,
-        f_ext: &[f64],
-        dt: f64,
-    ) {
+    pub fn step(sys: &DynamicsSystem, u: &mut [f64], v_half: &mut [f64], f_ext: &[f64], dt: f64) {
         let n = sys.n_dof;
         assert_eq!(u.len(), n);
         assert_eq!(v_half.len(), n);

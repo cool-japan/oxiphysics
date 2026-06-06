@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -25,9 +24,6 @@
 //! * McNeely et al. (1999) – voxel-based haptic rendering.
 //! * Misra et al. (2010) – mechanics-based models for needle insertion.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Math helpers
 // ---------------------------------------------------------------------------
@@ -37,6 +33,7 @@ fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+#[cfg(test)]
 #[inline]
 fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
@@ -66,6 +63,7 @@ fn norm3(a: [f64; 3]) -> f64 {
     dot3(a, a).sqrt()
 }
 
+#[cfg(test)]
 #[inline]
 fn normalize3(a: [f64; 3]) -> [f64; 3] {
     let n = norm3(a);
@@ -382,8 +380,8 @@ impl PhantomHapticDevice {
     /// Update device state from sensor readings.
     pub fn update_state(&mut self, position: [f64; 3], velocity: [f64; 3], orientation: [f64; 3]) {
         // Clamp to workspace.
-        for i in 0..3 {
-            self.position[i] = clamp(position[i], -self.workspace[i], self.workspace[i]);
+        for (i, &pos) in position.iter().enumerate() {
+            self.position[i] = clamp(pos, -self.workspace[i], self.workspace[i]);
         }
         self.velocity = velocity;
         self.orientation = orientation;

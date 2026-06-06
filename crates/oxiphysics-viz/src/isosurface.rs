@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +7,6 @@
 //! handled through an edge-table and symmetry-reduced triangle-table), signed
 //! distance functions for common shapes, and a simple 2-D dual-contouring
 //! sketch.
-
-#![allow(dead_code)]
 
 // ─── Scalar Field ────────────────────────────────────────────────────────────
 
@@ -471,8 +468,8 @@ pub fn marching_cubes(field: &ScalarField, isovalue: f64) -> Vec<Triangle> {
 
                 // Build cube index.
                 let mut cube_idx = 0u8;
-                for n in 0..8 {
-                    if vals[n] < isovalue {
+                for (n, &val) in vals.iter().enumerate() {
+                    if val < isovalue {
                         cube_idx |= 1 << n;
                     }
                 }

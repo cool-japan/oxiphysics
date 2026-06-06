@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::ConformingTransfer;
 
 /// Stefan-Boltzmann constant \[W/(m²·K⁴)\]
@@ -122,9 +121,12 @@ mod tests {
     fn constitutive_2d_symmetry() {
         let mat = ThermoElasticMaterial::new(200e9, 0.3, 12e-6, 50.0, 500.0, 7850.0);
         let d = mat.constitutive_2d(mat.t_ref);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((d[i][j] - d[j][i]).abs() < 1.0, "D must be symmetric");
+        for (i, row) in d.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
+                assert!(
+                    (v - d[j][i]).abs() < 1.0,
+                    "D must be symmetric at ({i},{j})"
+                );
             }
         }
     }
@@ -547,10 +549,10 @@ mod tests_new_coupled {
     fn temp_dependent_stiffness_matrix_symmetry() {
         let s = TempDependentStiffness::new(200e9, 0.0, 300.0, 0.3);
         let d = s.stiffness_6x6(300.0);
-        for i in 0..6 {
-            for j in 0..6 {
+        for (i, row) in d.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
                 assert!(
-                    (d[i][j] - d[j][i]).abs() < 1.0,
+                    (v - d[j][i]).abs() < 1.0,
                     "D[{i}][{j}] must equal D[{j}][{i}]"
                 );
             }

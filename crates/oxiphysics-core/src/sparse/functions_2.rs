@@ -2,13 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::CsrMatrix;
 
 /// Extract the upper triangular part of a sparse matrix (including diagonal).
-#[allow(dead_code)]
 pub fn upper_triangular(a: &CsrMatrix) -> CsrMatrix {
     let mut rows = Vec::new();
     let mut cols = Vec::new();
@@ -26,23 +22,20 @@ pub fn upper_triangular(a: &CsrMatrix) -> CsrMatrix {
     CsrMatrix::from_triplets(a.nrows, a.ncols, &rows, &cols, &vals)
 }
 /// Symmetrise a sparse matrix: A_sym = (A + A^T) / 2.
-#[allow(dead_code)]
 pub fn symmetrise_sparse(a: &CsrMatrix) -> CsrMatrix {
     let at = a.transpose();
     let sum = a.add(&at);
     sum.scale(0.5)
 }
 /// Compute the 1-norm (max column sum of absolute values) of a sparse matrix.
-#[allow(dead_code)]
 pub fn sparse_one_norm(a: &CsrMatrix) -> f64 {
     let mut col_sums = vec![0.0f64; a.ncols];
-    for k in 0..a.values.len() {
-        col_sums[a.col_idx[k]] += a.values[k].abs();
+    for (&col, &val) in a.col_idx.iter().zip(a.values.iter()) {
+        col_sums[col] += val.abs();
     }
     col_sums.iter().cloned().fold(0.0f64, f64::max)
 }
 /// Compute the infinity-norm (max row sum of absolute values) of a sparse matrix.
-#[allow(dead_code)]
 pub fn sparse_inf_norm(a: &CsrMatrix) -> f64 {
     (0..a.nrows)
         .map(|i| {
@@ -53,18 +46,16 @@ pub fn sparse_inf_norm(a: &CsrMatrix) -> f64 {
         .fold(0.0f64, f64::max)
 }
 /// Compute the Frobenius norm of a sparse matrix.
-#[allow(dead_code)]
 pub fn sparse_frobenius_norm(a: &CsrMatrix) -> f64 {
     a.values.iter().map(|x| x * x).sum::<f64>().sqrt()
 }
 /// Set the diagonal of a CSR matrix (in-place). Only existing diagonal entries are modified.
-#[allow(dead_code)]
 pub fn set_diagonal(a: &mut CsrMatrix, d: &[f64]) {
     assert_eq!(d.len(), a.nrows.min(a.ncols));
-    for i in 0..d.len() {
+    for (i, &di) in d.iter().enumerate() {
         for k in a.row_ptr[i]..a.row_ptr[i + 1] {
             if a.col_idx[k] == i {
-                a.values[k] = d[i];
+                a.values[k] = di;
                 break;
             }
         }
@@ -72,14 +63,20 @@ pub fn set_diagonal(a: &mut CsrMatrix, d: &[f64]) {
 }
 /// Add a scalar multiple of the identity to a CSR matrix: A + alpha * I.
 /// Requires the diagonal entries to already exist in the sparsity pattern.
-#[allow(dead_code)]
 pub fn add_identity_scaled(a: &CsrMatrix, alpha: f64) -> CsrMatrix {
     let n = a.nrows.min(a.ncols);
     let mut new_vals = a.values.clone();
     for i in 0..n {
-        for k in a.row_ptr[i]..a.row_ptr[i + 1] {
-            if a.col_idx[k] == i {
-                new_vals[k] += alpha;
+        let row_start = a.row_ptr[i];
+        let row_end = a.row_ptr[i + 1];
+        for (k_off, (&col, nv)) in a.col_idx[row_start..row_end]
+            .iter()
+            .zip(new_vals[row_start..row_end].iter_mut())
+            .enumerate()
+        {
+            if col == i {
+                *nv += alpha;
+                let _ = k_off;
                 break;
             }
         }
@@ -94,7 +91,7 @@ pub fn add_identity_scaled(a: &CsrMatrix, alpha: f64) -> CsrMatrix {
 }
 #[cfg(test)]
 mod tests_extended {
-    use super::*;
+    use super::super::*;
     use crate::sparse::BlockJacobi;
     fn approx(a: f64, b: f64, tol: f64) -> bool {
         (a - b).abs() < tol
@@ -126,8 +123,8 @@ mod tests_extended {
         let b = vec![0.0; 4];
         let (x, conv, _) = bicgstab_solve(&a, &b, None, 1e-10, 50);
         assert!(conv);
-        for i in 0..4 {
-            assert!(approx(x[i], 0.0, 1e-10));
+        for &xi in x.iter() {
+            assert!(approx(xi, 0.0, 1e-10));
         }
     }
     #[test]
@@ -137,8 +134,8 @@ mod tests_extended {
         let x0 = vec![3.9, 4.9, 5.9];
         let (x, conv, iters) = bicgstab_solve(&a, &b, Some(&x0), 1e-10, 50);
         assert!(conv, "should converge from near-exact initial guess");
-        for i in 0..3 {
-            assert!(approx(x[i], b[i], 1e-6));
+        for (&xi, &bi) in x.iter().zip(b.iter()) {
+            assert!(approx(xi, bi, 1e-6));
         }
         assert!(iters < 10, "iters={iters}");
     }
@@ -219,8 +216,8 @@ mod tests_extended {
         let a = identity_csr(3);
         let s = vec![2.0, 3.0, 5.0];
         let b = row_scale(&a, &s);
-        for i in 0..3 {
-            assert!(approx(b.get(i, i), s[i], 1e-12));
+        for (i, &si) in s.iter().enumerate() {
+            assert!(approx(b.get(i, i), si, 1e-12));
         }
     }
     #[test]
@@ -228,19 +225,19 @@ mod tests_extended {
         let a = identity_csr(3);
         let s = vec![7.0, 11.0, 13.0];
         let b = col_scale(&a, &s);
-        for i in 0..3 {
-            assert!(approx(b.get(i, i), s[i], 1e-12));
+        for (i, &si) in s.iter().enumerate() {
+            assert!(approx(b.get(i, i), si, 1e-12));
         }
     }
     #[test]
     fn test_equilibration_scales_identity() {
         let a = identity_csr(4);
         let (rs, cs) = equilibration_scales(&a);
-        for i in 0..4 {
-            assert!(approx(rs[i], 1.0, 1e-10));
+        for &r in rs.iter() {
+            assert!(approx(r, 1.0, 1e-10));
         }
-        for j in 0..4 {
-            assert!(approx(cs[j], 1.0, 1e-10));
+        for &c in cs.iter() {
+            assert!(approx(c, 1.0, 1e-10));
         }
     }
     #[test]
@@ -249,11 +246,11 @@ mod tests_extended {
         let b1 = vec![1.0, 2.0, 3.0];
         let b2 = vec![4.0, 5.0, 6.0];
         let xs = multi_rhs_cg(&a, &[b1.clone(), b2.clone()], 1e-10, 50);
-        for i in 0..3 {
-            assert!(approx(xs[0][i], b1[i], 1e-6));
+        for (&xi, &bi) in xs[0].iter().zip(b1.iter()) {
+            assert!(approx(xi, bi, 1e-6));
         }
-        for i in 0..3 {
-            assert!(approx(xs[1][i], b2[i], 1e-6));
+        for (&xi, &bi) in xs[1].iter().zip(b2.iter()) {
+            assert!(approx(xi, bi, 1e-6));
         }
     }
     #[test]
@@ -355,8 +352,8 @@ mod tests_extended {
         let bj = BlockJacobi::new(&a, 2);
         let b = vec![2.0, 4.0, 3.0, 6.0];
         let x = bj.apply(&b);
-        for i in 0..4 {
-            assert!(approx(x[i], 1.0, 1e-10));
+        for &xi in x.iter() {
+            assert!(approx(xi, 1.0, 1e-10));
         }
     }
     #[test]
@@ -423,8 +420,8 @@ mod tests_extended {
         let a = identity_csr(3);
         let b = vec![0.0, 0.0, 0.0];
         let (x, _conv, _) = minres_solve(&a, &b, 1e-10, 50);
-        for i in 0..3 {
-            assert!(x[i].abs() < 1e-10);
+        for &xi in x.iter() {
+            assert!(xi.abs() < 1e-10);
         }
     }
 }

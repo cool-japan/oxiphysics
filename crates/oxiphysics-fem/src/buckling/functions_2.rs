@@ -2,13 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+
     use crate::buckling::*;
     use std::f64::consts::PI;
     #[test]
@@ -372,10 +368,10 @@ mod tests {
     #[test]
     fn test_euler_buckling_critical_load() {
         let eb = EulerBuckling {
-            E: 200e9,
-            I: 1e-6,
-            L: 2.0,
-            K: 1.0,
+            e: 200e9,
+            i: 1e-6,
+            l: 2.0,
+            k: 1.0,
         };
         let expected = PI * PI * 200e9 * 1e-6 / (1.0 * 2.0_f64).powi(2);
         assert!((eb.critical_load() - expected).abs() / expected < 1e-12);
@@ -383,10 +379,10 @@ mod tests {
     #[test]
     fn test_euler_buckling_slenderness_ratio() {
         let eb = EulerBuckling {
-            E: 200e9,
-            I: 1e-6,
-            L: 2.0,
-            K: 1.0,
+            e: 200e9,
+            i: 1e-6,
+            l: 2.0,
+            k: 1.0,
         };
         let r = 0.05;
         let lambda = eb.slenderness_ratio(1e-4, r);
@@ -404,10 +400,10 @@ mod tests {
     #[test]
     fn test_geometric_stiffness_beam_symmetric() {
         let kg = geometric_stiffness_beam(500.0, 2.0);
-        for i in 0..4 {
-            for j in 0..4 {
+        for (i, row) in kg.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
                 assert!(
-                    (kg[i][j] - kg[j][i]).abs() < 1e-12,
+                    (v - kg[j][i]).abs() < 1e-12,
                     "Kg not symmetric at ({i},{j})"
                 );
             }
@@ -417,7 +413,7 @@ mod tests {
     fn test_buckling_analysis_critical_load_factor_positive() {
         let mut ba = BucklingAnalysis::new(4);
         for i in 0..4 {
-            ba.K_global.push((i, i, 1000.0));
+            ba.k_global.push((i, i, 1000.0));
         }
         ba.add_geometric_stiffness([0, 1], 100.0, 1.0);
         let factor = ba.critical_load_factor_estimate();
@@ -558,10 +554,10 @@ mod tests {
     #[test]
     fn test_timoshenko_beam_stiffness_symmetric() {
         let k = timoshenko_beam_stiffness(200e9, 1e-6, 80e9, 1e-3, 5.0 / 6.0, 1.0);
-        for i in 0..4 {
-            for j in 0..4 {
+        for (i, row) in k.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
                 assert!(
-                    (k[i][j] - k[j][i]).abs() < 1.0,
+                    (v - k[j][i]).abs() < 1.0,
                     "Timoshenko stiffness not symmetric at [{i}][{j}]"
                 );
             }

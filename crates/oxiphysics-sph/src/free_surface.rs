@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg, clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +7,6 @@
 //! for detecting and tracking free surfaces in SPH fluid simulations,
 //! including surface normals, curvature computation, and a simple
 //! dam-break scenario for 2D free-surface flows.
-
-#![allow(dead_code)]
 
 /// A particle that carries surface-tracking information.
 #[derive(Debug, Clone)]
@@ -100,6 +97,12 @@ impl ColorFunction {
 // Surface tension / detection
 // ---------------------------------------------------------------------------
 
+/// Snapshot entry for normal computation: (position, mass, density, smoothing_length).
+type NormalSnapEntry = ([f64; 3], f64, f64, f64);
+
+/// Snapshot entry for curvature computation: (position, normal, mass, density, smoothing_length).
+type CurvatureSnapEntry = ([f64; 3], [f64; 3], f64, f64, f64);
+
 /// Surface tension model using the Continuum Surface Force (CSF) approach.
 pub struct SurfaceTension {
     /// Surface tension coefficient σ \[N/m\].
@@ -120,46 +123,38 @@ impl SurfaceTension {
     /// Compute un-normalised surface normals for every particle.
     ///
     /// n_i = Σ_j (m_j / ρ_j) ∇W_ij
-    pub fn compute_normals(particles: &mut Vec<SurfaceParticle>) {
+    pub fn compute_normals(particles: &mut [SurfaceParticle]) {
         let n = particles.len();
         let mut normals = vec![[0.0_f64; 3]; n];
 
         // We need an immutable snapshot of the data we read.
-        let snap: Vec<([f64; 3], f64, f64, f64)> = particles
+        let snap: Vec<NormalSnapEntry> = particles
             .iter()
             .map(|p| (p.position, p.mass, p.density, p.smoothing_length_or(1.0)))
             .collect();
 
-        for i in 0..n {
-            let pi = snap[i].0;
-            let hi = snap[i].3;
-            for j in 0..n {
-                if i == j {
-                    continue;
-                }
-                let pj = snap[j].0;
-                let mj = snap[j].1;
-                let rhoj = snap[j].2;
-                if rhoj < 1e-12 {
+        for (i, (norm_i, &(pi, _, _, hi))) in normals.iter_mut().zip(snap.iter()).enumerate() {
+            for (j, &(pj, mj, rhoj, _)) in snap.iter().enumerate() {
+                if i == j || rhoj < 1e-12 {
                     continue;
                 }
                 let dx = [pi[0] - pj[0], pi[1] - pj[1], pi[2] - pj[2]];
                 let r = (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt();
                 let grad = ColorFunction::kernel_gradient(dx, r, hi);
                 let w = mj / rhoj;
-                normals[i][0] += w * grad[0];
-                normals[i][1] += w * grad[1];
-                normals[i][2] += w * grad[2];
+                norm_i[0] += w * grad[0];
+                norm_i[1] += w * grad[1];
+                norm_i[2] += w * grad[2];
             }
         }
 
-        for (i, p) in particles.iter_mut().enumerate() {
-            p.normal = normals[i];
+        for (p, &norm) in particles.iter_mut().zip(normals.iter()) {
+            p.normal = norm;
         }
     }
 
     /// Mark particles as surface particles when |n_i| > threshold.
-    pub fn detect_surface(particles: &mut Vec<SurfaceParticle>, threshold: f64) {
+    pub fn detect_surface(particles: &mut [SurfaceParticle], threshold: f64) {
         for p in particles.iter_mut() {
             let mag = vec3_len(p.normal);
             p.is_surface = mag > threshold;
@@ -167,7 +162,7 @@ impl SurfaceTension {
     }
 
     /// Normalise the surface normals in-place (for particles where |n| > ε).
-    pub fn normalize_normals(particles: &mut Vec<SurfaceParticle>) {
+    pub fn normalize_normals(particles: &mut [SurfaceParticle]) {
         for p in particles.iter_mut() {
             let mag = vec3_len(p.normal);
             if mag > 1e-12 {
@@ -183,11 +178,11 @@ impl SurfaceTension {
     /// κ_i = -Σ_j (m_j / ρ_j) (n̂_j − n̂_i) · ∇W_ij
     ///
     /// Call `normalize_normals` first.
-    pub fn compute_curvature(particles: &mut Vec<SurfaceParticle>) {
+    pub fn compute_curvature(particles: &mut [SurfaceParticle]) {
         let n = particles.len();
         let mut kappas = vec![0.0_f64; n];
 
-        let snap: Vec<([f64; 3], [f64; 3], f64, f64, f64)> = particles
+        let snap: Vec<CurvatureSnapEntry> = particles
             .iter()
             .map(|p| {
                 (
@@ -200,19 +195,9 @@ impl SurfaceTension {
             })
             .collect();
 
-        for i in 0..n {
-            let pi = snap[i].0;
-            let ni = snap[i].1;
-            let hi = snap[i].4;
-            for j in 0..n {
-                if i == j {
-                    continue;
-                }
-                let pj = snap[j].0;
-                let nj = snap[j].1;
-                let mj = snap[j].2;
-                let rhoj = snap[j].3;
-                if rhoj < 1e-12 {
+        for (i, (kappa_i, &(pi, ni, _, _, hi))) in kappas.iter_mut().zip(snap.iter()).enumerate() {
+            for (j, &(pj, nj, mj, rhoj, _)) in snap.iter().enumerate() {
+                if i == j || rhoj < 1e-12 {
                     continue;
                 }
                 let dx = [pi[0] - pj[0], pi[1] - pj[1], pi[2] - pj[2]];
@@ -220,7 +205,7 @@ impl SurfaceTension {
                 let grad = ColorFunction::kernel_gradient(dx, r, hi);
                 let dn = [nj[0] - ni[0], nj[1] - ni[1], nj[2] - ni[2]];
                 let dot = dn[0] * grad[0] + dn[1] * grad[1] + dn[2] * grad[2];
-                kappas[i] -= (mj / rhoj) * dot;
+                *kappa_i -= (mj / rhoj) * dot;
             }
         }
 
@@ -258,10 +243,6 @@ pub struct WaterSurface {
     pub domain: ([f64; 3], [f64; 3]),
     /// SPH smoothing length.
     pub h: f64,
-    /// Particle mass (uniform).
-    particle_mass: f64,
-    /// Reference density.
-    rho0: f64,
 }
 
 impl WaterSurface {
@@ -297,30 +278,32 @@ impl WaterSurface {
             gravity: [0.0, -9.81, 0.0],
             domain: (domain_min, domain_max),
             h,
-            particle_mass,
-            rho0,
         }
     }
 
     /// Update density via SPH summation: ρ_i = Σ_j m_j W(|x_i − x_j|, h).
     pub fn update_density(&mut self) {
-        let n = self.particles.len();
+        let _n = self.particles.len();
         let h = self.h;
         let positions: Vec<[f64; 3]> = self.particles.iter().map(|p| p.position).collect();
         let masses: Vec<f64> = self.particles.iter().map(|p| p.mass).collect();
 
-        for i in 0..n {
-            let mut rho = 0.0;
-            for j in 0..n {
-                let dx = [
-                    positions[i][0] - positions[j][0],
-                    positions[i][1] - positions[j][1],
-                    positions[i][2] - positions[j][2],
-                ];
-                let r = (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt();
-                rho += masses[j] * ColorFunction::kernel_value(r, h);
-            }
-            self.particles[i].density = rho.max(1e-6);
+        for (p_i, &pos_i) in self.particles.iter_mut().zip(positions.iter()) {
+            let rho: f64 = positions
+                .iter()
+                .zip(masses.iter())
+                .map(|(&pos_j, &mj)| {
+                    let dx = [
+                        pos_i[0] - pos_j[0],
+                        pos_i[1] - pos_j[1],
+                        pos_i[2] - pos_j[2],
+                    ];
+                    let r = (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt();
+                    mj * ColorFunction::kernel_value(r, h)
+                })
+                .sum::<f64>()
+                .max(1e-6);
+            p_i.density = rho;
         }
     }
 
@@ -338,17 +321,21 @@ impl WaterSurface {
     pub fn enforce_boundary(&mut self) {
         let (dmin, dmax) = self.domain;
         for p in self.particles.iter_mut() {
-            for k in 0..3 {
-                if p.position[k] < dmin[k] {
-                    p.position[k] = dmin[k];
-                    if p.velocity[k] < 0.0 {
-                        p.velocity[k] = -p.velocity[k];
+            for ((&lo, &hi_val), (pos_k, vel_k)) in dmin
+                .iter()
+                .zip(dmax.iter())
+                .zip(p.position.iter_mut().zip(p.velocity.iter_mut()))
+            {
+                if *pos_k < lo {
+                    *pos_k = lo;
+                    if *vel_k < 0.0 {
+                        *vel_k = -*vel_k;
                     }
                 }
-                if p.position[k] > dmax[k] {
-                    p.position[k] = dmax[k];
-                    if p.velocity[k] > 0.0 {
-                        p.velocity[k] = -p.velocity[k];
+                if *pos_k > hi_val {
+                    *pos_k = hi_val;
+                    if *vel_k > 0.0 {
+                        *vel_k = -*vel_k;
                     }
                 }
             }
@@ -401,7 +388,7 @@ impl SplashDetector {
     }
 
     /// Union-Find helper: find root with path compression.
-    fn find(parent: &mut Vec<usize>, i: usize) -> usize {
+    fn find(parent: &mut [usize], i: usize) -> usize {
         if parent[i] != i {
             parent[i] = Self::find(parent, parent[i]);
         }
@@ -409,7 +396,7 @@ impl SplashDetector {
     }
 
     /// Union two sets.
-    fn union(parent: &mut Vec<usize>, rank: &mut Vec<usize>, a: usize, b: usize) {
+    fn union(parent: &mut [usize], rank: &mut [usize], a: usize, b: usize) {
         let ra = Self::find(parent, a);
         let rb = Self::find(parent, b);
         if ra == rb {
@@ -510,7 +497,6 @@ pub struct EigenvalueSurfaceDetector {
 
 impl EigenvalueSurfaceDetector {
     /// Create a new eigenvalue surface detector.
-    #[allow(dead_code)]
     pub fn new(eigen_ratio_threshold: f64, smoothing_length: f64) -> Self {
         Self {
             eigen_ratio_threshold,
@@ -521,7 +507,6 @@ impl EigenvalueSurfaceDetector {
     /// Compute the weighted covariance matrix of neighbors around particle `i`.
     ///
     /// Returns `[[c00, c01, c02\], [c10, c11, c12], [c20, c21, c22]]`.
-    #[allow(dead_code)]
     pub fn neighbor_covariance(particles: &[SurfaceParticle], i: usize, h: f64) -> [[f64; 3]; 3] {
         let pi = particles[i].position;
         let mut cov = [[0.0_f64; 3]; 3];
@@ -550,9 +535,9 @@ impl EigenvalueSurfaceDetector {
         }
 
         if w_sum > 1e-30 {
-            for a in 0..3 {
-                for b in 0..3 {
-                    cov[a][b] /= w_sum;
+            for row in cov.iter_mut() {
+                for v in row.iter_mut() {
+                    *v /= w_sum;
                 }
             }
         }
@@ -562,7 +547,6 @@ impl EigenvalueSurfaceDetector {
     /// Compute eigenvalues of a symmetric 3x3 matrix using the analytical formula.
     ///
     /// Returns eigenvalues sorted in ascending order.
-    #[allow(dead_code)]
     pub fn eigenvalues_symmetric_3x3(m: [[f64; 3]; 3]) -> [f64; 3] {
         let a = m[0][0];
         let b = m[1][1];
@@ -611,7 +595,6 @@ impl EigenvalueSurfaceDetector {
     ///
     /// Marks `is_surface = true` when the smallest eigenvalue of the local
     /// covariance matrix is much smaller than the largest.
-    #[allow(dead_code)]
     pub fn detect(&self, particles: &mut [SurfaceParticle]) {
         let n = particles.len();
         let h = self.smoothing_length;
@@ -657,9 +640,9 @@ impl EigenvalueSurfaceDetector {
             }
 
             if w_sum > 1e-30 {
-                for a in 0..3 {
-                    for b in 0..3 {
-                        cov[a][b] /= w_sum;
+                for row in cov.iter_mut() {
+                    for v in row.iter_mut() {
+                        *v /= w_sum;
                     }
                 }
             }
@@ -693,7 +676,6 @@ pub struct DivergenceSurfaceDetector {
 
 impl DivergenceSurfaceDetector {
     /// Create a new divergence surface detector.
-    #[allow(dead_code)]
     pub fn new(density_ratio_threshold: f64, smoothing_length: f64) -> Self {
         Self {
             density_ratio_threshold,
@@ -702,7 +684,6 @@ impl DivergenceSurfaceDetector {
     }
 
     /// Compute the number density (sum of kernel values) for particle `i`.
-    #[allow(dead_code)]
     pub fn number_density(particles: &[SurfaceParticle], i: usize, h: f64) -> f64 {
         let pi = particles[i].position;
         let mut nd = ColorFunction::kernel_value(0.0, h); // self contribution
@@ -722,7 +703,6 @@ impl DivergenceSurfaceDetector {
     }
 
     /// Detect surface particles by comparing number density to reference.
-    #[allow(dead_code)]
     pub fn detect(&self, particles: &mut [SurfaceParticle]) {
         let n = particles.len();
         let h = self.smoothing_length;
@@ -730,10 +710,10 @@ impl DivergenceSurfaceDetector {
         // Find the maximum number density as reference
         let mut number_densities = vec![0.0_f64; n];
         let mut max_nd = 0.0_f64;
-        for i in 0..n {
-            number_densities[i] = Self::number_density(particles, i, h);
-            if number_densities[i] > max_nd {
-                max_nd = number_densities[i];
+        for (i, nd) in number_densities.iter_mut().enumerate() {
+            *nd = Self::number_density(particles, i, h);
+            if *nd > max_nd {
+                max_nd = *nd;
             }
         }
 
@@ -766,7 +746,6 @@ pub struct SurfaceReconstructor {
 
 impl SurfaceReconstructor {
     /// Create a new surface reconstructor.
-    #[allow(dead_code)]
     pub fn new(cell_size: f64, iso_value: f64, smoothing_length: f64) -> Self {
         Self {
             cell_size,
@@ -778,7 +757,6 @@ impl SurfaceReconstructor {
     /// Extract surface cell centers from a set of particles.
     ///
     /// Returns positions of grid cells that lie on the isosurface boundary.
-    #[allow(dead_code)]
     pub fn extract_surface_cells(&self, particles: &[SurfaceParticle]) -> Vec<[f64; 3]> {
         if particles.is_empty() {
             return Vec::new();
@@ -860,7 +838,6 @@ impl CurvatureEstimator {
     ///
     /// Given a set of nearby surface points, fits a paraboloid
     /// z = ax² + bxy + cy² and returns the mean curvature κ = a + c.
-    #[allow(dead_code)]
     pub fn estimate_from_neighbors(
         center: [f64; 3],
         neighbors: &[[f64; 3]],
@@ -940,7 +917,6 @@ impl CurvatureEstimator {
 
 /// Rendering hints for surface particles.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SurfaceRenderHint {
     /// Particle index.
     pub particle_index: usize,
@@ -955,7 +931,6 @@ pub struct SurfaceRenderHint {
 }
 
 /// Generate rendering hints for surface particles.
-#[allow(dead_code)]
 pub fn generate_render_hints(particles: &[SurfaceParticle]) -> Vec<SurfaceRenderHint> {
     particles
         .iter()

@@ -2,13 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::type_complexity)]
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+/// Shared work queue type alias for boxed closures.
+type WorkQueue = Arc<Mutex<Vec<Box<dyn FnOnce() + Send + 'static>>>>;
 
 /// Statistics collected from a thread pool execution.
 #[derive(Debug, Clone, Default)]
@@ -226,7 +224,7 @@ impl ThreadPool {
 /// ```
 pub struct WorkStealingPool {
     /// Shared queue of boxed closures.
-    pub(super) queue: Arc<Mutex<Vec<Box<dyn FnOnce() + Send + 'static>>>>,
+    pub(super) queue: WorkQueue,
     /// Join handles for worker threads.
     pub(super) handles: Vec<thread::JoinHandle<()>>,
     /// Number of worker threads.
@@ -238,8 +236,7 @@ impl WorkStealingPool {
     /// Create a new `WorkStealingPool` with `n_threads` worker threads.
     pub fn new(n_threads: usize) -> Self {
         let n = n_threads.max(1);
-        let queue: Arc<Mutex<Vec<Box<dyn FnOnce() + Send + 'static>>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let queue: WorkQueue = Arc::new(Mutex::new(Vec::new()));
         let stats = Arc::new(Mutex::new(ThreadPoolStats::new(n)));
         let handles = (0..n)
             .map(|_| {
@@ -305,7 +302,6 @@ impl WorkStealingPool {
     }
 }
 /// Extended thread pool statistics with timing information.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ExtendedPoolStats {
     /// Base statistics.
@@ -343,7 +339,6 @@ impl ExtendedPoolStats {
 ///
 /// Worker threads pop from the front; thieves steal from the back.
 /// This is the standard Chase-Lev deque API (serial simulation).
-#[allow(dead_code)]
 pub struct WorkStealingDeque<T> {
     pub(super) items: std::collections::VecDeque<T>,
     pub(super) steals: usize,
@@ -399,7 +394,6 @@ impl<T> WorkStealingDeque<T> {
 ///
 /// Instead of `Vec<[f64; 4]>` (AoS), stores each component separately so
 /// hardware SIMD units can operate on contiguous memory.
-#[allow(dead_code)]
 pub struct SoaVec3 {
     /// X components.
     pub xs: Vec<f64>,

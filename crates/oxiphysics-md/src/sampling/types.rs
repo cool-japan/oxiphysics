@@ -2,16 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::functions::KB_SAMP;
-#[allow(unused_imports)]
-use super::functions::*;
 
 /// Nudged elastic band (NEB) for MEP optimisation.
 ///
 /// Adds elastic springs between images to maintain equal spacing,
 /// while projecting forces to stay on the MEP.
-#[allow(dead_code)]
 pub struct NudgedElasticBand {
     /// Images along the band.
     pub images: Vec<PathImage>,
@@ -28,7 +24,6 @@ pub struct NudgedElasticBand {
 }
 impl NudgedElasticBand {
     /// Create a NEB with linearly interpolated initial images.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         start: Vec<f64>,
         end: Vec<f64>,
@@ -69,10 +64,10 @@ impl NudgedElasticBand {
         let n = self.images.len();
         let dim = self.images[0].coords.len();
         let mut forces: Vec<Vec<f64>> = vec![vec![0.0; dim]; n];
-        for i in 0..n {
-            let (f, e) = energy_force_fn(&self.images[i].coords);
-            forces[i] = f;
-            self.images[i].energy = e;
+        for (force_i, img) in forces.iter_mut().zip(self.images.iter_mut()) {
+            let (f, e) = energy_force_fn(&img.coords);
+            *force_i = f;
+            img.energy = e;
         }
         let ci_idx = if self.climbing_image {
             (1..n - 1)
@@ -87,29 +82,45 @@ impl NudgedElasticBand {
             usize::MAX
         };
         let mut max_force = 0.0f64;
-        for i in 1..n - 1 {
+        for (i, _forces_i) in forces.iter().enumerate().take(n - 1).skip(1) {
             let e_prev = self.images[i - 1].energy;
             let e_cur = self.images[i].energy;
             let e_next = self.images[i + 1].energy;
             let mut tangent = vec![0.0f64; dim];
             if e_next > e_cur && e_cur > e_prev {
-                for d in 0..dim {
-                    tangent[d] = self.images[i + 1].coords[d] - self.images[i].coords[d];
+                for (td, (&c_next, &c_cur)) in tangent.iter_mut().zip(
+                    self.images[i + 1]
+                        .coords
+                        .iter()
+                        .zip(self.images[i].coords.iter()),
+                ) {
+                    *td = c_next - c_cur;
                 }
             } else if e_next < e_cur && e_cur < e_prev {
-                for d in 0..dim {
-                    tangent[d] = self.images[i].coords[d] - self.images[i - 1].coords[d];
+                for (td, (&c_cur, &c_prev)) in tangent.iter_mut().zip(
+                    self.images[i]
+                        .coords
+                        .iter()
+                        .zip(self.images[i - 1].coords.iter()),
+                ) {
+                    *td = c_cur - c_prev;
                 }
             } else {
                 let de_max = (e_next - e_cur).abs().max((e_prev - e_cur).abs());
                 let de_min = (e_next - e_cur).abs().min((e_prev - e_cur).abs());
-                for d in 0..dim {
-                    let t_plus = self.images[i + 1].coords[d] - self.images[i].coords[d];
-                    let t_minus = self.images[i].coords[d] - self.images[i - 1].coords[d];
+                for (td, ((&c_next, &c_cur), &c_prev)) in tangent.iter_mut().zip(
+                    self.images[i + 1]
+                        .coords
+                        .iter()
+                        .zip(self.images[i].coords.iter())
+                        .zip(self.images[i - 1].coords.iter()),
+                ) {
+                    let t_plus = c_next - c_cur;
+                    let t_minus = c_cur - c_prev;
                     if e_next > e_prev {
-                        tangent[d] = t_plus * de_max + t_minus * de_min;
+                        *td = t_plus * de_max + t_minus * de_min;
                     } else {
-                        tangent[d] = t_plus * de_min + t_minus * de_max;
+                        *td = t_plus * de_min + t_minus * de_max;
                     }
                 }
             }
@@ -165,10 +176,10 @@ impl NudgedElasticBand {
             }
             self.images[i].perp_force = total_force;
         }
-        for i in 1..n - 1 {
-            let pf = self.images[i].perp_force.clone();
-            for d in 0..dim {
-                self.images[i].coords[d] += self.step_size * pf[d];
+        for img in self.images[1..n - 1].iter_mut() {
+            let pf = img.perp_force.clone();
+            for (c, &pf_d) in img.coords.iter_mut().zip(pf.iter()) {
+                *c += self.step_size * pf_d;
             }
         }
         self.iterations += 1;
@@ -203,7 +214,6 @@ impl NudgedElasticBand {
 /// 1D umbrella sampling window.
 /// Adds a harmonic bias potential: U_bias = k/2 * (xi - xi0)^2
 /// where xi is the collective variable (e.g. distance, dihedral).
-#[allow(dead_code)]
 pub struct UmbrellaSampling {
     /// Window center (collective variable reference value).
     pub xi0: f64,
@@ -235,8 +245,7 @@ impl UmbrellaSampling {
     /// Uses bins centered at bin_edges\[i\] .. bin_edges\[i+1\].
     /// Returns (bin_centers, free_energies).
     /// Returns (vec!\[\], vec!\[\]) if no samples collected (avoid log(0)).
-    #[allow(non_snake_case)]
-    pub fn free_energy_histogram(&self, n_bins: usize, kT: f64) -> (Vec<f64>, Vec<f64>) {
+    pub fn free_energy_histogram(&self, n_bins: usize, k_t: f64) -> (Vec<f64>, Vec<f64>) {
         if self.samples.is_empty() || n_bins == 0 {
             return (vec![], vec![]);
         }
@@ -267,7 +276,7 @@ impl UmbrellaSampling {
             if cnt == 0 {
                 free_energies.push(f64::INFINITY);
             } else {
-                let f_val = -kT * (cnt as f64 / max_count as f64).ln();
+                let f_val = -k_t * (cnt as f64 / max_count as f64).ln();
                 let _ = n_total;
                 free_energies.push(f_val);
             }
@@ -294,7 +303,6 @@ impl UmbrellaSampling {
 ///
 /// Provides temperature as a function of step number for use in
 /// Monte Carlo or MD simulations.
-#[allow(dead_code)]
 pub struct SimulatedAnnealing {
     /// Initial temperature.
     pub t_initial: f64,
@@ -365,7 +373,6 @@ impl SimulatedAnnealing {
 /// z measures deviation from the path (perpendicular distance).
 ///
 /// Reference: Branduardi, Gervasio, Parrinello, J. Chem. Phys. 126, 054103 (2007).
-#[allow(dead_code)]
 pub struct PathCV {
     /// Reference path images (coordinates only).
     pub reference_images: Vec<Vec<f64>>,
@@ -420,7 +427,6 @@ impl PathCV {
 /// walk in energy space with an adaptive modification factor.
 ///
 /// Reference: Wang & Landau, Phys. Rev. Lett. 86, 2050 (2001).
-#[allow(dead_code)]
 pub struct WangLandau {
     /// Energy bin edges.
     pub bin_edges: Vec<f64>,
@@ -535,7 +541,6 @@ impl WangLandau {
 }
 /// A transition path: a sequence of states (represented as indices or
 /// configurations) connecting two metastable basins.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TransitionPath {
     /// Sequence of states (e.g., collective variable values).
@@ -576,7 +581,6 @@ impl TransitionPath {
 ///
 /// Records accepted MC transitions between energy bins and estimates the
 /// density of states via detailed-balance.
-#[allow(dead_code)]
 pub struct TransitionMatrix {
     /// Number of energy bins.
     pub n_bins: usize,
@@ -652,7 +656,6 @@ impl TransitionMatrix {
 /// The committor p_B(x) is the probability that a trajectory starting
 /// from configuration x will reach basin B before basin A.
 /// p_B = 0 means "certain to reach A first"; p_B = 1 means "certain to reach B first".
-#[allow(dead_code)]
 pub struct CommittorAnalysis {
     /// Basin A boundary (collective variable ≤ a_boundary → in A).
     pub a_boundary: f64,
@@ -745,7 +748,6 @@ impl CommittorAnalysis {
 ///
 /// Uses iteratively updated weights W(E) = 1/g(E) to achieve flat energy
 /// sampling across the entire energy range.
-#[allow(dead_code)]
 pub struct MulticanonicalSimulation {
     /// Energy bin edges (n_bins + 1 values).
     pub bin_edges: Vec<f64>,
@@ -836,7 +838,6 @@ impl MulticanonicalSimulation {
     }
 }
 /// Cooling schedule types for simulated annealing.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub enum AnnealingSchedule {
     /// Linear cooling: T(t) = T_i + (T_f - T_i) * t / n_steps
@@ -852,7 +853,6 @@ pub enum AnnealingSchedule {
 /// P_swap = min(1, exp(Δβ · ΔE))
 ///
 /// where Δβ = β_j - β_i and ΔE = E_j - E_i for adjacent replicas i, j.
-#[allow(dead_code)]
 pub struct ReplicaExchange {
     /// Temperatures for each replica (K).
     pub temperatures: Vec<f64>,
@@ -911,7 +911,6 @@ impl ReplicaExchange {
     }
 }
 /// A single image (bead) on the string / NEB path.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PathImage {
     /// Collective variable values for this image.
@@ -934,20 +933,18 @@ impl PathImage {
 }
 /// Multi-window WHAM (Weighted Histogram Analysis Method) — simplified.
 /// Given N umbrella windows, compute the unbiased free energy profile.
-#[allow(dead_code, non_snake_case)]
 pub struct WhamAnalysis {
     /// Collection of umbrella sampling windows.
     pub windows: Vec<UmbrellaSampling>,
-    /// Thermal energy kT (same units as k_spring * xi²).
-    pub kT: f64,
+    /// Thermal energy k_t (same units as k_spring * xi²).
+    pub k_t: f64,
 }
 impl WhamAnalysis {
-    /// Create a new WHAM analysis with given thermal energy kT.
-    #[allow(non_snake_case)]
-    pub fn new(kT: f64) -> Self {
+    /// Create a new WHAM analysis with given thermal energy k_t.
+    pub fn new(k_t: f64) -> Self {
         Self {
             windows: Vec::new(),
-            kT,
+            k_t,
         }
     }
     /// Add an umbrella sampling window.
@@ -1007,7 +1004,7 @@ impl WhamAnalysis {
             for b in 0..n_bins {
                 let numerator: f64 = (0..n_windows).map(|i| hist[i][b] as f64).sum();
                 let denominator: f64 = (0..n_windows)
-                    .map(|i| n_i[i] as f64 * (f_i[i] / self.kT - bias[i][b] / self.kT).exp())
+                    .map(|i| n_i[i] as f64 * (f_i[i] / self.k_t - bias[i][b] / self.k_t).exp())
                     .sum();
                 rho[b] = if denominator > 0.0 {
                     numerator / denominator
@@ -1018,9 +1015,9 @@ impl WhamAnalysis {
             let f_i_new: Vec<f64> = (0..n_windows)
                 .map(|i| {
                     let s: f64 = (0..n_bins)
-                        .map(|b| rho[b] * (-bias[i][b] / self.kT).exp())
+                        .map(|b| rho[b] * (-bias[i][b] / self.k_t).exp())
                         .sum();
-                    if s > 0.0 { -self.kT * s.ln() } else { 0.0 }
+                    if s > 0.0 { -self.k_t * s.ln() } else { 0.0 }
                 })
                 .collect();
             let delta: f64 = f_i_new
@@ -1040,7 +1037,7 @@ impl WhamAnalysis {
                 if r <= 0.0 || max_rho <= 0.0 {
                     f64::INFINITY
                 } else {
-                    -self.kT * (r / max_rho).ln()
+                    -self.k_t * (r / max_rho).ln()
                 }
             })
             .collect();
@@ -1051,7 +1048,6 @@ impl WhamAnalysis {
 ///
 /// Maintains a chain of images between two endpoints and relaxes
 /// them onto the MEP while keeping equal arc-length spacing.
-#[allow(dead_code)]
 pub struct StringMethod {
     /// Images along the path.
     pub images: Vec<PathImage>,
@@ -1108,7 +1104,11 @@ impl StringMethod {
             return;
         }
         let old_coords: Vec<Vec<f64>> = self.images.iter().map(|im| im.coords.clone()).collect();
-        for i in 1..n - 1 {
+        for (i, img) in self.images[1..n - 1]
+            .iter_mut()
+            .enumerate()
+            .map(|(i, img)| (i + 1, img))
+        {
             let target = total_len * i as f64 / (n - 1) as f64;
             let seg = arc
                 .windows(2)
@@ -1120,9 +1120,12 @@ impl StringMethod {
             } else {
                 (target - arc[seg]) / dlen
             };
-            for d in 0..dim {
-                self.images[i].coords[d] =
-                    old_coords[seg][d] + t * (old_coords[seg + 1][d] - old_coords[seg][d]);
+            for (c, (&oc_seg, &oc_next)) in img
+                .coords
+                .iter_mut()
+                .zip(old_coords[seg].iter().zip(old_coords[seg + 1].iter()))
+            {
+                *c = oc_seg + t * (oc_next - oc_seg);
             }
         }
     }
@@ -1134,14 +1137,16 @@ impl StringMethod {
         F: FnMut(&[f64]) -> (Vec<f64>, f64),
     {
         let n = self.images.len();
-        let dim = self.images[0].coords.len();
+        let _dim = self.images[0].coords.len();
         for i in 1..n - 1 {
             let (forces, energy) = force_fn(&self.images[i].coords);
             self.images[i].energy = energy;
-            let mut tangent = vec![0.0f64; dim];
-            for d in 0..dim {
-                tangent[d] = self.images[i + 1].coords[d] - self.images[i - 1].coords[d];
-            }
+            let mut tangent: Vec<f64> = self.images[i + 1]
+                .coords
+                .iter()
+                .zip(self.images[i - 1].coords.iter())
+                .map(|(&c_next, &c_prev)| c_next - c_prev)
+                .collect();
             let tan_len: f64 = tangent.iter().map(|&t| t * t).sum::<f64>().sqrt();
             if tan_len > 1e-15 {
                 for t in &mut tangent {
@@ -1149,14 +1154,18 @@ impl StringMethod {
                 }
             }
             let f_dot_t: f64 = forces.iter().zip(tangent.iter()).map(|(f, t)| f * t).sum();
-            for d in 0..dim {
-                self.images[i].perp_force[d] = forces[d] - f_dot_t * tangent[d];
+            for (pf_d, (&f_d, &t_d)) in self.images[i]
+                .perp_force
+                .iter_mut()
+                .zip(forces.iter().zip(tangent.iter()))
+            {
+                *pf_d = f_d - f_dot_t * t_d;
             }
         }
-        for i in 1..n - 1 {
-            let pf = self.images[i].perp_force.clone();
-            for d in 0..dim {
-                self.images[i].coords[d] += self.step_size * pf[d];
+        for img in self.images[1..n - 1].iter_mut() {
+            let pf = img.perp_force.clone();
+            for (c, &pf_d) in img.coords.iter_mut().zip(pf.iter()) {
+                *c += self.step_size * pf_d;
             }
         }
         self.iterations += 1;
@@ -1196,7 +1205,6 @@ impl StringMethod {
 /// with likelihood > some threshold and iteratively replacing the lowest-likelihood
 /// point with a new sample drawn from the prior with higher likelihood.  The
 /// evidence integral Z = ∫ L(θ) π(θ) dθ is accumulated as a Riemann-like sum.
-#[allow(dead_code)]
 pub struct NestedSampling {
     /// Number of live points.
     pub n_live: usize,
@@ -1274,7 +1282,6 @@ impl NestedSampling {
 ///
 /// Stores an ensemble of reactive paths and provides shooting-move
 /// proposal logic.
-#[allow(dead_code)]
 pub struct TransitionPathSampling {
     /// Collection of accepted paths.
     pub paths: Vec<TransitionPath>,

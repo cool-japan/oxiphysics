@@ -17,9 +17,6 @@
 //! - **Thermomechanical coupling** – latent heat during phase change
 //! - **Material presets** – NiTi, CuAlNi, CuZnAl
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1160,7 +1157,6 @@ pub fn hysteresis_energy(loading: &[(f64, f64)], unloading: &[(f64, f64)]) -> f6
 }
 
 /// Trapezoidal integration of a curve given as `(x, y)` pairs.
-#[allow(dead_code)]
 fn trapz_area(curve: &[(f64, f64)]) -> f64 {
     if curve.len() < 2 {
         return 0.0;
@@ -1172,12 +1168,6 @@ fn trapz_area(curve: &[(f64, f64)]) -> f64 {
         area += 0.5 * (y0 + y1) * (x1 - x0);
     }
     area.abs()
-}
-
-/// Linear interpolation helper.
-#[allow(dead_code)]
-fn lerp(a: f64, b: f64, t: f64) -> f64 {
-    a + t * (b - a)
 }
 
 /// Generate a temperature sweep stress-strain path for shape memory effect

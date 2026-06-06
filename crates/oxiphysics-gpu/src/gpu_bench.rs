@@ -25,9 +25,6 @@
 //! assert!(available.contains(&BackendKind::Cpu));
 //! ```
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::time::{Duration, Instant};
 
 use crate::lbm_gpu::{LbmConfig, LbmSimulation};

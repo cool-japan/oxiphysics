@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -22,22 +21,9 @@
 //! assert!(q > 0.0);
 //! ```
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ── Vector helpers ────────────────────────────────────────────────────────────
-
-/// Cross product of two 3-vectors.
-#[inline]
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
 
 /// Dot product of two 3-vectors.
 #[inline]
@@ -67,17 +53,6 @@ fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 #[inline]
 fn scale3(a: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
-}
-
-/// Normalize a 3-vector; returns zero-vector if the norm is tiny.
-#[inline]
-fn normalize3(a: [f64; 3]) -> [f64; 3] {
-    let n = norm3(a);
-    if n < 1e-30 {
-        [0.0; 3]
-    } else {
-        [a[0] / n, a[1] / n, a[2] / n]
-    }
 }
 
 /// Normalize a quaternion `[x, y, z, w]`.
@@ -484,8 +459,8 @@ impl InertialNavigation {
     /// Apply a GPS position fix to correct accumulated drift.
     pub fn gps_correction(&mut self, gps_position: [f64; 3], weight: f64) {
         let w = weight.clamp(0.0, 1.0);
-        for i in 0..3 {
-            self.position[i] = (1.0 - w) * self.position[i] + w * gps_position[i];
+        for (i, gps_val) in gps_position.iter().enumerate() {
+            self.position[i] = (1.0 - w) * self.position[i] + w * gps_val;
         }
     }
 

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -55,7 +54,6 @@ pub enum BcType {
 ///
 /// Full bounce-back reverses the post-collision distribution at a node.
 /// Half-way bounce-back reflects streaming distributions at a mid-link.
-#[allow(dead_code)]
 pub struct BounceBackBc {
     /// Nodes that are solid (full bounce-back).
     pub solid_nodes: Vec<usize>,
@@ -114,7 +112,6 @@ impl BounceBackBc {
 ///
 /// Implements the method from Zou & He (1997) to prescribe inlet velocity or
 /// outlet pressure (density) consistently with the LBM distributions.
-#[allow(dead_code)]
 pub struct ZouHeBc {
     /// Prescribed x-velocity (for velocity BC).
     pub ux: f64,
@@ -178,7 +175,6 @@ impl ZouHeBc {
 /// Sets all distributions at a boundary node to their equilibrium values
 /// at specified macroscopic quantities.  Suitable for open inflow/outflow
 /// when more sophisticated methods are not required.
-#[allow(dead_code)]
 pub struct EquilibriumBc {
     /// Prescribed density.
     pub rho: f64,
@@ -208,7 +204,6 @@ impl EquilibriumBc {
 ///
 /// Uses a linear interpolation factor `q ∈ [0, 1]` representing the fraction
 /// of the link length from the fluid node to the solid wall.
-#[allow(dead_code)]
 pub struct InterpolatedBc {
     /// Distance fraction from fluid node to wall (0 < q ≤ 1).
     pub q: f64,
@@ -249,7 +244,6 @@ impl InterpolatedBc {
 /// domain at a specified convection velocity.
 ///
 /// f_new(boundary) ≈ f_old(boundary − 1 node) (first-order upwind in time).
-#[allow(dead_code)]
 pub struct OpenBc {
     /// Convection velocity (typically mean outlet velocity).
     pub u_conv: f64,
@@ -273,8 +267,9 @@ impl OpenBc {
     pub fn apply_east(&self, f: &mut [[f64; 9]], nx: usize, _ny: usize, iy: usize) {
         let boundary = iy * nx + (nx - 1);
         let interior = iy * nx + (nx - 2);
-        for i in 0..9 {
-            f[boundary][i] = f[interior][i];
+        let src_copy = f[interior];
+        for (dst, src) in f[boundary].iter_mut().zip(src_copy.iter()) {
+            *dst = *src;
         }
     }
 }
@@ -287,7 +282,6 @@ impl OpenBc {
 ///
 /// Copies distributions from one side of the domain to the other, creating
 /// full spatial periodicity in either x or y direction.
-#[allow(dead_code)]
 pub struct PeriodicBc;
 
 impl PeriodicBc {
@@ -390,8 +384,8 @@ fn feq_single(i: usize, rho: f64, ux: f64, uy: f64) -> f64 {
 
 /// Overwrite all distributions with their equilibrium values.
 fn apply_equilibrium(f: &mut [f64; 9], rho: f64, ux: f64, uy: f64) {
-    for i in 0..9 {
-        f[i] = feq_single(i, rho, ux, uy);
+    for (i, f_i) in f.iter_mut().enumerate() {
+        *f_i = feq_single(i, rho, ux, uy);
     }
 }
 
@@ -436,8 +430,8 @@ mod tests {
     // Initialise f to equilibrium at (rho, ux, uy).
     fn init_eq(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
         let mut f = [0.0; 9];
-        for i in 0..9 {
-            f[i] = feq_single(i, rho, ux, uy);
+        for (i, f_i) in f.iter_mut().enumerate() {
+            *f_i = feq_single(i, rho, ux, uy);
         }
         f
     }
@@ -657,8 +651,8 @@ mod tests {
         f[2] = init_eq(1.1, 0.05, 0.0);
         bc.apply_east(&mut f, nx, ny, 0);
         // Boundary node (ix=3) should equal interior node (ix=2)
-        for i in 0..9 {
-            assert!((f[3][i] - f[2][i]).abs() < EPS);
+        for (f3_i, f2_i) in f[3].iter().zip(f[2].iter()) {
+            assert!((f3_i - f2_i).abs() < EPS);
         }
     }
 

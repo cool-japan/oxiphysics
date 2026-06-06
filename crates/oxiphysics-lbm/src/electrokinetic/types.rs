@@ -1,11 +1,4 @@
-#![allow(
-    clippy::needless_range_loop,
-    clippy::ptr_arg,
-    clippy::too_many_arguments
-)]
 //! Auto-generated module
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{E_CHARGE, EK_CS2, EK_CX, EK_CY, EK_W, EPSILON_0, K_B, N_A};
 
 /// Diffusio-osmosis: flow driven by a concentration gradient along a wall.
@@ -124,7 +117,7 @@ impl ElectroosmoticBodyForce {
     /// Apply the electroosmotic body force to a 2D force field.
     ///
     /// `force_field[k] = [rho_e[k\] * E_x, rho_e[k] * E_y, 0]`
-    pub fn apply_2d(&self, rho_e: &[f64], force_field: &mut Vec<[f64; 3]>) {
+    pub fn apply_2d(&self, rho_e: &[f64], force_field: &mut [[f64; 3]]) {
         for (k, &re) in rho_e.iter().enumerate() {
             force_field[k][0] += re * self.e_field[0];
             force_field[k][1] += re * self.e_field[1];
@@ -239,11 +232,11 @@ impl BoltzmannIonDistribution {
     pub fn electric_field_from_potential(phi: &[f64], dx: f64) -> Vec<f64> {
         let n = phi.len();
         let mut e_field = vec![0.0_f64; n];
-        for i in 0..n {
+        for (i, e) in e_field.iter_mut().enumerate().take(n) {
             let ip = if i + 1 < n { i + 1 } else { i };
             let im = if i > 0 { i - 1 } else { i };
             let denom = if i == 0 || i + 1 == n { dx } else { 2.0 * dx };
-            e_field[i] = -(phi[ip] - phi[im]) / denom;
+            *e = -(phi[ip] - phi[im]) / denom;
         }
         e_field
     }
@@ -329,7 +322,7 @@ impl PoissonSolver {
     ///
     /// Returns the number of iterations used.
     pub fn solve_poisson_2d(
-        phi: &mut Vec<f64>,
+        phi: &mut [f64],
         rho: &[f64],
         nx: usize,
         ny: usize,
@@ -477,7 +470,7 @@ impl NernstPlanckSolver {
     ///
     /// `flux` is the combined (diffusive + migrative) flux, length `2 * nx * ny`.
     pub fn update_concentrations(
-        c: &mut Vec<f64>,
+        c: &mut [f64],
         flux: &[f64],
         nx: usize,
         ny: usize,
@@ -1049,12 +1042,6 @@ impl ElectrokineticLbm {
     pub fn set_charge_density(&mut self, rho_e: Vec<f64>) {
         self.rho_e = rho_e;
     }
-    /// Linear index.
-    #[inline]
-    #[allow(dead_code)]
-    fn idx(&self, i: usize, j: usize) -> usize {
-        j * self.nx + i
-    }
     /// Equilibrium distribution (standard D2Q9 BGK).
     pub fn equilibrium(rho: f64, u: [f64; 2]) -> [f64; 9] {
         let cs2 = EK_CS2;
@@ -1121,12 +1108,12 @@ impl ElectrokineticLbm {
         for idx in 0..n {
             let (rho, u) = self.macros(idx);
             let feq = Self::equilibrium(rho, u);
-            for k in 0..9 {
-                self.f[idx][k] += omega * (feq[k] - self.f[idx][k]);
+            for (k, &fk) in feq.iter().enumerate() {
+                self.f[idx][k] += omega * (fk - self.f[idx][k]);
             }
             let force = self.guo_force(idx, u[0], u[1], omega);
-            for k in 0..9 {
-                self.f[idx][k] += force[k];
+            for (k, &fk) in force.iter().enumerate() {
+                self.f[idx][k] += fk;
             }
         }
     }
@@ -1270,30 +1257,29 @@ impl DoubleLayer {
 }
 /// Dimensionless numbers relevant to electrokinetic transport.
 pub struct ElectrokineticNumbers;
-#[allow(non_snake_case)]
 impl ElectrokineticNumbers {
     /// Electrokinetic Reynolds number: Re_ek = rho * u_eo * L / mu.
-    pub fn Re(rho: f64, u_eo: f64, length: f64, mu: f64) -> f64 {
+    pub fn re(rho: f64, u_eo: f64, length: f64, mu: f64) -> f64 {
         rho * u_eo * length / mu
     }
     /// Electroviscous number (ratio of electrical to viscous effects):
     /// Ev = epsilon * (k_B * T / e)^2 / (mu * D)
-    pub fn Ev(epsilon: f64, temperature: f64, mu: f64, diffusivity: f64) -> f64 {
+    pub fn ev(epsilon: f64, temperature: f64, mu: f64, diffusivity: f64) -> f64 {
         let vt = K_B * temperature / E_CHARGE;
         epsilon * vt * vt / (mu * diffusivity)
     }
     /// Dimensionless Debye length: kappa * L where kappa = 1/lambda_D.
-    pub fn kappa_L(lambda_d: f64, length: f64) -> f64 {
+    pub fn kappa_l(lambda_d: f64, length: f64) -> f64 {
         length / lambda_d
     }
     /// Dukhin number: ratio of surface conductance to bulk conductance.
     ///
     /// Du = sigma_s / (sigma_bulk * L)
-    pub fn Du(surface_conductance: f64, bulk_conductivity: f64, length: f64) -> f64 {
+    pub fn du(surface_conductance: f64, bulk_conductivity: f64, length: f64) -> f64 {
         surface_conductance / (bulk_conductivity * length.max(1e-30))
     }
     /// Electroosmotic Peclet number: Pe_eo = u_eo * L / D.
-    pub fn Pe_eo(u_eo: f64, length: f64, diffusivity: f64) -> f64 {
+    pub fn pe_eo(u_eo: f64, length: f64, diffusivity: f64) -> f64 {
         u_eo * length / diffusivity
     }
 }
@@ -1318,7 +1304,6 @@ impl StreamingPotential {
     /// `I_stream = -(2 * epsilon_0 * epsilon_r * zeta * delta_P * h) / (3 * mu * L)`
     ///
     /// where h = channel half-height, L = channel length.
-    #[allow(clippy::too_many_arguments)]
     pub fn streaming_current(
         zeta: f64,
         epsilon_r: f64,

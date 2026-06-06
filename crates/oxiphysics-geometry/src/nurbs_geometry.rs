@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -25,18 +24,9 @@
 //! - Hughes, T. J. R., Cottrell, J. A. & Bazilevs, Y. (2005).
 //!   *Comput. Methods Appl. Mech. Engrg.* 194, 4135.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // 3-D vector helpers
 // ---------------------------------------------------------------------------
-
-/// Add two 3-D vectors.
-#[inline]
-fn vec3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
 
 /// Subtract two 3-D vectors.
 #[inline]
@@ -124,11 +114,11 @@ impl NurbsKnotVector {
         let p = degree;
         let m = n + p + 1;
         let mut knots = vec![0.0_f64; m + 1];
-        for i in 0..=p {
-            knots[i] = 0.0;
+        for k in knots[0..=p].iter_mut() {
+            *k = 0.0;
         }
-        for i in (m - p)..=m {
-            knots[i] = 1.0;
+        for k in knots[(m - p)..=m].iter_mut() {
+            *k = 1.0;
         }
         let n_int = m as isize - 2 * p as isize - 1;
         for j in 1..=(n_int.max(0) as usize) {
@@ -439,20 +429,20 @@ impl NurbsCurve {
 
         let mut w_sum = 0.0_f64;
         let mut point = [0.0_f64; 3];
-        for i in 0..=p {
+        for (i, b_i) in basis.iter().enumerate() {
             let idx = span - p + i;
             if idx < n {
                 let cp = &self.control_points[idx];
-                let wn = basis[i] * cp.weight;
+                let wn = b_i * cp.weight;
                 w_sum += wn;
-                for k in 0..3 {
-                    point[k] += wn * cp.point[k];
+                for (pt, cp_pt) in point.iter_mut().zip(cp.point.iter()) {
+                    *pt += wn * cp_pt;
                 }
             }
         }
         if w_sum.abs() > 1.0e-15 {
-            for k in 0..3 {
-                point[k] /= w_sum;
+            for pt in point.iter_mut() {
+                *pt /= w_sum;
             }
         }
         point
@@ -626,27 +616,27 @@ impl NurbsSurface {
 
         let mut w_sum = 0.0_f64;
         let mut point = [0.0_f64; 3];
-        for i in 0..=self.degree_u {
+        for (i, nu_i) in nu.iter().enumerate() {
             let iu = span_u + i - self.degree_u;
             if iu >= self.n_u {
                 continue;
             }
-            for j in 0..=self.degree_v {
+            for (j, nv_j) in nv.iter().enumerate() {
                 let jv = span_v + j - self.degree_v;
                 if jv >= self.n_v {
                     continue;
                 }
                 let cp = &self.control_net[iu * self.n_v + jv];
-                let wn = nu[i] * nv[j] * cp.weight;
+                let wn = nu_i * nv_j * cp.weight;
                 w_sum += wn;
-                for k in 0..3 {
-                    point[k] += wn * cp.point[k];
+                for (pt, cp_pt) in point.iter_mut().zip(cp.point.iter()) {
+                    *pt += wn * cp_pt;
                 }
             }
         }
         if w_sum.abs() > 1.0e-15 {
-            for k in 0..3 {
-                point[k] /= w_sum;
+            for pt in point.iter_mut() {
+                *pt /= w_sum;
             }
         }
         point
@@ -827,9 +817,7 @@ impl KnotInsertion {
 
         let mut new_cps: Vec<NurbsControlPoint> = Vec::with_capacity(n + 1);
         // Copy control points before affected region
-        for i in 0..=(span - p) {
-            new_cps.push(control_points[i]);
-        }
+        new_cps.extend_from_slice(&control_points[0..=(span - p)]);
         // Blend affected control points
         for i in (span - p + 1)..=span {
             let alpha = {
@@ -861,9 +849,7 @@ impl KnotInsertion {
             });
         }
         // Copy remaining control points
-        for i in span..n {
-            new_cps.push(control_points[i]);
-        }
+        new_cps.extend_from_slice(&control_points[span..n]);
         new_cps
     }
 }
@@ -1117,11 +1103,11 @@ impl NurbsTrimCurve {
         let span = self.knots.find_span(t, p, n);
         let mut w_sum = 0.0_f64;
         let mut uv = [0.0_f64; 2];
-        for i in 0..=p {
+        for (i, b_i) in basis.iter().enumerate() {
             let idx = span - p + i;
             if idx < n {
                 let cp = &self.control_points[idx];
-                let wn = basis[i] * cp.weight;
+                let wn = b_i * cp.weight;
                 w_sum += wn;
                 uv[0] += wn * cp.point[0];
                 uv[1] += wn * cp.point[1];

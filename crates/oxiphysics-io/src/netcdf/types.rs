@@ -2,15 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::io::Write;
 
 /// Dimension descriptor.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NetCdfDimension {
     /// Dimension name.
     pub name: String,
@@ -19,19 +15,16 @@ pub struct NetCdfDimension {
 }
 impl NetCdfDimension {
     /// Check if this is an unlimited dimension.
-    #[allow(dead_code)]
     pub fn is_unlimited(&self) -> bool {
         self.size.is_none()
     }
     /// Get the effective size (0 for unlimited with no data).
-    #[allow(dead_code)]
     pub fn effective_size(&self) -> usize {
         self.size.unwrap_or(0)
     }
 }
 /// A single variable inside a [`NetCdfFile`].
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NetCdfVariable {
     /// Variable name.
     pub name: String,
@@ -44,7 +37,6 @@ pub struct NetCdfVariable {
 }
 impl NetCdfVariable {
     /// Create a new variable with the given name, dimensions, and data.
-    #[allow(dead_code)]
     pub fn new(name: &str, dims: Vec<String>, data: Vec<f64>) -> Self {
         NetCdfVariable {
             name: name.to_string(),
@@ -54,7 +46,6 @@ impl NetCdfVariable {
         }
     }
     /// Add an attribute to this variable.
-    #[allow(dead_code)]
     pub fn add_attribute(&mut self, key: &str, value: &str) {
         self.attributes.push(VariableAttribute {
             key: key.to_string(),
@@ -62,7 +53,6 @@ impl NetCdfVariable {
         });
     }
     /// Get the value of an attribute by key.
-    #[allow(dead_code)]
     pub fn get_attribute(&self, key: &str) -> Option<&str> {
         self.attributes
             .iter()
@@ -70,19 +60,16 @@ impl NetCdfVariable {
             .map(|a| a.value.as_str())
     }
     /// Number of data elements.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.data.len()
     }
     /// Check if variable has no data.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 }
 /// Extended statistics for a [`NetcdfVariable`].
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NetcdfVariableStats {
     /// Variable name.
     pub name: String,
@@ -97,7 +84,6 @@ pub struct NetcdfVariableStats {
     /// Number of elements.
     pub count: usize,
 }
-#[allow(dead_code)]
 impl NetcdfVariableStats {
     /// Range = max − min.
     pub fn range(&self) -> f64 {
@@ -114,7 +100,6 @@ impl NetcdfVariableStats {
 }
 /// A NetCDF-4 (HDF5-based) in-memory dataset with group support.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Nc4File {
     /// Root group (equivalent to "/" in HDF5).
     pub root: Nc4Group,
@@ -127,7 +112,6 @@ pub struct Nc4File {
 }
 impl Nc4File {
     /// Create a new empty NetCDF-4 file.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             root: Nc4Group::new("/"),
@@ -137,17 +121,14 @@ impl Nc4File {
         }
     }
     /// Add a fixed dimension.
-    #[allow(dead_code)]
     pub fn add_dimension(&mut self, name: &str, size: usize) {
         self.dimensions.push((name.to_string(), Some(size)));
     }
     /// Add an unlimited dimension.
-    #[allow(dead_code)]
     pub fn add_unlimited_dimension(&mut self, name: &str) {
         self.dimensions.push((name.to_string(), None));
     }
     /// Extend the unlimited dimension by one record.
-    #[allow(dead_code)]
     pub fn extend_unlimited(&mut self) {
         self.unlimited_size += 1;
         for entry in self.dimensions.iter_mut() {
@@ -158,13 +139,11 @@ impl Nc4File {
         }
     }
     /// Add a global attribute.
-    #[allow(dead_code)]
     pub fn add_global_attribute(&mut self, key: &str, value: &str) {
         self.global_attributes
             .push((key.to_string(), value.to_string()));
     }
     /// Get a global attribute.
-    #[allow(dead_code)]
     pub fn get_global_attribute(&self, key: &str) -> Option<&str> {
         self.global_attributes
             .iter()
@@ -172,7 +151,6 @@ impl Nc4File {
             .map(|(_, v)| v.as_str())
     }
     /// Get a dimension size.
-    #[allow(dead_code)]
     pub fn get_dimension_size(&self, name: &str) -> Option<usize> {
         self.dimensions
             .iter()
@@ -180,7 +158,6 @@ impl Nc4File {
             .and_then(|(_, s)| *s)
     }
     /// Whether a dimension is unlimited.
-    #[allow(dead_code)]
     pub fn is_unlimited(&self, name: &str) -> bool {
         self.dimensions.iter().any(|(n, s)| {
             n == name && s.is_none()
@@ -188,27 +165,22 @@ impl Nc4File {
         })
     }
     /// Add a variable to the root group.
-    #[allow(dead_code)]
     pub fn add_variable(&mut self, var: Nc4Variable) {
         self.root.add_variable(var);
     }
     /// Get a variable from the root group.
-    #[allow(dead_code)]
     pub fn get_variable(&self, name: &str) -> Option<&Nc4Variable> {
         self.root.get_variable(name)
     }
     /// Add a named sub-group to the root.
-    #[allow(dead_code)]
     pub fn add_group(&mut self, group: Nc4Group) {
         self.root.add_subgroup(group);
     }
     /// Get a sub-group by name from the root.
-    #[allow(dead_code)]
     pub fn get_group(&self, name: &str) -> Option<&Nc4Group> {
         self.root.subgroups.iter().find(|g| g.name == name)
     }
     /// All variable count (all groups).
-    #[allow(dead_code)]
     pub fn total_variable_count(&self) -> usize {
         self.root.total_variable_count()
     }
@@ -218,7 +190,6 @@ impl Nc4File {
     ///
     /// The CDL payload stores global attributes, dimensions, unlimited size,
     /// and root variable names as a simple key=value text block.
-    #[allow(dead_code)]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut lines = Vec::new();
         lines.push(format!("unlimited_size:{}", self.unlimited_size));
@@ -255,7 +226,6 @@ impl Default for Nc4File {
 }
 /// NetCDF4 variable type tags (mirrors HDF5 / NetCDF-4 data types).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum Nc4DataType {
     /// 64-bit IEEE floating point.
     Float64,
@@ -270,7 +240,6 @@ pub enum Nc4DataType {
 }
 impl Nc4DataType {
     /// Return the typical byte width (variable-length types return 0).
-    #[allow(dead_code)]
     pub fn byte_width(&self) -> usize {
         match self {
             Nc4DataType::Float64 => 8,
@@ -281,7 +250,6 @@ impl Nc4DataType {
         }
     }
     /// NetCDF-4 type name string.
-    #[allow(dead_code)]
     pub fn type_name(&self) -> &'static str {
         match self {
             Nc4DataType::Float64 => "double",
@@ -294,7 +262,6 @@ impl Nc4DataType {
 }
 /// Fluent builder for writing NetCDF-convention trajectories.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct NetcdfTrajectoryBuilder {
     /// Title / description of the trajectory.
     pub title: String,
@@ -307,7 +274,6 @@ pub struct NetcdfTrajectoryBuilder {
 }
 impl NetcdfTrajectoryBuilder {
     /// Create an empty builder.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         NetcdfTrajectoryBuilder {
             title: String::new(),
@@ -317,46 +283,38 @@ impl NetcdfTrajectoryBuilder {
         }
     }
     /// Set the trajectory title.
-    #[allow(dead_code)]
     pub fn with_title(mut self, title: &str) -> Self {
         self.title = title.to_string();
         self
     }
     /// Set the application name.
-    #[allow(dead_code)]
     pub fn with_application(mut self, app: &str) -> Self {
         self.application = app.to_string();
         self
     }
     /// Use Å as the position unit.
-    #[allow(dead_code)]
     pub fn in_angstroms(mut self) -> Self {
         self.use_angstroms = true;
         self
     }
     /// Use nm as the position unit.
-    #[allow(dead_code)]
     pub fn in_nanometres(mut self) -> Self {
         self.use_angstroms = false;
         self
     }
     /// Append a frame to the trajectory.
-    #[allow(dead_code)]
     pub fn add_frame(&mut self, frame: TrajectoryFrame) {
         self.frames.push(frame);
     }
     /// Number of frames stored.
-    #[allow(dead_code)]
     pub fn frame_count(&self) -> usize {
         self.frames.len()
     }
     /// Number of atoms (taken from the first frame; 0 if empty).
-    #[allow(dead_code)]
     pub fn n_atoms(&self) -> usize {
         self.frames.first().map(|f| f.n_atoms()).unwrap_or(0)
     }
     /// Compute the RMSD trajectory (each frame vs. frame 0).
-    #[allow(dead_code)]
     pub fn rmsd_series(&self) -> Vec<f64> {
         if self.frames.is_empty() {
             return vec![];
@@ -365,7 +323,6 @@ impl NetcdfTrajectoryBuilder {
         self.frames.iter().map(|f| f.rmsd_from(ref_frame)).collect()
     }
     /// Write a minimal CDL representation to a writer.
-    #[allow(dead_code)]
     pub fn write_cdl<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
         let n_atoms = self.n_atoms();
         let n_frames = self.frame_count();
@@ -396,24 +353,20 @@ impl NetcdfTrajectoryBuilder {
         Ok(())
     }
     /// Extract the time series (ps) of all frames.
-    #[allow(dead_code)]
     pub fn time_series(&self) -> Vec<f64> {
         self.frames.iter().map(|f| f.time_ps).collect()
     }
     /// Compute per-frame centre-of-mass trajectories.
-    #[allow(dead_code)]
     pub fn com_trajectory(&self) -> Vec<[f64; 3]> {
         self.frames.iter().map(|f| f.centre_of_mass()).collect()
     }
     /// Get frame at a specific index (panics if out of range).
-    #[allow(dead_code)]
     pub fn frame(&self, idx: usize) -> &TrajectoryFrame {
         &self.frames[idx]
     }
 }
 /// An in-memory representation of a NetCDF-like dataset.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NetCdfFile {
     /// Named dimensions and their sizes.
     pub dimensions: Vec<(String, usize)>,
@@ -426,7 +379,6 @@ pub struct NetCdfFile {
 }
 impl NetCdfFile {
     /// Create an empty NetCDF file.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         NetCdfFile {
             dimensions: Vec::new(),
@@ -436,38 +388,31 @@ impl NetCdfFile {
         }
     }
     /// Add a dimension.
-    #[allow(dead_code)]
     pub fn add_dimension(&mut self, name: &str, size: usize) {
         self.dimensions.push((name.to_string(), size));
     }
     /// Add an unlimited dimension.
-    #[allow(dead_code)]
     pub fn add_unlimited_dimension(&mut self, name: &str, current_size: usize) {
         self.dimensions.push((name.to_string(), current_size));
         self.unlimited_dim = Some(name.to_string());
     }
     /// Add a variable.
-    #[allow(dead_code)]
     pub fn add_variable(&mut self, var: NetCdfVariable) {
         self.variables.push(var);
     }
     /// Add a global attribute.
-    #[allow(dead_code)]
     pub fn add_attribute(&mut self, key: &str, value: &str) {
         self.attributes.push((key.to_string(), value.to_string()));
     }
     /// Get a variable by name.
-    #[allow(dead_code)]
     pub fn get_variable(&self, name: &str) -> Option<&NetCdfVariable> {
         self.variables.iter().find(|v| v.name == name)
     }
     /// Get a mutable variable by name.
-    #[allow(dead_code)]
     pub fn get_variable_mut(&mut self, name: &str) -> Option<&mut NetCdfVariable> {
         self.variables.iter_mut().find(|v| v.name == name)
     }
     /// Get a global attribute value by key.
-    #[allow(dead_code)]
     pub fn get_attribute(&self, key: &str) -> Option<&str> {
         self.attributes
             .iter()
@@ -475,7 +420,6 @@ impl NetCdfFile {
             .map(|(_, v)| v.as_str())
     }
     /// Get the size of a dimension by name.
-    #[allow(dead_code)]
     pub fn get_dimension_size(&self, name: &str) -> Option<usize> {
         self.dimensions
             .iter()
@@ -483,17 +427,14 @@ impl NetCdfFile {
             .map(|(_, s)| *s)
     }
     /// Check if a dimension is unlimited.
-    #[allow(dead_code)]
     pub fn is_unlimited_dimension(&self, name: &str) -> bool {
         self.unlimited_dim.as_deref() == Some(name)
     }
     /// List all variable names.
-    #[allow(dead_code)]
     pub fn variable_names(&self) -> Vec<&str> {
         self.variables.iter().map(|v| v.name.as_str()).collect()
     }
     /// List all dimension names.
-    #[allow(dead_code)]
     pub fn dimension_names(&self) -> Vec<&str> {
         self.dimensions.iter().map(|(n, _)| n.as_str()).collect()
     }
@@ -505,7 +446,6 @@ impl Default for NetCdfFile {
 }
 /// In-memory NetCDF-like file using HashMap for O(1) dimension lookups.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NetcdfFile {
     /// Dimension name → size.
     pub dimensions: std::collections::HashMap<String, usize>,
@@ -514,7 +454,6 @@ pub struct NetcdfFile {
     /// Global attributes as (key, value) pairs.
     pub global_attrs: Vec<(String, String)>,
 }
-#[allow(dead_code)]
 impl NetcdfFile {
     /// Create a new empty `NetcdfFile`.
     pub fn new() -> Self {
@@ -623,7 +562,6 @@ impl NetcdfFile {
 /// Supports dimension management, coordinate variables, typed variables,
 /// global attributes, and trajectory serialisation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NetcdfWriter {
     pub(super) name: String,
     pub(super) dimensions: Vec<(String, usize)>,
@@ -631,7 +569,6 @@ pub struct NetcdfWriter {
     pub(super) variables: Vec<NetcdfWriterVariable>,
     pub(super) global_attrs: Vec<(String, String)>,
 }
-#[allow(dead_code)]
 impl NetcdfWriter {
     /// Create a new writer with a dataset name.
     pub fn new(name: &str) -> Self {
@@ -740,7 +677,6 @@ impl NetcdfWriter {
 }
 /// A single variable in the new simplified NetcdfFile.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NetcdfVariable {
     /// Variable name.
     pub name: String,
@@ -755,7 +691,6 @@ pub struct NetcdfVariable {
 }
 /// One snapshot of positions + optional velocities for an MD trajectory.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TrajectoryFrame {
     /// Simulation time in ps.
     pub time_ps: f64,
@@ -768,12 +703,10 @@ pub struct TrajectoryFrame {
 }
 impl TrajectoryFrame {
     /// Number of atoms in this frame.
-    #[allow(dead_code)]
     pub fn n_atoms(&self) -> usize {
         self.positions.len()
     }
     /// Compute the centre-of-mass position (equal masses assumed).
-    #[allow(dead_code)]
     pub fn centre_of_mass(&self) -> [f64; 3] {
         if self.positions.is_empty() {
             return [0.0; 3];
@@ -788,7 +721,6 @@ impl TrajectoryFrame {
         [s[0] * inv, s[1] * inv, s[2] * inv]
     }
     /// Compute the root-mean-square displacement from a reference frame.
-    #[allow(dead_code)]
     pub fn rmsd_from(&self, reference: &TrajectoryFrame) -> f64 {
         let n = self.positions.len().min(reference.positions.len());
         if n == 0 {
@@ -806,7 +738,6 @@ impl TrajectoryFrame {
     }
     /// Compute kinetic energy assuming all masses equal to `mass_amu`.
     /// Returns energy in kJ/mol (1 amu × nm²/ps² = 1 kJ/mol).
-    #[allow(dead_code)]
     pub fn kinetic_energy(&self, mass_amu: f64) -> f64 {
         let vels = match &self.velocities {
             Some(v) => v,
@@ -819,7 +750,6 @@ impl TrajectoryFrame {
         0.5 * mass_amu * sum
     }
     /// Translate all positions by `delta`.
-    #[allow(dead_code)]
     pub fn translate(&mut self, delta: [f64; 3]) {
         for p in &mut self.positions {
             p[0] += delta[0];
@@ -833,7 +763,6 @@ impl TrajectoryFrame {
 /// Reads dimension, variable, and data sections from CDL output produced by
 /// [`NetcdfWriter`] or [`NetcdfFile::write_cdl`].
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NetcdfReader {
     /// Parsed dimensions (name → size).
     pub dimensions: std::collections::HashMap<String, usize>,
@@ -844,7 +773,6 @@ pub struct NetcdfReader {
     /// Unlimited dimension name.
     pub unlimited_dim: Option<String>,
 }
-#[allow(dead_code)]
 impl NetcdfReader {
     /// Parse a CDL string.
     pub fn from_cdl(cdl: &str) -> Result<Self, String> {
@@ -896,7 +824,6 @@ impl NetcdfReader {
 }
 /// A variable attribute (key-value string pair).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct VariableAttribute {
     /// Attribute key.
     pub key: String,
@@ -907,7 +834,6 @@ pub struct VariableAttribute {
 ///
 /// Groups allow hierarchical organization of variables, akin to HDF5 groups.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Nc4Group {
     /// Group name.
     pub name: String,
@@ -920,7 +846,6 @@ pub struct Nc4Group {
 }
 impl Nc4Group {
     /// Create a new empty group.
-    #[allow(dead_code)]
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -930,27 +855,22 @@ impl Nc4Group {
         }
     }
     /// Add a variable to this group.
-    #[allow(dead_code)]
     pub fn add_variable(&mut self, var: Nc4Variable) {
         self.variables.push(var);
     }
     /// Add a sub-group.
-    #[allow(dead_code)]
     pub fn add_subgroup(&mut self, group: Nc4Group) {
         self.subgroups.push(group);
     }
     /// Add an attribute.
-    #[allow(dead_code)]
     pub fn add_attribute(&mut self, key: &str, value: &str) {
         self.attributes.push((key.to_string(), value.to_string()));
     }
     /// Get a variable by name.
-    #[allow(dead_code)]
     pub fn get_variable(&self, name: &str) -> Option<&Nc4Variable> {
         self.variables.iter().find(|v| v.name == name)
     }
     /// Get attribute value.
-    #[allow(dead_code)]
     pub fn get_attribute(&self, key: &str) -> Option<&str> {
         self.attributes
             .iter()
@@ -958,7 +878,6 @@ impl Nc4Group {
             .map(|(_, v)| v.as_str())
     }
     /// All variables in this group and all sub-groups (depth-first).
-    #[allow(dead_code)]
     pub fn all_variables(&self) -> Vec<&Nc4Variable> {
         let mut out: Vec<&Nc4Variable> = self.variables.iter().collect();
         for sg in &self.subgroups {
@@ -967,7 +886,6 @@ impl Nc4Group {
         out
     }
     /// Total variable count (recursive).
-    #[allow(dead_code)]
     pub fn total_variable_count(&self) -> usize {
         self.variables.len()
             + self
@@ -979,7 +897,6 @@ impl Nc4Group {
 }
 /// A dimension with name, size, and whether it is an unlimited record dimension.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub struct NetcdfDimSpec {
     /// Dimension name.
     pub name: String,
@@ -990,7 +907,6 @@ pub struct NetcdfDimSpec {
 }
 impl NetcdfDimSpec {
     /// Create a fixed-size dimension.
-    #[allow(dead_code)]
     pub fn fixed(name: &str, size: usize) -> Self {
         NetcdfDimSpec {
             name: name.to_string(),
@@ -999,7 +915,6 @@ impl NetcdfDimSpec {
         }
     }
     /// Create an unlimited record dimension with current size.
-    #[allow(dead_code)]
     pub fn unlimited(name: &str, current_size: usize) -> Self {
         NetcdfDimSpec {
             name: name.to_string(),
@@ -1008,7 +923,6 @@ impl NetcdfDimSpec {
         }
     }
     /// Produce the CDL declaration string.
-    #[allow(dead_code)]
     pub fn to_cdl(&self) -> String {
         if self.unlimited {
             format!("\t{} = UNLIMITED ; // currently {}", self.name, self.size)
@@ -1019,7 +933,6 @@ impl NetcdfDimSpec {
 }
 /// A NetCDF-4 variable with typed storage.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Nc4Variable {
     /// Variable name.
     pub name: String,
@@ -1038,7 +951,6 @@ pub struct Nc4Variable {
 }
 impl Nc4Variable {
     /// Create a Float64 variable.
-    #[allow(dead_code)]
     pub fn float64(name: &str, dims: Vec<String>, data: Vec<f64>) -> Self {
         Self {
             name: name.to_string(),
@@ -1051,7 +963,6 @@ impl Nc4Variable {
         }
     }
     /// Create a String variable.
-    #[allow(dead_code)]
     pub fn string_var(name: &str, dims: Vec<String>, data: Vec<String>) -> Self {
         Self {
             name: name.to_string(),
@@ -1064,7 +975,6 @@ impl Nc4Variable {
         }
     }
     /// Create an Int32 variable.
-    #[allow(dead_code)]
     pub fn int32(name: &str, dims: Vec<String>, data: Vec<i64>) -> Self {
         Self {
             name: name.to_string(),
@@ -1077,7 +987,6 @@ impl Nc4Variable {
         }
     }
     /// Add an attribute.
-    #[allow(dead_code)]
     pub fn add_attribute(&mut self, key: &str, value: &str) {
         self.attributes.push(VariableAttribute {
             key: key.to_string(),
@@ -1085,7 +994,6 @@ impl Nc4Variable {
         });
     }
     /// Get attribute value by key.
-    #[allow(dead_code)]
     pub fn get_attribute(&self, key: &str) -> Option<&str> {
         self.attributes
             .iter()
@@ -1093,7 +1001,6 @@ impl Nc4Variable {
             .map(|a| a.value.as_str())
     }
     /// Number of elements (type-appropriate).
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         match self.data_type {
             Nc4DataType::String => self.string_data.len(),
@@ -1102,14 +1009,12 @@ impl Nc4Variable {
         }
     }
     /// Whether the variable has no data.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 }
 /// Internal variable representation for [`NetcdfWriter`].
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(super) struct NetcdfWriterVariable {
     pub(super) name: String,
     pub(super) dims: Vec<String>,

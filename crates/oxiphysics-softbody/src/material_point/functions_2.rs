@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 use super::types::{MpmGrid, MpmParticle};
 
@@ -99,10 +97,10 @@ mod tests {
     fn test_mat3_inv_identity() {
         let i = mat3_identity();
         let inv = mat3_inv(i);
-        for row in 0..3 {
-            for col in 0..3 {
+        for (row, inv_row) in inv.iter().enumerate() {
+            for (col, &v) in inv_row.iter().enumerate() {
                 let expected = if row == col { 1.0 } else { 0.0 };
-                assert!((inv[row][col] - expected).abs() < 1e-8);
+                assert!((v - expected).abs() < 1e-8);
             }
         }
     }
@@ -111,14 +109,10 @@ mod tests {
         let m = [[2.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 2.0]];
         let inv = mat3_inv(m);
         let prod = mat3_mul(m, inv);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, prod_row) in prod.iter().enumerate() {
+            for (j, &v) in prod_row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (prod[i][j] - expected).abs() < 1e-8,
-                    "prod[{i}][{j}]={}",
-                    prod[i][j]
-                );
+                assert!((v - expected).abs() < 1e-8, "prod[{i}][{j}]={}", v);
             }
         }
     }
@@ -257,13 +251,9 @@ mod tests {
     fn test_neo_hookean_pk1_identity_zero() {
         let f = mat3_identity();
         let pk1 = neo_hookean_pk1(f, 1.0, 1.0);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(
-                    pk1[i][j].abs() < 1e-8,
-                    "pk1[{i}][{j}]={} should be ~0",
-                    pk1[i][j]
-                );
+        for (i, pk1_row) in pk1.iter().enumerate() {
+            for (j, &v) in pk1_row.iter().enumerate() {
+                assert!(v.abs() < 1e-8, "pk1[{i}][{j}]={} should be ~0", v);
             }
         }
     }
@@ -402,19 +392,18 @@ mod tests {
     fn test_drucker_prager_elastic_return() {
         let fe = mat3_identity();
         let fe_out = drucker_prager_return_mapping(fe, 1e5, 2e5, 30.0);
-        for i in 0..3 {
-            let expected = if i < 3 { 1.0 } else { 0.0 };
-            assert!((fe_out[i][i] - expected).abs() < 1e-3);
+        for (i, row) in fe_out.iter().enumerate() {
+            assert!((row[i] - 1.0).abs() < 1e-3);
         }
     }
     #[test]
     fn test_von_mises_elastic_return() {
         let fe = mat3_identity();
         let fe_out = von_mises_return_mapping(fe, 1e5, 2e5, 1e10);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, fe_row) in fe_out.iter().enumerate() {
+            for (j, &v) in fe_row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((fe_out[i][j] - expected).abs() < 1e-6);
+                assert!((v - expected).abs() < 1e-6);
             }
         }
     }
@@ -515,14 +504,10 @@ mod tests {
         )];
         update_deformation_gradient(&mut particles, 0.01, 0.025, 0.0075);
         let f = particles[0].deformation_gradient;
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, f_row) in f.iter().enumerate() {
+            for (j, &fv) in f_row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (f[i][j] - expected).abs() < 1e-10,
-                    "F[{i}][{j}]={}",
-                    f[i][j]
-                );
+                assert!((fv - expected).abs() < 1e-10, "F[{i}][{j}]={}", fv);
             }
         }
     }

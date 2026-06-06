@@ -1,13 +1,13 @@
-#![allow(clippy::needless_range_loop, clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! Spatial hashing, loose octree, k-nearest neighbours, ray grid traversal,
 //! and spatial statistics.
 
-#![allow(dead_code)]
-
 use std::collections::{BinaryHeap, HashMap};
+
+/// Type alias for the 3-D integer cell key used in spatial hashes.
+type CellKey = (i32, i32, i32);
 
 // ─── Helper math ─────────────────────────────────────────────────────────────
 
@@ -24,7 +24,7 @@ fn dist_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
 pub struct SpatialHash3D<T: Clone> {
     /// Side length of each cubic cell.
     pub cell_size: f64,
-    cells: HashMap<(i32, i32, i32), Vec<(usize, T)>>,
+    cells: HashMap<CellKey, Vec<(usize, T)>>,
     /// Total number of items currently stored.
     pub n_items: usize,
 }
@@ -136,7 +136,7 @@ impl<T: Clone> SpatialHash3D<T> {
 pub struct SpatialHashPos3D<T: Clone> {
     /// Side length of each cubic cell.
     pub cell_size: f64,
-    cells: HashMap<(i32, i32, i32), Vec<(usize, [f64; 3], T)>>,
+    cells: HashMap<CellKey, Vec<(usize, [f64; 3], T)>>,
     /// Total number of items currently stored.
     pub n_items: usize,
 }
@@ -548,13 +548,13 @@ impl<T: Clone> LooseOctree<T> {
     pub fn query_sphere(&self, center: [f64; 3], radius: f64) -> Vec<(usize, &T)> {
         let loose = self.half_size * 2.0;
         let mut closest2 = 0.0f64;
-        for i in 0..3 {
-            let lo = self.center[i] - loose;
-            let hi = self.center[i] + loose;
-            if center[i] < lo {
-                closest2 += (center[i] - lo).powi(2);
-            } else if center[i] > hi {
-                closest2 += (center[i] - hi).powi(2);
+        for (c_i, sc_i) in center.iter().zip(self.center.iter()) {
+            let lo = sc_i - loose;
+            let hi = sc_i + loose;
+            if c_i < &lo {
+                closest2 += (c_i - lo).powi(2);
+            } else if c_i > &hi {
+                closest2 += (c_i - hi).powi(2);
             }
         }
         if closest2 > radius * radius {
@@ -693,13 +693,13 @@ impl<T: Clone> LooseOctree<T> {
                 // Minimum distance from center to child's loose box
                 let loose = child.half_size * 2.0;
                 let mut min_d2 = 0.0f64;
-                for i in 0..3 {
-                    let lo = child.center[i] - loose;
-                    let hi = child.center[i] + loose;
-                    if center[i] < lo {
-                        min_d2 += (center[i] - lo).powi(2);
-                    } else if center[i] > hi {
-                        min_d2 += (center[i] - hi).powi(2);
+                for (c_i, cc_i) in center.iter().zip(child.center.iter()) {
+                    let lo = cc_i - loose;
+                    let hi = cc_i + loose;
+                    if c_i < &lo {
+                        min_d2 += (c_i - lo).powi(2);
+                    } else if c_i > &hi {
+                        min_d2 += (c_i - hi).powi(2);
                     }
                 }
                 let min_d = min_d2.sqrt();
@@ -932,7 +932,7 @@ impl<T: Clone> GpuSpatialHashLayout<T> {
     /// Build the GPU-friendly layout from a slice of `(id, position, data)`.
     pub fn build(entries: &[(usize, [f32; 3], T)], cell_size: f32) -> Self {
         // Bucket entries by cell key
-        let mut buckets: HashMap<(i32, i32, i32), Vec<(usize, [f32; 3], T)>> = HashMap::new();
+        let mut buckets: HashMap<CellKey, Vec<(usize, [f32; 3], T)>> = HashMap::new();
         for (id, pos, data) in entries {
             let key = (
                 (pos[0] / cell_size).floor() as i32,

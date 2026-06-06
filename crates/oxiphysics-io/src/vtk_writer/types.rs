@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use std::io::Write;
 /// Writer for the VTK XML Unstructured Grid format (`.vtu`).
 pub struct XmlVtuWriter;
@@ -467,7 +465,6 @@ impl VtkUnstructuredGrid {
     }
 }
 /// Partition-information for one MPI rank's data in a parallel VTK output.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VtkPartition {
     /// Rank index.
@@ -582,7 +579,6 @@ impl FormattedAsciiWriter {
     }
 }
 /// Validation result for a VTU grid.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VtuValidationResult {
     /// Whether the file structure is valid.
@@ -767,7 +763,6 @@ impl VtuXmlWriter {
     ///
     /// `point_arrays`: list of (name, values) where values.len() == n_points.
     /// `cell_arrays`: list of (name, values) where values.len() == n_cells.
-    #[allow(clippy::too_many_arguments)]
     pub fn write(
         path: &str,
         points: &[[f64; 3]],
@@ -910,9 +905,7 @@ impl VtkBinaryWriter {
     }
 }
 /// Stateless collection of higher-level VTK writing helpers.
-#[allow(dead_code)]
 pub struct VtkWriter;
-#[allow(dead_code)]
 impl VtkWriter {
     /// Write an unstructured mesh with an attached vector field to a VTU file.
     ///
@@ -1048,7 +1041,6 @@ impl VtkWriter {
     ///
     /// Optionally attach a scalar point-data field `scalars` of length
     /// `nx * ny * nz` (pass an empty slice to omit).
-    #[allow(clippy::too_many_arguments)]
     pub fn write_rectilinear_grid(
         path: &str,
         x_coords: &[f64],
@@ -1095,7 +1087,6 @@ impl VtkWriter {
     }
 }
 /// A piece descriptor for a parallel VTU file.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PvtuPiece {
     /// Relative path to the piece VTU file.

@@ -3,8 +3,6 @@
 
 //! Greedy aggregation for smoothed-aggregation AMG.
 
-#![allow(dead_code)]
-
 /// Greedy aggregation of nodes based on strong connections.
 ///
 /// Returns `aggregate_ids[i]` — the aggregate ID for each node `i`.

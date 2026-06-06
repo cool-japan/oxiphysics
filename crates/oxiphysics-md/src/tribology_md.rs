@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -24,9 +23,6 @@
 //! - Greenwood & Williamson (1966): Contact of nominally flat surfaces
 //! - Braginskii (1965): Transport processes in a plasma
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -36,26 +32,9 @@ use std::f64::consts::PI;
 /// Boltzmann constant \[J K⁻¹\].
 const K_B: f64 = 1.380_649e-23;
 
-/// Planck constant \[J s\].
-const H_PLANCK: f64 = 6.626_070_15e-34;
-
-/// Avogadro's number \[mol⁻¹\].
-const N_AV: f64 = 6.022_140_76e23;
-
-/// Universal gas constant \[J mol⁻¹ K⁻¹\].
-const R_GAS: f64 = 8.314_462_618;
-
-/// Elementary charge \[C\].
-const E_CHARGE: f64 = 1.602_176_634e-19;
-
 /// Atomic mass unit \[kg\].
+#[cfg(test)]
 const AMU: f64 = 1.660_539_066_6e-27;
-
-/// Angstrom in meters.
-const ANGSTROM: f64 = 1.0e-10;
-
-/// Vacuum permittivity ε₀ \[F m⁻¹\].
-const EPS_0: f64 = 8.854_187_817e-12;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Vector helpers
@@ -419,8 +398,8 @@ impl FrenkelKontorovaModel {
     pub fn euler_step(&mut self, dt: f64) {
         let n = self.n_atoms();
         let forces: Vec<f64> = (0..n).map(|i| self.total_force(i)).collect();
-        for i in 0..n {
-            let accel = forces[i] / self.mass;
+        for (i, &f) in forces.iter().enumerate() {
+            let accel = f / self.mass;
             self.velocities[i] += accel * dt;
             self.positions[i] += self.velocities[i] * dt;
         }

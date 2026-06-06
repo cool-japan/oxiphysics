@@ -8,8 +8,6 @@
 //! colour matching, Tauc-plot bandgap, emissivity, and photoluminescence
 //! spectra.
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

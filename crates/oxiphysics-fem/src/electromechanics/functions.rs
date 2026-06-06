@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 /// Compute the electric field **E = −∇φ** inside a linear tetrahedral element.
 ///
 /// `phi` – the four nodal potential values `[φ1, φ2, φ3, φ4]`.
@@ -115,12 +114,12 @@ mod tests {
     fn test_elastic_stiffness_symmetry() {
         let mat = PiezoMaterial::isotropic_with_piezo(200e9, 0.3, 1.0, 0.0, 0.0, 0.0);
         let c = mat.elastic_stiffness;
-        for i in 0..6 {
-            for j in 0..6 {
+        for (i, row) in c.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (c[i][j] - c[j][i]).abs() < 1e-6,
+                    (val - c[j][i]).abs() < 1e-6,
                     "C[{i}][{j}]={} != C[{j}][{i}]={}",
-                    c[i][j],
+                    val,
                     c[j][i]
                 );
             }
@@ -194,12 +193,12 @@ mod tests_extended {
             permittivity: 8.854e-12,
         };
         let k = elem.element_stiffness();
-        for i in 0..4 {
-            assert!(k[i][i] > 0.0, "k[{i}][{i}] = {}", k[i][i]);
+        for (i, row) in k.iter().enumerate() {
+            assert!(row[i] > 0.0, "k[{i}][{i}] = {}", row[i]);
         }
-        for i in 0..4 {
-            for j in 0..4 {
-                assert!((k[i][j] - k[j][i]).abs() < 1e-25, "asymmetry at ({i},{j})");
+        for (i, row) in k.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - k[j][i]).abs() < 1e-25, "asymmetry at ({i},{j})");
             }
         }
     }
@@ -326,7 +325,6 @@ mod tests_extended {
 /// Compute the Maxwell stress tensor for a dielectric with permittivity `eps`.
 ///
 /// T_ij = ε (E_i E_j - δ_ij |E|²/2)
-#[allow(dead_code)]
 pub fn maxwell_stress_tensor(e_field: &[f64; 3], eps: f64) -> [[f64; 3]; 3] {
     let e_sq: f64 = e_field.iter().map(|e| e * e).sum();
     let mut t = [[0.0_f64; 3]; 3];
@@ -341,13 +339,11 @@ pub fn maxwell_stress_tensor(e_field: &[f64; 3], eps: f64) -> [[f64; 3]; 3] {
 /// Compute the Maxwell stress tensor trace.
 ///
 /// tr(T_Maxwell) = ε (|E|² - 3/2 |E|²) = -ε |E|²/2
-#[allow(dead_code)]
 pub fn maxwell_stress_trace(e_field: &[f64; 3], eps: f64) -> f64 {
     let e_sq: f64 = e_field.iter().map(|e| e * e).sum();
     -0.5 * eps * e_sq
 }
 /// Electrostatic energy density: U = ε |E|² / 2.
-#[allow(dead_code)]
 pub fn electrostatic_energy_density(e_field: &[f64; 3], eps: f64) -> f64 {
     let e_sq: f64 = e_field.iter().map(|e| e * e).sum();
     0.5 * eps * e_sq
@@ -356,7 +352,6 @@ pub fn electrostatic_energy_density(e_field: &[f64; 3], eps: f64) -> f64 {
 ///
 /// For a uniform field, the net force from T_Maxwell on a surface element n dA.
 /// F_i = Σ_j T_ij n_j * area
-#[allow(dead_code)]
 pub fn maxwell_force(e_field: &[f64; 3], normal: &[f64; 3], area: f64, eps: f64) -> [f64; 3] {
     let t = maxwell_stress_tensor(e_field, eps);
     let mut f = [0.0_f64; 3];
@@ -426,9 +421,9 @@ mod tests_electromechanics_extended {
     fn test_electrostriction_zero_field() {
         let m = ElectrostrictiveMaterial::new(1e-18, 1e-19);
         let eps = m.strain_tensor(&[0.0; 3]);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(eps[i][j].abs() < 1e-30);
+        for row in &eps {
+            for &val in row {
+                assert!(val.abs() < 1e-30);
             }
         }
     }
@@ -438,10 +433,10 @@ mod tests_electromechanics_extended {
         let m = ElectrostrictiveMaterial::new(1e-18, 1e-19);
         let e = [1e6, 0.5e6, 0.0];
         let eps = m.strain_tensor(&e);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in eps.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (eps[i][j] - eps[j][i]).abs() < 1e-30,
+                    (val - eps[j][i]).abs() < 1e-30,
                     "eps[{i}][{j}] ≠ eps[{j}][{i}]"
                 );
             }
@@ -461,10 +456,10 @@ mod tests_electromechanics_extended {
         let dea = DielectricElastomer::new(1e6, 5e6, 4.0, 100e-6);
         let e = [1e6, 0.5e6, 0.0];
         let t = dea.maxwell_stress_tensor(&e);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in t.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (t[i][j] - t[j][i]).abs() < 1e-20,
+                    (val - t[j][i]).abs() < 1e-20,
                     "Maxwell stress not symmetric at ({i},{j})"
                 );
             }
@@ -500,12 +495,9 @@ mod tests_electromechanics_extended {
     fn test_maxwell_stress_tensor_symmetry() {
         let e = [1.0e5, 2.0e5, 0.5e5];
         let t = maxwell_stress_tensor(&e, 8.854e-12);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(
-                    (t[i][j] - t[j][i]).abs() < 1e-30,
-                    "not symmetric at ({i},{j})"
-                );
+        for (i, row) in t.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - t[j][i]).abs() < 1e-30, "not symmetric at ({i},{j})");
             }
         }
     }

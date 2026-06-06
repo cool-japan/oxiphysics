@@ -1,6 +1,6 @@
 # oxiphysics-io TODO
 
-Last updated: 2026-05-17 / v0.1.1
+Last updated: 2026-06-06 / v0.1.2
 
 File-format I/O subcrate. All listed items are production code, tested.
 
@@ -32,5 +32,8 @@ File-format I/O subcrate. All listed items are production code, tested.
 - [x] Scene JSON round-trip (via oxiphysics scene module)
 - [x] Snapshot binary format (fast save / restore)
 
+## v0.1.2 fixes
+- [x] (2026-06-01) Re-exported `particle_formats` public types at crate root (`DcdWriter`, `DcdReader`, `XyzWriter`, `XyzReader`, `ParticleFrame`, `ParticleTrajectory`, `TrajectoryStats`, `BinaryFrameReader`, `BinaryFrameWriter`, `GroReader`, `GroWriter`, `DcdHeader`). Fixes failing `DcdWriter` doctest.
+
 ## Outstanding (v0.2.0)
-No local v0.2.0 items at this level. Format additions will be driven by user demand; log feature requests in root `TODO.md` Deferred section.
+No additional items at this level. Format additions will be driven by user demand.

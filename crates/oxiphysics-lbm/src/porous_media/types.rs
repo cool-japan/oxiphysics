@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{CS2, CX, CY, W};
 
 /// A cell with anisotropic permeability and thermal state.
@@ -630,23 +628,20 @@ impl BrinkmanForce {
 }
 /// Darcy resistance for 1-D pressure drop calculation.
 #[derive(Debug, Clone, Copy)]
-#[allow(non_snake_case)]
 pub struct DarcyResistance {
-    /// Permeability K (m^2).
-    #[allow(non_snake_case)]
-    pub K: f64,
+    /// Permeability k (m^2).
+    pub k: f64,
     /// Dynamic viscosity mu (Pa·s).
     pub mu: f64,
 }
 impl DarcyResistance {
     /// Create a new `DarcyResistance`.
-    #[allow(non_snake_case)]
-    pub fn new(K: f64, mu: f64) -> Self {
-        Self { K, mu }
+    pub fn new(k: f64, mu: f64) -> Self {
+        Self { k, mu }
     }
     /// Darcy law pressure drop: ΔP = (mu / K) * u * L.
     pub fn pressure_drop(&self, l: f64, u: f64) -> f64 {
-        (self.mu / self.K) * u * l
+        (self.mu / self.k) * u * l
     }
 }
 /// Driver for a volume-averaged porous-media LBM simulation.

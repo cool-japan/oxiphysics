@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,9 +14,6 @@
 //! - `CompoundBvh` — BVH over compound sub-shapes
 //! - `ShapeOffset` — Minkowski sum with sphere (rounded shapes)
 //! - `ImportedCollisionMesh` — mesh from vertex data
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ---------------------------------------------------------------------------
 // Helper math
@@ -108,18 +104,26 @@ impl Aabb3 {
 
     /// Expand AABB to include point p.
     pub fn include_point(&mut self, p: [f64; 3]) {
-        for i in 0..3 {
-            self.min[i] = self.min[i].min(p[i]);
-            self.max[i] = self.max[i].max(p[i]);
-        }
+        self.min
+            .iter_mut()
+            .zip(p.iter())
+            .for_each(|(m, &pi)| *m = m.min(pi));
+        self.max
+            .iter_mut()
+            .zip(p.iter())
+            .for_each(|(m, &pi)| *m = m.max(pi));
     }
 
     /// Expand AABB to include another AABB.
     pub fn include_aabb(&mut self, other: &Aabb3) {
-        for i in 0..3 {
-            self.min[i] = self.min[i].min(other.min[i]);
-            self.max[i] = self.max[i].max(other.max[i]);
-        }
+        self.min
+            .iter_mut()
+            .zip(other.min.iter())
+            .for_each(|(m, &o)| *m = m.min(o));
+        self.max
+            .iter_mut()
+            .zip(other.max.iter())
+            .for_each(|(m, &o)| *m = m.max(o));
     }
 
     /// Center of this AABB.
@@ -747,13 +751,12 @@ impl<'a> MeshShapeQuery<'a> {
     /// Casts a ray in +x direction and counts crossings.
     pub fn point_inside(&self, point: [f64; 3]) -> bool {
         let dir = [1.0, 0.0, 0.0];
-        let mut count = 0;
-        for i in 0..self.mesh.num_triangles() {
-            let (a, b, c) = self.mesh.triangle(i);
-            if Self::ray_triangle_intersect(point, dir, a, b, c).is_some() {
-                count += 1;
-            }
-        }
+        let count = (0..self.mesh.num_triangles())
+            .filter(|&i| {
+                let (a, b, c) = self.mesh.triangle(i);
+                Self::ray_triangle_intersect(point, dir, a, b, c).is_some()
+            })
+            .count();
         count % 2 == 1
     }
 
@@ -797,7 +800,7 @@ impl<'a> MeshShapeQuery<'a> {
         let mut best_face = 0;
         let mut best_dist = f64::MAX;
 
-        for i in 0..self.mesh.num_triangles() {
+        for (i, _) in (0..self.mesh.num_triangles()).enumerate() {
             let (a, b, c) = self.mesh.triangle(i);
             let pt = Self::closest_point_triangle(query, a, b, c);
             let d = norm3(sub3(query, pt));

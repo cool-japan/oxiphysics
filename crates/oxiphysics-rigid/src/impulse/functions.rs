@@ -2,8 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+#[cfg(test)]
+use super::types::ImpulseClampStrategy;
 use super::types::{
-    CollisionManifold, ContactConstraint, ImpulseClampStrategy, RestitutionModel, RigidBodyState,
+    CollisionManifold, ContactConstraint, RestitutionModel, RigidBodyState,
     SequentialImpulseSolverConfig,
 };
 
@@ -52,6 +54,7 @@ pub(super) fn apply_inv_inertia(inv_inertia_local: [f64; 3], v: [f64; 3]) -> [f6
     ]
 }
 /// Clamp a normal impulse magnitude according to the strategy.
+#[cfg(test)]
 pub(super) fn clamp_normal_impulse(j: f64, strategy: ImpulseClampStrategy) -> f64 {
     match strategy {
         ImpulseClampStrategy::None => j,

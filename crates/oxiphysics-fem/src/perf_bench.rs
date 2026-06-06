@@ -33,8 +33,6 @@
 //! println!("{}", report);
 //! ```
 
-#![allow(dead_code)]
-
 use crate::parallel_solver::{
     AssemblyTask, CsrMatrix, ParallelAssembler, ParallelGmresSolver, ParallelPcgSolver,
 };
@@ -301,10 +299,9 @@ pub fn bench_spmv(n: usize) -> BenchResult {
         f64::INFINITY
     };
 
-    // Verify correctness of first/last element (2.0*1.0 - 2.0*1.0 = 0 intentional for the check)
-    #[allow(clippy::eq_op)]
+    // Verify correctness of first element (expected value is 0.0)
     {
-        debug_assert!((y[0] - (2.0 * 1.0 - 2.0)).abs() < 1e-6 || n == 1);
+        debug_assert!(y[0].abs() < 1e-6 || n == 1);
     }
 
     BenchResult {

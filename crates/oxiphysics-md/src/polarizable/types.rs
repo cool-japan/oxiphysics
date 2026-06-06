@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
-#[allow(unused_imports)]
 use super::functions::*;
 /// Thole short-range damping functions for dipole-dipole interactions.
 pub struct TholeDamping;
@@ -189,20 +187,19 @@ impl PointDipoleModel {
         for iter in 0..max_iter {
             let old_dipoles = self.dipoles.clone();
             let mut new_dipoles = vec![[0.0f64; 3]; n];
-            for i in 0..n {
-                let mut e_field = e_ext[i];
-                for j in 0..n {
+            for (i, (new_d, &e_ext_i)) in new_dipoles.iter_mut().zip(e_ext.iter()).enumerate() {
+                let mut e_field = e_ext_i;
+                for (j, &mu_j) in old_dipoles.iter().enumerate().take(n) {
                     if i == j {
                         continue;
                     }
                     let r_vec = sub(self.positions[i], self.positions[j]);
                     let t = Self::relay_tensor(r_vec);
-                    let mu_j = old_dipoles[j];
-                    for a in 0..3 {
-                        e_field[a] += t[a][0] * mu_j[0] + t[a][1] * mu_j[1] + t[a][2] * mu_j[2];
+                    for (ef_a, ta) in e_field.iter_mut().zip(t.iter()) {
+                        *ef_a += ta[0] * mu_j[0] + ta[1] * mu_j[1] + ta[2] * mu_j[2];
                     }
                 }
-                new_dipoles[i] = scale(self.alphas[i], e_field);
+                *new_d = scale(self.alphas[i], e_field);
             }
             let mut rms = 0.0;
             for i in 0..n {
@@ -231,8 +228,8 @@ impl PointDipoleModel {
         let n = self.positions.len();
         for iter in 0..max_iter {
             let mut max_change = 0.0_f64;
-            for i in 0..n {
-                let mut e_field = e_ext[i];
+            for (i, &e_ext_i) in e_ext.iter().enumerate().take(n) {
+                let mut e_field = e_ext_i;
                 for j in 0..n {
                     if i == j {
                         continue;
@@ -240,8 +237,8 @@ impl PointDipoleModel {
                     let r_vec = sub(self.positions[i], self.positions[j]);
                     let t = Self::relay_tensor(r_vec);
                     let mu_j = self.dipoles[j];
-                    for a in 0..3 {
-                        e_field[a] += t[a][0] * mu_j[0] + t[a][1] * mu_j[1] + t[a][2] * mu_j[2];
+                    for (ef_a, ta) in e_field.iter_mut().zip(t.iter()) {
+                        *ef_a += ta[0] * mu_j[0] + ta[1] * mu_j[1] + ta[2] * mu_j[2];
                     }
                 }
                 let new_mu = scale(self.alphas[i], e_field);
@@ -756,7 +753,6 @@ pub struct DrudeExtLagrangian {
 }
 impl DrudeExtLagrangian {
     /// Create a new extended-Lagrangian Drude state.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         core_pos: Vec<[f64; 3]>,
         drude_pos: Vec<[f64; 3]>,
@@ -813,16 +809,15 @@ impl DrudeExtLagrangian {
             let sigma = (KB_MD * self.t_drude / self.drude_mass[i] * noise_scale_sq).sqrt();
             let mut rng = rand::rng();
             use rand::RngExt;
-            for d in 0..3 {
+            for v in &mut self.drude_vel[i] {
                 let xi: f64 = rng.random_range(-1.0_f64..1.0_f64);
-                self.drude_vel[i][d] = decay * self.drude_vel[i][d] + sigma * xi;
+                *v = decay * *v + sigma * xi;
             }
         }
     }
 }
 /// A simple container for a set of induced dipoles and their polarizabilities,
 /// providing the classical polarization energy.
-#[allow(dead_code)]
 pub struct InducedDipoleModel {
     /// Isotropic polarizabilities α_i (Å³ or consistent units).
     pub polarizabilities: Vec<f64>,
@@ -945,8 +940,8 @@ impl FluctuatingCharge {
     }
     /// Velocity Verlet half-step for charge velocities.
     pub fn velocity_half_step(&mut self, forces: &[f64], dt: f64) {
-        for i in 0..self.charges.len() {
-            self.charge_velocities[i] += 0.5 * dt * forces[i] / self.charge_mass;
+        for (cv, &f) in self.charge_velocities.iter_mut().zip(forces.iter()) {
+            *cv += 0.5 * dt * f / self.charge_mass;
         }
     }
     /// Full position (charge) step.
@@ -1090,14 +1085,14 @@ impl ChargeOnSpring {
     ///
     /// The equilibrium displacement is: d = q * E / k
     pub fn update_positions(&mut self, e_ext: &[[f64; 3]]) {
-        for i in 0..self.positions.len() {
+        for (i, sp) in self.spring_positions.iter_mut().enumerate() {
             let k = self.spring_constants[i];
             if k.abs() < 1e-30 {
                 continue;
             }
             let q = self.spring_charges[i];
             let d = scale(q / k * self.damping, e_ext[i]);
-            self.spring_positions[i] = add(self.positions[i], d);
+            *sp = add(self.positions[i], d);
         }
     }
 }
@@ -1208,7 +1203,6 @@ impl AmoebaPolarization {
         self.mu_ind = mu_new;
     }
     /// Iterative SCF until convergence (max norm of Δμ < tol).
-    #[allow(clippy::too_many_arguments)]
     pub fn scf_solve(
         &mut self,
         e_perm: &[[f64; 3]],
@@ -1220,9 +1214,9 @@ impl AmoebaPolarization {
             let old = self.mu_ind.clone();
             self.jacobi_update(e_perm, positions);
             let mut max_delta = 0.0f64;
-            for i in 0..self.n_sites {
+            for (mu_i, old_i) in self.mu_ind.iter().zip(old.iter()) {
                 for d in 0..3 {
-                    let delta = (self.mu_ind[i][d] - old[i][d]).abs();
+                    let delta = (mu_i[d] - old_i[d]).abs();
                     if delta > max_delta {
                         max_delta = delta;
                     }
@@ -1236,9 +1230,9 @@ impl AmoebaPolarization {
     /// Induction energy = -1/2 Σ_i μ_i · E_perm_i.
     pub fn induction_energy(&self, e_perm: &[[f64; 3]]) -> f64 {
         let mut u = 0.0f64;
-        for i in 0..self.n_sites {
+        for (mu_i, ep_i) in self.mu_ind.iter().zip(e_perm.iter()) {
             for d in 0..3 {
-                u -= 0.5 * self.mu_ind[i][d] * e_perm[i][d];
+                u -= 0.5 * mu_i[d] * ep_i[d];
             }
         }
         u
@@ -1324,14 +1318,14 @@ impl QeqSolver {
         (a, b)
     }
     /// Solve the linear system A x = b using Gaussian elimination (in-place).
-    fn gaussian_solve(a: &mut Vec<Vec<f64>>, b: &mut Vec<f64>) -> Option<Vec<f64>> {
+    fn gaussian_solve(a: &mut [Vec<f64>], b: &mut [f64]) -> Option<Vec<f64>> {
         let n = b.len();
         for col in 0..n {
             let mut max_row = col;
             let mut max_val = a[col][col].abs();
-            for row in (col + 1)..n {
-                if a[row][col].abs() > max_val {
-                    max_val = a[row][col].abs();
+            for (row, a_row) in a.iter().enumerate().take(n).skip(col + 1) {
+                if a_row[col].abs() > max_val {
+                    max_val = a_row[col].abs();
                     max_row = row;
                 }
             }
@@ -1341,8 +1335,8 @@ impl QeqSolver {
             a.swap(col, max_row);
             b.swap(col, max_row);
             let pivot = a[col][col];
-            for j in col..n {
-                a[col][j] /= pivot;
+            for v in a[col].iter_mut().skip(col) {
+                *v /= pivot;
             }
             b[col] /= pivot;
             for row in 0..n {
@@ -1350,14 +1344,14 @@ impl QeqSolver {
                     continue;
                 }
                 let factor = a[row][col];
-                for j in col..n {
-                    let v = a[col][j];
-                    a[row][j] -= factor * v;
+                let pivot_row_slice: Vec<f64> = a[col][col..n].to_vec();
+                for (a_row_c, &pv) in a[row][col..n].iter_mut().zip(pivot_row_slice.iter()) {
+                    *a_row_c -= factor * pv;
                 }
                 b[row] -= factor * b[col];
             }
         }
-        Some(b.clone())
+        Some(b.to_vec())
     }
     /// Solve for equilibrium charges.
     ///

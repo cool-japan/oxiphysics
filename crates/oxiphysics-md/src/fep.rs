@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -18,7 +17,6 @@ const KB_J: f64 = 1.380_649e-23;
 ///
 /// The alchemical parameter λ ∈ \[0, 1\] smoothly interpolates between
 /// state A (λ = 0) and state B (λ = 1).
-#[allow(dead_code)]
 pub struct AlchemicalState {
     /// Alchemical coupling parameter: 0.0 = state A, 1.0 = state B.
     pub lambda: f64,
@@ -62,7 +60,6 @@ impl AlchemicalState {
 ///
 /// ΔF = ∫₀¹ ⟨dU/dλ⟩_λ dλ,  approximated via the trapezoidal rule over a
 /// discrete set of λ windows.
-#[allow(dead_code)]
 pub struct ThermodynamicIntegration {
     /// λ values at each window.
     pub lambda_windows: Vec<f64>,
@@ -170,7 +167,6 @@ impl ThermodynamicIntegration {
 /// ΔF_{A→B} = −k_B T · ln⟨exp(−β ΔU)⟩_A
 ///
 /// Samples of ΔU = U_B − U_A are collected while the system is in state A.
-#[allow(dead_code)]
 pub struct ExponentialAveraging {
     /// Inverse thermal energy β = 1 / (k_B T).
     pub beta: f64,
@@ -231,7 +227,6 @@ impl ExponentialAveraging {
 /// estimate of ΔF than the one-sided Zwanzig equation.  The simplified
 /// implementation here iterates the BAR self-consistency equation; it falls
 /// back to the Zwanzig estimate when one side is empty.
-#[allow(dead_code)]
 pub struct Bar {
     /// Inverse thermal energy β = 1 / (k_B T).
     pub beta: f64,
@@ -355,7 +350,6 @@ impl Bar {
 /// energy difference between all states simultaneously.
 ///
 /// Reference: Shirts & Chodera, J. Chem. Phys. 129, 124105 (2008).
-#[allow(dead_code)]
 pub struct Mbar {
     /// Number of thermodynamic states.
     pub n_states: usize,
@@ -415,7 +409,7 @@ impl Mbar {
         for _ in 0..max_iter {
             let mut f_new = vec![0.0f64; k_states];
 
-            for k in 0..k_states {
+            for (k, f_new_k) in f_new.iter_mut().enumerate() {
                 // f_k = -ln( sum_n [ exp(-u_kn) / sum_l N_l exp(f_l - u_ln) ] )
                 let mut sum = 0.0f64;
                 for n in 0..n_total {
@@ -423,8 +417,8 @@ impl Mbar {
 
                     // Compute log denominator for numerical stability
                     let mut max_arg = f64::NEG_INFINITY;
-                    for l in 0..k_states {
-                        let arg = f_k[l] - self.u_kn[l][n];
+                    for (l, &fkl) in f_k.iter().enumerate().take(k_states) {
+                        let arg = fkl - self.u_kn[l][n];
                         if arg > max_arg {
                             max_arg = arg;
                         }
@@ -436,7 +430,7 @@ impl Mbar {
 
                     sum += (-u_k_n - log_denom).exp();
                 }
-                f_new[k] = if sum > 0.0 { -sum.ln() } else { 0.0 };
+                *f_new_k = if sum > 0.0 { -sum.ln() } else { 0.0 };
             }
 
             // Normalize so f_0 = 0
@@ -471,7 +465,6 @@ impl Mbar {
 /// where ΔU = U_B − U_A sampled from state A.
 ///
 /// This is valid when the ΔU distribution is approximately Gaussian.
-#[allow(dead_code)]
 pub struct CumulantExpansion {
     /// Inverse thermal energy β.
     pub beta: f64,
@@ -529,7 +522,6 @@ impl CumulantExpansion {
 /// V_sc(r, λ) = 4·ε·λ^q · \[(σ²/r_eff²)^6 − (σ²/r_eff²)^3\]
 ///
 /// Default: α=0.5, p=1, q=1 (Beutler *et al.* 1994).
-#[allow(dead_code)]
 pub struct SoftcoreLJ {
     /// LJ well depth ε.
     pub epsilon: f64,
@@ -547,7 +539,6 @@ pub struct SoftcoreLJ {
 
 impl SoftcoreLJ {
     /// Create a new softcore LJ potential.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(epsilon: f64, sigma: f64, alpha: f64, p: i32, q: i32, cutoff: f64) -> Self {
         Self {
             epsilon,
@@ -593,7 +584,6 @@ impl SoftcoreLJ {
 ///
 /// Manages a set of λ values and provides soft-start/soft-end schedules
 /// for electrostatic and van der Waals decoupling.
-#[allow(dead_code)]
 pub struct AlchemicalSchedule {
     /// Lambda values for van der Waals.
     pub lambda_vdw: Vec<f64>,
@@ -650,7 +640,6 @@ impl AlchemicalSchedule {
 ///
 /// Computes per-state free-energy uncertainties by jackknife resampling
 /// of the sample rows.
-#[allow(dead_code)]
 pub fn mbar_jackknife_uncertainty(mbar: &Mbar, max_iter: usize) -> Vec<f64> {
     let n_total = if mbar.n_states > 0 {
         mbar.u_kn[0].len()
@@ -703,7 +692,6 @@ pub fn mbar_jackknife_uncertainty(mbar: &Mbar, max_iter: usize) -> Vec<f64> {
 ///
 /// Resamples `n_bootstrap` times from the collected samples and returns
 /// (mean_ΔF, std_ΔF).
-#[allow(dead_code)]
 pub fn exp_averaging_bootstrap(ea: &ExponentialAveraging, n_bootstrap: usize) -> (f64, f64) {
     use rand::RngExt;
     let n = ea.samples.len();
@@ -751,7 +739,6 @@ pub fn exp_averaging_bootstrap(ea: &ExponentialAveraging, n_bootstrap: usize) ->
 ///
 /// where f(x) = 1/(1+exp(x)) is the Fermi function.
 /// A value near 1.0 indicates good overlap; near 0 indicates poor overlap.
-#[allow(dead_code)]
 pub fn bennett_overlap_metric(bar: &Bar) -> f64 {
     let n_a = bar.samples_a.len();
     let n_b = bar.samples_b.len();
@@ -791,7 +778,6 @@ pub fn bennett_overlap_metric(bar: &Bar) -> f64 {
 ///
 /// This is a simplified implementation that uses numerical integration to
 /// compute the optimal spacing.
-#[allow(dead_code)]
 pub struct AlchemicalPathwayOptimizer {
     /// Number of desired λ windows.
     pub n_windows: usize,
@@ -833,8 +819,8 @@ impl AlchemicalPathwayOptimizer {
         lambdas.push(0.0);
         let mut target = target_step;
 
-        for i in 1..n_grid {
-            if cumulative[i] >= target && lambdas.len() < self.n_windows {
+        for (i, &cum) in cumulative.iter().enumerate().skip(1).take(n_grid - 1) {
+            if cum >= target && lambdas.len() < self.n_windows {
                 lambdas.push(i as f64 / n_grid as f64);
                 target += target_step;
             }
@@ -850,7 +836,6 @@ impl AlchemicalPathwayOptimizer {
 ///
 /// Extends `ThermodynamicIntegration` to store running second moments
 /// for uncertainty estimation.
-#[allow(dead_code)]
 pub struct ThermodynamicIntegrationVariance {
     /// Lambda windows.
     pub lambda_windows: Vec<f64>,
@@ -943,7 +928,6 @@ impl ThermodynamicIntegrationVariance {
 ///
 /// This function accepts raw ΔU samples and returns the FEP estimate
 /// together with a statistical uncertainty (bootstrap).
-#[allow(dead_code)]
 pub fn fep_estimate(delta_u_samples: &[f64], beta: f64) -> (f64, f64) {
     let n = delta_u_samples.len();
     if n == 0 {

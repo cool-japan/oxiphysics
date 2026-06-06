@@ -16,9 +16,6 @@
 //! - [`DeployableStructure`]: stowed/deployed states and actuation sequence
 //! - [`OrigamiRigidFolding`]: rigid origami simulator with angle constraints
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

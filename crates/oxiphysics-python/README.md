@@ -1,6 +1,6 @@
 # oxiphysics-python
 
-## Status: Stable (v0.1.1)
+## Status: Stable (v0.1.2)
 
 Full PyO3 0.28 bindings: 210 `#[pyclass]` types across 14 domain modules
 (analytics, constraints, fem, geometry, io, lbm, materials, md, rigid,
@@ -9,7 +9,7 @@ as a Python module via [maturin](https://www.maturin.rs/). See examples
 below for the live FFI API.
 
 Python API layer for the [OxiPhysics](https://github.com/cool-japan/oxiphysics) engine.  
-Version: **0.1.1** | Updated: **2026-05-06**
+Version: **0.1.2** | Updated: **2026-06-06**
 
 ---
 

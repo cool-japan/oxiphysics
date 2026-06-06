@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{
     GeodesicState, LeviCivitaConnection, MetricTensorND, OneForm, RicciTensor, RiemannTensor,
     RiemannianMetric, SecondFundamentalForm, So3, TwoForm,
@@ -99,9 +98,9 @@ pub fn mat3_frobenius_norm(m: Mat3) -> f64 {
 /// Add two 3×3 matrices.
 pub fn mat3_add(a: Mat3, b: Mat3) -> Mat3 {
     let mut r = mat3_zero();
-    for i in 0..3 {
-        for j in 0..3 {
-            r[i][j] = a[i][j] + b[i][j];
+    for (ri, (ai, bi)) in r.iter_mut().zip(a.iter().zip(b.iter())) {
+        for (rij, (aij, bij)) in ri.iter_mut().zip(ai.iter().zip(bi.iter())) {
+            *rij = *aij + *bij;
         }
     }
     r
@@ -109,9 +108,9 @@ pub fn mat3_add(a: Mat3, b: Mat3) -> Mat3 {
 /// Scale a 3×3 matrix by scalar.
 pub fn mat3_scale(m: Mat3, s: f64) -> Mat3 {
     let mut r = mat3_zero();
-    for i in 0..3 {
-        for j in 0..3 {
-            r[i][j] = m[i][j] * s;
+    for (ri, mi) in r.iter_mut().zip(m.iter()) {
+        for (rij, mij) in ri.iter_mut().zip(mi.iter()) {
+            *rij = *mij * s;
         }
     }
     r
@@ -429,9 +428,9 @@ pub fn ricci_scalar(metric: &MetricTensorND, ricci: &RicciTensor) -> f64 {
     let ginv = metric.inverse();
     let dim = metric.dim;
     let mut scalar = 0.0;
-    for mu in 0..dim {
-        for nu in 0..dim {
-            scalar += ginv[mu][nu] * ricci.components[mu][nu];
+    for (mu, row) in ginv.iter().enumerate().take(dim) {
+        for (nu, &g_val) in row.iter().enumerate().take(dim) {
+            scalar += g_val * ricci.components[mu][nu];
         }
     }
     scalar
@@ -456,9 +455,9 @@ pub fn einstein_tensor(metric: &MetricTensorND, ricci: &RicciTensor) -> [[f64; M
     let r = ricci_scalar(metric, ricci);
     let dim = metric.dim;
     let mut g_tensor = [[0.0_f64; MAX_DIM]; MAX_DIM];
-    for mu in 0..dim {
-        for nu in 0..dim {
-            g_tensor[mu][nu] = ricci.components[mu][nu] - 0.5 * metric.g[mu][nu] * r;
+    for (mu, row) in g_tensor.iter_mut().enumerate().take(dim) {
+        for (nu, cell) in row.iter_mut().enumerate().take(dim) {
+            *cell = ricci.components[mu][nu] - 0.5 * metric.g[mu][nu] * r;
         }
     }
     g_tensor
@@ -473,15 +472,15 @@ where
     let metric = MetricTensorND { dim, g: g_here };
     let ginv = metric.inverse();
     let mut r_lower = [[[[0.0_f64; MAX_DIM]; MAX_DIM]; MAX_DIM]; MAX_DIM];
-    for a in 0..dim {
-        for b in 0..dim {
-            for c in 0..dim {
-                for d in 0..dim {
+    for (a, ra) in r_lower.iter_mut().enumerate().take(dim) {
+        for (b, rab) in ra.iter_mut().enumerate().take(dim) {
+            for (c, rabc) in rab.iter_mut().enumerate().take(dim) {
+                for (d, cell) in rabc.iter_mut().enumerate().take(dim) {
                     let mut val = 0.0;
-                    for e in 0..dim {
-                        val += g_here[a][e] * riemann.components[e][b][c][d];
+                    for (e, &ge) in g_here[a].iter().enumerate().take(dim) {
+                        val += ge * riemann.components[e][b][c][d];
                     }
-                    r_lower[a][b][c][d] = val;
+                    *cell = val;
                 }
             }
         }
@@ -526,8 +525,8 @@ pub fn covariant_derivative_vector(
     for mu in 0..dim {
         for nu in 0..dim {
             let mut val = dv[mu][nu];
-            for lambda in 0..dim {
-                val += conn.christoffel[mu][nu][lambda] * v[lambda];
+            for (lambda, &vl) in v.iter().enumerate().take(dim) {
+                val += conn.christoffel[mu][nu][lambda] * vl;
             }
             result[mu][nu] = val;
         }
@@ -548,14 +547,27 @@ pub fn covariant_derivative_covector(
     for mu in 0..dim {
         for nu in 0..dim {
             let mut val = domega[mu][nu];
-            for lambda in 0..dim {
-                val -= conn.christoffel[lambda][nu][mu] * omega[lambda];
+            for (lambda, &wl) in omega.iter().enumerate().take(dim) {
+                val -= conn.christoffel[lambda][nu][mu] * wl;
             }
             result[mu][nu] = val;
         }
     }
     result
 }
+/// Configuration for geodesic integration.
+#[derive(Debug, Clone, Copy)]
+pub struct GeodesicConfig {
+    /// Manifold dimension.
+    pub dim: usize,
+    /// Time step for RK4 integration.
+    pub dt: f64,
+    /// Number of integration steps.
+    pub steps: usize,
+    /// Finite-difference step for Christoffel symbol computation.
+    pub h_christoffel: f64,
+}
+
 /// Solve the geodesic equation in N dimensions.
 ///
 /// x''^\mu + Gamma^\mu_{\alpha\beta} x'^\alpha x'^\beta = 0
@@ -563,19 +575,19 @@ pub fn covariant_derivative_covector(
 /// Uses RK4 integration.
 ///
 /// Returns a vector of (position, velocity) pairs along the geodesic.
-#[allow(clippy::too_many_arguments)]
 pub fn geodesic_equation_solve<F>(
     metric_fn: &F,
-    dim: usize,
     x0: &[f64; MAX_DIM],
     v0: &[f64; MAX_DIM],
-    dt: f64,
-    steps: usize,
-    h_christoffel: f64,
+    cfg: &GeodesicConfig,
 ) -> Vec<([f64; MAX_DIM], [f64; MAX_DIM])>
 where
     F: Fn(&[f64; MAX_DIM]) -> [[f64; MAX_DIM]; MAX_DIM],
 {
+    let dim = cfg.dim;
+    let dt = cfg.dt;
+    let steps = cfg.steps;
+    let h_christoffel = cfg.h_christoffel;
     let mut trajectory = Vec::with_capacity(steps + 1);
     let mut x = *x0;
     let mut v = *v0;
@@ -584,14 +596,14 @@ where
         let accel = |pos: &[f64; MAX_DIM], vel: &[f64; MAX_DIM]| -> [f64; MAX_DIM] {
             let conn = LeviCivitaConnection::from_metric_fn(metric_fn, pos, dim, h_christoffel);
             let mut a = [0.0; MAX_DIM];
-            for mu in 0..dim {
+            for (mu, cell) in a.iter_mut().enumerate().take(dim) {
                 let mut val = 0.0;
                 for alpha in 0..dim {
                     for beta in 0..dim {
                         val += conn.christoffel[mu][alpha][beta] * vel[alpha] * vel[beta];
                     }
                 }
-                a[mu] = -val;
+                *cell = -val;
             }
             a
         };
@@ -653,10 +665,10 @@ where
             dx[k] = curve[i][k] - curve[i - 1][k];
         }
         let mut dv = [0.0; MAX_DIM];
-        for mu in 0..dim {
-            for alpha in 0..dim {
-                for beta in 0..dim {
-                    dv[mu] -= conn.christoffel[mu][alpha][beta] * v[alpha] * dx[beta];
+        for (mu, dv_mu) in dv.iter_mut().enumerate().take(dim) {
+            for (alpha, &v_alpha) in v.iter().enumerate().take(dim) {
+                for (beta, &dx_beta) in dx.iter().enumerate().take(dim) {
+                    *dv_mu -= conn.christoffel[mu][alpha][beta] * v_alpha * dx_beta;
                 }
             }
         }
@@ -673,7 +685,6 @@ where
 ///
 /// `xi_fn` returns the Killing vector at a point.
 /// Returns the maximum violation of the Killing equation.
-#[allow(clippy::too_many_arguments)]
 pub fn killing_equation_violation<F, G>(
     metric_fn: &F,
     xi_fn: &G,
@@ -716,8 +727,8 @@ where
     }
     let nabla_xi = covariant_derivative_covector(&conn, &xi_lower, &dxi_lower);
     let mut max_viol = 0.0_f64;
-    for mu in 0..dim {
-        for nu in 0..dim {
+    for (mu, row_mu) in nabla_xi.iter().enumerate().take(dim) {
+        for (nu, _) in row_mu.iter().enumerate().take(dim) {
             let viol = (nabla_xi[nu][mu] + nabla_xi[mu][nu]).abs();
             max_viol = max_viol.max(viol);
         }
@@ -749,10 +760,10 @@ where
     let ginv = metric.inverse();
     let r = ricci_scalar(&metric, &ricci);
     let mut ricci_mixed = [[0.0_f64; MAX_DIM]; MAX_DIM];
-    for rho in 0..dim {
-        for mu in 0..dim {
-            for sigma in 0..dim {
-                ricci_mixed[rho][mu] += ginv[rho][sigma] * ricci.components[sigma][mu];
+    for (rho, rm_row) in ricci_mixed.iter_mut().enumerate().take(dim) {
+        for (mu, cell) in rm_row.iter_mut().enumerate().take(dim) {
+            for (sigma, &ginv_val) in ginv[rho].iter().enumerate().take(dim) {
+                *cell += ginv_val * ricci.components[sigma][mu];
             }
         }
     }
@@ -778,25 +789,36 @@ where
     }
     weyl
 }
+/// Configuration for geodesic deviation (Jacobi equation) integration.
+#[derive(Debug, Clone, Copy)]
+pub struct DeviationConfig {
+    /// Manifold dimension.
+    pub dim: usize,
+    /// Time step (must match the geodesic time step).
+    pub dt: f64,
+    /// Finite-difference step for Riemann tensor computation.
+    pub h: f64,
+}
+
 /// Geodesic deviation equation (Jacobi equation).
 ///
 /// Given a geodesic (x(t), v(t)) and an initial deviation vector xi(0) and its derivative,
 /// computes the evolution of the deviation vector.
 ///
 /// D^2 xi^mu / dt^2 = -R^mu_{alpha beta gamma} v^alpha xi^beta v^gamma
-#[allow(clippy::too_many_arguments)]
 pub fn geodesic_deviation<F>(
     metric_fn: &F,
-    dim: usize,
     geodesic: &[([f64; MAX_DIM], [f64; MAX_DIM])],
     xi0: &[f64; MAX_DIM],
     dxi0: &[f64; MAX_DIM],
-    dt: f64,
-    h: f64,
+    cfg: &DeviationConfig,
 ) -> Vec<[f64; MAX_DIM]>
 where
     F: Fn(&[f64; MAX_DIM]) -> [[f64; MAX_DIM]; MAX_DIM],
 {
+    let dim = cfg.dim;
+    let dt = cfg.dt;
+    let h = cfg.h;
     let mut result = Vec::with_capacity(geodesic.len());
     let mut xi = *xi0;
     let mut dxi = *dxi0;
@@ -805,13 +827,13 @@ where
         let (pos, vel) = &geodesic[i - 1];
         let riemann = RiemannTensor::from_metric_fn(metric_fn, pos, dim, h);
         let mut ddxi = [0.0; MAX_DIM];
-        for mu in 0..dim {
+        for (mu, cell) in ddxi.iter_mut().enumerate().take(dim) {
             for alpha in 0..dim {
-                for beta in 0..dim {
+                for (beta, &xi_b) in xi.iter().enumerate().take(dim) {
                     for gamma in 0..dim {
-                        ddxi[mu] -= riemann.components[mu][alpha][beta][gamma]
+                        *cell -= riemann.components[mu][alpha][beta][gamma]
                             * vel[alpha]
-                            * xi[beta]
+                            * xi_b
                             * vel[gamma];
                     }
                 }
@@ -964,8 +986,8 @@ mod tests {
         let inv = se3.inverse();
         let composed = se3.compose(&inv);
         let t = composed.translation;
-        for i in 0..3 {
-            assert!(t[i].abs() < 1e-10);
+        for &ti in t.iter() {
+            assert!(ti.abs() < 1e-10);
         }
     }
     #[test]
@@ -1088,9 +1110,9 @@ mod tests {
         let r_rodrigues = So3::exp(omega);
         let skew = skew3(omega);
         let r_exp = mat3_exp(skew);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((r_rodrigues.mat[i][j] - r_exp[i][j]).abs() < 1e-8);
+        for (i, (rod_row, exp_row)) in r_rodrigues.mat.iter().zip(r_exp.iter()).enumerate() {
+            for (j, (&rod_val, &exp_val)) in rod_row.iter().zip(exp_row.iter()).enumerate() {
+                assert!((rod_val - exp_val).abs() < 1e-8, "mismatch at [{i}][{j}]");
             }
         }
     }
@@ -1100,9 +1122,9 @@ mod tests {
         let b = skew3([0.0, 1.0, 0.0]);
         let ab = lie_bracket_mat3(a, b);
         let ba = lie_bracket_mat3(b, a);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((ab[i][j] + ba[i][j]).abs() < 1e-10);
+        for (ab_row, ba_row) in ab.iter().zip(ba.iter()) {
+            for (&ab_val, &ba_val) in ab_row.iter().zip(ba_row.iter()) {
+                assert!((ab_val + ba_val).abs() < 1e-10);
             }
         }
     }
@@ -1203,10 +1225,10 @@ mod tests {
         let m = MetricTensorND::euclidean(3);
         assert!((m.determinant() - 1.0).abs() < 1e-12);
         let inv = m.inverse();
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, inv_row) in inv.iter().enumerate().take(3) {
+            for (j, &val) in inv_row.iter().enumerate().take(3) {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((inv[i][j] - expected).abs() < 1e-12);
+                assert!((val - expected).abs() < 1e-12);
             }
         }
     }
@@ -1227,12 +1249,14 @@ mod tests {
         g[1][1] = 3.0;
         let m = MetricTensorND::new(2, &g);
         let inv = m.inverse();
-        for i in 0..2 {
+        for (i, g_row) in g.iter().enumerate().take(2) {
             for j in 0..2 {
-                let mut val = 0.0;
-                for k in 0..2 {
-                    val += g[i][k] * inv[k][j];
-                }
+                let val: f64 = g_row
+                    .iter()
+                    .zip(inv.iter())
+                    .map(|(&g_ik, inv_k)| g_ik * inv_k[j])
+                    .take(2)
+                    .sum();
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
                     (val - expected).abs() < 1e-10,
@@ -1415,12 +1439,12 @@ mod tests {
         let g_here = flat_2d_metric(&point);
         let metric = MetricTensorND { dim: 2, g: g_here };
         let g_tensor = einstein_tensor(&metric, &ricci);
-        for mu in 0..2 {
-            for nu in 0..2 {
+        for (mu, row) in g_tensor.iter().enumerate() {
+            for (nu, &val) in row.iter().enumerate() {
                 assert!(
-                    g_tensor[mu][nu].abs() < 0.01,
+                    val.abs() < 0.01,
                     "Einstein[{mu}][{nu}] = {} in flat space",
-                    g_tensor[mu][nu]
+                    val
                 );
             }
         }
@@ -1447,7 +1471,13 @@ mod tests {
         x0[1] = 0.0;
         v0[0] = 1.0;
         v0[1] = 0.5;
-        let traj = geodesic_equation_solve(&flat_2d_metric, 2, &x0, &v0, 0.1, 10, 1e-4);
+        let gcfg = GeodesicConfig {
+            dim: 2,
+            dt: 0.1,
+            steps: 10,
+            h_christoffel: 1e-4,
+        };
+        let traj = geodesic_equation_solve(&flat_2d_metric, &x0, &v0, &gcfg);
         assert_eq!(traj.len(), 11);
         let (final_x, _) = &traj[10];
         assert!(
@@ -1528,11 +1558,22 @@ mod tests {
         let x0 = [0.0; MAX_DIM];
         let mut v0 = [0.0; MAX_DIM];
         v0[0] = 1.0;
-        let traj = geodesic_equation_solve(&flat_2d_metric, 2, &x0, &v0, 0.1, 10, 1e-4);
+        let gcfg = GeodesicConfig {
+            dim: 2,
+            dt: 0.1,
+            steps: 10,
+            h_christoffel: 1e-4,
+        };
+        let traj = geodesic_equation_solve(&flat_2d_metric, &x0, &v0, &gcfg);
         let mut xi0 = [0.0; MAX_DIM];
         xi0[1] = 1.0;
         let dxi0 = [0.0; MAX_DIM];
-        let deviation = geodesic_deviation(&flat_2d_metric, 2, &traj, &xi0, &dxi0, 0.1, 1e-4);
+        let dcfg = DeviationConfig {
+            dim: 2,
+            dt: 0.1,
+            h: 1e-4,
+        };
+        let deviation = geodesic_deviation(&flat_2d_metric, &traj, &xi0, &dxi0, &dcfg);
         let last = deviation.last().unwrap();
         assert!(
             (last[1] - 1.0).abs() < 0.05,
@@ -1571,14 +1612,14 @@ mod tests {
     fn test_weyl_tensor_3d_flat() {
         let point = [1.0, 1.0, 1.0, 0.0];
         let weyl = weyl_tensor(&flat_3d_metric, &point, 3, 1e-4);
-        for rho in 0..3 {
-            for sigma in 0..3 {
-                for mu in 0..3 {
-                    for nu in 0..3 {
+        for (rho, w_rho) in weyl.iter().enumerate() {
+            for (sigma, w_sig) in w_rho.iter().enumerate() {
+                for (mu, w_mu) in w_sig.iter().enumerate() {
+                    for (nu, &val) in w_mu.iter().enumerate() {
                         assert!(
-                            weyl[rho][sigma][mu][nu].abs() < 0.1,
+                            val.abs() < 0.1,
                             "Weyl[{rho}][{sigma}][{mu}][{nu}] = {} in flat 3D",
-                            weyl[rho][sigma][mu][nu]
+                            val
                         );
                     }
                 }

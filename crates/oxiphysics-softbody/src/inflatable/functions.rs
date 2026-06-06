@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Auto-generated module
 //
 // 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
@@ -72,7 +71,6 @@ pub fn total_volume(verts: &[[f64; 3]], faces: &[InflatableFace]) -> f64 {
 /// Compute the per-face membrane stress (tension) based on edge stretch.
 ///
 /// Returns the average stretch ratio for each face.
-#[allow(dead_code)]
 pub fn face_stretch_ratios(body: &InflatableBody) -> Vec<f64> {
     body.faces
         .iter()
@@ -109,7 +107,6 @@ pub fn face_stretch_ratios(body: &InflatableBody) -> Vec<f64> {
 /// Compute pressure distribution on faces based on gravity (hydrostatic).
 ///
 /// Lower faces receive higher pressure: p_face = p_base + ρ g (y_top - y_face).
-#[allow(dead_code)]
 pub fn hydrostatic_pressure_distribution(
     body: &InflatableBody,
     fluid_density: f64,
@@ -133,7 +130,6 @@ pub fn hydrostatic_pressure_distribution(
         .collect()
 }
 /// Apply an inflation sequence to an inflatable body for one step.
-#[allow(dead_code)]
 pub fn step_with_sequence(
     body: &mut InflatableBody,
     seq: &mut InflationSequence,
@@ -145,7 +141,6 @@ pub fn step_with_sequence(
     seq.advance(dt);
 }
 /// Compute the area associated with each vertex (1/3 of incident face areas).
-#[allow(dead_code)]
 pub fn vertex_areas(body: &InflatableBody) -> Vec<f64> {
     let n = body.vertices.len();
     let mut areas = vec![0.0_f64; n];
@@ -431,7 +426,6 @@ mod tests {
 ///
 /// Returns a positive value when the body is under-inflated and negative when
 /// over-inflated.
-#[allow(dead_code)]
 pub fn inflation_rate(current_vol: f64, target_vol: f64, kp: f64) -> f64 {
     if target_vol.abs() < 1e-30 {
         return 0.0;
@@ -442,7 +436,6 @@ pub fn inflation_rate(current_vol: f64, target_vol: f64, kp: f64) -> f64 {
 /// panels, each subdivided into 2 triangles.
 ///
 /// The result is an [`InflatableShell`] with a UV-sphere topology of radius `r`.
-#[allow(dead_code)]
 pub fn balloon_model(n_panels: usize, r: f64) -> InflatableShell {
     use std::f64::consts::PI;
     assert!(n_panels >= 2, "n_panels must be >= 2");
@@ -662,7 +655,6 @@ mod inflatable_shell_tests {
 /// This is the gradient of the enclosed volume with respect to vertex positions.
 ///
 /// ∂V/∂x_i = (1/6) Σ_{faces incident to i} (face normal × face area × 2/3)
-#[allow(dead_code)]
 pub fn volume_constraint_gradient(body: &InflatableBody) -> Vec<[f64; 3]> {
     let n = body.vertices.len();
     let mut grad = vec![[0.0_f64; 3]; n];
@@ -687,7 +679,6 @@ pub fn volume_constraint_gradient(body: &InflatableBody) -> Vec<[f64; 3]> {
 /// Uses one step of the XPBD volume constraint:
 /// `Δx_i = λ * w_i * ∇_i C(x)`
 /// where `C(x) = V(x) - V_target`.
-#[allow(dead_code)]
 pub fn apply_volume_constraint(
     body: &mut InflatableBody,
     target_volume: f64,
@@ -713,8 +704,8 @@ pub fn apply_volume_constraint(
     let lambda = -c / denom;
     for (i, v) in body.vertices.iter_mut().enumerate() {
         let g = grad[i];
-        for d in 0..3 {
-            v.pos[d] += lambda * v.inv_mass * g[d];
+        for (d, gd) in g.iter().enumerate() {
+            v.pos[d] += lambda * v.inv_mass * gd;
         }
     }
 }
@@ -722,7 +713,6 @@ pub fn apply_volume_constraint(
 ///
 /// Given a `PressureVolumeGas` model and a valve, computes the current
 /// absolute internal pressure, converts to gauge, and sets it on the body.
-#[allow(dead_code)]
 pub fn inflate_body_with_gas(body: &mut InflatableBody, gas: &PressureVolumeGas) {
     let vol = body.total_volume();
     let gauge = gas.gauge_pressure(vol);

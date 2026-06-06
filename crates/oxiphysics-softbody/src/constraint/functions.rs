@@ -3,7 +3,9 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use crate::particle::SoftParticle;
-use oxiphysics_core::math::{Real, Vec3};
+use oxiphysics_core::math::Real;
+#[cfg(test)]
+use oxiphysics_core::math::Vec3;
 
 /// A constraint that can be projected onto a set of particles.
 pub trait SoftConstraint: Send + Sync {
@@ -15,14 +17,14 @@ pub trait SoftConstraint: Send + Sync {
 /// Compute the unit normal of a triangle (p0, p1, p2).
 ///
 /// Returns zero vector if the triangle is degenerate.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn triangle_normal(p0: &Vec3, p1: &Vec3, p2: &Vec3) -> Vec3 {
     let n = (p1 - p0).cross(&(p2 - p0));
     let len = n.norm();
     if len < 1e-14 { Vec3::zeros() } else { n / len }
 }
 /// Compute the area of a triangle (p0, p1, p2).
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn triangle_area(p0: &Vec3, p1: &Vec3, p2: &Vec3) -> Real {
     0.5 * (p1 - p0).cross(&(p2 - p0)).norm()
 }
@@ -516,13 +518,11 @@ mod tests {
     }
 }
 /// 3×3 matrix determinant (column-major flat array).
-#[allow(dead_code)]
 pub(super) fn mat3_det(m: [Real; 9]) -> Real {
     m[0] * (m[4] * m[8] - m[5] * m[7]) - m[3] * (m[1] * m[8] - m[2] * m[7])
         + m[6] * (m[1] * m[5] - m[2] * m[4])
 }
 /// 3×3 matrix inverse (column-major flat array). Returns None if singular.
-#[allow(dead_code)]
 pub(super) fn mat3_inverse(m: [Real; 9]) -> Option<[Real; 9]> {
     let det = mat3_det(m);
     if det.abs() < 1e-30 {
@@ -542,7 +542,6 @@ pub(super) fn mat3_inverse(m: [Real; 9]) -> Option<[Real; 9]> {
     ])
 }
 /// 3×3 matrix multiply (column-major flat arrays): C = A * B.
-#[allow(dead_code)]
 pub(super) fn mat3_mul(a: [Real; 9], b: [Real; 9]) -> [Real; 9] {
     let mut c = [0.0f64; 9];
     for i in 0..3 {

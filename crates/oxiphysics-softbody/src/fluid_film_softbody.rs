@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -10,9 +9,6 @@
 //!
 //! All quantities are in SI units (Pa, m, N, kg, s) unless otherwise noted.
 //! Uses `[f64; 3]` arrays for vectors (no nalgebra dependency).
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -59,26 +55,6 @@ fn vec_normalize(a: [f64; 3]) -> [f64; 3] {
     } else {
         vec_scale(a, 1.0 / l)
     }
-}
-
-/// Cross product.
-#[inline]
-fn vec_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-/// Linearly interpolate between a and b.
-#[inline]
-fn vec_lerp(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
-    [
-        a[0] + t * (b[0] - a[0]),
-        a[1] + t * (b[1] - a[1]),
-        a[2] + t * (b[2] - a[2]),
-    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -1192,8 +1168,8 @@ impl FluidFilmSimulation {
         }
 
         // Apply source terms and update
-        for i in 0..n {
-            self.nodes[i].thickness += dh[i] + self.nodes[i].source_rate * dt;
+        for (i, &dhi) in dh.iter().enumerate().take(n) {
+            self.nodes[i].thickness += dhi + self.nodes[i].source_rate * dt;
             self.nodes[i].thickness = self.nodes[i].thickness.max(self.h_min);
         }
     }

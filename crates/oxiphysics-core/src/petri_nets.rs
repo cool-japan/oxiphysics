@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +6,6 @@
 //! This module provides classical Petri nets, stochastic Petri nets,
 //! colored Petri nets, and supporting analysis algorithms such as
 //! reachability BFS and coverability trees.
-
-#![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -689,14 +686,6 @@ fn xml_attr_value<'a>(tag: &'a str, attr: &str) -> Option<&'a str> {
     })
 }
 
-/// Extract text content from a `<text>N</text>` block appearing anywhere in `src`.
-fn xml_text_content(src: &str) -> Option<&str> {
-    let open = src.find("<text>")?;
-    let content_start = open + "<text>".len();
-    let close = src[content_start..].find("</text>")?;
-    Some(src[content_start..content_start + close].trim())
-}
-
 /// Parse Petri Net Markup Language (PNML) XML and return a `PetriNet`.
 ///
 /// Implements a forward tag scanner with a small context stack.  It handles
@@ -1055,12 +1044,12 @@ pub fn incidence_matrix(net: &PetriNet) -> Vec<Vec<i64>> {
 pub fn state_equation(net: &PetriNet, sigma: &[i64]) -> Vec<i64> {
     let matrix = incidence_matrix(net);
     let marking: Vec<i64> = net.places.iter().map(|p| p.tokens as i64).collect();
-    let np = net.places.len();
+    let _np = net.places.len();
     let mut result = marking;
     for (t_idx, &fires) in sigma.iter().enumerate() {
         if t_idx < matrix.len() {
-            for p in 0..np {
-                result[p] += matrix[t_idx][p] * fires;
+            for (res, &m) in result.iter_mut().zip(matrix[t_idx].iter()) {
+                *res += m * fires;
             }
         }
     }
@@ -1147,10 +1136,11 @@ pub fn find_t_invariant(net: &PetriNet, max_count: usize) -> Option<Vec<i64>> {
                 return None;
             }
             for p in 0..np {
-                let mut sum = 0i64;
-                for t in 0..nt {
-                    sum += matrix[t][p] * current[t];
-                }
+                let sum: i64 = matrix
+                    .iter()
+                    .zip(current.iter())
+                    .map(|(row, &c)| row[p] * c)
+                    .sum();
                 if sum != 0 {
                     return None;
                 }
@@ -1183,16 +1173,6 @@ fn gcd(mut a: i64, mut b: i64) -> i64 {
         b = r;
     }
     a
-}
-
-/// Compute the LCM of two non-negative integers, returning `None` on overflow.
-fn lcm_checked(a: i64, b: i64) -> Option<i64> {
-    if a == 0 || b == 0 {
-        return Some(0);
-    }
-    let g = gcd(a, b);
-    // Use checked arithmetic to avoid overflow on pathological inputs.
-    (a / g).checked_mul(b)
 }
 
 /// Perform integer row-reduction (Hermite Normal Form style) on the augmented
@@ -1253,8 +1233,8 @@ fn integer_row_reduce(mat: &mut [Vec<i64>], n_c: usize) {
             // Reduce the row by its GCD to keep coefficients small.
             let row_gcd = mat[row].iter().fold(0i64, |acc, &v| gcd(acc, v.abs()));
             if row_gcd > 1 {
-                for c in 0..n_cols {
-                    mat[row][c] /= row_gcd;
+                for cell in mat[row].iter_mut() {
+                    *cell /= row_gcd;
                 }
             }
         }

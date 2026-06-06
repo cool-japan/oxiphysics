@@ -6,10 +6,6 @@
 //!
 //! All functions use SI units unless otherwise stated.
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

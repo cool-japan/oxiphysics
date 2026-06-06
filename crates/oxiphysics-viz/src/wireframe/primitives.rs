@@ -166,7 +166,6 @@ pub fn wireframe_aabb(aabb: &Aabb, color: Color) -> Vec<LinePrimitive> {
 
 /// A vertex in a wireframe mesh.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct WireframeVertex {
     /// Position in world space.
     pub position: [f64; 3],
@@ -176,7 +175,6 @@ pub struct WireframeVertex {
 
 /// A line segment in a wireframe mesh, referencing vertex indices.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct WireframeLine {
     /// Start vertex index.
     pub start: usize,
@@ -186,7 +184,6 @@ pub struct WireframeLine {
 
 /// An indexed wireframe mesh.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WireframeMesh {
     /// Vertices.
     pub vertices: Vec<WireframeVertex>,
@@ -194,7 +191,6 @@ pub struct WireframeMesh {
     pub lines: Vec<WireframeLine>,
 }
 
-#[allow(dead_code)]
 impl WireframeMesh {
     /// Create a wireframe box from AABB min/max corners.
     pub fn from_aabb(min: [f64; 3], max: [f64; 3]) -> Self {
@@ -358,7 +354,6 @@ impl WireframeMesh {
 
 /// Immediate-mode debug line drawing helper.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DebugDraw {
     /// Collected line segments.
     pub lines: Vec<(WireframeVertex, WireframeVertex)>,
@@ -370,7 +365,6 @@ impl Default for DebugDraw {
     }
 }
 
-#[allow(dead_code)]
 impl DebugDraw {
     /// Create a new empty debug drawer.
     pub fn new() -> Self {

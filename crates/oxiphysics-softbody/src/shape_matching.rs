@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -59,7 +58,6 @@ fn mat3_identity() -> Mat3x3 {
     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 }
 
-#[allow(dead_code)]
 fn mat3_mul(a: Mat3x3, b: Mat3x3) -> Mat3x3 {
     let mut c = mat3_zero();
     for i in 0..3 {
@@ -72,7 +70,7 @@ fn mat3_mul(a: Mat3x3, b: Mat3x3) -> Mat3x3 {
     c
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn mat3_transpose(m: Mat3x3) -> Mat3x3 {
     [
         [m[0][0], m[1][0], m[2][0]],
@@ -81,7 +79,6 @@ fn mat3_transpose(m: Mat3x3) -> Mat3x3 {
     ]
 }
 
-#[allow(dead_code)]
 fn mat3_det(m: Mat3x3) -> f64 {
     m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
         - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
@@ -182,7 +179,6 @@ pub struct ShapeMatchingBody {
 
 impl ShapeMatchingBody {
     /// Create a new body from rest positions and masses.
-    #[allow(dead_code)]
     pub fn new(positions: Vec<[f64; 3]>, masses: Vec<f64>, stiffness: f64) -> Self {
         assert_eq!(
             positions.len(),
@@ -219,13 +215,11 @@ impl ShapeMatchingBody {
     }
 
     /// Total mass of the body.
-    #[allow(dead_code)]
     pub fn total_mass(&self) -> f64 {
         self.masses.iter().sum()
     }
 
     /// Current centre of mass.
-    #[allow(dead_code)]
     pub fn centre_of_mass(&self) -> [f64; 3] {
         let total = self.total_mass();
         let mut cm = [0.0_f64; 3];
@@ -240,7 +234,6 @@ impl ShapeMatchingBody {
     /// Compute the optimal rotation matrix from current positions.
     ///
     /// Updates `self.rotation` and returns it.
-    #[allow(dead_code)]
     pub fn compute_optimal_rotation(&mut self) -> Mat3x3 {
         let xcm = self.centre_of_mass();
 
@@ -264,7 +257,6 @@ impl ShapeMatchingBody {
     /// Compute goal positions using the current optimal rotation.
     ///
     /// `goalᵢ = R * qᵢ + xcm`
-    #[allow(dead_code)]
     pub fn goal_positions(&mut self) -> Vec<[f64; 3]> {
         let r = self.compute_optimal_rotation();
         let xcm = self.centre_of_mass();
@@ -281,12 +273,11 @@ impl ShapeMatchingBody {
     ///   `pos += stiffness * (goal - pos)`
     ///
     /// After updating, optionally accumulates plastic deformation.
-    #[allow(dead_code)]
     pub fn apply_shape_matching_force(&mut self, stiffness: f64, dt: f64) {
         let goals = self.goal_positions();
         let n = self.positions.len();
-        for i in 0..n {
-            let delta = v3_sub(goals[i], self.positions[i]);
+        for (i, goal) in goals.iter().enumerate().take(n) {
+            let delta = v3_sub(*goal, self.positions[i]);
             let disp = v3_scale(delta, stiffness);
             self.positions[i] = v3_add(self.positions[i], disp);
             // Velocity from positional correction.
@@ -310,7 +301,6 @@ impl ShapeMatchingBody {
     }
 
     /// Reset the rest shape to the current positions (erase all deformation).
-    #[allow(dead_code)]
     pub fn reset_rest_shape(&mut self) {
         let cm = self.centre_of_mass();
         self.rest_positions = self.positions.iter().map(|p| v3_sub(*p, cm)).collect();
@@ -467,7 +457,6 @@ fn polar_rotation(m: &Mat3) -> Mat3 {
 /// deformation matrix instead of just its rotation factor.
 ///
 /// This allows volume-preserving stretch in addition to rotation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LinearDeformationBody {
     /// Current positions.
@@ -488,7 +477,6 @@ pub struct LinearDeformationBody {
 
 impl LinearDeformationBody {
     /// Create a new linear deformation body.
-    #[allow(dead_code)]
     pub fn new(positions: Vec<[f64; 3]>, masses: Vec<f64>, stiffness: f64) -> Self {
         assert_eq!(positions.len(), masses.len());
         let n = positions.len();
@@ -526,7 +514,6 @@ impl LinearDeformationBody {
     }
 
     /// Compute current centre of mass.
-    #[allow(dead_code)]
     pub fn centre_of_mass(&self) -> [f64; 3] {
         let total: f64 = self.masses.iter().sum();
         let mut cm = [0.0_f64; 3];
@@ -539,7 +526,6 @@ impl LinearDeformationBody {
     }
 
     /// Compute the linear deformation matrix A_lin = Σ mᵢ pᵢ qᵢᵀ * Q⁻¹.
-    #[allow(dead_code)]
     pub fn deformation_matrix(&self) -> Mat3x3 {
         let xcm = self.centre_of_mass();
         let mut a = mat3_zero();
@@ -559,7 +545,6 @@ impl LinearDeformationBody {
     /// Compute goal positions using the linear deformation matrix.
     ///
     /// Blends between pure rotation (shape matching) and full affine deformation.
-    #[allow(dead_code)]
     pub fn goal_positions(&self) -> Vec<[f64; 3]> {
         let a_lin = self.deformation_matrix();
         let r = polar_rotation_f64(a_lin);
@@ -600,7 +585,6 @@ impl LinearDeformationBody {
     }
 
     /// Apply goal-position correction.
-    #[allow(dead_code)]
     pub fn apply_correction(&mut self, stiffness: f64, dt: f64) {
         let goals = self.goal_positions();
         for (i, goal) in goals.iter().enumerate() {
@@ -651,7 +635,6 @@ fn mat3_inverse_safe(m: Mat3x3) -> Mat3x3 {
 /// quadratic terms: `[qx, qy, qz, qx*qx, qy*qy, qz*qz, qx*qy, qy*qz, qx*qz]`.
 ///
 /// This allows bending modes beyond pure affine deformation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct QuadraticDeformationBody {
     /// Current positions.
@@ -664,8 +647,6 @@ pub struct QuadraticDeformationBody {
     rest_features: Vec<[f64; 9]>,
     /// Stiffness α ∈ \[0, 1\].
     pub stiffness: f64,
-    /// Stored rest centre of mass.
-    rest_cm: [f64; 3],
 }
 
 impl QuadraticDeformationBody {
@@ -685,7 +666,6 @@ impl QuadraticDeformationBody {
     }
 
     /// Create a new quadratic deformation body from rest positions and masses.
-    #[allow(dead_code)]
     pub fn new(positions: Vec<[f64; 3]>, masses: Vec<f64>, stiffness: f64) -> Self {
         assert_eq!(positions.len(), masses.len());
         let total: f64 = masses.iter().sum();
@@ -710,12 +690,10 @@ impl QuadraticDeformationBody {
             masses,
             rest_features,
             stiffness,
-            rest_cm: cm,
         }
     }
 
     /// Compute current centre of mass.
-    #[allow(dead_code)]
     pub fn centre_of_mass(&self) -> [f64; 3] {
         let total: f64 = self.masses.iter().sum();
         let mut cm = [0.0_f64; 3];
@@ -728,7 +706,6 @@ impl QuadraticDeformationBody {
     }
 
     /// Compute the 3×9 deformation matrix mapping feature space to 3D.
-    #[allow(dead_code)]
     pub fn compute_a39(&self) -> [[f64; 9]; 3] {
         let xcm = self.centre_of_mass();
         let mut a = [[0.0_f64; 9]; 3];
@@ -751,7 +728,6 @@ impl QuadraticDeformationBody {
     /// Compute goal positions using the quadratic deformation matrix.
     ///
     /// Goal = A₃₉ * feat(q) + xcm (with stiffness blend).
-    #[allow(dead_code)]
     pub fn goal_positions(&self) -> Vec<[f64; 3]> {
         let a39 = self.compute_a39();
         let xcm = self.centre_of_mass();
@@ -775,7 +751,6 @@ impl QuadraticDeformationBody {
     }
 
     /// Apply quadratic goal correction.
-    #[allow(dead_code)]
     pub fn apply_correction(&mut self, stiffness: f64, dt: f64) {
         let goals = self.goal_positions();
         for (i, goal) in goals.iter().enumerate() {
@@ -796,7 +771,6 @@ impl QuadraticDeformationBody {
 /// A cluster used in cluster-based shape matching.
 ///
 /// Each particle may belong to multiple clusters; corrections are averaged.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ShapeMatchingCluster {
     /// Particle indices belonging to this cluster.
@@ -812,7 +786,6 @@ impl ShapeMatchingCluster {
     ///
     /// `positions` and `masses` are the full arrays; `indices` selects
     /// which particles form this cluster.
-    #[allow(dead_code)]
     pub fn new(
         positions: &[[f64; 3]],
         masses: &[f64],
@@ -839,7 +812,6 @@ impl ShapeMatchingCluster {
 
     /// Compute goal corrections for this cluster's particles, returning
     /// a Vec of `(particle_index, displacement)` pairs.
-    #[allow(dead_code)]
     pub fn compute_corrections(
         &self,
         positions: &[[f64; 3]],
@@ -884,7 +856,6 @@ impl ShapeMatchingCluster {
 ///
 /// Each particle may belong to multiple clusters; per-particle corrections
 /// are averaged across clusters.
-#[allow(dead_code)]
 pub struct ClusterShapeMatchingSystem {
     /// Particle positions.
     pub positions: Vec<[f64; 3]>,
@@ -898,7 +869,6 @@ pub struct ClusterShapeMatchingSystem {
 
 impl ClusterShapeMatchingSystem {
     /// Create an empty system with `n` particles.
-    #[allow(dead_code)]
     pub fn new(positions: Vec<[f64; 3]>, masses: Vec<f64>) -> Self {
         let n = positions.len();
         Self {
@@ -910,7 +880,6 @@ impl ClusterShapeMatchingSystem {
     }
 
     /// Add a cluster.
-    #[allow(dead_code)]
     pub fn add_cluster(&mut self, indices: Vec<usize>, stiffness: f64) {
         let c = ShapeMatchingCluster::new(&self.positions, &self.masses, indices, stiffness);
         self.clusters.push(c);
@@ -919,7 +888,6 @@ impl ClusterShapeMatchingSystem {
     /// Apply one step of cluster shape matching.
     ///
     /// Corrections from all clusters are averaged per particle.
-    #[allow(dead_code)]
     pub fn step(&mut self, dt: f64) {
         let n = self.positions.len();
         let mut total_correction = vec![[0.0_f64; 3]; n];
@@ -953,7 +921,6 @@ impl ClusterShapeMatchingSystem {
 ///
 /// Tracks the cumulative plastic strain and applies a hardening response
 /// once yield stress is exceeded.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PlasticityImprovedBody {
     /// Current positions.
@@ -980,7 +947,6 @@ pub struct PlasticityImprovedBody {
 
 impl PlasticityImprovedBody {
     /// Create a new body with improved plasticity.
-    #[allow(dead_code)]
     pub fn new(positions: Vec<[f64; 3]>, masses: Vec<f64>, stiffness: f64) -> Self {
         assert_eq!(positions.len(), masses.len());
         let n = positions.len();
@@ -1009,7 +975,6 @@ impl PlasticityImprovedBody {
     }
 
     /// Current centre of mass.
-    #[allow(dead_code)]
     pub fn centre_of_mass(&self) -> [f64; 3] {
         let total: f64 = self.masses.iter().sum();
         let mut cm = [0.0_f64; 3];
@@ -1024,7 +989,6 @@ impl PlasticityImprovedBody {
     /// Apply one shape-matching step with improved plasticity.
     ///
     /// The effective yield stress varies with accumulated plastic strain (hardening).
-    #[allow(dead_code)]
     pub fn step(&mut self, dt: f64) {
         let xcm = self.centre_of_mass();
 
@@ -1067,13 +1031,11 @@ impl PlasticityImprovedBody {
     }
 
     /// Total accumulated plastic strain across all particles.
-    #[allow(dead_code)]
     pub fn total_plastic_strain(&self) -> f64 {
         self.plastic_strain.iter().sum()
     }
 
     /// Reset plastic rest shape to current positions.
-    #[allow(dead_code)]
     pub fn reset_plasticity(&mut self) {
         let cm = self.centre_of_mass();
         self.plastic_rest = self.positions.iter().map(|p| v3_sub(*p, cm)).collect();
@@ -1294,13 +1256,13 @@ mod tests {
     fn test_mat3_mul_identity() {
         let i = mat3_identity();
         let r = mat3_mul(i, i);
-        for row in 0..3 {
-            for col in 0..3 {
+        for (row, r_row) in r.iter().enumerate() {
+            for (col, &v) in r_row.iter().enumerate() {
                 let expected = if row == col { 1.0 } else { 0.0 };
                 assert!(
-                    (r[row][col] - expected).abs() < 1e-12,
+                    (v - expected).abs() < 1e-12,
                     "mat3_mul(I,I)[{row}][{col}] = {} (expected {expected})",
-                    r[row][col]
+                    v
                 );
             }
         }
@@ -1326,11 +1288,11 @@ mod tests {
     fn test_mat3_inverse_safe_identity() {
         let i = mat3_identity();
         let inv = mat3_inverse_safe(i);
-        for r in 0..3 {
-            for c in 0..3 {
+        for (r, inv_row) in inv.iter().enumerate() {
+            for (c, &v) in inv_row.iter().enumerate() {
                 let expected = if r == c { 1.0 } else { 0.0 };
                 assert!(
-                    (inv[r][c] - expected).abs() < 1e-10,
+                    (v - expected).abs() < 1e-10,
                     "Inverse of identity should be identity at [{r}][{c}]"
                 );
             }

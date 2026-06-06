@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -29,9 +28,6 @@
 //! * Wolff (1892) – Das Gesetz der Transformation der Knochen.
 //! * Chauvière et al. (2010) – Modeling cell migration mechanics.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -45,16 +41,6 @@ type Vec3 = [f64; 3];
 #[inline]
 fn dot3(a: Vec3, b: Vec3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-/// Cross product of two 3-D vectors.
-#[inline]
-fn cross3(a: Vec3, b: Vec3) -> Vec3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 /// Euclidean norm of a 3-D vector.
@@ -1099,8 +1085,8 @@ impl Platelet {
     pub fn step(&mut self, dt: f64, force: Vec3, r_disc: f64, viscosity: f64) {
         // Stokes drag coefficient for a disc: γ ≈ 16 η r
         let gamma = 16.0 * viscosity * r_disc;
-        for i in 0..3 {
-            let a = (force[i] - gamma * self.velocity[i]) / 1e-14; // platelet mass ~10 pg
+        for (i, &fi) in force.iter().enumerate() {
+            let a = (fi - gamma * self.velocity[i]) / 1e-14; // platelet mass ~10 pg
             self.velocity[i] += a * dt;
             self.position[i] += self.velocity[i] * dt;
         }

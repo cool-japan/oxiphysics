@@ -17,7 +17,6 @@ use super::{CS2, LocalViscosityModel, MU_MAX, MU_MIN, NonNewtonianFluid, NonNewt
 /// ```
 ///
 /// When `tau_y = 0`, this reduces to a power-law fluid.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct HerschelBulkley {
     /// Consistency coefficient K.
@@ -28,7 +27,6 @@ pub struct HerschelBulkley {
     pub tau_y: f64,
 }
 
-#[allow(dead_code)]
 impl HerschelBulkley {
     /// Create a new Herschel-Bulkley fluid.
     pub fn new(consistency_k: f64, n: f64, tau_y: f64) -> Self {
@@ -82,7 +80,6 @@ impl NonNewtonianModel for HerschelBulkley {
 ///
 /// When `n = 1`, reduces to Bingham plastic.
 /// When `tau_y = 0`, reduces to power-law fluid.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct HerschelBulkleyFluid {
     /// Yield stress tau_y (Pa in physical units).
@@ -93,7 +90,6 @@ pub struct HerschelBulkleyFluid {
     pub n: f64,
 }
 
-#[allow(dead_code)]
 impl HerschelBulkleyFluid {
     /// Create a new Herschel-Bulkley fluid.
     pub fn new(tau_y: f64, consistency_k: f64, n: f64) -> Self {

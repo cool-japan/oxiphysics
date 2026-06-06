@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,10 +5,12 @@
 //!
 //! Provides SDF primitives, CSG operations, mesh offsetting, and voxel SDF grids.
 
-#![allow(dead_code)]
-#![allow(missing_docs)]
-
 use std::collections::HashMap;
+
+/// Type alias for a pair of convex/concave edge lists returned by `detect_edge_features`.
+type EdgeFeatureLists = (Vec<(usize, usize)>, Vec<(usize, usize)>);
+/// Type alias for the per-edge face-normal accumulation map.
+type EdgeFaceNormalMap = HashMap<(usize, usize), Vec<([f64; 3], [f64; 3])>>;
 
 // ---------------------------------------------------------------------------
 // Helper math on plain [f64; 3]
@@ -82,7 +83,9 @@ pub trait Sdf: Send + Sync {
 
 /// Sphere SDF (exact).
 pub struct SdfSphere {
+    /// Center of the sphere.
     pub center: [f64; 3],
+    /// Radius of the sphere.
     pub radius: f64,
 }
 
@@ -101,7 +104,9 @@ impl Sdf for SdfSphere {
 
 /// Axis-aligned box SDF (exact).
 pub struct SdfBox {
+    /// Centre of the box in world space.
     pub center: [f64; 3],
+    /// Half-lengths along each axis.
     pub half_extents: [f64; 3],
 }
 
@@ -136,8 +141,11 @@ impl Sdf for SdfBox {
 
 /// Capsule (line-segment rounded) SDF (exact).
 pub struct SdfCapsule {
+    /// Start point of the capsule axis.
     pub a: [f64; 3],
+    /// End point of the capsule axis.
     pub b: [f64; 3],
+    /// Radius of the capsule.
     pub radius: f64,
 }
 
@@ -153,7 +161,9 @@ impl Sdf for SdfCapsule {
 
 /// Half-space plane SDF: `n·p - offset` (exact). `normal` should be unit length.
 pub struct SdfPlane {
+    /// Outward-facing unit normal of the plane.
     pub normal: [f64; 3],
+    /// Signed distance from the origin to the plane along `normal`.
     pub offset: f64,
 }
 
@@ -172,8 +182,11 @@ impl Sdf for SdfPlane {
 
 /// Torus SDF lying in the XZ plane, centred at `center` (exact).
 pub struct SdfTorus {
+    /// Centre of the torus.
     pub center: [f64; 3],
+    /// Distance from the torus centre to the tube centre.
     pub major_radius: f64,
+    /// Radius of the tube.
     pub minor_radius: f64,
 }
 
@@ -193,7 +206,9 @@ impl Sdf for SdfTorus {
 
 /// Boolean union (min).
 pub struct SdfUnion {
+    /// First SDF operand.
     pub a: Box<dyn Sdf>,
+    /// Second SDF operand.
     pub b: Box<dyn Sdf>,
 }
 
@@ -205,7 +220,9 @@ impl Sdf for SdfUnion {
 
 /// Boolean intersection (max).
 pub struct SdfIntersection {
+    /// First SDF operand.
     pub a: Box<dyn Sdf>,
+    /// Second SDF operand.
     pub b: Box<dyn Sdf>,
 }
 
@@ -217,7 +234,9 @@ impl Sdf for SdfIntersection {
 
 /// Boolean difference: A minus B (max(da, -db)).
 pub struct SdfDifference {
+    /// The base SDF (A).
     pub a: Box<dyn Sdf>,
+    /// The subtracted SDF (B).
     pub b: Box<dyn Sdf>,
 }
 
@@ -229,7 +248,9 @@ impl Sdf for SdfDifference {
 
 /// Offset (shell expansion / shrinkage): `d(p) - offset`.
 pub struct SdfOffset {
+    /// The inner SDF being offset.
     pub inner: Box<dyn Sdf>,
+    /// Amount to offset (positive = expand, negative = shrink).
     pub offset: f64,
 }
 
@@ -241,8 +262,11 @@ impl Sdf for SdfOffset {
 
 /// Polynomial smooth union with blending radius `k`.
 pub struct SdfSmoothUnion {
+    /// First SDF operand.
     pub a: Box<dyn Sdf>,
+    /// Second SDF operand.
     pub b: Box<dyn Sdf>,
+    /// Blending radius (larger = smoother transition).
     pub k: f64,
 }
 
@@ -258,8 +282,11 @@ impl Sdf for SdfSmoothUnion {
 
 /// Polynomial smooth intersection with blending radius `k`.
 pub struct SdfSmoothIntersection {
+    /// First SDF operand.
     pub a: Box<dyn Sdf>,
+    /// Second SDF operand.
     pub b: Box<dyn Sdf>,
+    /// Blending radius (larger = smoother transition).
     pub k: f64,
 }
 
@@ -278,8 +305,11 @@ impl Sdf for SdfSmoothIntersection {
 
 /// A triangle mesh with per-vertex normals, supporting inward/outward offsetting.
 pub struct OffsetMesh {
+    /// Vertex positions.
     pub vertices: Vec<[f64; 3]>,
+    /// Per-vertex normals (unit vectors).
     pub normals: Vec<[f64; 3]>,
+    /// Triangle faces as vertex index triples.
     pub faces: Vec<[usize; 3]>,
 }
 
@@ -338,11 +368,17 @@ impl OffsetMesh {
 
 /// Discretised signed distance field on a regular axis-aligned grid.
 pub struct VoxelSdf {
+    /// Number of cells along the X axis.
     pub nx: usize,
+    /// Number of cells along the Y axis.
     pub ny: usize,
+    /// Number of cells along the Z axis.
     pub nz: usize,
+    /// World-space position of the grid origin (corner of cell `[0,0,0]`).
     pub origin: [f64; 3],
+    /// Cell side length (isotropic).
     pub dx: f64,
+    /// Flat array of SDF values, stored in x-major order.
     pub values: Vec<f64>,
 }
 
@@ -593,8 +629,11 @@ pub fn approximate_medial_axis(grid: &VoxelSdf, gradient_threshold: f64) -> Vec<
 
 /// Cylinder SDF aligned with the Y axis (exact).
 pub struct SdfCylinder {
+    /// Centre of the cylinder (midpoint of its axis).
     pub center: [f64; 3],
+    /// Radius of the cylinder.
     pub radius: f64,
+    /// Half the total height along the Y axis.
     pub half_height: f64,
 }
 
@@ -615,8 +654,11 @@ impl Sdf for SdfCylinder {
 
 /// Cone SDF: tip at `apex`, opening downward along -Y, with half-angle `angle_rad`.
 pub struct SdfCone {
+    /// Position of the cone tip.
     pub apex: [f64; 3],
+    /// Height of the cone (distance from apex to base).
     pub height: f64,
+    /// Half-opening angle in radians.
     pub angle_rad: f64,
 }
 
@@ -639,7 +681,9 @@ impl Sdf for SdfCone {
 
 /// Translate an SDF by a fixed offset.
 pub struct SdfTranslated {
+    /// The inner SDF being translated.
     pub inner: Box<dyn Sdf>,
+    /// Translation vector applied before evaluating the inner SDF.
     pub offset: [f64; 3],
 }
 
@@ -656,7 +700,9 @@ impl Sdf for SdfTranslated {
 
 /// Uniformly scale an SDF (scale > 1 makes the shape larger).
 pub struct SdfScaled {
+    /// The inner SDF being scaled.
     pub inner: Box<dyn Sdf>,
+    /// Uniform scale factor applied to the shape.
     pub scale_factor: f64,
 }
 
@@ -759,14 +805,9 @@ pub fn offset_polyhedron(verts: &[[f64; 3]], faces: &[[usize; 3]], d: f64) -> Of
 ///
 /// Returns `(convex_edges, concave_edges)` as lists of `(v0, v1)` index pairs.
 /// Boundary edges (shared by only one face) are excluded from both lists.
-pub fn detect_edge_features(
-    verts: &[[f64; 3]],
-    faces: &[[usize; 3]],
-) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
-    use std::collections::HashMap;
-
+pub fn detect_edge_features(verts: &[[f64; 3]], faces: &[[usize; 3]]) -> EdgeFeatureLists {
     // Build edge → face normals
-    let mut edge_data: HashMap<(usize, usize), Vec<([f64; 3], [f64; 3])>> = HashMap::new();
+    let mut edge_data: EdgeFaceNormalMap = HashMap::new();
 
     for face in faces {
         let v0 = verts[face[0]];

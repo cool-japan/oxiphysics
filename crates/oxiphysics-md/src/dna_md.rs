@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,9 +16,6 @@
 //! - **Denaturation bubbles**: detection and characterization of local melting.
 //! - **Nucleosome wrapping**: simple elastic-rod model of DNA wrapped around a
 //!   histone core particle.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -1128,9 +1124,9 @@ pub fn apply_backbone_forces(strand: &mut OxDnaStrand, params: &OxDnaParams, dt:
 
     // Apply half-step velocity update
     let half_dt_over_m = 0.5 * dt / mass.max(1e-15);
-    for i in 0..n {
-        for d in 0..3 {
-            strand.nucleotides[i].velocity[d] += half_dt_over_m * forces[i][d];
+    for (nuc, f) in strand.nucleotides.iter_mut().zip(forces.iter()).take(n) {
+        for (v, &fv) in nuc.velocity.iter_mut().zip(f.iter()) {
+            *v += half_dt_over_m * fv;
         }
     }
 }

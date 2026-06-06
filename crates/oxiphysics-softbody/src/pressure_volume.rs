@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,9 +8,6 @@
 //!
 //! Uses a triangle-mesh surface representation. Volume is computed using the
 //! divergence theorem (signed tetrahedral decomposition).
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Vector helpers (no nalgebra; use [f64; 3])
@@ -52,20 +48,10 @@ fn v3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 
 /// Euclidean norm.
+#[cfg(test)]
 #[inline]
 fn v3_norm(a: [f64; 3]) -> f64 {
     v3_dot(a, a).sqrt()
-}
-
-/// Normalize. Returns zero vector if near-zero.
-#[inline]
-fn v3_normalize(a: [f64; 3]) -> [f64; 3] {
-    let n = v3_norm(a);
-    if n < 1e-15 {
-        [0.0; 3]
-    } else {
-        v3_scale(a, 1.0 / n)
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -317,11 +303,11 @@ pub fn incompressibility_constraint(body: &mut PressurizedBody) -> f64 {
         return c;
     }
     let lambda = -c / w_sum;
-    for i in 0..nv {
+    for (i, &gi) in grad.iter().enumerate().take(nv) {
         if body.vertices[i].is_static() {
             continue;
         }
-        let dx = v3_scale(grad[i], lambda * body.vertices[i].inv_mass);
+        let dx = v3_scale(gi, lambda * body.vertices[i].inv_mass);
         body.vertices[i].position = v3_add(body.vertices[i].position, dx);
     }
     c

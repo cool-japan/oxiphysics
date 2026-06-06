@@ -1,8 +1,5 @@
 //! Internal helper vector math functions for aerodynamics.
 
-#![allow(clippy::ptr_arg)]
-#[allow(unused_imports)]
-use super::functions::*;
 #[inline]
 pub(crate) fn v3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
@@ -49,7 +46,6 @@ pub(crate) fn v3_normalize(a: [f64; 3]) -> Option<[f64; 3]> {
 
 /// Biot-Savart induced velocity due to a finite vortex filament
 /// from point `a` to point `b` with circulation `gamma` at field point `p`.
-#[allow(dead_code)]
 pub(crate) fn biot_savart_filament(a: [f64; 3], b: [f64; 3], p: [f64; 3], gamma: f64) -> [f64; 3] {
     let r1 = v3_sub(p, a);
     let r2 = v3_sub(p, b);
@@ -74,7 +70,6 @@ pub(crate) fn biot_savart_filament(a: [f64; 3], b: [f64; 3], p: [f64; 3], gamma:
 }
 
 /// Alias for `biot_savart_filament` with clearer argument names.
-#[allow(dead_code)]
 pub(crate) fn biot_savart_velocity(
     r1: [f64; 3],
     r2: [f64; 3],
@@ -85,7 +80,7 @@ pub(crate) fn biot_savart_velocity(
 }
 
 /// Gaussian elimination with partial pivoting.
-pub(crate) fn gauss_solve_opt(n: usize, a: &mut Vec<f64>, b: &[f64]) -> Option<Vec<f64>> {
+pub(crate) fn gauss_solve_opt(n: usize, a: &mut [f64], b: &[f64]) -> Option<Vec<f64>> {
     let mut x = b.to_vec();
     for col in 0..n {
         let mut max_row = col;

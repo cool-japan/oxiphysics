@@ -1,8 +1,3 @@
-#![allow(
-    clippy::needless_range_loop,
-    clippy::ptr_arg,
-    clippy::too_many_arguments
-)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -20,8 +15,6 @@
 //! - **Room acoustics**: image-source reflection / diffraction (simplified)
 //! - **Acoustic streaming** body force
 //! - **Acoustic radiation pressure** (Langevin / Gorkov)
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -52,7 +45,6 @@ pub const CS: f64 = 0.577_350_269_189_625_8_f64; // sqrt(1/3)
 ///
 /// ρ' is the density perturbation, u' are velocity perturbations around
 /// the mean flow (u0, v0).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AcousticState {
     /// Density perturbation ρ'.
@@ -92,7 +84,6 @@ impl AcousticState {
 /// where u is the total velocity (mean + perturbation).
 ///
 /// Returns array of 9 distribution function values (D2Q9 ordering).
-#[allow(dead_code)]
 pub fn acoustic_equilibrium(state: &AcousticState, u0: f64, v0: f64) -> [f64; 9] {
     // D2Q9 weights
     let weights = [
@@ -116,9 +107,9 @@ pub fn acoustic_equilibrium(state: &AcousticState, u0: f64, v0: f64) -> [f64; 9]
     let rho = state.rho_prime;
 
     let mut feq = [0.0f64; 9];
-    for i in 0..9 {
+    for (i, feq_i) in feq.iter_mut().enumerate() {
         let eu = ex[i] * ux + ey[i] * uy;
-        feq[i] =
+        *feq_i =
             weights[i] * rho * (1.0 + eu / CS2 + eu * eu / (2.0 * CS2 * CS2) - u2 / (2.0 * CS2));
     }
     feq
@@ -128,11 +119,10 @@ pub fn acoustic_equilibrium(state: &AcousticState, u0: f64, v0: f64) -> [f64; 9]
 ///
 /// `f` is the current distribution, `feq` the equilibrium, `omega` the
 /// relaxation frequency (omega = 1/tau).  Returns updated distributions.
-#[allow(dead_code)]
 pub fn acoustic_bgk_collision(f: &[f64; 9], feq: &[f64; 9], omega: f64) -> [f64; 9] {
     let mut f_out = *f;
-    for i in 0..9 {
-        f_out[i] = f[i] - omega * (f[i] - feq[i]);
+    for (i, f_out_i) in f_out.iter_mut().enumerate() {
+        *f_out_i = f[i] - omega * (f[i] - feq[i]);
     }
     f_out
 }
@@ -141,7 +131,6 @@ pub fn acoustic_bgk_collision(f: &[f64; 9], feq: &[f64; 9], omega: f64) -> [f64;
 /// distribution functions.
 ///
 /// Returns `(rho_prime, ux_prime, uy_prime)`.
-#[allow(dead_code)]
 pub fn acoustic_moments(f: &[f64; 9]) -> (f64, f64, f64) {
     let ex = [0.0, 1.0, 0.0, -1.0, 0.0, 1.0, -1.0, -1.0, 1.0];
     let ey = [0.0, 0.0, 1.0, 0.0, -1.0, 1.0, 1.0, -1.0, -1.0];
@@ -164,13 +153,11 @@ pub fn acoustic_moments(f: &[f64; 9]) -> (f64, f64, f64) {
 /// Compute Sound Pressure Level (SPL) in decibels from an RMS pressure.
 ///
 /// SPL = 20 * log10(p_rms / p_ref), where p_ref = 20 µPa.
-#[allow(dead_code)]
 pub fn sound_pressure_level(p_rms: f64) -> f64 {
     20.0 * (p_rms.abs() / P_REF).log10()
 }
 
 /// Compute RMS pressure from a time series of pressure values.
-#[allow(dead_code)]
 pub fn rms_pressure(p_series: &[f64]) -> f64 {
     if p_series.is_empty() {
         return 0.0;
@@ -180,7 +167,6 @@ pub fn rms_pressure(p_series: &[f64]) -> f64 {
 }
 
 /// Compute SPL directly from a pressure time series.
-#[allow(dead_code)]
 pub fn spl_from_series(p_series: &[f64]) -> f64 {
     sound_pressure_level(rms_pressure(p_series))
 }
@@ -188,7 +174,6 @@ pub fn spl_from_series(p_series: &[f64]) -> f64 {
 /// Weighted A-filter gain at a given frequency \[Hz\].
 ///
 /// Uses the standard IEC 61672 A-weighting formula.
-#[allow(dead_code)]
 pub fn a_weighting_db(freq_hz: f64) -> f64 {
     let f2 = freq_hz * freq_hz;
     let f4 = f2 * f2;
@@ -208,7 +193,6 @@ pub fn a_weighting_db(freq_hz: f64) -> f64 {
 ///
 /// Represents a point source with volume velocity Q(t) at position (xs, ys).
 /// Returns the source contribution to density at field point (x, y).
-#[allow(dead_code)]
 pub fn monopole_source_term(q: f64, xs: f64, ys: f64, x: f64, y: f64, c0: f64, rho0: f64) -> f64 {
     let r = ((x - xs).powi(2) + (y - ys).powi(2)).sqrt();
     if r < 1.0e-10 {
@@ -221,8 +205,6 @@ pub fn monopole_source_term(q: f64, xs: f64, ys: f64, x: f64, y: f64, c0: f64, r
 /// by distance `d` along unit direction `dir`.
 ///
 /// Returns pressure perturbation contribution at field point.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn dipole_source_pressure(
     force: [f64; 2],
     xs: f64,
@@ -253,8 +235,6 @@ pub fn dipole_source_pressure(
 /// Quadrupole source pressure from the T_ij stress tensor.
 ///
 /// Uses the Lighthill quadrupole radiation formula in 2-D far field.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn quadrupole_source_pressure(
     t: [[f64; 2]; 2],
     xs: f64,
@@ -277,9 +257,9 @@ pub fn quadrupole_source_pressure(
     // ri * rj * T_ij / r^2 (double contraction in observer direction)
     let mut tij_rirj = 0.0;
     let r_hat = [rx_n, ry_n];
-    for i in 0..2 {
-        for j in 0..2 {
-            tij_rirj += t[i][j] * r_hat[i] * r_hat[j];
+    for (i, t_row) in t.iter().enumerate() {
+        for (j, &t_ij) in t_row.iter().enumerate() {
+            tij_rirj += t_ij * r_hat[i] * r_hat[j];
         }
     }
     rho0 * k * k * tij_rirj / (4.0 * PI * r) * (k * r).cos()
@@ -289,7 +269,6 @@ pub fn quadrupole_source_pressure(
 ///
 /// `source_strength` is Δρ per time step from the monopole.
 /// Returns the modified distribution function.
-#[allow(dead_code)]
 pub fn inject_monopole_lbm(f: &[f64; 9], source_strength: f64) -> [f64; 9] {
     let mut f_out = *f;
     // Distribute source uniformly with D2Q9 weights (rest weight 4/9)
@@ -304,8 +283,8 @@ pub fn inject_monopole_lbm(f: &[f64; 9], source_strength: f64) -> [f64; 9] {
         1.0 / 36.0,
         1.0 / 36.0,
     ];
-    for i in 0..9 {
-        f_out[i] += weights[i] * source_strength;
+    for (i, f_out_i) in f_out.iter_mut().enumerate() {
+        *f_out_i += weights[i] * source_strength;
     }
     f_out
 }
@@ -317,7 +296,6 @@ pub fn inject_monopole_lbm(f: &[f64; 9], source_strength: f64) -> [f64; 9] {
 /// A 2-D acoustic LBM grid using D2Q9.
 ///
 /// Stores distribution functions at each grid point.
-#[allow(dead_code)]
 pub struct AcousticGrid2D {
     /// Number of grid cells in x.
     pub nx: usize,
@@ -356,24 +334,29 @@ impl AcousticGrid2D {
     ///
     /// `amp` is the pulse amplitude, `sigma` the Gaussian width.
     pub fn init_gaussian_pulse(&mut self, xc: f64, yc: f64, amp: f64, sigma: f64) {
-        for i in 0..self.nx {
-            for j in 0..self.ny {
+        let u0 = self.u0;
+        let v0 = self.v0;
+        for (i, row) in self.f.iter_mut().enumerate() {
+            for (j, cell) in row.iter_mut().enumerate() {
                 let r2 = (i as f64 - xc).powi(2) + (j as f64 - yc).powi(2);
                 let rho_prime = amp * (-r2 / (2.0 * sigma * sigma)).exp();
                 let state = AcousticState::new(rho_prime, 0.0, 0.0);
-                self.f[i][j] = acoustic_equilibrium(&state, self.u0, self.v0);
+                *cell = acoustic_equilibrium(&state, u0, v0);
             }
         }
     }
 
     /// Perform collision step on the entire grid.
     pub fn collide(&mut self) {
-        for i in 0..self.nx {
-            for j in 0..self.ny {
-                let (rho_p, ux_p, uy_p) = acoustic_moments(&self.f[i][j]);
+        let u0 = self.u0;
+        let v0 = self.v0;
+        let omega = self.omega;
+        for (row, f_star_row) in self.f.iter().zip(self.f_star.iter_mut()) {
+            for (cell, f_star_cell) in row.iter().zip(f_star_row.iter_mut()) {
+                let (rho_p, ux_p, uy_p) = acoustic_moments(cell);
                 let state = AcousticState::new(rho_p, ux_p, uy_p);
-                let feq = acoustic_equilibrium(&state, self.u0, self.v0);
-                self.f_star[i][j] = acoustic_bgk_collision(&self.f[i][j], &feq, self.omega);
+                let feq = acoustic_equilibrium(&state, u0, v0);
+                *f_star_cell = acoustic_bgk_collision(cell, &feq, omega);
             }
         }
     }
@@ -385,12 +368,12 @@ impl AcousticGrid2D {
         let nx = self.nx as i64;
         let ny = self.ny as i64;
         let mut f_new = vec![vec![[0.0f64; 9]; self.ny]; self.nx];
-        for i in 0..self.nx {
-            for j in 0..self.ny {
-                for q in 0..9 {
+        for (i, f_new_row) in f_new.iter_mut().enumerate() {
+            for (j, f_new_cell) in f_new_row.iter_mut().enumerate() {
+                for (q, f_new_q) in f_new_cell.iter_mut().enumerate() {
                     let src_i = ((i as i64 - ex[q]).rem_euclid(nx)) as usize;
                     let src_j = ((j as i64 - ey[q]).rem_euclid(ny)) as usize;
-                    f_new[i][j][q] = self.f_star[src_i][src_j][q];
+                    *f_new_q = self.f_star[src_i][src_j][q];
                 }
             }
         }
@@ -400,9 +383,9 @@ impl AcousticGrid2D {
     /// Extract the pressure perturbation field as a flat Vec (row-major).
     pub fn pressure_field(&self) -> Vec<f64> {
         let mut p = Vec::with_capacity(self.nx * self.ny);
-        for i in 0..self.nx {
-            for j in 0..self.ny {
-                let (rho_p, _ux, _uy) = acoustic_moments(&self.f[i][j]);
+        for row in &self.f {
+            for cell in row {
+                let (rho_p, _ux, _uy) = acoustic_moments(cell);
                 p.push(CS2 * rho_p);
             }
         }
@@ -422,7 +405,6 @@ impl AcousticGrid2D {
 /// Parameters for a PML absorbing layer.
 ///
 /// The PML attenuates outgoing waves without spurious reflections.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct PmlParams {
     /// Thickness of the PML layer in grid cells.
@@ -466,10 +448,9 @@ impl PmlParams {
 /// Apply PML damping to the acoustic pressure field in-place.
 ///
 /// Damps cells within `pml_thickness` cells of each boundary.
-#[allow(dead_code)]
-pub fn apply_pml_2d(f: &mut Vec<Vec<[f64; 9]>>, nx: usize, ny: usize, pml: &PmlParams, dt: f64) {
-    for i in 0..nx {
-        for j in 0..ny {
+pub fn apply_pml_2d(f: &mut [Vec<[f64; 9]>], nx: usize, ny: usize, pml: &PmlParams, dt: f64) {
+    for (i, f_row) in f.iter_mut().enumerate() {
+        for (j, f_cell) in f_row.iter_mut().enumerate() {
             let d_left = i as f64;
             let d_right = (nx - 1 - i) as f64;
             let d_bottom = j as f64;
@@ -480,8 +461,8 @@ pub fn apply_pml_2d(f: &mut Vec<Vec<[f64; 9]>>, nx: usize, ny: usize, pml: &PmlP
             let d_from_pml_start = (pml.thickness as f64 - d_min).max(0.0);
             let damp = pml.damping_factor(d_from_pml_start, dt);
             if damp < 1.0 {
-                for q in 0..9 {
-                    f[i][j][q] *= damp;
+                for f_q in f_cell.iter_mut() {
+                    *f_q *= damp;
                 }
             }
         }
@@ -492,7 +473,6 @@ pub fn apply_pml_2d(f: &mut Vec<Vec<[f64; 9]>>, nx: usize, ny: usize, pml: &PmlP
 /// theoretical reflection coefficient R < `target_r`.
 ///
 /// Uses: R = exp(-2 * σ_max * L / (c0 * (m+1))) => σ_max = -ln(R)*(m+1)*c0/(2L).
-#[allow(dead_code)]
 pub fn optimal_sigma_max(thickness: f64, c0: f64, grading_order: f64, target_r: f64) -> f64 {
     -(target_r.ln()) * (grading_order + 1.0) * c0 / (2.0 * thickness)
 }
@@ -505,7 +485,6 @@ pub fn optimal_sigma_max(thickness: f64, c0: f64, grading_order: f64, target_r: 
 /// at wavenumber `k` (2-D, leading-order Born approximation).
 ///
 /// σ_scat ≈ π * k * a² (small ka limit).
-#[allow(dead_code)]
 pub fn scattering_cross_section_cylinder_2d(k: f64, a: f64) -> f64 {
     PI * k * a * a
 }
@@ -514,7 +493,6 @@ pub fn scattering_cross_section_cylinder_2d(k: f64, a: f64) -> f64 {
 /// radius `a` at distance `r` and wavenumber `k` (3-D far field, leading order).
 ///
 /// p_scat ≈ (k² a³) / (3 r) * p_inc at backscatter.
-#[allow(dead_code)]
 pub fn sphere_scattered_pressure(k: f64, a: f64, r: f64, p_inc: f64) -> f64 {
     if r < 1.0e-10 {
         return 0.0;
@@ -526,7 +504,6 @@ pub fn sphere_scattered_pressure(k: f64, a: f64, r: f64, p_inc: f64) -> f64 {
 ///
 /// Returns the reflected distribution index for D2Q9 bounce-back.
 /// The bounce-back rule maps direction q -> opposite direction.
-#[allow(dead_code)]
 pub fn d2q9_bounce_back_index(q: usize) -> usize {
     // D2Q9 opposite indices: 0<->0, 1<->3, 2<->4, 5<->7, 6<->8
     const OPPOSITE: [usize; 9] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
@@ -536,11 +513,10 @@ pub fn d2q9_bounce_back_index(q: usize) -> usize {
 /// Apply rigid-wall (bounce-back) boundary condition to a distribution.
 ///
 /// Swaps post-streaming populations with their opposite directions.
-#[allow(dead_code)]
 pub fn apply_bounce_back(f: &mut [f64; 9]) {
     let f_copy = *f;
-    for q in 0..9 {
-        f[q] = f_copy[d2q9_bounce_back_index(q)];
+    for (q, fq) in f.iter_mut().enumerate() {
+        *fq = f_copy[d2q9_bounce_back_index(q)];
     }
 }
 
@@ -548,7 +524,6 @@ pub fn apply_bounce_back(f: &mut [f64; 9]) {
 ///
 /// `n_delta` is the Fresnel number N = 2δ/λ (path length difference over wavelength).
 /// Returns attenuation in dB.
-#[allow(dead_code)]
 pub fn maekawa_diffraction_db(n_delta: f64) -> f64 {
     if n_delta <= -0.2 {
         0.0
@@ -564,7 +539,6 @@ pub fn maekawa_diffraction_db(n_delta: f64) -> f64 {
 /// Lighthill stress tensor T_ij = ρ u_i u_j + (p - c0² ρ) δ_ij.
 ///
 /// Returns the 2×2 tensor for 2-D flow.
-#[allow(dead_code)]
 pub fn lighthill_tensor_2d(rho: f64, u: [f64; 2], p: f64, c0_sq: f64) -> [[f64; 2]; 2] {
     let excess = p - c0_sq * rho;
     [
@@ -577,7 +551,6 @@ pub fn lighthill_tensor_2d(rho: f64, u: [f64; 2], p: f64, c0_sq: f64) -> [[f64; 
 ///
 /// Returns the source term vector \[∂T_xi/∂x_j\] for row `i=0` (x-component).
 /// Uses second-order central differences with grid spacing `dx`.
-#[allow(dead_code)]
 pub fn lighthill_divergence_x(
     t: &[Vec<[[f64; 2]; 2]>],
     i: usize,
@@ -599,7 +572,6 @@ pub fn lighthill_divergence_x(
 /// Compute the Lighthill source power spectral density estimate (simplified).
 ///
 /// Integrates T_ij² over the source volume. Returns total acoustic power ∝ ρ c0^-5 U^8.
-#[allow(dead_code)]
 pub fn lighthill_acoustic_power(
     t_field: &[Vec<[[f64; 2]; 2]>],
     rho0: f64,
@@ -609,9 +581,9 @@ pub fn lighthill_acoustic_power(
     let mut sum = 0.0;
     for row in t_field {
         for t in row {
-            for i in 0..2 {
-                for j in 0..2 {
-                    sum += t[i][j] * t[i][j];
+            for t_row in t {
+                for &t_ij in t_row {
+                    sum += t_ij * t_ij;
                 }
             }
         }
@@ -624,7 +596,6 @@ pub fn lighthill_acoustic_power(
 // ============================================================================
 
 /// Room geometry for simplified image-source method.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RoomGeometry {
     /// Room width in x \[m\].
@@ -687,7 +658,6 @@ impl RoomGeometry {
 /// (UTD) half-plane formula (simplified, 2-D).
 ///
 /// `theta_i` is incident angle, `theta_d` diffraction angle, both from edge normal.
-#[allow(dead_code)]
 pub fn utd_diffraction_coefficient(theta_i: f64, theta_d: f64, k: f64, l: f64) -> f64 {
     // Simplified UTD: D = -1 / (2 * sqrt(2*pi*k) * cos((theta_d - theta_i)/2))
     let denom = 2.0 * (2.0 * PI * k * l).sqrt() * ((theta_d - theta_i) / 2.0).cos();
@@ -706,7 +676,6 @@ pub fn utd_diffraction_coefficient(theta_i: f64, theta_d: f64, k: f64, l: f64) -
 ///
 /// F_stream = (2 * α * I) / c0  where α is the absorption coefficient,
 /// I is the acoustic intensity.  Returns force vector \[Fx, Fy\].
-#[allow(dead_code)]
 pub fn eckart_streaming_force(intensity: [f64; 2], alpha_abs: f64, c0: f64) -> [f64; 2] {
     [
         2.0 * alpha_abs * intensity[0] / c0,
@@ -718,7 +687,6 @@ pub fn eckart_streaming_force(intensity: [f64; 2], alpha_abs: f64, c0: f64) -> [
 ///
 /// U_stream ~ (3/8) * (v_0² / c0) * k * sin(2kx) * sinh(2αy) / sinh(2αH)
 /// Simplified to peak amplitude: U_max = (3 * v0² * k) / (8 * c0).
-#[allow(dead_code)]
 pub fn rayleigh_streaming_peak_velocity(v0: f64, k: f64, c0: f64) -> f64 {
     3.0 * v0 * v0 * k / (8.0 * c0)
 }
@@ -726,8 +694,6 @@ pub fn rayleigh_streaming_peak_velocity(v0: f64, k: f64, c0: f64) -> f64 {
 /// Add acoustic streaming force to LBM distributions using Guo's forcing scheme.
 ///
 /// Guo forcing: f_i += w_i * (e_i - u) / cs² * F · e_i * (1 - omega/2) * dt
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn guo_forcing_streaming(
     f: &mut [f64; 9],
     force: [f64; 2],
@@ -750,12 +716,12 @@ pub fn guo_forcing_streaming(
     let ex = [0.0f64, 1.0, 0.0, -1.0, 0.0, 1.0, -1.0, -1.0, 1.0];
     let ey = [0.0f64, 0.0, 1.0, 0.0, -1.0, 1.0, 1.0, -1.0, -1.0];
     let coeff = (1.0 - 0.5 * omega) * dt;
-    for i in 0..9 {
+    for (i, fi) in f.iter_mut().enumerate() {
         let eu = ex[i] * ux + ey[i] * uy;
         let ef = ex[i] * force[0] + ey[i] * force[1];
         let ue_term = ef / CS2 + (ef * eu - (force[0] * ux + force[1] * uy)) / (CS2 * CS2);
         // Simplified: f_i += w_i * (e_i·F / cs²) * (1 - ω/2) * dt
-        f[i] += weights[i] * coeff * ef / CS2;
+        *fi += weights[i] * coeff * ef / CS2;
         let _ = ue_term; // higher-order term stored for reference
     }
 }
@@ -767,7 +733,6 @@ pub fn guo_forcing_streaming(
 /// Compute the Langevin radiation pressure on a perfect reflector.
 ///
 /// P_rad = 2 * `E` = 2 * p_rms² / (ρ0 * c0²)  \[Pa\].
-#[allow(dead_code)]
 pub fn langevin_radiation_pressure(p_rms: f64, rho0: f64, c0: f64) -> f64 {
     2.0 * p_rms * p_rms / (rho0 * c0 * c0)
 }
@@ -779,7 +744,6 @@ pub fn langevin_radiation_pressure(p_rms: f64, rho0: f64, c0: f64) -> f64 {
 ///
 /// where f1 = 1 - κ_p/κ_0,  f2 = 2(ρ_p - ρ0)/(2ρ_p + ρ0),
 /// a = sphere radius, κ = compressibility.
-#[allow(dead_code)]
 pub fn gorkov_potential(
     a: f64,
     p_sq_mean: f64,
@@ -799,7 +763,6 @@ pub fn gorkov_potential(
 ///
 /// For a 1-D standing wave p = P0 cos(kx), the force is:
 /// F = -dU/dx ∝ sin(2kx).
-#[allow(dead_code)]
 pub fn gorkov_force_standing_wave_1d(
     a: f64,
     p0: f64,
@@ -827,13 +790,11 @@ pub fn gorkov_force_standing_wave_1d(
 /// Uses Stokes-Kirchhoff formula:
 /// α ≈ ω² / (2 ρ0 c0³) * (4/3 η + κ(1/Cv - 1/Cp))
 /// Here a simplified form is used: α ≈ (2 * η * ω²) / (3 * ρ0 * c0³).
-#[allow(dead_code)]
 pub fn classical_absorption(omega_rad: f64, eta: f64, rho0: f64, c0: f64) -> f64 {
     2.0 * eta * omega_rad * omega_rad / (3.0 * rho0 * c0 * c0 * c0)
 }
 
 /// Compute the acoustic impedance of a medium: Z = ρ0 * c0.
-#[allow(dead_code)]
 pub fn acoustic_impedance(rho0: f64, c0: f64) -> f64 {
     rho0 * c0
 }
@@ -841,7 +802,6 @@ pub fn acoustic_impedance(rho0: f64, c0: f64) -> f64 {
 /// Compute the transmission coefficient for a plane wave at a flat interface.
 ///
 /// T = 2 Z2 / (Z1 + Z2), where Z = ρ c0 is the acoustic impedance.
-#[allow(dead_code)]
 pub fn transmission_coefficient(z1: f64, z2: f64) -> f64 {
     2.0 * z2 / (z1 + z2)
 }
@@ -849,7 +809,6 @@ pub fn transmission_coefficient(z1: f64, z2: f64) -> f64 {
 /// Compute the reflection coefficient for a plane wave at a flat interface.
 ///
 /// R = (Z2 - Z1) / (Z2 + Z1).
-#[allow(dead_code)]
 pub fn reflection_coefficient(z1: f64, z2: f64) -> f64 {
     (z2 - z1) / (z2 + z1)
 }
@@ -857,13 +816,11 @@ pub fn reflection_coefficient(z1: f64, z2: f64) -> f64 {
 /// Compute the LBM relaxation time tau from the physical kinematic viscosity ν.
 ///
 /// ν = cs² * (tau - 0.5) * dt/dx², so tau = ν/(cs² * dt/dx²) + 0.5.
-#[allow(dead_code)]
 pub fn tau_from_viscosity(nu: f64, dt: f64, dx: f64) -> f64 {
     nu / (CS2 * dt / (dx * dx)) + 0.5
 }
 
 /// Compute the Mach number for a given flow velocity and speed of sound.
-#[allow(dead_code)]
 pub fn mach_number(u: f64, c0: f64) -> f64 {
     u / c0
 }
@@ -871,7 +828,6 @@ pub fn mach_number(u: f64, c0: f64) -> f64 {
 /// Estimate the acoustic power radiated by a monopole source of volume velocity Q.
 ///
 /// W = ρ0 * c0 * k² * Q² / (4π) for a 3-D monopole.
-#[allow(dead_code)]
 pub fn monopole_radiated_power(q: f64, freq: f64, rho0: f64, c0: f64) -> f64 {
     let k = 2.0 * PI * freq / c0;
     rho0 * c0 * k * k * q * q / (4.0 * PI)
@@ -880,25 +836,21 @@ pub fn monopole_radiated_power(q: f64, freq: f64, rho0: f64, c0: f64) -> f64 {
 /// Compute the near-field correction factor for a monopole source.
 ///
 /// Factor = 1 + 1/(k*r)².
-#[allow(dead_code)]
 pub fn near_field_correction(k: f64, r: f64) -> f64 {
     1.0 + 1.0 / (k * r * k * r)
 }
 
 /// Frequency from wavenumber and speed of sound: f = k * c0 / (2π).
-#[allow(dead_code)]
 pub fn freq_from_wavenumber(k: f64, c0: f64) -> f64 {
     k * c0 / (2.0 * PI)
 }
 
 /// Wavenumber from frequency: k = 2π f / c0.
-#[allow(dead_code)]
 pub fn wavenumber_from_freq(freq: f64, c0: f64) -> f64 {
     2.0 * PI * freq / c0
 }
 
 /// Compute the acoustic energy density: E = p²/(ρ0 c0²).
-#[allow(dead_code)]
 pub fn acoustic_energy_density(p: f64, rho0: f64, c0: f64) -> f64 {
     p * p / (rho0 * c0 * c0)
 }
@@ -906,13 +858,11 @@ pub fn acoustic_energy_density(p: f64, rho0: f64, c0: f64) -> f64 {
 /// Compute the acoustic power flux from intensity magnitude.
 ///
 /// W = |I| * A where A is the area element.
-#[allow(dead_code)]
 pub fn acoustic_power_flux(intensity_mag: f64, area: f64) -> f64 {
     intensity_mag * area
 }
 
 /// LBM D2Q9 streaming index bounce-back list (for reference in tests).
-#[allow(dead_code)]
 pub const D2Q9_OPPOSITE: [usize; 9] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
 
 // ============================================================================
@@ -971,8 +921,8 @@ mod tests {
         let omega = 1.0; // tau = 1 => one-step full relaxation
         let f_out = acoustic_bgk_collision(&f, &feq, omega);
         // After one step with omega=1: f_out = feq
-        for i in 0..9 {
-            assert!((f_out[i] - feq[i]).abs() < EPS);
+        for (&fo, &fe) in f_out.iter().zip(&feq) {
+            assert!((fo - fe).abs() < EPS);
         }
     }
 

@@ -24,8 +24,6 @@
 //! assert!((range - 360.0).abs() < 1e-6);
 //! ```
 
-#![allow(dead_code)]
-
 // ── ChargingLevel ─────────────────────────────────────────────────────────────
 
 /// EV charging level / standard defining the nominal power.

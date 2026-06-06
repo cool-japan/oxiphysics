@@ -32,24 +32,50 @@
 //!
 //! let mut soa = SoaConstraints::new();
 //! // Populate constraints from your scene …
-//! soa.push(
-//!     [0.0, 1.0, 0.0],  // normal
-//!     [0.0, 0.1, 0.0],  // r_a
-//!     [0.0, -0.1, 0.0], // r_b
-//!     1.0, 1.0,          // inv_mass_a, inv_mass_b
-//!     1.0,               // eff_mass
-//!     0.01,              // bias (Baumgarte)
-//!     0.0, f64::NEG_INFINITY, f64::INFINITY, // warm lambda, lo, hi
-//! );
+//! soa.push(SoaConstraintRow {
+//!     normal: [0.0, 1.0, 0.0],
+//!     r_a: [0.0, 0.1, 0.0],
+//!     r_b: [0.0, -0.1, 0.0],
+//!     inv_mass_a: 1.0,
+//!     inv_mass_b: 1.0,
+//!     eff_mass: 1.0,
+//!     bias: 0.01,
+//!     warm_lambda: 0.0,
+//!     lo: f64::NEG_INFINITY,
+//!     hi: f64::INFINITY,
+//! });
 //! soa.resize_bodies(1); // body index 0 needs one velocity slot
 //!
 //! let stats = BatchPgsSolver::default().solve(&mut soa, 1.0 / 60.0);
 //! assert!(stats.iterations_used >= 1);
 //! ```
 
-#![allow(dead_code)]
-
 // ── SoaConstraints ──────────────────────────────────────────────────────────
+
+/// A single constraint row for insertion into [`SoaConstraints::push`].
+#[derive(Debug, Clone, Copy)]
+pub struct SoaConstraintRow {
+    /// Unit contact normal in world space `[nx, ny, nz]`.
+    pub normal: [f64; 3],
+    /// Lever arm from body A COM to contact `[rax, ray, raz]`.
+    pub r_a: [f64; 3],
+    /// Lever arm from body B COM to contact `[rbx, rby, rbz]`.
+    pub r_b: [f64; 3],
+    /// Inverse mass of body A (`0.0` for static bodies).
+    pub inv_mass_a: f64,
+    /// Inverse mass of body B.
+    pub inv_mass_b: f64,
+    /// Precomputed effective mass (1/K).
+    pub eff_mass: f64,
+    /// Velocity bias for Baumgarte / restitution.
+    pub bias: f64,
+    /// Warm-start accumulated impulse (0.0 for cold start).
+    pub warm_lambda: f64,
+    /// Lower clamp for impulse.
+    pub lo: f64,
+    /// Upper clamp for impulse.
+    pub hi: f64,
+}
 
 /// Structure-of-Arrays storage for one frame of PGS constraint data.
 ///
@@ -139,34 +165,20 @@ impl SoaConstraints {
         self.nx.is_empty()
     }
 
-    /// Append one constraint row.
-    ///
-    /// # Arguments
-    ///
-    /// * `normal`     — unit contact normal in world space `[nx, ny, nz]`
-    /// * `r_a`        — lever arm from body A COM to contact `[rax, ray, raz]`
-    /// * `r_b`        — lever arm from body B COM to contact `[rbx, rby, rbz]`
-    /// * `inv_mass_a` — 1 / mass_a (`0.0` for static bodies)
-    /// * `inv_mass_b` — 1 / mass_b
-    /// * `eff_mass`   — precomputed effective mass (1/K)
-    /// * `bias`       — velocity bias for Baumgarte / restitution
-    /// * `warm_lambda`— warm-start accumulated impulse (0.0 for cold start)
-    /// * `lo`         — lower clamp for impulse
-    /// * `hi`         — upper clamp for impulse
-    #[allow(clippy::too_many_arguments)]
-    pub fn push(
-        &mut self,
-        normal: [f64; 3],
-        r_a: [f64; 3],
-        r_b: [f64; 3],
-        inv_mass_a: f64,
-        inv_mass_b: f64,
-        eff_mass: f64,
-        bias: f64,
-        warm_lambda: f64,
-        lo: f64,
-        hi: f64,
-    ) {
+    /// Append one constraint row from a [`SoaConstraintRow`].
+    pub fn push(&mut self, row: SoaConstraintRow) {
+        let SoaConstraintRow {
+            normal,
+            r_a,
+            r_b,
+            inv_mass_a,
+            inv_mass_b,
+            eff_mass,
+            bias,
+            warm_lambda,
+            lo,
+            hi,
+        } = row;
         self.nx.push(normal[0]);
         self.ny.push(normal[1]);
         self.nz.push(normal[2]);
@@ -463,7 +475,6 @@ impl SoaContactBuilder {
     /// * `restitution` — coefficient of restitution ∈ \[0,1\]
     /// * `dt`          — simulation time step
     /// * `baumgarte`   — stabilization factor (typical 0.2)
-    #[allow(clippy::too_many_arguments)]
     pub fn add_contact(
         &mut self,
         normal: [f64; 3],
@@ -486,18 +497,18 @@ impl SoaContactBuilder {
         };
         // Warm-start lambda = 0 (cold start)
         let warm_lambda = restitution * penetration.max(0.0) * eff_mass;
-        self.constraints.push(
+        self.constraints.push(SoaConstraintRow {
             normal,
-            [0.0; 3],
-            [0.0; 3],
+            r_a: [0.0; 3],
+            r_b: [0.0; 3],
             inv_mass_a,
             inv_mass_b,
             eff_mass,
             bias,
             warm_lambda,
-            0.0, // contact: no pulling
-            f64::INFINITY,
-        );
+            lo: 0.0, // contact: no pulling
+            hi: f64::INFINITY,
+        });
     }
 
     /// Consume the builder, returning the constraint set.

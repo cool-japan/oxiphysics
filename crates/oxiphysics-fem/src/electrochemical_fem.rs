@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -13,10 +12,7 @@
 //! - [`ElectrochemicalCorrosion`]: Pitting corrosion, Evans diagram, galvanic coupling
 //! - [`FuelCellFem`]: PEM fuel cell — proton transport, oxygen reduction, water management
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
-#[allow(unused_imports)]
+#[cfg(test)]
 use std::f64::consts::PI;
 
 // ============================================================================
@@ -27,10 +23,6 @@ use std::f64::consts::PI;
 const FARADAY: f64 = 96485.332;
 /// Universal gas constant (J/(mol·K)).
 const R_GAS: f64 = 8.314462;
-/// Boltzmann constant (J/K).
-const K_BOLTZMANN: f64 = 1.380649e-23;
-/// Elementary charge (C).
-const ELEM_CHARGE: f64 = 1.602176634e-19;
 /// Vacuum permittivity (F/m).
 const EPSILON_0: f64 = 8.854187817e-12;
 
@@ -775,8 +767,8 @@ impl BatteryFem {
         let h_r = r_p / (n_r as f64 - 1.0);
         let dt = self.dt;
         let n_x = dom.n_macro;
-        for xi in 0..n_x {
-            let c = &self.c_solid[electrode_idx][xi];
+        for c_solid_xi in self.c_solid[electrode_idx].iter_mut().take(n_x) {
+            let c = c_solid_xi.clone();
             // Build tridiagonal for spherical diffusion operator
             let mut lower = vec![0.0_f64; n_r];
             let mut diag = vec![0.0_f64; n_r];
@@ -804,7 +796,7 @@ impl BatteryFem {
             lower[n_r - 1] = 0.0;
             rhs[n_r - 1] = c[n_r - 1] - j_li * dt * h_r / (FARADAY * ds);
             let new_c = NernstPlanckFem::solve_tridiagonal(&lower, &diag, &upper, &rhs);
-            self.c_solid[electrode_idx][xi] = new_c;
+            *c_solid_xi = new_c;
         }
     }
 
@@ -1183,9 +1175,14 @@ impl FuelCellFem {
         }
         // Add ORR sink in cathode CL (last few nodes)
         let n_cl = (self.thickness_cl / h).ceil() as usize;
-        for i in n.saturating_sub(n_cl)..n {
+        for (i, diag_i) in diag
+            .iter_mut()
+            .enumerate()
+            .take(n)
+            .skip(n.saturating_sub(n_cl))
+        {
             let r_o2 = self.orr_rate(self.c_oxygen[i].max(0.0), eta_c.abs()) * FARADAY;
-            diag[i] += r_o2 / self.c_oxygen[i].max(1e-10) * h;
+            *diag_i += r_o2 / self.c_oxygen[i].max(1e-10) * h;
         }
         // BCs: inlet c_O2 = c_ref, at membrane ∂c/∂x = 0
         diag[0] = 1.0;

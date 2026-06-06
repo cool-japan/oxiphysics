@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_range_contains)]
 use std::f64::consts::PI;
 
 /// Standard normal CDF  Φ(x) via Abramowitz & Stegun 26.2.17.
@@ -267,7 +266,7 @@ mod tests {
     fn test_random_field_energy_fraction() {
         let rf = RandomField::new(0.0, 1.0, 16, 4, 0.3, 1.0);
         let ef = rf.energy_fraction();
-        assert!(ef >= 0.0 && ef <= 1.0 + 1e-10);
+        assert!((0.0..=1.0 + 1e-10).contains(&ef));
     }
     #[test]
     fn test_form_linear_exact() {
@@ -321,7 +320,7 @@ mod tests {
         let g = LimitState::new(vec![10.0, 5.0], vec![2.0, 2.0], |x| x[0] - x[1]);
         let form = FormAnalysis::solve(&g);
         let sorm = SormAnalysis::solve(&g, &form);
-        assert!(sorm.pf_breitung >= 0.0 && sorm.pf_breitung <= 1.0);
+        assert!((0.0..=1.0).contains(&sorm.pf_breitung));
     }
     #[test]
     fn test_sorm_curvatures_len() {
@@ -345,7 +344,7 @@ mod tests {
     #[test]
     fn test_sorm_tvedt_pf_range() {
         let pf = SormAnalysis::tvedt_pf(2.0, &[0.1, 0.05, -0.1]);
-        assert!(pf >= 0.0 && pf <= 1.0);
+        assert!((0.0..=1.0).contains(&pf));
     }
     #[test]
     fn test_sorm_tvedt_no_curvature() {
@@ -416,7 +415,7 @@ mod tests {
         let form = FormAnalysis::solve(&g);
         let is = ImportanceSampling::new(500, 1.0);
         let pf = is.estimate(&g, &form.design_point);
-        assert!(pf >= 0.0 && pf <= 1.0, "pf={pf}");
+        assert!((0.0..=1.0).contains(&pf), "pf={pf}");
     }
     #[test]
     fn test_is_estimator_cov_formula() {
@@ -498,7 +497,7 @@ mod tests {
     fn test_ditlevsen_lower_nonneg() {
         let betas = vec![2.0, 3.0, 2.5];
         let lb = SystemReliability::ditlevsen_lower(&betas, 0.3);
-        assert!(lb >= 0.0 && lb <= 1.0);
+        assert!((0.0..=1.0).contains(&lb));
     }
     #[test]
     fn test_series_mttf() {
@@ -520,7 +519,7 @@ mod tests {
         let g = LimitState::new(vec![0.0, 0.0], vec![1.0, 1.0], |x| x[0] + 0.5 * x[1]);
         let si = SensitivityIndex::compute(&g, 500);
         for s in &si.first_order {
-            assert!(*s >= 0.0 && *s <= 1.0, "s={s}");
+            assert!((0.0..=1.0).contains(s), "s={s}");
         }
     }
     #[test]
@@ -636,7 +635,7 @@ mod tests {
     fn test_limit_state_mc_pf_range() {
         let g = LimitState::new(vec![5.0], vec![1.0], |x| x[0] - 3.0);
         let pf = g.monte_carlo_pf(500);
-        assert!(pf >= 0.0 && pf <= 1.0);
+        assert!((0.0..=1.0).contains(&pf));
     }
     #[test]
     fn test_normality_statistic_returns_finite() {

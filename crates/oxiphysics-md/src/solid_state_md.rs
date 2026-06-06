@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -15,9 +14,6 @@
 //! - Amorphization threshold from cumulative dose
 //! - Born effective charges and dielectric tensor
 //! - Debye-Waller factor and mean-square displacement
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -36,9 +32,6 @@ const AMU: f64 = 1.660_539_066_6e-27;
 
 /// Elementary charge (C).
 const E_CHARGE: f64 = 1.602_176_634e-19;
-
-/// Avogadro number (mol⁻¹).
-const N_A: f64 = 6.022_140_76e23;
 
 // ---------------------------------------------------------------------------
 // Vector helpers
@@ -265,9 +258,9 @@ pub fn dynamical_matrix_simple_cubic(
         let cos_phase = phase.cos();
         // Each neighbour: the phi matrix rotated to the bond direction
         // For simplicity use the same phi_nn (assumes isotropic bonds in diagonal form)
-        for i in 0..3 {
-            for j in 0..3 {
-                d[i][j] += fc.phi_nn[i][j] * cos_phase;
+        for (d_row, phi_row) in d.iter_mut().zip(fc.phi_nn.iter()) {
+            for (d_ij, &phi_ij) in d_row.iter_mut().zip(phi_row.iter()) {
+                *d_ij += phi_ij * cos_phase;
             }
         }
     }
@@ -338,7 +331,7 @@ pub fn compute_hcacf(heat_current: &[f64], max_lag: usize) -> Vec<f64> {
     let n = heat_current.len();
     let m_max = max_lag.min(n);
     let mut acf = vec![0.0_f64; m_max];
-    for lag in 0..m_max {
+    for (lag, acf_val) in acf.iter_mut().enumerate() {
         let count = n.saturating_sub(lag);
         if count == 0 {
             break;
@@ -346,7 +339,7 @@ pub fn compute_hcacf(heat_current: &[f64], max_lag: usize) -> Vec<f64> {
         let sum: f64 = (0..count)
             .map(|k| heat_current[k] * heat_current[k + lag])
             .sum();
-        acf[lag] = sum / count as f64;
+        *acf_val = sum / count as f64;
     }
     acf
 }

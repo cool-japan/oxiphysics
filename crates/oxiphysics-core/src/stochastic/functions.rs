@@ -212,9 +212,9 @@ pub fn control_variate_terminal_estimate(
     let mean_ctrl = controls.iter().sum::<f64>() / n_paths as f64;
     let mut cov = 0.0_f64;
     let mut var_c = 0.0_f64;
-    for i in 0..n_paths {
-        cov += (vals[i] - mean_val) * (controls[i] - mean_ctrl);
-        var_c += (controls[i] - mean_ctrl) * (controls[i] - mean_ctrl);
+    for (&v, &c) in vals.iter().zip(controls.iter()) {
+        cov += (v - mean_val) * (c - mean_ctrl);
+        var_c += (c - mean_ctrl) * (c - mean_ctrl);
     }
     let beta = if var_c.abs() > 1e-30 {
         -cov / var_c
@@ -223,8 +223,8 @@ pub fn control_variate_terminal_estimate(
     };
     let mut sum = 0.0_f64;
     let mut sum_sq = 0.0_f64;
-    for i in 0..n_paths {
-        let adj = vals[i] + beta * (controls[i] - expected_s_t);
+    for (&v, &c) in vals.iter().zip(controls.iter()) {
+        let adj = v + beta * (c - expected_s_t);
         sum += adj;
         sum_sq += adj * adj;
     }
@@ -370,16 +370,15 @@ pub fn effective_sample_size(data: &[f64], max_lag: usize) -> f64 {
 ///
 /// # Arguments
 /// * `barrier_height` — ΔE = barrier height above the minimum
-/// * `D` — diffusion coefficient (not directly used in the Kramers formula but
-///   kept as part of the signature for context; `D = kT / gamma`)
+/// * `d` — diffusion coefficient (not directly used in the Kramers formula but
+///   kept as part of the signature for context; `d = kT / gamma`)
 /// * `omega_0` — angular frequency at the minimum (attempt frequency)
 /// * `omega_b` — absolute value of imaginary frequency at the saddle point
 ///
 /// Returns the MFPT in units consistent with the input.
-#[allow(non_snake_case)]
-pub fn mean_first_passage_time(barrier_height: f64, D: f64, omega_0: f64, omega_b: f64) -> f64 {
-    let _ = D;
-    (2.0 * PI / (omega_0 * omega_b)) * (barrier_height / D).exp()
+pub fn mean_first_passage_time(barrier_height: f64, d: f64, omega_0: f64, omega_b: f64) -> f64 {
+    let _ = d;
+    (2.0 * PI / (omega_0 * omega_b)) * (barrier_height / d).exp()
 }
 #[cfg(test)]
 mod tests {

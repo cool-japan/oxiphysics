@@ -2,13 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests_extended {
-    use super::*;
+
     use crate::contact_fem::*;
     #[test]
     fn test_nts_gap_above_segment() {
@@ -85,10 +81,10 @@ mod tests_extended {
         let normal = [0.0, 1.0, 0.0];
         let ke = elem.contact_stiffness_matrix(normal, true);
         assert!((ke[1][1] - 1000.0).abs() < 1e-10, "k_yy = {}", ke[1][1]);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in ke.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
                 assert!(
-                    (ke[i][j] - ke[j][i]).abs() < 1e-10,
+                    (v - ke[j][i]).abs() < 1e-10,
                     "Stiffness not symmetric at ({i},{j})"
                 );
             }

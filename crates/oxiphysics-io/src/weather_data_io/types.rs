@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::should_implement_trait)]
-#[allow(unused_imports)]
 use super::functions::*;
 use std::collections::HashMap;
 
@@ -371,7 +369,12 @@ pub enum CellMethod {
 }
 impl CellMethod {
     /// Parse from a CF cell_methods attribute fragment.
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_keyword(s: &str) -> Self {
+        Self::from(s)
+    }
+}
+impl From<&str> for CellMethod {
+    fn from(s: &str) -> Self {
         match s.trim() {
             "point" => Self::Point,
             "mean" => Self::Mean,
@@ -888,7 +891,12 @@ pub enum CfStandardName {
 }
 impl CfStandardName {
     /// Parse a CF standard_name attribute string.
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_keyword(s: &str) -> Self {
+        Self::from(s)
+    }
+}
+impl From<&str> for CfStandardName {
+    fn from(s: &str) -> Self {
         match s {
             "air_temperature" => Self::AirTemperature,
             "air_pressure" => Self::AirPressure,
@@ -900,6 +908,8 @@ impl CfStandardName {
             other => Self::Custom(other.to_string()),
         }
     }
+}
+impl CfStandardName {
     /// String representation matching the CF table.
     pub fn as_str(&self) -> &str {
         match self {

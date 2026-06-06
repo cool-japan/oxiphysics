@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::useless_vec)]
 use std::collections::HashMap;
 
 use super::types::{CsrMatrix, QuadTreeNode};
@@ -18,7 +16,6 @@ use super::types::{CsrMatrix, QuadTreeNode};
 /// This implements the greedy minimum-degree heuristic: at each step, select
 /// the node with the fewest structural neighbours (minimum degree) and
 /// eliminate it.
-#[allow(dead_code)]
 pub fn amd_ordering(a: &CsrMatrix) -> Vec<usize> {
     let n = a.nrows;
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -64,7 +61,6 @@ pub fn amd_ordering(a: &CsrMatrix) -> Vec<usize> {
 /// Symmetrically permute a CSR matrix using permutation `perm`.
 ///
 /// Returns `B` where `B[i,j] = A[perm[i\], perm[j]]`.
-#[allow(dead_code)]
 pub fn permute_matrix(a: &CsrMatrix, perm: &[usize]) -> CsrMatrix {
     let n = a.nrows;
     assert_eq!(
@@ -77,8 +73,8 @@ pub fn permute_matrix(a: &CsrMatrix, perm: &[usize]) -> CsrMatrix {
         inv_perm[old_idx] = new_idx;
     }
     let mut triplets = Vec::with_capacity(a.nnz());
-    for row in 0..n {
-        let old_row = perm[row];
+    for (row, &perm_row) in perm.iter().enumerate() {
+        let old_row = perm_row;
         let start = a.row_ptr[old_row];
         let end = a.row_ptr[old_row + 1];
         for idx in start..end {
@@ -90,12 +86,10 @@ pub fn permute_matrix(a: &CsrMatrix, perm: &[usize]) -> CsrMatrix {
     CsrMatrix::from_triplets(n, n, &triplets)
 }
 /// Apply a permutation to a vector: `y[i] = x[perm[i\]]`.
-#[allow(dead_code)]
 pub fn apply_permutation(x: &[f64], perm: &[usize]) -> Vec<f64> {
     perm.iter().map(|&i| x[i]).collect()
 }
 /// Apply the inverse permutation: `y[perm[i\]] = x[i]`.
-#[allow(dead_code)]
 pub fn apply_inverse_permutation(x: &[f64], perm: &[usize]) -> Vec<f64> {
     let n = x.len();
     let mut y = vec![0.0; n];
@@ -114,19 +108,18 @@ pub fn apply_inverse_permutation(x: &[f64], perm: &[usize]) -> Vec<f64> {
 /// The function uses a strength-of-connection threshold: node `j` is
 /// "strongly connected" to node `i` if `|a_ij| >= theta * max_k |a_ik|`.
 /// A greedy MIS on the strong-connection graph defines the C-points.
-#[allow(dead_code)]
 pub fn amg_coarsen(a: &CsrMatrix) -> Vec<usize> {
     let n = a.nrows;
     let theta = 0.25;
     let mut max_off: Vec<f64> = vec![0.0; n];
-    for row in 0..n {
+    for (row, max_off_row) in max_off.iter_mut().enumerate() {
         let start = a.row_ptr[row];
         let end = a.row_ptr[row + 1];
         for idx in start..end {
             if a.col_indices[idx] != row {
                 let v = a.values[idx].abs();
-                if v > max_off[row] {
-                    max_off[row] = v;
+                if v > *max_off_row {
+                    *max_off_row = v;
                 }
             }
         }
@@ -157,8 +150,8 @@ pub fn amg_coarsen(a: &CsrMatrix) -> Vec<usize> {
             assigned[nb] = true;
         }
     }
-    for i in 0..n {
-        if !assigned[i] {
+    for (i, &is_assigned) in assigned.iter().enumerate() {
+        if !is_assigned {
             coarse.push(i);
         }
     }
@@ -169,7 +162,6 @@ pub fn amg_coarsen(a: &CsrMatrix) -> Vec<usize> {
 ///
 /// Each fine-grid F-point is interpolated from the nearest C-point based on
 /// the strength of connection.  C-points map to themselves with weight 1.
-#[allow(dead_code)]
 pub fn amg_prolongation(a: &CsrMatrix, coarse: &[usize]) -> CsrMatrix {
     let n_fine = a.nrows;
     let n_coarse = coarse.len();
@@ -179,14 +171,14 @@ pub fn amg_prolongation(a: &CsrMatrix, coarse: &[usize]) -> CsrMatrix {
     }
     let theta = 0.25;
     let mut max_off: Vec<f64> = vec![0.0; n_fine];
-    for row in 0..n_fine {
+    for (row, max_off_row) in max_off.iter_mut().enumerate() {
         let start = a.row_ptr[row];
         let end = a.row_ptr[row + 1];
         for idx in start..end {
             if a.col_indices[idx] != row {
                 let v = a.values[idx].abs();
-                if v > max_off[row] {
-                    max_off[row] = v;
+                if v > *max_off_row {
+                    *max_off_row = v;
                 }
             }
         }
@@ -227,7 +219,6 @@ pub fn amg_prolongation(a: &CsrMatrix, coarse: &[usize]) -> CsrMatrix {
 /// Compute the Galerkin coarse-grid operator: A_c = P^T A P.
 ///
 /// This is the standard Galerkin coarsening used in AMG.
-#[allow(dead_code)]
 pub fn amg_galerkin_coarse(a: &CsrMatrix, p: &CsrMatrix) -> CsrMatrix {
     let r = p.transpose();
     let ap = csr_mat_mul(a, p);
@@ -236,7 +227,6 @@ pub fn amg_galerkin_coarse(a: &CsrMatrix, p: &CsrMatrix) -> CsrMatrix {
 /// Sparse matrix-matrix multiplication: C = A * B.
 ///
 /// Both matrices must be compatible: A is (m×k) and B is (k×n).
-#[allow(dead_code)]
 pub fn csr_mat_mul(a: &CsrMatrix, b: &CsrMatrix) -> CsrMatrix {
     assert_eq!(a.ncols, b.nrows, "inner dimensions must match");
     let m = a.nrows;
@@ -274,7 +264,6 @@ pub fn csr_mat_mul(a: &CsrMatrix, b: &CsrMatrix) -> CsrMatrix {
 /// * `nu2`  – number of post-smoothing steps (Jacobi)
 ///
 /// Returns the updated solution vector.
-#[allow(dead_code)]
 pub fn amg_v_cycle(a: &CsrMatrix, b: &[f64], x0: &[f64], nu1: usize, nu2: usize) -> Vec<f64> {
     let n = a.nrows;
     let coarse = amg_coarsen(a);
@@ -300,7 +289,6 @@ pub fn amg_v_cycle(a: &CsrMatrix, b: &[f64], x0: &[f64], nu1: usize, nu2: usize)
     x
 }
 /// Damped Jacobi smoother: one step.
-#[allow(dead_code)]
 pub(super) fn jacobi_smooth(a: &CsrMatrix, b: &[f64], x: &[f64], omega: f64) -> Vec<f64> {
     let n = a.nrows;
     let mut x_new = x.to_vec();
@@ -325,27 +313,24 @@ pub(super) fn jacobi_smooth(a: &CsrMatrix, b: &[f64], x: &[f64], omega: f64) -> 
     x_new
 }
 /// Restrict a fine-grid vector to the coarse grid: r_c = P^T r.
-#[allow(dead_code)]
 pub(super) fn restrict_vector(p: &CsrMatrix, r: &[f64]) -> Vec<f64> {
     let n_coarse = p.ncols;
     let mut r_c = vec![0.0f64; n_coarse];
-    for i in 0..p.nrows {
+    for (i, &r_i) in r.iter().enumerate().take(p.nrows) {
         let start = p.row_ptr[i];
         let end = p.row_ptr[i + 1];
         for idx in start..end {
             let j = p.col_indices[idx];
-            r_c[j] += p.values[idx] * r[i];
+            r_c[j] += p.values[idx] * r_i;
         }
     }
     r_c
 }
 /// Prolongate a coarse-grid vector to the fine grid: e = P * e_c.
-#[allow(dead_code)]
 pub(super) fn prolongate_vector(p: &CsrMatrix, e_c: &[f64]) -> Vec<f64> {
     p.mul_vec(e_c)
 }
 /// Simple Gauss-Seidel solver for the coarse-grid system.
-#[allow(dead_code)]
 pub(super) fn gauss_seidel_solve(
     a: &CsrMatrix,
     b: &[f64],
@@ -378,7 +363,6 @@ pub(super) fn gauss_seidel_solve(
 ///
 /// Nodes whose `error_indicator` exceeds `threshold` are refined, up to a
 /// maximum refinement level `max_level`.
-#[allow(dead_code)]
 pub fn adaptive_refine_quadtree(node: &mut QuadTreeNode, threshold: f64, max_level: u32) {
     if node.level >= max_level {
         return;
@@ -397,7 +381,6 @@ pub fn adaptive_refine_quadtree(node: &mut QuadTreeNode, threshold: f64, max_lev
 /// `threshold`, replace the parent with a single leaf.
 ///
 /// Returns `true` if this node was coarsened.
-#[allow(dead_code)]
 pub fn coarsen_quadtree(node: &mut QuadTreeNode, threshold: f64) -> bool {
     if node.is_leaf() {
         return false;
@@ -418,7 +401,6 @@ pub fn coarsen_quadtree(node: &mut QuadTreeNode, threshold: f64) -> bool {
     false
 }
 /// Compute the maximum refinement level in a quadtree.
-#[allow(dead_code)]
 pub fn max_refinement_level(node: &QuadTreeNode) -> u32 {
     match &node.children {
         None => node.level,
@@ -432,7 +414,6 @@ pub fn max_refinement_level(node: &QuadTreeNode) -> u32 {
 /// Compute the 1-norm of a CSR matrix: max column sum of absolute values.
 ///
 /// `||A||_1 = max_j sum_i |a_ij|`
-#[allow(dead_code)]
 pub fn csr_norm_1(a: &CsrMatrix) -> f64 {
     let mut col_sums = vec![0.0f64; a.ncols];
     for row in 0..a.nrows {
@@ -447,7 +428,6 @@ pub fn csr_norm_1(a: &CsrMatrix) -> f64 {
 /// Compute the infinity-norm of a CSR matrix: max row sum of absolute values.
 ///
 /// `||A||_inf = max_i sum_j |a_ij|`
-#[allow(dead_code)]
 pub fn csr_norm_inf(a: &CsrMatrix) -> f64 {
     (0..a.nrows)
         .map(|row| {
@@ -466,7 +446,6 @@ pub fn csr_norm_inf(a: &CsrMatrix) -> f64 {
 /// # References
 /// E. Cuthill and J. McKee, "Reducing the Bandwidth of Sparse Symmetric
 /// Matrices", ACM 1969.
-#[allow(dead_code)]
 pub fn reverse_cuthill_mckee(a: &CsrMatrix) -> Vec<usize> {
     assert_eq!(a.nrows, a.ncols, "RCM requires a square symmetric matrix");
     let n = a.nrows;
@@ -507,8 +486,8 @@ pub fn reverse_cuthill_mckee(a: &CsrMatrix) -> Vec<usize> {
             }
         }
     }
-    for i in 0..n {
-        if !visited[i] {
+    for (i, &v) in visited.iter().enumerate() {
+        if !v {
             order.push(i);
         }
     }
@@ -518,7 +497,6 @@ pub fn reverse_cuthill_mckee(a: &CsrMatrix) -> Vec<usize> {
 /// Compute the bandwidth of a sparse matrix under a given permutation.
 ///
 /// Returns `max_{(i,j) in A} |new_i - new_j|` where `new_k = inv_perm[k]`.
-#[allow(dead_code)]
 pub fn bandwidth(a: &CsrMatrix, perm: &[usize]) -> usize {
     let n = a.nrows;
     let mut inv_perm = vec![0usize; n];
@@ -545,7 +523,6 @@ pub fn bandwidth(a: &CsrMatrix, perm: &[usize]) -> usize {
 ///
 /// Returns a new CSR matrix containing only the entries `(i, j)` with `j >= i`.
 /// The diagonal and strictly upper triangle are retained.
-#[allow(dead_code)]
 pub fn to_upper_triangular(a: &CsrMatrix) -> CsrMatrix {
     let mut triplets = Vec::new();
     for row in 0..a.nrows {
@@ -564,7 +541,6 @@ pub fn to_upper_triangular(a: &CsrMatrix) -> CsrMatrix {
 ///
 /// Each off-diagonal entry `(i, j)` in the upper triangle generates a
 /// symmetric entry `(j, i)` with the same value.
-#[allow(dead_code)]
 pub fn from_upper_triangular(a: &CsrMatrix) -> CsrMatrix {
     let mut triplets = Vec::new();
     for row in 0..a.nrows {
@@ -585,7 +561,6 @@ pub fn from_upper_triangular(a: &CsrMatrix) -> CsrMatrix {
 ///
 /// Returns `true` if `|A[i,j] - A[j,i]| <= tol * max(|A[i,j]|, |A[j,i]|, 1)`
 /// for all stored entries.
-#[allow(dead_code)]
 pub fn is_symmetric(a: &CsrMatrix, tol: f64) -> bool {
     for row in 0..a.nrows {
         let start = a.row_ptr[row];

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,10 +6,6 @@
 //! Provides Cooley-Tukey FFT/IFFT, windowing functions (Hann/Hamming/Blackman/Kaiser),
 //! PSD estimation (Welch/Bartlett), FIR/IIR filter design (Butterworth/Chebyshev/elliptic),
 //! convolution, correlation, Hilbert transform, spectrogram, and wavelet transforms.
-
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -70,36 +65,6 @@ impl Complex64 {
         self.re * self.re + self.im * self.im
     }
 
-    /// Multiply two complex numbers.
-    #[inline]
-    #[allow(clippy::should_implement_trait)]
-    pub fn mul(self, rhs: Self) -> Self {
-        Self {
-            re: self.re * rhs.re - self.im * rhs.im,
-            im: self.re * rhs.im + self.im * rhs.re,
-        }
-    }
-
-    /// Add two complex numbers.
-    #[inline]
-    #[allow(clippy::should_implement_trait)]
-    pub fn add(self, rhs: Self) -> Self {
-        Self {
-            re: self.re + rhs.re,
-            im: self.im + rhs.im,
-        }
-    }
-
-    /// Subtract two complex numbers.
-    #[inline]
-    #[allow(clippy::should_implement_trait)]
-    pub fn sub(self, rhs: Self) -> Self {
-        Self {
-            re: self.re - rhs.re,
-            im: self.im - rhs.im,
-        }
-    }
-
     /// Scale by a real scalar.
     #[inline]
     pub fn scale(self, s: f64) -> Self {
@@ -131,22 +96,34 @@ impl Complex64 {
 
 impl std::ops::Add for Complex64 {
     type Output = Self;
+    /// Add two complex numbers.
     fn add(self, rhs: Self) -> Self {
-        Self::add(self, rhs)
+        Self {
+            re: self.re + rhs.re,
+            im: self.im + rhs.im,
+        }
     }
 }
 
 impl std::ops::Sub for Complex64 {
     type Output = Self;
+    /// Subtract two complex numbers.
     fn sub(self, rhs: Self) -> Self {
-        Self::sub(self, rhs)
+        Self {
+            re: self.re - rhs.re,
+            im: self.im - rhs.im,
+        }
     }
 }
 
 impl std::ops::Mul for Complex64 {
     type Output = Self;
+    /// Multiply two complex numbers.
     fn mul(self, rhs: Self) -> Self {
-        Self::mul(self, rhs)
+        Self {
+            re: self.re * rhs.re - self.im * rhs.im,
+            im: self.re * rhs.im + self.im * rhs.re,
+        }
     }
 }
 
@@ -889,11 +866,11 @@ pub fn analytic_signal(x: &[f64]) -> Vec<Complex64> {
     let mut spec = fft(x);
     spec.resize(n, Complex64::new(0.0, 0.0));
     // Zero the negative frequencies and double positive ones
-    for k in 1..n / 2 {
-        spec[k] = spec[k].scale(2.0);
+    for v in &mut spec[1..n / 2] {
+        *v = v.scale(2.0);
     }
-    for k in n / 2 + 1..n {
-        spec[k] = Complex64::new(0.0, 0.0);
+    for v in &mut spec[n / 2 + 1..n] {
+        *v = Complex64::new(0.0, 0.0);
     }
     let mut result = spec;
     ifft_inplace(&mut result);
@@ -1535,9 +1512,9 @@ mod tests {
         let spec = fft(&signal);
         assert!(approx_eq(spec[0].re, 8.0, 1e-10));
         assert!(approx_eq(spec[0].im, 0.0, 1e-10));
-        for k in 1..8 {
-            assert!(approx_eq(spec[k].re, 0.0, 1e-10));
-            assert!(approx_eq(spec[k].im, 0.0, 1e-10));
+        for s in spec.iter().skip(1) {
+            assert!(approx_eq(s.re, 0.0, 1e-10));
+            assert!(approx_eq(s.im, 0.0, 1e-10));
         }
     }
 
@@ -1728,8 +1705,8 @@ mod tests {
             .collect();
         let env = instantaneous_amplitude(&sig);
         // Middle section should be ≈ amp
-        for i in 16..n - 16 {
-            assert!(approx_eq(env[i], amp, 0.1));
+        for (_, &e) in env.iter().enumerate().take(n - 16).skip(16) {
+            assert!(approx_eq(e, amp, 0.1));
         }
     }
 

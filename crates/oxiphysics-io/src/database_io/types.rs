@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use std::collections::{HashMap, VecDeque};
 
 /// A single row in the simulation database, mapping column names to values.
@@ -476,7 +474,6 @@ pub struct MaterialRecord {
 }
 impl MaterialRecord {
     /// Create a new material record.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: impl Into<String>,
         density: f64,

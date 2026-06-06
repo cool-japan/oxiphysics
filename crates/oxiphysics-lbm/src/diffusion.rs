@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -18,9 +17,7 @@
 //! - Wolf-Gladrow, D. A. (2000). *Lattice-Gas Cellular Automata and Lattice
 //!   Boltzmann Models*. Springer.
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-
+#[cfg(test)]
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -118,8 +115,8 @@ impl DiffusionLattice1D {
             let val = amplitude * (-(x - center).powi(2) / (2.0 * sigma * sigma)).exp();
             self.phi[i] = val;
             // Initialise f to equilibrium
-            for q in 0..3 {
-                self.f[i][q] = D1Q3_W[q] * val;
+            for (q, &w) in D1Q3_W.iter().enumerate() {
+                self.f[i][q] = w * val;
             }
         }
     }
@@ -131,21 +128,21 @@ impl DiffusionLattice1D {
 
         // --- Collision ---
         let mut f_post = self.f.clone();
-        for i in 0..n {
+        for (i, f_post_i) in f_post.iter_mut().enumerate().take(n) {
             let rho = self.phi[i];
             for q in 0..3 {
                 let f_eq = D1Q3_W[q] * rho;
-                f_post[i][q] = self.f[i][q] - omega * (self.f[i][q] - f_eq);
+                f_post_i[q] = self.f[i][q] - omega * (self.f[i][q] - f_eq);
             }
         }
 
         // --- Streaming (periodic) ---
         let mut f_stream = vec![[0.0_f64; 3]; n];
-        for i in 0..n {
-            for q in 0..3 {
+        for (i, f_post_i) in f_post.iter().enumerate().take(n) {
+            for (q, &fq) in f_post_i.iter().enumerate() {
                 let c = D1Q3_C[q];
                 let dest = ((i as i64 + c as i64).rem_euclid(n as i64)) as usize;
-                f_stream[dest][q] = f_post[i][q];
+                f_stream[dest][q] = fq;
             }
         }
         self.f = f_stream;
@@ -281,9 +278,9 @@ impl DiffusionLattice2D {
             self.phi[ny - 1][ix] = val;
             let idx0 = self.idx(ix, 0);
             let idx1 = self.idx(ix, ny - 1);
-            for q in 0..5 {
-                self.f[idx0][q] = D2Q5_W[q] * val;
-                self.f[idx1][q] = D2Q5_W[q] * val;
+            for (q, &w) in D2Q5_W.iter().enumerate() {
+                self.f[idx0][q] = w * val;
+                self.f[idx1][q] = w * val;
             }
         }
         for iy in 0..ny {
@@ -291,9 +288,9 @@ impl DiffusionLattice2D {
             self.phi[iy][nx - 1] = val;
             let idx0 = self.idx(0, iy);
             let idx1 = self.idx(nx - 1, iy);
-            for q in 0..5 {
-                self.f[idx0][q] = D2Q5_W[q] * val;
-                self.f[idx1][q] = D2Q5_W[q] * val;
+            for (q, &w) in D2Q5_W.iter().enumerate() {
+                self.f[idx0][q] = w * val;
+                self.f[idx1][q] = w * val;
             }
         }
     }
@@ -319,13 +316,12 @@ impl DiffusionLattice2D {
     pub fn set_field(&mut self, data: &[Vec<f64>]) {
         let nx = self.nx;
         let ny = self.ny;
-        for iy in 0..ny {
-            for ix in 0..nx {
-                let val = data[iy][ix];
+        for (iy, data_row) in data.iter().enumerate().take(ny) {
+            for (ix, &val) in data_row.iter().enumerate().take(nx) {
                 self.phi[iy][ix] = val;
                 let idx = self.idx(ix, iy);
-                for q in 0..5 {
-                    self.f[idx][q] = D2Q5_W[q] * val;
+                for (q, &w) in D2Q5_W.iter().enumerate() {
+                    self.f[idx][q] = w * val;
                 }
             }
         }
@@ -416,9 +412,10 @@ impl AdvectionDiffusion1D {
 
     /// Initialise φ to a Gaussian profile.
     pub fn set_gaussian(&mut self, center: f64, sigma: f64, amplitude: f64) {
-        for i in 0..self.n {
-            let x = i as f64 * self.dx;
-            self.phi[i] = amplitude * (-(x - center).powi(2) / (2.0 * sigma * sigma)).exp();
+        let dx = self.dx;
+        for (i, phi) in self.phi.iter_mut().enumerate() {
+            let x = i as f64 * dx;
+            *phi = amplitude * (-(x - center).powi(2) / (2.0 * sigma * sigma)).exp();
         }
     }
 
@@ -562,8 +559,8 @@ impl MultiSpeciesDiffusion {
         for s in 0..ns {
             let d = self.diff_coeffs[s];
             let mut new_field = vec![vec![0.0_f64; nx]; ny];
-            for iy in 0..ny {
-                for ix in 0..nx {
+            for (iy, row) in new_field.iter_mut().enumerate() {
+                for (ix, cell) in row.iter_mut().enumerate() {
                     let im1x = (ix + nx - 1) % nx;
                     let ip1x = (ix + 1) % nx;
                     let im1y = (iy + ny - 1) % ny;
@@ -574,7 +571,7 @@ impl MultiSpeciesDiffusion {
                         + self.species[s][im1y][ix]
                         - 4.0 * self.species[s][iy][ix])
                         / (dx * dx);
-                    new_field[iy][ix] = self.species[s][iy][ix] + dt * d * laplacian;
+                    *cell = self.species[s][iy][ix] + dt * d * laplacian;
                 }
             }
             self.species[s] = new_field;
@@ -696,8 +693,8 @@ mod tests {
         // place blob in center
         lat.phi[ny / 2][nx / 2] = 10.0;
         let idx = lat.idx(nx / 2, ny / 2);
-        for q in 0..5 {
-            lat.f[idx][q] = D2Q5_W[q] * 10.0;
+        for (q, &w) in D2Q5_W.iter().enumerate() {
+            lat.f[idx][q] = w * 10.0;
         }
         let mass0 = lat.total_mass();
         for _ in 0..10 {

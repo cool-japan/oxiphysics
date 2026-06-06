@@ -9,9 +9,6 @@
 //!
 //! No nalgebra dependency — all arrays are plain `f64` slices / `Vec`f64`.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // Activation helpers
 // ---------------------------------------------------------------------------

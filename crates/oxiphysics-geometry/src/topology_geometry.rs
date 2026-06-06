@@ -32,7 +32,6 @@ pub struct SimplicialComplex {
 
 impl SimplicialComplex {
     /// Creates an empty simplicial complex.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             vertices: Vec::new(),
@@ -43,7 +42,6 @@ impl SimplicialComplex {
     }
 
     /// Adds a vertex and returns its index.
-    #[allow(dead_code)]
     pub fn add_vertex(&mut self, pos: [f64; 3]) -> usize {
         let idx = self.vertices.len();
         self.vertices.push(pos);
@@ -51,7 +49,6 @@ impl SimplicialComplex {
     }
 
     /// Adds an edge if it is not already present.
-    #[allow(dead_code)]
     pub fn add_edge(&mut self, i: usize, j: usize) {
         let e = if i < j { [i, j] } else { [j, i] };
         if !self.edges.contains(&e) {
@@ -60,7 +57,6 @@ impl SimplicialComplex {
     }
 
     /// Adds a triangle.
-    #[allow(dead_code)]
     pub fn add_triangle(&mut self, i: usize, j: usize, k: usize) {
         let mut t = [i, j, k];
         t.sort_unstable();
@@ -70,7 +66,6 @@ impl SimplicialComplex {
     }
 
     /// Adds a tetrahedron.
-    #[allow(dead_code)]
     pub fn add_tetrahedron(&mut self, i: usize, j: usize, k: usize, l: usize) {
         let mut t = [i, j, k, l];
         t.sort_unstable();
@@ -80,32 +75,27 @@ impl SimplicialComplex {
     }
 
     /// Computes the Euler characteristic χ = V - E + F - T.
-    #[allow(dead_code)]
     pub fn euler_characteristic(&self) -> i64 {
         self.vertices.len() as i64 - self.edges.len() as i64 + self.triangles.len() as i64
             - self.tetrahedra.len() as i64
     }
 
     /// Returns the number of vertices V.
-    #[allow(dead_code)]
     pub fn n_vertices(&self) -> usize {
         self.vertices.len()
     }
 
     /// Returns the number of edges E.
-    #[allow(dead_code)]
     pub fn n_edges(&self) -> usize {
         self.edges.len()
     }
 
     /// Returns the number of triangles F.
-    #[allow(dead_code)]
     pub fn n_triangles(&self) -> usize {
         self.triangles.len()
     }
 
     /// Returns the number of tetrahedra T.
-    #[allow(dead_code)]
     pub fn n_tetrahedra(&self) -> usize {
         self.tetrahedra.len()
     }
@@ -113,7 +103,6 @@ impl SimplicialComplex {
     /// Builds the boundary operator ∂_1: edges → vertices as incidence matrix.
     ///
     /// Returns a |V| × |E| matrix (flat row-major).
-    #[allow(dead_code)]
     pub fn boundary_1(&self) -> Vec<i32> {
         let nv = self.vertices.len();
         let ne = self.edges.len();
@@ -128,7 +117,6 @@ impl SimplicialComplex {
     /// Builds the boundary operator ∂_2: triangles → edges.
     ///
     /// Returns a |E| × |F| matrix (flat row-major).
-    #[allow(dead_code)]
     pub fn boundary_2(&self) -> Vec<i32> {
         let ne = self.edges.len();
         let nf = self.triangles.len();
@@ -155,7 +143,6 @@ impl SimplicialComplex {
     ///
     /// Uses an octahedral approximation: 6 vertices, 12 edges, 8 triangles.
     /// Euler characteristic = 6 - 12 + 8 = 2.
-    #[allow(dead_code)]
     pub fn octahedral_sphere() -> Self {
         let mut sc = Self::new();
         // 6 vertices of octahedron
@@ -199,7 +186,6 @@ impl SimplicialComplex {
     ///
     /// Minimal triangulation: V=7, E=21, F=14, χ=0.
     /// Uses the complete graph K_7 triangulation of the torus.
-    #[allow(dead_code)]
     pub fn minimal_torus() -> Self {
         let mut sc = Self::new();
         for i in 0..7 {
@@ -253,13 +239,11 @@ pub struct BirthDeathPair {
 
 impl BirthDeathPair {
     /// Computes persistence = death - birth.
-    #[allow(dead_code)]
     pub fn persistence(&self) -> f64 {
         self.death - self.birth
     }
 
     /// Returns true if this is an essential class (death = ∞).
-    #[allow(dead_code)]
     pub fn is_essential(&self) -> bool {
         self.death.is_infinite()
     }
@@ -277,7 +261,6 @@ pub struct PersistentHomology {
 
 impl PersistentHomology {
     /// Creates an empty persistent homology.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self { pairs: Vec::new() }
     }
@@ -290,7 +273,6 @@ impl PersistentHomology {
     /// # Arguments
     /// * `points` - Point cloud as \[x,y,z\] array
     /// * `filtration_values` - Per-edge filtration values (distances)
-    #[allow(dead_code)]
     pub fn compute_0d(points: &[[f64; 3]]) -> Self {
         let n = points.len();
         if n == 0 {
@@ -342,7 +324,6 @@ impl PersistentHomology {
     }
 
     /// Returns all pairs in the persistence diagram.
-    #[allow(dead_code)]
     pub fn diagram(&self) -> &[BirthDeathPair] {
         &self.pairs
     }
@@ -351,7 +332,6 @@ impl PersistentHomology {
     ///
     /// # Arguments
     /// * `threshold` - Minimum persistence to count as a feature
-    #[allow(dead_code)]
     pub fn significant_features(&self, threshold: f64) -> usize {
         self.pairs
             .iter()
@@ -367,7 +347,6 @@ impl PersistentHomology {
     ///
     /// # Arguments
     /// * `other` - Other persistence diagram
-    #[allow(dead_code)]
     pub fn bottleneck_distance(&self, other: &Self) -> f64 {
         // Filter to finite pairs
         let d1: Vec<_> = self.pairs.iter().filter(|p| p.death.is_finite()).collect();
@@ -498,7 +477,6 @@ pub struct ReebArc {
 
 impl ReebGraph {
     /// Creates an empty Reeb graph.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
@@ -511,7 +489,6 @@ impl ReebGraph {
     /// # Arguments
     /// * `values` - Scalar function values at each vertex
     /// * `edges` - Edge connectivity of the mesh
-    #[allow(dead_code)]
     pub fn compute(values: &[f64], edges: &[[usize; 2]]) -> Self {
         let n = values.len();
         if n == 0 {
@@ -587,13 +564,11 @@ impl ReebGraph {
     }
 
     /// Returns the number of critical points.
-    #[allow(dead_code)]
     pub fn n_critical_points(&self) -> usize {
         self.nodes.len()
     }
 
     /// Returns the number of minima.
-    #[allow(dead_code)]
     pub fn n_minima(&self) -> usize {
         self.nodes
             .iter()
@@ -602,7 +577,6 @@ impl ReebGraph {
     }
 
     /// Returns the number of maxima.
-    #[allow(dead_code)]
     pub fn n_maxima(&self) -> usize {
         self.nodes
             .iter()
@@ -611,7 +585,6 @@ impl ReebGraph {
     }
 
     /// Returns the number of saddles.
-    #[allow(dead_code)]
     pub fn n_saddles(&self) -> usize {
         self.nodes
             .iter()
@@ -650,7 +623,6 @@ pub struct MorseCriticalPoint {
 
 impl MorseComplex {
     /// Creates an empty Morse complex.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             critical_points: Vec::new(),
@@ -663,7 +635,6 @@ impl MorseComplex {
     /// # Arguments
     /// * `values` - Scalar function values at each vertex
     /// * `edges` - Edge connectivity
-    #[allow(dead_code)]
     pub fn compute(values: &[f64], edges: &[[usize; 2]]) -> Self {
         let n = values.len();
         if n == 0 {
@@ -719,7 +690,6 @@ impl MorseComplex {
     }
 
     /// Returns the number of minima.
-    #[allow(dead_code)]
     pub fn n_minima(&self) -> usize {
         self.critical_points
             .iter()
@@ -728,7 +698,6 @@ impl MorseComplex {
     }
 
     /// Returns the number of saddles.
-    #[allow(dead_code)]
     pub fn n_saddles(&self) -> usize {
         self.critical_points
             .iter()
@@ -737,7 +706,6 @@ impl MorseComplex {
     }
 
     /// Returns the number of maxima.
-    #[allow(dead_code)]
     pub fn n_maxima(&self) -> usize {
         self.critical_points
             .iter()
@@ -746,7 +714,6 @@ impl MorseComplex {
     }
 
     /// Verifies Morse inequalities: saddles + 2 ≤ maxima + minima (approx).
-    #[allow(dead_code)]
     pub fn morse_relation_holds(&self) -> bool {
         let nm = self.n_minima();
         let ns = self.n_saddles();
@@ -784,7 +751,6 @@ impl AlphaComplex {
     /// # Arguments
     /// * `points` - Point cloud
     /// * `alpha` - Circumradius threshold (larger = more simplices)
-    #[allow(dead_code)]
     pub fn new(points: Vec<[f64; 3]>, alpha: f64) -> Self {
         let n = points.len();
         let mut edges = Vec::new();
@@ -822,7 +788,6 @@ impl AlphaComplex {
     }
 
     /// Returns the number of connected components at this alpha.
-    #[allow(dead_code)]
     pub fn n_components(&self) -> usize {
         let n = self.points.len();
         if n == 0 {
@@ -836,7 +801,6 @@ impl AlphaComplex {
     }
 
     /// Returns the simplicial complex at this alpha level.
-    #[allow(dead_code)]
     pub fn to_simplicial_complex(&self) -> SimplicialComplex {
         let mut sc = SimplicialComplex::new();
         for &p in &self.points {
@@ -853,7 +817,6 @@ impl AlphaComplex {
 }
 
 /// Circumradius of a triangle defined by three 3D points.
-#[allow(dead_code)]
 fn circumradius_3pts(a: &[f64; 3], b: &[f64; 3], c: &[f64; 3]) -> f64 {
     let ab = dist3(a, b);
     let bc = dist3(b, c);
@@ -868,7 +831,6 @@ fn circumradius_3pts(a: &[f64; 3], b: &[f64; 3], c: &[f64; 3]) -> f64 {
 }
 
 /// 3D Euclidean distance between two points.
-#[allow(dead_code)]
 fn dist3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
@@ -894,13 +856,11 @@ impl CheckerboardComplex {
     /// # Arguments
     /// * `dims` - Grid dimensions \[nx, ny\]
     /// * `data` - Binary values row-major
-    #[allow(dead_code)]
     pub fn new(dims: [usize; 2], data: Vec<bool>) -> Self {
         Self { dims, data }
     }
 
     /// Creates a filled disk of given radius in a grid.
-    #[allow(dead_code)]
     pub fn filled_disk(size: usize, radius: f64) -> Self {
         let cx = size as f64 / 2.0;
         let cy = size as f64 / 2.0;
@@ -915,7 +875,6 @@ impl CheckerboardComplex {
     }
 
     /// Creates an annulus (ring) in a grid.
-    #[allow(dead_code)]
     pub fn annulus(size: usize, r_inner: f64, r_outer: f64) -> Self {
         let cx = size as f64 / 2.0;
         let cy = size as f64 / 2.0;
@@ -931,7 +890,6 @@ impl CheckerboardComplex {
     }
 
     /// Counts the number of filled voxels.
-    #[allow(dead_code)]
     pub fn volume(&self) -> usize {
         self.data.iter().filter(|&&b| b).count()
     }
@@ -939,7 +897,6 @@ impl CheckerboardComplex {
     /// Computes the Euler characteristic via the cubical formula.
     ///
     /// χ = V - E + F for 2D cubical complex
-    #[allow(dead_code)]
     pub fn euler_characteristic_2d(&self) -> i64 {
         let nx = self.dims[0];
         let ny = self.dims[1];
@@ -997,7 +954,6 @@ impl BettiNumbers {
     /// * `sc` - Simplicial complex
     /// * `n_components` - Number of connected components (β_0)
     /// * `n_voids` - Number of enclosed voids (β_2, 0 for surfaces)
-    #[allow(dead_code)]
     pub fn from_simplicial_complex(
         sc: &SimplicialComplex,
         n_components: usize,
@@ -1015,13 +971,11 @@ impl BettiNumbers {
     }
 
     /// Returns the Euler characteristic χ = β_0 - β_1 + β_2.
-    #[allow(dead_code)]
     pub fn euler_characteristic(&self) -> i64 {
         self.beta_0 as i64 - self.beta_1 as i64 + self.beta_2 as i64
     }
 
     /// Creates Betti numbers directly.
-    #[allow(dead_code)]
     pub fn new(beta_0: usize, beta_1: usize, beta_2: usize) -> Self {
         Self {
             beta_0,
@@ -1045,7 +999,6 @@ impl TopologicalNoise {
     ///
     /// # Arguments
     /// * `threshold` - Minimum persistence to keep a feature
-    #[allow(dead_code)]
     pub fn new(threshold: f64) -> Self {
         Self { threshold }
     }
@@ -1054,7 +1007,6 @@ impl TopologicalNoise {
     ///
     /// # Arguments
     /// * `pairs` - Input persistence diagram
-    #[allow(dead_code)]
     pub fn filter(&self, pairs: &[BirthDeathPair]) -> Vec<BirthDeathPair> {
         pairs
             .iter()
@@ -1068,7 +1020,6 @@ impl TopologicalNoise {
     /// # Arguments
     /// * `pairs` - Persistence diagram
     /// * `dim` - Homological dimension
-    #[allow(dead_code)]
     pub fn count_features(&self, pairs: &[BirthDeathPair], dim: usize) -> usize {
         pairs
             .iter()

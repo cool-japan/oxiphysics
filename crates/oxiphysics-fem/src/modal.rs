@@ -1,5 +1,3 @@
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -172,7 +170,6 @@ pub fn inverse_iteration(
 // ---------------------------------------------------------------------------
 
 /// Normalization method for mode shapes.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NormalizationMethod {
     /// Mass normalization: φ^T M φ = 1
@@ -191,7 +188,6 @@ pub enum NormalizationMethod {
 /// * `mode_shape` - Mode shape vector (modified in-place)
 /// * `method` - Normalization method to apply
 /// * `mass` - Optional mass matrix (required for `Mass` normalization)
-#[allow(dead_code)]
 pub fn normalize_mode_shape(
     mode_shape: &mut [f64],
     method: NormalizationMethod,
@@ -237,7 +233,6 @@ pub fn normalize_mode_shape(
 /// MAC = |φ_a^T φ_b|^2 / (φ_a^T φ_a)(φ_b^T φ_b)
 ///
 /// Returns a value in \[0, 1\] where 1 indicates perfectly correlated modes.
-#[allow(dead_code)]
 pub fn mac_value(phi_a: &[f64], phi_b: &[f64]) -> f64 {
     assert_eq!(phi_a.len(), phi_b.len(), "mode shape lengths must match");
     let cross: f64 = dot(phi_a, phi_b);
@@ -254,7 +249,6 @@ pub fn mac_value(phi_a: &[f64], phi_b: &[f64]) -> f64 {
 /// Compute the full MAC matrix between two sets of mode shapes.
 ///
 /// Returns a matrix (`Vec<Vec`f64`>`) of size `modes_a.len()` x `modes_b.len()`.
-#[allow(dead_code)]
 pub fn mac_matrix(modes_a: &[Vec<f64>], modes_b: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let na = modes_a.len();
     let nb = modes_b.len();
@@ -272,7 +266,6 @@ pub fn mac_matrix(modes_a: &[Vec<f64>], modes_b: &[Vec<f64>]) -> Vec<Vec<f64>> {
 // ---------------------------------------------------------------------------
 
 /// Result of a Frequency Response Function computation at a single excitation frequency.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FrfResult {
     /// Excitation frequency ω (rad/s).
@@ -292,8 +285,6 @@ pub struct FrfResult {
 /// * `omega` - Excitation angular frequency (rad/s)
 /// * `damping_ratios` - Modal damping ratio ζ for each mode
 /// * `force_vector` - Applied force vector (one per DOF)
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn frequency_response_function(
     modal_result: &ModalResult,
     omega: f64,
@@ -364,7 +355,6 @@ pub fn frequency_response_function(
 /// * `omega_range` - Slice of excitation frequencies
 /// * `damping_ratios` - Modal damping ratios
 /// * `force_vector` - Applied force vector
-#[allow(dead_code)]
 pub fn frf_sweep(
     modal_result: &ModalResult,
     omega_range: &[f64],
@@ -384,7 +374,6 @@ pub fn frf_sweep(
 // ---------------------------------------------------------------------------
 
 /// Result of harmonic analysis at a single frequency.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HarmonicResult {
     /// Excitation frequency ω (rad/s).
@@ -409,8 +398,6 @@ pub struct HarmonicResult {
 /// * `alpha` - Mass-proportional damping coefficient
 /// * `beta` - Stiffness-proportional damping coefficient
 /// * `force_vector` - Applied harmonic force vector
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn harmonic_analysis(
     stiffness: &CsrMatrix,
     mass: &CsrMatrix,
@@ -515,7 +502,6 @@ pub fn harmonic_analysis(
 ///
 /// # Returns
 /// Vector of displacement vectors, one per time step.
-#[allow(dead_code)]
 pub fn modal_superposition(
     modal_result: &ModalResult,
     damping_ratios: &[f64],
@@ -601,10 +587,10 @@ pub fn modal_superposition(
 
         // Reconstruct physical displacement: u = Σ_r φ_r q_r
         let mut u = vec![0.0; n_dof];
-        for r in 0..n_modes {
+        for (r, &qr) in q.iter().enumerate().take(n_modes) {
             let phi_r = &modal_result.mode_shapes[r];
             for i in 0..n_dof.min(phi_r.len()) {
-                u[i] += phi_r[i] * q[r];
+                u[i] += phi_r[i] * qr;
             }
         }
         results.push(u);
@@ -624,7 +610,6 @@ pub fn modal_superposition(
 /// * `mode_shapes` - Mode shape vectors
 /// * `mass` - Mass matrix
 /// * `direction` - Direction vector (length n_dof, usually a rigid-body mode)
-#[allow(dead_code)]
 pub fn effective_modal_mass(
     mode_shapes: &[Vec<f64>],
     mass: &CsrMatrix,
@@ -812,19 +797,15 @@ mod tests {
             vec![0.0, 0.0, 1.0],
         ];
         let mac = mac_matrix(&modes, &modes);
-        for i in 0..3 {
+        for (i, row) in mac.iter().enumerate() {
             assert!(
-                (mac[i][i] - 1.0).abs() < 1e-12,
+                (row[i] - 1.0).abs() < 1e-12,
                 "diagonal MAC[{i}][{i}] = {}",
-                mac[i][i]
+                row[i]
             );
-            for j in 0..3 {
+            for (j, &val) in row.iter().enumerate() {
                 if i != j {
-                    assert!(
-                        mac[i][j].abs() < 1e-12,
-                        "off-diagonal MAC[{i}][{j}] = {}",
-                        mac[i][j]
-                    );
+                    assert!(val.abs() < 1e-12, "off-diagonal MAC[{i}][{j}] = {}", val);
                 }
             }
         }
@@ -985,7 +966,6 @@ mod tests {
 // ---------------------------------------------------------------------------
 
 /// Result of a Lanczos iteration.
-#[allow(dead_code)]
 pub struct LanczosResult {
     /// Approximate eigenvalues (angular frequencies squared ω²).
     pub eigenvalues: Vec<f64>,
@@ -1007,7 +987,6 @@ pub struct LanczosResult {
 /// 3. Build tridiagonal T from α and β recurrences.
 /// 4. Solve T y = θ y (small eigenproblem via bisection/QR).
 /// 5. Ritz vectors: x_i = V y_i (approximate mode shapes).
-#[allow(dead_code)]
 pub fn lanczos_iteration(
     stiffness: &CsrMatrix,
     mass: &CsrMatrix,
@@ -1241,7 +1220,6 @@ fn tridiagonal_eigenvalues(diag: &[f64], offdiag: &[f64], max_iter: usize) -> Ve
 // ---------------------------------------------------------------------------
 
 /// Configuration for modal truncation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ModalTruncationConfig {
     /// Fraction of total effective mass that must be captured.
@@ -1266,7 +1244,6 @@ impl Default for ModalTruncationConfig {
 /// effective mass in a specified direction.
 ///
 /// Returns the truncated index (number of modes to use).
-#[allow(dead_code)]
 pub fn modal_truncation(
     mode_shapes: &[Vec<f64>],
     mass: &CsrMatrix,
@@ -1294,7 +1271,6 @@ pub fn modal_truncation(
 ///
 /// Participation factor for mode r: Γ_r = φ_r^T M L
 /// where L is the direction vector (rigid body mode).
-#[allow(dead_code)]
 pub fn participation_factors(
     mode_shapes: &[Vec<f64>],
     mass: &CsrMatrix,
@@ -1307,7 +1283,6 @@ pub fn participation_factors(
 /// Cumulative effective mass fraction as a function of mode count.
 ///
 /// Returns a vector of cumulative mass fractions (0..1), one per mode.
-#[allow(dead_code)]
 pub fn cumulative_mass_fraction(
     mode_shapes: &[Vec<f64>],
     mass: &CsrMatrix,
@@ -1333,7 +1308,6 @@ pub fn cumulative_mass_fraction(
 // ---------------------------------------------------------------------------
 
 /// Ground acceleration record for response spectrum analysis.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GroundMotion {
     /// Time values (seconds).
@@ -1343,7 +1317,6 @@ pub struct GroundMotion {
 }
 
 /// Response spectrum data: peak response vs. natural period.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ResponseSpectrum {
     /// Natural periods T (seconds).
@@ -1362,7 +1335,6 @@ pub struct ResponseSpectrum {
 /// 1. Compute ω = 2π/T
 /// 2. Integrate the SDOF equation: ẍ + 2ζω ẋ + ω²x = -ẍ_g(t)
 /// 3. Record peak absolute values of x, ẋ, ω²x
-#[allow(dead_code)]
 pub fn compute_response_spectrum(
     ground_motion: &GroundMotion,
     periods: &[f64],
@@ -1474,7 +1446,6 @@ pub fn compute_response_spectrum(
 /// 3. Combine using SRSS rule
 ///
 /// Returns the SRSS-combined peak displacement at each DOF.
-#[allow(dead_code)]
 pub fn response_spectrum_analysis(
     modal_result: &ModalResult,
     mass: &CsrMatrix,
@@ -1489,7 +1460,7 @@ pub fn response_spectrum_analysis(
     // SRSS combination
     let mut u_srss = vec![0.0; n_dof];
 
-    for r in 0..n_modes {
+    for (r, &pfr) in pf.iter().enumerate().take(n_modes) {
         let omega_r = modal_result.frequencies[r];
         let t_r = if omega_r > 1e-10 {
             2.0 * PI / omega_r
@@ -1507,7 +1478,7 @@ pub fn response_spectrum_analysis(
 
         let phi_r = &modal_result.mode_shapes[r];
         for i in 0..n_dof.min(phi_r.len()) {
-            let u_modal = phi_r[i] * pf[r] * sd;
+            let u_modal = phi_r[i] * pfr * sd;
             u_srss[i] += u_modal * u_modal;
         }
     }
@@ -1527,7 +1498,7 @@ fn interpolate_spectrum(periods: &[f64], values: &[f64], t: f64, _zeta: f64) -> 
         return *values.last().expect("values is non-empty");
     }
     for i in 0..periods.len() - 1 {
-        if t >= periods[i] && t <= periods[i + 1] {
+        if (periods[i]..=periods[i + 1]).contains(&t) {
             let alpha = (t - periods[i]) / (periods[i + 1] - periods[i]);
             return values[i] + alpha * (values[i + 1] - values[i]);
         }
@@ -1616,7 +1587,7 @@ mod tests_extended {
             static_correction: false,
         };
         let n_keep = modal_truncation(&modes, &m, &dir, &config);
-        assert!(n_keep >= 1 && n_keep <= 4, "n_keep = {n_keep}");
+        assert!((1..=4).contains(&n_keep), "n_keep = {n_keep}");
     }
 
     #[test]

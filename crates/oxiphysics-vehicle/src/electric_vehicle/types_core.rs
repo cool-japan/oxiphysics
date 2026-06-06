@@ -5,8 +5,6 @@
 use std::collections::VecDeque;
 
 use super::functions::soc_to_ocv;
-#[allow(unused_imports)]
-use super::functions::*;
 
 /// Smart charging scheduler using LP-inspired greedy algorithm.
 #[derive(Debug, Clone)]
@@ -851,7 +849,6 @@ impl EvDrivetrain {
     /// * `front_ratio`                  — fraction of total torque to front axle.
     /// * `final_drive`                  — combined drive ratio.
     /// * `tv_gain`                      — torque vectoring gain (N·m/(rad/s)).
-    #[allow(clippy::too_many_arguments)]
     pub fn dual_motor_awd(
         front_torque: f64,
         front_speed_rpm: f64,

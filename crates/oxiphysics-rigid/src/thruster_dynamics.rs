@@ -18,9 +18,6 @@
 //! - [`thrust_allocation_pseudoinverse`] — minimum-norm wrench allocation.
 //! - [`required_battery_capacity`] — required battery capacity in Ah.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────

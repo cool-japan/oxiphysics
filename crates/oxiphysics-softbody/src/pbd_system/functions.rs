@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use super::types::{ConstraintColoring, PbdConstraint, PbdConstraintType, PbdParticle, PbdSystem};
 
 /// Euclidean distance between two 3-D points.
@@ -40,7 +39,7 @@ pub(super) fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// Adjusts the predicted positions of particles `i` and `j` so that their
 /// separation approaches `rest`.
 pub fn solve_distance_xpbd(
-    particles: &mut Vec<PbdParticle>,
+    particles: &mut [PbdParticle],
     i: usize,
     j: usize,
     rest: f64,
@@ -216,7 +215,7 @@ pub fn solve_triangle_collision(
 ///
 /// This is O(n²) and only suitable for small systems.
 pub fn solve_self_collision_all_pairs(
-    particles: &mut Vec<PbdParticle>,
+    particles: &mut [PbdParticle],
     min_distance: f64,
     stiffness: f64,
 ) {
@@ -247,7 +246,7 @@ pub fn solve_self_collision_all_pairs(
 ///
 /// Divides space into a grid and only checks nearby particles.
 pub fn solve_self_collision_grid(
-    particles: &mut Vec<PbdParticle>,
+    particles: &mut [PbdParticle],
     min_distance: f64,
     stiffness: f64,
     cell_size: f64,
@@ -266,8 +265,8 @@ pub fn solve_self_collision_grid(
         )
     };
     let mut grid: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
-    for i in 0..n {
-        let key = cell_key(particles[i].predicted);
+    for (i, p) in particles.iter().enumerate() {
+        let key = cell_key(p.predicted);
         grid.entry(key).or_default().push(i);
     }
     let mut pairs: Vec<(usize, usize)> = Vec::new();
@@ -315,7 +314,7 @@ pub fn solve_self_collision_grid(
 ///
 /// Implemented as a stiff spring pulling the particle toward `target`.
 pub fn solve_cloth_rigid_attachment(
-    particles: &mut Vec<PbdParticle>,
+    particles: &mut [PbdParticle],
     particle_idx: usize,
     target: [f64; 3],
     stiffness: f64,
@@ -433,7 +432,7 @@ pub fn xpbd_step_colored(system: &mut PbdSystem, dt: f64, coloring: &ConstraintC
 /// Solve distance constraints using the Jacobi style (all corrections computed
 /// before any are applied).
 pub fn solve_distance_jacobi(
-    particles: &mut Vec<PbdParticle>,
+    particles: &mut [PbdParticle],
     constraints: &[PbdConstraint],
     dt: f64,
 ) {
@@ -489,7 +488,7 @@ pub fn solve_distance_jacobi(
 /// toward the center-of-mass velocity.
 ///
 /// `alpha` in \[0,1\]: 0 = no damping, 1 = full damping to COM velocity.
-pub fn apply_position_damping(particles: &mut Vec<PbdParticle>, alpha: f64) {
+pub fn apply_position_damping(particles: &mut [PbdParticle], alpha: f64) {
     let n = particles.len();
     if n == 0 {
         return;
@@ -502,27 +501,27 @@ pub fn apply_position_damping(particles: &mut Vec<PbdParticle>, alpha: f64) {
         }
         let m = 1.0 / p.inv_mass;
         total_m += m;
-        for k in 0..3 {
-            com_v[k] += m * p.velocity[k];
+        for (cv, pv) in com_v.iter_mut().zip(p.velocity.iter()) {
+            *cv += m * pv;
         }
     }
     if total_m < 1e-30 {
         return;
     }
-    for k in 0..3 {
-        com_v[k] /= total_m;
+    for cv in com_v.iter_mut() {
+        *cv /= total_m;
     }
     for p in particles.iter_mut() {
         if p.fixed || p.inv_mass < 1e-30 {
             continue;
         }
-        for k in 0..3 {
-            p.velocity[k] = p.velocity[k] * (1.0 - alpha) + com_v[k] * alpha;
+        for (pv, cv) in p.velocity.iter_mut().zip(com_v.iter()) {
+            *pv = *pv * (1.0 - alpha) + cv * alpha;
         }
     }
 }
 /// Apply per-axis velocity damping: scale velocity by `(1 - damping_coeff)`.
-pub fn apply_velocity_damping(particles: &mut Vec<PbdParticle>, damping_coeff: f64) {
+pub fn apply_velocity_damping(particles: &mut [PbdParticle], damping_coeff: f64) {
     let scale = (1.0 - damping_coeff).max(0.0);
     for p in particles.iter_mut() {
         if p.fixed {

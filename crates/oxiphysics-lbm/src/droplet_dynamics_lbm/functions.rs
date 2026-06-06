@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_range_contains)]
 /// Ranz-Marshall Sherwood number correlation.
 ///
 /// Sh = 2 + 0.6 Re^0.5 Sc^(1/3)
@@ -254,7 +253,7 @@ mod tests {
         let lbm = DropletLBM::new(10, 1.0, 0.01, 2, 7);
         for i in 0..10 {
             let phi = lbm.phase_field(i);
-            assert!(phi >= -1.0 && phi <= 1.0, "phi[{i}]={phi}");
+            assert!((-1.0_f64..=1.0).contains(&phi), "phi[{i}]={phi}");
         }
     }
     #[test]
@@ -488,7 +487,7 @@ mod tests_new {
     fn test_ch_lbm_phi_range() {
         let ch = CahnHilliardLbm::new_circular_droplet(16, 16, 4.0, 1.0, 1e-5);
         for &phi in &ch.phi {
-            assert!(phi >= -2.0 && phi <= 2.0, "phi out of range: {phi}");
+            assert!((-2.0_f64..=2.0).contains(&phi), "phi out of range: {phi}");
         }
     }
     #[test]
@@ -706,13 +705,16 @@ mod tests_new {
         let mut ca = ContactAngle::from_energies(0.072, 0.040, 0.030);
         ca.solid_fraction = 0.5;
         let theta_cb = ca.cassie_baxter_angle();
-        assert!(theta_cb >= 0.0 && theta_cb <= PI);
+        assert!((0.0..=PI).contains(&theta_cb));
     }
     #[test]
     fn test_contact_angle_capillary_length_positive() {
         let ca = ContactAngle::from_energies(0.072, 0.040, 0.030);
         let lc = ca.capillary_length(1000.0, 9.81);
-        assert!(lc > 0.0 && lc < 0.01, "capillary length ~2.7mm: {lc}");
+        assert!(
+            (0.0_f64..0.01).contains(&lc) && lc != 0.0,
+            "capillary length ~2.7mm: {lc}"
+        );
     }
     #[test]
     fn test_contact_angle_superhydrophobic() {

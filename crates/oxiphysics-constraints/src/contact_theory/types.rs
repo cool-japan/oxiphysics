@@ -2,14 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// 3D impact mechanics for two colliding bodies.
 ///
 /// Computes post-impact velocities for both bodies.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ImpactMechanics {
     /// Mass of body A (kg).
@@ -117,21 +114,21 @@ impl MachineLearningContact {
         let n_h = self.hidden_size;
         let n_out = self.output_size;
         let mut h = vec![0.0f64; n_h];
-        for i in 0..n_h {
-            let mut s = self.b1[i];
+        for (i, (h_i, b1_i)) in h.iter_mut().zip(self.b1.iter()).enumerate() {
+            let mut s = *b1_i;
             for j in 0..n_in {
                 let x_j = if j < input.len() { input[j] } else { 0.0 };
                 s += self.w1[i * n_in + j] * x_j;
             }
-            h[i] = s.max(0.0);
+            *h_i = s.max(0.0);
         }
         let mut out = vec![0.0f64; n_out];
-        for i in 0..n_out {
-            let mut s = self.b2[i];
-            for j in 0..n_h {
-                s += self.w2[i * n_h + j] * h[j];
+        for (i, (out_i, b2_i)) in out.iter_mut().zip(self.b2.iter()).enumerate() {
+            let mut s = *b2_i;
+            for (j, h_j) in h.iter().enumerate() {
+                s += self.w2[i * n_h + j] * h_j;
             }
-            out[i] = s;
+            *out_i = s;
         }
         out
     }
@@ -142,31 +139,35 @@ impl MachineLearningContact {
         let n_out = self.output_size;
         let mut h_pre = vec![0.0f64; n_h];
         let mut h = vec![0.0f64; n_h];
-        for i in 0..n_h {
-            let mut s = self.b1[i];
+        for (i, (h_i, (hp_i, b1_i))) in h
+            .iter_mut()
+            .zip(h_pre.iter_mut().zip(self.b1.iter()))
+            .enumerate()
+        {
+            let mut s = *b1_i;
             for j in 0..n_in {
                 let x_j = if j < input.len() { input[j] } else { 0.0 };
                 s += self.w1[i * n_in + j] * x_j;
             }
-            h_pre[i] = s;
-            h[i] = s.max(0.0);
+            *hp_i = s;
+            *h_i = s.max(0.0);
         }
         let out = self.predict(input);
         let mut d_out = vec![0.0f64; n_out];
-        for i in 0..n_out {
+        for (i, (do_i, out_i)) in d_out.iter_mut().zip(out.iter()).enumerate() {
             let t_i = if i < target.len() { target[i] } else { 0.0 };
-            d_out[i] = out[i] - t_i;
+            *do_i = out_i - t_i;
         }
         let mut d_h = vec![0.0f64; n_h];
-        for j in 0..n_h {
-            for i in 0..n_out {
-                d_h[j] += self.w2[i * n_h + j] * d_out[i];
+        for (j, dh_j) in d_h.iter_mut().enumerate() {
+            for (i, do_i) in d_out.iter().enumerate() {
+                *dh_j += self.w2[i * n_h + j] * do_i;
             }
         }
-        for i in 0..n_out {
-            self.b2[i] -= lr * d_out[i];
-            for j in 0..n_h {
-                self.w2[i * n_h + j] -= lr * d_out[i] * h[j];
+        for (i, (do_i, b2_i)) in d_out.iter().zip(self.b2.iter_mut()).enumerate() {
+            *b2_i -= lr * do_i;
+            for (j, h_j) in h.iter().enumerate() {
+                self.w2[i * n_h + j] -= lr * do_i * h_j;
             }
         }
         let d_h_pre: Vec<f64> = d_h
@@ -174,17 +175,16 @@ impl MachineLearningContact {
             .zip(h_pre.iter())
             .map(|(&dh, &hp)| if hp > 0.0 { dh } else { 0.0 })
             .collect();
-        for i in 0..n_h {
-            self.b1[i] -= lr * d_h_pre[i];
+        for (i, (dhp_i, b1_i)) in d_h_pre.iter().zip(self.b1.iter_mut()).enumerate() {
+            *b1_i -= lr * dhp_i;
             for j in 0..n_in {
                 let x_j = if j < input.len() { input[j] } else { 0.0 };
-                self.w1[i * n_in + j] -= lr * d_h_pre[i] * x_j;
+                self.w1[i * n_in + j] -= lr * dhp_i * x_j;
             }
         }
     }
 }
 /// Tribological contact interface with wear and friction modeling.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TribologicalContact {
     /// Archard wear coefficient K (dimensionless).
@@ -280,13 +280,13 @@ impl ContactGraph {
             return Vec::new();
         }
         let mut parent: Vec<usize> = (0..n).collect();
-        fn find(parent: &mut Vec<usize>, x: usize) -> usize {
+        fn find(parent: &mut [usize], x: usize) -> usize {
             if parent[x] != x {
                 parent[x] = find(parent, parent[x]);
             }
             parent[x]
         }
-        fn union(parent: &mut Vec<usize>, a: usize, b: usize) {
+        fn union(parent: &mut [usize], a: usize, b: usize) {
             let ra = find(parent, a);
             let rb = find(parent, b);
             if ra != rb {
@@ -316,7 +316,6 @@ impl ContactGraph {
     }
 }
 /// Elasto-plastic contact material with strain hardening.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ElastoPlasticMaterial {
     /// Young's modulus (Pa).
@@ -477,8 +476,8 @@ impl LcpSolver {
             let mut max_change = 0.0_f64;
             for i in 0..n {
                 let mut w_i = lcp.q[i];
-                for j in 0..n {
-                    w_i += lcp.m[i * n + j] * z[j];
+                for (j, z_j) in z.iter().enumerate() {
+                    w_i += lcp.m[i * n + j] * z_j;
                 }
                 let m_ii = lcp.m[i * n + i];
                 if m_ii.abs() > self.epsilon {
@@ -495,8 +494,8 @@ impl LcpSolver {
         let w: Vec<f64> = (0..n)
             .map(|i| {
                 let mut wi = lcp.q[i];
-                for j in 0..n {
-                    wi += lcp.m[i * n + j] * z[j];
+                for (j, z_j) in z.iter().enumerate() {
+                    wi += lcp.m[i * n + j] * z_j;
                 }
                 wi
             })
@@ -515,7 +514,7 @@ impl LcpSolver {
     /// Lemke's algorithm single pivot step.
     ///
     /// Returns the entering variable index, or `None` if no valid pivot.
-    pub fn lemke_step(tableau: &mut Vec<f64>, n: usize, entering: usize) -> Option<usize> {
+    pub fn lemke_step(tableau: &mut [f64], n: usize, entering: usize) -> Option<usize> {
         let rows = n + 1;
         let cols = 2 * n + 2;
         let mut min_ratio = f64::INFINITY;
@@ -561,7 +560,6 @@ impl LcpSolver {
 ///
 /// Extension of Hertz theory to elastic-plastic regime using
 /// piecewise: elastic → Hertz, elastic-plastic → Thornton, fully plastic.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ThorntonContact {
     /// Reduced elastic modulus E* (Pa).
@@ -625,7 +623,6 @@ impl ThorntonContact {
 ///
 /// Models a surface as a population of spherical asperities with heights
 /// following a Gaussian (or exponential) distribution.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GreenwoodWilliamson {
     /// Asperity density (1/m²).
@@ -787,7 +784,6 @@ impl ContactDamping {
 ///
 /// Extends Hertz theory to include energy dissipation:
 /// F = k * δ^n * (1 + α * δ̇)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HuntCrossleyContact {
     /// Hertz stiffness k (N/m^n).
@@ -842,7 +838,6 @@ impl HuntCrossleyContact {
 ///
 /// Suitable for stiff, small-radius contacts with short-range adhesion.
 /// Contact radius follows Hertz, but pull-off force = 2πWR*.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DmtContact {
     /// Reduced elastic modulus E* (Pa).
@@ -896,7 +891,6 @@ impl DmtContact {
 ///
 /// Gives displacement and stress fields in a half-space due to
 /// a concentrated normal load P at the surface.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BoussinesqHalfSpace {
     /// Young's modulus E (Pa).
@@ -1164,7 +1158,6 @@ impl PenetrationHandling {
 /// JKR (Johnson-Kendall-Roberts, 1971) adhesive contact model.
 ///
 /// Extends Hertz theory with surface adhesion via work of adhesion W.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct JkrContact {
     /// Reduced elastic modulus E* (Pa).
@@ -1230,7 +1223,6 @@ impl JkrContact {
     }
 }
 /// Hertz contact pressure distribution over the contact patch.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HertzPressureDistribution {
     /// Contact radius a (m).
@@ -1356,7 +1348,6 @@ impl ImpulseBasedSolver {
 /// Chang-Etsion-Bogy (1987) single asperity elastic-plastic contact.
 ///
 /// Combines Hertz theory (elastic regime) with fully plastic regime.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CebAsperity {
     /// Asperity tip radius (m).
@@ -1408,7 +1399,6 @@ impl CebAsperity {
 ///
 /// Computes tangential stiffness and slip for a Hertz contact under
 /// combined normal and tangential loading.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MindlinContact {
     /// Hertz contact radius a (m).

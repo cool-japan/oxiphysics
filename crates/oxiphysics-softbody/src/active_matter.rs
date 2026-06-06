@@ -6,9 +6,6 @@
 //! Implements the Vicsek flocking model, run-and-tumble bacterial motility,
 //! active nematic liquid crystals, and motility-induced phase separation (MIPS).
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -22,16 +19,6 @@ fn normalise2(v: [f64; 2]) -> [f64; 2] {
         [1.0, 0.0]
     } else {
         [v[0] / n, v[1] / n]
-    }
-}
-
-/// Normalise a 3-vector; returns \[1, 0, 0\] for near-zero input.
-fn normalise3(v: [f64; 3]) -> [f64; 3] {
-    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if n < 1e-14 {
-        [1.0, 0.0, 0.0]
-    } else {
-        [v[0] / n, v[1] / n, v[2] / n]
     }
 }
 

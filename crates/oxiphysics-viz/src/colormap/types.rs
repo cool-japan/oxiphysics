@@ -3,8 +3,6 @@
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use crate::primitives::Color;
 
 /// A detailed legend for a colormap, including raster and tick labels.
@@ -104,7 +102,6 @@ pub enum InterpolationMode {
     Step,
 }
 /// A color stop used by `CustomColormapBuilder` and `SplineColormap`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ColorStop {
     /// Position in \[0, 1\].
@@ -122,14 +119,12 @@ impl ColorStop {
 /// Stops are stored sorted by `t`.  When fewer than two stops are provided,
 /// [`build`](CustomColormapBuilder::build) will still return a valid (constant)
 /// colormap that clamps to the single stop color.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct CustomColormapBuilder {
     pub(super) stops: Vec<ColorStop>,
     /// Interpolation mode applied when sampling the built colormap.
     pub interpolation: LinearInterp,
 }
-#[allow(dead_code)]
 impl CustomColormapBuilder {
     /// Create a new builder with no stops.
     pub fn new() -> Self {
@@ -326,7 +321,6 @@ impl ColorMap {
 /// A colormap that wraps smoothly at `t = 0` / `t = 1`.
 ///
 /// Useful for periodic data such as angles, phases, or times of day.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CyclicColormap {
     /// The cyclic color style variant to use.
@@ -334,7 +328,6 @@ pub struct CyclicColormap {
     /// Number of full cycles across \[0, 1\].  Default is 1.
     pub cycles: f64,
 }
-#[allow(dead_code)]
 impl CyclicColormap {
     /// Create a new cyclic colormap with a given style and one cycle.
     pub fn new(style: CyclicStyle) -> Self {
@@ -374,7 +367,6 @@ impl CyclicColormap {
 /// Unlike [`CyclicStyle::HsvWheel`] which always cycles fully, `HsvColormap`
 /// can sweep a *partial* hue range and supports configurable saturation and
 /// value (brightness).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HsvColormap {
     /// Starting hue in \[0, 1\] (0 = red, 1/3 = green, 2/3 = blue).
@@ -386,7 +378,6 @@ pub struct HsvColormap {
     /// Value / brightness (0 = black, 1 = full brightness).
     pub value: f64,
 }
-#[allow(dead_code)]
 impl HsvColormap {
     /// Full rainbow from red → violet.
     pub fn rainbow() -> Self {
@@ -434,7 +425,6 @@ impl HsvColormap {
     }
 }
 /// Linear interpolation strategy marker used by `CustomColormapBuilder`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LinearInterp {
     /// Simple linear blend between adjacent stops.
@@ -491,7 +481,6 @@ impl CategoricalColormap {
     }
 }
 /// Style of cyclic (wrapping) colormap.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CyclicStyle {
     /// Full HSV hue wheel: hue rotates 0 → 360° and wraps.
@@ -505,12 +494,10 @@ pub enum CyclicStyle {
 ///
 /// For fewer than four stops the implementation falls back to linear blending
 /// so the API remains consistent regardless of the number of stops.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SplineColormap {
     pub(super) stops: Vec<ColorStop>,
 }
-#[allow(dead_code)]
 impl SplineColormap {
     /// Create a spline colormap from a list of `(t, color)` pairs.
     pub fn new(stops: impl IntoIterator<Item = (f64, Color)>) -> Self {

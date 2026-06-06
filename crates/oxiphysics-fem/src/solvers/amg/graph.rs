@@ -3,8 +3,6 @@
 
 //! C/F splitting and strong-connection graph for classical AMG.
 
-#![allow(dead_code)]
-
 use std::collections::BinaryHeap;
 
 use crate::parallel_solver::CsrMatrix;
@@ -16,12 +14,11 @@ use crate::parallel_solver::CsrMatrix;
 /// `max_neg_off_diag` is the maximum of all negated off-diagonal entries in row `i`.
 ///
 /// This is the standard Ruge-Stüben measure for M-matrices.
-#[allow(clippy::needless_range_loop)]
 pub fn strong_connections(a: &CsrMatrix, theta: f64) -> Vec<Vec<usize>> {
     let n = a.nrows;
     let mut strong = vec![Vec::new(); n];
 
-    for i in 0..n {
+    for (i, strong_row) in strong.iter_mut().enumerate() {
         let rs = a.row_offsets[i];
         let re = a.row_offsets[i + 1];
 
@@ -46,7 +43,7 @@ pub fn strong_connections(a: &CsrMatrix, theta: f64) -> Vec<Vec<usize>> {
         for k in rs..re {
             let j = a.col_indices[k];
             if j != i && -a.values[k] >= threshold {
-                strong[i].push(j);
+                strong_row.push(j);
             }
         }
     }
@@ -67,7 +64,6 @@ pub fn strong_connections(a: &CsrMatrix, theta: f64) -> Vec<Vec<usize>> {
 ///
 /// **Phase 2**: For each F-point with no C-point among its strong neighbors,
 /// promote it to a C-point.
-#[allow(clippy::needless_range_loop)]
 pub fn cf_splitting(strong: &[Vec<usize>]) -> Vec<bool> {
     let n = strong.len();
 

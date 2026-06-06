@@ -2,14 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use oxiphysics_core::math::Vec3;
-
-#[allow(unused_imports)]
+#[cfg(test)]
 use crate::simulation::types::*;
-#[allow(unused_imports)]
+#[cfg(test)]
 use crate::simulation::types_sim::*;
+#[cfg(test)]
+use oxiphysics_core::math::Vec3;
 
 #[cfg(test)]
 mod tests {
@@ -455,8 +453,8 @@ mod tests_periodic {
             sim.step();
         }
         let mom = sim.total_momentum();
-        for k in 0..3 {
-            assert!(mom[k].is_finite(), "momentum[{k}] not finite: {}", mom[k]);
+        for (k, &m) in mom.iter().enumerate() {
+            assert!(m.is_finite(), "momentum[{k}] not finite: {}", m);
         }
     }
     /// Surface tension step: total energy must remain finite.
@@ -516,8 +514,8 @@ mod tests_periodic {
             2.0,
         ));
         let mom = sim.total_momentum();
-        for k in 0..3 {
-            assert!(mom[k].is_finite(), "momentum[{k}] not finite");
+        for (k, &m) in mom.iter().enumerate() {
+            assert!(m.is_finite(), "momentum[{k}] not finite");
         }
     }
     /// `SphSimulation::total_energy` returns finite value.
@@ -686,8 +684,8 @@ mod tests_wcsph_sim {
         let mut sim = make_sim_with_particles(8);
         sim.step(1e-4);
         let mom = sim.total_momentum();
-        for k in 0..3 {
-            assert!(mom[k].is_finite(), "momentum[{k}] must be finite");
+        for (k, &m) in mom.iter().enumerate() {
+            assert!(m.is_finite(), "momentum[{k}] must be finite");
         }
     }
     #[test]
@@ -1292,8 +1290,8 @@ mod tests_simulation_ext {
         let mut sim = TwoPhaseSimState::new(a, b, 0.07);
         sim.step();
         let mom = sim.total_momentum();
-        for k in 0..3 {
-            assert!(mom[k].is_finite());
+        for &m in &mom {
+            assert!(m.is_finite());
         }
     }
     #[test]
@@ -1370,8 +1368,8 @@ mod tests_simulation_ext {
         let mut sim = SphSimulation::new(params);
         sim.add_particle_raw([0.5, 0.5, 0.5], [0.0; 3], 1.0);
         let mom = sim.total_momentum();
-        for k in 0..3 {
-            assert_eq!(mom[k], 0.0);
+        for &m in &mom {
+            assert_eq!(m, 0.0);
         }
     }
     #[test]
@@ -1417,8 +1415,8 @@ mod tests_simulation_ext {
         let cfg = SphSimConfig::default_water();
         let sim = SphSim::new(cfg, 4);
         let p = sim.linear_momentum();
-        for k in 0..3 {
-            assert_eq!(p[k], 0.0);
+        for &pk in &p {
+            assert_eq!(pk, 0.0);
         }
     }
     #[test]

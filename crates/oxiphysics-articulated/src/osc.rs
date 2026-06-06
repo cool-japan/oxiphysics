@@ -70,7 +70,6 @@ pub fn compute_lambda(
 ///
 /// Returns `None` if `A` is not positive-definite (diagonal entry ≤ 0 after
 /// subtraction). `A` must be symmetric positive-definite.
-#[allow(clippy::needless_range_loop)]
 fn cholesky_lower(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
     let n = a.len();
     let mut l = vec![vec![0.0f64; n]; n];
@@ -79,8 +78,8 @@ fn cholesky_lower(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
     for i in 0..n {
         for j in 0..=i {
             let mut sum = a[i][j];
-            for k in 0..j {
-                sum -= l[i][k] * l[j][k];
+            for (l_ik, l_jk) in l[i][..j].iter().zip(l[j][..j].iter()) {
+                sum -= l_ik * l_jk;
             }
             if i == j {
                 if sum <= 0.0 {
@@ -96,7 +95,6 @@ fn cholesky_lower(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
 }
 
 /// Solve L · L^T · x = b using forward/backward substitution.
-#[allow(clippy::needless_range_loop)]
 fn cholesky_solve(l: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
     let n = l.len();
     // Forward substitution: L · y = b
@@ -123,7 +121,6 @@ fn cholesky_solve(l: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
 }
 
 /// Invert a 6×6 matrix via Gauss-Jordan elimination with partial pivoting.
-#[allow(clippy::needless_range_loop)]
 fn invert_6x6(a: [[f64; 6]; 6]) -> Option<[[f64; 6]; 6]> {
     let mut aug = [[0.0f64; 12]; 6];
     // Build augmented matrix [A | I]
@@ -139,9 +136,13 @@ fn invert_6x6(a: [[f64; 6]; 6]) -> Option<[[f64; 6]; 6]> {
         // Partial pivot: find row with largest absolute value in this column
         let mut max_row = col;
         let mut max_val = aug[col][col].abs();
-        for row in col + 1..6 {
-            if aug[row][col].abs() > max_val {
-                max_val = aug[row][col].abs();
+        for (row, aug_row) in aug[col + 1..]
+            .iter()
+            .enumerate()
+            .map(|(k, r)| (col + 1 + k, r))
+        {
+            if aug_row[col].abs() > max_val {
+                max_val = aug_row[col].abs();
                 max_row = row;
             }
         }
@@ -177,7 +178,6 @@ fn invert_6x6(a: [[f64; 6]; 6]) -> Option<[[f64; 6]; 6]> {
 }
 
 #[cfg(test)]
-#[allow(clippy::needless_range_loop)]
 mod tests {
     use super::*;
 
@@ -190,14 +190,10 @@ mod tests {
         ];
         let l = cholesky_lower(&a).expect("identity should factor");
         // L should be identity
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, l_row) in l.iter().enumerate() {
+            for (j, &l_ij) in l_row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (l[i][j] - expected).abs() < 1e-14,
-                    "L[{i}][{j}] = {}",
-                    l[i][j]
-                );
+                assert!((l_ij - expected).abs() < 1e-14, "L[{i}][{j}] = {}", l_ij);
             }
         }
     }
@@ -219,17 +215,17 @@ mod tests {
     #[test]
     fn test_invert_6x6_identity() {
         let mut a = [[0.0f64; 6]; 6];
-        for i in 0..6 {
-            a[i][i] = 1.0;
+        for (i, a_row) in a.iter_mut().enumerate() {
+            a_row[i] = 1.0;
         }
         let inv = invert_6x6(a).expect("identity should invert");
-        for i in 0..6 {
-            for j in 0..6 {
+        for (i, inv_row) in inv.iter().enumerate() {
+            for (j, &inv_ij) in inv_row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (inv[i][j] - expected).abs() < 1e-14,
+                    (inv_ij - expected).abs() < 1e-14,
                     "inv[{i}][{j}]={}",
-                    inv[i][j]
+                    inv_ij
                 );
             }
         }

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +7,6 @@
 //! crystal structure builders (FCC, BCC, HCP, diamond), lattice parameter
 //! optimization, coordination number analysis, Voronoi analysis basics,
 //! and static structure factor S(q).
-
-#![allow(dead_code)]
 
 use std::f64::consts::PI;
 
@@ -128,11 +125,11 @@ fn jacobi_rotation(a: &mut [[f64; 3]; 3], v: &mut [[f64; 3]; 3], p: usize, q: us
     }
 
     // Accumulate rotation in V (columns of V ← V * J)
-    for i in 0..3 {
-        let vip = v[i][p];
-        let viq = v[i][q];
-        v[i][p] = c * vip - s * viq;
-        v[i][q] = s * vip + c * viq;
+    for row in v.iter_mut() {
+        let vip = row[p];
+        let viq = row[q];
+        row[p] = c * vip - s * viq;
+        row[q] = s * vip + c * viq;
     }
 }
 
@@ -274,8 +271,8 @@ pub fn kabsch_rotation(p: &[[f64; 3]], q: &[[f64; 3]]) -> [[f64; 3]; 3] {
 
     if mat3_det(&r) < 0.0 {
         let mut v_fixed = v;
-        for row in 0..3 {
-            v_fixed[row][2] = -v_fixed[row][2];
+        for row in v_fixed.iter_mut() {
+            row[2] = -row[2];
         }
         r = mat3_mul(&v_fixed, &ut);
     }

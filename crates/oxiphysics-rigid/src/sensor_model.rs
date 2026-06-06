@@ -4,9 +4,6 @@
 //! Physics-based sensor models: IMU, GPS, lidar, camera, radar, force/strain gauges,
 //! encoder, sensor fusion (Madgwick AHRS), and noise models.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────

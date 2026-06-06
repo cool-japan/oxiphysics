@@ -3,8 +3,6 @@
 
 //! V-cycle and W-cycle for AMG hierarchies.
 
-#![allow(dead_code)]
-
 use crate::parallel_solver::{CsrMatrix, ParallelPcgSolver, PcgStats};
 use crate::solvers::amg::smoothers::symmetric_gs;
 

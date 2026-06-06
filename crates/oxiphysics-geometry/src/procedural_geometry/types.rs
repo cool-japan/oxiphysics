@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 /// Parametric surface types: tensor product, Coons patch.
 #[derive(Debug, Clone)]
 pub struct SurfaceParametric {

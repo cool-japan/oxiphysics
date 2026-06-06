@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_strip)]
 use super::types::TrajectoryFrame;
 
 /// Extract timestep and time from an XYZ comment line.
@@ -11,8 +10,8 @@ pub(super) fn parse_xyz_comment(comment: &str) -> (u64, f64) {
     let mut timestep = 0u64;
     let mut time = 0.0f64;
     for token in comment.split_whitespace() {
-        if token.starts_with("time=") {
-            if let Ok(t) = token[5..].parse::<f64>() {
+        if let Some(rest) = token.strip_prefix("time=") {
+            if let Ok(t) = rest.parse::<f64>() {
                 time = t;
             }
         } else if let Ok(ts) = token.parse::<u64>() {
@@ -40,7 +39,6 @@ pub(super) fn count_line_bytes(s: &str, n: usize) -> usize {
 ///
 /// Both frames must have the same number of atoms.  Returns 0.0 if the frames
 /// are identical.
-#[allow(dead_code)]
 pub fn compute_rmsd(frame_a: &TrajectoryFrame, frame_b: &TrajectoryFrame) -> f64 {
     assert_eq!(
         frame_a.n_atoms(),
@@ -66,7 +64,6 @@ pub fn compute_rmsd(frame_a: &TrajectoryFrame, frame_b: &TrajectoryFrame) -> f64
 /// Compute the center of mass for a set of positions and corresponding masses.
 ///
 /// `masses` must have the same length as `positions`.
-#[allow(dead_code)]
 pub fn center_of_mass(positions: &[[f64; 3]], masses: &[f64]) -> [f64; 3] {
     assert_eq!(
         positions.len(),
@@ -92,7 +89,6 @@ pub fn center_of_mass(positions: &[[f64; 3]], masses: &[f64]) -> [f64; 3] {
 /// decomposition: R_{k+1} = (R_k + (R_k^{-T})) / 2.
 ///
 /// Returns a 3×3 rotation matrix as `[[f64; 3\]; 3]`.
-#[allow(dead_code)]
 pub(super) fn polar_rotation_3x3(h: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut r = h;
     for _ in 0..50 {

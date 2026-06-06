@@ -1,4 +1,3 @@
-#![allow(clippy::ptr_arg, clippy::too_many_arguments)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -13,8 +12,6 @@
 //! - Fakhari & Rahimian (2010): Phase-field modeling by the method of lattices
 //! - Bao et al. (2012): Lattice Boltzmann equation model for two-component additively manufactured
 //! - Zheng, Shu & Chew (2006): Lattice Boltzmann interface capturing method for incompressible flows
-
-#![allow(dead_code)]
 
 /// D2Q9 lattice velocities (ex, ey) for the phase-field LBM.
 const EX: [f64; 9] = [0.0, 1.0, 0.0, -1.0, 0.0, 1.0, -1.0, -1.0, 1.0];
@@ -563,7 +560,7 @@ impl PhaseFieldWetting {
     /// Sets the ghost-layer value of φ so that ∂φ/∂n|_{wall} = −cos(θ)/ξ·φ_w(1−φ_w²).
     ///
     /// `phi` is the full 2D order-parameter array (size nx × ny).
-    pub fn apply_bottom_wall(&self, phi: &mut Vec<f64>, nx: usize, ny: usize) {
+    pub fn apply_bottom_wall(&self, phi: &mut [f64], nx: usize, ny: usize) {
         let xi = self.epsilon / std::f64::consts::SQRT_2;
         let cos_theta = self.contact_angle.cos();
         for x in 0..nx {
@@ -579,7 +576,7 @@ impl PhaseFieldWetting {
     }
 
     /// Apply wetting BC to a top wall (y = ny−1).
-    pub fn apply_top_wall(&self, phi: &mut Vec<f64>, nx: usize, ny: usize) {
+    pub fn apply_top_wall(&self, phi: &mut [f64], nx: usize, ny: usize) {
         let xi = self.epsilon / std::f64::consts::SQRT_2;
         let cos_theta = self.contact_angle.cos();
         for x in 0..nx {

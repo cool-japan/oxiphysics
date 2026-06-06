@@ -7,9 +7,6 @@
 //! scopes, call counts, and nanosecond timing, suitable for use across the
 //! WASM boundary.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use wasm_bindgen::prelude::*;

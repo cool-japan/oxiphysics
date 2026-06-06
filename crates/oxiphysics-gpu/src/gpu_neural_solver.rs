@@ -12,8 +12,6 @@
 //! - Loss functions: [`ns_mse_loss`], [`ns_mae_loss`].
 //! - PINN residuals: [`pinn_residual`], [`pinn_boundary_loss`].
 
-#![allow(dead_code)]
-
 // ── Activation functions ──────────────────────────────────────────────────────
 
 /// Rectified linear unit activation: `max(0, x)`.

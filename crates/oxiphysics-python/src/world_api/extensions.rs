@@ -48,7 +48,6 @@ impl InertiaTensor {
     /// Create from diagonal elements (assumes principal axes aligned).
     #[staticmethod]
     pub fn from_diagonal(ix: f64, iy: f64, iz: f64) -> Self {
-        #[allow(clippy::zero_prefixed_literal)]
         let elements = [ix, 0.0, 0.0, 0.0, iy, 0.0, 0.0, 0.0, iz];
         Self { elements }
     }

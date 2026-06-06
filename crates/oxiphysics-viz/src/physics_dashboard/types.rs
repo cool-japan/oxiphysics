@@ -2,11 +2,7 @@
 //!
 //! Types that depend on core dashboard types.
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types_core::*;
-#[allow(unused_imports)]
-use std::collections::VecDeque;
 
 /// Body inspector panel.
 #[derive(Debug, Clone, Default)]
@@ -142,7 +138,6 @@ impl EnergyTimeSeries {
     }
 }
 /// A panel in the dashboard grid.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DashboardPanel {
     /// Panel title.
@@ -482,7 +477,6 @@ impl AlertSystem {
     }
 }
 /// Panel content type.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum PanelContent {
     /// Energy time series plot.
@@ -503,7 +497,6 @@ pub enum PanelContent {
     Empty,
 }
 /// Ring buffer for simulation snapshots.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SnapshotBuffer {
     /// Circular buffer of snapshots.
@@ -949,7 +942,6 @@ impl PerformanceProfiler {
     }
 }
 /// Solver convergence history tracker.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ConvergenceMonitor {
     /// Residual history.
@@ -1060,7 +1052,6 @@ impl MaterialInspector {
     }
 }
 /// Collection of parameter sweep results.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ParamSweepViz {
     /// Parameter name.
@@ -1134,7 +1125,6 @@ impl ParamSweepViz {
     }
 }
 /// Multi-panel simulation dashboard layout.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct DashboardLayout {
     /// Grid rows.

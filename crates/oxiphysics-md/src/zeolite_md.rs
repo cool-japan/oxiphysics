@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -27,9 +26,6 @@
 //! - Frenkel, D. & Smit, B. (2002). *Understanding Molecular Simulation*, 2nd ed.
 //! - Smit, B. & Maesen, T. L. M. (2008). *Chem. Rev.* 108, 4125.
 //! - Dubbeldam, D. *et al.* (2016). *Mol. Sim.* 42, 81.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -250,8 +246,8 @@ impl ZeoliteBox {
     /// Apply minimum image convention to a displacement vector.
     pub fn min_image(&self, dr: [f64; 3]) -> [f64; 3] {
         let mut out = dr;
-        for i in 0..3 {
-            out[i] -= self.lengths[i] * (out[i] / self.lengths[i]).round();
+        for (o, &l) in out.iter_mut().zip(self.lengths.iter()) {
+            *o -= l * (*o / l).round();
         }
         out
     }
@@ -259,8 +255,8 @@ impl ZeoliteBox {
     /// Wrap a position back into the primary cell \[0, L).
     pub fn wrap(&self, pos: [f64; 3]) -> [f64; 3] {
         let mut out = pos;
-        for i in 0..3 {
-            out[i] -= self.lengths[i] * (out[i] / self.lengths[i]).floor();
+        for (o, &l) in out.iter_mut().zip(self.lengths.iter()) {
+            *o -= l * (*o / l).floor();
         }
         out
     }

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{BranchingCriterion, CrackTip3D, Fragment, PropagationCriterion, SplitResult};
 
 /// Rankine (maximum principal stress) fracture criterion.
@@ -312,24 +311,24 @@ mod tests {
         };
         let mut mesh = FractureMesh::new(model);
         let mut node_idx = [[0usize; 3]; 3];
-        for row in 0..3usize {
-            for col in 0..3usize {
+        for (row, node_row) in node_idx.iter_mut().enumerate() {
+            for (col, slot) in node_row.iter_mut().enumerate() {
                 let x = col as f64;
                 let y = row as f64;
-                node_idx[row][col] = mesh.add_node([x, y, 0.0], 1.0);
+                *slot = mesh.add_node([x, y, 0.0], 1.0);
             }
         }
-        for col in 0..3 {
-            mesh.pin_node(node_idx[2][col]);
+        for &nid in node_idx[2].iter() {
+            mesh.pin_node(nid);
         }
-        for row in 0..3 {
+        for row_arr in node_idx.iter() {
             for col in 0..2 {
-                mesh.add_edge(node_idx[row][col], node_idx[row][col + 1], 200.0);
+                mesh.add_edge(row_arr[col], row_arr[col + 1], 200.0);
             }
         }
-        for row in 0..2 {
-            for col in 0..3 {
-                mesh.add_edge(node_idx[row][col], node_idx[row + 1][col], 200.0);
+        for (row, row_arr) in node_idx[..2].iter().enumerate() {
+            for (col, &nid) in row_arr.iter().enumerate() {
+                mesh.add_edge(nid, node_idx[row + 1][col], 200.0);
             }
         }
         let gravity = [0.0, -9.81, 0.0];
@@ -770,7 +769,6 @@ mod tests_fracture_ext {
     }
 }
 /// Build a unit vector perpendicular to `n` using a stable Gram-Schmidt step.
-#[allow(dead_code)]
 pub(super) fn make_perpendicular(n: [f64; 3]) -> [f64; 3] {
     let ax: [f64; 3] = if n[0].abs() <= n[1].abs() && n[0].abs() <= n[2].abs() {
         [1.0, 0.0, 0.0]
@@ -801,7 +799,6 @@ pub(super) fn make_perpendicular(n: [f64; 3]) -> [f64; 3] {
 /// The function advances `tip` by `da` in the direction determined by
 /// the chosen criterion.  Returns `true` when the crack propagated, `false`
 /// when it arrested (K_eq < toughness).
-#[allow(dead_code)]
 pub fn propagate_crack(
     tip: &mut CrackTip3D,
     k1: f64,
@@ -837,7 +834,6 @@ pub fn propagate_crack(
 /// and current crack direction, according to `criterion`.
 ///
 /// Returns a unit vector in 3-D.
-#[allow(dead_code)]
 pub fn propagation_direction(
     k1: f64,
     k2: f64,
@@ -912,7 +908,6 @@ pub(super) fn make_perp_fracture(n: [f64; 3]) -> [f64; 3] {
 ///
 /// Returns `None` if the crack does not branch; `Some((tip_a, tip_b))`
 /// otherwise, where `tip_a` and `tip_b` are the two new crack tips.
-#[allow(dead_code)]
 pub fn crack_branching(
     tip: &CrackTip3D,
     k1: f64,
@@ -927,7 +922,6 @@ pub fn crack_branching(
 /// `c_R ≈ c_S * (0.862 + 1.14 ν) / (1 + ν)`
 ///
 /// where `c_S = sqrt(μ / ρ)` is the shear wave speed.
-#[allow(dead_code)]
 pub fn rayleigh_wave_speed(young: f64, poisson: f64, density: f64) -> f64 {
     if density < 1e-30 || young < 1e-30 {
         return 0.0;
@@ -942,7 +936,6 @@ pub fn rayleigh_wave_speed(young: f64, poisson: f64, density: f64) -> f64 {
 /// Empirical result (Stroh 1954, Freund 1990): cracks in brittle materials
 /// seldom exceed `≈ 0.6 c_R` before branching.  Returns the theoretical
 /// maximum in m/s.
-#[allow(dead_code)]
 pub fn limiting_crack_speed(young: f64, poisson: f64, density: f64) -> f64 {
     0.6 * rayleigh_wave_speed(young, poisson, density)
 }
@@ -1369,7 +1362,6 @@ mod tests_crack_front {
 ///
 /// where `G_c = K_Ic² / E_young` (plane stress) is the fracture energy per
 /// unit volume times a characteristic length.
-#[allow(dead_code)]
 pub fn dynamic_fragment_count(
     impact_energy: f64,
     k1c: f64,
@@ -1398,7 +1390,6 @@ pub fn dynamic_fragment_count(
 /// `L_frag = (2 K_Ic²) / (ρ c² strain_rate²)`^(1/3)
 ///
 /// where `c = sqrt(E/ρ)` is the longitudinal wave speed.
-#[allow(dead_code)]
 pub fn mott_fragment_size(k1c: f64, density: f64, young: f64, strain_rate: f64) -> f64 {
     if density < 1e-30 || young < 1e-30 || strain_rate.abs() < 1e-30 {
         return f64::MAX;
@@ -1415,7 +1406,6 @@ pub fn mott_fragment_size(k1c: f64, density: f64, young: f64, strain_rate: f64) 
 ///
 /// Uses BFS over non-broken edges to find connected components, then builds
 /// one [`Fragment`] per component.
-#[allow(dead_code)]
 pub fn extract_fragments(
     positions: &[[f64; 3]],
     velocities: &[[f64; 3]],
@@ -1463,7 +1453,6 @@ pub fn extract_fragments(
 /// `K_I = σ √(π a) * F(a/W)`
 ///
 /// where `F(a/W) ≈ 1.12 - 0.231 (a/W) + 10.55 (a/W)^2 - 21.72 (a/W)^3 + 30.39 (a/W)^4`
-#[allow(dead_code)]
 pub fn sif_edge_crack_finite_plate(sigma: f64, crack_length: f64, plate_width: f64) -> f64 {
     let ratio = (crack_length / plate_width.max(1e-30)).min(1.0);
     let f = 1.12 - 0.231 * ratio + 10.55 * ratio.powi(2) - 21.72 * ratio.powi(3)
@@ -1476,7 +1465,6 @@ pub fn sif_edge_crack_finite_plate(sigma: f64, crack_length: f64, plate_width: f
 ///
 /// Returns the minimum far-field stress required to propagate a crack of
 /// half-length `a`.
-#[allow(dead_code)]
 pub fn griffith_critical_stress(young: f64, fracture_energy: f64, crack_half_length: f64) -> f64 {
     if crack_half_length < 1e-30 {
         return f64::MAX;
@@ -1488,7 +1476,6 @@ pub fn griffith_critical_stress(young: f64, fracture_energy: f64, crack_half_len
 /// `δ_t = 4 K_I² / (π E σ_ys)` (Dugdale strip-yield model)
 ///
 /// where `σ_ys` is the yield stress.
-#[allow(dead_code)]
 pub fn crack_opening_displacement(k1: f64, young: f64, yield_stress: f64) -> f64 {
     if young < 1e-30 || yield_stress < 1e-30 {
         return 0.0;
@@ -1498,7 +1485,6 @@ pub fn crack_opening_displacement(k1: f64, young: f64, yield_stress: f64) -> f64
 /// J-integral (energy release rate) for a mode-I crack in plane stress.
 ///
 /// `J = K_I² / E`
-#[allow(dead_code)]
 pub fn j_integral_mode1(k1: f64, young: f64) -> f64 {
     if young < 1e-30 {
         return 0.0;
@@ -1511,7 +1497,6 @@ pub fn j_integral_mode1(k1: f64, young: f64) -> f64 {
 ///
 /// From Williams (1957): `θ_c = 2 atan((K_I - sqrt(K_I^2 + 8 K_II^2)) / (4 K_II))`
 /// when K_II ≠ 0, else 0.
-#[allow(dead_code)]
 pub fn branching_angle_max_circumferential(k1: f64, k2: f64) -> f64 {
     if k2.abs() < 1e-30 {
         return 0.0;

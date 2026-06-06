@@ -10,9 +10,6 @@
 
 use std::f64::consts::PI;
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
 use super::functions::*;
 use super::types::SdfGyroid;
 

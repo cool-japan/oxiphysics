@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::functions::*;
 
 /// Synthetic turbulence inflow generator using the random Fourier modes method.
@@ -96,7 +95,6 @@ impl SyntheticTurbulenceInflow {
 /// (k-ω) and an LES model (Smagorinsky) based on grid resolution.
 ///
 /// The blending parameter `sigma` = 0 → pure RANS, 1 → pure LES.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HybridRansLes {
     /// k-ω model state.
@@ -110,7 +108,6 @@ pub struct HybridRansLes {
 }
 impl HybridRansLes {
     /// Create a new hybrid RANS/LES model.
-    #[allow(dead_code)]
     pub fn new(k: f64, omega: f64, cs: f64) -> Self {
         Self {
             k,
@@ -120,12 +117,10 @@ impl HybridRansLes {
         }
     }
     /// Compute the RANS eddy viscosity: ν_t^RANS = k / ω.
-    #[allow(dead_code)]
     pub fn nu_rans(&self) -> f64 {
         turbulent_viscosity(self.k, self.omega)
     }
     /// Compute the LES (Smagorinsky) eddy viscosity: ν_t^LES = (Cs Δ)² |S|.
-    #[allow(dead_code)]
     pub fn nu_les(&self, delta: f64, strain_rate: f64) -> f64 {
         (self.cs * delta) * (self.cs * delta) * strain_rate
     }
@@ -134,7 +129,6 @@ impl HybridRansLes {
     /// `sigma = exp(-k / (3 nu_t * omega))`
     ///
     /// Approaches 1 (LES) when turbulent length scale < filter width.
-    #[allow(dead_code)]
     pub fn blending_sigma(&self, delta: f64, strain_rate: f64) -> f64 {
         let nu_t_les = self.nu_les(delta, strain_rate);
         let nu_t_rans = self.nu_rans();
@@ -143,7 +137,6 @@ impl HybridRansLes {
     /// Effective eddy viscosity using linear blending.
     ///
     /// `ν_t = σ * ν_t^LES + (1-σ) * ν_t^RANS`
-    #[allow(dead_code)]
     pub fn effective_nu(&self, delta: f64, strain_rate: f64, nu_base: f64) -> f64 {
         let sigma = self.blending_sigma(delta, strain_rate);
         let nu_t_les = self.nu_les(delta, strain_rate);
@@ -151,7 +144,6 @@ impl HybridRansLes {
         nu_base + sigma * nu_t_les + (1.0 - sigma) * nu_t_rans
     }
     /// Update RANS state with explicit Euler.
-    #[allow(dead_code)]
     pub fn update_rans(&mut self, strain_rate: f64, dt: f64) {
         let prod = k_production(self.nu_rans(), strain_rate * strain_rate);
         let dk = dk_dt(self.k, self.omega, prod, &self.komega_params) * dt;
@@ -314,7 +306,6 @@ impl MixedModel {
     }
 }
 /// Parameters for the SST k-ω model (Menter 1994).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct SstParams {
     /// Beta* coefficient (dissipation in k equation).
@@ -338,7 +329,6 @@ pub struct SstParams {
 }
 impl SstParams {
     /// Standard Menter (1994) SST constants.
-    #[allow(dead_code)]
     pub fn menter_1994() -> Self {
         Self {
             beta_star: 0.09,
@@ -355,17 +345,14 @@ impl SstParams {
     /// Blend SST inner (k-ω) and outer (k-ε) constants using blending function F1.
     ///
     /// `phi_blended = F1 * phi_inner + (1 - F1) * phi_outer`
-    #[allow(dead_code)]
     pub fn blended_beta(&self, f1: f64) -> f64 {
         f1 * self.beta1 + (1.0 - f1) * self.beta2
     }
     /// Blended alpha for omega production.
-    #[allow(dead_code)]
     pub fn blended_alpha(&self, f1: f64) -> f64 {
         f1 * self.alpha1 + (1.0 - f1) * self.alpha2
     }
     /// Blended sigma_k.
-    #[allow(dead_code)]
     pub fn blended_sigma_k(&self, f1: f64) -> f64 {
         f1 * self.sigma_k1 + (1.0 - f1) * self.sigma_k2
     }
@@ -854,17 +841,16 @@ impl KOmegaField {
     /// `strain_rates_sq` must have length `nx * ny`; element `j*nx + i` is
     /// the local S² value for cell (i, j).
     pub fn step(&mut self, dt: f64, strain_rates_sq: &[f64]) {
-        let nx = self.nx;
-        for idx in 0..self.cells.len() {
-            let cell = self.cells[idx];
-            let s2 = strain_rates_sq[idx];
-            let nu_t = turbulent_viscosity(cell.k, cell.omega);
+        let _nx = self.nx;
+        for (cell, &s2) in self.cells.iter_mut().zip(strain_rates_sq.iter()) {
+            let k_old = cell.k;
+            let w_old = cell.omega;
+            let nu_t = turbulent_viscosity(k_old, w_old);
             let prod = k_production(nu_t, s2);
-            let dk = dk_dt(cell.k, cell.omega, prod, &self.params) * dt;
-            let dw = domega_dt(cell.k, cell.omega, prod, &self.params) * dt;
-            self.cells[idx].k = (cell.k + dk).max(1e-14);
-            self.cells[idx].omega = (cell.omega + dw).max(1e-14);
-            let _ = nx;
+            let dk = dk_dt(k_old, w_old, prod, &self.params) * dt;
+            let dw = domega_dt(k_old, w_old, prod, &self.params) * dt;
+            cell.k = (k_old + dk).max(1e-14);
+            cell.omega = (w_old + dw).max(1e-14);
         }
     }
     /// Effective kinematic viscosity at cell (i, j): ν_eff = ν + ν_t.
@@ -885,7 +871,6 @@ impl KOmegaField {
 ///
 /// The DES length scale modification replaces the RANS length scale
 /// `l_RANS = sqrt(k) / (beta* omega)` by `l_DES = min(l_RANS, C_DES * Delta)`.
-#[allow(dead_code)]
 pub struct DesSstModel {
     /// SST parameters.
     pub params: SstParams,
@@ -894,7 +879,6 @@ pub struct DesSstModel {
 }
 impl DesSstModel {
     /// Create a DES-SST model with given DES constant.
-    #[allow(dead_code)]
     pub fn new(c_des: f64) -> Self {
         Self {
             params: SstParams::menter_1994(),
@@ -904,7 +888,6 @@ impl DesSstModel {
     /// Compute the DES destruction term for k:
     ///
     /// `D_k^DES = beta* * k * omega * max(1, l_RANS / (C_DES * Delta))`
-    #[allow(dead_code)]
     pub fn k_destruction_des(&self, k: f64, omega: f64, delta: f64) -> f64 {
         let l_rans = if omega > 0.0 {
             k.sqrt() / (self.params.beta_star * omega)
@@ -920,7 +903,6 @@ impl DesSstModel {
         self.params.beta_star * k * omega * psi
     }
     /// Effective viscosity using DES-SST blend.
-    #[allow(dead_code)]
     pub fn effective_nu(&self, k: f64, omega: f64, s_mag: f64, f2: f64, nu: f64) -> f64 {
         let nu_t = sst_eddy_viscosity(k, omega, s_mag, f2);
         nu + nu_t
@@ -934,7 +916,6 @@ impl DesSstModel {
 /// `τ_ij = C_ss * τ_ss_ij - 2 * C_v * δ² * |S̃| * S̃_ij`
 ///
 /// where τ_ss is the Bardina scale-similar stress.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BardinalFullModel {
     /// Scale-similar coefficient (typically 1.0).
@@ -944,7 +925,6 @@ pub struct BardinalFullModel {
 }
 impl BardinalFullModel {
     /// Create with default coefficients.
-    #[allow(dead_code)]
     pub fn new(c_ss: f64, c_v: f64) -> Self {
         Self { c_ss, c_v }
     }
@@ -957,7 +937,6 @@ impl BardinalFullModel {
     /// * `delta`              – filter width
     /// * `s_mag`              – |S| magnitude
     /// * `s_ij`               – strain rate component S_ij
-    #[allow(dead_code)]
     pub fn sgs_stress(
         &self,
         u_hat_i_u_hat_j: f64,
@@ -971,7 +950,6 @@ impl BardinalFullModel {
         self.c_ss * tau_ss - 2.0 * self.c_v * delta * delta * s_mag * s_ij
     }
     /// Effective viscosity from eddy-viscosity part only.
-    #[allow(dead_code)]
     pub fn eddy_viscosity(&self, delta: f64, s_mag: f64) -> f64 {
         self.c_v * delta * delta * s_mag
     }

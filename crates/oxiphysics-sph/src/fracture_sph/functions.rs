@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::f64::consts::PI;
 
 /// 3×3 matrix type (row-major).
@@ -214,9 +213,9 @@ mod tests {
         p.stress[0][0] = 1e6;
         p.damage = 1.0;
         let eff = p.effective_stress();
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(eff[i][j].abs() < 1e-10, "Fully damaged stress should be ~0");
+        for row in &eff {
+            for &val in row {
+                assert!(val.abs() < 1e-10, "Fully damaged stress should be ~0");
             }
         }
     }

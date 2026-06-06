@@ -5,9 +5,6 @@
 //!
 //! Exposes FABRIK and 2-bone analytic IK to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::ik::{IkChain, IkSolver};
 use pyo3::prelude::*;
 

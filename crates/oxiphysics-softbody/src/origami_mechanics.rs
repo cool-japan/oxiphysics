@@ -11,8 +11,6 @@
 //! All vectors are plain `[f64; 3]` — no nalgebra dependency.
 
 // ── lint allowances ──────────────────────────────────────────────────────────
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 

@@ -2,10 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 /// A single geodesic isoline segment on the mesh.
 #[derive(Debug, Clone)]
 pub struct IsolineSegment {
@@ -16,7 +13,6 @@ pub struct IsolineSegment {
 }
 /// A geodesic Voronoi cell: the set of mesh vertices closest to a given source.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct GeoVoronoiCell {
     /// Index into the sources array.
     pub source_idx: usize,

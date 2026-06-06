@@ -55,7 +55,6 @@ pub fn kozeny_carman_permeability(d_p: f64, epsilon: f64) -> f64 {
 /// * `epsilon` - porosity (dimensionless)
 /// * `mu`      - dynamic viscosity (Pa·s)
 /// * `rho`     - fluid density (kg/m^3)
-#[allow(clippy::too_many_arguments)]
 pub fn ergun_pressure_drop(l: f64, u: f64, d_p: f64, epsilon: f64, mu: f64, rho: f64) -> f64 {
     let one_minus_eps = 1.0 - epsilon;
     let eps3 = epsilon.powi(3);
@@ -639,7 +638,6 @@ pub fn ergun_drag_coefficients(d_p: f64, epsilon: f64) -> (f64, f64) {
 /// * `mu`   - dynamic viscosity (Pa·s)
 /// * `rho`  - fluid density (kg/m^3)
 /// * `k_kc` - Kozeny-Carman constant (default 5)
-#[allow(clippy::too_many_arguments)]
 pub fn packed_bed_pressure_drop(
     l: f64,
     u: f64,

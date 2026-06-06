@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,9 +15,6 @@
 //! - Parallel transport and holonomy on meshes.
 //! - Discrete minimal surfaces (mean-curvature flow).
 //! - Discrete vector fields and Hodge decomposition on meshes.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::f64::consts::PI;
@@ -257,8 +253,8 @@ impl DiscreteMesh {
             row_sum[a] += w;
             row_sum[b] += w;
         }
-        for i in 0..n {
-            entries.push((i, i, -row_sum[i]));
+        for (i, &rs) in row_sum.iter().enumerate().take(n) {
+            entries.push((i, i, -rs));
         }
         entries
     }
@@ -1307,7 +1303,7 @@ pub fn vertex_curvature_tensor(mesh: &DiscreteMesh, v: usize) -> [f64; 9] {
 ///
 /// Updates the conformal factor `u[v]` proportional to `K[v] - K_target`,
 /// where `K` is Gaussian curvature and `K_target` is the target curvature.
-pub fn ricci_flow_step(mesh: &DiscreteMesh, u: &mut Vec<f64>, k_target: &[f64], step_size: f64) {
+pub fn ricci_flow_step(mesh: &DiscreteMesh, u: &mut [f64], k_target: &[f64], step_size: f64) {
     let k_current = mesh.gaussian_curvature();
     for (i, ui) in u.iter_mut().enumerate() {
         let kt = if i < k_target.len() { k_target[i] } else { 0.0 };

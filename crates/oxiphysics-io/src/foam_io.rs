@@ -1,4 +1,3 @@
-#![allow(clippy::manual_strip, clippy::should_implement_trait)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,8 +5,6 @@
 //!
 //! Supports reading polyMesh directories and writing basic OpenFOAM cases.
 //! Uses plain `f64` arrays and `Vec` — no external linear-algebra crates.
-
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 
@@ -28,17 +25,8 @@ pub struct FoamHeader {
 }
 
 impl FoamHeader {
-    /// Serialise to the OpenFOAM `FoamFile { … }` block.
-    #[allow(clippy::inherent_to_string)]
-    pub fn to_string(&self) -> String {
-        format!(
-            "FoamFile\n{{\n    version     {};\n    format      {};\n    class       {};\n    object      {};\n}}\n",
-            self.foam_file_version, self.format, self.class_name, self.object_name,
-        )
-    }
-
     /// Parse a string that contains a `FoamFile { … }` block.
-    pub fn from_str(s: &str) -> Result<Self, String> {
+    pub fn parse(s: &str) -> Result<Self, String> {
         let start = s
             .find("FoamFile")
             .ok_or_else(|| "No FoamFile block found".to_string())?;
@@ -68,6 +56,23 @@ impl FoamHeader {
             class_name: kv.get("class").unwrap_or(&"").to_string(),
             object_name: kv.get("object").unwrap_or(&"").to_string(),
         })
+    }
+}
+
+impl std::fmt::Display for FoamHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "FoamFile\n{{\n    version     {};\n    format      {};\n    class       {};\n    object      {};\n}}\n",
+            self.foam_file_version, self.format, self.class_name, self.object_name,
+        )
+    }
+}
+
+impl std::str::FromStr for FoamHeader {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
     }
 }
 
@@ -736,8 +741,8 @@ pub fn parse_foam_scalar_field_internal(content: &str) -> Result<Vec<f64>, Strin
     // Check for "uniform VALUE".
     for line in content.lines() {
         let line = line.trim();
-        if line.starts_with("internalField") {
-            let rest = &line["internalField".len()..].trim_start();
+        if let Some(after_field) = line.strip_prefix("internalField") {
+            let rest = &after_field.trim_start();
             if let Some(rest2) = rest.strip_prefix("uniform") {
                 let v: f64 = rest2
                     .trim()
@@ -827,7 +832,6 @@ pub fn write_foam_fv_solution() -> String {
 // ---------------------------------------------------------------------------
 
 /// Standard OpenFOAM boundary condition types.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum FoamBcType {
     /// Zero-gradient (Neumann) boundary condition.
@@ -1175,7 +1179,11 @@ mod tests {
 
     #[test]
     fn test_simple_case_writer_file_list_nonempty() {
-        let writer = SimpleCaseWriter::new("/tmp/test_case", simple_mesh());
+        let tmpdir = std::env::temp_dir();
+        let writer = SimpleCaseWriter::new(
+            tmpdir.join("test_case").to_str().unwrap_or(""),
+            simple_mesh(),
+        );
         let files = writer.file_list();
         assert!(!files.is_empty());
         assert!(files.iter().any(|f| f.contains("points")));
@@ -1324,7 +1332,8 @@ mod tests {
     #[test]
     fn test_foam_case_file_list() {
         let mesh = simple_mesh();
-        let case = FoamCase::new("/tmp/mycase", mesh);
+        let tmpdir = std::env::temp_dir();
+        let case = FoamCase::new(tmpdir.join("mycase").to_str().unwrap_or(""), mesh);
         let files = case.file_list();
         assert!(files.iter().any(|f| f.contains("controlDict")));
         assert!(files.iter().any(|f| f.contains("fvSchemes")));
@@ -1333,7 +1342,8 @@ mod tests {
     #[test]
     fn test_foam_case_with_scalar_field() {
         let mesh = simple_mesh();
-        let mut case = FoamCase::new("/tmp/mycase2", mesh);
+        let tmpdir = std::env::temp_dir();
+        let mut case = FoamCase::new(tmpdir.join("mycase2").to_str().unwrap_or(""), mesh);
         case.add_scalar_field(FoamScalarField::uniform("p", 10, 0.0));
         let files = case.file_list();
         assert!(files.iter().any(|f| f.ends_with("/0/p")));
@@ -1342,7 +1352,8 @@ mod tests {
     #[test]
     fn test_foam_case_control_dict_content() {
         let mesh = simple_mesh();
-        let mut case = FoamCase::new("/tmp/mycase3", mesh);
+        let tmpdir = std::env::temp_dir();
+        let mut case = FoamCase::new(tmpdir.join("mycase3").to_str().unwrap_or(""), mesh);
         case.end_time = 2.5;
         let s = case.control_dict_content();
         assert!(s.contains("2.5"), "controlDict should contain the end time");
@@ -1351,7 +1362,8 @@ mod tests {
     #[test]
     fn test_foam_case_boundary_content() {
         let mesh = simple_mesh();
-        let case = FoamCase::new("/tmp/mycase4", mesh);
+        let tmpdir = std::env::temp_dir();
+        let case = FoamCase::new(tmpdir.join("mycase4").to_str().unwrap_or(""), mesh);
         let s = case.boundary_content();
         assert!(
             s.contains("wall"),

@@ -149,7 +149,7 @@ mod tests {
         let masses = vec![12.0_f64, 16.0];
         let types = vec![1u32, 2u32];
         let s = LammpsDataWriter::write_complete(&pos, &masses, &types, [0.0; 3], [10.0; 3]);
-        let reader = LammpsDataReader::from_str(&s).unwrap();
+        let reader = LammpsDataReader::from_data_str(&s).unwrap();
         assert_eq!(reader.positions().len(), 2);
         assert!((reader.positions()[0][0] - 1.0).abs() < 1e-6);
         assert!((reader.positions()[1][2] - 6.0).abs() < 1e-6);
@@ -163,7 +163,7 @@ mod tests {
             [-5.0, -5.0, -5.0],
             [5.0, 5.0, 5.0],
         );
-        let reader = LammpsDataReader::from_str(&s).unwrap();
+        let reader = LammpsDataReader::from_data_str(&s).unwrap();
         let (lo, hi) = reader.box_bounds();
         assert!((lo[0] - (-5.0)).abs() < 1e-6, "lo[0]={}", lo[0]);
         assert!((hi[0] - 5.0).abs() < 1e-6, "hi[0]={}", hi[0]);

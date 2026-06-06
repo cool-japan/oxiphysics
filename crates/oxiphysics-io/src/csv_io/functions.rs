@@ -28,7 +28,6 @@ pub fn parse_column_f64(csv: &CsvFile, name: &str) -> Result<Vec<f64>, String> {
 ///
 /// Tests comma, tab, semicolon, and pipe. Returns the delimiter that produces
 /// the most consistent column count across the first few lines.
-#[allow(dead_code)]
 pub fn detect_delimiter(s: &str) -> char {
     let candidates = [',', '\t', ';', '|'];
     let lines: Vec<&str> = s.lines().take(10).collect();
@@ -56,16 +55,14 @@ pub fn detect_delimiter(s: &str) -> char {
     best_delim
 }
 /// Parse a CSV string with auto-detected delimiter.
-#[allow(dead_code)]
 pub fn parse_auto(s: &str) -> Result<CsvFile, String> {
     let delim = detect_delimiter(s);
     CsvFile::from_str_with_delimiter(s, delim)
 }
 /// Read a CSV in chunks: returns an iterator of `CsvFile` objects, each
 /// containing at most `chunk_size` records.
-#[allow(dead_code)]
 pub fn read_chunked(s: &str, chunk_size: usize) -> Vec<CsvFile> {
-    let full = match CsvFile::from_str(s) {
+    let full = match s.parse::<CsvFile>() {
         Ok(f) => f,
         Err(_) => return Vec::new(),
     };
@@ -88,7 +85,6 @@ pub fn read_chunked(s: &str, chunk_size: usize) -> Vec<CsvFile> {
     chunks
 }
 /// Normalize a header string: lowercase, replace non-alphanumeric with underscores.
-#[allow(dead_code)]
 pub fn normalize_header(s: &str) -> String {
     s.trim()
         .to_lowercase()
@@ -106,7 +102,6 @@ pub fn normalize_header(s: &str) -> String {
 ///
 /// Returns `None` if the column index is out of range or no numeric values
 /// are found.
-#[allow(dead_code)]
 pub fn aggregate_column(csv: &CsvFile, col: usize, op: AggOp) -> Option<f64> {
     let vals = csv.get_column_f64(col).ok()?;
     if vals.is_empty() {
@@ -127,7 +122,6 @@ pub fn aggregate_column(csv: &CsvFile, col: usize, op: AggOp) -> Option<f64> {
     })
 }
 /// Validate a [`CsvFile`] against a [`CsvSchema`] and return a report.
-#[allow(dead_code)]
 pub fn validate_csv(csv: &CsvFile, schema: &CsvSchema) -> CsvValidationReport {
     CsvValidationReport {
         errors: schema.validate(csv),
@@ -192,26 +186,26 @@ mod tests {
         csv.add_record_f64(&[0.0, 1.0]);
         csv.add_record_f64(&[1.0, 2.0]);
         let s = csv.to_string();
-        let parsed = CsvFile::from_str(&s).unwrap();
+        let parsed = &s.parse::<CsvFile>().unwrap();
         assert_eq!(parsed.headers, vec!["t", "x"]);
         assert_eq!(parsed.record_count(), 2);
     }
     #[test]
     fn test_from_str_with_spaces() {
         let s = "time , value\n0.0 , 1.0\n1.0 , 2.0\n";
-        let csv = CsvFile::from_str(s).unwrap();
+        let csv = s.parse::<CsvFile>().unwrap();
         assert_eq!(csv.headers[0], "time");
         assert_eq!(csv.record_count(), 2);
     }
     #[test]
     fn test_from_str_empty_lines_ignored() {
         let s = "a,b\n1,2\n\n3,4\n";
-        let csv = CsvFile::from_str(s).unwrap();
+        let csv = s.parse::<CsvFile>().unwrap();
         assert_eq!(csv.record_count(), 2);
     }
     #[test]
     fn test_from_str_empty_input() {
-        assert!(CsvFile::from_str("").is_err());
+        assert!("".parse::<CsvFile>().is_err());
     }
     #[test]
     fn test_filter_rows_positive() {
@@ -260,7 +254,7 @@ mod tests {
         let mut csv = CsvFile::new(vec!["x".into(), "y".into(), "z".into()]);
         csv.add_record_f64(&[1.0, 2.0, 3.0]);
         let s = csv.to_string();
-        let parsed = CsvFile::from_str(&s).unwrap();
+        let parsed = &s.parse::<CsvFile>().unwrap();
         let x = parsed.get_column_f64(0).unwrap();
         let y = parsed.get_column_f64(1).unwrap();
         let z = parsed.get_column_f64(2).unwrap();
@@ -586,26 +580,26 @@ mod tests {
     #[test]
     fn time_series_times_extracted() {
         let input = "time,temp\n0.0,300.0\n1.0,301.0\n2.0,302.0\n";
-        let ts = TimeSeriesCsv::from_str(input, "time").unwrap();
+        let ts = TimeSeriesCsv::parse(input, "time").unwrap();
         let times = ts.times().unwrap();
         assert_eq!(times, vec![0.0, 1.0, 2.0]);
     }
     #[test]
     fn time_series_duration() {
         let input = "time,v\n1.0,0.0\n3.0,1.0\n5.0,2.0\n";
-        let ts = TimeSeriesCsv::from_str(input, "time").unwrap();
+        let ts = TimeSeriesCsv::parse(input, "time").unwrap();
         assert!((ts.duration() - 4.0).abs() < 1e-10);
     }
     #[test]
     fn time_series_n_steps() {
         let input = "time,v\n0.0,1.0\n0.5,2.0\n";
-        let ts = TimeSeriesCsv::from_str(input, "time").unwrap();
+        let ts = TimeSeriesCsv::parse(input, "time").unwrap();
         assert_eq!(ts.n_steps(), 2);
     }
     #[test]
     fn time_series_missing_column() {
         let input = "x,y\n1.0,2.0\n";
-        let ts = TimeSeriesCsv::from_str(input, "time").unwrap();
+        let ts = TimeSeriesCsv::parse(input, "time").unwrap();
         assert!(ts.times().is_none());
     }
     fn sample_csv() -> CsvFile {
@@ -742,7 +736,6 @@ mod tests {
 /// ...
 /// <blank line>
 /// ```
-#[allow(dead_code)]
 pub fn write_trajectory_csv(frames: &[TrajectoryFrame]) -> String {
     let mut out = String::new();
     for frame in frames {
@@ -762,7 +755,6 @@ pub fn write_trajectory_csv(frames: &[TrajectoryFrame]) -> String {
 /// treated as the frame title.  Each data line must have exactly 3
 /// comma-separated values (`x,y,z`). Returns an error string with the line
 /// number on failure.
-#[allow(dead_code)]
 pub fn read_trajectory_csv(s: &str) -> std::result::Result<Vec<TrajectoryFrame>, String> {
     let mut frames: Vec<TrajectoryFrame> = Vec::new();
     let mut current = TrajectoryFrame::new();
@@ -816,7 +808,7 @@ mod tests_dataframe {
     #[test]
     fn dataframe_from_csv_types() {
         let csv_str = "id,x,label\n1,3.14,hello\n2,2.71,world\n";
-        let df = CsvDataFrame::from_str(csv_str).unwrap();
+        let df = csv_str.parse::<CsvDataFrame>().unwrap();
         assert_eq!(df.n_cols(), 3);
         assert_eq!(df.n_rows(), 2);
         assert_eq!(df.column(0).unwrap().column_type(), ColumnType::Integer);
@@ -826,7 +818,7 @@ mod tests_dataframe {
     #[test]
     fn dataframe_float_column_by_name() {
         let csv_str = "t,v\n0.0,1.5\n1.0,2.5\n";
-        let df = CsvDataFrame::from_str(csv_str).unwrap();
+        let df = csv_str.parse::<CsvDataFrame>().unwrap();
         let v = df.float_column("v").unwrap();
         assert_eq!(v.len(), 2);
         assert!((v[0] - 1.5).abs() < 1e-12);
@@ -835,49 +827,49 @@ mod tests_dataframe {
     #[test]
     fn dataframe_integer_column_by_name() {
         let csv_str = "n,label\n10,a\n20,b\n";
-        let df = CsvDataFrame::from_str(csv_str).unwrap();
+        let df = csv_str.parse::<CsvDataFrame>().unwrap();
         let n = df.integer_column("n").unwrap();
         assert_eq!(n, &vec![10_i64, 20_i64]);
     }
     #[test]
     fn dataframe_text_column_by_name() {
         let csv_str = "name,val\nalice,1.0\nbob,2.0\n";
-        let df = CsvDataFrame::from_str(csv_str).unwrap();
+        let df = csv_str.parse::<CsvDataFrame>().unwrap();
         let names = df.text_column("name").unwrap();
         assert_eq!(names, &vec!["alice".to_string(), "bob".to_string()]);
     }
     #[test]
     fn dataframe_column_index_missing() {
         let csv_str = "a,b\n1,2\n";
-        let df = CsvDataFrame::from_str(csv_str).unwrap();
+        let df = csv_str.parse::<CsvDataFrame>().unwrap();
         assert!(df.column_index("nope").is_none());
     }
     #[test]
     fn dataframe_to_csv_string_roundtrip() {
         let csv_str = "x,y\n1.5,2.5\n3.5,4.5\n";
-        let df = CsvDataFrame::from_str(csv_str).unwrap();
+        let df = csv_str.parse::<CsvDataFrame>().unwrap();
         let out = df.to_csv_string();
         assert!(out.contains("x,y"));
-        let df2 = CsvDataFrame::from_str(&out).unwrap();
+        let df2 = out.parse::<CsvDataFrame>().unwrap();
         let x = df2.float_column("x").unwrap();
         assert!((x[0] - 1.5).abs() < 1e-12);
         assert!((x[1] - 3.5).abs() < 1e-12);
     }
     #[test]
     fn dataframe_empty_input() {
-        assert!(CsvDataFrame::from_str("").is_err());
+        assert!("".parse::<CsvDataFrame>().is_err());
     }
     #[test]
     fn dataframe_n_rows_n_cols() {
         let csv_str = "a,b,c\n1,2,3\n4,5,6\n7,8,9\n";
-        let df = CsvDataFrame::from_str(csv_str).unwrap();
+        let df = csv_str.parse::<CsvDataFrame>().unwrap();
         assert_eq!(df.n_rows(), 3);
         assert_eq!(df.n_cols(), 3);
     }
     #[test]
     fn dataframe_column_by_name_returns_none_for_missing() {
         let csv_str = "x\n1.0\n";
-        let df = CsvDataFrame::from_str(csv_str).unwrap();
+        let df = csv_str.parse::<CsvDataFrame>().unwrap();
         assert!(df.column_by_name("missing").is_none());
     }
     #[test]
@@ -969,7 +961,6 @@ mod tests_dataframe {
 ///
 /// Rows from `other` are appended after the rows of `base`.
 /// Returns `Err` if the header lists differ.
-#[allow(dead_code)]
 pub fn merge_csv_files(base: &CsvFile, other: &CsvFile) -> Result<CsvFile, String> {
     if base.headers != other.headers {
         return Err(format!(
@@ -994,7 +985,6 @@ pub fn merge_csv_files(base: &CsvFile, other: &CsvFile) -> Result<CsvFile, Strin
 ///
 /// The resulting file has column headers `"col_0"`, `"col_1"`, …
 /// (original row indices), and each new row corresponds to an original column.
-#[allow(dead_code)]
 pub fn transpose_csv(csv: &CsvFile) -> CsvFile {
     let n_rows = csv.records.len();
     let n_cols = csv.headers.len();
@@ -1022,7 +1012,6 @@ pub fn transpose_csv(csv: &CsvFile) -> CsvFile {
 /// Rows are matched when the key column value is equal (string comparison).
 /// The output contains all columns from `left` followed by the non-key columns
 /// of `right`.
-#[allow(dead_code)]
 pub fn inner_join_csv(left: &CsvFile, right: &CsvFile, key: &str) -> Result<CsvFile, String> {
     let left_key_idx = left
         .get_column_by_name(key)
@@ -1058,7 +1047,6 @@ pub fn inner_join_csv(left: &CsvFile, right: &CsvFile, key: &str) -> Result<CsvF
 ///
 /// Both files must have the same dimensions and numeric-only columns.
 /// Returns `Err` on dimension mismatch or parse failure.
-#[allow(dead_code)]
 pub fn diff_csv(a: &CsvFile, b: &CsvFile) -> Result<CsvFile, String> {
     if a.headers != b.headers {
         return Err("header mismatch".to_string());
@@ -1090,7 +1078,6 @@ pub fn diff_csv(a: &CsvFile, b: &CsvFile) -> Result<CsvFile, String> {
 ///
 /// A row is considered a header if it contains at least one non-numeric,
 /// non-empty token (i.e., any field that cannot be parsed as `f64`).
-#[allow(dead_code)]
 pub fn has_header(s: &str, delim: char) -> bool {
     let first = s.lines().next().unwrap_or("");
     first.split(delim).any(|f| {
@@ -1102,7 +1089,6 @@ pub fn has_header(s: &str, delim: char) -> bool {
 ///
 /// Returns `"col_0"`, `"col_1"`, … based on the number of fields in the
 /// first data row.
-#[allow(dead_code)]
 pub fn infer_headers(s: &str, delim: char) -> Vec<String> {
     let n = s
         .lines()
@@ -1116,7 +1102,6 @@ pub fn infer_headers(s: &str, delim: char) -> Vec<String> {
 /// If `auto_header` is `true` (default behaviour), header presence is
 /// inferred using [`has_header`].  If no header is detected, synthetic
 /// column names `col_0`, `col_1`, … are used.
-#[allow(dead_code)]
 pub fn parse_smart(s: &str) -> Result<CsvFile, String> {
     let delim = detect_delimiter(s);
     if has_header(s, delim) {
@@ -1139,7 +1124,6 @@ pub fn parse_smart(s: &str) -> Result<CsvFile, String> {
 /// Recognised truthy values: `"true"`, `"1"`, `"yes"`, `"on"` (case-insensitive).
 /// Recognised falsy values: `"false"`, `"0"`, `"no"`, `"off"`.
 /// Any other value → not boolean.
-#[allow(dead_code)]
 pub fn is_boolean_column(csv: &CsvFile, col_idx: usize) -> bool {
     let truthy = ["true", "1", "yes", "on"];
     let falsy = ["false", "0", "no", "off"];
@@ -1159,7 +1143,6 @@ pub fn is_boolean_column(csv: &CsvFile, col_idx: usize) -> bool {
 /// Parse a boolean column as `Vec`bool`.
 ///
 /// Returns `Err` if any value is not recognisable as boolean.
-#[allow(dead_code)]
 pub fn get_column_bool(csv: &CsvFile, col_idx: usize) -> Result<Vec<bool>, String> {
     let truthy = ["true", "1", "yes", "on"];
     let falsy = ["false", "0", "no", "off"];
@@ -1186,7 +1169,6 @@ pub fn get_column_bool(csv: &CsvFile, col_idx: usize) -> Result<Vec<bool>, Strin
 /// Sample every `n`-th row from a [`CsvFile`].
 ///
 /// The header is preserved. `stride = 1` returns all rows unchanged.
-#[allow(dead_code)]
 pub fn sample_every_nth(csv: &CsvFile, stride: usize) -> CsvFile {
     if stride == 0 {
         return CsvFile::new(csv.headers.clone());
@@ -1202,7 +1184,6 @@ pub fn sample_every_nth(csv: &CsvFile, stride: usize) -> CsvFile {
     result
 }
 /// Deduplicate rows in a [`CsvFile`] based on a key column (keep first occurrence).
-#[allow(dead_code)]
 pub fn dedup_by_column(csv: &CsvFile, col_idx: usize) -> CsvFile {
     use std::collections::HashSet;
     let mut seen: HashSet<String> = HashSet::new();

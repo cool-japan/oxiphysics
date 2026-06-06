@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,8 +16,6 @@
 //! - Swap scheme (neighbor-swap in-place streaming)
 //! - Streaming with force correction (Guo forcing)
 //! - Periodic streaming helpers (shift, wrap)
-
-#![allow(dead_code, missing_docs)]
 
 use crate::grid::{LbmGrid2D, LbmGrid3D};
 
@@ -362,7 +359,6 @@ pub fn stream_swap_2d(grid: &mut LbmGrid2D) {
 /// * `grid`       – 2D grid (distributions are streamed in-place)
 /// * `forces`     – per-cell body forces `[Fx, Fy]`, length = nx*ny
 /// * `tau`        – relaxation time
-#[allow(clippy::too_many_arguments)]
 pub fn stream_with_force_correction_2d(grid: &mut LbmGrid2D, forces: &[[f64; 2]], tau: f64) {
     // First do normal streaming.
     stream_2d(grid);
@@ -428,8 +424,8 @@ pub fn shift_periodic_2d(grid: &mut LbmGrid2D, dx: i64, dy: i64) {
             let dst_x = wrap_periodic(x as i64 + dx, nx);
             let dst_y = wrap_periodic(y as i64 + dy, ny);
             let dst = dst_y * nx + dst_x;
-            for i in 0..q {
-                f_shifted[i][dst] = grid.f[i][src];
+            for (f_shifted_i, f_i) in f_shifted.iter_mut().zip(grid.f.iter()) {
+                f_shifted_i[dst] = f_i[src];
             }
         }
     }
@@ -456,8 +452,8 @@ pub fn shift_periodic_3d(grid: &mut LbmGrid3D, dx: i64, dy: i64, dz: i64) {
                 let dst_y = wrap_periodic(y as i64 + dy, ny);
                 let dst_z = wrap_periodic(z as i64 + dz, nz);
                 let dst = dst_z * ny * nx + dst_y * nx + dst_x;
-                for i in 0..q {
-                    f_shifted[i][dst] = grid.f[i][src];
+                for (f_shifted_i, f_i) in f_shifted.iter_mut().zip(grid.f.iter()) {
+                    f_shifted_i[dst] = f_i[src];
                 }
             }
         }
@@ -525,8 +521,8 @@ pub fn bounce_back_2d(grid: &mut LbmGrid2D, wall_cells: &[usize]) {
     let q = grid.lattice.q();
     for &k in wall_cells {
         let mut tmp = vec![0.0_f64; q];
-        for i in 0..q {
-            tmp[i] = grid.f[i][k];
+        for (tmp_i, f_i) in tmp.iter_mut().zip(grid.f.iter()) {
+            *tmp_i = f_i[k];
         }
         for i in 0..q {
             let opp = grid.lattice.opposite(i);
@@ -545,8 +541,8 @@ pub fn bounce_back_3d(grid: &mut LbmGrid3D, wall_cells: &[usize]) {
     let q = grid.lattice.q();
     for &k in wall_cells {
         let mut tmp = vec![0.0_f64; q];
-        for i in 0..q {
-            tmp[i] = grid.f[i][k];
+        for (tmp_i, f_i) in tmp.iter_mut().zip(grid.f.iter()) {
+            *tmp_i = f_i[k];
         }
         for i in 0..q {
             let opp = grid.lattice.opposite(i);

@@ -2,12 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::functions::*;
 
 /// Tracks the SGS energy budget: production, dissipation, and transfer.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct LesEnergyBudget {
     /// Accumulated SGS production Σ P_sgs.
     pub production: f64,
@@ -16,7 +14,6 @@ pub struct LesEnergyBudget {
     /// Number of particles contributing.
     pub count: usize,
 }
-#[allow(dead_code)]
 impl LesEnergyBudget {
     /// Create a new zeroed energy budget.
     pub fn new() -> Self {
@@ -109,7 +106,6 @@ impl SpsModel {
     /// `kernel_grads[k]` is the gradient vector of W(r_ij, h) evaluated at
     /// the position of neighbour `neighbors[k]`, pointing from i → j:
     ///   ∇_i W_ij = (dW/dr) * r_hat_ij  (a \[f64;3\] value).
-    #[allow(clippy::too_many_arguments)]
     pub fn compute_strain_rate_tensor(
         &self,
         i: usize,
@@ -177,7 +173,6 @@ impl SpsModel {
     ///
     /// `all_kernel_grads[i][k]` is the kernel gradient for the k-th
     /// neighbour of particle i.
-    #[allow(clippy::too_many_arguments)]
     pub fn apply_sps_forces(
         &self,
         positions: &[[f64; 3]],
@@ -228,14 +223,12 @@ impl SpsModel {
 ///
 /// The eddy viscosity is: ν_t = (C_s · h)² · |S|
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct LesFilter {
     /// Filter width / smoothing length h (m).
     pub h: f64,
     /// Smagorinsky constant C_s (dimensionless, typically ~0.1–0.2).
     pub c_s: f64,
 }
-#[allow(dead_code)]
 impl LesFilter {
     /// Create a new LES filter.
     pub fn new(h: f64, c_s: f64) -> Self {
@@ -261,7 +254,6 @@ impl LesFilter {
 }
 /// SPH particle carrying LES turbulent fields.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SphLesParticle {
     /// Position (m).
     pub pos: [f64; 3],
@@ -285,14 +277,12 @@ pub struct SphLesParticle {
 /// Reference: Smagorinsky (1963), "General circulation experiments with the
 /// primitive equations", Monthly Weather Review.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SmagorinskyLes {
     /// Smagorinsky constant C_s (typically 0.1–0.2 for turbulent flows).
     pub cs: f64,
     /// Filter width Δ (particle spacing, m).
     pub delta: f64,
 }
-#[allow(dead_code)]
 impl SmagorinskyLes {
     /// Create a new Smagorinsky LES model.
     pub fn new(cs: f64, delta: f64) -> Self {
@@ -319,7 +309,6 @@ impl SmagorinskyLes {
     ///
     /// `tau_i` and `tau_j` are the SGS stress tensors; `grad_w` is the
     /// kernel gradient ∇W_ij pointing from i to j.
-    #[allow(clippy::too_many_arguments)]
     pub fn sgs_acceleration(
         &self,
         tau_i: &Mat3,
@@ -353,7 +342,6 @@ impl SmagorinskyLes {
 /// Uses two filter levels (grid filter Δ and test filter 2Δ) to dynamically
 /// adjust the Smagorinsky constant in space and time.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DynamicSmagorinsky {
     /// Base filter width Δ (particle spacing).
     pub delta: f64,
@@ -364,7 +352,6 @@ pub struct DynamicSmagorinsky {
     /// Upper clip for the dynamic coefficient.
     pub c_max: f64,
 }
-#[allow(dead_code)]
 impl DynamicSmagorinsky {
     /// Create a new dynamic Smagorinsky model.
     pub fn new(delta: f64, test_filter_ratio: f64) -> Self {
@@ -427,14 +414,12 @@ impl DynamicSmagorinsky {
 /// Returns the particle contribution to the turbulent stress divergence:
 /// (1/ρ) ∂τ_ij/∂x_j ≈ sum_j (m_j / ρ_j) (τ_i^j + τ_i^j) · ∇W_ij
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TurbulentDiffusionSph {
     /// Smagorinsky constant.
     pub cs: f64,
     /// Particle spacing / filter width.
     pub delta: f64,
 }
-#[allow(dead_code)]
 impl TurbulentDiffusionSph {
     /// Create a new turbulent diffusion SPH operator.
     pub fn new(cs: f64, delta: f64) -> Self {
@@ -445,7 +430,6 @@ impl TurbulentDiffusionSph {
     /// a_turb_i = Σ_j (m_j / ρ_j) · (τ_ij_i/ρ_i + τ_ij_j/ρ_j) · ∇W_ij
     ///
     /// Returns the 3-component acceleration vector.
-    #[allow(clippy::too_many_arguments)]
     pub fn turbulent_acceleration(
         &self,
         s_i: Mat3,
@@ -484,7 +468,6 @@ impl TurbulentDiffusionSph {
 /// Reference: Germano et al. (1991), "A dynamic subgrid-scale eddy viscosity
 /// model", Physics of Fluids A.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DynamicSmagorinskyLes {
     /// Base filter width Δ (particle spacing, m).
     pub delta: f64,
@@ -495,7 +478,6 @@ pub struct DynamicSmagorinskyLes {
     /// Maximum clipping bound for C_s².
     pub cs_sq_max: f64,
 }
-#[allow(dead_code)]
 impl DynamicSmagorinskyLes {
     /// Create a new dynamic Smagorinsky model.
     pub fn new(delta: f64, test_filter_ratio: f64) -> Self {
@@ -557,7 +539,6 @@ impl DynamicSmagorinskyLes {
 /// Stores a per-particle turbulent viscosity field and provides operations
 /// such as SPH-smoothed diffusion and local averaging.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TurbulentViscosityField {
     /// Per-particle turbulent kinematic viscosity ν_t (m² s⁻¹).
     pub nu_t: Vec<f64>,
@@ -566,7 +547,6 @@ pub struct TurbulentViscosityField {
     /// Per-particle specific dissipation rate ω (s⁻¹) or ε (m² s⁻³).
     pub omega: Vec<f64>,
 }
-#[allow(dead_code)]
 impl TurbulentViscosityField {
     /// Allocate a zero-initialised field for `n` particles.
     pub fn new(n: usize) -> Self {
@@ -644,14 +624,12 @@ impl TurbulentViscosityField {
 /// Nicoud et al. (2011) "Using singular values to build a subgrid-scale
 /// model for large eddy simulations."
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SigmaModel {
     /// Sigma model constant C_σ (default 1.35).
     pub c_sigma: f64,
     /// Filter width Δ.
     pub delta: f64,
 }
-#[allow(dead_code)]
 impl SigmaModel {
     /// Create a new Sigma model.
     pub fn new(c_sigma: f64, delta: f64) -> Self {
@@ -664,8 +642,8 @@ impl SigmaModel {
         let mut big_g = mat3_zero();
         for i in 0..3 {
             for j in 0..3 {
-                for k in 0..3 {
-                    big_g[i][j] += g[k][i] * g[k][j];
+                for g_k in g.iter() {
+                    big_g[i][j] += g_k[i] * g_k[j];
                 }
             }
         }
@@ -732,7 +710,6 @@ impl SigmaModel {
 /// The blending uses a length-scale comparison: l_RANS = √k / (β* ω),
 /// l_LES = C_DES * Δ.  Wherever l_LES < l_RANS the LES branch is active.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DesModel {
     /// DES constant (default 0.65).
     pub c_des: f64,
@@ -741,7 +718,6 @@ pub struct DesModel {
     /// Inner k-ω model.
     pub k_omega: KOmegaModel,
 }
-#[allow(dead_code)]
 impl DesModel {
     /// Create a new DES model.
     pub fn new(delta: f64, nu_mol: f64) -> Self {
@@ -799,14 +775,12 @@ impl DesModel {
 /// `d_wall` and the local grid/particle spacing `h`.
 /// The blending function is: f_DES = min(1, d_wall / (C_DES · Δ)).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DesDetachment {
     /// DES constant C_DES (typically 0.65).
     pub c_des: f64,
     /// Maximum LES length scale Δ (particle spacing or filter width).
     pub max_le: f64,
 }
-#[allow(dead_code)]
 impl DesDetachment {
     /// Create a new DES detachment sensor.
     pub fn new(c_des: f64, max_le: f64) -> Self {
@@ -838,7 +812,6 @@ impl DesDetachment {
 /// Reference: Wilcox (1988), "Reassessment of the scale-determining equation
 /// for advanced turbulence models", AIAA Journal.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct KOmegaRans {
     /// Closure constant α (≈ 5/9).
     pub alpha: f64,
@@ -853,7 +826,6 @@ pub struct KOmegaRans {
     /// Kinematic viscosity ν (m² s⁻¹).
     pub nu: f64,
 }
-#[allow(dead_code)]
 impl KOmegaRans {
     /// Create a new k-ω model with custom constants.
     pub fn new(
@@ -957,7 +929,6 @@ impl KOmegaRans {
 ///
 /// Reference: Prandtl (1925).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct MixingLengthModel {
     /// Von Kármán constant κ (≈ 0.41).
     pub kappa: f64,
@@ -966,7 +937,6 @@ pub struct MixingLengthModel {
     /// Maximum mixing length cap (m).  Set to f64::MAX to disable.
     pub l_max: f64,
 }
-#[allow(dead_code)]
 impl MixingLengthModel {
     /// Create a new mixing-length model.
     pub fn new(kappa: f64, a_plus: f64, l_max: f64) -> Self {
@@ -1007,7 +977,6 @@ impl MixingLengthModel {
 }
 /// Near-wall turbulence parameters.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WallTurbulence {
     /// von Kármán constant κ (default 0.41).
     pub kappa: f64,
@@ -1016,7 +985,6 @@ pub struct WallTurbulence {
     /// Kinematic viscosity ν (m²/s).
     pub nu: f64,
 }
-#[allow(dead_code)]
 impl WallTurbulence {
     /// Create a new near-wall turbulence model.
     pub fn new(kappa: f64, a_plus: f64, nu: f64) -> Self {
@@ -1073,14 +1041,12 @@ impl WallTurbulence {
 /// Nicoud & Ducros (1999).  The WALE model captures the correct near-wall
 /// behaviour (ν_t → O(y³)) without requiring explicit wall distance.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WaleModel {
     /// WALE constant C_w (default 0.325).
     pub c_w: f64,
     /// Filter width Δ (particle spacing).
     pub delta: f64,
 }
-#[allow(dead_code)]
 impl WaleModel {
     /// Create a new WALE model.
     pub fn new(c_w: f64, delta: f64) -> Self {
@@ -1095,8 +1061,8 @@ impl WaleModel {
         let mut g2 = mat3_zero();
         for i in 0..3 {
             for j in 0..3 {
-                for k in 0..3 {
-                    g2[i][j] += g[i][k] * g[k][j];
+                for (k, &g_ik) in g[i].iter().enumerate() {
+                    g2[i][j] += g_ik * g[k][j];
                 }
             }
         }
@@ -1115,7 +1081,6 @@ impl WaleModel {
     /// Compute the WALE eddy viscosity ν_t.
     ///
     /// ν_t = (C_w Δ)² · (S^d_ij S^d_ij)^(3/2) / \[(S_ij S_ij)^(5/2) + (S^d_ij S^d_ij)^(5/4)\]
-    #[allow(clippy::too_many_arguments)]
     pub fn eddy_viscosity(&self, s: Mat3, g: Mat3) -> f64 {
         let sd = self.sd_tensor(g);
         let mut sd_sq = 0.0_f64;
@@ -1154,7 +1119,6 @@ impl WaleModel {
 /// Tracks turbulent kinetic energy `k` and specific dissipation `ω`, and
 /// exposes the standard Wilcox (1988) model constants.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct KomegaSph {
     /// Turbulent kinetic energy k (m²/s²).
     pub k: f64,
@@ -1169,7 +1133,6 @@ pub struct KomegaSph {
     /// Turbulent diffusion coefficient for ω.
     pub sigma_w: f64,
 }
-#[allow(dead_code)]
 impl KomegaSph {
     /// Create a new k-ω state with Wilcox (1988) standard constants.
     pub fn new(k: f64, omega: f64) -> Self {
@@ -1199,7 +1162,6 @@ impl KomegaSph {
 /// Follows the standard high-Reynolds-number k-ε model
 /// (Launder & Spalding 1974) with SPH-adapted diffusion terms.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct KepsilonSph {
     /// Turbulent kinetic energy k (m²/s²).
     pub k: f64,
@@ -1216,7 +1178,6 @@ pub struct KepsilonSph {
     /// Turbulent Prandtl number for ε (default 1.3).
     pub sigma_eps: f64,
 }
-#[allow(dead_code)]
 impl KepsilonSph {
     /// Create a new k-ε SPH model.
     pub fn new(k: f64, epsilon: f64) -> Self {
@@ -1290,12 +1251,10 @@ impl KepsilonSph {
 ///
 /// where α_t is the turbulent thermal diffusivity.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TurbulentPrandtlNumber {
     /// Turbulent Prandtl number (typically 0.85–0.9 for temperature).
     pub pr_t: f64,
 }
-#[allow(dead_code)]
 impl TurbulentPrandtlNumber {
     /// Create with a given Pr_t.
     pub fn new(pr_t: f64) -> Self {
@@ -1323,7 +1282,6 @@ impl TurbulentPrandtlNumber {
 /// Tracks turbulent kinetic energy (k) and specific dissipation rate (ω)
 /// per particle and computes an eddy viscosity ν_t = k / ω.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct KOmegaModel {
     /// Model constant α (production coefficient, default 5/9).
     pub alpha: f64,
@@ -1338,7 +1296,6 @@ pub struct KOmegaModel {
     /// Molecular kinematic viscosity ν (m²/s).
     pub nu_mol: f64,
 }
-#[allow(dead_code)]
 impl KOmegaModel {
     /// Create a new k-ω model with standard constants.
     pub fn new(nu_mol: f64) -> Self {

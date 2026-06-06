@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,12 +7,6 @@
 //! understeer gradient, pitch dynamics, yaw moment diagram, handling balance,
 //! wheel spin control, and a vehicle state estimator.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-#![allow(unused_imports)]
-
-use std::f64::consts::PI;
-
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 #[inline]
@@ -22,9 +15,11 @@ fn clamp(v: f64, lo: f64, hi: f64) -> f64 {
 }
 
 /// 3×3 matrix as flat row-major array.
+#[cfg(test)]
 type Mat3 = [f64; 9];
 
 /// Matrix-vector multiply: 3×3 * 3 → 3.
+#[cfg(test)]
 fn mat3_mul_vec3(m: &Mat3, v: &[f64; 3]) -> [f64; 3] {
     [
         m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
@@ -34,16 +29,19 @@ fn mat3_mul_vec3(m: &Mat3, v: &[f64; 3]) -> [f64; 3] {
 }
 
 /// Transpose a 3×3 matrix.
+#[cfg(test)]
 fn mat3_transpose(m: &Mat3) -> Mat3 {
     [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]]
 }
 
 /// Identity 3×3.
+#[cfg(test)]
 fn mat3_identity() -> Mat3 {
     [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
 }
 
 /// Simple 2D rotation matrix (returns 2×2 as \[f64; 4\]).
+#[cfg(test)]
 fn rot2(angle: f64) -> [f64; 4] {
     let c = angle.cos();
     let s = angle.sin();
@@ -1039,10 +1037,9 @@ impl VehicleStateEstimator {
     pub fn update(&mut self, measurement: &[f64; 4]) {
         let state_arr = [self.state.vx, self.state.vy, self.state.r, self.state.beta];
         let mut k = [0.0f64; 4]; // Kalman gain (diagonal approximation)
-        for i in 0..4 {
+        for (i, (k_i, r_ii)) in k.iter_mut().zip(self.r_diag.iter()).enumerate() {
             let p_ii = self.p[i * 5];
-            let r_ii = self.r_diag[i];
-            k[i] = p_ii / (p_ii + r_ii);
+            *k_i = p_ii / (p_ii + r_ii);
         }
         // State update
         self.state.vx += k[0] * (measurement[0] - state_arr[0]);
@@ -1050,8 +1047,8 @@ impl VehicleStateEstimator {
         self.state.r += k[2] * (measurement[2] - state_arr[2]);
         self.state.beta += k[3] * (measurement[3] - state_arr[3]);
         // Covariance update
-        for i in 0..4 {
-            self.p[i * 5] *= 1.0 - k[i];
+        for (i, k_i) in k.iter().enumerate() {
+            self.p[i * 5] *= 1.0 - k_i;
         }
     }
 
@@ -1081,6 +1078,7 @@ impl Default for VehicleStateEstimator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::PI;
 
     // LinearBicycleModel tests
 

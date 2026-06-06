@@ -5,9 +5,6 @@
 //!
 //! Exposes spatial force fields (gravity wells, vortex, wind, explosion) to Python.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::force_field::{AabbRegion, ForceFieldKind, ForceFieldSystem};
 use pyo3::prelude::*;
 

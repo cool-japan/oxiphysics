@@ -6,9 +6,6 @@
 //! This crate provides a GPU compute abstraction layer that can work with any
 //! backend, with a CPU fallback as the default implementation. No heavy GPU
 //! dependencies (such as wgpu) are required.
-#![allow(missing_docs)]
-#![allow(ambiguous_glob_reexports)]
-#![allow(dead_code)]
 
 mod error;
 pub use error::*;
@@ -35,7 +32,8 @@ pub mod sph_gpu;
 
 pub use compute::{BufferHandle, ComputeBackend, ComputeKernel, CpuBackend};
 pub use neural_compute::*;
-pub use particle_system::*;
+pub use particle_system::functions::*;
+pub use particle_system::types::*;
 pub use sparse_gpu::*;
 
 // ── GPU compute utility functions ───────────────────────────────────────────
@@ -61,13 +59,11 @@ pub fn aligned_size(size: usize, alignment: usize) -> usize {
 }
 
 /// Flatten a 3D dispatch (x, y, z) into a linear index, given grid dimensions.
-#[allow(dead_code)]
 pub fn linear_index_3d(x: usize, y: usize, z: usize, dim_x: usize, dim_y: usize) -> usize {
     z * dim_x * dim_y + y * dim_x + x
 }
 
 /// Convert a linear index back to 3D coordinates.
-#[allow(dead_code)]
 pub fn index_3d_from_linear(index: usize, dim_x: usize, dim_y: usize) -> (usize, usize, usize) {
     let z = index / (dim_x * dim_y);
     let rem = index % (dim_x * dim_y);
@@ -104,7 +100,6 @@ impl DispatchTimer {
 ///
 /// * `bytes_transferred` - Total bytes read + written.
 /// * `elapsed_secs` - Elapsed time in seconds.
-#[allow(dead_code)]
 pub fn bandwidth_gb_s(bytes_transferred: usize, elapsed_secs: f64) -> f64 {
     if elapsed_secs <= 0.0 {
         return 0.0;
@@ -116,7 +111,6 @@ pub fn bandwidth_gb_s(bytes_transferred: usize, elapsed_secs: f64) -> f64 {
 ///
 /// * `budget_bytes` - Available memory in bytes.
 /// * `element_size` - Size of one element in bytes.
-#[allow(dead_code)]
 pub fn elements_in_budget(budget_bytes: usize, element_size: usize) -> usize {
     if element_size == 0 {
         return 0;
@@ -130,14 +124,12 @@ pub fn elements_in_budget(budget_bytes: usize, element_size: usize) -> usize {
 /// and the required alignment.
 ///
 /// This mirrors `wgpuDeviceGetSupportedSurfaceFormats` style pitch calculation.
-#[allow(dead_code)]
 pub fn row_pitch(elements_per_row: usize, element_size: usize, alignment: usize) -> usize {
     let raw = elements_per_row * element_size;
     aligned_size(raw, alignment)
 }
 
 /// Compute the 2-D buffer size (rows × pitch) for a texture-like allocation.
-#[allow(dead_code)]
 pub fn buffer_size_2d(
     width: usize,
     height: usize,

@@ -16,8 +16,6 @@
 //! - [`EinsteinModel`] — Einstein heat capacity model
 //! - [`NuclearQuantumEffect`] — proton tunnelling fraction, H/D isotope fractionation
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------

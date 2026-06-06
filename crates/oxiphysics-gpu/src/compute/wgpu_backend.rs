@@ -58,8 +58,6 @@
 //! let data = backend.read_buffer(handle);
 //! ```
 
-#![allow(dead_code)]
-
 // ── BufferHandle (re-used from parent module) ─────────────────────────────────
 
 /// Opaque handle to a GPU buffer allocated by a `ComputeBackend`.

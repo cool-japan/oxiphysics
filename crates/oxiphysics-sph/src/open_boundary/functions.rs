@@ -157,7 +157,6 @@ pub fn non_reflecting_bc_pressure(
 ///
 /// At an inflow: use exterior `W+` and interior `W-`.
 /// Returns the normal velocity at the boundary.
-#[allow(dead_code)]
 pub fn riemann_boundary_velocity(
     interior_v_n: f64,
     exterior_v_n: f64,
@@ -178,7 +177,6 @@ pub fn riemann_boundary_velocity(
 /// Uses a simple random fluctuation scaled by `intensity * |v_mean|`.
 /// In production code this would use a correlated random field (e.g. digital
 /// filter method); here we use a deterministic hash for reproducibility.
-#[allow(dead_code)]
 pub fn turbulent_velocity_perturbation(
     pos: [f64; 3],
     v_mean: [f64; 3],
@@ -206,7 +204,6 @@ pub fn turbulent_velocity_perturbation(
 /// relaxation: dp/dt = −σ · (p − p_ref) where σ = u_bc / L.
 ///
 /// Returns the relaxed pressure after one time-like update.
-#[allow(dead_code)]
 pub fn nscbc_inlet_pressure(p_ref: f64, u_bc: f64, rho: f64, c: f64, l: f64) -> f64 {
     let p_local = rho * c * c;
     let sigma = u_bc.abs() / l.max(1e-14);
@@ -219,7 +216,6 @@ pub fn nscbc_inlet_pressure(p_ref: f64, u_bc: f64, rho: f64, c: f64, l: f64) -> 
 /// `target` with coefficient `sigma` (1/s).  Returns the new velocity.
 ///
 /// `vel_new[α] = vel[α] − σ * (vel[α] − target[α])` (explicit relaxation).
-#[allow(dead_code)]
 pub fn sponge_zone_damping(
     x: f64,
     x_start: f64,
@@ -249,7 +245,6 @@ pub fn sponge_zone_damping(
 ///
 /// where Q_target (m³/s) is the volumetric flow rate and V_particle (m³) is the
 /// reference particle volume.
-#[allow(dead_code)]
 pub fn particles_to_inject(q_target: f64, dt: f64, v_particle: f64) -> usize {
     if v_particle < 1e-30 || q_target < 0.0 {
         return 0;
@@ -257,7 +252,6 @@ pub fn particles_to_inject(q_target: f64, dt: f64, v_particle: f64) -> usize {
     (q_target * dt / v_particle).round() as usize
 }
 /// Compute the target volumetric flow rate from a prescribed velocity and area.
-#[allow(dead_code)]
 pub fn target_flow_rate(velocity: f64, area: f64) -> f64 {
     velocity * area
 }

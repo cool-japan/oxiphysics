@@ -6,9 +6,6 @@
 //! Provides detailed combustion engine, fuel injection, exhaust/turbo, electric
 //! motor, battery, hybrid drivetrain, CVT, DCT, and throttle-by-wire models.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─── helpers ────────────────────────────────────────────────────────────────

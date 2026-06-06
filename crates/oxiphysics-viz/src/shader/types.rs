@@ -2,12 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::should_implement_trait)]
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{dot3, identity4, look_at, normalize3, normalize3_shader, sh9_basis};
 
 /// A typed uniform buffer that stores named uniform values with ordering.
@@ -129,7 +126,6 @@ impl ShadowMapSetup {
     }
 }
 /// A skeleton — a list of joints.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct Skeleton {
     /// All joints, indexed by their position in this array.
@@ -156,7 +152,6 @@ impl Skeleton {
     }
 }
 /// A joint (bone) in a skeleton, described by its inverse bind-pose matrix.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Joint {
     /// Name of the joint.
@@ -226,7 +221,6 @@ impl BssrdfApprox {
     }
 }
 /// Options for generating a GLSL shader preamble.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GlslOptions {
     /// GLSL version string, e.g. `"330 core"`.
@@ -295,7 +289,6 @@ impl GlslOptions {
 /// coefficients (L1 irradiance).
 ///
 /// This represents ambient lighting that varies smoothly with surface normal.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IblProbe {
     /// 9 SH coefficients for the R, G, B channels (L0 + L1 + L2, band 0..2).
@@ -323,9 +316,9 @@ impl IblProbe {
         let d = normalize3_shader(dir);
         let sh = sh9_basis(d);
         let mut result = [0.0_f64; 3];
-        for i in 0..9 {
-            for c in 0..3 {
-                result[c] += sh[i] * self.sh9[i][c];
+        for (sh_i, sh9_i) in sh.iter().zip(self.sh9.iter()) {
+            for (res_c, s9_c) in result.iter_mut().zip(sh9_i.iter()) {
+                *res_c += sh_i * s9_c;
             }
         }
         [
@@ -336,7 +329,6 @@ impl IblProbe {
     }
 }
 /// A pose: one local transform matrix per joint.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Pose {
     /// Local joint transforms, one per joint.
@@ -386,7 +378,6 @@ impl RenderPass {
     }
 }
 /// Per-vertex skinning data: joint indices and blend weights for up to 4 joints.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkinningVertex {
     /// Index of up to 4 influencing joints.
@@ -425,7 +416,6 @@ impl SkinningVertex {
     }
 }
 /// A simple PCF shadow sampler working on a floating-point depth map.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PcfSampler {
     /// The depth map (row-major: `depths[row * width + col]`).
@@ -927,9 +917,10 @@ pub struct PbrMaterial {
     /// Ambient occlusion factor in \[0, 1\].
     pub ao: f64,
 }
-impl PbrMaterial {
+
+impl Default for PbrMaterial {
     /// Sensible default: opaque mid-gray dielectric, roughness 0.5.
-    pub fn default() -> Self {
+    fn default() -> Self {
         Self {
             base_color: [0.5, 0.5, 0.5],
             metallic: 0.0,
@@ -938,6 +929,9 @@ impl PbrMaterial {
             ao: 1.0,
         }
     }
+}
+
+impl PbrMaterial {
     /// Create a metallic material.
     pub fn metallic(base_color: [f64; 3], roughness: f64) -> Self {
         Self {
@@ -1025,7 +1019,6 @@ impl PbrMaterial {
     }
 }
 /// A morph target: displacement vectors per vertex.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MorphTarget {
     /// Name for this target (e.g. "smile", "blink_left").
@@ -1072,7 +1065,6 @@ impl AnisotropicBrdf {
     /// GGX NDF for anisotropic surfaces.
     ///
     /// h = half vector, t = tangent, b = bitangent, n = normal.
-    #[allow(clippy::too_many_arguments)]
     pub fn ndf_ggx_aniso(
         &self,
         h: [f64; 3],
@@ -1091,7 +1083,6 @@ impl AnisotropicBrdf {
     /// Evaluate anisotropic BRDF value.
     ///
     /// Returns RGB specular contribution.
-    #[allow(clippy::too_many_arguments)]
     pub fn evaluate(
         &self,
         view_dir: [f64; 3],

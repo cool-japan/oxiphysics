@@ -2,9 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-use super::functions::{BodyId, ConstraintId, SLEEP_VELOCITY_THRESHOLD};
+use super::functions::{
+    BodyId, ConstraintId, SLEEP_VELOCITY_THRESHOLD, adaptive_substeps, build_body_to_island_map,
+    solve_contact_constraint,
+};
 
 /// Cache of contact manifold entries for all active body pairs.
 #[derive(Debug, Clone, Default)]

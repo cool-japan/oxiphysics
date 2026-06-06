@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use std::collections::{HashMap, HashSet};
 
 use super::types::MeshStats;
@@ -110,8 +109,8 @@ pub fn weld_vertices(
     }
     let mut new_vertices: Vec<[f64; 3]> = Vec::new();
     let mut compact: Vec<usize> = vec![usize::MAX; n];
-    for i in 0..n {
-        let canon = remap[i];
+    for (i, &canon) in remap.iter().enumerate().take(n) {
+        let _ = i;
         if compact[canon] == usize::MAX {
             compact[canon] = new_vertices.len();
             new_vertices.push(vertices[canon]);
@@ -153,7 +152,7 @@ pub fn compute_vertex_normals(vertices: &[[f64; 3]], triangles: &[[usize; 3]]) -
     normals.iter().map(|&n| normalize(n)).collect()
 }
 /// Reverse the winding order of all triangles, flipping their normals.
-pub fn flip_normals(triangles: &mut Vec<[usize; 3]>) {
+pub fn flip_normals(triangles: &mut [[usize; 3]]) {
     for tri in triangles.iter_mut() {
         tri.swap(1, 2);
     }
@@ -585,8 +584,7 @@ pub fn merge_duplicate_vertices(
     let n_merged = remap.iter().enumerate().filter(|&(i, &r)| r != i).count();
     let mut compact: Vec<usize> = vec![usize::MAX; n];
     let mut new_verts: Vec<[f64; 3]> = Vec::new();
-    for i in 0..n {
-        let canon = remap[i];
+    for &canon in remap.iter().take(n) {
         if compact[canon] == usize::MAX {
             compact[canon] = new_verts.len();
             new_verts.push(vertices[canon]);
@@ -607,7 +605,7 @@ pub fn merge_duplicate_vertices(
 /// Fill all boundary holes in a mesh using ear-clipping.
 ///
 /// Modifies `vertices` and `tris` in place. Returns the number of holes filled.
-pub fn fill_boundary_holes(vertices: &mut Vec<[f64; 3]>, tris: &mut Vec<[usize; 3]>) -> usize {
+pub fn fill_boundary_holes(vertices: &[[f64; 3]], tris: &mut Vec<[usize; 3]>) -> usize {
     let loops = find_boundary_loops(tris);
     let n_holes = loops.len();
     for lp in &loops {
@@ -619,7 +617,7 @@ pub fn fill_boundary_holes(vertices: &mut Vec<[f64; 3]>, tris: &mut Vec<[usize; 
 /// Orient all triangles consistently using flood-fill from the first face.
 ///
 /// Returns the number of faces that were flipped.
-pub fn fix_face_normals(vertices: &[[f64; 3]], tris: &mut Vec<[usize; 3]>) -> usize {
+pub fn fix_face_normals(vertices: &[[f64; 3]], tris: &mut [[usize; 3]]) -> usize {
     let n = tris.len();
     if n == 0 {
         return 0;
@@ -753,12 +751,9 @@ pub fn minimum_bounding_sphere(vertices: &[[f64; 3]]) -> ([f64; 3], f64) {
     if vertices.is_empty() {
         return ([0.0; 3], 0.0);
     }
-    let mut center = vertices[0];
-    #[allow(unused_assignments)]
-    let mut radius = 0.0_f64;
     let mut far = vertices[0];
     for &p in vertices.iter().skip(1) {
-        if dist(p, center) > dist(far, center) {
+        if dist(p, vertices[0]) > dist(far, vertices[0]) {
             far = p;
         }
     }
@@ -768,8 +763,8 @@ pub fn minimum_bounding_sphere(vertices: &[[f64; 3]]) -> ([f64; 3], f64) {
             far2 = p;
         }
     }
-    center = midpoint(far, far2);
-    radius = dist(far, far2) * 0.5;
+    let mut center = midpoint(far, far2);
+    let mut radius = dist(far, far2) * 0.5;
     for &p in vertices {
         let d = dist(p, center);
         if d > radius {
@@ -1367,7 +1362,7 @@ mod tests {
     }
     #[test]
     fn test_fill_boundary_holes_adds_triangles() {
-        let mut vertices = vec![
+        let vertices = vec![
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
             [1.0, 1.0, 0.0],
@@ -1375,7 +1370,7 @@ mod tests {
         ];
         let mut tris = vec![[0usize, 1, 2]];
         let before = tris.len();
-        let n_holes = fill_boundary_holes(&mut vertices, &mut tris);
+        let n_holes = fill_boundary_holes(&vertices, &mut tris);
         assert!(n_holes > 0, "should find at least one hole");
         assert!(tris.len() > before, "filling holes should add triangles");
     }

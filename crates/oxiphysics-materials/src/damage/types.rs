@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 /// Bailey-Norton primary creep model.
 ///
 /// ε_cr = B * σ^m * t^p
@@ -105,12 +103,10 @@ impl CdmDamage {
         self.d = d_new.clamp(self.d, 1.0);
     }
     /// Effective stiffness: E_eff = (1 - D) * E.
-    #[allow(dead_code)]
     pub fn effective_stiffness(&self, young_modulus: f64) -> f64 {
         (1.0 - self.d) * young_modulus
     }
     /// Effective stress: σ_eff = σ / (1 - D).
-    #[allow(dead_code)]
     pub fn effective_stress(&self, nominal_stress: f64) -> f64 {
         let w = 1.0 - self.d;
         if w < 1e-15 {
@@ -172,14 +168,12 @@ impl NonLocalRegularization {
         Self { lc }
     }
     /// Gaussian weight function: w(r) = exp(-r² / (2*l_c²)).
-    #[allow(dead_code)]
     pub fn weight(&self, distance: f64) -> f64 {
         (-distance * distance / (2.0 * self.lc * self.lc)).exp()
     }
     /// Bell-shaped (polynomial) weight function (compact support at r = l_c).
     ///
     /// w(r) = (1 - (r/l_c)²)² for r < l_c, 0 otherwise
-    #[allow(dead_code)]
     pub fn weight_bell(&self, distance: f64) -> f64 {
         if distance >= self.lc {
             0.0
@@ -195,7 +189,6 @@ impl NonLocalRegularization {
     /// * `point` - Position at which to evaluate the non-local average
     /// * `positions` - Positions of all integration points
     /// * `values` - Local field values at each integration point
-    #[allow(dead_code)]
     pub fn nonlocal_average(
         &self,
         point: &[f64; 3],
@@ -222,7 +215,6 @@ impl NonLocalRegularization {
     /// Compute non-local averages for all points simultaneously.
     ///
     /// Returns a vector of non-local averages, one per point.
-    #[allow(dead_code)]
     pub fn nonlocal_average_all(&self, positions: &[[f64; 3]], values: &[f64]) -> Vec<f64> {
         positions
             .iter()
@@ -296,7 +288,6 @@ impl IsotropicDamage {
 /// Each ply is assigned a scalar damage variable d ∈ \[0, 1\].
 /// When d = 1 for a ply, it is considered fully failed and its stiffness
 /// contribution is set to zero (ply-discount method).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ProgressiveFailureAnalysis {
     /// Number of plies.
@@ -308,7 +299,6 @@ pub struct ProgressiveFailureAnalysis {
 }
 impl ProgressiveFailureAnalysis {
     /// Create a new PFA model with `n_plies` plies.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(n_plies: usize, x_t: f64, x_c: f64, y_t: f64, y_c: f64, s12: f64) -> Self {
         Self {
             n_plies,
@@ -363,7 +353,6 @@ impl ProgressiveFailureAnalysis {
 /// Maintains separate damage variables for the three principal directions
 /// (d11, d22, d33) and the three shear planes (d12, d13, d23).
 /// The effective compliance tensor accounts for directional degradation.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DamageInducedAnisotropy {
     /// Undamaged Young's modulus \[Pa\].
@@ -513,7 +502,6 @@ impl MazarsDamage {
 /// F₁σ₁ + F₂σ₂ + F₁₁σ₁² + F₂₂σ₂² + F₆₆τ₁₂² + 2F₁₂σ₁σ₂ = 1  (failure)
 ///
 /// Reference: Tsai & Wu (1971).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TsaiWuCriterion {
     /// Longitudinal tensile strength X_T \[Pa\].
@@ -531,7 +519,6 @@ pub struct TsaiWuCriterion {
 }
 impl TsaiWuCriterion {
     /// Create a new Tsai-Wu criterion.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(x_t: f64, x_c: f64, y_t: f64, y_c: f64, s12: f64, f12_star: f64) -> Self {
         Self {
             x_t,
@@ -595,7 +582,6 @@ impl TsaiWuCriterion {
 /// Repair effectiveness η ∈ \[0, 1\]:
 /// - η = 1: perfect repair (full strength recovery)
 /// - η = 0: no repair (residual damage remains)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RepairEffectiveness {
     /// Repair quality factor κ ∈ \[0, 1\] (1 = perfect repair quality).
@@ -661,7 +647,6 @@ pub struct LemaitreDuctileDamage {
 }
 impl LemaitreDuctileDamage {
     /// Create a new Lemaitre ductile damage model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(eps_d: f64, s_param: f64, s_exp: f64, d_critical: f64, nu: f64) -> Self {
         Self {
             d: 0.0,
@@ -678,12 +663,10 @@ impl LemaitreDuctileDamage {
     /// R_ν = (2/3)(1 + ν) + 3(1 - 2ν)(σ_H/σ_eq)²
     ///
     /// where σ_H/σ_eq is the triaxiality ratio.
-    #[allow(dead_code)]
     pub fn triaxiality_function(&self, triaxiality: f64) -> f64 {
         (2.0 / 3.0) * (1.0 + self.nu) + 3.0 * (1.0 - 2.0 * self.nu) * triaxiality * triaxiality
     }
     /// Energy release rate: Y = σ_eq² * R_ν / (2*E*(1-D)²)
-    #[allow(dead_code)]
     pub fn energy_release_rate(&self, sigma_eq: f64, triaxiality: f64, young_modulus: f64) -> f64 {
         let rv = self.triaxiality_function(triaxiality);
         let w = 1.0 - self.d;
@@ -692,7 +675,6 @@ impl LemaitreDuctileDamage {
     /// Update damage given an increment of plastic strain.
     ///
     /// Ḋ = (Y/S)^s * Δε_p   if ε_p > ε_D and D < D_c
-    #[allow(dead_code)]
     pub fn update(
         &mut self,
         sigma_eq: f64,
@@ -709,7 +691,6 @@ impl LemaitreDuctileDamage {
         self.d = (self.d + dd).min(self.d_critical);
     }
     /// Check if rupture has occurred (D >= D_c).
-    #[allow(dead_code)]
     pub fn is_ruptured(&self) -> bool {
         self.d >= self.d_critical - 1e-15
     }
@@ -739,7 +720,6 @@ impl LemaitreDuctileDamage {
 /// (transverse direction). Effective stiffness:
 ///
 /// E11_eff = (1 - D11) * E11,   E22_eff = (1 - D22) * E22
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ProgressiveDamage {
     /// Undamaged Young's modulus (isotropic assumption) \[Pa\].
@@ -820,7 +800,6 @@ impl GradientEnhancedDamage {
     /// ε̄_i - c*(ε̄_{i-1} - 2*ε̄_i + ε̄_{i+1})/h² = ε_i
     ///
     /// Uses Thomas algorithm (tridiagonal solver).
-    #[allow(dead_code)]
     pub fn solve_1d(&self, local_strains: &[f64], element_size: f64) -> Vec<f64> {
         let n = local_strains.len();
         if n == 0 {
@@ -873,7 +852,6 @@ impl GradientEnhancedDamage {
 /// 4. Matrix compression (σ_2 < 0)
 ///
 /// Reference: Hashin (1980).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HashinFailureCriteria {
     /// Longitudinal tensile strength X_T \[Pa\].
@@ -982,7 +960,6 @@ impl NortonCreep {
 /// - Mode B/C: inter-fiber failure (IFF)
 ///
 /// Reference: Puck & Schürmann (1998).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PuckFailureCriteria {
     /// Longitudinal tensile strength X_T \[Pa\].
@@ -998,7 +975,6 @@ pub struct PuckFailureCriteria {
 }
 impl PuckFailureCriteria {
     /// Create a new Puck failure criteria instance.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(x_t: f64, x_c: f64, y_t: f64, y_c: f64, s12: f64) -> Self {
         Self {
             x_t,
@@ -1107,7 +1083,6 @@ impl CrackBandModel {
         }
     }
     /// Damage initiation strain: ε_0 = f_t / E.
-    #[allow(dead_code)]
     pub fn initiation_strain(&self) -> f64 {
         self.ft / self.young_modulus
     }
@@ -1115,26 +1090,22 @@ impl CrackBandModel {
     ///
     /// This ensures the correct fracture energy is dissipated
     /// regardless of element size.
-    #[allow(dead_code)]
     pub fn failure_strain(&self) -> f64 {
         2.0 * self.gf / (self.ft * self.h)
     }
     /// Check snap-back condition: ε_f must be > ε_0.
     ///
     /// If h > 2*E*G_f / f_t², snap-back occurs and the element is too large.
-    #[allow(dead_code)]
     pub fn has_snapback(&self) -> bool {
         self.failure_strain() <= self.initiation_strain()
     }
     /// Maximum allowable element size to avoid snap-back.
-    #[allow(dead_code)]
     pub fn max_element_size(&self) -> f64 {
         2.0 * self.young_modulus * self.gf / (self.ft * self.ft)
     }
     /// Update damage based on current strain.
     ///
     /// Uses linear softening between ε_0 and ε_f.
-    #[allow(dead_code)]
     pub fn update(&mut self, strain: f64) {
         if strain <= self.kappa {
             return;
@@ -1155,7 +1126,6 @@ impl CrackBandModel {
     /// Stress for a given strain considering damage.
     ///
     /// σ = (1 - D) * E * ε
-    #[allow(dead_code)]
     pub fn stress(&self, strain: f64) -> f64 {
         (1.0 - self.d) * self.young_modulus * strain
     }
@@ -1163,7 +1133,6 @@ impl CrackBandModel {
     ///
     /// For linear softening: g = 0.5 * f_t * (ε_f - ε_0) * D
     /// Total energy dissipated per unit area = g * h ≈ G_f when D=1.
-    #[allow(dead_code)]
     pub fn dissipated_energy_density(&self) -> f64 {
         let eps0 = self.initiation_strain();
         let eps_f = self.failure_strain();
@@ -1201,7 +1170,6 @@ pub struct GursonDamage {
 }
 impl GursonDamage {
     /// Create a new GTN model with default Tvergaard parameters.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(f0: f64, fc: f64, f_f: f64, a_n: f64, eps_n: f64, s_n: f64) -> Self {
         let q1 = 1.5;
         let q2 = 1.0;
@@ -1224,7 +1192,6 @@ impl GursonDamage {
     /// f* = f_c + (f̄_F - f_c)/(f_F - f_c) * (f - f_c)   if f > f_c
     ///
     /// where f̄_F = (q₁ + sqrt(q₁² - q₃))/q₃ ≈ 1/q₁
-    #[allow(dead_code)]
     pub fn effective_void_fraction(&self) -> f64 {
         if self.f <= self.fc {
             self.f
@@ -1237,7 +1204,6 @@ impl GursonDamage {
     /// Evaluate the GTN yield function.
     ///
     /// Φ = (σ_eq/σ_y)² + 2*q₁*f* cosh(3*q₂*σ_H/(2*σ_y)) - 1 - q₃*f*²
-    #[allow(dead_code)]
     pub fn yield_function(&self, sigma_eq: f64, sigma_h: f64, sigma_y: f64) -> f64 {
         let f_star = self.effective_void_fraction();
         let term1 = (sigma_eq / sigma_y).powi(2);
@@ -1248,7 +1214,6 @@ impl GursonDamage {
     /// Void nucleation rate from strain-controlled nucleation (Chu & Needleman).
     ///
     /// ḟ_nucleation = A_n / (s_N * sqrt(2π)) * exp(-0.5*((ε_p - ε_N)/s_N)²) * ε̇_p
-    #[allow(dead_code)]
     pub fn nucleation_rate(&self, eps_p: f64, eps_p_dot: f64) -> f64 {
         let z = (eps_p - self.eps_n) / self.s_n;
         let coeff = self.a_n / (self.s_n * (2.0 * std::f64::consts::PI).sqrt());
@@ -1257,12 +1222,10 @@ impl GursonDamage {
     /// Void growth rate from plastic dilatation.
     ///
     /// ḟ_growth = (1 - f) * ε̇_kk^p
-    #[allow(dead_code)]
     pub fn growth_rate(&self, plastic_volumetric_strain_rate: f64) -> f64 {
         (1.0 - self.f) * plastic_volumetric_strain_rate
     }
     /// Update void volume fraction given plastic strain increment.
-    #[allow(dead_code)]
     pub fn update(
         &mut self,
         eps_p: f64,
@@ -1275,7 +1238,6 @@ impl GursonDamage {
         self.f = (self.f + f_nucleation + f_growth).clamp(0.0, self.f_f);
     }
     /// Check if material has failed (f >= f_F).
-    #[allow(dead_code)]
     pub fn is_failed(&self) -> bool {
         self.f >= self.f_f - 1e-15
     }
@@ -1299,7 +1261,6 @@ impl GursonDamage {
     ///
     /// # Returns
     /// Total void volume fraction rate df/dε (per unit plastic strain)
-    #[allow(clippy::too_many_arguments)]
     pub fn compute_void_growth_rate(
         &self,
         sigma_h: f64,
@@ -1347,7 +1308,6 @@ impl MinerFatigueDamage {
     /// Fatigue life N at stress amplitude S from the S-N curve.
     ///
     /// N = C / S^m
-    #[allow(dead_code)]
     pub fn fatigue_life(&self, stress_amplitude: f64) -> f64 {
         if stress_amplitude.abs() < f64::EPSILON {
             return f64::INFINITY;
@@ -1355,7 +1315,6 @@ impl MinerFatigueDamage {
         self.c / stress_amplitude.abs().powf(self.m)
     }
     /// Accumulate damage for n cycles at the given stress amplitude.
-    #[allow(dead_code)]
     pub fn accumulate(&mut self, stress_amplitude: f64, n_cycles: f64) {
         let n_f = self.fatigue_life(stress_amplitude);
         if n_f.is_finite() {
@@ -1363,7 +1322,6 @@ impl MinerFatigueDamage {
         }
     }
     /// Check if fatigue failure has occurred (D >= 1).
-    #[allow(dead_code)]
     pub fn is_failed(&self) -> bool {
         self.d >= 1.0 - 1e-15
     }

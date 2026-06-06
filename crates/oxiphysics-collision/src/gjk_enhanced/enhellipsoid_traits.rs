@@ -8,9 +8,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use super::functions::ConvexShape;
-#[allow(unused_imports)]
-use super::functions::*;
+use super::functions::{ConvexShape, vadd, vdot, vlen, vscale};
 use super::types::EnhEllipsoid;
 
 impl ConvexShape for EnhEllipsoid {

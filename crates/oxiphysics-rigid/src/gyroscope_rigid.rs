@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,9 +10,6 @@
 //! north, attitude determination, angular momentum conservation, torque-free
 //! (Poinsot) motion, quaternion-based Euler angle integration, gyroscopic
 //! stabilisation analysis, and gimbal lock detection.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -143,6 +139,7 @@ fn quat_to_euler(q: [f64; 4]) -> [f64; 3] {
 }
 
 /// Convert Euler angles (ZYX convention) to quaternion.
+#[cfg(test)]
 fn euler_to_quat(roll: f64, pitch: f64, yaw: f64) -> [f64; 4] {
     let (sr, cr) = (roll * 0.5).sin_cos();
     let (sp, cp) = (pitch * 0.5).sin_cos();
@@ -1427,8 +1424,11 @@ mod tests {
     fn test_attitude_estimator_identity() {
         let est = AttitudeEstimator::new();
         let euler = est.euler_angles();
-        for i in 0..3 {
-            assert!(euler[i].abs() < TOL, "initial Euler angles should be 0");
+        for (i, &angle) in euler.iter().enumerate() {
+            assert!(
+                angle.abs() < TOL,
+                "initial Euler angles should be 0 (axis {i})"
+            );
         }
     }
 
@@ -1614,10 +1614,10 @@ mod tests {
     fn test_angular_velocity_variance_constant() {
         let data = vec![[1.0, 1.0, 1.0]; 10];
         let var = angular_velocity_variance(&data);
-        for i in 0..3 {
+        for (i, &v) in var.iter().enumerate() {
             assert!(
-                var[i].abs() < TOL,
-                "constant data should have zero variance"
+                v.abs() < TOL,
+                "constant data should have zero variance (axis {i})"
             );
         }
     }

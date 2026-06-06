@@ -3,8 +3,6 @@
 
 //! SPH (Smoothed Particle Hydrodynamics) compute kernels.
 
-#![allow(dead_code, missing_docs)]
-
 use crate::compute::ComputeKernel;
 use std::f64::consts::PI;
 
@@ -535,7 +533,6 @@ fn viscosity_laplacian(r: f64, h: f64) -> f64 {
     45.0 / (PI * h.powi(6)) * (h - r)
 }
 
-#[allow(clippy::needless_range_loop)]
 impl ComputeKernel for SphDensityKernel {
     fn name(&self) -> &str {
         "SphDensityKernel"
@@ -582,7 +579,6 @@ impl ComputeKernel for SphDensityKernel {
 ///   - `outputs[0]`: forces `[fx, fy, fz, ...]` (3n)
 pub struct SphForceKernel;
 
-#[allow(clippy::needless_range_loop)]
 impl ComputeKernel for SphForceKernel {
     fn name(&self) -> &str {
         "SphForceKernel"
@@ -651,7 +647,6 @@ impl ComputeKernel for SphForceKernel {
 ///   - `outputs[0]`: cell indices (one per particle)
 pub struct SphNeighborListKernel;
 
-#[allow(clippy::needless_range_loop)]
 impl ComputeKernel for SphNeighborListKernel {
     fn name(&self) -> &str {
         "SphNeighborListKernel"
@@ -712,7 +707,6 @@ impl ComputeKernel for SphNeighborListKernel {
 /// * `densities`  - Per-particle densities.
 /// * `h`          - Smoothing length.
 /// * `sigma`      - Surface tension coefficient.
-#[allow(clippy::too_many_arguments)]
 pub fn surface_tension_force(
     positions: &[[f64; 3]],
     color_fn: &[f64],
@@ -831,7 +825,6 @@ pub fn radix_sort_by_density(densities: &[f64]) -> Vec<usize> {
 ///
 /// Only pairs within distance `h` contribute.  The neighbour list is expected
 /// to already be built for the given positions.
-#[allow(dead_code)]
 pub fn density_accumulation(
     positions: &[[f64; 3]],
     masses: &[f64],
@@ -863,7 +856,6 @@ pub fn density_accumulation(
 /// Symmetric SPH pressure force kernel using neighbour lists.
 ///
 /// `F_i^press = -m_i sum_j m_j (p_i/rho_i^2 + p_j/rho_j^2) nabla W(r_ij, h)`
-#[allow(dead_code)]
 pub fn pressure_force_kernel(
     positions: &[[f64; 3]],
     densities: &[f64],
@@ -922,8 +914,6 @@ pub fn pressure_force_kernel(
 ///
 /// where `PI_ij = (-alpha * mu_ij * c_s + beta * mu_ij^2) / rho_ij`
 /// and `mu_ij = h * v_ij . r_ij / (|r_ij|^2 + 0.01 h^2)`.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn artificial_viscosity_force(
     positions: &[[f64; 3]],
     velocities: &[[f64; 3]],
@@ -985,7 +975,6 @@ pub fn artificial_viscosity_force(
 /// Equation of state for WCSPH: `p = B * ((rho/rho0)^gamma - 1)`.
 ///
 /// Typical values: `gamma = 7`, `B = rho0 * c_s^2 / gamma`.
-#[allow(dead_code)]
 pub fn wcsph_pressure(rho: f64, rho0: f64, b: f64, gamma: f64) -> f64 {
     b * ((rho / rho0).powf(gamma) - 1.0)
 }
@@ -994,7 +983,6 @@ pub fn wcsph_pressure(rho: f64, rho0: f64, b: f64, gamma: f64) -> f64 {
 ///
 /// Updates positions and velocities using the computed forces.
 /// Returns (new_positions, new_velocities).
-#[allow(dead_code)]
 pub fn wcsph_euler_step(
     positions: &[[f64; 3]],
     velocities: &[[f64; 3]],
@@ -1027,7 +1015,6 @@ pub fn wcsph_euler_step(
 /// Apply one leap-frog WCSPH half-step (velocity update only).
 ///
 /// `v_{n+1/2} = v_{n-1/2} + a_n * dt`
-#[allow(dead_code)]
 pub fn wcsph_leapfrog_velocity_half(
     velocities: &[[f64; 3]],
     forces: &[[f64; 3]],
@@ -1054,7 +1041,6 @@ pub fn wcsph_leapfrog_velocity_half(
 /// `n_i = sum_j (m_j / rho_j) * nabla W(r_ij, h)`
 ///
 /// The magnitude of `n_i` is proportional to the interface curvature.
-#[allow(dead_code)]
 pub fn surface_normal_kernel(
     positions: &[[f64; 3]],
     densities: &[f64],
@@ -1091,7 +1077,6 @@ pub fn surface_normal_kernel(
 }
 
 /// Normalize a surface normal vector.  Returns zero vector if magnitude is too small.
-#[allow(dead_code)]
 pub fn normalize_normal(n: [f64; 3]) -> [f64; 3] {
     let mag = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
     if mag < 1e-30 {
@@ -1109,7 +1094,6 @@ pub fn normalize_normal(n: [f64; 3]) -> [f64; 3] {
 /// indices within distance `h`.
 ///
 /// Returns `Vec<Vec`usize`>` where `neighbours[i]` is the list of neighbour indices for particle `i`.
-#[allow(dead_code)]
 pub fn build_neighbor_list_explicit(positions: &[[f64; 3]], h: f64) -> Vec<Vec<usize>> {
     let n = positions.len();
     let mut neighbors = vec![Vec::new(); n];
@@ -1127,7 +1111,6 @@ pub fn build_neighbor_list_explicit(positions: &[[f64; 3]], h: f64) -> Vec<Vec<u
 }
 
 /// Compute average number of neighbours per particle.
-#[allow(dead_code)]
 pub fn mean_neighbor_count(neighbors: &[Vec<usize>]) -> f64 {
     if neighbors.is_empty() {
         return 0.0;
@@ -1143,7 +1126,6 @@ pub fn mean_neighbor_count(neighbors: &[Vec<usize>]) -> f64 {
 /// Numerically integrate the kernel over a sphere of radius `h` using Monte Carlo.
 ///
 /// Useful for verifying kernel normalization (should integrate to ~1 in 3D).
-#[allow(dead_code)]
 pub fn integrate_kernel_sphere(h: f64, kernel: SphKernel, n_samples: usize) -> f64 {
     let params = SphKernelParams::new(h);
     // Uniform sampling in [0, h] with spherical volume element 4*pi*r^2

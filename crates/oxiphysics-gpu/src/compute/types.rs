@@ -2,22 +2,16 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_div_ceil)]
 use std::cell::RefCell;
 use std::collections::HashMap;
-
-#[allow(unused_imports)]
-use super::functions::*;
 
 /// Records a sequence of kernel dispatches for batched execution.
 ///
 /// Compute passes accumulate dispatch commands and execute them in order.
-#[allow(dead_code)]
 pub struct ComputePass {
     /// Recorded dispatch commands: (kernel_name, work_size).
     pub(super) commands: Vec<(String, usize)>,
 }
-#[allow(dead_code)]
 impl ComputePass {
     /// Create a new empty compute pass.
     pub fn new() -> Self {
@@ -48,7 +42,6 @@ impl ComputePass {
 }
 /// Describes how a buffer is used in a compute pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum BufferUsage {
     /// Buffer is read-only (storage, read).
     ReadOnly,
@@ -61,7 +54,6 @@ pub enum BufferUsage {
 }
 /// A single GPU command entry.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum GpuCommand {
     /// Copy from one buffer to another.
     CopyBuffer {
@@ -90,11 +82,9 @@ pub enum GpuCommand {
     },
 }
 /// Tracks buffer lifecycle (creation, writes, reads) for debugging.
-#[allow(dead_code)]
 pub struct ResourceLifecycle {
     pub(super) events: Vec<ResourceEvent>,
 }
-#[allow(dead_code)]
 impl ResourceLifecycle {
     /// Create a new lifecycle tracker.
     pub fn new() -> Self {
@@ -149,7 +139,6 @@ impl ResourceLifecycle {
 }
 /// Specifies the type of pipeline barrier needed between passes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum PipelineBarrier {
     /// Ensure all writes to storage buffers are visible before reading.
     StorageReadAfterWrite,
@@ -164,7 +153,6 @@ pub enum PipelineBarrier {
 ///
 /// Models occupancy as the ratio of active warps to maximum concurrent warps.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct OccupancyModel {
     /// Total number of compute units (SMs / CUs).
     pub compute_units: u32,
@@ -179,7 +167,6 @@ pub struct OccupancyModel {
 }
 impl OccupancyModel {
     /// Create a model resembling a mid-range discrete GPU.
-    #[allow(dead_code)]
     pub fn mid_range() -> Self {
         Self {
             compute_units: 32,
@@ -195,7 +182,6 @@ impl OccupancyModel {
     /// 1. Workgroup size (must not exceed warp_size * max_warps_per_cu).
     /// 2. Shared memory usage.
     /// 3. Register usage.
-    #[allow(dead_code)]
     pub fn estimate_occupancy(
         &self,
         workgroup_size: u32,
@@ -220,7 +206,6 @@ impl OccupancyModel {
     /// Total theoretical peak throughput in GFLOP/s (mock model).
     ///
     /// Assumes 2 FP32 ops per clock per SIMD unit.
-    #[allow(dead_code)]
     pub fn peak_gflops(&self, clock_mhz: f64) -> f64 {
         let simd_width = self.warp_size as f64;
         2.0 * simd_width * self.compute_units as f64 * clock_mhz * 1e6 / 1e9
@@ -229,12 +214,10 @@ impl OccupancyModel {
 /// A recorded sequence of GPU commands (mock encoder).
 ///
 /// Records commands for later submission; models wgpu-style recording.
-#[allow(dead_code)]
 pub struct GpuCommandEncoder {
     pub(super) label: String,
     pub(super) commands: Vec<GpuCommand>,
 }
-#[allow(dead_code)]
 impl GpuCommandEncoder {
     /// Create a new command encoder with a debug label.
     pub fn new(label: impl Into<String>) -> Self {
@@ -353,17 +336,14 @@ impl ComputeDispatcher {
             .ok_or(GpuError::InvalidBuffer(id))
     }
     /// Return the number of buffers currently managed.
-    #[allow(dead_code)]
     pub fn num_buffers(&self) -> usize {
         self.buffers.len()
     }
     /// Check if a buffer exists.
-    #[allow(dead_code)]
     pub fn has_buffer(&self, id: BufferId) -> bool {
         self.buffers.contains_key(&id)
     }
     /// Return the size of a buffer.
-    #[allow(dead_code)]
     pub fn buffer_size(&self, id: BufferId) -> Result<usize, GpuError> {
         self.buffers
             .get(&id)
@@ -371,7 +351,6 @@ impl ComputeDispatcher {
             .ok_or(GpuError::InvalidBuffer(id))
     }
     /// Destroy (remove) a buffer.
-    #[allow(dead_code)]
     pub fn destroy_buffer(&mut self, id: BufferId) -> Result<(), GpuError> {
         self.buffers
             .remove(&id)
@@ -379,7 +358,6 @@ impl ComputeDispatcher {
             .ok_or(GpuError::InvalidBuffer(id))
     }
     /// Copy data from one buffer to another.
-    #[allow(dead_code)]
     pub fn copy_buffer(&mut self, src: BufferId, dst: BufferId) -> Result<(), GpuError> {
         let src_data = self
             .buffers
@@ -430,7 +408,6 @@ impl ComputeDispatcher {
         Ok(())
     }
     /// Dispatch a parallel map with index: `out[i] = f(i, in[i])`.
-    #[allow(dead_code)]
     pub fn dispatch_map_indexed(
         &mut self,
         buf_in: BufferId,
@@ -457,7 +434,6 @@ impl ComputeDispatcher {
         Ok(())
     }
     /// Dispatch a zip-map: `out[i] = f(a[i], b[i])`.
-    #[allow(dead_code)]
     pub fn dispatch_zip_map(
         &mut self,
         buf_a: BufferId,
@@ -586,7 +562,6 @@ impl ComputeDispatcher {
     /// summing adjacent elements until one value remains.
     ///
     /// Returns the reduced value (identity `0.0` for an empty buffer).
-    #[allow(dead_code)]
     pub fn dispatch_reduction_tree(&self, buf: BufferId) -> Result<f64, GpuError> {
         let data = self
             .buffers
@@ -618,7 +593,6 @@ impl ComputeDispatcher {
     /// Writes `out[i] = sum(in[0..=i])` into `out_buf`.
     ///
     /// Uses a sequential Hillis-Steele-style scan for correctness.
-    #[allow(dead_code)]
     pub fn dispatch_inclusive_scan(
         &mut self,
         buf_in: BufferId,
@@ -649,7 +623,6 @@ impl ComputeDispatcher {
     /// counting sort passes with 2-bit digits.  32 passes cover all 64 bits.
     /// For non-negative IEEE 754 doubles the bit pattern order matches numeric
     /// order.  Returns the sorted data as a new `Vec`f64` (input unchanged).
-    #[allow(dead_code)]
     pub fn dispatch_radix_sort(&self, buf: BufferId) -> Result<Vec<f64>, GpuError> {
         let data = self
             .buffers
@@ -689,7 +662,6 @@ impl ComputeDispatcher {
 pub struct BufferHandle(pub usize);
 /// Specification for a GPU compute kernel dispatch.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct KernelSpec {
     /// Human-readable kernel name.
     pub name: String,
@@ -708,7 +680,6 @@ impl KernelSpec {
         }
     }
     /// Create a kernel spec with a 3-D workgroup size.
-    #[allow(dead_code)]
     pub fn with_workgroup_3d(
         name: impl Into<String>,
         workgroup_size: [u32; 3],
@@ -721,12 +692,10 @@ impl KernelSpec {
         }
     }
     /// Compute the number of workgroups needed for `total_items` in the X dimension.
-    #[allow(dead_code)]
     pub fn num_workgroups_x(&self, total_items: u32) -> u32 {
         total_items.div_ceil(self.workgroup_size[0])
     }
     /// Total threads per workgroup.
-    #[allow(dead_code)]
     pub fn threads_per_workgroup(&self) -> u32 {
         self.workgroup_size[0] * self.workgroup_size[1] * self.workgroup_size[2]
     }
@@ -757,29 +726,24 @@ impl GpuBuffer {
         }
     }
     /// Fill the buffer with a constant value.
-    #[allow(dead_code)]
     pub fn fill(&mut self, value: f64) {
         for v in &mut self.data {
             *v = value;
         }
     }
     /// Clear the buffer (set all elements to 0).
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.fill(0.0);
     }
     /// Get a slice of the buffer data.
-    #[allow(dead_code)]
     pub fn as_slice(&self) -> &[f64] {
         &self.data
     }
     /// Get a mutable slice of the buffer data.
-    #[allow(dead_code)]
     pub fn as_mut_slice(&mut self) -> &mut [f64] {
         &mut self.data
     }
     /// Number of bytes the buffer would occupy on GPU (f64 = 8 bytes each).
-    #[allow(dead_code)]
     pub fn byte_size(&self) -> usize {
         self.size * std::mem::size_of::<f64>()
     }
@@ -799,7 +763,6 @@ pub enum GpuError {
     /// The reduction was attempted on an empty buffer.
     EmptyBuffer,
     /// A kernel or operation was not found.
-    #[allow(dead_code)]
     NotFound(String),
 }
 /// CPU fallback compute backend.
@@ -816,19 +779,16 @@ impl CpuBackend {
         }
     }
     /// Return the number of buffers currently allocated.
-    #[allow(dead_code)]
     pub fn num_buffers(&self) -> usize {
         self.buffers.borrow().len()
     }
     /// Return the total number of f64 elements across all buffers.
-    #[allow(dead_code)]
     pub fn total_elements(&self) -> usize {
         self.buffers.borrow().iter().map(|b| b.len()).sum()
     }
 }
 /// A single resource event for lifecycle tracking.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum ResourceEvent {
     /// Buffer was created.
     Created(BufferId, usize),
@@ -841,14 +801,12 @@ pub enum ResourceEvent {
 }
 /// A record of divergent branches observed in a kernel.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct WarpDivergenceRecord {
     /// Number of branch instructions encountered.
     pub total_branches: u64,
     /// Number of branches where threads diverged (not all took same path).
     pub divergent_branches: u64,
 }
-#[allow(dead_code)]
 impl WarpDivergenceRecord {
     /// Compute the divergence rate (0.0 = no divergence, 1.0 = fully divergent).
     pub fn divergence_rate(&self) -> f64 {
@@ -871,7 +829,6 @@ impl WarpDivergenceRecord {
 /// On real GPU APIs (Vulkan, D3D12), timeline semaphores allow the CPU to
 /// wait for a specific GPU progress point.  This mock records signal and
 /// wait operations for testing.
-#[allow(dead_code)]
 pub struct TimelineSemaphore {
     /// Current value of the semaphore counter.
     pub value: u64,
@@ -880,7 +837,6 @@ pub struct TimelineSemaphore {
     /// History of wait requests.
     pub(super) wait_history: Vec<u64>,
 }
-#[allow(dead_code)]
 impl TimelineSemaphore {
     /// Create a new semaphore starting at value 0.
     pub fn new() -> Self {
@@ -919,14 +875,12 @@ impl TimelineSemaphore {
 ///
 /// Estimates the effective bandwidth and the roofline-model bound for a kernel.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct MemoryBandwidthModel {
     /// Peak memory bandwidth in GB/s.
     pub peak_bandwidth_gbs: f64,
     /// Peak compute throughput in GFLOP/s.
     pub peak_compute_gflops: f64,
 }
-#[allow(dead_code)]
 impl MemoryBandwidthModel {
     /// Create a model for a mid-range discrete GPU.
     pub fn mid_range() -> Self {
@@ -973,7 +927,6 @@ impl MemoryBandwidthModel {
 }
 /// A binding entry associating a buffer with a binding index and usage.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct BufferBinding {
     /// Binding index in the shader (e.g. @binding(0)).
     pub binding: u32,
@@ -982,7 +935,6 @@ pub struct BufferBinding {
     /// Usage of the buffer in this binding.
     pub usage: BufferUsage,
 }
-#[allow(dead_code)]
 impl BufferBinding {
     /// Create a new buffer binding.
     pub fn new(binding: u32, buffer_id: BufferId, usage: BufferUsage) -> Self {

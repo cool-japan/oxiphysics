@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use crate::complex::Complex;
 use std::f64::consts::PI;
 
@@ -37,7 +36,7 @@ pub(super) fn bit_reverse_permute(buf: &mut [Complex]) {
 }
 /// Cooley-Tukey radix-2 DIT butterfly in-place.
 /// `inverse = true` uses +2π twiddle factor (for IFFT).
-pub(super) fn fft_inplace_impl(buf: &mut Vec<Complex>, inverse: bool) {
+pub(super) fn fft_inplace_impl(buf: &mut [Complex], inverse: bool) {
     let n = buf.len();
     if n <= 1 {
         return;
@@ -179,9 +178,9 @@ pub fn gaussian_filter_1d(signal: &[f64], sigma: f64) -> Vec<f64> {
     let kernel_len = 2 * radius + 1;
     let mut kernel = vec![0.0_f64; kernel_len];
     let denom = 2.0 * sigma * sigma;
-    for i in 0..kernel_len {
+    for (i, k) in kernel.iter_mut().enumerate() {
         let x = i as f64 - radius as f64;
-        kernel[i] = (-x * x / denom).exp();
+        *k = (-x * x / denom).exp();
     }
     let k_sum: f64 = kernel.iter().sum();
     for k in kernel.iter_mut() {
@@ -218,13 +217,13 @@ pub fn median_filter_1d(signal: &[f64], window: usize) -> Vec<f64> {
     let half = w / 2;
     let n = signal.len();
     let mut out = vec![0.0_f64; n];
-    for i in 0..n {
+    for (i, o) in out.iter_mut().enumerate() {
         let start = i.saturating_sub(half);
         let end = (i + half + 1).min(n);
         let mut window_vals: Vec<f64> = signal[start..end].to_vec();
         window_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let mid = window_vals.len() / 2;
-        out[i] = if window_vals.len() % 2 == 1 {
+        *o = if window_vals.len() % 2 == 1 {
             window_vals[mid]
         } else {
             (window_vals[mid - 1] + window_vals[mid]) * 0.5
@@ -499,14 +498,14 @@ pub fn savitzky_golay(signal: &[f64], half_window: usize, poly_order: usize) -> 
     let coeffs = savgol_coeffs(half_window, poly_order);
     let m = half_window as isize;
     let mut out = vec![0.0_f64; n];
-    for i in 0..n {
+    for (i, o) in out.iter_mut().enumerate() {
         let mut val = 0.0;
         for (k, &c) in coeffs.iter().enumerate() {
             let idx = i as isize + k as isize - m;
             let idx = idx.clamp(0, n as isize - 1) as usize;
             val += c * signal[idx];
         }
-        out[i] = val;
+        *o = val;
     }
     out
 }
@@ -599,12 +598,8 @@ mod tests {
             "recovered[0].re = {}",
             recovered[0].re
         );
-        for i in 1..n {
-            assert!(
-                close(recovered[i].re, 0.0, LOOSE),
-                "recovered[{i}].re = {}",
-                recovered[i].re
-            );
+        for (i, rec) in recovered.iter().enumerate().skip(1) {
+            assert!(close(rec.re, 0.0, LOOSE), "recovered[{i}].re = {}", rec.re);
         }
     }
     #[test]
@@ -635,12 +630,8 @@ mod tests {
             "DC bin = {}",
             spectrum[0].re
         );
-        for k in 1..spectrum.len() {
-            assert!(
-                spectrum[k].norm() < LOOSE,
-                "bin {k} magnitude = {}",
-                spectrum[k].norm()
-            );
+        for (k, s) in spectrum.iter().enumerate().skip(1) {
+            assert!(s.norm() < LOOSE, "bin {k} magnitude = {}", s.norm());
         }
     }
     #[test]

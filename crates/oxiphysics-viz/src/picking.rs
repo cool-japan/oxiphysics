@@ -27,8 +27,6 @@
 //! }
 //! ```
 
-#![allow(dead_code)]
-
 // ── Ray ──────────────────────────────────────────────────────────────────────
 
 /// A world-space ray with an origin and a unit-length direction.

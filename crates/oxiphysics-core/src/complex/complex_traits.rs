@@ -12,8 +12,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
 use super::types::Complex;

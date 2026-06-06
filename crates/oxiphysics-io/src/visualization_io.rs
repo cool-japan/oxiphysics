@@ -8,10 +8,6 @@
 //! glTF 2.0 physics annotations, VDB sparse volume, OpenEXR multi-channel,
 //! and Cinema database format.
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(clippy::too_many_arguments)]
-
 use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
 
@@ -1616,21 +1612,25 @@ mod tests {
 
     #[test]
     fn test_blender_script_imports_bpy() {
-        let cfg = BlenderExportConfig::new("obj1", "/tmp/out.blend");
+        let tmpdir = std::env::temp_dir();
+        let cfg = BlenderExportConfig::new("obj1", tmpdir.join("out.blend").to_str().unwrap_or(""));
         let s = cfg.generate_script("mesh.obj");
         assert!(s.contains("import bpy"));
     }
 
     #[test]
     fn test_blender_script_contains_object_name() {
-        let cfg = BlenderExportConfig::new("my_obj", "/tmp/out.blend");
+        let tmpdir = std::env::temp_dir();
+        let cfg =
+            BlenderExportConfig::new("my_obj", tmpdir.join("out.blend").to_str().unwrap_or(""));
         let s = cfg.generate_script("mesh.obj");
         assert!(s.contains("my_obj"));
     }
 
     #[test]
     fn test_blender_volume_script() {
-        let cfg = BlenderExportConfig::new("vol", "/tmp/vol.blend");
+        let tmpdir = std::env::temp_dir();
+        let cfg = BlenderExportConfig::new("vol", tmpdir.join("vol.blend").to_str().unwrap_or(""));
         let s = cfg.generate_volume_script("smoke.vdb");
         assert!(s.contains("smoke.vdb"));
         assert!(s.contains("ShaderNodeEmission"));

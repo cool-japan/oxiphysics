@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use std::f64::consts::PI;
 
 /// Geometric parameters for a single AM layer.
@@ -327,7 +325,6 @@ pub struct MultiMaterialAM {
 }
 impl MultiMaterialAM {
     /// Construct a [`MultiMaterialAM`] graded transition.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         e_a: f64,
         e_b: f64,
@@ -986,7 +983,6 @@ pub struct ProcessWindowOptimizer {
 }
 impl ProcessWindowOptimizer {
     /// Construct a [`ProcessWindowOptimizer`].
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         power_min: f64,
         power_max: f64,

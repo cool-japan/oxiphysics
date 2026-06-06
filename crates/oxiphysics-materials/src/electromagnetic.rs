@@ -12,9 +12,6 @@
 //! the Jiles-Atherton hysteresis model, and electromagnetic shielding
 //! effectiveness.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
@@ -86,13 +83,14 @@ impl Tensor3x3 {
     }
 
     /// Multiply tensor by a 3-vector: y = T·x.
-    #[allow(clippy::needless_range_loop)]
     pub fn mul_vec(&self, x: [f64; 3]) -> [f64; 3] {
         let mut y = [0.0_f64; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                y[i] += self.data[i][j] * x[j];
-            }
+        for (y_i, row) in y.iter_mut().zip(self.data.iter()) {
+            *y_i = row
+                .iter()
+                .zip(x.iter())
+                .map(|(&t_ij, &x_j)| t_ij * x_j)
+                .sum();
         }
         y
     }

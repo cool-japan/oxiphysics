@@ -7,8 +7,6 @@
 //! cycle, heat-pump heating, occupant comfort indices (PMV/PPD),
 //! humidity/defogging, energy balance, and EV pre-conditioning.
 
-#![allow(dead_code)]
-
 use std::f64::consts::E;
 
 // ── CabinThermal ──────────────────────────────────────────────────────────────
@@ -276,7 +274,6 @@ impl AirDistribution {
     /// Create with a given mode split and total flow.
     ///
     /// Fractions are normalised automatically.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(face: f64, floor: f64, defrost: f64, total_flow: f64) -> Self {
         let sum = face + floor + defrost;
         let inv = if sum > 1e-12 { 1.0 / sum } else { 1.0 };

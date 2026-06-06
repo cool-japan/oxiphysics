@@ -12,8 +12,6 @@ use crate::types::CollisionPair;
 use oxiphysics_core::Aabb;
 
 use super::functions::BroadPhase;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::BruteForceBroadPhase;
 
 impl BroadPhase for BruteForceBroadPhase {

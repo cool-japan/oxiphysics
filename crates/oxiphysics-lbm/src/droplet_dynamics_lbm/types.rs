@@ -2,9 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use std::f64::consts::PI;
+
+use super::functions::{find, probit, sherwood_number, union_uf};
 
 /// Rayleigh-Plateau instability and secondary-breakup model for LBM droplets.
 ///
@@ -192,7 +192,6 @@ impl DropletLBM {
     /// Create a new `DropletLBM` with equilibrium initialisation.
     ///
     /// The droplet (red) phase occupies nodes `[left, right)`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(n: usize, omega: f64, surface_tension: f64, left: usize, right: usize) -> Self {
         let mut f_red = vec![0.0; 3 * n];
         let mut f_blue = vec![0.0; 3 * n];
@@ -379,7 +378,6 @@ pub struct SprayModel {
 }
 impl SprayModel {
     /// Create a new `SprayModel`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mean_diameter: f64,
         spread_param: f64,
@@ -727,7 +725,6 @@ pub struct LiftDragDroplet {
 }
 impl LiftDragDroplet {
     /// Create a new `LiftDragDroplet`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         fluid_density: f64,
         fluid_viscosity: f64,
@@ -992,7 +989,6 @@ pub struct EvaporationModel {
 }
 impl EvaporationModel {
     /// Create a new `EvaporationModel`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         d2_initial: f64,
         evaporation_constant: f64,
@@ -1193,7 +1189,6 @@ pub struct DropletLbmParams {
 }
 impl DropletLbmParams {
     /// Create a new `DropletLbmParams`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         density_droplet: f64,
         density_carrier: f64,

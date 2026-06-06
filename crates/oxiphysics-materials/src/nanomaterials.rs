@@ -15,9 +15,6 @@
 //! - Nanoparticle surface-area-to-volume ratio
 //! - Thermal conductivity phonon mean-free-path model
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use rand::RngExt;
 
 // ---------------------------------------------------------------------------

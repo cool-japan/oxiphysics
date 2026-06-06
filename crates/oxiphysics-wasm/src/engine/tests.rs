@@ -3,7 +3,6 @@
 
 //! Tests for all engine submodules.
 
-#![allow(missing_docs)]
 #![cfg(test)]
 
 use super::*;

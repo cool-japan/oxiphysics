@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 use std::f64::consts::PI;
 
 /// Auxetic material with negative Poisson's ratio.
@@ -174,23 +172,22 @@ impl TransformationAcoustics {
     /// Effective density tensor ρ_ij = ρ₀ · (J·J^T)_ij / det(J).
     ///
     /// `rho0` is the background density (kg/m³).
-    #[allow(clippy::needless_range_loop)]
     pub fn effective_density_tensor(&self, rho0: f64) -> [[f64; 3]; 3] {
         let j = &self.jacobian;
         let det = self.det_j();
         let mut jjt = [[0.0f64; 3]; 3];
-        for i in 0..3 {
-            for k in 0..3 {
-                for l in 0..3 {
-                    jjt[i][k] += j[i][l] * j[k][l];
+        for (i, jjt_row) in jjt.iter_mut().enumerate() {
+            for (k, jjt_ik) in jjt_row.iter_mut().enumerate() {
+                for (l, &j_kl) in j[k].iter().enumerate() {
+                    *jjt_ik += j[i][l] * j_kl;
                 }
             }
         }
         let scale = if det.abs() < 1e-30 { 0.0 } else { rho0 / det };
         let mut out = [[0.0f64; 3]; 3];
-        for i in 0..3 {
-            for k in 0..3 {
-                out[i][k] = scale * jjt[i][k];
+        for (out_row, jjt_row) in out.iter_mut().zip(jjt.iter()) {
+            for (o, &jv) in out_row.iter_mut().zip(jjt_row.iter()) {
+                *o = scale * jv;
             }
         }
         out
@@ -228,7 +225,6 @@ pub struct ElasticMetamaterial {
 }
 impl ElasticMetamaterial {
     /// Create a new [`ElasticMetamaterial`].
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         effective_modulus: f64,
         effective_poisson: f64,
@@ -637,7 +633,6 @@ pub struct SplitRingResonator {
 }
 impl SplitRingResonator {
     /// Create a new SRR.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         radius: f64,
         gap_width: f64,

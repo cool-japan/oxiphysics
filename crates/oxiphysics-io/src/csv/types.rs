@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::should_implement_trait)]
-#[allow(unused_imports)]
 use super::functions::*;
 use crate::{Error, Result};
 use std::fs::{File, OpenOptions};
@@ -11,7 +9,6 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
 /// Configuration for [`ConfigurableCsvWriter`].
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CsvWriterConfig {
     /// Field delimiter (default `,`).
@@ -44,13 +41,11 @@ pub struct CsvWriterConfig {
 /// assert_eq!(records[1].get(1), "line1\nline2");
 /// assert_eq!(records[2].get(1), "he said \"hi\"");
 /// ```
-#[allow(dead_code)]
 pub struct CsvParser<'a> {
     pub(super) input: &'a str,
     pub(super) delimiter: char,
     pub(super) comment_prefix: Option<char>,
 }
-#[allow(dead_code)]
 impl<'a> CsvParser<'a> {
     /// Create a new parser for `input` with the given `delimiter`.
     pub fn new(input: &'a str, delimiter: char) -> Self {
@@ -132,8 +127,6 @@ impl<'a> CsvParser<'a> {
                     Some(c) => {
                         field.push(c);
                     }
-                    #[allow(unreachable_patterns)]
-                    _ => {}
                 }
             }
             if let Some(prefix) = self.comment_prefix
@@ -173,7 +166,6 @@ impl CsvRecord {
     }
 }
 /// Aggregation function for pivot table values.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PivotAgg {
     /// Sum of values.
@@ -191,7 +183,6 @@ pub enum PivotAgg {
 ///
 /// Columns are named; rows are `Vec`String`. Provides the foundation for
 /// type inference, merge/join, pivot, and diff operations.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CsvTable {
     /// Column headers.
@@ -199,7 +190,6 @@ pub struct CsvTable {
     /// Data rows (each row has `headers.len()` fields, padded with `""` if short).
     pub rows: Vec<Vec<String>>,
 }
-#[allow(dead_code)]
 impl CsvTable {
     /// Create an empty table with the given headers.
     pub fn new(headers: Vec<String>) -> Self {
@@ -209,7 +199,7 @@ impl CsvTable {
         }
     }
     /// Parse a CSV string into a `CsvTable` using the given delimiter.
-    pub fn from_str(data: &str, delimiter: char) -> std::result::Result<Self, Error> {
+    pub fn parse(data: &str, delimiter: char) -> std::result::Result<Self, Error> {
         let parser = CsvParser::new(data, delimiter).with_comment_prefix('#');
         let mut records = parser.parse_all()?;
         if records.is_empty() {
@@ -288,14 +278,12 @@ impl CsvTable {
     }
 }
 /// In-memory CSV writer with configurable delimiter and floating-point precision.
-#[allow(dead_code)]
 pub struct InMemoryCsvWriter {
     pub(super) columns: Vec<String>,
     pub(super) delimiter: char,
     pub(super) precision: usize,
     pub(super) rows: Vec<Vec<f64>>,
 }
-#[allow(dead_code)]
 impl InMemoryCsvWriter {
     /// Create a new `InMemoryCsvWriter` with the given column names and delimiter.
     pub fn new(columns: &[&str], delimiter: char) -> Self {
@@ -382,7 +370,6 @@ impl CsvReader {
     }
 }
 /// Inferred column type after scanning all values in a column.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ColumnType {
     /// All non-empty values parse as integers.
@@ -414,7 +401,6 @@ pub enum ColumnType {
 ///     let _ = record.len();
 /// }
 /// ```
-#[allow(dead_code)]
 pub struct CsvStreamParser {
     pub(super) reader: BufReader<File>,
     pub(super) delimiter: char,
@@ -423,7 +409,6 @@ pub struct CsvStreamParser {
     pub(super) pending: String,
     pub(super) open_quotes: bool,
 }
-#[allow(dead_code)]
 impl CsvStreamParser {
     /// Open a CSV file for streaming parsing.
     pub fn open(path: &str, delimiter: char) -> std::result::Result<Self, Error> {
@@ -498,17 +483,11 @@ impl CsvStreamParser {
 /// - comment lines starting with `#`
 /// - empty fields (treated as `f64::NAN`)
 /// - quoted strings (double-quoted fields with escaped commas)
-#[allow(dead_code)]
 pub struct InMemoryCsvReader {
     pub(super) headers: Vec<String>,
     pub(super) rows: Vec<Vec<Option<f64>>>,
 }
-#[allow(dead_code)]
 impl InMemoryCsvReader {
-    /// Parse a CSV string with the default comma delimiter.
-    pub fn from_str(data: &str) -> std::result::Result<Self, Error> {
-        Self::parse_with_delimiter(data, ',')
-    }
     /// Parse a CSV string with a custom delimiter.
     pub fn parse_with_delimiter(data: &str, delim: char) -> std::result::Result<Self, Error> {
         let mut non_empty_lines: Vec<&str> = data
@@ -590,6 +569,12 @@ impl InMemoryCsvReader {
         Ok((min, max, mean, std))
     }
 }
+impl std::str::FromStr for InMemoryCsvReader {
+    type Err = Error;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Self::parse_with_delimiter(s, ',')
+    }
+}
 /// A CSV reader that exposes per-column typed access after type inference.
 ///
 /// # Example
@@ -598,7 +583,7 @@ impl InMemoryCsvReader {
 /// use oxiphysics_io::csv::TypedCsvReader;
 ///
 /// let data = "id,x,active\n1,3.14,true\n2,2.71,false\n";
-/// let reader = TypedCsvReader::from_str(data).unwrap();
+/// let reader = data.parse::<TypedCsvReader>().unwrap();
 /// let ids = reader.column_as_i64("id").unwrap();
 /// assert_eq!(ids, vec![1, 2]);
 /// let xs = reader.column_as_f64("x").unwrap();
@@ -606,20 +591,13 @@ impl InMemoryCsvReader {
 /// let active = reader.column_as_bool("active").unwrap();
 /// assert_eq!(active, vec![true, false]);
 /// ```
-#[allow(dead_code)]
 pub struct TypedCsvReader {
     pub(super) table: CsvTable,
 }
-#[allow(dead_code)]
 impl TypedCsvReader {
-    /// Parse a CSV string with the default comma delimiter.
-    pub fn from_str(data: &str) -> std::result::Result<Self, Error> {
-        let table = CsvTable::from_str(data, ',')?;
-        Ok(Self { table })
-    }
     /// Parse a CSV string with a custom delimiter.
     pub fn with_delimiter(data: &str, delimiter: char) -> std::result::Result<Self, Error> {
-        let table = CsvTable::from_str(data, delimiter)?;
+        let table = CsvTable::parse(data, delimiter)?;
         Ok(Self { table })
     }
     /// Return the inferred type of a named column.
@@ -681,8 +659,14 @@ impl TypedCsvReader {
         self.table.row_count()
     }
 }
+impl std::str::FromStr for TypedCsvReader {
+    type Err = Error;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let table = CsvTable::parse(s, ',')?;
+        Ok(Self { table })
+    }
+}
 /// The result of comparing two CSV datasets.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CsvDiff {
     /// Rows present in `left` but not in `right` (by key column value).
@@ -716,7 +700,6 @@ impl CsvWriter {
     }
 }
 /// A single changed row in a [`CsvDiff`].
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CsvChangedRow {
     /// The key value identifying this row.
@@ -741,12 +724,10 @@ pub struct CsvChangedRow {
 /// assert!(out.starts_with("x;y"));
 /// assert!(out.contains("1.000;2.500"));
 /// ```
-#[allow(dead_code)]
 pub struct ConfigurableCsvWriter {
     pub(super) config: CsvWriterConfig,
     pub(super) buffer: String,
 }
-#[allow(dead_code)]
 impl ConfigurableCsvWriter {
     /// Create a new writer with the given configuration.
     pub fn new(config: CsvWriterConfig) -> Self {

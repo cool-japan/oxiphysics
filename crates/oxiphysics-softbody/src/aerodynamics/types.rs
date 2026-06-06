@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{biot_savart_filament, biot_savart_velocity};
 use oxiphysics_core::math::{Real, Vec3};
 
@@ -17,13 +14,11 @@ use super::helpers::*;
 ///
 /// For simple shapes the added mass matrix is diagonal and can be computed
 /// analytically.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AddedMassTensor {
     /// Diagonal added mass coefficients `[m11, m22, m33]` in kg.
     pub diagonal: [f64; 3],
 }
-#[allow(dead_code)]
 impl AddedMassTensor {
     /// Added mass for a sphere of radius `r` in fluid of density `rho`.
     ///
@@ -89,7 +84,6 @@ pub struct AeroPanel {
 }
 impl AeroPanel {
     /// Create a new aerodynamic panel.
-    #[allow(dead_code)]
     pub fn new(normal: [f64; 3], area: f64, center: [f64; 3], cl: f64, cd: f64) -> Self {
         Self {
             normal,
@@ -101,7 +95,6 @@ impl AeroPanel {
         }
     }
     /// Build a panel from three vertex positions (computes normal and area).
-    #[allow(dead_code)]
     pub fn from_triangle(v0: [f64; 3], v1: [f64; 3], v2: [f64; 3], cl: f64, cd: f64) -> Self {
         let e1 = v3_sub(v1, v0);
         let e2 = v3_sub(v2, v0);
@@ -126,7 +119,6 @@ impl AeroPanel {
     /// Compute lift and drag forces on this panel.
     ///
     /// Returns `(lift, drag)` as `[f64; 3]` vectors.
-    #[allow(dead_code)]
     pub fn lift_drag(&self, wind_velocity: [f64; 3], density: f64) -> ([f64; 3], [f64; 3]) {
         let v_rel = v3_sub(wind_velocity, self.velocity);
         let half_rho_a = 0.5 * density * self.area;
@@ -141,7 +133,6 @@ impl AeroPanel {
     /// `Cp = 1 - (v_local / v_inf)^2`
     ///
     /// where `v_local` is the tangential velocity component at the panel surface.
-    #[allow(dead_code)]
     pub fn pressure_coefficient(&self, wind_velocity: [f64; 3]) -> f64 {
         let v_inf_sq = v3_dot(wind_velocity, wind_velocity);
         if v_inf_sq < 1e-30 {
@@ -156,7 +147,6 @@ impl AeroPanel {
     /// Compute the angle of attack (radians) between the wind and the panel plane.
     ///
     /// Returns a value in `[0, pi/2]`.
-    #[allow(dead_code)]
     pub fn angle_of_attack(&self, wind_velocity: [f64; 3]) -> f64 {
         let v_rel = v3_sub(wind_velocity, self.velocity);
         let speed = v3_norm(v_rel);
@@ -177,7 +167,6 @@ impl AeroPanel {
 ///
 /// where `T` is the tension, `R` is the radius of curvature, and `p` is the
 /// pressure differential.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MembraneInflation {
     /// Unstressed membrane radius (m).
@@ -189,7 +178,6 @@ pub struct MembraneInflation {
     /// Poisson's ratio of the membrane material.
     pub poisson_ratio: f64,
 }
-#[allow(dead_code)]
 impl MembraneInflation {
     /// Create a model for a typical textile membrane (low-porosity nylon).
     pub fn nylon_canopy(radius: f64) -> Self {
@@ -250,8 +238,6 @@ impl MembraneInflation {
 /// - CL_2D = 2π * alpha (thin-airfoil)
 /// - Induced drag: CDi = CL^2 / (π * AR * e)  (e = Oswald efficiency ≈ 1)
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub struct LiftingLineTheory {
     /// Wing span (m).
     pub span: f64,
@@ -264,8 +250,6 @@ pub struct LiftingLineTheory {
     /// Oswald span efficiency factor (0..1].
     pub oswald_e: f64,
 }
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 impl LiftingLineTheory {
     /// Create a new lifting-line wing.
     ///
@@ -323,8 +307,6 @@ impl LiftingLineTheory {
 /// horseshoe vortices.  The system Γ = AIC⁻¹ * RHS is solved by Gaussian
 /// elimination.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 pub struct VortexLatticeMethod {
     /// Number of spanwise panels.
     pub n_span: usize,
@@ -341,8 +323,6 @@ pub struct VortexLatticeMethod {
     /// Bound vortex quarter-chord points.
     pub bound_vortex_pts: Vec<([f64; 3], [f64; 3])>,
 }
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 impl VortexLatticeMethod {
     /// Create a flat, rectangular wing centred at the origin.
     ///
@@ -439,7 +419,6 @@ impl VortexLatticeMethod {
 /// - Maximum lift-to-drag ratio
 /// - Stall-bounded envelope
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct DragPolar {
     /// Parasitic drag coefficient (zero-lift drag).
     pub cd0: f64,
@@ -448,7 +427,6 @@ pub struct DragPolar {
     /// Maximum lift coefficient (stall limit).
     pub cl_max: f64,
 }
-#[allow(dead_code)]
 impl DragPolar {
     /// Create a drag polar for a wing with given `AR` and Oswald efficiency `e`.
     ///
@@ -537,7 +515,6 @@ impl DragPolar {
 }
 /// Aerodynamic force and moment state for a wing or body.
 #[derive(Debug, Clone, Copy, Default)]
-#[allow(dead_code)]
 pub struct AeroForces {
     /// Total lift force (N).
     pub lift: f64,
@@ -547,7 +524,6 @@ pub struct AeroForces {
     /// Positive nose-up.
     pub pitching_moment: f64,
 }
-#[allow(dead_code)]
 impl AeroForces {
     /// Compute from non-dimensional coefficients and flight conditions.
     ///
@@ -577,7 +553,6 @@ impl AeroForces {
 }
 /// A horseshoe vortex element used in the vortex lattice method.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct HorseshoeVortex {
     /// Left bound vortex endpoint.
     pub p1: [f64; 3],
@@ -597,7 +572,6 @@ pub struct HorseshoeVortex {
 /// unsteady lift correction adds the "added mass" (non-circulatory) term:
 ///
 /// `ΔCl = π · (c/2) · (αdot / V + hdot / V²)` (per unit chord)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct UnsteadyAeroPanel {
     /// Chord length (m).
@@ -607,7 +581,6 @@ pub struct UnsteadyAeroPanel {
     /// Air density (kg/m³).
     pub density: f64,
 }
-#[allow(dead_code)]
 impl UnsteadyAeroPanel {
     /// Create a thin-airfoil panel with standard lift slope (2π).
     pub fn thin_airfoil(chord: f64, density: f64) -> Self {
@@ -660,7 +633,6 @@ impl UnsteadyAeroPanel {
 ///
 /// The drag polar above stall adds a separation penalty.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct StallModel {
     /// Critical (stall) angle of attack (rad).  Typically 15–20°.
     pub alpha_stall: f64,
@@ -675,7 +647,6 @@ pub struct StallModel {
     /// Post-stall drag increment at 90° (fully separated).
     pub cd_max_stall: f64,
 }
-#[allow(dead_code)]
 impl StallModel {
     /// Create a NACA-4 symmetric profile model (e.g. NACA 0012).
     pub fn naca_symmetric() -> Self {
@@ -736,7 +707,6 @@ impl StallModel {
     /// Full aerodynamic forces from flight conditions.
     ///
     /// Returns `(lift_N, drag_N)` for the given reference area, velocity, and density.
-    #[allow(clippy::too_many_arguments)]
     pub fn forces(&self, alpha: f64, velocity: f64, density: f64, ref_area: f64) -> (f64, f64) {
         let q = 0.5 * density * velocity * velocity;
         let lift = self.lift_coefficient(alpha) * q * ref_area;
@@ -756,7 +726,6 @@ impl StallModel {
 /// Simple look-up table aerodynamic model mapping angle of attack (degrees)
 /// to CL and CD coefficients, with linear interpolation.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AeroCoeffTable {
     /// Alpha values in degrees (must be sorted ascending).
     pub alpha_deg: Vec<f64>,
@@ -765,7 +734,6 @@ pub struct AeroCoeffTable {
     /// Drag coefficient at each alpha.
     pub cd: Vec<f64>,
 }
-#[allow(dead_code)]
 impl AeroCoeffTable {
     /// Construct from paired data.
     pub fn new(alpha_deg: Vec<f64>, cl: Vec<f64>, cd: Vec<f64>) -> Self {
@@ -798,12 +766,10 @@ pub struct AeroSurface {
 }
 impl AeroSurface {
     /// Create an empty surface.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
     /// Add a panel to the surface.
-    #[allow(dead_code)]
     pub fn add_panel(&mut self, panel: AeroPanel) {
         self.panels.push(panel);
     }
@@ -811,7 +777,6 @@ impl AeroSurface {
     /// density.
     ///
     /// Sums `lift + drag` contributions from all panels.
-    #[allow(dead_code)]
     pub fn total_force(&self, wind_velocity: [f64; 3], density: f64) -> [f64; 3] {
         let mut total = [0.0_f64; 3];
         for panel in &self.panels {
@@ -823,7 +788,6 @@ impl AeroSurface {
     /// Compute lift and drag coefficients for the whole surface.
     ///
     /// Returns `(CL, CD)` based on total lift/drag forces and reference area.
-    #[allow(dead_code)]
     pub fn lift_drag_coefficients(
         &self,
         wind_velocity: [f64; 3],
@@ -855,7 +819,6 @@ impl AeroSurface {
         (cl_val, cd_val)
     }
     /// Pressure distribution across all panels as Cp values.
-    #[allow(dead_code)]
     pub fn pressure_distribution(&self, wind_velocity: [f64; 3]) -> Vec<f64> {
         self.panels
             .iter()
@@ -863,12 +826,10 @@ impl AeroSurface {
             .collect()
     }
     /// Total wetted area of the surface.
-    #[allow(dead_code)]
     pub fn total_area(&self) -> f64 {
         self.panels.iter().map(|p| p.area).sum()
     }
     /// Compute the aerodynamic center (area-weighted centroid).
-    #[allow(dead_code)]
     pub fn aero_center(&self) -> [f64; 3] {
         let total_a = self.total_area();
         if total_a < 1e-30 {
@@ -900,7 +861,6 @@ impl AerodynamicsModel {
     ///
     /// Returns the force contribution `(f0, f1, f2)` for each vertex (equal
     /// thirds of the total triangle force).
-    #[allow(clippy::too_many_arguments)]
     pub fn triangle_force(
         &self,
         v0: Vec3,
@@ -938,7 +898,6 @@ impl AerodynamicsModel {
 /// The fluid exerts aero forces on the structure; the structural deformation
 /// modifies the panel geometry.  This struct tracks the panel pressures and
 /// deformation history for one update cycle.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FsiCoupling {
     /// Aero pressure at each panel (Pa).
@@ -952,7 +911,6 @@ pub struct FsiCoupling {
     /// Velocity of each panel in the deformation direction (m/s).
     pub velocities: Vec<f64>,
 }
-#[allow(dead_code)]
 impl FsiCoupling {
     /// Create an FSI coupling with `n` panels.
     pub fn new(n: usize, stiffness: f64, damping: f64) -> Self {
@@ -974,24 +932,34 @@ impl FsiCoupling {
             .len()
             .min(areas.len())
             .min(self.pressures.len());
-        for i in 0..n {
-            let force = self.pressures[i] * areas[i]
-                - self.stiffness[i] * self.deformations[i]
-                - self.damping[i] * self.velocities[i];
+        for (vel, (deform, ((pres, stiff), (damp, area)))) in self
+            .velocities
+            .iter_mut()
+            .zip(
+                self.deformations.iter_mut().zip(
+                    self.pressures
+                        .iter()
+                        .zip(self.stiffness.iter())
+                        .zip(self.damping.iter().zip(areas.iter())),
+                ),
+            )
+            .take(n)
+        {
+            let force = pres * area - stiff * *deform - damp * *vel;
             let accel = if panel_mass > 1e-20 {
                 force / panel_mass
             } else {
                 0.0
             };
-            self.velocities[i] += accel * dt;
-            self.deformations[i] += self.velocities[i] * dt;
+            *vel += accel * dt;
+            *deform += *vel * dt;
         }
     }
     /// Set aero pressures from a Cp distribution.
     pub fn set_pressures_from_cp(&mut self, cp: &[f64], dynamic_pressure: f64) {
         let n = self.pressures.len().min(cp.len());
-        for i in 0..n {
-            self.pressures[i] = cp[i] * dynamic_pressure;
+        for (pres, cp_i) in self.pressures.iter_mut().zip(cp.iter()).take(n) {
+            *pres = cp_i * dynamic_pressure;
         }
     }
     /// Maximum deformation in the structure.
@@ -1019,14 +987,12 @@ impl FsiCoupling {
 ///
 /// where σ_ground is derived from the wing height above the ground.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct GroundEffect {
     /// Wing semi-span (m).
     pub semi_span: f64,
     /// Wing aspect ratio.
     pub aspect_ratio: f64,
 }
-#[allow(dead_code)]
 impl GroundEffect {
     /// Create a ground-effect model for a given wing geometry.
     pub fn new(semi_span: f64, aspect_ratio: f64) -> Self {
@@ -1085,14 +1051,12 @@ impl GroundEffect {
 /// The panel has four corner nodes (counterclockwise viewed from above) and a
 /// bound-vortex segment running span-wise along the quarter-chord line.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct VortexRingPanel {
     /// Four corner nodes of the panel \[front-left, front-right, rear-right, rear-left\].
     pub corners: [[f64; 3]; 4],
     /// Circulation strength Γ.
     pub gamma: f64,
 }
-#[allow(dead_code)]
 impl VortexRingPanel {
     /// Construct a planar rectangular panel from leading-edge midpoint, span,
     /// chord and sweep angle (radians).
@@ -1159,7 +1123,6 @@ impl VortexRingPanel {
 ///
 /// The wing is discretised into `n_sections` along the span.  Each section
 /// has an independent twist angle that changes due to aerodynamic moments.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FlexibleWing {
     /// Number of spanwise sections.
@@ -1175,7 +1138,6 @@ pub struct FlexibleWing {
     /// Current elastic twist angles per section (rad).
     pub twist: Vec<f64>,
 }
-#[allow(dead_code)]
 impl FlexibleWing {
     /// Create a flexible wing with `n_sections` spanwise sections.
     pub fn new(n_sections: usize, semi_span: f64, chord: f64, torsional_stiffness: f64) -> Self {

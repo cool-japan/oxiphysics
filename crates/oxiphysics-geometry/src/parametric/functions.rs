@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::BezierCurve;
 
 #[inline]
@@ -697,8 +696,8 @@ mod tests {
         let profile = BezierCurve::new(vec![[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]);
         let swept = SweptSurface::new(spine, profile);
         let p00 = swept.evaluate(0.0, 0.0);
-        for k in 0..3 {
-            assert!(p00[k].abs() < 1e-9, "p00[{k}]={}", p00[k]);
+        for (k, &p00k) in p00.iter().enumerate() {
+            assert!(p00k.abs() < 1e-9, "p00[{k}]={}", p00k);
         }
     }
     #[test]
@@ -767,11 +766,11 @@ mod tests {
         let spline = BSpline::clamped_uniform(3, pts);
         for &t in &[0.0, 0.25, 0.5, 0.75, 1.0] {
             let d = spline.derivative(t);
-            for k in 0..3 {
+            for (k, &dk) in d.iter().enumerate() {
                 assert!(
-                    d[k].is_finite(),
+                    dk.is_finite(),
                     "derivative[{k}] not finite at t={t}: {}",
-                    d[k]
+                    dk
                 );
             }
         }
@@ -850,8 +849,8 @@ mod tests {
         for &u in &[0.0, 0.25, 0.5, 0.75, 1.0] {
             for &v in &[0.0, 0.25, 0.5, 0.75, 1.0] {
                 let p = surf.eval(u, v);
-                for k in 0..3 {
-                    assert!(p[k].is_finite(), "eval({u},{v})[{k}] not finite: {}", p[k]);
+                for (k, &pk) in p.iter().enumerate() {
+                    assert!(pk.is_finite(), "eval({u},{v})[{k}] not finite: {}", pk);
                 }
             }
         }

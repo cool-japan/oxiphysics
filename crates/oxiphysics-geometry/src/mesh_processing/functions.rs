@@ -52,9 +52,14 @@ pub(super) fn vec3_normalize(a: [f64; 3]) -> [f64; 3] {
         vec3_scale(a, 1.0 / l)
     }
 }
+#[cfg(test)]
 #[inline]
 pub(super) fn vec3_lerp(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
-    vec3_add(vec3_scale(a, 1.0 - t), vec3_scale(b, t))
+    [
+        a[0] + t * (b[0] - a[0]),
+        a[1] + t * (b[1] - a[1]),
+        a[2] + t * (b[2] - a[2]),
+    ]
 }
 /// Apply `iters` passes of uniform Laplacian smoothing with step `lambda`.
 ///

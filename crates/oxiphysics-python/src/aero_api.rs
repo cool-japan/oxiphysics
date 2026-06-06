@@ -5,11 +5,111 @@
 //!
 //! Exposes aerodynamic force computation (bluff-body drag and wing lift/drag).
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::aero::{AeroBody, AeroEntry, AeroSystem, DragCurve, LiftCurve, WingSurface};
 use pyo3::prelude::*;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PyAeroCoefficients
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Grouped aerodynamic coefficients for a wing surface.
+///
+/// Pass this to `WingParams` to avoid a long flat argument list.
+#[pyclass(name = "AeroCoefficients", from_py_object)]
+#[derive(Debug, Clone)]
+pub struct PyAeroCoefficients {
+    /// Zero-angle-of-attack lift coefficient.
+    pub cl0: f64,
+    /// Lift-curve slope (CL = cl0 + cl_slope * alpha).
+    pub cl_slope: f64,
+    /// Constant drag coefficient.
+    pub cd_const: f64,
+    /// Air density (kg/m³).
+    pub air_density: f64,
+}
+
+#[pymethods]
+impl PyAeroCoefficients {
+    /// Create `AeroCoefficients` from individual fields.
+    #[new]
+    pub fn new(cl0: f64, cl_slope: f64, cd_const: f64, air_density: f64) -> Self {
+        Self {
+            cl0,
+            cl_slope,
+            cd_const,
+            air_density,
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PyWingParams
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Wing surface parameters for `AeroSystem.add_wing_body()`.
+///
+/// Construct this object and pass it to `add_wing_body` instead of using
+/// ten separate scalar arguments.
+#[pyclass(name = "WingParams", from_py_object)]
+#[derive(Clone)]
+pub struct PyWingParams {
+    /// Body position in world space `[x, y, z]`.
+    pub position: [f64; 3],
+    /// Body velocity in world space `[x, y, z]`.
+    pub velocity: [f64; 3],
+    /// Wing centre of pressure in body-local space.
+    pub center_local: [f64; 3],
+    /// Wing lift axis in body-local space.
+    pub normal_local: [f64; 3],
+    /// Wing chord length (m).
+    pub chord: f64,
+    /// Wing span (m).
+    pub span: f64,
+    /// Zero-angle-of-attack lift coefficient.
+    pub cl0: f64,
+    /// Lift-curve slope (CL = cl0 + cl_slope * alpha).
+    pub cl_slope: f64,
+    /// Constant drag coefficient.
+    pub cd_const: f64,
+    /// Air density (kg/m³).
+    pub air_density: f64,
+    /// Row-major 3×3 orientation matrix (9 floats).
+    pub rotation_flat: [f64; 9],
+}
+
+#[pymethods]
+impl PyWingParams {
+    /// Create `WingParams` from individual fields.
+    #[new]
+    pub fn new(
+        position: [f64; 3],
+        velocity: [f64; 3],
+        center_local: [f64; 3],
+        normal_local: [f64; 3],
+        chord: f64,
+        span: f64,
+        aero: PyRef<'_, PyAeroCoefficients>,
+        rotation_flat: [f64; 9],
+    ) -> Self {
+        let cl0 = aero.cl0;
+        let cl_slope = aero.cl_slope;
+        let cd_const = aero.cd_const;
+        let air_density = aero.air_density;
+        Self {
+            position,
+            velocity,
+            center_local,
+            normal_local,
+            chord,
+            span,
+            cl0,
+            cl_slope,
+            cd_const,
+            air_density,
+            rotation_flat,
+        }
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PyAeroSystem
@@ -55,7 +155,6 @@ impl PyAeroSystem {
     /// `drag_coeff` — C_d. `cross_section` — reference area (m²).
     /// `air_density` — ρ (kg/m³). `rotation` — row-major 3×3 orientation
     /// matrix as flat 9-element list (row0..row2).
-    #[allow(clippy::too_many_arguments)]
     pub fn add_drag_body(
         &mut self,
         position: [f64; 3],
@@ -85,51 +184,29 @@ impl PyAeroSystem {
     }
 
     /// Add a wing-surface entry (lift + drag, linear lift curve, constant drag).
-    ///
-    /// `position` — body position. `velocity` — body velocity.
-    /// `center_local` — wing centre of pressure in body-local space.
-    /// `normal_local` — wing lift axis in body-local space.
-    /// `chord`, `span` — wing dimensions (m).
-    /// `cl0`, `cl_slope` — lift curve: `CL = cl0 + cl_slope * alpha`.
-    /// `cd_const` — constant drag coefficient.
-    /// `air_density` — ρ (kg/m³).
-    /// `rotation_flat` — row-major 3×3 orientation matrix, 9 floats.
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_wing_body(
-        &mut self,
-        position: [f64; 3],
-        velocity: [f64; 3],
-        center_local: [f64; 3],
-        normal_local: [f64; 3],
-        chord: f64,
-        span: f64,
-        cl0: f64,
-        cl_slope: f64,
-        cd_const: f64,
-        air_density: f64,
-        rotation_flat: [f64; 9],
-    ) {
+    /// Add a wing-lift body entry using a [`WingParams`] object.
+    pub fn add_wing_body(&mut self, p: PyWingParams) {
         let rotation = [
-            [rotation_flat[0], rotation_flat[1], rotation_flat[2]],
-            [rotation_flat[3], rotation_flat[4], rotation_flat[5]],
-            [rotation_flat[6], rotation_flat[7], rotation_flat[8]],
+            [p.rotation_flat[0], p.rotation_flat[1], p.rotation_flat[2]],
+            [p.rotation_flat[3], p.rotation_flat[4], p.rotation_flat[5]],
+            [p.rotation_flat[6], p.rotation_flat[7], p.rotation_flat[8]],
         ];
         let wing = WingSurface {
-            center_local,
-            normal_local,
-            chord,
-            span,
+            center_local: p.center_local,
+            normal_local: p.normal_local,
+            chord: p.chord,
+            span: p.span,
             lift_curve: LiftCurve::Linear {
-                cl0,
-                slope: cl_slope,
+                cl0: p.cl0,
+                slope: p.cl_slope,
             },
-            drag_curve: DragCurve::Constant(cd_const),
-            air_density,
+            drag_curve: DragCurve::Constant(p.cd_const),
+            air_density: p.air_density,
         };
         let entry = AeroEntry {
-            position,
+            position: p.position,
             rotation,
-            velocity,
+            velocity: p.velocity,
             drag_body: None,
             wings: vec![wing],
         };
@@ -162,6 +239,8 @@ impl PyAeroSystem {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyAeroCoefficients>()?;
+    m.add_class::<PyWingParams>()?;
     m.add_class::<PyAeroSystem>()?;
     Ok(())
 }
@@ -208,19 +287,19 @@ mod tests {
         let mut sys = PyAeroSystem::new();
         sys.set_wind(0.0, 0.0, 0.0);
         // Wing facing up (+Y normal), moving forward (+X at 20 m/s)
-        sys.add_wing_body(
-            [0.0, 0.0, 0.0],
-            [20.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            1.5,
-            10.0,
-            0.0,
-            2.0 * std::f64::consts::PI,
-            0.02,
-            1.225,
-            identity_rot(),
-        );
+        sys.add_wing_body(PyWingParams {
+            position: [0.0, 0.0, 0.0],
+            velocity: [20.0, 0.0, 0.0],
+            center_local: [0.0, 0.0, 0.0],
+            normal_local: [0.0, 1.0, 0.0],
+            chord: 1.5,
+            span: 10.0,
+            cl0: 0.0,
+            cl_slope: 2.0 * std::f64::consts::PI,
+            cd_const: 0.02,
+            air_density: 1.225,
+            rotation_flat: identity_rot(),
+        });
         let json = sys.apply_json().expect("apply_json failed");
         assert!(json.contains("torque"));
     }

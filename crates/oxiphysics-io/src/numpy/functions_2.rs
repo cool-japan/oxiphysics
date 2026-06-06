@@ -2,12 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::numpy::NpyArray;
     use crate::numpy::NpyDtype;
     use crate::numpy::NpyField;
@@ -16,6 +12,7 @@ mod tests {
     use crate::numpy::NpySlice;
     use crate::numpy::NpzArchive;
     use crate::numpy::NpzWriter;
+    use crate::numpy::*;
     /// write/read round-trip for f64: shape=\[3,2\], 6 values.
     #[test]
     fn test_roundtrip_f64() {

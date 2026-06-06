@@ -2,11 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_strip, clippy::should_implement_trait)]
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 
 use crate::{Error, Result};
 use oxiphysics_core::math::Vec3;
@@ -15,7 +11,6 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
 /// A simple scene graph for OBJ scenes.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ObjScene {
     /// All nodes in the scene.
@@ -25,7 +20,6 @@ pub struct ObjScene {
     /// All materials in the scene.
     pub materials: Vec<ObjMaterial>,
 }
-#[allow(dead_code)]
 impl ObjScene {
     /// Create an empty scene.
     pub fn new() -> Self {
@@ -94,7 +88,6 @@ impl ObjScene {
     }
 }
 /// A simple OBJ curve (polyline or rational B-spline stub).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ObjCurve {
     /// Curve name.
@@ -107,12 +100,10 @@ pub struct ObjCurve {
     pub knots: Vec<f64>,
 }
 /// Reader for Wavefront OBJ files.
-#[allow(dead_code)]
 pub struct ObjReader;
-#[allow(dead_code)]
 impl ObjReader {
     /// Parse an OBJ string into an [`ObjMesh`].
-    pub fn from_str(data: &str) -> Result<ObjMesh> {
+    pub fn parse(data: &str) -> Result<ObjMesh> {
         let mut mesh = ObjMesh::default();
         let mut current_group_name: Option<String> = None;
         let mut current_group_start: usize = 0;
@@ -123,7 +114,7 @@ impl ObjReader {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            if line.starts_with("g ") || line.starts_with("o ") {
+            if let Some(rest) = line.strip_prefix("g ").or_else(|| line.strip_prefix("o ")) {
                 if let Some(ref name) = current_group_name {
                     let count = mesh.faces.len() - current_group_start;
                     if count > 0 {
@@ -134,18 +125,18 @@ impl ObjReader {
                         });
                     }
                 }
-                let name = line[2..].trim().to_string();
+                let name = rest.trim().to_string();
                 current_group_name = Some(name);
                 current_group_start = mesh.faces.len();
-            } else if line.starts_with("s ") {
-                let val = line[2..].trim();
+            } else if let Some(val) = line.strip_prefix("s ") {
+                let val = val.trim();
                 current_smoothing_group = if val == "off" || val == "0" {
                     0
                 } else {
                     val.parse::<u32>().unwrap_or(0)
                 };
-            } else if line.starts_with("usemtl ") {
-                current_material = Some(line[7..].trim().to_string());
+            } else if let Some(rest) = line.strip_prefix("usemtl ") {
+                current_material = Some(rest.trim().to_string());
             } else {
                 Self::parse_line_extended(
                     line,
@@ -263,7 +254,7 @@ impl ObjReader {
             data.push_str(&raw);
             data.push('\n');
         }
-        Self::from_str(&data)
+        Self::parse(&data)
     }
     /// Read vertices and triangle faces from an OBJ file (legacy API).
     ///
@@ -291,7 +282,6 @@ impl ObjReader {
     }
 }
 /// A simple OBJ material definition.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ObjMaterial {
     /// Material name.
@@ -309,7 +299,6 @@ pub struct ObjMaterial {
     /// Diffuse texture map filename.
     pub map_kd: Option<String>,
 }
-#[allow(dead_code)]
 impl ObjMaterial {
     /// Create a basic material with just a name and diffuse color.
     pub fn basic(name: &str, kd: [f64; 3]) -> Self {
@@ -325,7 +314,6 @@ impl ObjMaterial {
     }
 }
 /// A level-of-detail collection: multiple meshes at decreasing resolution.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ObjLod {
     /// LOD levels, index 0 = highest detail.
@@ -334,7 +322,6 @@ pub struct ObjLod {
     /// `thresholds[i]` is the max distance for `levels[i]`.
     pub thresholds: Vec<f64>,
 }
-#[allow(dead_code)]
 impl ObjLod {
     /// Create an empty LOD set.
     pub fn new() -> Self {
@@ -376,7 +363,6 @@ impl ObjLod {
     }
 }
 /// A transform applied when instancing a mesh.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MeshTransform {
     /// Translation vector.
@@ -388,7 +374,6 @@ pub struct MeshTransform {
     /// Rotation angle in radians.
     pub angle: f64,
 }
-#[allow(dead_code)]
 impl MeshTransform {
     /// Identity transform.
     pub fn identity() -> Self {
@@ -432,7 +417,6 @@ impl MeshTransform {
     }
 }
 /// Statistics computed from an `ObjMesh`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ObjMeshStats {
     /// Number of vertices.
@@ -455,7 +439,6 @@ pub struct ObjMeshStats {
     pub bbox: Option<([f64; 3], [f64; 3])>,
 }
 /// A Wavefront OBJ mesh with vertices, normals, UVs, and faces.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ObjMesh {
     /// 3D vertex positions.
@@ -469,7 +452,6 @@ pub struct ObjMesh {
     /// Named groups.
     pub groups: Vec<ObjGroup>,
 }
-#[allow(dead_code)]
 impl ObjMesh {
     /// Extract a flat triangle soup from the mesh.
     ///
@@ -571,7 +553,6 @@ impl ObjMesh {
     }
 }
 /// An instance of an `ObjMesh` with a transform and optional name override.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MeshInstance {
     /// Name of this instance.
@@ -580,7 +561,6 @@ pub struct MeshInstance {
     pub transform: MeshTransform,
 }
 /// A named group/object within an OBJ file.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ObjGroup {
     /// Group or object name.
@@ -594,7 +574,6 @@ pub struct ObjGroup {
 ///
 /// All index arrays are optional to support the various OBJ face formats:
 /// `f v`, `f v/vt`, `f v//vn`, `f v/vt/vn`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ObjFace {
     /// Vertex indices (0-based).
@@ -609,9 +588,7 @@ pub struct ObjFace {
     pub material: Option<String>,
 }
 /// Writer for `ObjMesh` structures.
-#[allow(dead_code)]
 pub struct ObjWriter;
-#[allow(dead_code)]
 impl ObjWriter {
     /// Serialize an `ObjMesh` to a Wavefront OBJ string.
     pub fn write(mesh: &ObjMesh) -> String {
@@ -752,7 +729,6 @@ impl ObjWriter {
     }
 }
 /// A node in an OBJ scene hierarchy.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ObjSceneNode {
     /// Name of this node.
@@ -765,7 +741,6 @@ pub struct ObjSceneNode {
     pub children: Vec<usize>,
 }
 /// Per-vertex RGBA colour.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ObjVertexColor {
     /// Red channel \[0, 1\].
@@ -777,7 +752,6 @@ pub struct ObjVertexColor {
     /// Alpha channel \[0, 1\].
     pub a: f64,
 }
-#[allow(dead_code)]
 impl ObjVertexColor {
     /// Construct a colour from (r, g, b, a).
     pub fn rgba(r: f64, g: f64, b: f64, a: f64) -> Self {
@@ -802,7 +776,6 @@ impl ObjVertexColor {
     }
 }
 /// A simple OBJ surface (tensor-product B-spline stub).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ObjSurface {
     /// Surface name.
@@ -821,9 +794,7 @@ pub struct ObjSurface {
     pub knots_v: Vec<f64>,
 }
 /// Writer for Wavefront MTL material library files.
-#[allow(dead_code)]
 pub struct MtlWriter;
-#[allow(dead_code)]
 impl MtlWriter {
     /// Generate an MTL file string for the given materials.
     pub fn write(materials: &[ObjMaterial]) -> String {
@@ -846,7 +817,6 @@ impl MtlWriter {
 ///
 /// Some exporters write vertex colours as extra columns on `v` lines:
 /// `v x y z r g b` or `v x y z r g b a`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ObjVertexColorMesh {
     /// Underlying geometry.
@@ -854,10 +824,9 @@ pub struct ObjVertexColorMesh {
     /// Per-vertex colours (same length as `mesh.vertices` if present).
     pub colors: Vec<ObjVertexColor>,
 }
-#[allow(dead_code)]
 impl ObjVertexColorMesh {
     /// Parse an OBJ string that may contain vertex colour data.
-    pub fn from_str(data: &str) -> std::result::Result<Self, String> {
+    pub fn parse(data: &str) -> std::result::Result<Self, String> {
         let mut vcmesh = ObjVertexColorMesh::default();
         let mut smoothing_group: u32 = 0;
         let mut current_material: Option<String> = None;
@@ -868,7 +837,7 @@ impl ObjVertexColorMesh {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            if line.starts_with("g ") || line.starts_with("o ") {
+            if let Some(rest) = line.strip_prefix("g ").or_else(|| line.strip_prefix("o ")) {
                 if let Some(ref name) = current_group_name {
                     let count = vcmesh.mesh.faces.len() - current_group_start;
                     if count > 0 {
@@ -879,12 +848,12 @@ impl ObjVertexColorMesh {
                         });
                     }
                 }
-                current_group_name = Some(line[2..].trim().to_string());
+                current_group_name = Some(rest.trim().to_string());
                 current_group_start = vcmesh.mesh.faces.len();
-            } else if line.starts_with("usemtl ") {
-                current_material = Some(line[7..].trim().to_string());
-            } else if line.starts_with("s ") {
-                let val = line[2..].trim();
+            } else if let Some(rest) = line.strip_prefix("usemtl ") {
+                current_material = Some(rest.trim().to_string());
+            } else if let Some(val_str) = line.strip_prefix("s ") {
+                let val = val_str.trim();
                 smoothing_group = if val == "off" || val == "0" {
                     0
                 } else {
@@ -1014,6 +983,13 @@ impl ObjVertexColorMesh {
             s.push('\n');
         }
         s
+    }
+}
+
+impl std::str::FromStr for ObjVertexColorMesh {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Self::parse(s)
     }
 }
 

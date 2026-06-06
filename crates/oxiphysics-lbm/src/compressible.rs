@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,9 +5,6 @@
 //!
 //! Provides high-Mach LBM with extended equilibrium, Euler equations via LBM,
 //! shock capturing, compressible Navier-Stokes, and detonation wave simulation.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 /// High-Mach LBM simulation with extended equilibrium.
 ///
@@ -133,8 +129,8 @@ impl CompressibleLbm {
                 let rho = self.rho[y][x];
                 let [ux, uy] = self.u[y][x];
                 let feq = equilibrium_compressible(rho, ux, uy, cs2);
-                for q in 0..9 {
-                    self.f[y][x][q] = self.f[y][x][q] * (1.0 - self.omega) + self.omega * feq[q];
+                for (q, &fq) in feq.iter().enumerate() {
+                    self.f[y][x][q] = self.f[y][x][q] * (1.0 - self.omega) + self.omega * fq;
                 }
             }
         }
@@ -889,12 +885,12 @@ impl SupersonicInlet {
     }
 
     /// Apply inlet BC to distribution functions at column x=0.
-    pub fn apply(&self, f: &mut Vec<Vec<Vec<f64>>>, ny: usize) {
+    pub fn apply(&self, f: &mut [Vec<Vec<f64>>], ny: usize) {
         let cs2 = self.cs * self.cs;
         let [ux, uy] = self.velocity();
         let feq = equilibrium_compressible(self.rho_in, ux, uy, cs2);
-        for y in 0..ny {
-            f[y][0] = feq.to_vec();
+        for row in f.iter_mut().take(ny) {
+            row[0] = feq.to_vec();
         }
     }
 

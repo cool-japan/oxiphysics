@@ -40,23 +40,51 @@ pub fn gradient_descent(
         converged,
     }
 }
+/// Hyperparameters for the Adam adaptive-moment optimizer.
+#[derive(Debug, Clone, Copy)]
+pub struct AdamConfig {
+    /// Learning rate (step size).
+    pub lr: f64,
+    /// Exponential decay rate for the first moment estimate.
+    pub beta1: f64,
+    /// Exponential decay rate for the second moment estimate.
+    pub beta2: f64,
+    /// Small constant for numerical stability in the denominator.
+    pub eps: f64,
+    /// Maximum number of iterations.
+    pub max_iter: u32,
+}
+
+impl Default for AdamConfig {
+    fn default() -> Self {
+        Self {
+            lr: 0.001,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+            max_iter: 1000,
+        }
+    }
+}
+
 /// Adam adaptive-moment optimizer.
 ///
 /// Uses the standard Adam update rule with bias correction.
 /// Stops when the L2 norm of the gradient falls below the default tolerance
-/// `1e-7`, or after `max_iter` steps (no separate `tol` parameter because
-/// Adam is typically used for a fixed budget).
-#[allow(clippy::too_many_arguments)]
+/// `1e-7`, or after `cfg.max_iter` steps.
 pub fn adam(
     f: impl Fn(&[f64]) -> f64,
     grad: impl Fn(&[f64]) -> Vec<f64>,
     x0: Vec<f64>,
-    lr: f64,
-    beta1: f64,
-    beta2: f64,
-    eps: f64,
-    max_iter: u32,
+    cfg: AdamConfig,
 ) -> OptResult {
+    let AdamConfig {
+        lr,
+        beta1,
+        beta2,
+        eps,
+        max_iter,
+    } = cfg;
     let n = x0.len();
     let mut x = x0;
     let mut m = vec![0.0f64; n];
@@ -146,7 +174,8 @@ pub fn lbfgs(
         let direction: Vec<f64> = r.iter().map(|ri| -*ri).collect();
         let f0 = f(&x);
         let gd = dot(&g, &direction);
-        let alpha = backtracking_line_search(&f, &x, &direction, f0, gd, 1.0, 0.5, 1e-4);
+        let alpha =
+            backtracking_line_search(&f, &x, &direction, f0, gd, BacktrackingConfig::default());
         let s: Vec<f64> = direction.iter().map(|di| alpha * di).collect();
         let x_new: Vec<f64> = x.iter().zip(s.iter()).map(|(xi, si)| xi + si).collect();
         let g_new = grad(&x_new);
@@ -470,21 +499,40 @@ pub fn numerical_hessian(f: impl Fn(&[f64]) -> f64, x: &[f64], h: f64) -> Vec<Ve
     }
     hess
 }
+/// Configuration for the Armijo backtracking line search.
+#[derive(Debug, Clone, Copy)]
+pub struct BacktrackingConfig {
+    /// Initial step length.
+    pub alpha0: f64,
+    /// Shrinkage factor per rejection (`rho ∈ (0, 1)`).
+    pub rho: f64,
+    /// Armijo sufficient-decrease constant (`c ∈ (0, 1)`).
+    pub c: f64,
+}
+
+impl Default for BacktrackingConfig {
+    fn default() -> Self {
+        Self {
+            alpha0: 1.0,
+            rho: 0.5,
+            c: 1e-4,
+        }
+    }
+}
+
 /// Backtracking line search satisfying the Armijo (sufficient-decrease)
 /// condition.
 ///
 /// Returns the accepted step length `alpha`.
-#[allow(clippy::too_many_arguments)]
 pub fn backtracking_line_search(
     f: impl Fn(&[f64]) -> f64,
     x: &[f64],
     direction: &[f64],
     f0: f64,
     grad_dot: f64,
-    alpha0: f64,
-    rho: f64,
-    c: f64,
+    cfg: BacktrackingConfig,
 ) -> f64 {
+    let BacktrackingConfig { alpha0, rho, c } = cfg;
     let mut alpha = alpha0;
     for _ in 0..100 {
         let x_new: Vec<f64> = x
@@ -644,25 +692,50 @@ pub fn simulated_annealing(
         converged: temp < 1e-10,
     }
 }
+/// Configuration for Particle Swarm Optimization.
+#[derive(Debug, Clone, Copy)]
+pub struct PsoConfig {
+    /// Number of particles.
+    pub n_particles: usize,
+    /// Inertia weight (0.5–0.9 typical).
+    pub w: f64,
+    /// Cognitive coefficient (≈ 2.0).
+    pub c1: f64,
+    /// Social coefficient (≈ 2.0).
+    pub c2: f64,
+    /// Maximum number of iterations.
+    pub max_iter: u32,
+}
+
+impl Default for PsoConfig {
+    fn default() -> Self {
+        Self {
+            n_particles: 30,
+            w: 0.7,
+            c1: 2.0,
+            c2: 2.0,
+            max_iter: 500,
+        }
+    }
+}
+
 /// Particle Swarm Optimization (PSO).
 ///
-/// Minimises `f` using `n_particles` agents.  Each agent is initialised
-/// uniformly in `[lb[i\], ub[i]]`.
-///
-/// * `w` — inertia weight (0.5–0.9 typical)
-/// * `c1` — cognitive coefficient (≈ 2.0)
-/// * `c2` — social coefficient (≈ 2.0)
-#[allow(clippy::too_many_arguments)]
+/// Minimises `f` using `cfg.n_particles` agents, each initialised
+/// uniformly in `[lb[i], ub[i]]`.
 pub fn particle_swarm(
     f: impl Fn(&[f64]) -> f64,
     lb: &[f64],
     ub: &[f64],
-    n_particles: usize,
-    w: f64,
-    c1: f64,
-    c2: f64,
-    max_iter: u32,
+    cfg: PsoConfig,
 ) -> OptResult {
+    let PsoConfig {
+        n_particles,
+        w,
+        c1,
+        c2,
+        max_iter,
+    } = cfg;
     let n = lb.len();
     let mut rng = rand::rng();
     let mut particles: Vec<Particle> = (0..n_particles)
@@ -720,21 +793,50 @@ pub fn particle_swarm(
         converged: true,
     }
 }
+/// Configuration for the genetic algorithm optimizer.
+#[derive(Debug, Clone, Copy)]
+pub struct GeneticAlgorithmConfig {
+    /// Population size.
+    pub pop_size: usize,
+    /// Probability of crossover per individual.
+    pub crossover_rate: f64,
+    /// Probability of mutation per gene.
+    pub mutation_rate: f64,
+    /// Scale of random mutation perturbation.
+    pub mutation_scale: f64,
+    /// Number of generations.
+    pub max_generations: u32,
+}
+
+impl Default for GeneticAlgorithmConfig {
+    fn default() -> Self {
+        Self {
+            pop_size: 50,
+            crossover_rate: 0.8,
+            mutation_rate: 0.1,
+            mutation_scale: 0.1,
+            max_generations: 200,
+        }
+    }
+}
+
 /// Genetic algorithm for real-valued continuous minimisation.
 ///
-/// Represents each individual as a `Vec`f64` in `\[lb\[i\\], ub\[i\]]`.
+/// Represents each individual as a `Vec<f64>` in `[lb[i], ub[i]]`.
 /// Uses tournament selection, arithmetic crossover, and uniform mutation.
-#[allow(clippy::too_many_arguments)]
 pub fn genetic_algorithm(
     f: impl Fn(&[f64]) -> f64,
     lb: &[f64],
     ub: &[f64],
-    pop_size: usize,
-    crossover_rate: f64,
-    mutation_rate: f64,
-    mutation_scale: f64,
-    max_generations: u32,
+    cfg: GeneticAlgorithmConfig,
 ) -> OptResult {
+    let GeneticAlgorithmConfig {
+        pop_size,
+        crossover_rate,
+        mutation_rate,
+        mutation_scale,
+        max_generations,
+    } = cfg;
     let n = lb.len();
     let mut rng = rand::rng();
     let mut pop: Vec<Vec<f64>> = (0..pop_size)
@@ -791,21 +893,40 @@ pub fn genetic_algorithm(
         converged: true,
     }
 }
+/// Configuration for L-BFGS-B (box-constrained L-BFGS).
+#[derive(Debug, Clone, Copy)]
+pub struct LbfgsbConfig {
+    /// Number of correction vectors to store (history size).
+    pub m: usize,
+    /// Convergence tolerance on the gradient norm.
+    pub tol: f64,
+    /// Maximum number of iterations.
+    pub max_iter: u32,
+}
+
+impl Default for LbfgsbConfig {
+    fn default() -> Self {
+        Self {
+            m: 5,
+            tol: 1e-8,
+            max_iter: 1000,
+        }
+    }
+}
+
 /// L-BFGS-B: box-constrained variant of L-BFGS.
 ///
-/// Enforces `lb\[i\] ≤ x\[i\] ≤ ub\[i\]` by projecting the search direction onto the
+/// Enforces `lb[i] ≤ x[i] ≤ ub[i]` by projecting the search direction onto the
 /// feasible set after each step (simple projected L-BFGS).
-#[allow(clippy::too_many_arguments)]
 pub fn lbfgsb(
     f: impl Fn(&[f64]) -> f64,
     grad: impl Fn(&[f64]) -> Vec<f64>,
     x0: Vec<f64>,
     lb: &[f64],
     ub: &[f64],
-    m: usize,
-    tol: f64,
-    max_iter: u32,
+    cfg: LbfgsbConfig,
 ) -> OptResult {
+    let LbfgsbConfig { m, tol, max_iter } = cfg;
     let mut x: Vec<f64> = x0
         .iter()
         .enumerate()
@@ -866,7 +987,8 @@ pub fn lbfgsb(
             .collect();
         let f0 = f(&x);
         let gd = dot(&g, &proj_dir);
-        let alpha = backtracking_line_search(&f, &x, &proj_dir, f0, gd, 1.0, 0.5, 1e-4);
+        let alpha =
+            backtracking_line_search(&f, &x, &proj_dir, f0, gd, BacktrackingConfig::default());
         let s: Vec<f64> = proj_dir.iter().map(|di| alpha * di).collect();
         let x_new: Vec<f64> = x
             .iter()
@@ -930,7 +1052,7 @@ where
             d = g.iter().map(|gi| -*gi).collect();
         }
         let gd = g.iter().zip(d.iter()).map(|(gi, di)| gi * di).sum::<f64>();
-        let alpha = backtracking_line_search(&f, &x, &d, f0, gd, 1.0, 0.5, 1e-4);
+        let alpha = backtracking_line_search(&f, &x, &d, f0, gd, BacktrackingConfig::default());
         let x_new: Vec<f64> = (0..n).map(|i| x[i] + alpha * d[i]).collect();
         let g_new = grad(&x_new);
         let g_new_sq: f64 = g_new.iter().map(|v| v * v).sum();
@@ -953,7 +1075,6 @@ where
 /// 2. Curvature: `|∇f(x + α d)·d| ≤ c2 * |∇f(x)·d|`
 ///
 /// Returns the accepted step length.
-#[allow(clippy::too_many_arguments)]
 pub fn wolfe_line_search(
     f: impl Fn(&[f64]) -> f64,
     grad: impl Fn(&[f64]) -> Vec<f64>,
@@ -1006,7 +1127,6 @@ pub fn wolfe_line_search(
 ///
 /// Each unconstrained sub-problem is solved with a few steps of gradient
 /// descent (a full sub-solver can be plugged in via `inner_iter`).
-#[allow(clippy::too_many_arguments)]
 pub fn augmented_lagrangian<F, G, C, DC>(
     f: F,
     grad_f: G,
@@ -1283,7 +1403,7 @@ pub fn bfgs(
             .collect();
         let f0 = f(&x);
         let gd: f64 = g.iter().zip(p.iter()).map(|(gi, pi)| gi * pi).sum();
-        let alpha = backtracking_line_search(&f, &x, &p, f0, gd, 1.0, 0.5, 1e-4);
+        let alpha = backtracking_line_search(&f, &x, &p, f0, gd, BacktrackingConfig::default());
         let x_new: Vec<f64> = (0..n).map(|i| x[i] + alpha * p[i]).collect();
         let g_new = grad(&x_new);
         let s: Vec<f64> = (0..n).map(|i| x_new[i] - x[i]).collect();

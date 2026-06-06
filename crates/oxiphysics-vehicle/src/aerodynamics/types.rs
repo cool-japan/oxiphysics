@@ -5,7 +5,6 @@
 use std::f64::consts::PI;
 
 use super::functions::AIR_DENSITY_SEA_LEVEL;
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// Feedback controller that adjusts front/rear wing levels to achieve a

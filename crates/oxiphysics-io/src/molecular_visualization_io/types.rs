@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{Lattice, Result, Vec3};
 

@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use super::types::{
     Ray, RayMarchSettings, TransferFunction, TransferFunctionF64, Vec3, Volume, VolumeGrid,
 };
@@ -52,7 +51,6 @@ pub fn gaussian_blob_volume(
 ///
 /// `dst` is the accumulated buffer, `src` is the new sample.
 /// Returns the composited result.
-#[allow(dead_code)]
 pub fn composite_front_to_back(dst: [f32; 4], src: [f32; 4]) -> [f32; 4] {
     let one_minus_a = 1.0 - dst[3];
     [
@@ -63,7 +61,6 @@ pub fn composite_front_to_back(dst: [f32; 4], src: [f32; 4]) -> [f32; 4] {
     ]
 }
 /// Composite two RGBA colors using back-to-front blending.
-#[allow(dead_code)]
 pub fn composite_back_to_front(dst: [f32; 4], src: [f32; 4]) -> [f32; 4] {
     [
         src[0] * src[3] + dst[0] * (1.0 - src[3]),
@@ -78,7 +75,6 @@ pub fn composite_back_to_front(dst: [f32; 4], src: [f32; 4]) -> [f32; 4] {
 /// `slice_idx` is the integer index along that axis.
 ///
 /// Returns a 2D grid of density values.
-#[allow(dead_code)]
 pub fn extract_slice(vol: &Volume, axis: usize, slice_idx: usize) -> Vec<Vec<f32>> {
     match axis {
         0 => {
@@ -122,7 +118,6 @@ pub fn extract_slice(vol: &Volume, axis: usize, slice_idx: usize) -> Vec<Vec<f32
 /// if the threshold is crossed along any edge and produces intersection
 /// vertices. This is a basic educational implementation, not the full
 /// 256-case marching cubes table.
-#[allow(dead_code)]
 pub fn extract_isosurface_simple(vol: &Volume, threshold: f32) -> Vec<[Vec3; 3]> {
     let mut triangles: Vec<[Vec3; 3]> = Vec::new();
     for ix in 0..vol.nx.saturating_sub(1) {
@@ -166,7 +161,6 @@ pub fn extract_isosurface_simple(vol: &Volume, threshold: f32) -> Vec<[Vec3; 3]>
 /// March a ray through `grid` using Beer-Lambert absorption + transfer function.
 ///
 /// Returns accumulated `[r, g, b, alpha]`.
-#[allow(dead_code)]
 pub fn ray_march(
     grid: &VolumeGrid,
     tf: &TransferFunctionF64,
@@ -211,7 +205,6 @@ pub fn ray_march(
 /// The gradient points in the direction of increasing density; the normal
 /// pointing outward from the isosurface is therefore the negated normalised
 /// gradient.  Returns `[0, 0, 0]` when the gradient magnitude is near zero.
-#[allow(dead_code)]
 pub fn iso_surface_normal(grid: &VolumeGrid, pos: [f64; 3], _iso_value: f64) -> [f64; 3] {
     let g = grid.gradient_at(pos);
     let mag = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
@@ -223,13 +216,11 @@ pub fn iso_surface_normal(grid: &VolumeGrid, pos: [f64; 3], _iso_value: f64) -> 
 }
 /// Compute the opacity of a participating-media step via Beer-Lambert:
 /// `opacity = 1 - exp(-absorption * step_size)`.
-#[allow(dead_code)]
 pub fn compute_opacity(absorption: f64, step_size: f64) -> f64 {
     1.0 - (-absorption * step_size).exp()
 }
 /// Build a `VolumeGrid` by sampling a scalar field function `f` over a uniform
 /// grid.  Grid points are voxel-centred: `pos = (i + 0.5) * voxel_size`.
-#[allow(dead_code)]
 pub fn volume_from_scalar_field(
     f: impl Fn([f64; 3]) -> f64,
     nx: usize,
@@ -499,11 +490,11 @@ mod tests {
     fn test_gradient_constant_field_is_zero() {
         let vol = unit_volume_constant(0.5);
         let g = vol.gradient(1, 1, 1);
-        for k in 0..3 {
+        for &gk in g.iter() {
             assert!(
-                g[k].abs() < 1e-3,
+                gk.abs() < 1e-3,
                 "gradient of constant field should be 0, got {}",
-                g[k]
+                gk
             );
         }
     }
@@ -793,7 +784,6 @@ mod tests {
 ///
 /// Returns the maximum density value encountered, mapped through
 /// the transfer function.
-#[allow(dead_code)]
 pub fn mip_ray(ray: &Ray, volume: &Volume, tf: &TransferFunction, step_size: f32) -> [f32; 4] {
     let Some((t_enter, t_exit)) = volume.aabb_intersect(ray) else {
         return [0.0; 4];
@@ -813,7 +803,6 @@ pub fn mip_ray(ray: &Ray, volume: &Volume, tf: &TransferFunction, step_size: f32
 /// Compute simple Phong shading for a surface normal and light direction.
 ///
 /// Returns a scalar in `[0, 1]` representing the lighting intensity.
-#[allow(dead_code)]
 pub fn phong_shading(
     normal: Vec3,
     light_dir: Vec3,

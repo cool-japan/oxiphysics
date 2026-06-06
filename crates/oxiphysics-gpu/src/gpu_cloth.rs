@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -472,7 +471,6 @@ impl GpuClothSolver {
         let gravity = [0.0, -9.81, 0.0];
 
         // --- 1. Semi-implicit Euler predict ---
-        let n = self.mesh.vertices.len();
         let mut pred_pos: Vec<[f64; 3]> = self
             .mesh
             .vertices
@@ -533,22 +531,22 @@ impl GpuClothSolver {
 
         // --- 3. Collision resolution ---
         for collider in &self.colliders {
-            for i in 0..n {
+            for (i, pred) in pred_pos.iter_mut().enumerate() {
                 if self.mesh.vertices[i].pinned {
                     continue;
                 }
-                if let Some((depth, dir)) = collider.penetration(pred_pos[i]) {
-                    pred_pos[i] = add3(pred_pos[i], scale3(dir, depth));
+                if let Some((depth, dir)) = collider.penetration(*pred) {
+                    *pred = add3(*pred, scale3(dir, depth));
                 }
             }
         }
 
         // --- 4. Update velocities and positions ---
-        for i in 0..n {
+        for (i, &pred) in pred_pos.iter().enumerate() {
             if !self.mesh.vertices[i].pinned {
                 let old_pos = self.mesh.vertices[i].position;
-                self.mesh.vertices[i].velocity = scale3(sub3(pred_pos[i], old_pos), 1.0 / dt);
-                self.mesh.vertices[i].position = pred_pos[i];
+                self.mesh.vertices[i].velocity = scale3(sub3(pred, old_pos), 1.0 / dt);
+                self.mesh.vertices[i].position = pred;
             }
         }
     }

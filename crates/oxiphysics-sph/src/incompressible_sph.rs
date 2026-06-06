@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -30,34 +29,24 @@ use std::f64::consts::PI;
 /// A 3-D position or velocity stored as `[f64; 3]`.
 pub type Vec3 = [f64; 3];
 
-#[allow(dead_code)]
 fn vec3_add(a: Vec3, b: Vec3) -> Vec3 {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-#[allow(dead_code)]
 fn vec3_sub(a: Vec3, b: Vec3) -> Vec3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-#[allow(dead_code)]
 fn vec3_scale(a: Vec3, s: f64) -> Vec3 {
     [a[0] * s, a[1] * s, a[2] * s]
 }
 
-#[allow(dead_code)]
 fn vec3_dot(a: Vec3, b: Vec3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-#[allow(dead_code)]
 fn vec3_norm(a: Vec3) -> f64 {
     vec3_dot(a, a).sqrt()
-}
-
-#[allow(dead_code)]
-fn vec3_norm2(a: Vec3) -> f64 {
-    vec3_dot(a, a)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -65,7 +54,6 @@ fn vec3_norm2(a: Vec3) -> f64 {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Cubic spline kernel value W(r, h).
-#[allow(dead_code)]
 fn kernel_w(r: f64, h: f64) -> f64 {
     let sigma = 1.0 / (PI * h * h * h);
     let q = r / h;
@@ -80,7 +68,6 @@ fn kernel_w(r: f64, h: f64) -> f64 {
 }
 
 /// Gradient of cubic spline kernel dW/dr (scalar; multiply by r̂ to get vector).
-#[allow(dead_code)]
 fn kernel_dw_dr(r: f64, h: f64) -> f64 {
     let sigma = 1.0 / (PI * h * h * h);
     let q = r / h;
@@ -95,7 +82,6 @@ fn kernel_dw_dr(r: f64, h: f64) -> f64 {
 }
 
 /// Gradient vector ∇W(rᵢⱼ, h) where rᵢⱼ = xᵢ − xⱼ.
-#[allow(dead_code)]
 fn kernel_grad(rij: Vec3, h: f64) -> Vec3 {
     let r = vec3_norm(rij);
     if r < 1e-14 {
@@ -170,7 +156,6 @@ impl IsphParticle {
 /// Computes ∇·v at each particle via SPH summation.
 ///
 /// ∇·vᵢ = Σⱼ (mⱼ/ρⱼ) (vⱼ − vᵢ) · ∇Wᵢⱼ
-#[allow(dead_code)]
 pub struct VelocityDivergence {
     /// Smoothing length h.
     pub h: f64,
@@ -183,20 +168,20 @@ impl VelocityDivergence {
     }
 
     /// Compute ∇·vᵢ for all particles in-place.
-    pub fn compute(&self, particles: &mut Vec<IsphParticle>) {
+    pub fn compute(&self, particles: &mut [IsphParticle]) {
         let n = particles.len();
         let mut divs = vec![0.0_f64; n];
 
-        for i in 0..n {
-            let xi = particles[i].position;
-            let vi = particles[i].velocity;
+        for (i, particle_i) in particles.iter().enumerate() {
+            let xi = particle_i.position;
+            let vi = particle_i.velocity;
             let mut div = 0.0_f64;
-            for j in 0..n {
+            for (j, pj) in particles.iter().enumerate() {
                 if i == j {
                     continue;
                 }
-                let xj = particles[j].position;
-                let vj = particles[j].velocity;
+                let xj = pj.position;
+                let vj = pj.velocity;
                 let rij = vec3_sub(xi, xj);
                 let r = vec3_norm(rij);
                 if r >= 2.0 * self.h {
@@ -205,7 +190,7 @@ impl VelocityDivergence {
                 let grad_w = kernel_grad(rij, self.h);
                 let dv = vec3_sub(vj, vi);
                 let vdotg = vec3_dot(dv, grad_w);
-                let vol_j = particles[j].mass / particles[j].density.max(1e-300);
+                let vol_j = pj.mass / pj.density.max(1e-300);
                 div += vol_j * vdotg;
             }
             divs[i] = div;
@@ -223,7 +208,6 @@ impl VelocityDivergence {
 /// Computes ∇P at each particle using the symmetric SPH formulation.
 ///
 /// (∇P/ρ)ᵢ = Σⱼ mⱼ (Pᵢ/ρᵢ² + Pⱼ/ρⱼ²) ∇Wᵢⱼ
-#[allow(dead_code)]
 pub struct PressureGradient {
     /// Smoothing length h.
     pub h: f64,
@@ -301,7 +285,6 @@ impl Default for IsphPressureSolverParams {
 ///
 /// Solves ∇²P = ρ/Δt · ∇·v* using a relaxed Jacobi iteration with
 /// diagonal approximation of the Laplacian operator.
-#[allow(dead_code)]
 pub struct IsphPressureSolver {
     /// Solver parameters.
     pub params: IsphPressureSolverParams,
@@ -318,7 +301,7 @@ impl IsphPressureSolver {
     /// Run one pressure-Poisson solve; updates `p.pressure` for each particle.
     ///
     /// Returns `(iterations, max_pressure_change)`.
-    pub fn solve(&self, particles: &mut Vec<IsphParticle>, dt: f64) -> (usize, f64) {
+    pub fn solve(&self, particles: &mut [IsphParticle], dt: f64) -> (usize, f64) {
         let n = particles.len();
         let h = self.h;
         let rho0 = self.params.rest_density;
@@ -390,7 +373,6 @@ impl IsphPressureSolver {
 /// 2. Divergence: compute ∇·v*
 /// 3. Pressure: solve Poisson equation
 /// 4. Correct: v = v* − Δt/ρ ∇P,  x = x + Δt v
-#[allow(dead_code)]
 pub struct IsphStep {
     /// Smoothing length.
     pub h: f64,
@@ -414,7 +396,7 @@ impl IsphStep {
     }
 
     /// Predict velocity using explicit forces (gravity + viscosity).
-    fn predict(&self, particles: &mut Vec<IsphParticle>, dt: f64) {
+    fn predict(&self, particles: &mut [IsphParticle], dt: f64) {
         let n = particles.len();
         let h = self.h;
         let nu = self.viscosity;
@@ -456,7 +438,7 @@ impl IsphStep {
     }
 
     /// Correct velocity using pressure gradient.
-    fn correct(&self, particles: &mut Vec<IsphParticle>, dt: f64) {
+    fn correct(&self, particles: &mut [IsphParticle], dt: f64) {
         let pg = PressureGradient::new(self.h);
         let accs = pg.all_accelerations(particles);
         for (i, p) in particles.iter_mut().enumerate() {
@@ -468,7 +450,7 @@ impl IsphStep {
     /// Advance the particle system by one timestep `dt`.
     ///
     /// Returns solver statistics from the pressure solve.
-    pub fn advance(&self, particles: &mut Vec<IsphParticle>, dt: f64) -> (usize, f64) {
+    pub fn advance(&self, particles: &mut [IsphParticle], dt: f64) -> (usize, f64) {
         self.predict(particles, dt);
         // Copy velocity_star → velocity for divergence computation
         for p in particles.iter_mut() {
@@ -487,7 +469,6 @@ impl IsphStep {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Checks and reports the divergence-free condition ∇·v ≈ 0.
-#[allow(dead_code)]
 pub struct DivergenceFreeCondition {
     /// Tolerance threshold for acceptable divergence.
     pub tolerance: f64,
@@ -533,7 +514,6 @@ impl DivergenceFreeCondition {
 ///
 /// Each fluid particle near a wall is mirrored across the wall plane to
 /// enforce no-penetration and no-slip conditions.
-#[allow(dead_code)]
 pub struct IsphBoundary {
     /// Wall plane origin.
     pub plane_point: Vec3,
@@ -633,7 +613,6 @@ impl Default for IsphMultiphaseParams {
 }
 
 /// Two-fluid ISPH: handles density ratio and surface tension.
-#[allow(dead_code)]
 pub struct IsphMultiphase {
     /// Multiphase parameters.
     pub params: IsphMultiphaseParams,
@@ -648,7 +627,7 @@ impl IsphMultiphase {
     }
 
     /// Assign rest density to each particle based on its phase.
-    pub fn assign_densities(&self, particles: &mut Vec<IsphParticle>) {
+    pub fn assign_densities(&self, particles: &mut [IsphParticle]) {
         for p in particles.iter_mut() {
             p.rest_density = match p.phase {
                 0 => self.params.density_phase0,
@@ -669,19 +648,19 @@ impl IsphMultiphase {
         let h = self.h;
         let n = particles.len();
         let mut color = vec![0.0_f64; n];
-        for i in 0..n {
-            let xi = particles[i].position;
-            let ci = particles[i].phase as f64;
+        for (i, particle_i) in particles.iter().enumerate() {
+            let xi = particle_i.position;
+            let ci = particle_i.phase as f64;
             let mut wsum = 0.0_f64;
             let mut csum = 0.0_f64;
-            for j in 0..n {
-                let xj = particles[j].position;
+            for pj in particles.iter() {
+                let xj = pj.position;
                 let r = vec3_norm(vec3_sub(xi, xj));
                 if r >= 2.0 * h {
                     continue;
                 }
                 let w = kernel_w(r, h);
-                csum += w * particles[j].phase as f64;
+                csum += w * pj.phase as f64;
                 wsum += w;
             }
             color[i] = if wsum > 1e-300 {
@@ -735,7 +714,6 @@ impl IsphMultiphase {
 /// νₜ = (Cₛ Δ)² |S̃|
 /// where |S̃| is the magnitude of the resolved strain-rate tensor and
 /// Δ is the filter width (≈ h).
-#[allow(dead_code)]
 pub struct IsphTurbulence {
     /// Smagorinsky constant Cₛ (typically 0.1–0.2).
     pub cs: f64,
@@ -772,17 +750,17 @@ impl IsphTurbulence {
             let gw = kernel_grad(rij, h);
             let dv = vec3_sub(pj.velocity, vi);
             let vol_j = pj.mass / pj.density.max(1e-300);
-            for alpha in 0..3 {
-                for beta in 0..3 {
-                    g[alpha][beta] += vol_j * dv[alpha] * gw[beta];
+            for (g_row, dv_a) in g.iter_mut().zip(dv.iter()) {
+                for (g_ab, gw_b) in g_row.iter_mut().zip(gw.iter()) {
+                    *g_ab += vol_j * dv_a * gw_b;
                 }
             }
         }
         // Symmetric part S = ½(G + Gᵀ)
         let mut s2 = 0.0_f64;
-        for alpha in 0..3 {
-            for beta in 0..3 {
-                let s_ab = 0.5 * (g[alpha][beta] + g[beta][alpha]);
+        for (alpha, g_row) in g.iter().enumerate() {
+            for (beta, g_ab) in g_row.iter().enumerate() {
+                let s_ab = 0.5 * (g_ab + g[beta][alpha]);
                 s2 += 2.0 * s_ab * s_ab;
             }
         }

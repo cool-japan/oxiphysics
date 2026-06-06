@@ -2,15 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-use std::f64::consts::PI;
-
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     Mat3, mat3_identity, mat3_mul, mat3_vec_mul, rot_from_axis_angle, vec3_add, vec3_cross,
     vec3_dot, vec3_norm, vec3_scale, vec3_sub,
 };
+use std::f64::consts::PI;
 
 /// A link-joint pair in the chain.
 #[derive(Debug, Clone)]
@@ -48,9 +44,9 @@ impl InverseKinematics {
                 return true;
             }
             let j = chain.jacobian_matrix();
-            for col in 0..chain.n_links {
+            for (col, q_col) in chain.q.iter_mut().enumerate().take(chain.n_links) {
                 let jt_e = j[0][col] * err[0] + j[1][col] * err[1] + j[2][col] * err[2];
-                chain.q[col] += alpha * jt_e;
+                *q_col += alpha * jt_e;
             }
         }
         let ee = chain.end_effector_position();
@@ -268,9 +264,9 @@ impl ArticulatedInertia {
     /// Multiply spatial inertia by a 6-vector: M * v.
     pub fn mul_vec6(&self, v: &[f64; 6]) -> [f64; 6] {
         let mut result = [0.0f64; 6];
-        for r in 0..6 {
-            for c in 0..6 {
-                result[r] += self.data[r * 6 + c] * v[c];
+        for (r, res_r) in result.iter_mut().enumerate() {
+            for (c, v_c) in v.iter().enumerate() {
+                *res_r += self.data[r * 6 + c] * v_c;
             }
         }
         result
@@ -507,15 +503,17 @@ impl KinematicChain {
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ];
-        for i in 0..n {
+        let mut col = 0usize;
+        while col < n {
             let z = [t_cumul[0][2], t_cumul[1][2], t_cumul[2][2]];
             let p = [t_cumul[0][3], t_cumul[1][3], t_cumul[2][3]];
             let r = vec3_sub(ee, p);
             let jcol = vec3_cross(z, r);
-            j[0][i] = jcol[0];
-            j[1][i] = jcol[1];
-            j[2][i] = jcol[2];
-            t_cumul = Self::mat4_mul(t_cumul, self.dh_transform(i));
+            j[0][col] = jcol[0];
+            j[1][col] = jcol[1];
+            j[2][col] = jcol[2];
+            t_cumul = Self::mat4_mul(t_cumul, self.dh_transform(col));
+            col += 1;
         }
         j
     }
@@ -979,17 +977,6 @@ impl MultibodyKinematics {
         fk.last().map(|t| t.translation).unwrap_or([0.0; 3])
     }
 }
-/// State of one link during the ABA pass.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub(super) struct AbaLinkState {
-    /// Articulated body inertia (6×6 via 3 diag blocks).
-    pub(super) ia: Mat3,
-    /// Spatial acceleration (6-vector simplified as 3-vec).
-    pub(super) a: [f64; 3],
-    /// Bias force (3-vec).
-    pub(super) pa: [f64; 3],
-}
 /// Multibody dynamics system: manages links, DOFs, and dynamics algorithms.
 #[derive(Debug, Clone)]
 pub struct MultibodySystem {
@@ -1181,7 +1168,6 @@ impl MultibodySystem {
     ///
     /// `_q` and `_dq` are accepted for API completeness but the current
     /// simplification uses the system's stored `positions` and `velocities`.
-    #[allow(clippy::too_many_arguments)]
     pub fn inverse_dynamics(&self, _q: &[f64], _dq: &[f64], ddq: &[f64]) -> Vec<f64> {
         let n = self.n_dof();
         let m = self.mass_matrix();
@@ -1199,9 +1185,14 @@ impl MultibodySystem {
     pub fn integrate_euler(&mut self, tau: &[f64], dt: f64) {
         let qdd = self.forward_dynamics(tau);
         let n = self.n_dof();
-        for i in 0..n {
-            self.velocities[i] += qdd[i] * dt;
-            self.positions[i] += self.velocities[i] * dt;
+        for (vel_i, (pos_i, qdd_i)) in self
+            .velocities
+            .iter_mut()
+            .zip(self.positions.iter_mut().zip(qdd.iter()))
+            .take(n)
+        {
+            *vel_i += qdd_i * dt;
+            *pos_i += *vel_i * dt;
         }
         self.accelerations = qdd;
     }

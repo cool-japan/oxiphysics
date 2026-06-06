@@ -702,14 +702,12 @@ pub fn extended_cortical_bone_v2() -> ExtendedMaterial {
     )
 }
 /// Compare two materials by density (lighter first).
-#[allow(dead_code)]
 pub fn compare_by_density(a: &Material, b: &Material) -> std::cmp::Ordering {
     a.density
         .partial_cmp(&b.density)
         .unwrap_or(std::cmp::Ordering::Equal)
 }
 /// Find the material with the highest Young's modulus from a list.
-#[allow(dead_code)]
 pub fn stiffest_material(materials: &[ExtendedMaterial]) -> Option<&ExtendedMaterial> {
     materials.iter().max_by(|a, b| {
         a.young_modulus
@@ -718,7 +716,6 @@ pub fn stiffest_material(materials: &[ExtendedMaterial]) -> Option<&ExtendedMate
     })
 }
 /// Find the material with the highest specific strength (σ_y / ρ).
-#[allow(dead_code)]
 pub fn highest_specific_strength(materials: &[ExtendedMaterial]) -> Option<&ExtendedMaterial> {
     materials.iter().max_by(|a, b| {
         a.specific_strength()

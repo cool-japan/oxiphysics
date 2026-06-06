@@ -12,8 +12,6 @@ use crate::particle::SoftParticle;
 use oxiphysics_core::math::{Real, Vec3};
 
 use super::functions::SoftConstraint;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::ShapeMatchingConstraint;
 
 impl SoftConstraint for ShapeMatchingConstraint {

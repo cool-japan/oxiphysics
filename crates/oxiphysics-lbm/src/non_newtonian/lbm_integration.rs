@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,14 +15,12 @@ use super::{CS2, LocalViscosityModel, MU_MAX, MU_MIN, NonNewtonianFluid, NonNewt
 
 /// Helper for computing an effective relaxation frequency from a
 /// non-Newtonian rheology model in LBM simulations.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct NonNewtonianLBM {
     /// Base relaxation frequency (Newtonian reference).
     pub omega_base: f64,
 }
 
-#[allow(dead_code)]
 impl NonNewtonianLBM {
     /// Create a new helper with the given base omega.
     pub fn new(omega_base: f64) -> Self {
@@ -62,7 +59,6 @@ impl NonNewtonianLBM {
 /// * `alpha` -- under-relaxation factor (0 < alpha <= 1)
 /// * `max_iter` -- maximum number of iterations
 /// * `tol` -- convergence tolerance
-#[allow(dead_code)]
 pub fn iterate_apparent_viscosity(
     initial_mu: f64,
     shear_rate: f64,
@@ -90,7 +86,6 @@ pub fn iterate_apparent_viscosity(
 /// A field storing per-node effective viscosity values.
 ///
 /// Useful for post-processing and visualization of non-Newtonian flows.
-#[allow(dead_code)]
 pub struct ViscosityField {
     /// Number of nodes.
     pub n_nodes: usize,
@@ -98,7 +93,6 @@ pub struct ViscosityField {
     pub values: Vec<f64>,
 }
 
-#[allow(dead_code)]
 impl ViscosityField {
     /// Create a new viscosity field with uniform initial viscosity.
     pub fn new(n_nodes: usize, initial: f64) -> Self {
@@ -222,7 +216,6 @@ impl LocalTauLattice {
 ///
 /// where `mu_0` and `mu_inf` are the viscosities of fully-structured and
 /// fully-broken microstructure, respectively.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ThixotropicFluid {
     /// Rest (fully-structured) viscosity.
@@ -239,7 +232,6 @@ pub struct ThixotropicFluid {
     pub lambda: f64,
 }
 
-#[allow(dead_code)]
 impl ThixotropicFluid {
     /// Create a new thixotropic fluid at full structure (lambda=1).
     pub fn new(mu_0: f64, mu_inf: f64, a: f64, b: f64, m: f64) -> Self {
@@ -315,7 +307,6 @@ impl ThixotropicFluid {
 /// ```
 ///
 /// where `k` is the structural exponent (typically 1).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ThixotropicModel {
     /// Viscosity at full structure (lambda = 1).
@@ -334,7 +325,6 @@ pub struct ThixotropicModel {
     pub lambda: f64,
 }
 
-#[allow(dead_code)]
 impl ThixotropicModel {
     /// Create a new thixotropic model at full structure (lambda = 1).
     pub fn new(mu_0: f64, mu_inf: f64, a: f64, b: f64, m: f64) -> Self {
@@ -440,7 +430,6 @@ impl ThixotropicModel {
 ///
 /// This combines the Papanastasiou regularization with a power-law viscoplastic
 /// contribution, giving a general viscoplastic model.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct PapanastasiouViscoplastic {
     /// Yield stress tau_y.
@@ -455,7 +444,6 @@ pub struct PapanastasiouViscoplastic {
     pub m: f64,
 }
 
-#[allow(dead_code)]
 impl PapanastasiouViscoplastic {
     /// Create with purely Papanastasiou (no power-law term, n=1, K=0).
     pub fn papanastasiou_only(tau_y: f64, mu_inf: f64, m: f64) -> Self {
@@ -520,7 +508,6 @@ impl PapanastasiouViscoplastic {
 /// `mu_total = mu_eff_laminar + rho * l_m^2 * |S|`
 ///
 /// where `l_m` is the mixing length and `S` is the strain-rate invariant.
-#[allow(dead_code)]
 pub fn turbulent_effective_viscosity(
     mu_laminar: f64,
     rho: f64,
@@ -536,7 +523,6 @@ pub fn turbulent_effective_viscosity(
 ///
 /// where `y_plus = y * u_tau / nu`, `kappa = 0.41` (von Karman constant),
 /// `A_plus = 26` (van Driest constant).
-#[allow(dead_code)]
 pub fn van_driest_mixing_length(
     y_wall_distance: f64,
     u_tau: f64,
@@ -557,7 +543,6 @@ pub fn van_driest_mixing_length(
 ///
 /// where `C_s` is the Smagorinsky constant (~0.1-0.2), `delta` is the
 /// grid spacing, and `|S| = sqrt(2 * S_ij * S_ij)` is the strain-rate magnitude.
-#[allow(dead_code)]
 pub fn smagorinsky_turbulent_viscosity(
     cs_constant: f64,
     delta: f64,
@@ -572,7 +557,6 @@ pub fn smagorinsky_turbulent_viscosity(
 /// `eta_k = (nu_eff^3 / epsilon)^0.25`
 ///
 /// where `epsilon` is the turbulent dissipation rate.
-#[allow(dead_code)]
 pub fn kolmogorov_scale(nu_eff: f64, epsilon: f64) -> f64 {
     if epsilon < 1e-30 {
         return f64::INFINITY;
@@ -586,7 +570,6 @@ pub fn kolmogorov_scale(nu_eff: f64, epsilon: f64) -> f64 {
 /// `Re_gen = rho * U^(2-n) * L^n / (K * 8^(n-1))`
 ///
 /// where `U` is velocity, `L` characteristic length, `K` consistency.
-#[allow(dead_code)]
 pub fn generalized_reynolds_power_law(
     rho: f64,
     velocity: f64,
@@ -603,7 +586,6 @@ pub fn generalized_reynolds_power_law(
 /// Metzner-Reed generalized Reynolds number for pipe flow:
 ///
 /// `Re_MR = rho * U^2 / (K' * (U/D)^n')`
-#[allow(dead_code)]
 pub fn metzner_reed_reynolds(
     rho: f64,
     velocity: f64,
@@ -657,7 +639,6 @@ pub fn shear_rate_from_strain_tensor(s: [[f64; 3]; 3]) -> f64 {
 /// where `nu_k = viscosity_field[k]`.
 ///
 /// Returns a `Vec`f64` of per-cell omega values, length `n_cells = f.len()`.
-#[allow(clippy::too_many_arguments)]
 pub fn update_relaxation_field(
     f: &[[f64; 19]],
     viscosity_field: &[f64],
@@ -691,7 +672,6 @@ pub fn update_relaxation_field(
 /// ```
 ///
 /// Returns the LBM relaxation time `tau` clamped to `\[0.5 + MU_MIN/CS2, 0.5 + MU_MAX/CS2\]`.
-#[allow(dead_code)]
 pub fn effective_relaxation_time(shear_rate: f64, model: &dyn NonNewtonianFluid) -> f64 {
     let mu_eff = model.effective_viscosity(shear_rate).clamp(MU_MIN, MU_MAX);
     0.5 + mu_eff / CS2
@@ -700,7 +680,6 @@ pub fn effective_relaxation_time(shear_rate: f64, model: &dyn NonNewtonianFluid)
 /// Compute the effective LBM relaxation frequency from local shear rate.
 ///
 /// `omega_eff = 1 / tau_eff`
-#[allow(dead_code)]
 pub fn effective_relaxation_frequency(shear_rate: f64, model: &dyn NonNewtonianFluid) -> f64 {
     1.0 / effective_relaxation_time(shear_rate, model)
 }
@@ -710,7 +689,6 @@ pub fn effective_relaxation_frequency(shear_rate: f64, model: &dyn NonNewtonianF
 ///
 /// For each node `k`:
 /// `tau\[k\] = 0.5 + mu_eff(shear_rates\[k\]) / cs^2`
-#[allow(dead_code)]
 pub fn update_tau_from_shear_rates(shear_rates: &[f64], model: &dyn NonNewtonianFluid) -> Vec<f64> {
     shear_rates
         .iter()
@@ -734,7 +712,6 @@ pub fn update_tau_from_shear_rates(shear_rates: &[f64], model: &dyn NonNewtonian
 /// * `viscosity` -- effective kinematic viscosity nu_eff (lattice units)
 /// * `cs2` -- speed of sound squared (lattice units; usually 1/3)
 /// * `dt` -- time step (lattice units; usually 1.0)
-#[allow(dead_code)]
 pub fn effective_tau(viscosity: f64, cs2: f64, dt: f64) -> f64 {
     0.5 * dt + viscosity / (cs2 * dt.max(1e-30))
 }
@@ -779,7 +756,6 @@ pub(crate) const C9_NN: [[i32; 2]; 9] = [
 /// * `rho` -- macroscopic density
 /// * `u` -- macroscopic velocity `\[ux, uy\]`
 /// * `model` -- any `NonNewtonianModel` implementation
-#[allow(dead_code)]
 pub fn apply_non_newtonian_collision(
     f: &mut [f64; 9],
     rho: f64,
@@ -822,26 +798,25 @@ pub fn apply_non_newtonian_collision(
 ///
 /// The relaxation time tau(x,y) is computed from the local shear rate, which is
 /// estimated from the non-equilibrium part of the distributions.
-#[allow(dead_code)]
 pub fn non_newtonian_bgk_step_2d<M: LocalViscosityModel>(
-    pop: &mut Vec<[f64; 9]>,
+    pop: &mut [[f64; 9]],
     nx: usize,
     ny: usize,
     model: &M,
 ) {
-    use crate::lattice::{CS2, D2Q9_VELOCITIES, D2Q9_WEIGHTS, equilibrium_d2q9, macros_from_d2q9};
+    use crate::lattice::{CS2, D2Q9_VELOCITIES, equilibrium_d2q9, macros_from_d2q9};
     let n = nx * ny;
-    for idx in 0..n {
-        let f = &pop[idx];
-        let (rho, ux, uy) = macros_from_d2q9(f);
+    for cell in pop[..n].iter_mut() {
+        let f_copy = *cell;
+        let (rho, ux, uy) = macros_from_d2q9(&f_copy);
         let feq = equilibrium_d2q9(rho, ux, uy);
         // Estimate shear rate from |fneq|
         let mut pi_xy = 0.0f64;
         let mut pi_xx = 0.0f64;
-        for q in 0..9 {
-            let cx = D2Q9_VELOCITIES[q][0] as f64;
-            let cy = D2Q9_VELOCITIES[q][1] as f64;
-            let fneq_q = f[q] - feq[q];
+        for (q, c) in D2Q9_VELOCITIES.iter().enumerate() {
+            let cx = c[0] as f64;
+            let cy = c[1] as f64;
+            let fneq_q = f_copy[q] - feq[q];
             pi_xy += cx * cy * fneq_q;
             pi_xx += cx * cx * fneq_q;
         }
@@ -850,9 +825,8 @@ pub fn non_newtonian_bgk_step_2d<M: LocalViscosityModel>(
         let mu = model.viscosity(gamma_approx);
         let tau = 0.5 + mu / CS2;
         let omega = 1.0 / tau;
-        for q in 0..9 {
-            pop[idx][q] += omega * (feq[q] - pop[idx][q]);
-            let _ = D2Q9_WEIGHTS[q]; // suppress unused
+        for (fi, &feq_i) in cell.iter_mut().zip(feq.iter()) {
+            *fi += omega * (feq_i - *fi);
         }
     }
 }
@@ -864,7 +838,6 @@ pub fn non_newtonian_bgk_step_2d<M: LocalViscosityModel>(
 /// Compute the viscosity index (VI) for a fluid given viscosities at two temperatures.
 ///
 /// Simplified: VI ~ (mu_40 - mu_100) / mu_100 * 100.
-#[allow(dead_code)]
 pub fn viscosity_index(mu_40: f64, mu_100: f64) -> f64 {
     if mu_100 < 1e-30 {
         return 0.0;
@@ -873,7 +846,6 @@ pub fn viscosity_index(mu_40: f64, mu_100: f64) -> f64 {
 }
 
 /// Compute the Deborah number De = lambda / t_process.
-#[allow(dead_code)]
 pub fn deborah_number(lambda: f64, t_process: f64) -> f64 {
     if t_process < 1e-30 {
         return f64::INFINITY;
@@ -882,7 +854,6 @@ pub fn deborah_number(lambda: f64, t_process: f64) -> f64 {
 }
 
 /// Compute the Weissenberg number Wi = lambda * gamma.
-#[allow(dead_code)]
 pub fn weissenberg_number(lambda: f64, shear_rate: f64) -> f64 {
     lambda * shear_rate.abs()
 }
@@ -890,7 +861,6 @@ pub fn weissenberg_number(lambda: f64, shear_rate: f64) -> f64 {
 /// Compute the Oldroyd B effective viscosity at steady shear.
 ///
 /// eta_eff = eta_s + eta_p (for UCM/Oldroyd-B, viscosity is shear-rate-independent).
-#[allow(dead_code)]
 pub fn oldroyd_b_viscosity(eta_s: f64, eta_p: f64) -> f64 {
     eta_s + eta_p
 }
@@ -899,7 +869,6 @@ pub fn oldroyd_b_viscosity(eta_s: f64, eta_p: f64) -> f64 {
 /// Tr = eta_extensional / eta_shear.
 ///
 /// For Newtonian fluids Tr = 3; for polymers Tr can be much larger.
-#[allow(dead_code)]
 pub fn trouton_ratio(eta_ext: f64, eta_shear: f64) -> f64 {
     if eta_shear < 1e-30 {
         return 0.0;

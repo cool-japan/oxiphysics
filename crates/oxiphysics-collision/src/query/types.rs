@@ -1,29 +1,28 @@
-#![allow(clippy::type_complexity)]
 // Auto-generated module
 //
 // 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
 use super::functions::*;
 
+/// A child shape entry: a boxed shape query together with its 4×4 world transform.
+pub type ShapeEntry = (Box<dyn ShapeQuery>, [[f64; 4]; 4]);
+
 /// A view frustum defined by 6 half-space planes.
 ///
 /// Each plane is `[nx, ny, nz, d]` where `n·p + d >= 0` is the "inside" half-space.
 /// Planes should be: near, far, left, right, top, bottom.
-#[allow(dead_code)]
 pub struct ViewFrustum {
     /// The 6 frustum planes.
     pub planes: [[f64; 4]; 6],
 }
 impl ViewFrustum {
     /// Create a frustum from 6 plane coefficients.
-    #[allow(dead_code)]
     pub fn new(planes: [[f64; 4]; 6]) -> Self {
         Self { planes }
     }
     /// Test whether a sphere is potentially visible (intersects the frustum).
     ///
     /// Returns `false` only if the sphere is fully outside at least one plane.
-    #[allow(dead_code)]
     pub fn test_sphere(&self, center: [f64; 3], radius: f64) -> bool {
         for plane in &self.planes {
             let n = [plane[0], plane[1], plane[2]];
@@ -38,7 +37,6 @@ impl ViewFrustum {
     /// Test whether an AABB is potentially visible.
     ///
     /// Uses the p-vertex / n-vertex method for conservative rejection.
-    #[allow(dead_code)]
     pub fn test_aabb(&self, min: [f64; 3], max: [f64; 3]) -> bool {
         for plane in &self.planes {
             let n = [plane[0], plane[1], plane[2]];
@@ -56,7 +54,6 @@ impl ViewFrustum {
     }
 }
 /// Result of a ray cast in the all-pairs query.
-#[allow(dead_code)]
 pub struct AllPairsRayResult {
     /// Index into the input shapes array of the hit shape.
     pub shape_index: usize,
@@ -68,7 +65,6 @@ pub struct AllPairsRayResult {
     pub point: [f64; 3],
 }
 /// Result of a sphere cast against the scene.
-#[allow(dead_code)]
 pub struct SphereCastResult {
     /// Index of the first shape hit.
     pub shape_index: usize,
@@ -78,7 +74,6 @@ pub struct SphereCastResult {
     pub normal: [f64; 3],
 }
 /// Result of a continuous time-of-impact (TOI) query between two moving spheres.
-#[allow(dead_code)]
 pub struct ToiResult {
     /// Time of impact in `[0, max_t]`.
     pub toi: f64,
@@ -88,7 +83,6 @@ pub struct ToiResult {
     pub point: [f64; 3],
 }
 /// A shape and its distance from the query point.
-#[allow(dead_code)]
 pub struct NearestShape {
     /// Index of the shape in the input array.
     pub index: usize,
@@ -101,7 +95,7 @@ pub struct NearestShape {
 /// Compound shape composed of transformed child shapes.
 pub struct CompoundQuery {
     /// Child shapes together with their world transforms.
-    pub shapes: Vec<(Box<dyn ShapeQuery>, [[f64; 4]; 4])>,
+    pub shapes: Vec<ShapeEntry>,
 }
 impl CompoundQuery {
     /// Create an empty compound shape.
@@ -150,7 +144,6 @@ impl CompoundQuery {
     }
 }
 /// Descriptor for a shape in the all-pairs query.
-#[allow(dead_code)]
 pub enum QueryShapeRef<'a> {
     /// A sphere.
     Sphere(&'a QuerySphere),
@@ -176,7 +169,6 @@ pub struct QuerySphere {
     pub radius: f64,
 }
 /// Result of a segment-to-segment closest-point query.
-#[allow(dead_code)]
 pub struct SegmentDistResult {
     /// Closest point on segment A.
     pub point_a: [f64; 3],

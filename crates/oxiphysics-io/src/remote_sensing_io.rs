@@ -1,5 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::type_complexity)]
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,8 +6,6 @@
 //! Provides structs and methods for reading, writing, and processing
 //! geospatial raster data (GeoTIFF-style), point clouds (LAS/XYZ),
 //! satellite imagery indices, and digital elevation models.
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // GeoTiffReader
@@ -188,13 +184,13 @@ impl RasterData {
         let new_h = ((self.height as f64) * factor).round() as usize;
         let new_w = ((self.width as f64) * factor).round() as usize;
         let mut out = vec![vec![self.nodata; new_w]; new_h];
-        for r in 0..new_h {
-            for c in 0..new_w {
+        for (r, row) in out.iter_mut().enumerate() {
+            for (c, cell) in row.iter_mut().enumerate() {
                 let src_r = ((r as f64) / factor) as usize;
                 let src_c = ((c as f64) / factor) as usize;
                 let src_r = src_r.min(self.height.saturating_sub(1));
                 let src_c = src_c.min(self.width.saturating_sub(1));
-                out[r][c] = self.data[src_r][src_c];
+                *cell = self.data[src_r][src_c];
             }
         }
         RasterData::new(out, self.nodata)
@@ -229,8 +225,18 @@ impl RasterData {
     /// Compute slope (degrees) using a 3×3 Sobel kernel.
     pub fn slope(&self) -> Vec<Vec<f64>> {
         let mut out = vec![vec![0.0_f64; self.width]; self.height];
-        for r in 1..self.height.saturating_sub(1) {
-            for c in 1..self.width.saturating_sub(1) {
+        for (r, row) in out
+            .iter_mut()
+            .enumerate()
+            .take(self.height.saturating_sub(1))
+            .skip(1)
+        {
+            for (c, cell) in row
+                .iter_mut()
+                .enumerate()
+                .take(self.width.saturating_sub(1))
+                .skip(1)
+            {
                 let dzdx =
                     (self.data[r - 1][c + 1] + 2.0 * self.data[r][c + 1] + self.data[r + 1][c + 1]
                         - self.data[r - 1][c - 1]
@@ -243,7 +249,7 @@ impl RasterData {
                         - 2.0 * self.data[r - 1][c]
                         - self.data[r - 1][c + 1])
                         / 8.0;
-                out[r][c] = (dzdx * dzdx + dzdy * dzdy).sqrt().atan().to_degrees();
+                *cell = (dzdx * dzdx + dzdy * dzdy).sqrt().atan().to_degrees();
             }
         }
         out
@@ -252,8 +258,18 @@ impl RasterData {
     /// Compute aspect (degrees, 0 = North, clockwise) using a 3×3 Sobel kernel.
     pub fn aspect(&self) -> Vec<Vec<f64>> {
         let mut out = vec![vec![0.0_f64; self.width]; self.height];
-        for r in 1..self.height.saturating_sub(1) {
-            for c in 1..self.width.saturating_sub(1) {
+        for (r, row) in out
+            .iter_mut()
+            .enumerate()
+            .take(self.height.saturating_sub(1))
+            .skip(1)
+        {
+            for (c, cell) in row
+                .iter_mut()
+                .enumerate()
+                .take(self.width.saturating_sub(1))
+                .skip(1)
+            {
                 let dzdx =
                     (self.data[r - 1][c + 1] + 2.0 * self.data[r][c + 1] + self.data[r + 1][c + 1]
                         - self.data[r - 1][c - 1]
@@ -267,7 +283,7 @@ impl RasterData {
                         - self.data[r - 1][c + 1])
                         / 8.0;
                 let aspect = (-dzdy).atan2(dzdx).to_degrees();
-                out[r][c] = if aspect < 0.0 { aspect + 360.0 } else { aspect };
+                *cell = if aspect < 0.0 { aspect + 360.0 } else { aspect };
             }
         }
         out
@@ -311,8 +327,8 @@ impl Dem {
             (-1, 1, 128), // NE
         ];
         let mut out = vec![vec![0u8; w]; h];
-        for r in 0..h {
-            for c in 0..w {
+        for (r, row) in out.iter_mut().enumerate() {
+            for (c, cell) in row.iter_mut().enumerate() {
                 let z = self.raster.data[r][c];
                 let mut max_drop = 0.0_f64;
                 let mut best_dir = 1u8;
@@ -334,7 +350,7 @@ impl Dem {
                         best_dir = code;
                     }
                 }
-                out[r][c] = best_dir;
+                *cell = best_dir;
             }
         }
         out
@@ -551,7 +567,9 @@ impl PointCloudIO {
         }
         let bb = Self::bounding_box(points);
         use std::collections::HashMap;
-        let mut voxels: HashMap<(i64, i64, i64), (f64, f64, f64, u64)> = HashMap::new();
+        type VoxelKey = (i64, i64, i64);
+        type VoxelAccum = (f64, f64, f64, u64);
+        let mut voxels: HashMap<VoxelKey, VoxelAccum> = HashMap::new();
         for p in points {
             let ix = ((p[0] - bb[0]) / resolution).floor() as i64;
             let iy = ((p[1] - bb[1]) / resolution).floor() as i64;
@@ -1234,7 +1252,7 @@ mod tests {
         let a = r.aspect();
         for row in &a {
             for &v in row {
-                assert!(v >= 0.0 && v < 360.0 + 1e-9, "aspect out of range: {v}");
+                assert!((0.0..360.0 + 1e-9).contains(&v), "aspect out of range: {v}");
             }
         }
     }
@@ -1245,7 +1263,10 @@ mod tests {
         let hs = r.hillshade(315.0, 45.0);
         for row in &hs {
             for &v in row {
-                assert!(v >= 0.0 && v <= 1.0 + 1e-9, "hillshade out of [0,1]: {v}");
+                assert!(
+                    (0.0..=1.0 + 1e-9).contains(&v),
+                    "hillshade out of [0,1]: {v}"
+                );
             }
         }
     }
@@ -1374,7 +1395,7 @@ mod tests {
         let img = make_image();
         for v in img.ndvi() {
             assert!(
-                v >= -1.0 - 1e-9 && v <= 1.0 + 1e-9,
+                (-1.0 - 1e-9..=1.0 + 1e-9).contains(&v),
                 "NDVI out of range: {v}"
             );
         }
@@ -1399,7 +1420,7 @@ mod tests {
         for px in img.false_color_composite(0, 2, 1) {
             for &ch in &px {
                 assert!(
-                    ch >= 0.0 - 1e-9 && ch <= 1.0 + 1e-9,
+                    (0.0 - 1e-9..=1.0 + 1e-9).contains(&ch),
                     "channel out of [0,1]: {ch}"
                 );
             }

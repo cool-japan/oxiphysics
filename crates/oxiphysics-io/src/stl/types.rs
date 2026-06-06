@@ -2,11 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::manual_strip)]
-#[allow(unused_imports)]
 use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use std::collections::HashMap;
 
 /// A single triangle in an STL mesh, with a normal vector and three vertices.
@@ -139,8 +135,8 @@ impl StlMesh {
             .next()
             .ok_or_else(|| "Empty STL string".to_string())?
             .trim();
-        let name = if first.starts_with("solid") {
-            first[5..].trim().to_string()
+        let name = if let Some(rest) = first.strip_prefix("solid") {
+            rest.trim().to_string()
         } else {
             return Err(format!("Expected 'solid', got: {first}"));
         };
@@ -245,7 +241,6 @@ pub struct StlValidationReport {
     pub degenerate_count: usize,
 }
 /// A simple indexed triangle mesh produced from the STL-to-mesh pipeline.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TriangleMesh {
     /// Unique vertex positions.
@@ -302,7 +297,6 @@ impl StlColor {
     }
 }
 /// Quality metric report for an STL mesh.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StlQualityMetrics {
     /// Aspect ratio of each triangle (longest edge / shortest altitude).
@@ -317,7 +311,6 @@ pub struct StlQualityMetrics {
     pub has_bad_geometry: bool,
 }
 /// Validation result for an STL mesh.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StlValidation {
     /// Number of degenerate (zero-area) triangles.
@@ -349,7 +342,6 @@ impl EdgeKey {
     }
 }
 /// Statistics for an STL mesh.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StlStatistics {
     /// Number of triangles.
@@ -374,7 +366,6 @@ pub struct StlStatistics {
     pub approx_unique_vertices: usize,
 }
 /// Vertex welding result: unique vertices and remapped face indices.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct WeldedMesh {
     /// Unique vertex positions.

@@ -24,9 +24,6 @@
 //! assert!(manager.latest().is_some());
 //! ```
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 
 // ============================================================================

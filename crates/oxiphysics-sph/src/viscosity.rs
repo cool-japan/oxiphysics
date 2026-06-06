@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,8 +15,6 @@
 //! - Continuum Surface Force (CSF) surface tension
 //! - Akinci boundary particle repulsion
 //! - Smoothed velocity gradient and strain rate
-
-#![allow(dead_code)]
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -56,7 +53,6 @@ fn norm3(a: [f64; 3]) -> f64 {
 ///       = 0                              otherwise
 /// ```
 /// where `c̄ = (c_i + c_j) / 2`, `ρ̄ = (ρ_i + ρ_j) / 2`.
-#[allow(clippy::too_many_arguments)]
 pub fn artificial_viscosity(
     alpha: f64,
     beta: f64,
@@ -148,7 +144,6 @@ pub fn morris_viscosity_force(
 /// where `η = 0.01 * h`.
 ///
 /// Returns acceleration (force per unit mass) on particle i.
-#[allow(clippy::too_many_arguments)]
 pub fn cleary_viscosity_force(
     mu_i: f64,
     mu_j: f64,
@@ -611,9 +606,9 @@ fn cubic_spline_dw_dr(r: f64, h: f64) -> f64 {
 pub fn strain_rate_magnitude(grad_v: &[[f64; 3]; 3]) -> f64 {
     // Symmetric strain-rate tensor S = (∇v + ∇v^T) / 2
     let mut sum = 0.0;
-    for a in 0..3 {
-        for b in 0..3 {
-            let s_ab = 0.5 * (grad_v[a][b] + grad_v[b][a]);
+    for (a, row_a) in grad_v.iter().enumerate() {
+        for (b, &gv_ab) in row_a.iter().enumerate() {
+            let s_ab = 0.5 * (gv_ab + grad_v[b][a]);
             sum += s_ab * s_ab;
         }
     }
@@ -684,11 +679,11 @@ mod tests {
     fn test_xsph_same_velocity() {
         let v = [1.0_f64, 2.0, 3.0];
         let corr = xsph_correction(0.5, v, v, 0.001, 1000.0, 0.8);
-        for k in 0..3 {
+        for (k, &ck) in corr.iter().enumerate() {
             assert!(
-                corr[k].abs() < 1e-15,
+                ck.abs() < 1e-15,
                 "Same velocity → zero correction; component {k} = {}",
-                corr[k]
+                ck
             );
         }
     }
@@ -703,11 +698,11 @@ mod tests {
         let csf = SurfaceTensionCSF::new(0.072, 0.05);
         let normal = [0.0_f64, 0.0, 1.0];
         let force = csf.surface_force(0.0, normal);
-        for k in 0..3 {
+        for (k, &fk) in force.iter().enumerate() {
             assert_eq!(
-                force[k], 0.0,
+                fk, 0.0,
                 "Zero curvature → zero force; component {k} = {}",
-                force[k]
+                fk
             );
         }
     }
@@ -755,11 +750,8 @@ mod tests {
             [1.0, 0.0, 0.0],
             0.05,
         );
-        for k in 0..3 {
-            assert!(
-                f[k].abs() < 1e-14,
-                "Cleary force should be zero with mu_i=0"
-            );
+        for &fk in &f {
+            assert!(fk.abs() < 1e-14, "Cleary force should be zero with mu_i=0");
         }
     }
 
@@ -845,12 +837,12 @@ mod tests {
         grad_v[1][0] = 1.0;
         let tau = sps_stress_tensor(0.01, 1000.0, &grad_v, 0.05);
         // The stress tensor should be symmetric since S is symmetric.
-        for a in 0..3 {
-            for b in 0..3 {
+        for (a, row) in tau.iter().enumerate() {
+            for (b, &val) in row.iter().enumerate() {
                 assert!(
-                    (tau[a][b] - tau[b][a]).abs() < 1e-12,
+                    (val - tau[b][a]).abs() < 1e-12,
                     "SPS stress tensor not symmetric: tau[{a}][{b}]={} != tau[{b}][{a}]={}",
-                    tau[a][b],
+                    val,
                     tau[b][a]
                 );
             }
@@ -1168,7 +1160,6 @@ mod tests {
 /// v_sig = c_i + c_j - β_c * min(0, v_ij · r_hat)
 /// ```
 /// Returns zero if particles are separating.
-#[allow(dead_code, clippy::too_many_arguments)]
 pub fn morris_fox_viscosity(
     alpha: f64,
     beta_c: f64,
@@ -1206,7 +1197,6 @@ pub fn morris_fox_viscosity(
 /// ψ_ij = 2(ρ_j - ρ_i) r_hat · ∇W_ij / |r_ij|
 /// ```
 /// Returns the diffusion contribution for particle `i` from one neighbor `j`.
-#[allow(dead_code, clippy::too_many_arguments)]
 pub fn delta_sph_diffusion_contribution(
     delta: f64,
     h: f64,
@@ -1230,7 +1220,6 @@ pub fn delta_sph_diffusion_contribution(
 }
 
 /// Accumulate delta-SPH diffusion contributions for particle `i` from all neighbors.
-#[allow(dead_code, clippy::too_many_arguments)]
 pub fn delta_sph_density_diffusion(
     i: usize,
     positions: &[[f64; 3]],
@@ -1277,7 +1266,6 @@ pub fn delta_sph_density_diffusion(
 /// dU_i/dt|_cond = Σ_j α_c v_sig_u (U_j - U_i) m_j / (ρ_i + ρ_j) |∇W_ij|
 /// ```
 /// Returns the conductivity contribution from neighbor `j`.
-#[allow(dead_code, clippy::too_many_arguments)]
 pub fn artificial_conductivity(
     alpha_c: f64,
     v_sig_u: f64,
@@ -1300,7 +1288,6 @@ pub fn artificial_conductivity(
 /// ```text
 /// v_sig_u = sqrt(|p_i - p_j| / (0.5 * (rho_i + rho_j)))
 /// ```
-#[allow(dead_code)]
 pub fn thermal_signal_velocity(p_i: f64, p_j: f64, rho_i: f64, rho_j: f64) -> f64 {
     let rho_bar = 0.5 * (rho_i + rho_j);
     if rho_bar < EPSILON {
@@ -1321,7 +1308,6 @@ pub fn thermal_signal_velocity(p_i: f64, p_j: f64, rho_i: f64, rho_j: f64) -> f6
 /// f_i = A_i / (A_i + |curl v_i|² + ε * c_i² / h_i²)
 /// ```
 /// Returns the switch value in \[0, 1\].
-#[allow(dead_code)]
 pub fn cullen_dehnen_switch(div_v: f64, curl_v_sq: f64, c: f64, h: f64) -> f64 {
     let a_i = (-div_v).max(0.0);
     let a_sq = a_i * a_i;
@@ -1338,7 +1324,6 @@ pub fn cullen_dehnen_switch(div_v: f64, curl_v_sq: f64, c: f64, h: f64) -> f64 {
 /// where `τ = h / (l * c_s)` is the decay timescale.
 ///
 /// Returns the new α after a time step `dt`.
-#[allow(dead_code, clippy::too_many_arguments)]
 pub fn cullen_dehnen_alpha_update(
     alpha: f64,
     alpha_max: f64,
@@ -1369,7 +1354,6 @@ pub fn cullen_dehnen_alpha_update(
 /// Π_αβ = ρ * ν_t * (∂v_α/∂x_β + ∂v_β/∂x_α - (2/3)δ_αβ div v)
 /// ```
 /// Returns the viscous stress tensor (3×3).
-#[allow(dead_code)]
 pub fn tensor_viscosity_stress(rho: f64, nu_t: f64, grad_v: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let div_v = grad_v[0][0] + grad_v[1][1] + grad_v[2][2];
     let mut tau = [[0.0_f64; 3]; 3];
@@ -1388,7 +1372,6 @@ pub fn tensor_viscosity_stress(rho: f64, nu_t: f64, grad_v: &[[f64; 3]; 3]) -> [
 /// `f_visc_i = (1/ρ_i) * Σ_j m_j * (τ_i/ρ_i² + τ_j/ρ_j²) · ∇W_ij`
 ///
 /// This is the anti-symmetric form preserving linear momentum.
-#[allow(dead_code, clippy::too_many_arguments)]
 pub fn tensor_viscosity_acceleration(
     tau_i: &[[f64; 3]; 3],
     tau_j: &[[f64; 3]; 3],
@@ -1420,7 +1403,6 @@ pub fn tensor_viscosity_acceleration(
 /// Compute the rotation tensor from the velocity gradient.
 ///
 /// `Ω_αβ = (∂v_α/∂x_β - ∂v_β/∂x_α) / 2`
-#[allow(dead_code)]
 pub fn rotation_tensor(grad_v: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut omega = [[0.0_f64; 3]; 3];
     for a in 0..3 {
@@ -1436,14 +1418,13 @@ pub fn rotation_tensor(grad_v: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
 /// `Q = 0.5 * (|Ω|² - |S|²)`
 ///
 /// Positive Q indicates vortex-dominated regions.
-#[allow(dead_code)]
 pub fn q_criterion(grad_v: &[[f64; 3]; 3]) -> f64 {
     let omega = rotation_tensor(grad_v);
     let s_mag_sq = {
         let mut s = 0.0;
-        for a in 0..3 {
-            for b in 0..3 {
-                let s_ab = 0.5 * (grad_v[a][b] + grad_v[b][a]);
+        for (a, row_a) in grad_v.iter().enumerate() {
+            for (b, &gv_ab) in row_a.iter().enumerate() {
+                let s_ab = 0.5 * (gv_ab + grad_v[b][a]);
                 s += s_ab * s_ab;
             }
         }
@@ -1451,9 +1432,9 @@ pub fn q_criterion(grad_v: &[[f64; 3]; 3]) -> f64 {
     };
     let omega_mag_sq = {
         let mut o = 0.0;
-        for a in 0..3 {
-            for b in 0..3 {
-                o += omega[a][b] * omega[a][b];
+        for row in &omega {
+            for &v in row.iter() {
+                o += v * v;
             }
         }
         o
@@ -1464,12 +1445,11 @@ pub fn q_criterion(grad_v: &[[f64; 3]; 3]) -> f64 {
 /// Compute the second invariant of the strain-rate tensor.
 ///
 /// `II_S = S_αβ S_αβ = |S|²_F / 2`  (Frobenius norm squared / 2)
-#[allow(dead_code)]
 pub fn strain_rate_second_invariant(grad_v: &[[f64; 3]; 3]) -> f64 {
     let mut sum = 0.0;
-    for a in 0..3 {
-        for b in 0..3 {
-            let s_ab = 0.5 * (grad_v[a][b] + grad_v[b][a]);
+    for (a, row_a) in grad_v.iter().enumerate() {
+        for (b, &gv_ab) in row_a.iter().enumerate() {
+            let s_ab = 0.5 * (gv_ab + grad_v[b][a]);
             sum += s_ab * s_ab;
         }
     }
@@ -1702,12 +1682,12 @@ mod tests_extended {
         grad_v[0][1] = 2.0;
         grad_v[1][0] = 1.5;
         let tau = tensor_viscosity_stress(1000.0, 0.01, &grad_v);
-        for a in 0..3 {
-            for b in 0..3 {
+        for (a, row) in tau.iter().enumerate() {
+            for (b, &val) in row.iter().enumerate() {
                 assert!(
-                    (tau[a][b] - tau[b][a]).abs() < 1e-12,
+                    (val - tau[b][a]).abs() < 1e-12,
                     "Tensor viscosity stress should be symmetric: tau[{a}][{b}]={} != tau[{b}][{a}]={}",
-                    tau[a][b],
+                    val,
                     tau[b][a]
                 );
             }
@@ -1723,12 +1703,12 @@ mod tests_extended {
         grad_v[1][0] = 1.0; // dvy/dx = omega
         let tau = tensor_viscosity_stress(1000.0, 0.01, &grad_v);
         // S_xy = 0.5*(grad_v[0][1] + grad_v[1][0]) = 0 → tau = 0
-        for a in 0..3 {
-            for b in 0..3 {
+        for (a, row) in tau.iter().enumerate() {
+            for (b, &val) in row.iter().enumerate() {
                 assert!(
-                    tau[a][b].abs() < 1e-12,
+                    val.abs() < 1e-12,
                     "Rigid body rotation → zero tensor viscosity: tau[{a}][{b}]={}",
-                    tau[a][b]
+                    val
                 );
             }
         }
@@ -1759,12 +1739,12 @@ mod tests_extended {
         grad_v[0][1] = 2.0;
         grad_v[1][0] = 1.0;
         let omega = rotation_tensor(&grad_v);
-        for a in 0..3 {
-            for b in 0..3 {
+        for (a, row) in omega.iter().enumerate() {
+            for (b, &val) in row.iter().enumerate() {
                 assert!(
-                    (omega[a][b] + omega[b][a]).abs() < 1e-12,
+                    (val + omega[b][a]).abs() < 1e-12,
                     "Rotation tensor should be antisymmetric: omega[{a}][{b}]={} != -omega[{b}][{a}]={}",
-                    omega[a][b],
+                    val,
                     -omega[b][a]
                 );
             }
@@ -1775,9 +1755,9 @@ mod tests_extended {
     fn test_rotation_tensor_diagonal_zero() {
         let grad_v = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
         let omega = rotation_tensor(&grad_v);
-        for i in 0..3 {
+        for (i, row) in omega.iter().enumerate() {
             assert!(
-                omega[i][i].abs() < 1e-12,
+                row[i].abs() < 1e-12,
                 "Diagonal of antisymmetric tensor should be 0"
             );
         }

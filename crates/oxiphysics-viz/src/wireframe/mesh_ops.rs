@@ -9,7 +9,6 @@ use super::primitives::{WireframeLine, WireframeMesh, WireframeVertex};
 
 /// A directed or undirected edge between two vertex indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub struct MeshEdge {
     /// Lower vertex index (canonical form: a <= b).
     pub a: usize,
@@ -17,7 +16,6 @@ pub struct MeshEdge {
     pub b: usize,
 }
 
-#[allow(dead_code)]
 impl MeshEdge {
     /// Construct a canonical (sorted) edge.
     pub fn new(i: usize, j: usize) -> Self {
@@ -34,7 +32,6 @@ impl MeshEdge {
 /// `positions`: flat list of \[x, y, z\] vertex positions.
 /// `indices`: groups of 3 (triangle indices).
 /// Returns deduplicated edges.
-#[allow(dead_code)]
 pub fn extract_mesh_edges(positions: &[[f64; 3]], indices: &[usize]) -> Vec<MeshEdge> {
     use std::collections::HashSet;
     let mut set: HashSet<MeshEdge> = HashSet::new();
@@ -54,7 +51,6 @@ pub fn extract_mesh_edges(positions: &[[f64; 3]], indices: &[usize]) -> Vec<Mesh
 }
 
 /// Convert extracted `MeshEdge` list to a `WireframeMesh`, picking vertex colors from `color`.
-#[allow(dead_code)]
 pub fn edges_to_wireframe(
     positions: &[[f64; 3]],
     edges: &[MeshEdge],
@@ -77,7 +73,6 @@ pub fn edges_to_wireframe(
 // ─── Triangle Normal ─────────────────────────────────────────────────────────
 
 /// Compute the face normal for a triangle defined by three positions.
-#[allow(dead_code)]
 pub fn triangle_normal(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f64; 3] {
     let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
@@ -98,7 +93,6 @@ pub fn triangle_normal(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f64; 3] {
 
 /// Build a map from each undirected edge to the (up to 2) triangles that share it.
 /// Returns a `Vec` of `(MeshEdge, [triangle_index_a, Option<triangle_index_b>])`.
-#[allow(dead_code)]
 pub fn build_edge_triangle_adjacency(
     positions: &[[f64; 3]],
     indices: &[usize],
@@ -136,7 +130,6 @@ pub fn build_edge_triangle_adjacency(
 /// the other faces away (i.e. the dot product of each triangle's normal with the
 /// view direction has opposite signs). Boundary edges (only one adjacent triangle)
 /// are also included.
-#[allow(dead_code)]
 pub fn detect_silhouette_edges(
     positions: &[[f64; 3]],
     indices: &[usize],
@@ -203,7 +196,6 @@ pub fn detect_silhouette_edges(
 ///
 /// An edge is a "feature edge" if the dihedral angle between its two adjacent
 /// triangles exceeds `threshold_degrees`. Boundary edges are always included.
-#[allow(dead_code)]
 pub fn detect_feature_edges(
     positions: &[[f64; 3]],
     indices: &[usize],
@@ -246,7 +238,6 @@ pub fn detect_feature_edges(
 
 /// Dihedral angle (in degrees) between two adjacent triangles sharing an edge.
 /// Returns 0.0 if either normal is degenerate or there is no second triangle.
-#[allow(dead_code)]
 pub fn dihedral_angle_deg(positions: &[[f64; 3]], indices: &[usize], edge: &MeshEdge) -> f64 {
     let adjacency = build_edge_triangle_adjacency(positions, indices);
     let num_tris = indices.len() / 3;
@@ -277,7 +268,6 @@ pub fn dihedral_angle_deg(positions: &[[f64; 3]], indices: &[usize], edge: &Mesh
 /// Both endpoints include position and color packed as `[f32; 3]` each
 /// (cast from `f64`) for typical vertex-buffer usage.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct WireSegmentGpu {
     /// Start position as f32.
     pub start: [f32; 3],
@@ -289,7 +279,6 @@ pub struct WireSegmentGpu {
     pub half_width: f32,
 }
 
-#[allow(dead_code)]
 impl WireSegmentGpu {
     /// Construct from f64 positions, f64 color (RGB), width in pixels.
     pub fn new(start: [f64; 3], end: [f64; 3], color: [f64; 3], width_px: f64) -> Self {
@@ -321,7 +310,6 @@ impl WireSegmentGpu {
 
 /// A batch of GPU wireframe segments with optional metadata.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WireframeBatch {
     /// The line segments.
     pub segments: Vec<WireSegmentGpu>,
@@ -329,7 +317,6 @@ pub struct WireframeBatch {
     pub label: String,
 }
 
-#[allow(dead_code)]
 impl WireframeBatch {
     /// Create a new empty batch with a label.
     pub fn new(label: impl Into<String>) -> Self {
@@ -383,7 +370,6 @@ impl WireframeBatch {
 
 /// Parameters for anti-aliased wireframe rendering using a screen-space approach.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct AaWireframeParams {
     /// Line width in pixels.
     pub line_width_px: f64,
@@ -397,7 +383,6 @@ pub struct AaWireframeParams {
     pub depth_test: bool,
 }
 
-#[allow(dead_code)]
 impl AaWireframeParams {
     /// Default parameters: 1.5 px wide, 0.5 px falloff, white, opaque, depth-tested.
     pub fn default_params() -> Self {
@@ -451,7 +436,6 @@ impl AaWireframeParams {
 }
 
 /// Generate anti-aliased GPU segments from a `WireframeMesh` with given AA parameters.
-#[allow(dead_code)]
 pub fn build_aa_wireframe_batch(
     mesh: &WireframeMesh,
     params: &AaWireframeParams,
@@ -474,7 +458,6 @@ pub fn build_aa_wireframe_batch(
 }
 
 /// Generate anti-aliased GPU segments from extracted feature edges.
-#[allow(dead_code)]
 pub fn build_aa_feature_edge_batch(
     positions: &[[f64; 3]],
     edges: &[MeshEdge],
@@ -494,7 +477,6 @@ pub fn build_aa_feature_edge_batch(
 
 /// Compute a depth-fade factor for a point given camera position, near/far planes.
 /// Returns 1.0 at near plane, 0.0 at far plane.
-#[allow(dead_code)]
 pub fn depth_fade(point: [f64; 3], camera_pos: [f64; 3], near: f64, far: f64) -> f64 {
     let dist = {
         let dx = point[0] - camera_pos[0];
@@ -507,7 +489,6 @@ pub fn depth_fade(point: [f64; 3], camera_pos: [f64; 3], near: f64, far: f64) ->
 }
 
 /// Apply depth-fade to a `WireframeBatch`, modulating the alpha channel.
-#[allow(dead_code)]
 pub fn apply_depth_fade_to_batch(
     batch: &WireframeBatch,
     camera_pos: [f64; 3],

@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/cool-japan/oxiphysics"
@@ -18,18 +18,18 @@ nalgebra = "0.34"
 serde_json = "1"
 serde-wasm-bindgen = "0.6.5"
 criterion = { version = "0.8", features = ["html_reports"] }
-js-sys = "0.3.97"
+js-sys = "0.3.98"
 proptest = "1"
 numpy = "0.28.0"
 pyo3 = "0.28"
 wasm-bindgen = "0.2"
-wasm-bindgen-test = "0.3.70"
-web-sys = { version = "0.3.97", features = ["console", "Window", "Performance"] }
+wasm-bindgen-test = "0.3.71"
+web-sys = { version = "0.3.98", features = ["console", "Window", "Performance"] }
 rayon = "1"
 wgpu = "29"
 bitvec = "1"
-oxiarc-zstd = "0.2"
-oxifft = "0.3.1"
+oxiarc-zstd = "0.3.2"
+oxifft = "0.3.2"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 console_error_panic_hook = "0.1.7"
@@ -37,25 +37,25 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 cudarc = { version = "0.19", default-features = false, features = ["driver", "nvrtc", "dynamic-loading", "cuda-12080"] }
 
 ndarray = { version = "0.17.2", default-features = false, features = ["std"] }
-scirs2-integrate = { version = "0.4.4" }
+scirs2-integrate = { version = "0.5.0" }
 
 # Workspace-internal dependencies
-oxiphysics-articulated = { path = "crates/oxiphysics-articulated", version = "0.1.1" }
-oxiphysics-core = { path = "crates/oxiphysics-core", version = "0.1.1" }
-oxiphysics-geometry = { path = "crates/oxiphysics-geometry", version = "0.1.1" }
-oxiphysics-collision = { path = "crates/oxiphysics-collision", version = "0.1.1" }
-oxiphysics-rigid = { path = "crates/oxiphysics-rigid", version = "0.1.1" }
-oxiphysics-constraints = { path = "crates/oxiphysics-constraints", version = "0.1.1" }
-oxiphysics-vehicle = { path = "crates/oxiphysics-vehicle", version = "0.1.1" }
-oxiphysics-sph = { path = "crates/oxiphysics-sph", version = "0.1.1" }
-oxiphysics-lbm = { path = "crates/oxiphysics-lbm", version = "0.1.1" }
-oxiphysics-fem = { path = "crates/oxiphysics-fem", version = "0.1.1" }
-oxiphysics-md = { path = "crates/oxiphysics-md", version = "0.1.1" }
-oxiphysics-softbody = { path = "crates/oxiphysics-softbody", version = "0.1.1" }
-oxiphysics-materials = { path = "crates/oxiphysics-materials", version = "0.1.1" }
-oxiphysics-gpu = { path = "crates/oxiphysics-gpu", version = "0.1.1" }
-oxiphysics-viz = { path = "crates/oxiphysics-viz", version = "0.1.1" }
-oxiphysics-io = { path = "crates/oxiphysics-io", version = "0.1.1" }
-oxiphysics = { path = "crates/oxiphysics", version = "0.1.1" }
-oxiphysics-python = { path = "crates/oxiphysics-python", version = "0.1.1" }
-oxiphysics-wasm = { path = "crates/oxiphysics-wasm", version = "0.1.1" }
+oxiphysics-articulated = { path = "crates/oxiphysics-articulated", version = "0.1.2" }
+oxiphysics-core = { path = "crates/oxiphysics-core", version = "0.1.2" }
+oxiphysics-geometry = { path = "crates/oxiphysics-geometry", version = "0.1.2" }
+oxiphysics-collision = { path = "crates/oxiphysics-collision", version = "0.1.2" }
+oxiphysics-rigid = { path = "crates/oxiphysics-rigid", version = "0.1.2" }
+oxiphysics-constraints = { path = "crates/oxiphysics-constraints", version = "0.1.2" }
+oxiphysics-vehicle = { path = "crates/oxiphysics-vehicle", version = "0.1.2" }
+oxiphysics-sph = { path = "crates/oxiphysics-sph", version = "0.1.2" }
+oxiphysics-lbm = { path = "crates/oxiphysics-lbm", version = "0.1.2" }
+oxiphysics-fem = { path = "crates/oxiphysics-fem", version = "0.1.2" }
+oxiphysics-md = { path = "crates/oxiphysics-md", version = "0.1.2" }
+oxiphysics-softbody = { path = "crates/oxiphysics-softbody", version = "0.1.2" }
+oxiphysics-materials = { path = "crates/oxiphysics-materials", version = "0.1.2" }
+oxiphysics-gpu = { path = "crates/oxiphysics-gpu", version = "0.1.2" }
+oxiphysics-viz = { path = "crates/oxiphysics-viz", version = "0.1.2" }
+oxiphysics-io = { path = "crates/oxiphysics-io", version = "0.1.2" }
+oxiphysics = { path = "crates/oxiphysics", version = "0.1.2" }
+oxiphysics-python = { path = "crates/oxiphysics-python", version = "0.1.2" }
+oxiphysics-wasm = { path = "crates/oxiphysics-wasm", version = "0.1.2" }

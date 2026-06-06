@@ -2,10 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
 use crate::Material;
 
 /// Extended material with full elastic constants.
@@ -30,7 +26,6 @@ pub struct ExtendedMaterial {
 }
 impl ExtendedMaterial {
     /// Create an extended material.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         base: Material,
         young_modulus: f64,

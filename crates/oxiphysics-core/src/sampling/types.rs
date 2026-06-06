@@ -2,20 +2,16 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::type_complexity)]
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::functions_2::*;
+/// Type alias for a conditional mean function used in Gibbs sampling.
+pub type ConditionalMeanFn = Box<dyn Fn(usize, &[f64]) -> f64>;
+
 /// Hammersley low-discrepancy sequence in `d` dimensions.
 ///
 /// The first dimension is `i/n` (uniform grid); subsequent dimensions use
 /// the van der Corput sequence with the first `d-1` prime bases.
 ///
 /// Returns `n` points in `[0,1)^d`.
-#[allow(dead_code)]
 pub struct HammersleySequence;
-#[allow(dead_code)]
 impl HammersleySequence {
     /// Generate `n` Hammersley points in `d` dimensions.
     pub fn sample(n: usize, d: usize) -> Vec<Vec<f64>> {
@@ -25,8 +21,8 @@ impl HammersleySequence {
             .map(|i| {
                 let mut pt = Vec::with_capacity(d);
                 pt.push(i as f64 / n as f64);
-                for k in 0..n_bases {
-                    pt.push(HaltonSequence::van_der_corput(i as u32 + 1, PRIMES[k]));
+                for &p in PRIMES[..n_bases].iter() {
+                    pt.push(HaltonSequence::van_der_corput(i as u32 + 1, p));
                 }
                 while pt.len() < d {
                     pt.push(0.0);
@@ -188,12 +184,10 @@ impl Sobol {
 /// Multi-dimensional Sobol quasi-random sequence (dims 1-3).
 ///
 /// Uses standard direction numbers for dimensions 1, 2, and 3.
-#[allow(dead_code)]
 pub struct SobolSequence {
     /// Number of dimensions (1..=3).
     pub n_dims: usize,
 }
-#[allow(dead_code)]
 impl SobolSequence {
     const BITS: usize = 32;
     /// Create a new Sobol sequence generator for `n_dims` dimensions (max 3).
@@ -235,10 +229,10 @@ impl SobolSequence {
         for idx in 0..n {
             let gray = idx ^ (idx >> 1);
             let mut point = Vec::with_capacity(self.n_dims);
-            for d in 0..self.n_dims {
+            for dir_d in dir.iter() {
                 let x = (0..Self::BITS)
                     .filter(|&i| (gray >> i) & 1 == 1)
-                    .fold(0u32, |acc, i| acc ^ dir[d][i]);
+                    .fold(0u32, |acc, i| acc ^ dir_d[i]);
                 point.push(x as f64 / (1u64 << Self::BITS) as f64);
             }
             result.push(point);
@@ -250,14 +244,12 @@ impl SobolSequence {
 ///
 /// Divides each dimension into `n_samples` equally-probable intervals and
 /// places exactly one sample in each interval per dimension.
-#[allow(dead_code)]
 pub struct LatinHypercube {
     /// Number of samples to generate.
     pub n_samples: usize,
     /// Number of dimensions.
     pub n_dims: usize,
 }
-#[allow(dead_code)]
 impl LatinHypercube {
     /// Create a new Latin Hypercube sampler.
     pub fn new(n_samples: usize, n_dims: usize) -> Self {
@@ -287,12 +279,10 @@ impl LatinHypercube {
 ///
 /// Divides the unit square `[0,1)^2` into `n_strata_per_dim^2` equal cells and
 /// places one jittered sample in each cell.
-#[allow(dead_code)]
 pub struct StratifiedSampler {
     /// Number of strata per dimension.
     pub n_strata_per_dim: usize,
 }
-#[allow(dead_code)]
 impl StratifiedSampler {
     /// Create a new stratified sampler.
     pub fn new(n_strata_per_dim: usize) -> Self {
@@ -317,14 +307,12 @@ impl StratifiedSampler {
 ///
 /// Draws samples from a target PDF using a uniform proposal on `[0, 1)` and
 /// rejection sampling.
-#[allow(dead_code)]
 pub struct ImportanceSampler {
     /// Target PDF (un-normalised is fine as long as `pdf(x) ≤ envelope`).
     pub pdf_fn: fn(f64) -> f64,
     /// Upper bound on `pdf_fn(x)` for `x ∈ [0, 1)`.
     pub envelope: f64,
 }
-#[allow(dead_code)]
 impl ImportanceSampler {
     /// Create a new importance sampler.
     pub fn new(pdf_fn: fn(f64) -> f64, envelope: f64) -> Self {
@@ -371,7 +359,7 @@ impl GibbsSampler {
     pub fn sample(
         &mut self,
         n: usize,
-        conditional_means: &[Box<dyn Fn(usize, &[f64]) -> f64>],
+        conditional_means: &[ConditionalMeanFn],
         conditional_stds: &[f64],
     ) -> Vec<Vec<f64>> {
         let mut samples = Vec::with_capacity(n);
@@ -392,14 +380,12 @@ impl GibbsSampler {
 /// `data`, using bandwidth `h`.  Uses the Gaussian kernel:
 ///
 /// `k(x, xi, h) = 1/(h * √(2π)) * exp(-0.5 * ((x - xi)/h)²)`.
-#[allow(dead_code)]
 pub struct GaussianKde {
     /// Training data.
     pub data: Vec<f64>,
     /// Bandwidth (smoothing parameter).
     pub bandwidth: f64,
 }
-#[allow(dead_code)]
 impl GaussianKde {
     /// Create a new Gaussian KDE, optionally with Silverman's rule of thumb
     /// if `bandwidth` is 0 or negative.
@@ -442,9 +428,7 @@ impl GaussianKde {
     }
 }
 /// Halton (van der Corput) quasi-random sequence.
-#[allow(dead_code)]
 pub struct HaltonSequence;
-#[allow(dead_code)]
 impl HaltonSequence {
     /// Generate `n` points of the van der Corput sequence in the given `base`.
     ///

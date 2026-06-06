@@ -8,24 +8,21 @@ use super::functions::*;
 ///
 /// Implements the localization condition (bifurcation) for a damage
 /// model: checks whether the acoustic tensor becomes singular.
-#[allow(non_snake_case)]
 #[derive(Debug, Clone)]
 pub struct DamageBandLocalization {
     /// Current damage variable D.
-    pub D: f64,
+    pub d: f64,
     /// Softening modulus H_soft (negative for softening).
-    pub H_soft: f64,
+    pub h_soft: f64,
     /// Young's modulus E.
-    pub E: f64,
+    pub e: f64,
     /// Poisson's ratio ν.
     pub nu: f64,
 }
 impl DamageBandLocalization {
     /// Create a new localization band analysis object.
-    #[allow(dead_code)]
-    #[allow(non_snake_case)]
-    pub fn new(D: f64, H_soft: f64, E: f64, nu: f64) -> Self {
-        Self { D, H_soft, E, nu }
+    pub fn new(d: f64, h_soft: f64, e: f64, nu: f64) -> Self {
+        Self { d, h_soft, e, nu }
     }
     /// Localization condition for uniaxial stress.
     ///
@@ -34,28 +31,25 @@ impl DamageBandLocalization {
     ///
     /// Tangent E_t = (1−D)·E + dD/dε · (−E·ε)
     ///            ≈ (1−D)·E − H_soft
-    #[allow(dead_code)]
     pub fn localization_condition(&self) -> bool {
-        let e_t = (1.0 - self.D) * self.E - self.H_soft.abs();
+        let e_t = (1.0 - self.d) * self.e - self.h_soft.abs();
         e_t <= 0.0
     }
     /// Width of a process zone in a rate-dependent (viscous) regularization.
     ///
     /// w_pz = l_c · π / 2 where l_c = √(E · l²_visc / |H|).
-    #[allow(dead_code)]
     pub fn process_zone_width(&self, l_visc_sq: f64) -> f64 {
         use std::f64::consts::PI;
-        let h_abs = self.H_soft.abs().max(1e-30);
-        let lc = ((1.0 - self.D) * self.E * l_visc_sq / h_abs).sqrt();
+        let h_abs = self.h_soft.abs().max(1e-30);
+        let lc = ((1.0 - self.d) * self.e * l_visc_sq / h_abs).sqrt();
         lc * PI / 2.0
     }
     /// Critical wave vector for localization:
     ///
     /// k_c = √(−H̃ / (2G))  where H̃ = effective tangent modulus.
-    #[allow(dead_code)]
     pub fn critical_wave_vector(&self) -> Option<f64> {
-        let g = self.E / (2.0 * (1.0 + self.nu));
-        let h_eff = (1.0 - self.D) * self.E - self.H_soft.abs();
+        let g = self.e / (2.0 * (1.0 + self.nu));
+        let h_eff = (1.0 - self.d) * self.e - self.h_soft.abs();
         if h_eff >= 0.0 {
             return None;
         }
@@ -126,7 +120,6 @@ impl DamageVisualization {
 /// ```
 ///
 /// where A, B, n, m, r, k are material constants.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DamageCreepCoupling {
     /// Creep rate coefficient A (1/Pa^n/s).
@@ -144,7 +137,6 @@ pub struct DamageCreepCoupling {
 }
 impl DamageCreepCoupling {
     /// Create a new creep-damage model with Kachanov-Rabotnov parameters.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         a_creep: f64,
         n_creep: f64,
@@ -217,13 +209,11 @@ impl GursonModel {
     /// * `sigma_eq` – von-Mises equivalent stress
     /// * `sigma_h`  – hydrostatic (mean) stress
     /// * `sigma_0`  – current yield stress of the matrix
-    #[allow(dead_code)]
     pub fn yield_function(sigma_eq: f64, sigma_h: f64, sigma_0: f64) -> f64 {
         let _ = (sigma_eq, sigma_h, sigma_0);
         0.0
     }
     /// Gurson yield function using this model's parameters.
-    #[allow(dead_code)]
     pub fn phi(&self, sigma_eq: f64, sigma_h: f64, sigma_0: f64) -> f64 {
         if sigma_0.abs() < 1e-30 {
             return f64::NAN;
@@ -235,7 +225,6 @@ impl GursonModel {
     /// Void growth rate: df/dε_p^vol = (1 - f) * ε_p_vol
     ///
     /// * `eps_p_vol` – volumetric plastic strain rate
-    #[allow(dead_code)]
     pub fn void_growth_rate(&self, eps_p_vol: f64) -> f64 {
         (1.0 - self.f) * eps_p_vol
     }
@@ -299,11 +288,10 @@ impl FailureMode {
 ///
 /// Cracks are modeled as penny-shaped inclusions with zero stiffness,
 /// and their effect on the effective moduli is captured via crack density.
-#[allow(non_snake_case)]
 #[derive(Debug, Clone)]
 pub struct DamageHomogenization {
     /// Matrix Young's modulus E_m.
-    pub E_m: f64,
+    pub e_m: f64,
     /// Matrix Poisson's ratio ν_m.
     pub nu_m: f64,
     /// Crack density parameter ρ = N a³ / V (penny-shaped cracks).
@@ -311,11 +299,9 @@ pub struct DamageHomogenization {
 }
 impl DamageHomogenization {
     /// Create a new damage homogenization model.
-    #[allow(dead_code)]
-    #[allow(non_snake_case)]
-    pub fn new(E_m: f64, nu_m: f64, crack_density: f64) -> Self {
+    pub fn new(e_m: f64, nu_m: f64, crack_density: f64) -> Self {
         Self {
-            E_m,
+            e_m,
             nu_m,
             crack_density,
         }
@@ -323,24 +309,21 @@ impl DamageHomogenization {
     /// Effective Young's modulus via Budiansky-O'Connell penny-crack formula:
     ///
     /// E_eff/E_m = 1 − ρ · 16(1−ν²) / (9(1−ν/2))
-    #[allow(dead_code)]
     pub fn effective_youngs_modulus(&self) -> f64 {
         let nu = self.nu_m;
         let factor = 16.0 * (1.0 - nu * nu) / (9.0 * (1.0 - nu / 2.0));
-        self.E_m * (1.0 - self.crack_density * factor).max(0.0)
+        self.e_m * (1.0 - self.crack_density * factor).max(0.0)
     }
     /// Effective shear modulus via Budiansky-O'Connell:
     ///
     /// G_eff/G_m = 1 − ρ · 32(1−ν)(5−ν) / (45(2−ν))
-    #[allow(dead_code)]
     pub fn effective_shear_modulus(&self) -> f64 {
         let nu = self.nu_m;
-        let g_m = self.E_m / (2.0 * (1.0 + nu));
+        let g_m = self.e_m / (2.0 * (1.0 + nu));
         let factor = 32.0 * (1.0 - nu) * (5.0 - nu) / (45.0 * (2.0 - nu));
         g_m * (1.0 - self.crack_density * factor).max(0.0)
     }
     /// Effective bulk modulus from effective E and G.
-    #[allow(dead_code)]
     pub fn effective_bulk_modulus(&self) -> f64 {
         let e_eff = self.effective_youngs_modulus();
         let g_eff = self.effective_shear_modulus();
@@ -352,21 +335,19 @@ impl DamageHomogenization {
     /// Convert crack density to a scalar damage variable:
     ///
     /// D = 1 − E_eff / E_m
-    #[allow(dead_code)]
     pub fn damage_from_crack_density(&self) -> f64 {
-        1.0 - self.effective_youngs_modulus() / self.E_m.max(1e-30)
+        1.0 - self.effective_youngs_modulus() / self.e_m.max(1e-30)
     }
 }
 /// Lemaitre damage model (simplified scalar version).
 ///
 /// Damage evolution: dD/dε_p = (σ_eq / S)^s0 * (σ_h / σ_eq)^s0
-#[allow(non_snake_case)]
 #[derive(Debug, Clone)]
 pub struct LemaitreCDM {
     /// Current damage variable D ∈ \[0, 1\].
-    pub D: f64,
+    pub d: f64,
     /// Damage energy release rate denominator S.
-    pub S: f64,
+    pub s: f64,
     /// Damage exponent s0.
     pub s0: f64,
 }
@@ -376,14 +357,13 @@ impl LemaitreCDM {
     /// * `eps_p`    – equivalent plastic strain increment
     /// * `sigma_eq` – von-Mises equivalent stress
     /// * `sigma_h`  – hydrostatic (mean) stress
-    #[allow(dead_code)]
     pub fn evolution_rate(&self, eps_p: f64, sigma_eq: f64, sigma_h: f64) -> f64 {
-        if self.S.abs() < 1e-30 || sigma_eq.abs() < 1e-30 {
+        if self.s.abs() < 1e-30 || sigma_eq.abs() < 1e-30 {
             return 0.0;
         }
         let triax = sigma_h / sigma_eq;
-        let y = sigma_eq * sigma_eq / (2.0 * self.S) * (2.0 / 3.0 + 3.0 * triax * triax);
-        (y / self.S).powf(self.s0) * eps_p
+        let y = sigma_eq * sigma_eq / (2.0 * self.s) * (2.0 / 3.0 + 3.0 * triax * triax);
+        (y / self.s).powf(self.s0) * eps_p
     }
 }
 /// Finite element that tracks damage at every Gauss point using the
@@ -523,6 +503,36 @@ impl DamageMechanicsElement {
             .collect()
     }
 }
+/// Parameter bundle for [`CoupledDamagePlasticity::new`].
+///
+/// Groups the 11 material constants so the constructor stays within the
+/// argument-count limit.
+#[derive(Debug, Clone, Copy)]
+pub struct CoupledDamagePlasticityParams {
+    /// Young's modulus E \[Pa\]
+    pub e: f64,
+    /// Poisson's ratio ν
+    pub nu: f64,
+    /// Initial yield stress σ_y0 \[Pa\]
+    pub sigma_y0: f64,
+    /// Isotropic hardening modulus H \[Pa\]
+    pub h: f64,
+    /// Isotropic hardening saturation stress Q \[Pa\]
+    pub q: f64,
+    /// Isotropic hardening rate b
+    pub b_hard: f64,
+    /// Kinematic hardening stiffness C \[Pa\]
+    pub c_kin: f64,
+    /// Kinematic hardening recall γ
+    pub gamma_kin: f64,
+    /// Damage energy denominator S \[Pa\]
+    pub s_dmg: f64,
+    /// Damage exponent s
+    pub s_dmg_exp: f64,
+    /// Critical damage D_c
+    pub d_c: f64,
+}
+
 /// Coupled isotropic damage-plasticity model (Lemaitre-Chaboche framework).
 ///
 /// Combines isotropic hardening plasticity with scalar damage using
@@ -531,77 +541,60 @@ impl DamageMechanicsElement {
 /// # Reference
 /// Lemaitre, J. & Chaboche, J.-L. (1990). *Mechanics of Solid Materials*.
 /// Cambridge University Press.
-#[allow(non_snake_case)]
 #[derive(Debug, Clone)]
 pub struct CoupledDamagePlasticity {
     /// Young's modulus E.
-    pub E: f64,
+    pub e: f64,
     /// Poisson's ratio ν.
     pub nu: f64,
     /// Initial yield stress σ_y0.
     pub sigma_y0: f64,
     /// Isotropic hardening modulus H.
-    pub H: f64,
+    pub h: f64,
     /// Isotropic hardening saturation stress Q.
-    pub Q: f64,
+    pub q: f64,
     /// Isotropic hardening rate b.
     pub b_hard: f64,
     /// Kinematic hardening stiffness C.
-    pub C_kin: f64,
+    pub c_kin: f64,
     /// Kinematic hardening recall γ.
     pub gamma_kin: f64,
     /// Damage energy denominator S.
-    pub S_dmg: f64,
-    /// Damage exponent s.
     pub s_dmg: f64,
+    /// Damage exponent s.
+    pub s_dmg_exp: f64,
     /// Critical damage D_c.
-    pub D_c: f64,
+    pub d_c: f64,
 }
 impl CoupledDamagePlasticity {
-    /// Create a new coupled damage-plasticity model.
-    #[allow(dead_code)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(non_snake_case)]
-    pub fn new(
-        E: f64,
-        nu: f64,
-        sigma_y0: f64,
-        H: f64,
-        Q: f64,
-        b_hard: f64,
-        C_kin: f64,
-        gamma_kin: f64,
-        S_dmg: f64,
-        s_dmg: f64,
-        D_c: f64,
-    ) -> Self {
+    /// Create a new coupled damage-plasticity model from a
+    /// [`CoupledDamagePlasticityParams`] bundle.
+    pub fn new(p: CoupledDamagePlasticityParams) -> Self {
         Self {
-            E,
-            nu,
-            sigma_y0,
-            H,
-            Q,
-            b_hard,
-            C_kin,
-            gamma_kin,
-            S_dmg,
-            s_dmg,
-            D_c,
+            e: p.e,
+            nu: p.nu,
+            sigma_y0: p.sigma_y0,
+            h: p.h,
+            q: p.q,
+            b_hard: p.b_hard,
+            c_kin: p.c_kin,
+            gamma_kin: p.gamma_kin,
+            s_dmg: p.s_dmg,
+            s_dmg_exp: p.s_dmg_exp,
+            d_c: p.d_c,
         }
     }
     /// Current yield stress including isotropic hardening.
     ///
     /// σ_y(R) = σ_y0 + H·p̄ + Q·(1 − e^{−b·p̄})
-    #[allow(dead_code)]
     pub fn yield_stress(&self, p_bar: f64) -> f64 {
-        self.sigma_y0 + self.H * p_bar + self.Q * (1.0 - (-self.b_hard * p_bar).exp())
+        self.sigma_y0 + self.h * p_bar + self.q * (1.0 - (-self.b_hard * p_bar).exp())
     }
     /// Von-Mises yield function in effective stress space.
     ///
     /// f = σ̃_eq − σ_y(p̄) ≤ 0 for elastic state.
     ///
     /// `overstress` – overstress relative to von-Mises surface.
-    #[allow(dead_code)]
     pub fn yield_function(&self, sigma_eff: &[f64; 6], back_stress: &[f64; 6], p_bar: f64) -> f64 {
         let shifted: [f64; 6] = {
             let mut s = [0.0; 6];
@@ -616,13 +609,12 @@ impl CoupledDamagePlasticity {
     ///
     /// Given trial stress `sigma_trial` and current state, returns
     /// (updated_state, converged).
-    #[allow(dead_code)]
     pub fn return_mapping(
         &self,
         state: &DamagePlasticityState,
         sigma_trial: &[f64; 6],
     ) -> (DamagePlasticityState, bool) {
-        let d = state.D;
+        let d = state.d;
         let factor = 1.0 / (1.0 - d).max(1e-12);
         let sigma_eff_trial: [f64; 6] = {
             let mut s = [0.0; 6];
@@ -655,7 +647,7 @@ impl CoupledDamagePlasticity {
             if res.abs() < 1e-10 * self.sigma_y0 {
                 break;
             }
-            let dsy = self.H + self.Q * self.b_hard * (-self.b_hard * p_new).exp();
+            let dsy = self.h + self.q * self.b_hard * (-self.b_hard * p_new).exp();
             let slope = -3.0 * g - dsy;
             if slope.abs() < 1e-30 {
                 break;
@@ -669,7 +661,7 @@ impl CoupledDamagePlasticity {
         }
         let mut back_new = state.back_stress;
         for i in 0..6 {
-            back_new[i] += self.C_kin * dp * n_vec[i] - self.gamma_kin * back_new[i] * dp;
+            back_new[i] += self.c_kin * dp * n_vec[i] - self.gamma_kin * back_new[i] * dp;
         }
         let sigma_eq = von_mises_local(&sigma_eff_new).max(1e-30);
         let sigma_h = (sigma_eff_new[0] + sigma_eff_new[1] + sigma_eff_new[2]) / 3.0;
@@ -678,15 +670,15 @@ impl CoupledDamagePlasticity {
         let nu = self.nu;
         let rv = 2.0 / 3.0 * (1.0 + nu) + 3.0 * (1.0 - 2.0 * nu) * triax * triax;
         let _ = g_mod;
-        let denom = 2.0 * self.E * (1.0 - d).powi(2).max(1e-30);
+        let denom = 2.0 * self.e * (1.0 - d).powi(2).max(1e-30);
         let y = sigma_eq * sigma_eq / denom * rv;
-        let dd = (y / self.S_dmg).powf(self.s_dmg) * dp;
+        let dd = (y / self.s_dmg).powf(self.s_dmg_exp) * dp;
         let p_new = state.p_bar + dp;
-        let new_d = (d + dd).min(self.D_c).clamp(0.0, 1.0);
+        let new_d = (d + dd).min(self.d_c).clamp(0.0, 1.0);
         let new_state = DamagePlasticityState {
-            D: new_d,
+            d: new_d,
             p_bar: p_new,
-            R: state.R + self.H * dp,
+            r: state.r + self.h * dp,
             back_stress: back_new,
             effective_stress: sigma_eff_new,
         };
@@ -694,7 +686,7 @@ impl CoupledDamagePlasticity {
     }
     /// Shear modulus G = E / (2(1+ν)).
     pub fn shear_modulus(&self) -> f64 {
-        self.E / (2.0 * (1.0 + self.nu))
+        self.e / (2.0 * (1.0 + self.nu))
     }
 }
 /// Non-local damage regularization.
@@ -747,7 +739,6 @@ impl NonLocalDamage {
 /// Generalized damage evolution law for isotropic damage mechanics.
 ///
 /// Supports exponential, linear, and power-law softening.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DamageEvolutionLaw {
     /// Damage threshold strain (strain at which damage initiates).
@@ -854,15 +845,14 @@ impl DamageEvolutionLaw {
     }
 }
 /// State of a coupled damage-plasticity point.
-#[allow(non_snake_case)]
 #[derive(Debug, Clone)]
 pub struct DamagePlasticityState {
     /// Damage variable D ∈ \[0, 1\].
-    pub D: f64,
+    pub d: f64,
     /// Accumulated plastic strain p̄.
     pub p_bar: f64,
     /// Isotropic hardening variable R.
-    pub R: f64,
+    pub r: f64,
     /// Back-stress (kinematic hardening) in Voigt notation \[αxx, αyy, αzz, αxy, αyz, αxz\].
     pub back_stress: [f64; 6],
     /// Effective (net-section) stress tensor.
@@ -876,11 +866,10 @@ pub struct DamagePlasticityState {
 /// # Reference
 /// Chaboche, J.-L. (1988). *Continuum Damage Mechanics: Part I–A Time and Cycle
 /// Dependent Damage Model*. J. Appl. Mech. 55(1):59.
-#[allow(non_snake_case)]
 #[derive(Debug, Clone)]
 pub struct FatigueDamageModel {
     /// Material constant M_0 controlling the endurance limit.
-    pub M0: f64,
+    pub m0: f64,
     /// Exponent beta controlling the damage accumulation rate.
     pub beta: f64,
     /// Endurance limit sigma_u (below which no fatigue occurs).
@@ -892,11 +881,9 @@ pub struct FatigueDamageModel {
 }
 impl FatigueDamageModel {
     /// Create a new fatigue damage model.
-    #[allow(dead_code)]
-    #[allow(non_snake_case)]
-    pub fn new(M0: f64, beta: f64, sigma_u: f64, alpha: f64, b: f64) -> Self {
+    pub fn new(m0: f64, beta: f64, sigma_u: f64, alpha: f64, b: f64) -> Self {
         Self {
-            M0,
+            m0,
             beta,
             sigma_u,
             alpha,
@@ -910,12 +897,11 @@ impl FatigueDamageModel {
     /// * `sigma_a` – stress amplitude
     /// * `sigma_mean` – mean stress
     /// * `d` – current damage variable D
-    #[allow(dead_code)]
     pub fn damage_rate_per_cycle(&self, sigma_a: f64, sigma_mean: f64, d: f64) -> f64 {
         if sigma_a <= self.sigma_u {
             return 0.0;
         }
-        let m_eff = self.M0 * (1.0 - self.b * sigma_mean / self.sigma_u).max(1e-12);
+        let m_eff = self.m0 * (1.0 - self.b * sigma_mean / self.sigma_u).max(1e-12);
         let base = (sigma_a / m_eff).powf(self.beta);
         let d_clamped = d.clamp(0.0, 1.0 - 1e-10);
         let factor = (1.0 - (1.0 - d_clamped).powf(self.beta + 1.0)).powf(self.alpha);
@@ -925,7 +911,6 @@ impl FatigueDamageModel {
     ///
     /// Integrates dD/dN from D to 1 using a simple Euler step estimate.
     /// Returns the estimated number of remaining cycles.
-    #[allow(dead_code)]
     pub fn remaining_life(
         &self,
         sigma_a: f64,
@@ -950,7 +935,6 @@ impl FatigueDamageModel {
         total_cycles
     }
     /// Number of cycles to failure (Nf) from D = 0.
-    #[allow(dead_code)]
     pub fn cycles_to_failure(&self, sigma_a: f64, sigma_mean: f64) -> f64 {
         self.remaining_life(sigma_a, sigma_mean, 0.0, 1000)
     }
@@ -1084,7 +1068,6 @@ pub struct NonlocalContinuumDamage {
 }
 impl NonlocalContinuumDamage {
     /// Create a new nonlocal continuum damage model.
-    #[allow(dead_code)]
     pub fn new(characteristic_length: f64, epsilon_0: f64, kappa_d: f64, alpha_soft: f64) -> Self {
         Self {
             characteristic_length,
@@ -1094,14 +1077,12 @@ impl NonlocalContinuumDamage {
         }
     }
     /// Gradient parameter c = l_c² / 2.
-    #[allow(dead_code)]
     pub fn gradient_parameter(&self) -> f64 {
         self.characteristic_length * self.characteristic_length / 2.0
     }
     /// Exponential softening damage function g(κ):
     ///
     /// g(κ) = 1 − ε_0/κ · \[(1 − α) + α · e^{−β(κ − ε_0)}\]
-    #[allow(dead_code)]
     pub fn damage_loading_function(&self, kappa: f64, beta: f64) -> f64 {
         if kappa <= self.epsilon_0 {
             return 0.0;
@@ -1124,7 +1105,6 @@ impl NonlocalContinuumDamage {
     /// `local_strains` – local equivalent strains at those points
     ///
     /// Returns the nonlocal equivalent strains.
-    #[allow(dead_code)]
     pub fn compute_nonlocal_strains(&self, positions: &[f64], local_strains: &[f64]) -> Vec<f64> {
         assert_eq!(positions.len(), local_strains.len());
         let c = self.gradient_parameter();
@@ -1151,7 +1131,6 @@ impl NonlocalContinuumDamage {
     /// Localization indicator: returns the ratio of the damage zone width to
     /// the characteristic length. A value > 1 indicates mesh-independent
     /// localization zone.
-    #[allow(dead_code)]
     pub fn localization_indicator(&self, damage_profile: &[f64], dx: f64) -> f64 {
         let threshold = 0.05;
         let n_damaged = damage_profile.iter().filter(|&&d| d > threshold).count();
@@ -1176,7 +1155,6 @@ pub struct ThermalDamage {
 }
 impl ThermalDamage {
     /// Create a new thermal damage model.
-    #[allow(dead_code)]
     pub fn new(t_ref: f64, t_melt: f64, e0: f64, m_exp: f64) -> Self {
         Self {
             t_ref,
@@ -1188,36 +1166,31 @@ impl ThermalDamage {
     /// Temperature-dependent stiffness reduction factor.
     ///
     /// E(T) / E_0 = (1 − (T − T_ref)/(T_melt − T_ref))^m
-    #[allow(dead_code)]
     pub fn stiffness_factor(&self, temperature: f64) -> f64 {
         let theta = ((temperature - self.t_ref) / (self.t_melt - self.t_ref)).clamp(0.0, 1.0);
         (1.0 - theta).powf(self.m_exp).max(0.0)
     }
     /// Effective Young's modulus at temperature T.
-    #[allow(dead_code)]
     pub fn effective_modulus(&self, temperature: f64) -> f64 {
         self.e0 * self.stiffness_factor(temperature)
     }
     /// Thermal damage variable D_T = 1 − E(T)/E_0.
-    #[allow(dead_code)]
     pub fn thermal_damage_variable(&self, temperature: f64) -> f64 {
         1.0 - self.stiffness_factor(temperature)
     }
     /// Combined mechanical-thermal damage:
     ///
     /// D_total = 1 − (1 − D_mech) · (1 − D_T)
-    #[allow(dead_code)]
     pub fn combined_damage(&self, d_mech: f64, temperature: f64) -> f64 {
         let d_t = self.thermal_damage_variable(temperature);
         (1.0 - (1.0 - d_mech) * (1.0 - d_t)).clamp(0.0, 1.0)
     }
 }
 /// Crack band model (Bažant–Oh) for quasi-brittle fracture regularization.
-#[allow(non_snake_case)]
 #[derive(Debug, Clone)]
 pub struct CrackBandModel {
     /// Fracture energy G_f (J/m² or N/m).
-    pub Gf: f64,
+    pub gf: f64,
     /// Uniaxial compressive (or tensile peak) strength f_c.
     pub fc: f64,
     /// Crack band width h (element characteristic length).
@@ -1227,9 +1200,8 @@ impl CrackBandModel {
     /// Softening slope E_s = −f_c² h / (2 G_f).
     ///
     /// Negative value indicates softening.
-    #[allow(dead_code)]
     pub fn softening_slope(&self) -> f64 {
-        -(self.fc * self.fc * self.h) / (2.0 * self.Gf)
+        -(self.fc * self.fc * self.h) / (2.0 * self.gf)
     }
 }
 /// Simple isotropic scalar damage model with exponential softening.
@@ -1316,7 +1288,6 @@ impl DamageRateLimiter {
     }
 }
 /// Type of damage softening law.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DamageLawType {
     /// Exponential softening: D = 1 - (kappa0/kappa) * (1 - alpha + alpha * exp(-beta*(kappa - kappa0)))
@@ -1480,11 +1451,10 @@ impl ElementDeletionManager {
 }
 /// Scalar isotropic damage model storing the current damage variable D,
 /// current equivalent strain kappa, and initiation threshold kappa_0.
-#[allow(non_snake_case)]
 #[derive(Debug, Clone)]
 pub struct ScalarIsotropicDamage {
     /// Current damage variable D ∈ \[0, 1\].
-    pub D: f64,
+    pub d: f64,
     /// Current (maximum historical) equivalent strain kappa.
     pub kappa: f64,
     /// Damage initiation threshold kappa_0.
@@ -1492,7 +1462,6 @@ pub struct ScalarIsotropicDamage {
 }
 impl ScalarIsotropicDamage {
     /// Equivalent strain: Euclidean norm of the strain vector.
-    #[allow(dead_code)]
     pub fn equivalent_strain(eps: &[f64]) -> f64 {
         eps.iter().map(|&e| e * e).sum::<f64>().sqrt()
     }
@@ -1500,18 +1469,17 @@ impl ScalarIsotropicDamage {
     ///
     /// Returns the updated damage D.  Uses linear damage loading:
     ///   D = 1 - kappa_0 / kappa  if kappa > kappa_0, else 0.
-    #[allow(dead_code)]
     pub fn update(&mut self, eps_eq: f64) -> f64 {
         if eps_eq > self.kappa {
             self.kappa = eps_eq;
         }
         if self.kappa > self.kappa_0 {
             let new_d = (1.0 - self.kappa_0 / self.kappa).clamp(0.0, 1.0);
-            if new_d > self.D {
-                self.D = new_d;
+            if new_d > self.d {
+                self.d = new_d;
             }
         }
-        self.D
+        self.d
     }
 }
 /// Full Lemaitre-Chaboche continuum damage mechanics model.
@@ -1525,19 +1493,18 @@ impl ScalarIsotropicDamage {
 /// # Reference
 /// Lemaitre, J. & Desmorat, R. (2005). *Engineering Damage Mechanics*.
 /// Springer-Verlag.
-#[allow(non_snake_case)]
 #[derive(Debug, Clone)]
 pub struct LemaitreChabocheDamage {
     /// Damage strength S.
-    pub S: f64,
+    pub s_strength: f64,
     /// Damage exponent s.
     pub s: f64,
     /// Plastic strain threshold p_D before damage initiates.
-    pub p_D: f64,
+    pub p_d: f64,
     /// Critical damage D_c (rupture criterion).
-    pub D_c: f64,
+    pub d_c: f64,
     /// Young's modulus E.
-    pub E: f64,
+    pub e: f64,
     /// Poisson's ratio ν.
     pub nu: f64,
 }
@@ -1545,7 +1512,6 @@ impl LemaitreChabocheDamage {
     /// Triaxiality function R_v:
     ///
     /// R_v = 2/3(1+ν) + 3(1−2ν)(σ_H/σ_eq)²
-    #[allow(dead_code)]
     pub fn triaxiality_factor(&self, sigma_eq: f64, sigma_h: f64) -> f64 {
         if sigma_eq.abs() < 1e-30 {
             return 1.0;
@@ -1556,37 +1522,33 @@ impl LemaitreChabocheDamage {
     /// Thermodynamic force Y conjugate to damage:
     ///
     /// Y = σ_eq² · R_v / (2E(1−D)²)
-    #[allow(dead_code)]
     pub fn damage_energy_release_rate(&self, sigma: &[f64; 6], d: f64) -> f64 {
         let sigma_eq = von_mises_local(sigma).max(1e-30);
         let sigma_h = (sigma[0] + sigma[1] + sigma[2]) / 3.0;
         let rv = self.triaxiality_factor(sigma_eq, sigma_h);
-        let denom = 2.0 * self.E * (1.0 - d).powi(2).max(1e-30);
+        let denom = 2.0 * self.e * (1.0 - d).powi(2).max(1e-30);
         sigma_eq * sigma_eq * rv / denom
     }
     /// Damage increment dD for a plastic strain increment dp.
     ///
     /// dD/dp = (Y/S)^s if p > p_D, else 0.
-    #[allow(dead_code)]
     pub fn damage_increment(&self, sigma: &[f64; 6], d: f64, dp: f64, p_bar: f64) -> f64 {
-        if p_bar < self.p_D || dp <= 0.0 {
+        if p_bar < self.p_d || dp <= 0.0 {
             return 0.0;
         }
         let y = self.damage_energy_release_rate(sigma, d);
-        (y / self.S).powf(self.s) * dp
+        (y / self.s_strength).powf(self.s) * dp
     }
     /// Update a damage state by one increment.
     ///
     /// Returns the updated damage D (clamped to \[0, D_c\]).
-    #[allow(dead_code)]
     pub fn update(&self, state: &mut DamageState, sigma: &[f64; 6], dp: f64) {
         let dd = self.damage_increment(sigma, state.d, dp, state.accumulated_plastic_strain);
         state.damage_rate = dd;
-        state.d = (state.d + dd).min(self.D_c).clamp(0.0, 1.0);
+        state.d = (state.d + dd).min(self.d_c).clamp(0.0, 1.0);
         state.accumulated_plastic_strain += dp;
     }
     /// Effective stress tensor: σ̃ = σ / (1−D).
-    #[allow(dead_code)]
     pub fn effective_stress(&self, sigma: &[f64; 6], d: f64) -> [f64; 6] {
         let factor = 1.0 / (1.0 - d).max(1e-12);
         let mut out = [0.0f64; 6];
@@ -1596,15 +1558,13 @@ impl LemaitreChabocheDamage {
         out
     }
     /// Check whether the material has reached the rupture criterion D ≥ D_c.
-    #[allow(dead_code)]
     pub fn is_ruptured(&self, d: f64) -> bool {
-        d >= self.D_c
+        d >= self.d_c
     }
     /// Correction factor for plane-stress fracture mechanics.
     ///
     /// The Lemaitre crack closure parameter h corrects the damage coupling
     /// for compressive triaxiality.
-    #[allow(dead_code)]
     pub fn closure_corrected_damage(&self, d: f64, sigma: &[f64; 6], h: f64) -> f64 {
         let sigma_h = (sigma[0] + sigma[1] + sigma[2]) / 3.0;
         if sigma_h >= 0.0 { d } else { h * d }

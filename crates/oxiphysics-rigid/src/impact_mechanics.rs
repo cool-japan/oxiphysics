@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,9 +6,6 @@
 //! Implements Hertzian contact, Hunt-Crossley viscoelastic models, elastic wave
 //! propagation, ballistic penetration, Taylor anvil dynamics, spallation,
 //! oblique impact, multi-body chain impacts, and impact sensor models.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -1183,8 +1179,8 @@ impl ImpactSensor {
 
         for i in 0..n {
             let mut integral = 0.0f64;
-            for j in (i + 1)..n.min(i + max_span) {
-                integral += a_g[j] * self.dt;
+            for (j, &a_val) in a_g.iter().enumerate().skip(i + 1).take(max_span - 1) {
+                integral += a_val * self.dt;
                 let dt_interval = (j - i) as f64 * self.dt;
                 if dt_interval < 1e-14 {
                     continue;

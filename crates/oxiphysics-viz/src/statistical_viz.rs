@@ -19,8 +19,6 @@
 //! - **Empirical CDF** – step-function cumulative distribution from samples
 //! - **Bland-Altman plot** – method-comparison via mean vs. difference
 
-#![allow(dead_code)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared helpers
 // ─────────────────────────────────────────────────────────────────────────────

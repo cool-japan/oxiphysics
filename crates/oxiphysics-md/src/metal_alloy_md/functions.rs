@@ -27,6 +27,7 @@ pub(super) fn vnorm(v: [f64; 3]) -> f64 {
     vdot(v, v).sqrt()
 }
 /// Cross product.
+#[cfg(test)]
 pub(super) fn vcross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -120,7 +121,6 @@ pub fn warren_cowley_sro(system: &AlloySystem, species_a: usize, species_b: usiz
 ///
 /// Creates a vacancy at `vacancy_idx`, attempts to move a neighbor into it,
 /// and returns the energy barrier estimate (eV).
-#[allow(clippy::too_many_arguments)]
 pub fn vacancy_migration_energy(
     species: &[EamParams],
     lattice_a: f64,

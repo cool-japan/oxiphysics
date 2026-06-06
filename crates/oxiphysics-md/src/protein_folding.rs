@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,11 +16,6 @@
 //! - Protein energy decomposition into bond/angle/dihedral/LJ/electrostatics
 //! - All-atom-like energy function with CHARMM-style terms
 
-#![allow(dead_code)]
-
-#[allow(unused_imports)]
-use std::f64::consts::PI;
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -30,12 +24,8 @@ use std::f64::consts::PI;
 const KB_KCAL: f64 = 0.001987;
 /// Gas constant R in kcal mol⁻¹ K⁻¹.
 const R_KCAL: f64 = 0.001987;
-/// Avogadro's number.
-const AVOGADRO: f64 = 6.022e23;
 /// Vacuum permittivity in CHARMM internal units (e² / (kcal mol⁻¹ Å)).
 const COULOMB_FACTOR: f64 = 332.0636; // e² kcal⁻¹ mol Å
-/// Angstrom → nanometre conversion.
-const ANG_TO_NM: f64 = 0.1;
 
 // ---------------------------------------------------------------------------
 // Vec3 helpers
@@ -386,7 +376,6 @@ pub fn build_native_contact_map(
 /// * `theta_bond`     – equilibrium Cα–Cα–Cα angle (rad)
 /// * `r_rep`          – repulsion radius for non-native pairs (Å)
 /// * `eps_rep`        – repulsion energy coefficient (kcal mol⁻¹)
-#[allow(clippy::too_many_arguments)]
 pub fn go_model_energy(
     chain: &ProteinChain,
     native: &[NativeContact],
@@ -602,7 +591,7 @@ pub fn assign_secondary_structure(chain: &ProteinChain) -> Vec<SecondaryStructur
     let n = chain.len();
     let mut ss = vec![SecondaryStructure::Coil; n];
 
-    for i in 1..n.saturating_sub(1) {
+    for (i, ss_i) in ss.iter_mut().enumerate().take(n.saturating_sub(1)).skip(1) {
         let theta = bond_angle(
             chain.residues[i - 1].ca_pos,
             chain.residues[i].ca_pos,
@@ -614,14 +603,14 @@ pub fn assign_secondary_structure(chain: &ProteinChain) -> Vec<SecondaryStructur
         if i + 3 < n {
             let d_i3 = chain.ca_distance(i, i + 3);
             if (theta_deg > 80.0 && theta_deg < 105.0) && (d_i3 > 4.5 && d_i3 < 6.5) {
-                ss[i] = SecondaryStructure::AlphaHelix;
+                *ss_i = SecondaryStructure::AlphaHelix;
                 continue;
             }
         }
 
         // β-strand: extended, bond angle > 120°
         if theta_deg > 120.0 {
-            ss[i] = SecondaryStructure::BetaStrand;
+            *ss_i = SecondaryStructure::BetaStrand;
             continue;
         }
 
@@ -629,7 +618,7 @@ pub fn assign_secondary_structure(chain: &ProteinChain) -> Vec<SecondaryStructur
         if i + 2 < n {
             let d_i2 = chain.ca_distance(i, i + 2);
             if (theta_deg > 80.0 && theta_deg < 95.0) && (d_i2 > 5.0 && d_i2 < 6.5) {
-                ss[i] = SecondaryStructure::ThreeTenHelix;
+                *ss_i = SecondaryStructure::ThreeTenHelix;
                 continue;
             }
         }
@@ -928,7 +917,6 @@ pub fn charmm_coulomb_energy(q1: f64, q2: f64, r: f64, eps_r: f64) -> f64 {
 ///
 /// All atom coordinates, connectivity, and parameters must be provided.
 /// Returns `(E_bond, E_angle, E_dihedral, E_lj, E_coulomb)` in kcal mol⁻¹.
-#[allow(clippy::too_many_arguments)]
 pub fn protein_energy_decomposition(
     positions: &[[f64; 3]],
     bonds: &[(usize, usize, f64, f64)],         // (i, j, kb, r0)
@@ -1241,6 +1229,7 @@ pub fn boltzmann_average(observables: &[f64], energies: &[f64], temp: f64) -> f6
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::PI;
 
     fn make_helix_chain(n: usize) -> ProteinChain {
         // Approximate α-helix Cα positions: rise 1.5 Å/res, radius 2.3 Å

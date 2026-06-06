@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,9 +10,6 @@
 //! - `NetworkMetrics` — degree, clustering, betweenness, PageRank
 //! - `CommunityDetection` — modularity, spectral, label propagation
 //! - `NetworkAnimation` — time-evolving graph with interpolation
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -1201,29 +1197,48 @@ impl CommunityDetection {
 
 /// An event in the network timeline.
 #[derive(Debug, Clone)]
-#[allow(missing_docs)]
 pub enum NetworkEvent {
     /// A node appears at the given time.
-    NodeAppear { node_id: usize, time: f64 },
+    NodeAppear {
+        /// Index of the node that appears.
+        node_id: usize,
+        /// Time at which the node appears.
+        time: f64,
+    },
     /// A node disappears at the given time.
-    NodeDisappear { node_id: usize, time: f64 },
+    NodeDisappear {
+        /// Index of the node that disappears.
+        node_id: usize,
+        /// Time at which the node disappears.
+        time: f64,
+    },
     /// An edge appears between source and target at the given time.
     EdgeAppear {
+        /// Source node index.
         source: usize,
+        /// Target node index.
         target: usize,
+        /// Time at which the edge appears.
         time: f64,
     },
     /// An edge disappears at the given time.
     EdgeDisappear {
+        /// Source node index.
         source: usize,
+        /// Target node index.
         target: usize,
+        /// Time at which the edge disappears.
         time: f64,
     },
     /// A node moves to a new position over a duration.
     NodeMove {
+        /// Index of the node to move.
         node_id: usize,
+        /// World-space 2-D target position.
         target_position: [f64; 2],
+        /// Time at which the movement begins.
         start_time: f64,
+        /// Duration of the movement animation.
         duration: f64,
     },
 }
@@ -1470,9 +1485,9 @@ mod tests {
         let mat = g.adjacency_matrix();
         assert_eq!(mat.len(), 3);
         // Symmetric
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!((mat[i][j] - mat[j][i]).abs() < 1e-10);
+        for (i, row) in mat.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!((val - mat[j][i]).abs() < 1e-10);
             }
         }
     }

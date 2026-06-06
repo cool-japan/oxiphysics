@@ -45,10 +45,18 @@
 //!     "particles should fall under gravity");
 //! ```
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use crate::compute::{WgpuBackend, WgpuBufferHandle};
+
+/// 8-tuple of optional GPU buffer handles used by [`SphSimulation::init_gpu`].
+type SphGpuBuffers = (
+    Option<WgpuBufferHandle>,
+    Option<WgpuBufferHandle>,
+    Option<WgpuBufferHandle>,
+    Option<WgpuBufferHandle>,
+    Option<WgpuBufferHandle>,
+    Option<WgpuBufferHandle>,
+    Option<WgpuBufferHandle>,
+);
 
 // ── SphConfig ─────────────────────────────────────────────────────────────────
 
@@ -198,7 +206,6 @@ pub struct SphSimulation {
     buf_vel_y: Option<WgpuBufferHandle>,
     buf_vel_z: Option<WgpuBufferHandle>,
     buf_density: Option<WgpuBufferHandle>,
-    buf_pressure: Option<WgpuBufferHandle>,
     /// Total elapsed simulation time.
     pub time: f64,
 }
@@ -214,7 +221,7 @@ impl SphSimulation {
         let (backend, bufs) = Self::init_gpu(n);
 
         let state = SphParticleState::new(n);
-        let (bx, by, bz, bvx, bvy, bvz, bd, bp) = bufs;
+        let (bx, by, bz, bvx, bvy, bvz, bd) = bufs;
 
         Self {
             config,
@@ -227,27 +234,11 @@ impl SphSimulation {
             buf_vel_y: bvy,
             buf_vel_z: bvz,
             buf_density: bd,
-            buf_pressure: bp,
             time: 0.0,
         }
     }
 
-    #[allow(clippy::type_complexity)]
-    fn init_gpu(
-        n: usize,
-    ) -> (
-        Option<WgpuBackend>,
-        (
-            Option<WgpuBufferHandle>,
-            Option<WgpuBufferHandle>,
-            Option<WgpuBufferHandle>,
-            Option<WgpuBufferHandle>,
-            Option<WgpuBufferHandle>,
-            Option<WgpuBufferHandle>,
-            Option<WgpuBufferHandle>,
-            Option<WgpuBufferHandle>,
-        ),
-    ) {
+    fn init_gpu(n: usize) -> (Option<WgpuBackend>, SphGpuBuffers) {
         match WgpuBackend::try_new() {
             Ok(mut b) => {
                 b.register_shader(
@@ -261,10 +252,9 @@ impl SphSimulation {
                 let bvy = Some(b.create_buffer(n));
                 let bvz = Some(b.create_buffer(n));
                 let bd = Some(b.create_buffer(n));
-                let bp = Some(b.create_buffer(n));
-                (Some(b), (bx, by, bz, bvx, bvy, bvz, bd, bp))
+                (Some(b), (bx, by, bz, bvx, bvy, bvz, bd))
             }
-            Err(_) => (None, (None, None, None, None, None, None, None, None)),
+            Err(_) => (None, (None, None, None, None, None, None, None)),
         }
     }
 

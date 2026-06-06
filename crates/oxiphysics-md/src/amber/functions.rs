@@ -408,7 +408,6 @@ mod tests {
 /// sigma values are the Lennard-Jones Rmin/2 converted to sigma:
 ///   sigma = Rmin/2 * 2^(5/6) / (10 Å/nm)
 /// epsilon values are converted from kcal/mol to kJ/mol (* 4.184).
-#[allow(dead_code)]
 pub const AMBER99SB_TYPES: &[Amber99sbType] = &[
     Amber99sbType {
         symbol: "C",
@@ -616,7 +615,6 @@ pub const AMBER99SB_TYPES: &[Amber99sbType] = &[
     },
 ];
 /// Look up an AMBER99SB atom type by symbol.  Returns `None` if not found.
-#[allow(dead_code)]
 pub fn lookup_amber99sb(symbol: &str) -> Option<&'static Amber99sbType> {
     AMBER99SB_TYPES.iter().find(|t| t.symbol == symbol)
 }
@@ -624,7 +622,6 @@ pub fn lookup_amber99sb(symbol: &str) -> Option<&'static Amber99sbType> {
 ///
 /// Data taken from the AMBER99SB parameter set (ff99SB).
 /// Only backbone + Cβ atoms are listed here for brevity.
-#[allow(dead_code)]
 pub const AMBER99SB_BACKBONE_CHARGES: &[ResidueChargeRecord] = &[
     ResidueChargeRecord {
         residue: "ALA",
@@ -838,7 +835,6 @@ pub const AMBER99SB_BACKBONE_CHARGES: &[ResidueChargeRecord] = &[
     },
 ];
 /// Look up partial charge for a residue/atom name pair.
-#[allow(dead_code)]
 pub fn lookup_partial_charge(residue: &str, atom: &str) -> Option<f64> {
     AMBER99SB_BACKBONE_CHARGES
         .iter()
@@ -849,24 +845,20 @@ pub fn lookup_partial_charge(residue: &str, atom: &str) -> Option<f64> {
 ///
 /// In AMBER force fields (ff94 through ff99SB), 1-4 electrostatic
 /// interactions are scaled by 1/1.2 ≈ 0.8333.
-#[allow(dead_code)]
 pub const AMBER_FUDGE_QQ: f64 = 1.0 / 1.2;
 /// AMBER standard 1-4 van der Waals scaling factor.
 ///
 /// In AMBER force fields, 1-4 LJ interactions are scaled by 0.5.
-#[allow(dead_code)]
 pub const AMBER_FUDGE_LJ: f64 = 0.5;
 /// Compute scaled 1-4 Coulomb energy.
 ///
 /// E_14_elec = fudgeQQ * k * q_i * q_j / r
-#[allow(dead_code)]
 pub fn scaled_14_coulomb(coulomb_k: f64, q_i: f64, q_j: f64, r: f64) -> f64 {
     AMBER_FUDGE_QQ * coulomb_k * q_i * q_j / r
 }
 /// Compute scaled 1-4 LJ energy between two atom types.
 ///
 /// E_14_LJ = fudgeLJ * 4 * eps_ij * \[(sig_ij/r)^12 - (sig_ij/r)^6\]
-#[allow(dead_code)]
 pub fn scaled_14_lj(sigma_ij: f64, epsilon_ij: f64, r: f64) -> f64 {
     let sr6 = (sigma_ij / r).powi(6);
     AMBER_FUDGE_LJ * 4.0 * epsilon_ij * (sr6 * sr6 - sr6)
@@ -877,7 +869,6 @@ pub fn scaled_14_lj(sigma_ij: f64, epsilon_ij: f64, r: f64) -> f64 {
 /// * `element`      – element symbol (e.g., "C", "N", "O").
 /// * `hybridization`– 1 = sp, 2 = sp2, 3 = sp3, 0 = aromatic.
 /// * `bonded_to`    – element symbol of the heavy atom this H is bonded to (for H only).
-#[allow(dead_code)]
 pub fn assign_gaff_type(element: &str, hybridization: u8, bonded_to: Option<&str>) -> GaffType {
     match element {
         "C" => match hybridization {
@@ -910,7 +901,6 @@ pub fn assign_gaff_type(element: &str, hybridization: u8, bonded_to: Option<&str
 /// GAFF LJ parameters for common types.
 ///
 /// Returns `(sigma_nm, epsilon_kJ_mol)` for a given `GaffType`.
-#[allow(dead_code)]
 pub fn gaff_lj_params(gt: &GaffType) -> (f64, f64) {
     match gt {
         GaffType::C3 => (0.33996695, 0.45773),
@@ -930,7 +920,6 @@ pub fn gaff_lj_params(gt: &GaffType) -> (f64, f64) {
 /// Selected AMBER99SB bond parameters (from parm99.dat).
 /// k converted from kcal/(mol·Å²) * 2 to kJ/(mol·nm²):
 ///   k_kJ_nm2 = k_kcal_A2 * 2 * 4.184 * 100
-#[allow(dead_code)]
 pub const AMBER99SB_BONDS: &[Amber99sbBondParam] = &[
     Amber99sbBondParam {
         type_i: "C",
@@ -1038,7 +1027,6 @@ pub const AMBER99SB_BONDS: &[Amber99sbBondParam] = &[
 /// Selected AMBER99SB angle parameters.
 /// k converted from kcal/(mol·rad²) * 2 to kJ/(mol·rad²):
 ///   k_kJ_rad2 = k_kcal_rad2 * 2 * 4.184
-#[allow(dead_code)]
 pub const AMBER99SB_ANGLES: &[Amber99sbAngleParam] = &[
     Amber99sbAngleParam {
         type_i: "CT",
@@ -1149,7 +1137,6 @@ pub const AMBER99SB_ANGLES: &[Amber99sbAngleParam] = &[
 /// Find AMBER99SB bond parameters for a given atom-type pair.
 ///
 /// Returns `None` if the pair is not in the table.
-#[allow(dead_code)]
 pub fn find_amber99sb_bond(type_i: &str, type_j: &str) -> Option<&'static Amber99sbBondParam> {
     AMBER99SB_BONDS.iter().find(|b| {
         (b.type_i == type_i && b.type_j == type_j) || (b.type_i == type_j && b.type_j == type_i)
@@ -1158,7 +1145,6 @@ pub fn find_amber99sb_bond(type_i: &str, type_j: &str) -> Option<&'static Amber9
 /// Find AMBER99SB angle parameters for a given atom-type triple.
 ///
 /// Returns `None` if the triple is not in the table.
-#[allow(dead_code)]
 pub fn find_amber99sb_angle(
     type_i: &str,
     type_j: &str,
@@ -1171,7 +1157,6 @@ pub fn find_amber99sb_angle(
     })
 }
 /// Build an `AmberForceField` pre-populated with AMBER99SB atom types.
-#[allow(dead_code)]
 pub fn amber99sb_ff() -> AmberForceField {
     let mut ff = AmberForceField::new();
     for t in AMBER99SB_TYPES {

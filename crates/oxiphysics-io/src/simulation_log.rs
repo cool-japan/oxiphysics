@@ -7,8 +7,6 @@
 //! body counts), filtering, compression, metrics, snapshotting, and a
 //! ring-buffer streaming log.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------

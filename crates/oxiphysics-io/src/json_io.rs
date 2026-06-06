@@ -1,10 +1,7 @@
-#![allow(clippy::manual_strip, clippy::should_implement_trait)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
 //! Simple hand-rolled JSON serialization for physics data (no serde dependency).
-
-#![allow(dead_code)]
 
 /// A JSON value that covers all standard JSON types.
 #[derive(Debug, Clone, PartialEq)]
@@ -110,7 +107,7 @@ impl JsonValue {
     }
 
     /// Parse a JSON string into a `JsonValue`.
-    pub fn from_str(s: &str) -> Result<Self, String> {
+    pub fn parse(s: &str) -> Result<Self, String> {
         let s = s.trim();
         let (val, rest) = parse_value(s)?;
         if rest.trim().is_empty() {
@@ -251,6 +248,13 @@ impl JsonValue {
         } else {
             Vec::new()
         }
+    }
+}
+
+impl std::str::FromStr for JsonValue {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
     }
 }
 
@@ -630,18 +634,18 @@ fn parse_array(s: &str) -> Result<(JsonValue, &str), String> {
     // s starts with '['
     let mut s = skip_whitespace(&s[1..]);
     let mut items = Vec::new();
-    if s.starts_with(']') {
-        return Ok((JsonValue::Array(items), &s[1..]));
+    if let Some(rest) = s.strip_prefix(']') {
+        return Ok((JsonValue::Array(items), rest));
     }
     loop {
         let (val, rest) = parse_value(s)?;
         items.push(val);
         s = skip_whitespace(rest);
-        if s.starts_with(']') {
-            return Ok((JsonValue::Array(items), &s[1..]));
+        if let Some(rest) = s.strip_prefix(']') {
+            return Ok((JsonValue::Array(items), rest));
         }
-        if s.starts_with(',') {
-            s = skip_whitespace(&s[1..]);
+        if let Some(rest) = s.strip_prefix(',') {
+            s = skip_whitespace(rest);
         } else {
             return Err(format!(
                 "Expected ',' or ']' in array, got: {:?}",
@@ -655,8 +659,8 @@ fn parse_object(s: &str) -> Result<(JsonValue, &str), String> {
     // s starts with '{'
     let mut s = skip_whitespace(&s[1..]);
     let mut pairs = Vec::new();
-    if s.starts_with('}') {
-        return Ok((JsonValue::Object(pairs), &s[1..]));
+    if let Some(rest) = s.strip_prefix('}') {
+        return Ok((JsonValue::Object(pairs), rest));
     }
     loop {
         s = skip_whitespace(s);
@@ -673,21 +677,18 @@ fn parse_object(s: &str) -> Result<(JsonValue, &str), String> {
             _ => unreachable!(),
         };
         s = skip_whitespace(rest);
-        if !s.starts_with(':') {
-            return Err(format!(
-                "Expected ':' after key, got: {:?}",
-                &s[..s.len().min(5)]
-            ));
-        }
-        s = skip_whitespace(&s[1..]);
+        let colon_rest = s
+            .strip_prefix(':')
+            .ok_or_else(|| format!("Expected ':' after key, got: {:?}", &s[..s.len().min(5)]))?;
+        s = skip_whitespace(colon_rest);
         let (val, rest) = parse_value(s)?;
         pairs.push((key, val));
         s = skip_whitespace(rest);
-        if s.starts_with('}') {
-            return Ok((JsonValue::Object(pairs), &s[1..]));
+        if let Some(rest) = s.strip_prefix('}') {
+            return Ok((JsonValue::Object(pairs), rest));
         }
-        if s.starts_with(',') {
-            s = skip_whitespace(&s[1..]);
+        if let Some(rest) = s.strip_prefix(',') {
+            s = skip_whitespace(rest);
         } else {
             return Err(format!(
                 "Expected ',' or '}}' in object, got: {:?}",
@@ -1077,12 +1078,10 @@ pub fn jsonpath_query<'a>(root: &'a JsonValue, path: &str) -> Vec<&'a JsonValue>
     if path == "$" {
         return vec![root];
     }
-    if !path.starts_with('$') {
-        return vec![];
-    }
-
-    // Parse path segments
-    let rest = &path[1..]; // drop '$'
+    let rest = match path.strip_prefix('$') {
+        Some(r) => r,
+        None => return vec![],
+    };
     let segments = parse_jsonpath_segments(rest);
     let mut current: Vec<&'a JsonValue> = vec![root];
 
@@ -1135,8 +1134,8 @@ fn parse_jsonpath_segments(s: &str) -> Vec<String> {
     let mut remaining = s;
 
     while !remaining.is_empty() {
-        if remaining.starts_with('.') {
-            remaining = &remaining[1..];
+        if let Some(after_dot) = remaining.strip_prefix('.') {
+            remaining = after_dot;
             // Read until next '.' or '['
             let end = remaining.find(['.', '[']).unwrap_or(remaining.len());
             if end > 0 {
@@ -1240,7 +1239,7 @@ mod tests {
         let j = JsonValue::Null;
         let s = j.to_json_string();
         assert_eq!(s, "null");
-        let parsed = JsonValue::from_str(&s).unwrap();
+        let parsed = JsonValue::parse(&s).unwrap();
         assert_eq!(parsed, JsonValue::Null);
     }
 
@@ -1249,17 +1248,14 @@ mod tests {
         let j = JsonValue::Bool(true);
         let s = j.to_json_string();
         assert_eq!(s, "true");
-        assert_eq!(JsonValue::from_str(&s).unwrap(), JsonValue::Bool(true));
+        assert_eq!(JsonValue::parse(&s).unwrap(), JsonValue::Bool(true));
     }
 
     #[test]
     fn test_bool_false() {
         let j = JsonValue::Bool(false);
         assert_eq!(j.to_json_string(), "false");
-        assert_eq!(
-            JsonValue::from_str("false").unwrap(),
-            JsonValue::Bool(false)
-        );
+        assert_eq!(JsonValue::parse("false").unwrap(), JsonValue::Bool(false));
     }
 
     #[test]
@@ -1267,7 +1263,7 @@ mod tests {
         let j = JsonValue::Number(42.0);
         let s = j.to_json_string();
         assert_eq!(s, "42");
-        let parsed = JsonValue::from_str(&s).unwrap();
+        let parsed = JsonValue::parse(&s).unwrap();
         assert_eq!(parsed.as_f64(), Some(42.0));
     }
 
@@ -1275,7 +1271,7 @@ mod tests {
     fn test_number_float() {
         let j = JsonValue::Number(3.125);
         let s = j.to_json_string();
-        let parsed = JsonValue::from_str(&s).unwrap();
+        let parsed = JsonValue::parse(&s).unwrap();
         let v = parsed.as_f64().unwrap();
         assert!((v - 3.125).abs() < 1e-10);
     }
@@ -1285,7 +1281,7 @@ mod tests {
         let j = JsonValue::Str("hello world".to_string());
         let s = j.to_json_string();
         assert_eq!(s, "\"hello world\"");
-        let parsed = JsonValue::from_str(&s).unwrap();
+        let parsed = JsonValue::parse(&s).unwrap();
         assert_eq!(parsed.as_str(), Some("hello world"));
     }
 
@@ -1294,7 +1290,7 @@ mod tests {
         let j = JsonValue::Str("line1\nline2".to_string());
         let s = j.to_json_string();
         assert!(s.contains("\\n"));
-        let parsed = JsonValue::from_str(&s).unwrap();
+        let parsed = JsonValue::parse(&s).unwrap();
         assert_eq!(parsed.as_str(), Some("line1\nline2"));
     }
 
@@ -1306,7 +1302,7 @@ mod tests {
             JsonValue::Number(3.0),
         ]);
         let s = j.to_json_string();
-        let parsed = JsonValue::from_str(&s).unwrap();
+        let parsed = JsonValue::parse(&s).unwrap();
         let arr = parsed.as_array().unwrap();
         assert_eq!(arr.len(), 3);
         assert_eq!(arr[0].as_f64(), Some(1.0));
@@ -1316,7 +1312,7 @@ mod tests {
     fn test_empty_array() {
         let j = JsonValue::Array(vec![]);
         assert_eq!(j.to_json_string(), "[]");
-        let parsed = JsonValue::from_str("[]").unwrap();
+        let parsed = JsonValue::parse("[]").unwrap();
         assert_eq!(parsed.as_array().unwrap().len(), 0);
     }
 
@@ -1337,7 +1333,7 @@ mod tests {
             ("mass".to_string(), JsonValue::Number(1.5)),
         ]);
         let s = j.to_json_string();
-        let parsed = JsonValue::from_str(&s).unwrap();
+        let parsed = JsonValue::parse(&s).unwrap();
         assert_eq!(parsed.get("name").unwrap().as_str(), Some("particle"));
         assert_eq!(parsed.get("mass").unwrap().as_f64(), Some(1.5));
     }
@@ -1345,7 +1341,7 @@ mod tests {
     #[test]
     fn test_nested_object() {
         let s = r#"{"pos":{"x":1,"y":2}}"#;
-        let parsed = JsonValue::from_str(s).unwrap();
+        let parsed = JsonValue::parse(s).unwrap();
         let pos = parsed.get("pos").unwrap();
         assert_eq!(pos.get("x").unwrap().as_f64(), Some(1.0));
     }
@@ -1385,26 +1381,26 @@ mod tests {
 
     #[test]
     fn test_parse_negative_number() {
-        let j = JsonValue::from_str("-3.125").unwrap();
+        let j = JsonValue::parse("-3.125").unwrap();
         assert!((j.as_f64().unwrap() + 3.125).abs() < 1e-10);
     }
 
     #[test]
     fn test_whitespace_tolerance() {
         let s = "  {  \"k\"  :  42  }  ";
-        let j = JsonValue::from_str(s).unwrap();
+        let j = JsonValue::parse(s).unwrap();
         assert_eq!(j.get("k").unwrap().as_f64(), Some(42.0));
     }
 
     #[test]
     fn test_empty_object() {
-        let j = JsonValue::from_str("{}").unwrap();
+        let j = JsonValue::parse("{}").unwrap();
         assert!(j.get("anything").is_none());
     }
 
     #[test]
     fn test_invalid_input_error() {
-        assert!(JsonValue::from_str("not_json").is_err());
+        assert!(JsonValue::parse("not_json").is_err());
     }
 
     // ── New tests for expanded features ─────────────────────────────────────
@@ -1412,7 +1408,7 @@ mod tests {
     #[test]
     fn test_get_path() {
         let s = r#"{"a":{"b":{"c":42}}}"#;
-        let j = JsonValue::from_str(s).unwrap();
+        let j = JsonValue::parse(s).unwrap();
         assert_eq!(j.get_path("a.b.c").unwrap().as_f64(), Some(42.0));
         assert!(j.get_path("a.b.d").is_none());
         assert!(j.get_path("x").is_none());
@@ -1434,8 +1430,8 @@ mod tests {
 
     #[test]
     fn test_json_merge() {
-        let base = JsonValue::from_str(r#"{"a":1,"b":2}"#).unwrap();
-        let overlay = JsonValue::from_str(r#"{"b":3,"c":4}"#).unwrap();
+        let base = JsonValue::parse(r#"{"a":1,"b":2}"#).unwrap();
+        let overlay = JsonValue::parse(r#"{"b":3,"c":4}"#).unwrap();
         let merged = base.merge(&overlay);
         assert_eq!(merged.get("a").unwrap().as_f64(), Some(1.0));
         assert_eq!(merged.get("b").unwrap().as_f64(), Some(3.0));
@@ -1444,8 +1440,8 @@ mod tests {
 
     #[test]
     fn test_json_merge_nested() {
-        let base = JsonValue::from_str(r#"{"a":{"x":1,"y":2}}"#).unwrap();
-        let overlay = JsonValue::from_str(r#"{"a":{"y":3,"z":4}}"#).unwrap();
+        let base = JsonValue::parse(r#"{"a":{"x":1,"y":2}}"#).unwrap();
+        let overlay = JsonValue::parse(r#"{"a":{"y":3,"z":4}}"#).unwrap();
         let merged = base.merge(&overlay);
         let a = merged.get("a").unwrap();
         assert_eq!(a.get("x").unwrap().as_f64(), Some(1.0));
@@ -1455,7 +1451,7 @@ mod tests {
 
     #[test]
     fn test_json_keys_values() {
-        let j = JsonValue::from_str(r#"{"a":1,"b":2}"#).unwrap();
+        let j = JsonValue::parse(r#"{"a":1,"b":2}"#).unwrap();
         let keys = j.keys();
         assert_eq!(keys.len(), 2);
         assert!(keys.contains(&"a"));
@@ -1480,10 +1476,10 @@ mod tests {
             ],
             allow_extra: true,
         };
-        let valid = JsonValue::from_str(r#"{"name":"ball","mass":1.5,"extra":true}"#).unwrap();
+        let valid = JsonValue::parse(r#"{"name":"ball","mass":1.5,"extra":true}"#).unwrap();
         assert!(schema.validate(&valid).is_ok());
 
-        let missing_mass = JsonValue::from_str(r#"{"name":"ball"}"#).unwrap();
+        let missing_mass = JsonValue::parse(r#"{"name":"ball"}"#).unwrap();
         assert!(schema.validate(&missing_mass).is_err());
     }
 
@@ -1493,35 +1489,35 @@ mod tests {
             required: vec![("x".into(), JsonSchema::Number)],
             allow_extra: false,
         };
-        let valid = JsonValue::from_str(r#"{"x":1}"#).unwrap();
+        let valid = JsonValue::parse(r#"{"x":1}"#).unwrap();
         assert!(schema.validate(&valid).is_ok());
 
-        let extra = JsonValue::from_str(r#"{"x":1,"y":2}"#).unwrap();
+        let extra = JsonValue::parse(r#"{"x":1,"y":2}"#).unwrap();
         assert!(schema.validate(&extra).is_err());
     }
 
     #[test]
     fn test_schema_array_of() {
         let schema = JsonSchema::ArrayOf(Box::new(JsonSchema::Number));
-        let valid = JsonValue::from_str("[1,2,3]").unwrap();
+        let valid = JsonValue::parse("[1,2,3]").unwrap();
         assert!(schema.validate(&valid).is_ok());
 
-        let invalid = JsonValue::from_str(r#"[1,"two",3]"#).unwrap();
+        let invalid = JsonValue::parse(r#"[1,"two",3]"#).unwrap();
         assert!(schema.validate(&invalid).is_err());
     }
 
     #[test]
     fn test_json_diff_same() {
-        let a = JsonValue::from_str(r#"{"x":1}"#).unwrap();
-        let b = JsonValue::from_str(r#"{"x":1}"#).unwrap();
+        let a = JsonValue::parse(r#"{"x":1}"#).unwrap();
+        let b = JsonValue::parse(r#"{"x":1}"#).unwrap();
         let diffs = json_diff(&a, &b);
         assert!(diffs.is_empty());
     }
 
     #[test]
     fn test_json_diff_different_value() {
-        let a = JsonValue::from_str(r#"{"x":1}"#).unwrap();
-        let b = JsonValue::from_str(r#"{"x":2}"#).unwrap();
+        let a = JsonValue::parse(r#"{"x":1}"#).unwrap();
+        let b = JsonValue::parse(r#"{"x":2}"#).unwrap();
         let diffs = json_diff(&a, &b);
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].path, "x");
@@ -1529,8 +1525,8 @@ mod tests {
 
     #[test]
     fn test_json_diff_added_key() {
-        let a = JsonValue::from_str(r#"{"x":1}"#).unwrap();
-        let b = JsonValue::from_str(r#"{"x":1,"y":2}"#).unwrap();
+        let a = JsonValue::parse(r#"{"x":1}"#).unwrap();
+        let b = JsonValue::parse(r#"{"x":1,"y":2}"#).unwrap();
         let diffs = json_diff(&a, &b);
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].path, "y");
@@ -1540,8 +1536,8 @@ mod tests {
 
     #[test]
     fn test_json_diff_removed_key() {
-        let a = JsonValue::from_str(r#"{"x":1,"y":2}"#).unwrap();
-        let b = JsonValue::from_str(r#"{"x":1}"#).unwrap();
+        let a = JsonValue::parse(r#"{"x":1,"y":2}"#).unwrap();
+        let b = JsonValue::parse(r#"{"x":1}"#).unwrap();
         let diffs = json_diff(&a, &b);
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].path, "y");
@@ -1551,8 +1547,8 @@ mod tests {
 
     #[test]
     fn test_json_diff_array() {
-        let a = JsonValue::from_str("[1,2,3]").unwrap();
-        let b = JsonValue::from_str("[1,2,4]").unwrap();
+        let a = JsonValue::parse("[1,2,3]").unwrap();
+        let b = JsonValue::parse("[1,2,4]").unwrap();
         let diffs = json_diff(&a, &b);
         assert_eq!(diffs.len(), 1);
         assert!(diffs[0].path.contains("[2]"));
@@ -1602,19 +1598,19 @@ mod tests {
     #[test]
     fn test_json_to_records() {
         let s = r#"[{"id":1},{"id":2}]"#;
-        let j = JsonValue::from_str(s).unwrap();
+        let j = JsonValue::parse(s).unwrap();
         let records = json_to_records(&j).unwrap();
         assert_eq!(records.len(), 2);
     }
 
     #[test]
     fn test_pretty_print() {
-        let j = JsonValue::from_str(r#"{"a":1,"b":[2,3]}"#).unwrap();
+        let j = JsonValue::parse(r#"{"a":1,"b":[2,3]}"#).unwrap();
         let pretty = j.to_json_pretty(2);
         assert!(pretty.contains('\n'));
         assert!(pretty.contains("\"a\""));
         // Should be parseable back
-        let reparsed = JsonValue::from_str(&pretty).unwrap();
+        let reparsed = JsonValue::parse(&pretty).unwrap();
         assert_eq!(reparsed.get("a").unwrap().as_f64(), Some(1.0));
     }
 
@@ -1626,7 +1622,7 @@ mod tests {
 
     #[test]
     fn test_as_object() {
-        let j = JsonValue::from_str(r#"{"a":1}"#).unwrap();
+        let j = JsonValue::parse(r#"{"a":1}"#).unwrap();
         assert!(j.as_object().is_some());
         assert!(JsonValue::Number(1.0).as_object().is_none());
     }
@@ -1660,7 +1656,7 @@ mod tests {
         w.end_array();
         let s = w.finish();
         assert_eq!(
-            JsonValue::from_str(&s).unwrap(),
+            JsonValue::parse(&s).unwrap(),
             JsonValue::Array(vec![JsonValue::Number(42.0)])
         );
     }
@@ -1674,7 +1670,7 @@ mod tests {
         w.write_value(&JsonValue::Str("three".to_string()));
         w.end_array();
         let s = w.finish();
-        let parsed = JsonValue::from_str(&s).unwrap();
+        let parsed = JsonValue::parse(&s).unwrap();
         let arr = parsed.as_array().unwrap();
         assert_eq!(arr.len(), 3);
     }
@@ -1689,7 +1685,7 @@ mod tests {
         w.write_value(&JsonValue::Number(2.0));
         w.end_object();
         let s = w.finish();
-        let parsed = JsonValue::from_str(&s).unwrap();
+        let parsed = JsonValue::parse(&s).unwrap();
         assert_eq!(parsed.get("x").unwrap().as_f64(), Some(1.0));
     }
 
@@ -1705,19 +1701,19 @@ mod tests {
 
     #[test]
     fn test_schema_from_object() {
-        let j = JsonValue::from_str(r#"{"name":"alice","age":30}"#).unwrap();
+        let j = JsonValue::parse(r#"{"name":"alice","age":30}"#).unwrap();
         let schema = JsonSchema::infer_from(&j);
-        let valid = JsonValue::from_str(r#"{"name":"bob","age":25}"#).unwrap();
+        let valid = JsonValue::parse(r#"{"name":"bob","age":25}"#).unwrap();
         assert!(schema.validate(&valid).is_ok());
     }
 
     #[test]
     fn test_schema_from_array() {
-        let j = JsonValue::from_str("[1,2,3]").unwrap();
+        let j = JsonValue::parse("[1,2,3]").unwrap();
         let schema = JsonSchema::infer_from(&j);
-        let valid = JsonValue::from_str("[4,5,6]").unwrap();
+        let valid = JsonValue::parse("[4,5,6]").unwrap();
         assert!(schema.validate(&valid).is_ok());
-        let invalid = JsonValue::from_str(r#"["a","b"]"#).unwrap();
+        let invalid = JsonValue::parse(r#"["a","b"]"#).unwrap();
         assert!(schema.validate(&invalid).is_err());
     }
 
@@ -1732,7 +1728,7 @@ mod tests {
 
     #[test]
     fn test_json_patch_add() {
-        let mut doc = JsonValue::from_str(r#"{"a":1}"#).unwrap();
+        let mut doc = JsonValue::parse(r#"{"a":1}"#).unwrap();
         let patch = JsonPatch::Add {
             path: "b".to_string(),
             value: JsonValue::Number(2.0),
@@ -1743,7 +1739,7 @@ mod tests {
 
     #[test]
     fn test_json_patch_remove() {
-        let mut doc = JsonValue::from_str(r#"{"a":1,"b":2}"#).unwrap();
+        let mut doc = JsonValue::parse(r#"{"a":1,"b":2}"#).unwrap();
         let patch = JsonPatch::Remove {
             path: "b".to_string(),
         };
@@ -1754,7 +1750,7 @@ mod tests {
 
     #[test]
     fn test_json_patch_replace() {
-        let mut doc = JsonValue::from_str(r#"{"a":1}"#).unwrap();
+        let mut doc = JsonValue::parse(r#"{"a":1}"#).unwrap();
         let patch = JsonPatch::Replace {
             path: "a".to_string(),
             value: JsonValue::Number(99.0),
@@ -1765,7 +1761,7 @@ mod tests {
 
     #[test]
     fn test_json_patch_sequence() {
-        let mut doc = JsonValue::from_str(r#"{"x":1}"#).unwrap();
+        let mut doc = JsonValue::parse(r#"{"x":1}"#).unwrap();
         let patches = vec![
             JsonPatch::Add {
                 path: "y".to_string(),
@@ -1785,7 +1781,7 @@ mod tests {
 
     #[test]
     fn test_jsonpath_root() {
-        let j = JsonValue::from_str(r#"{"a":1}"#).unwrap();
+        let j = JsonValue::parse(r#"{"a":1}"#).unwrap();
         let results = jsonpath_query(&j, "$");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].get("a").unwrap().as_f64(), Some(1.0));
@@ -1793,7 +1789,7 @@ mod tests {
 
     #[test]
     fn test_jsonpath_child() {
-        let j = JsonValue::from_str(r#"{"a":{"b":42}}"#).unwrap();
+        let j = JsonValue::parse(r#"{"a":{"b":42}}"#).unwrap();
         let results = jsonpath_query(&j, "$.a.b");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].as_f64(), Some(42.0));
@@ -1801,7 +1797,7 @@ mod tests {
 
     #[test]
     fn test_jsonpath_array_index() {
-        let j = JsonValue::from_str("[10,20,30]").unwrap();
+        let j = JsonValue::parse("[10,20,30]").unwrap();
         let results = jsonpath_query(&j, "$[1]");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].as_f64(), Some(20.0));
@@ -1809,14 +1805,14 @@ mod tests {
 
     #[test]
     fn test_jsonpath_wildcard() {
-        let j = JsonValue::from_str(r#"{"a":1,"b":2,"c":3}"#).unwrap();
+        let j = JsonValue::parse(r#"{"a":1,"b":2,"c":3}"#).unwrap();
         let results = jsonpath_query(&j, "$.*");
         assert_eq!(results.len(), 3);
     }
 
     #[test]
     fn test_jsonpath_array_wildcard() {
-        let j = JsonValue::from_str("[1,2,3]").unwrap();
+        let j = JsonValue::parse("[1,2,3]").unwrap();
         let results = jsonpath_query(&j, "$[*]");
         assert_eq!(results.len(), 3);
     }
@@ -1841,16 +1837,16 @@ mod tests {
             !compressed.contains("  "),
             "compressed should not contain double spaces"
         );
-        let parsed = JsonValue::from_str(&compressed).unwrap();
+        let parsed = JsonValue::parse(&compressed).unwrap();
         assert_eq!(parsed.get("a").unwrap().as_f64(), Some(1.0));
     }
 
     #[test]
     fn test_json_compress_roundtrip() {
-        let j = JsonValue::from_str(r#"{"x":1,"y":[2,3],"z":true}"#).unwrap();
+        let j = JsonValue::parse(r#"{"x":1,"y":[2,3],"z":true}"#).unwrap();
         let pretty = j.to_json_pretty(4);
         let compressed = json_compress(&pretty);
-        let reparsed = JsonValue::from_str(&compressed).unwrap();
+        let reparsed = JsonValue::parse(&compressed).unwrap();
         assert_eq!(reparsed, j);
     }
 
@@ -1872,10 +1868,10 @@ mod tests {
 
     #[test]
     fn test_json_compress_preserves_strings_with_spaces() {
-        let j = JsonValue::from_str(r#"{"msg":"hello world"}"#).unwrap();
+        let j = JsonValue::parse(r#"{"msg":"hello world"}"#).unwrap();
         let pretty = j.to_json_pretty(2);
         let compressed = json_compress(&pretty);
-        let reparsed = JsonValue::from_str(&compressed).unwrap();
+        let reparsed = JsonValue::parse(&compressed).unwrap();
         assert_eq!(reparsed.get("msg").unwrap().as_str(), Some("hello world"));
     }
 }

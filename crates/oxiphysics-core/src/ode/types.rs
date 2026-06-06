@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::ptr_arg)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{OdeSystem, rk45_step, solve_linear_system};
 
 /// Dormand-Prince RK45 integrator (struct form).
@@ -53,15 +50,15 @@ impl Verlet {
     /// Updates `x` to the new position and moves `x_prev` to the old `x`.
     ///
     /// Formula: `x_new = 2*x - x_prev + a * dt²`
-    pub fn step(x: &mut Vec<f64>, x_prev: &mut Vec<f64>, a: &[f64], dt: f64) {
+    pub fn step(x: &mut [f64], x_prev: &mut [f64], a: &[f64], dt: f64) {
         let x_new: Vec<f64> = x
             .iter()
             .zip(x_prev.iter())
             .zip(a.iter())
             .map(|((xi, xp), ai)| 2.0 * xi - xp + ai * dt * dt)
             .collect();
-        *x_prev = x.clone();
-        *x = x_new;
+        x_prev.copy_from_slice(x);
+        x.copy_from_slice(&x_new);
     }
 }
 /// Adaptive Dormand-Prince RK45 integrator that returns the full trajectory.
@@ -138,7 +135,6 @@ impl DormandPrince {
     ///
     /// The DOPRI5 error coefficients are the difference between the 5th- and
     /// 4th-order solutions in the standard Butcher tableau.
-    #[allow(clippy::too_many_arguments)]
     pub fn compute_error_norm(
         &self,
         y: &[f64],
@@ -204,21 +200,31 @@ impl BulirschStoer {
         h: f64,
         n: usize,
     ) -> Vec<f64> {
-        let dim = y.len();
+        let _dim = y.len();
         let dt = h / n as f64;
         let mut z0 = y.to_vec();
         let k1 = f(t, &z0);
-        let mut z1: Vec<f64> = (0..dim).map(|i| z0[i] + dt * k1[i]).collect();
+        let mut z1: Vec<f64> = z0
+            .iter()
+            .zip(k1.iter())
+            .map(|(zi, ki)| zi + dt * ki)
+            .collect();
         for m in 0..(n - 1) {
             let tm = t + (m + 1) as f64 * dt;
             let k = f(tm, &z1);
-            let z2: Vec<f64> = (0..dim).map(|i| z0[i] + 2.0 * dt * k[i]).collect();
+            let z2: Vec<f64> = z0
+                .iter()
+                .zip(k.iter())
+                .map(|(z0i, ki)| z0i + 2.0 * dt * ki)
+                .collect();
             z0 = z1;
             z1 = z2;
         }
         let k_last = f(t + h, &z1);
-        (0..dim)
-            .map(|i| 0.5 * (z0[i] + z1[i] + dt * k_last[i]))
+        z0.iter()
+            .zip(z1.iter())
+            .zip(k_last.iter())
+            .map(|((z0i, z1i), kli)| 0.5 * (z0i + z1i + dt * kli))
             .collect()
     }
     /// Richardson extrapolation of a triangular array `t_table`.
@@ -226,7 +232,7 @@ impl BulirschStoer {
     /// `t_table[k]` is the midpoint result using `n_k` substeps.
     /// Builds the Neville table and returns the highest-order estimate.
     pub fn extrapolate(t_table: &[Vec<f64>], n: usize) -> Vec<f64> {
-        let dim = t_table[0].len();
+        let _dim = t_table[0].len();
         let mut table: Vec<Vec<f64>> = t_table[..n].to_vec();
         for j in 1..n {
             for i in (j..n).rev() {
@@ -234,8 +240,8 @@ impl BulirschStoer {
                 let nj = 2 * (i - j + 1);
                 let ratio = (ni as f64 / nj as f64).powi(2);
                 let prev = table[i - 1].clone();
-                for d in 0..dim {
-                    table[i][d] = table[i][d] + (table[i][d] - prev[d]) / (ratio - 1.0);
+                for (td, &pd) in table[i].iter_mut().zip(prev.iter()) {
+                    *td += (*td - pd) / (ratio - 1.0);
                 }
             }
         }
@@ -800,13 +806,13 @@ impl LeapFrog {
         Self
     }
     /// Velocity kick: `v += a * dt`
-    pub fn kick(v: &mut Vec<f64>, a: &[f64], dt: f64) {
+    pub fn kick(v: &mut [f64], a: &[f64], dt: f64) {
         for (vi, ai) in v.iter_mut().zip(a.iter()) {
             *vi += ai * dt;
         }
     }
     /// Position drift: `x += v * dt`
-    pub fn drift(x: &mut Vec<f64>, v: &[f64], dt: f64) {
+    pub fn drift(x: &mut [f64], v: &[f64], dt: f64) {
         for (xi, vi) in x.iter_mut().zip(v.iter()) {
             *xi += vi * dt;
         }
@@ -836,14 +842,22 @@ impl StiffOdeSolver {
         let t_new = t + dt;
         let f0 = f(t, y);
         let gamma = self.gamma;
-        let mut z: Vec<f64> = (0..n).map(|i| y[i] + dt * f0[i]).collect();
+        let mut z: Vec<f64> = y
+            .iter()
+            .zip(f0.iter())
+            .map(|(yi, f0i)| yi + dt * f0i)
+            .collect();
         let fd_eps = 1e-7;
         let max_iter = 50usize;
         let tol = 1e-10_f64;
         for _ in 0..max_iter {
             let fz = f(t_new, &z);
-            let g: Vec<f64> = (0..n)
-                .map(|i| z[i] - y[i] - dt * ((1.0 - gamma) * f0[i] + gamma * fz[i]))
+            let g: Vec<f64> = z
+                .iter()
+                .zip(y.iter())
+                .zip(f0.iter())
+                .zip(fz.iter())
+                .map(|(((zi, yi), f0i), fzi)| zi - yi - dt * ((1.0 - gamma) * f0i + gamma * fzi))
                 .collect();
             let g_norm: f64 = g.iter().map(|v| v * v).sum::<f64>().sqrt();
             if g_norm < tol {
@@ -854,15 +868,15 @@ impl StiffOdeSolver {
                 let mut z_pert = z.clone();
                 z_pert[j] += fd_eps;
                 let f_pert = f(t_new, &z_pert);
-                for i in 0..n {
-                    let dfdz = (f_pert[i] - fz[i]) / fd_eps;
+                for (i, (fp, fz_i)) in f_pert.iter().zip(fz.iter()).enumerate() {
+                    let dfdz = (fp - fz_i) / fd_eps;
                     jac[i][j] = if i == j { 1.0 } else { 0.0 } - dt * gamma * dfdz;
                 }
             }
             let neg_g: Vec<f64> = g.iter().map(|v| -v).collect();
             if let Some(dz) = solve_linear_system(&jac, &neg_g) {
-                for i in 0..n {
-                    z[i] += dz[i];
+                for (zi, dzi) in z.iter_mut().zip(dz.iter()) {
+                    *zi += dzi;
                 }
             } else {
                 break;
@@ -913,7 +927,11 @@ impl Bdf2 {
         let h = dt;
         let (alpha, beta, rhs_const) = match &self.y_prev {
             Some(yp) => {
-                let rc: Vec<f64> = (0..n).map(|i| 2.0 * y[i] - 0.5 * yp[i]).collect();
+                let rc: Vec<f64> = y
+                    .iter()
+                    .zip(yp.iter())
+                    .map(|(&yi, &ypi)| 2.0 * yi - 0.5 * ypi)
+                    .collect();
                 (1.5_f64, h, rc)
             }
             None => {
@@ -925,8 +943,11 @@ impl Bdf2 {
         let fd_eps = 1e-7;
         for _ in 0..self.max_iter {
             let fz = f(t_new, &z);
-            let g: Vec<f64> = (0..n)
-                .map(|i| alpha * z[i] - rhs_const[i] - beta * fz[i])
+            let g: Vec<f64> = z
+                .iter()
+                .zip(rhs_const.iter())
+                .zip(fz.iter())
+                .map(|((zi, rci), fzi)| alpha * zi - rci - beta * fzi)
                 .collect();
             let g_norm: f64 = g.iter().map(|v| v * v).sum::<f64>().sqrt();
             if g_norm < self.newton_tol {
@@ -937,15 +958,15 @@ impl Bdf2 {
                 let mut z_pert = z.clone();
                 z_pert[j] += fd_eps;
                 let f_pert = f(t_new, &z_pert);
-                for i in 0..n {
-                    let dfdz_ij = (f_pert[i] - fz[i]) / fd_eps;
+                for (i, (fp, fz_i)) in f_pert.iter().zip(fz.iter()).enumerate() {
+                    let dfdz_ij = (fp - fz_i) / fd_eps;
                     jac[i][j] = if i == j { alpha } else { 0.0 } - beta * dfdz_ij;
                 }
             }
             let neg_g: Vec<f64> = g.iter().map(|v| -v).collect();
             if let Some(dz) = solve_linear_system(&jac, &neg_g) {
-                for i in 0..n {
-                    z[i] += dz[i];
+                for (zi, dzi) in z.iter_mut().zip(dz.iter()) {
+                    *zi += dzi;
                 }
             } else {
                 break;
@@ -979,10 +1000,19 @@ impl ImplicitEulerNewton {
         let t_new = t + dt;
         let fd_eps = 1e-7_f64;
         let f0 = f(t, y);
-        let mut z: Vec<f64> = (0..n).map(|i| y[i] + dt * f0[i]).collect();
+        let mut z: Vec<f64> = y
+            .iter()
+            .zip(f0.iter())
+            .map(|(yi, f0i)| yi + dt * f0i)
+            .collect();
         for _ in 0..self.max_iter {
             let fz = f(t_new, &z);
-            let g: Vec<f64> = (0..n).map(|i| z[i] - y[i] - dt * fz[i]).collect();
+            let g: Vec<f64> = z
+                .iter()
+                .zip(y.iter())
+                .zip(fz.iter())
+                .map(|((zi, yi), fzi)| zi - yi - dt * fzi)
+                .collect();
             let g_norm: f64 = g.iter().map(|v| v * v).sum::<f64>().sqrt();
             if g_norm < self.tol {
                 break;
@@ -992,15 +1022,15 @@ impl ImplicitEulerNewton {
                 let mut z_pert = z.clone();
                 z_pert[j] += fd_eps;
                 let f_pert = f(t_new, &z_pert);
-                for i in 0..n {
-                    let dfdz = (f_pert[i] - fz[i]) / fd_eps;
+                for (i, (fp, fz_i)) in f_pert.iter().zip(fz.iter()).enumerate() {
+                    let dfdz = (fp - fz_i) / fd_eps;
                     jac[i][j] = if i == j { 1.0 } else { 0.0 } - dt * dfdz;
                 }
             }
             let neg_g: Vec<f64> = g.iter().map(|v| -v).collect();
             if let Some(dz) = solve_linear_system(&jac, &neg_g) {
-                for i in 0..n {
-                    z[i] += dz[i];
+                for (zi, dzi) in z.iter_mut().zip(dz.iter()) {
+                    *zi += dzi;
                 }
             } else {
                 break;
@@ -1047,11 +1077,19 @@ impl BdfOrder2 {
         let n = y_n.len();
         let t_new = t + dt;
         let fd_eps = 1e-7_f64;
-        let mut z: Vec<f64> = (0..n).map(|i| 2.0 * y_n[i] - y_nm1[i]).collect();
+        let mut z: Vec<f64> = y_n
+            .iter()
+            .zip(y_nm1.iter())
+            .map(|(yn, ynm1)| 2.0 * yn - ynm1)
+            .collect();
         for _ in 0..self.max_iter {
             let fz = f(t_new, &z);
-            let g: Vec<f64> = (0..n)
-                .map(|i| 1.5 * z[i] - 2.0 * y_n[i] + 0.5 * y_nm1[i] - dt * fz[i])
+            let g: Vec<f64> = z
+                .iter()
+                .zip(y_n.iter())
+                .zip(y_nm1.iter())
+                .zip(fz.iter())
+                .map(|(((zi, yni), ynm1i), fzi)| 1.5 * zi - 2.0 * yni + 0.5 * ynm1i - dt * fzi)
                 .collect();
             let g_norm: f64 = g.iter().map(|v| v * v).sum::<f64>().sqrt();
             if g_norm < self.tol {
@@ -1062,15 +1100,15 @@ impl BdfOrder2 {
                 let mut z_pert = z.clone();
                 z_pert[j] += fd_eps;
                 let f_pert = f(t_new, &z_pert);
-                for i in 0..n {
-                    let dfdz = (f_pert[i] - fz[i]) / fd_eps;
+                for (i, (fp, fz_i)) in f_pert.iter().zip(fz.iter()).enumerate() {
+                    let dfdz = (fp - fz_i) / fd_eps;
                     jac[i][j] = if i == j { 1.5 } else { 0.0 } - dt * dfdz;
                 }
             }
             let neg_g: Vec<f64> = g.iter().map(|v| -v).collect();
             if let Some(dz) = solve_linear_system(&jac, &neg_g) {
-                for i in 0..n {
-                    z[i] += dz[i];
+                for (zi, dzi) in z.iter_mut().zip(dz.iter()) {
+                    *zi += dzi;
                 }
             } else {
                 break;

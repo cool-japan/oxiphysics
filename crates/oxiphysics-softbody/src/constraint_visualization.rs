@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,7 +7,8 @@
 //! mapping) and per-particle energy density maps that help diagnose solver
 //! convergence and constraint quality during development.
 
-#![allow(dead_code)]
+/// A constraint record: `(particle_a, particle_b, rest_length)`.
+pub type ConstraintRecord = (usize, usize, f64);
 
 // ---------------------------------------------------------------------------
 // ConstraintDebugInfo
@@ -92,7 +92,7 @@ impl ConstraintVisualization {
 /// Returns a `Vec`f64` of the same length as `constraints`.
 pub fn compute_constraint_violations(
     positions: &[[f64; 3]],
-    constraints: &[(usize, usize, f64)],
+    constraints: &[ConstraintRecord],
 ) -> Vec<f64> {
     constraints
         .iter()
@@ -222,7 +222,7 @@ pub fn constraint_force_magnitude(violation: f64, stiffness: f64) -> f64 {
 /// Returns a `Vec`f64` of per-particle energy (J) with length `positions.len()`.
 pub fn energy_density_map(
     positions: &[[f64; 3]],
-    constraints: &[(usize, usize, f64)],
+    constraints: &[ConstraintRecord],
     stiffness: f64,
 ) -> Vec<f64> {
     let mut energy = vec![0.0_f64; positions.len()];
@@ -267,7 +267,7 @@ mod tests {
     use super::*;
 
     // Helper: build a simple two-particle line
-    fn two_particle_setup() -> (Vec<[f64; 3]>, Vec<(usize, usize, f64)>) {
+    fn two_particle_setup() -> (Vec<[f64; 3]>, Vec<ConstraintRecord>) {
         let positions = vec![[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]];
         let constraints = vec![(0usize, 1usize, 1.0_f64)];
         (positions, constraints)
@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn test_violation_empty_constraints() {
         let positions = vec![[0.0, 0.0, 0.0]];
-        let constraints: Vec<(usize, usize, f64)> = vec![];
+        let constraints: Vec<ConstraintRecord> = vec![];
         let viols = compute_constraint_violations(&positions, &constraints);
         assert!(viols.is_empty());
     }

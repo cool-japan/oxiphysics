@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::too_many_arguments)]
 use crate::ml_potential::{MlPotential, cutoff_function};
 use oxiphysics_core::math::Vec3;
 
@@ -13,7 +12,6 @@ use super::types::{AngularTriplet, EnsembleNnp, FeedForwardPotential, NnAtomisti
 /// G5 = 2^(1-zeta) * sum_{j,k≠j} (1 + lambda*cos(theta))^zeta
 ///        * exp(-eta*(r_ij^2 + r_ik^2)) * fc(r_ij) * fc(r_ik)
 /// (No r_jk term, unlike G4.)
-#[allow(dead_code)]
 pub fn compute_g5(
     r_ij: f64,
     r_ik: f64,
@@ -35,7 +33,6 @@ pub fn compute_g5(
 }
 /// Radial power-type symmetry function (BP G3, less common):
 /// G3 = sum_j cos(kappa * r_ij) * fc(r_ij)
-#[allow(dead_code)]
 pub fn compute_g3(r_ij: f64, kappa: f64, rc: f64) -> f64 {
     if r_ij >= rc {
         return 0.0;
@@ -46,7 +43,6 @@ pub fn compute_g3(r_ij: f64, kappa: f64, rc: f64) -> f64 {
 ///
 /// Returns the maximum absolute difference between analytic and numerical
 /// forces across all atoms and Cartesian components.
-#[allow(dead_code)]
 pub fn energy_force_consistency(
     potential: &FeedForwardPotential,
     positions: &[Vec3],
@@ -79,7 +75,6 @@ pub fn energy_force_consistency(
 /// the first `n_basis` Chebyshev polynomials T_k(x) are evaluated.
 ///
 /// Returns a vector of length `n_basis`.
-#[allow(dead_code)]
 pub fn chebyshev_descriptor(r: f64, rc: f64, n_basis: usize) -> Vec<f64> {
     if n_basis == 0 || r >= rc {
         return vec![0.0; n_basis];
@@ -99,7 +94,6 @@ pub fn chebyshev_descriptor(r: f64, rc: f64, n_basis: usize) -> Vec<f64> {
 /// Build a full pair descriptor: \[r, r/rc\] + Chebyshev expansion of length `n_cheb`.
 ///
 /// Returns a vector of length `2 + n_cheb`.
-#[allow(dead_code)]
 pub fn pair_descriptor(r: f64, rc: f64, n_cheb: usize) -> Vec<f64> {
     let mut d = vec![r, r / rc];
     d.extend(chebyshev_descriptor(r, rc, n_cheb));
@@ -111,7 +105,6 @@ pub fn pair_descriptor(r: f64, rc: f64, n_cheb: usize) -> Vec<f64> {
 /// G4 = 2^(1-zeta) * (1 + lambda*cos(theta))^zeta
 ///        * exp(-eta*(r_ij^2 + r_ik^2 + r_jk^2)) * fc(r_ij) * fc(r_ik) * fc(r_jk)
 /// ```
-#[allow(dead_code)]
 pub fn compute_g4(
     r_ij: f64,
     r_ik: f64,
@@ -138,7 +131,6 @@ pub fn compute_g4(
 /// Returns the index of the candidate with the highest disagreement.
 ///
 /// Returns `None` if the pool is empty.
-#[allow(dead_code)]
 pub fn query_by_committee(ensemble: &EnsembleNnp, pool: &[Vec<f64>]) -> Option<usize> {
     if pool.is_empty() {
         return None;
@@ -157,7 +149,6 @@ pub fn query_by_committee(ensemble: &EnsembleNnp, pool: &[Vec<f64>]) -> Option<u
 /// Returns the disagreement (std) for every candidate in the pool.
 ///
 /// Useful for ranking all candidates by uncertainty.
-#[allow(dead_code)]
 pub fn committee_disagreements(ensemble: &EnsembleNnp, pool: &[Vec<f64>]) -> Vec<f64> {
     pool.iter()
         .map(|desc| ensemble.predict_energy(desc).1)
@@ -167,7 +158,6 @@ pub fn committee_disagreements(ensemble: &EnsembleNnp, pool: &[Vec<f64>]) -> Vec
 ///
 /// Returns `(initial_energy, final_energy, max_drift)` where `max_drift` is the
 /// maximum |E(t) - E(0)| normalised by |E(0)|.
-#[allow(dead_code)]
 pub fn energy_conservation_check(
     potential: &FeedForwardPotential,
     mut system: NnAtomisticSystem,
@@ -1171,7 +1161,6 @@ mod tests {
     }
 }
 /// Collect all angular triplets (i, j, k) within cutoff.
-#[allow(dead_code)]
 pub fn collect_triplets(positions: &[[f64; 3]], cutoff: f64) -> Vec<AngularTriplet> {
     let n = positions.len();
     let mut triplets = Vec::new();
@@ -1201,7 +1190,6 @@ pub fn collect_triplets(positions: &[[f64; 3]], cutoff: f64) -> Vec<AngularTripl
     triplets
 }
 /// Compute cosine of the angle at atom i formed by atoms j and k.
-#[allow(dead_code)]
 pub fn triplet_cos_angle(positions: &[[f64; 3]], triplet: AngularTriplet) -> f64 {
     let ri = positions[triplet.i];
     let rj = positions[triplet.j];
@@ -1217,7 +1205,6 @@ pub fn triplet_cos_angle(positions: &[[f64; 3]], triplet: AngularTriplet) -> f64
     (dot / (nj * nk)).clamp(-1.0, 1.0)
 }
 /// Fourier-type angular basis: \[cos(m*theta)\] for m = 0..n_max.
-#[allow(dead_code)]
 pub fn angular_fourier_basis(cos_theta: f64, n_max: usize) -> Vec<f64> {
     let theta = cos_theta.clamp(-1.0, 1.0).acos();
     (0..n_max).map(|m| (m as f64 * theta).cos()).collect()

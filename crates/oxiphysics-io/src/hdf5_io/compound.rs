@@ -3,8 +3,6 @@
 
 //! Compound datatype helpers.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use super::dataset::Hdf5Dataset;

@@ -223,10 +223,10 @@ mod tests {
 
     #[test]
     fn test_write_read_header_roundtrip() {
-        let path = "/tmp/test_oxiphysics_header.bin";
+        let path = std::env::temp_dir().join("test_oxiphysics_header.bin");
         let hdr = sample_header();
-        write_binary_header(path, &hdr).unwrap();
-        let hdr2 = read_binary_header(path).unwrap();
+        write_binary_header(path.to_str().unwrap_or(""), &hdr).unwrap();
+        let hdr2 = read_binary_header(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(hdr2.magic, *b"OXIP");
         assert_eq!(hdr2.version, 1);
         assert_eq!(hdr2.n_atoms, 100);
@@ -237,13 +237,13 @@ mod tests {
 
     #[test]
     fn test_header_magic() {
-        let path = "/tmp/test_oxiphysics_header_magic.bin";
+        let path = std::env::temp_dir().join("test_oxiphysics_header_magic.bin");
         let hdr = BinaryHeader {
             magic: *b"TEST",
             ..sample_header()
         };
-        write_binary_header(path, &hdr).unwrap();
-        let hdr2 = read_binary_header(path).unwrap();
+        write_binary_header(path.to_str().unwrap_or(""), &hdr).unwrap();
+        let hdr2 = read_binary_header(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(hdr2.magic, *b"TEST");
     }
 
@@ -254,14 +254,14 @@ mod tests {
 
     #[test]
     fn test_write_read_frame_roundtrip() {
-        let path = "/tmp/test_oxiphysics_frame.bin";
+        let path = std::env::temp_dir().join("test_oxiphysics_frame.bin");
         let positions = vec![[1.0_f32, 2.0, 3.0], [4.0, 5.0, 6.0], [-1.0, 0.0, 0.5]];
         {
-            let mut file = std::fs::File::create(path).unwrap();
+            let mut file = std::fs::File::create(&path).unwrap();
             write_frame_binary(&mut file, &positions).unwrap();
         }
         {
-            let mut file = std::fs::File::open(path).unwrap();
+            let mut file = std::fs::File::open(&path).unwrap();
             let back = read_frame_binary(&mut file, 3).unwrap();
             assert_eq!(back.len(), 3);
             assert!((back[0][0] - 1.0).abs() < 1e-6);
@@ -271,14 +271,14 @@ mod tests {
 
     #[test]
     fn test_write_read_frame_single_atom() {
-        let path = "/tmp/test_oxiphysics_frame_single.bin";
+        let path = std::env::temp_dir().join("test_oxiphysics_frame_single.bin");
         let positions = vec![[0.1_f32, 0.2, 0.3]];
         {
-            let mut file = std::fs::File::create(path).unwrap();
+            let mut file = std::fs::File::create(&path).unwrap();
             write_frame_binary(&mut file, &positions).unwrap();
         }
         {
-            let mut file = std::fs::File::open(path).unwrap();
+            let mut file = std::fs::File::open(&path).unwrap();
             let back = read_frame_binary(&mut file, 1).unwrap();
             assert!((back[0][1] - 0.2).abs() < 1e-6);
         }
@@ -286,13 +286,13 @@ mod tests {
 
     #[test]
     fn test_write_read_empty_frame() {
-        let path = "/tmp/test_oxiphysics_frame_empty.bin";
+        let path = std::env::temp_dir().join("test_oxiphysics_frame_empty.bin");
         {
-            let mut file = std::fs::File::create(path).unwrap();
+            let mut file = std::fs::File::create(&path).unwrap();
             write_frame_binary(&mut file, &[]).unwrap();
         }
         {
-            let mut file = std::fs::File::open(path).unwrap();
+            let mut file = std::fs::File::open(&path).unwrap();
             let back = read_frame_binary(&mut file, 0).unwrap();
             assert!(back.is_empty());
         }
@@ -360,16 +360,16 @@ mod tests {
 
     #[test]
     fn test_multiple_frames_sequential() {
-        let path = "/tmp/test_oxiphysics_multiframe.bin";
+        let path = std::env::temp_dir().join("test_oxiphysics_multiframe.bin");
         let frame1 = vec![[1.0_f32, 0.0, 0.0]];
         let frame2 = vec![[2.0_f32, 0.0, 0.0]];
         {
-            let mut file = std::fs::File::create(path).unwrap();
+            let mut file = std::fs::File::create(&path).unwrap();
             write_frame_binary(&mut file, &frame1).unwrap();
             write_frame_binary(&mut file, &frame2).unwrap();
         }
         {
-            let mut file = std::fs::File::open(path).unwrap();
+            let mut file = std::fs::File::open(&path).unwrap();
             let f1 = read_frame_binary(&mut file, 1).unwrap();
             let f2 = read_frame_binary(&mut file, 1).unwrap();
             assert!((f1[0][0] - 1.0).abs() < 1e-6);
@@ -379,25 +379,25 @@ mod tests {
 
     #[test]
     fn test_header_dt_precision() {
-        let path = "/tmp/test_oxiphysics_header_dt.bin";
+        let path = std::env::temp_dir().join("test_oxiphysics_header_dt.bin");
         let hdr = BinaryHeader {
             dt: 1.23456789012345e-4,
             ..sample_header()
         };
-        write_binary_header(path, &hdr).unwrap();
-        let hdr2 = read_binary_header(path).unwrap();
+        write_binary_header(path.to_str().unwrap_or(""), &hdr).unwrap();
+        let hdr2 = read_binary_header(path.to_str().unwrap_or("")).unwrap();
         assert!((hdr2.dt - 1.23456789012345e-4).abs() < 1e-18);
     }
 
     #[test]
     fn test_header_large_n_atoms() {
-        let path = "/tmp/test_oxiphysics_header_large.bin";
+        let path = std::env::temp_dir().join("test_oxiphysics_header_large.bin");
         let hdr = BinaryHeader {
             n_atoms: 1_000_000,
             ..sample_header()
         };
-        write_binary_header(path, &hdr).unwrap();
-        let hdr2 = read_binary_header(path).unwrap();
+        write_binary_header(path.to_str().unwrap_or(""), &hdr).unwrap();
+        let hdr2 = read_binary_header(path.to_str().unwrap_or("")).unwrap();
         assert_eq!(hdr2.n_atoms, 1_000_000);
     }
 

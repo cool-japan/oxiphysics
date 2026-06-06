@@ -12,8 +12,6 @@ use crate::particle::SoftParticle;
 use oxiphysics_core::math::Real;
 
 use super::functions::SoftConstraint;
-#[allow(unused_imports)]
-use super::functions::*;
 use super::types::VolumeConstraint;
 
 impl SoftConstraint for VolumeConstraint {

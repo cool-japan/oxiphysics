@@ -2,12 +2,11 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
+use super::types::D2Q9;
+#[cfg(test)]
 use super::types::{
-    D2Q9, D2Q9Grid, D3Q19, D3Q27, GuoBodyForce, Lattice, LatticeD2Q9Grid, LatticeDimensions,
-    LatticeType, MrtCollision, SmagorinskyModel, TrtCollision,
+    D2Q9Grid, D3Q19, D3Q27, GuoBodyForce, Lattice, LatticeD2Q9Grid, LatticeDimensions, LatticeType,
+    MrtCollision, SmagorinskyModel, TrtCollision,
 };
 
 /// D2Q9 weights.
@@ -185,9 +184,9 @@ mod tests {
     #[test]
     fn test_d2q9grid_feq_zero_velocity() {
         let rho = 2.0;
-        for alpha in 0..9 {
+        for (alpha, &w) in D2Q9_WEIGHTS.iter().enumerate() {
             let feq = D2Q9Grid::feq(rho, 0.0, 0.0, alpha);
-            let expected = D2Q9_WEIGHTS[alpha] * rho;
+            let expected = w * rho;
             assert!(
                 (feq - expected).abs() < 1e-14,
                 "feq[{alpha}] = {feq}, expected {expected}"
@@ -284,7 +283,6 @@ mod tests {
 /// D2Q9 MRT transformation matrix M (row vectors are the 9 modes).
 ///
 /// Based on Lallemand & Luo (2000).
-#[allow(dead_code)]
 pub const MRT_M: [[f64; 9]; 9] = [
     [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
     [-4.0, -1.0, -1.0, -1.0, -1.0, 2.0, 2.0, 2.0, 2.0],
@@ -429,14 +427,12 @@ mod expanded_tests {
     }
 }
 /// Compute macroscopic density from a D2Q9 distribution.
-#[allow(dead_code)]
 pub fn compute_rho(f: &[f64; 9]) -> f64 {
     f.iter().sum()
 }
 /// Compute macroscopic velocity `[ux, uy]` from a D2Q9 distribution.
 ///
 /// Requires `rho > 0`.
-#[allow(dead_code)]
 pub fn compute_velocity(f: &[f64; 9], rho: f64) -> [f64; 2] {
     let mut mx = 0.0_f64;
     let mut my = 0.0_f64;
@@ -453,7 +449,6 @@ pub fn compute_velocity(f: &[f64; 9], rho: f64) -> [f64; 2] {
 /// Apply BGK collision in-place to a single D2Q9 node.
 ///
 /// Relaxes `f` toward equilibrium at `(rho, ux, uy)` with frequency `omega`.
-#[allow(dead_code)]
 pub fn bgk_collision(f: &mut [f64; 9], rho: f64, ux: f64, uy: f64, omega: f64) {
     let feq = D2Q9::equilibrium(rho, ux, uy);
     for i in 0..9 {
@@ -465,9 +460,8 @@ pub fn bgk_collision(f: &mut [f64; 9], rho: f64, ux: f64, uy: f64, omega: f64) {
 /// `f` is laid out as `f[y * nx * 9 + x * 9 + alpha]` (flat, row-major).
 /// After streaming, distribution `alpha` at `(x, y)` is pulled from
 /// `(x - cx_alpha, y - cy_alpha)` (periodic).
-#[allow(dead_code)]
-pub fn stream_d2q9(f: &mut Vec<f64>, nx: usize, ny: usize) {
-    let f_old = f.clone();
+pub fn stream_d2q9(f: &mut [f64], nx: usize, ny: usize) {
+    let f_old = f.to_owned();
     for y in 0..ny {
         for x in 0..nx {
             let dst = (y * nx + x) * 9;
@@ -485,9 +479,8 @@ pub fn stream_d2q9(f: &mut Vec<f64>, nx: usize, ny: usize) {
 /// D3Q19 full periodic pull-scheme streaming step.
 ///
 /// `f` is laid out as `f[(z * ny * nx + y * nx + x) * 19 + alpha]`.
-#[allow(dead_code)]
-pub fn stream_d3q19(f: &mut Vec<f64>, nx: usize, ny: usize, nz: usize) {
-    let f_old = f.clone();
+pub fn stream_d3q19(f: &mut [f64], nx: usize, ny: usize, nz: usize) {
+    let f_old = f.to_owned();
     for z in 0..nz {
         for y in 0..ny {
             for x in 0..nx {
@@ -509,7 +502,6 @@ pub fn stream_d3q19(f: &mut Vec<f64>, nx: usize, ny: usize, nz: usize) {
 /// Compute the D2Q9 equilibrium distribution for density `rho` and velocity `(ux, uy)`.
 ///
 /// Returns `[feq_0, ..., feq_8]`.
-#[allow(dead_code)]
 pub fn feq_d2q9(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
     let u_sq = ux * ux + uy * uy;
     let mut feq = [0.0_f64; 9];
@@ -526,7 +518,6 @@ pub fn feq_d2q9(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
 /// Compute the D3Q19 equilibrium distribution for density `rho` and velocity `(ux, uy, uz)`.
 ///
 /// Returns `[feq_0, ..., feq_18]`.
-#[allow(dead_code)]
 pub fn feq_d3q19(rho: f64, ux: f64, uy: f64, uz: f64) -> [f64; 19] {
     let u_sq = ux * ux + uy * uy + uz * uz;
     let mut feq = [0.0_f64; 19];
@@ -545,7 +536,6 @@ pub fn feq_d3q19(rho: f64, ux: f64, uy: f64, uz: f64) -> [f64; 19] {
 ///
 /// `f` must have length 9.
 /// Returns `(rho, ux, uy)`.
-#[allow(dead_code)]
 pub fn macros_d2q9(f: &[f64]) -> (f64, f64, f64) {
     debug_assert_eq!(f.len(), 9, "macros_d2q9: f must have 9 elements");
     let mut rho = 0.0_f64;
@@ -566,7 +556,6 @@ pub fn macros_d2q9(f: &[f64]) -> (f64, f64, f64) {
 ///
 /// Reverses all distribution functions in-place: `f[alpha] ↔ f[opposite(alpha)]`.
 /// This implements a no-slip boundary at the wall node.
-#[allow(dead_code)]
 pub fn bounce_back_d2q9(f: &mut [f64; 9]) {
     let tmp = *f;
     for a in 0..9 {
@@ -576,7 +565,6 @@ pub fn bounce_back_d2q9(f: &mut [f64; 9]) {
 /// Apply full-way bounce-back for a wall node in D3Q19.
 ///
 /// Reverses all distribution functions in-place: `f[alpha] ↔ f[opposite(alpha)]`.
-#[allow(dead_code)]
 pub fn bounce_back_d3q19(f: &mut [f64; 19]) {
     let tmp = *f;
     for a in 0..19 {
@@ -808,14 +796,12 @@ mod freefunction_tests {
 /// Compute the zeroth-order Hermite expansion coefficient `a^(0)` = rho.
 ///
 /// The zeroth-order coefficient is simply the macroscopic density.
-#[allow(dead_code)]
 pub fn hermite_a0(f: &[f64; 9]) -> f64 {
     f.iter().sum()
 }
 /// Compute the first-order Hermite coefficient `a^(1)_alpha` = rho * u_alpha.
 ///
 /// Returns `[rho*ux, rho*uy]` — the momentum vector.
-#[allow(dead_code)]
 pub fn hermite_a1(f: &[f64; 9]) -> [f64; 2] {
     let mut mx = 0.0_f64;
     let mut my = 0.0_f64;
@@ -831,7 +817,6 @@ pub fn hermite_a1(f: &[f64; 9]) -> [f64; 2] {
 /// - `Pxx = sum_i f_i * cx_i * cx_i`
 /// - `Pxy = sum_i f_i * cx_i * cy_i`
 /// - `Pyy = sum_i f_i * cy_i * cy_i`
-#[allow(dead_code)]
 pub fn hermite_a2(f: &[f64; 9]) -> [f64; 3] {
     let mut pxx = 0.0_f64;
     let mut pxy = 0.0_f64;
@@ -848,7 +833,6 @@ pub fn hermite_a2(f: &[f64; 9]) -> [f64; 3] {
 /// Compute second-order Hermite coefficients for a D3Q19 distribution.
 ///
 /// Returns `[Pxx, Pxy, Pxz, Pyy, Pyz, Pzz]`.
-#[allow(dead_code)]
 pub fn hermite_a2_3d(f: &[f64; 19]) -> [f64; 6] {
     let mut pxx = 0.0_f64;
     let mut pxy = 0.0_f64;
@@ -875,7 +859,6 @@ pub fn hermite_a2_3d(f: &[f64; 19]) -> [f64; 6] {
 /// `f_eq_i = w_i * (a0 + cx*a1x/cs2 + cy*a1y/cs2
 ///           + (cx*cx - cs2)*a2xx/(2*cs4) + cx*cy*a2xy/cs4
 ///           + (cy*cy - cs2)*a2yy/(2*cs4))`
-#[allow(dead_code)]
 pub fn equilibrium_from_hermite(_a0: f64, _a1: [f64; 2], _a2: [f64; 3]) -> [f64; 9] {
     let rho = _a0;
     let ux = if rho.abs() > 1e-15 { _a1[0] / rho } else { 0.0 };
@@ -886,60 +869,49 @@ pub fn equilibrium_from_hermite(_a0: f64, _a1: [f64; 2], _a2: [f64; 3]) -> [f64;
 ///
 /// `u_lattice = u_physical / u_ref * Ma_target * cs`
 /// where `cs = 1/sqrt(3)` in lattice units.
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn scale_to_lattice_velocity(u_physical: f64, u_ref: f64, Ma_target: f64) -> f64 {
+pub fn scale_to_lattice_velocity(u_physical: f64, u_ref: f64, ma_target: f64) -> f64 {
     let cs = CS2.sqrt();
-    (u_physical / u_ref) * Ma_target * cs
+    (u_physical / u_ref) * ma_target * cs
 }
 /// Convert lattice viscosity to relaxation time tau.
 ///
 /// `tau = nu_lattice / cs^2 + 0.5`
-#[allow(dead_code)]
 pub fn viscosity_to_tau(nu_lattice: f64) -> f64 {
     nu_lattice / CS2 + 0.5
 }
 /// Convert relaxation time tau to lattice kinematic viscosity.
 ///
 /// `nu_lattice = cs^2 * (tau - 0.5)`
-#[allow(dead_code)]
 pub fn tau_to_viscosity(tau: f64) -> f64 {
     CS2 * (tau - 0.5)
 }
 /// Convert relaxation frequency omega to Reynolds number given grid resolution and velocity.
 ///
 /// `Re = u_lb * L / nu_lb`
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn omega_to_reynolds(omega: f64, u_lb: f64, L: usize) -> f64 {
+pub fn omega_to_reynolds(omega: f64, u_lb: f64, l: usize) -> f64 {
     let nu = tau_to_viscosity(1.0 / omega);
-    u_lb * L as f64 / nu
+    u_lb * l as f64 / nu
 }
 /// Compute the target omega for a desired Reynolds number.
 ///
 /// `omega = 1 / (Re * nu / (u_lb * L) + 0.5)`
-#[allow(dead_code)]
-#[allow(non_snake_case)]
-pub fn reynolds_to_omega(Re: f64, u_lb: f64, L: usize) -> f64 {
-    let nu = u_lb * L as f64 / Re;
+pub fn reynolds_to_omega(re: f64, u_lb: f64, l: usize) -> f64 {
+    let nu = u_lb * l as f64 / re;
     1.0 / viscosity_to_tau(nu)
 }
 /// Compute the lattice Mach number for a given lattice velocity.
 ///
 /// `Ma = u / cs`
-#[allow(dead_code)]
 pub fn mach_number(u: f64) -> f64 {
     u / CS2.sqrt()
 }
 /// Compute acoustic pressure from density using equation of state `p = cs^2 * rho`.
-#[allow(dead_code)]
 pub fn acoustic_pressure(rho: f64) -> f64 {
     CS2 * rho
 }
 /// Compute the non-equilibrium stress tensor component P_xy from f and f_eq.
 ///
 /// `Pi_xy = sum_i (f_i - f_eq_i) * cx_i * cy_i`
-#[allow(dead_code)]
 pub fn non_equilibrium_stress_xy(f: &[f64; 9], feq: &[f64; 9]) -> f64 {
     let mut pi_xy = 0.0_f64;
     for i in 0..9 {
@@ -953,7 +925,6 @@ pub fn non_equilibrium_stress_xy(f: &[f64; 9], feq: &[f64; 9]) -> f64 {
 ///
 /// `nu_eff = nu_0 + (sqrt(nu_0^2 + 18 * C_s^2 * |S|) - nu_0) / 2`
 /// where `|S|` is the strain-rate magnitude estimated from Pi_neq.
-#[allow(dead_code)]
 pub fn effective_viscosity_smagorinsky(nu0: f64, cs_sgs: f64, pi_neq_mag: f64) -> f64 {
     let discriminant = nu0 * nu0 + 18.0 * cs_sgs * cs_sgs * pi_neq_mag;
     (discriminant.sqrt() - nu0) * 0.5 + nu0
@@ -961,7 +932,6 @@ pub fn effective_viscosity_smagorinsky(nu0: f64, cs_sgs: f64, pi_neq_mag: f64) -
 /// Compute the strain rate tensor magnitude from non-equilibrium distributions (D2Q9).
 ///
 /// `|S| = sqrt(2 * Pi_neq : Pi_neq) / (2 * rho * cs^2)`
-#[allow(dead_code)]
 pub fn strain_rate_magnitude_d2q9(f: &[f64; 9], feq: &[f64; 9], rho: f64, tau: f64) -> f64 {
     let mut pi_sq = 0.0_f64;
     for i in 0..9 {
@@ -977,7 +947,6 @@ pub fn strain_rate_magnitude_d2q9(f: &[f64; 9], feq: &[f64; 9], rho: f64, tau: f
 ///
 /// Equivalent to the standard BGK equilibrium but written explicitly in terms
 /// of the Hermite basis functions for clarity and validation purposes.
-#[allow(dead_code)]
 pub fn d2q9_hermite_equilibrium(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
     let u_sq = ux * ux + uy * uy;
     let mut feq = [0.0_f64; 9];
@@ -991,7 +960,6 @@ pub fn d2q9_hermite_equilibrium(rho: f64, ux: f64, uy: f64) -> [f64; 9] {
     feq
 }
 /// Compute D3Q19 equilibrium using explicit Hermite expansion up to order 2.
-#[allow(dead_code)]
 pub fn d3q19_hermite_equilibrium(rho: f64, ux: f64, uy: f64, uz: f64) -> [f64; 19] {
     let u_sq = ux * ux + uy * uy + uz * uz;
     let mut feq = [0.0_f64; 19];
@@ -1008,7 +976,6 @@ pub fn d3q19_hermite_equilibrium(rho: f64, ux: f64, uy: f64, uz: f64) -> [f64; 1
 /// Compute the full pressure tensor (momentum flux) for D2Q9.
 ///
 /// Returns `[[Pxx, Pxy\], [Pyx, Pyy]]` as a flat `[f64; 4]` in row-major order.
-#[allow(dead_code)]
 pub fn pressure_tensor_d2q9(f: &[f64; 9]) -> [f64; 4] {
     let mut pxx = 0.0_f64;
     let mut pxy = 0.0_f64;
@@ -1025,7 +992,6 @@ pub fn pressure_tensor_d2q9(f: &[f64; 9]) -> [f64; 4] {
 /// Compute the energy flux vector `q_alpha = sum_i f_i * c_i^2 * c_alpha` for D2Q9.
 ///
 /// Returns `[qx, qy]`.
-#[allow(dead_code)]
 pub fn energy_flux_d2q9(f: &[f64; 9]) -> [f64; 2] {
     let mut qx = 0.0_f64;
     let mut qy = 0.0_f64;
@@ -1386,11 +1352,11 @@ mod lattice_physics_tests {
         let mut f = [0.0_f64; 27];
         let mut east_idx = 0;
         let mut west_idx = 0;
-        for i in 0..27 {
-            if D3Q27_VELOCITIES[i] == [1, 0, 0] {
+        for (i, &vel) in D3Q27_VELOCITIES.iter().enumerate() {
+            if vel == [1, 0, 0] {
                 east_idx = i;
             }
-            if D3Q27_VELOCITIES[i] == [-1, 0, 0] {
+            if vel == [-1, 0, 0] {
                 west_idx = i;
             }
         }
@@ -1447,8 +1413,7 @@ mod lattice_extended_tests {
     }
     #[test]
     fn test_d2q9_opposites_are_involutory() {
-        for i in 0..9 {
-            let j = D2Q9_OPPOSITES[i];
+        for (i, &j) in D2Q9_OPPOSITES.iter().enumerate() {
             assert_eq!(
                 D2Q9_OPPOSITES[j], i,
                 "D2Q9_OPPOSITES involutory failed at {i}"
@@ -1457,8 +1422,7 @@ mod lattice_extended_tests {
     }
     #[test]
     fn test_d3q19_opposites_are_involutory() {
-        for i in 0..19 {
-            let j = D3Q19_OPPOSITES[i];
+        for (i, &j) in D3Q19_OPPOSITES.iter().enumerate() {
             assert_eq!(
                 D3Q19_OPPOSITES[j], i,
                 "D3Q19_OPPOSITES involutory failed at {i}"
@@ -1467,8 +1431,7 @@ mod lattice_extended_tests {
     }
     #[test]
     fn test_d3q27_opposites_are_involutory() {
-        for i in 0..27 {
-            let j = D3Q27_OPPOSITES[i];
+        for (i, &j) in D3Q27_OPPOSITES.iter().enumerate() {
             assert_eq!(
                 D3Q27_OPPOSITES[j], i,
                 "D3Q27_OPPOSITES involutory failed at {i}"

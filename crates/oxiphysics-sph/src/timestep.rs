@@ -53,7 +53,6 @@ pub fn adaptive_timestep(
 // ── CflCondition ──────────────────────────────────────────────────────────────
 
 /// Aggregated CFL condition parameters derived from particle data.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CflCondition {
     /// Maximum speed of sound encountered across particles.
@@ -72,7 +71,6 @@ pub struct CflCondition {
 ///
 /// Ensures that information (pressure waves) cannot travel more than one
 /// smoothing-length interval per timestep.
-#[allow(dead_code)]
 pub fn cfl_acoustic(c_sound: f64, h: f64, cfl_factor: f64) -> f64 {
     cfl_factor * h / c_sound.max(1e-14)
 }
@@ -80,7 +78,6 @@ pub fn cfl_acoustic(c_sound: f64, h: f64, cfl_factor: f64) -> f64 {
 /// Viscous CFL timestep: `dt = cfl_factor * h² / nu`.
 ///
 /// Ensures numerical stability of the diffusion operator.
-#[allow(dead_code)]
 pub fn cfl_viscous(nu: f64, h: f64, cfl_factor: f64) -> f64 {
     cfl_factor * h * h / nu.max(1e-14)
 }
@@ -88,7 +85,6 @@ pub fn cfl_viscous(nu: f64, h: f64, cfl_factor: f64) -> f64 {
 /// Combined CFL timestep — minimum of acoustic and viscous constraints.
 ///
 /// Also incorporates the convective CFL `h / (c_sound + v_max)`.
-#[allow(dead_code)]
 pub fn cfl_combined(c_sound: f64, v_max: f64, nu: f64, h: f64, cfl_factor: f64) -> f64 {
     let dt_acoustic = cfl_acoustic(c_sound, h, cfl_factor);
     let dt_viscous = cfl_viscous(nu, h, cfl_factor);
@@ -104,7 +100,6 @@ pub fn cfl_combined(c_sound: f64, v_max: f64, nu: f64, h: f64, cfl_factor: f64) 
 /// `dt_st = cfl_factor * sqrt(rho * h³ / (2π σ))`
 ///
 /// where σ is the surface tension coefficient (N/m).
-#[allow(dead_code)]
 pub fn surface_tension_timestep(rho: f64, h: f64, sigma: f64, cfl_factor: f64) -> f64 {
     if sigma.abs() < 1e-30 || rho < 1e-30 {
         return f64::MAX;
@@ -119,7 +114,6 @@ pub fn surface_tension_timestep(rho: f64, h: f64, sigma: f64, cfl_factor: f64) -
 /// `dt_acc = cfl_factor * sqrt(h / |a_max|)`
 ///
 /// Limits timestep based on maximum particle acceleration.
-#[allow(dead_code)]
 pub fn acceleration_timestep(h: f64, a_max: f64, cfl_factor: f64) -> f64 {
     if a_max.abs() < 1e-30 {
         return f64::MAX;
@@ -128,7 +122,6 @@ pub fn acceleration_timestep(h: f64, a_max: f64, cfl_factor: f64) -> f64 {
 }
 
 /// Compute maximum acceleration magnitude from an array of accelerations.
-#[allow(dead_code)]
 pub fn max_acceleration(accelerations: &[[f64; 3]]) -> f64 {
     accelerations
         .iter()
@@ -139,7 +132,6 @@ pub fn max_acceleration(accelerations: &[[f64; 3]]) -> f64 {
 // ── Multi-criteria timestep selection ─────────────────────────────────────────
 
 /// Parameters for multi-criteria timestep selection.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TimestepCriteria {
     /// CFL factor for all criteria.
@@ -166,7 +158,6 @@ pub struct TimestepCriteria {
 
 impl TimestepCriteria {
     /// Compute the minimum timestep across all criteria.
-    #[allow(dead_code)]
     pub fn compute(&self) -> f64 {
         let dt_acoustic = cfl_acoustic(self.c_sound, self.h, self.cfl_factor);
         let dt_viscous = cfl_viscous(self.nu, self.h, self.cfl_factor);
@@ -183,7 +174,6 @@ impl TimestepCriteria {
     }
 
     /// Identify which criterion is the most restrictive.
-    #[allow(dead_code)]
     pub fn limiting_criterion(&self) -> &'static str {
         let dt_acoustic = cfl_acoustic(self.c_sound, self.h, self.cfl_factor);
         let dt_viscous = cfl_viscous(self.nu, self.h, self.cfl_factor);
@@ -214,7 +204,6 @@ impl TimestepCriteria {
 // ── Timestep history tracking ─────────────────────────────────────────────────
 
 /// Tracks timestep history for diagnostics and analysis.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TimestepHistory {
     /// Timestep values over time.
@@ -227,7 +216,6 @@ pub struct TimestepHistory {
 
 impl TimestepHistory {
     /// Create a new history tracker.
-    #[allow(dead_code)]
     pub fn new(max_entries: usize) -> Self {
         Self {
             values: Vec::with_capacity(max_entries),
@@ -237,7 +225,6 @@ impl TimestepHistory {
     }
 
     /// Record a timestep.
-    #[allow(dead_code)]
     pub fn record(&mut self, time: f64, dt: f64) {
         if self.values.len() >= self.max_entries {
             self.values.remove(0);
@@ -248,7 +235,6 @@ impl TimestepHistory {
     }
 
     /// Get the average timestep over the recorded history.
-    #[allow(dead_code)]
     pub fn average_dt(&self) -> f64 {
         if self.values.is_empty() {
             return 0.0;
@@ -257,13 +243,11 @@ impl TimestepHistory {
     }
 
     /// Get the minimum timestep in the recorded history.
-    #[allow(dead_code)]
     pub fn min_dt(&self) -> f64 {
         self.values.iter().cloned().fold(f64::INFINITY, f64::min)
     }
 
     /// Get the maximum timestep in the recorded history.
-    #[allow(dead_code)]
     pub fn max_dt(&self) -> f64 {
         self.values
             .iter()
@@ -272,7 +256,6 @@ impl TimestepHistory {
     }
 
     /// Get the standard deviation of timestep values.
-    #[allow(dead_code)]
     pub fn std_dev(&self) -> f64 {
         if self.values.len() < 2 {
             return 0.0;
@@ -288,19 +271,16 @@ impl TimestepHistory {
     }
 
     /// Number of recorded entries.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.values.len()
     }
 
     /// Whether history is empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
 
     /// Compute the rate of change of dt (dt_dot) from the last two entries.
-    #[allow(dead_code)]
     pub fn dt_rate_of_change(&self) -> f64 {
         let n = self.values.len();
         if n < 2 {
@@ -327,7 +307,6 @@ impl Default for TimestepHistory {
 ///
 /// Grows or shrinks the current step based on whether a proposed CFL condition
 /// allows the step to grow.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AdaptiveTimestep {
     /// Current timestep value.
@@ -344,7 +323,6 @@ pub struct AdaptiveTimestep {
 
 impl AdaptiveTimestep {
     /// Create a new `AdaptiveTimestep` with sensible defaults.
-    #[allow(dead_code)]
     pub fn new(initial_dt: f64, min_dt: f64, max_dt: f64) -> Self {
         Self {
             current_dt: initial_dt,
@@ -363,7 +341,6 @@ impl AdaptiveTimestep {
     /// `cfl_dt * shrink_factor` (clamped to `min_dt`).
     ///
     /// Returns the new `current_dt`.
-    #[allow(dead_code)]
     pub fn update(&mut self, cfl_dt: f64) -> f64 {
         if cfl_dt >= self.current_dt {
             // CFL allows growth.
@@ -376,7 +353,6 @@ impl AdaptiveTimestep {
     }
 
     /// Update with multi-criteria: takes a TimestepCriteria and uses its computed dt.
-    #[allow(dead_code)]
     pub fn update_multi(&mut self, criteria: &TimestepCriteria) -> f64 {
         let cfl_dt = criteria.compute();
         self.update(cfl_dt)
@@ -390,7 +366,6 @@ impl AdaptiveTimestep {
 /// Iterates over all particles to find the maximum speed and uses the
 /// provided `h` (smoothing length) and `nu` (kinematic viscosity) to
 /// call `cfl_combined`.
-#[allow(dead_code)]
 pub fn sph_dt_from_particles(particles: &ParticleSet, h: f64, nu: f64, cfl: f64) -> f64 {
     let v_max = particles
         .velocities
@@ -405,7 +380,6 @@ pub fn sph_dt_from_particles(particles: &ParticleSet, h: f64, nu: f64, cfl: f64)
 // ── TimeIntegrator ────────────────────────────────────────────────────────────
 
 /// Time integration scheme selector.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeIntegrator {
     /// First-order explicit Euler: `x += v*dt`, `v += a*dt`.
@@ -425,7 +399,6 @@ pub enum TimeIntegrator {
 /// In the kick-drift-kick (KDK) scheme this is applied with `dt/2` at the
 /// start and end of each step; in drift-kick-drift (DKD) it is applied once
 /// per step.
-#[allow(dead_code)]
 pub fn leapfrog_kick(v: [f64; 3], a: [f64; 3], dt: f64) -> [f64; 3] {
     [v[0] + a[0] * dt, v[1] + a[1] * dt, v[2] + a[2] * dt]
 }
@@ -433,7 +406,6 @@ pub fn leapfrog_kick(v: [f64; 3], a: [f64; 3], dt: f64) -> [f64; 3] {
 /// Leapfrog *drift*: position update using the (already kicked) velocity.
 ///
 /// `x_new = x + v * dt`
-#[allow(dead_code)]
 pub fn leapfrog_drift(x: [f64; 3], v: [f64; 3], dt: f64) -> [f64; 3] {
     [x[0] + v[0] * dt, x[1] + v[1] * dt, x[2] + v[2] * dt]
 }
@@ -441,7 +413,6 @@ pub fn leapfrog_drift(x: [f64; 3], v: [f64; 3], dt: f64) -> [f64; 3] {
 /// Simple Euler integrator for reference (position + velocity).
 ///
 /// Returns `(new_position, new_velocity)`.
-#[allow(dead_code)]
 pub fn euler_step(x: [f64; 3], v: [f64; 3], a: [f64; 3], dt: f64) -> ([f64; 3], [f64; 3]) {
     let xn = leapfrog_drift(x, v, dt);
     let vn = leapfrog_kick(v, a, dt);
@@ -453,7 +424,6 @@ pub fn euler_step(x: [f64; 3], v: [f64; 3], a: [f64; 3], dt: f64) -> ([f64; 3], 
 /// The acceleration `a` is evaluated at the midpoint position.
 /// Caller is responsible for recomputing `a` at `x_mid` if needed.
 /// Returns `(new_position, new_velocity)`.
-#[allow(dead_code)]
 pub fn leapfrog_kdk(x: [f64; 3], v: [f64; 3], a: [f64; 3], dt: f64) -> ([f64; 3], [f64; 3]) {
     let v_half = leapfrog_kick(v, a, dt * 0.5);
     let x_new = leapfrog_drift(x, v_half, dt);
@@ -465,7 +435,6 @@ pub fn leapfrog_kdk(x: [f64; 3], v: [f64; 3], a: [f64; 3], dt: f64) -> ([f64; 3]
 /// Runge-Kutta 4th-order step for a constant acceleration field.
 ///
 /// Returns `(new_position, new_velocity)`.
-#[allow(dead_code)]
 pub fn rk4_constant_accel(x: [f64; 3], v: [f64; 3], a: [f64; 3], dt: f64) -> ([f64; 3], [f64; 3]) {
     // k1
     let k1_x = v;
@@ -527,7 +496,6 @@ pub fn rk4_constant_accel(x: [f64; 3], v: [f64; 3], a: [f64; 3], dt: f64) -> ([f
 /// v_{n+1} = v_n + 0.5 * (a_n + a_{n+1}) * dt
 ///
 /// Returns `(new_position, new_velocity)`.
-#[allow(dead_code)]
 pub fn velocity_verlet(
     x: [f64; 3],
     v: [f64; 3],
@@ -551,7 +519,6 @@ pub fn velocity_verlet(
 // ── Multi-step SPH integrator ─────────────────────────────────────────────────
 
 /// Result of one multi-step integration pass for a single particle.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MultiStepResult {
     /// Final position after all substeps.
@@ -568,7 +535,6 @@ pub struct MultiStepResult {
 /// equal sub-intervals of the symplectic Euler method.
 ///
 /// `accel_fn(x, v) -> [f64; 3]` computes the acceleration at the given state.
-#[allow(dead_code)]
 pub fn sph_multistep_euler<F>(
     x0: [f64; 3],
     v0: [f64; 3],
@@ -600,8 +566,6 @@ where
 ///
 /// The acceleration function `accel_fn(x, v) -> [f64; 3]` may depend on
 /// both position and velocity (e.g. drag terms).
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
 pub fn sph_multistep_rk4<F>(
     x0: [f64; 3],
     v0: [f64; 3],
@@ -683,7 +647,6 @@ where
 /// the acceleration at the predicted state and averages (trapezoidal rule).
 ///
 /// Returns `(new_position, new_velocity)`.
-#[allow(dead_code)]
 pub fn predictor_corrector_step<F>(
     x: [f64; 3],
     v: [f64; 3],
@@ -727,7 +690,6 @@ where
 /// energy for Hamiltonian systems.
 ///
 /// Returns `(new_position, new_velocity)`.
-#[allow(dead_code)]
 pub fn symplectic_euler_sph(
     x: [f64; 3],
     v: [f64; 3],
@@ -749,7 +711,6 @@ pub fn symplectic_euler_sph(
 ///
 /// `dt = cfl_factor * sqrt(h / |a_body|)` where `a_body` is a background
 /// body-force acceleration (e.g. gravity).
-#[allow(dead_code)]
 pub fn body_force_timestep(h: f64, a_body: f64, cfl_factor: f64) -> f64 {
     if a_body.abs() < 1e-30 {
         return f64::MAX;
@@ -758,7 +719,6 @@ pub fn body_force_timestep(h: f64, a_body: f64, cfl_factor: f64) -> f64 {
 }
 
 /// Combined adaptive timestep with CFL + viscous + body-force criteria.
-#[allow(dead_code, clippy::too_many_arguments)]
 pub fn adaptive_timestep_full(
     c_sound: f64,
     v_max: f64,
@@ -778,7 +738,6 @@ pub fn adaptive_timestep_full(
 
 /// Controller that breaks a target time interval into sub-steps that each
 /// satisfy the given CFL condition.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SubstepController {
     /// Target simulation interval (outer step).
@@ -789,7 +748,6 @@ pub struct SubstepController {
     pub dt_min: f64,
 }
 
-#[allow(dead_code)]
 impl SubstepController {
     /// Create a new sub-step controller.
     pub fn new(dt_outer: f64, dt_cfl_max: f64, dt_min: f64) -> Self {

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -17,10 +16,6 @@
 //! - Operational space formulation
 //! - Redundant DOF handling
 //! - Cable-driven systems
-
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(clippy::too_many_arguments)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 3-D math helpers (no nalgebra; use [f64; 3] arrays)
@@ -125,14 +120,6 @@ fn mat3_transpose(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     ]
 }
 
-/// Determinant of a 3×3 matrix.
-#[inline]
-fn mat3_det(m: [[f64; 3]; 3]) -> f64 {
-    m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
-}
-
 /// Add two 3×3 matrices.
 #[inline]
 fn mat3_add(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
@@ -152,45 +139,6 @@ fn mat3_scale(m: [[f64; 3]; 3], s: f64) -> [[f64; 3]; 3] {
     for i in 0..3 {
         for j in 0..3 {
             r[i][j] = m[i][j] * s;
-        }
-    }
-    r
-}
-
-/// Inverse of a 3×3 matrix (returns identity if singular).
-#[inline]
-fn mat3_inv(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
-    let det = mat3_det(m);
-    if det.abs() < 1e-15 {
-        return mat3_identity();
-    }
-    let inv_det = 1.0 / det;
-    [
-        [
-            (m[1][1] * m[2][2] - m[1][2] * m[2][1]) * inv_det,
-            (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * inv_det,
-            (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * inv_det,
-        ],
-        [
-            (m[1][2] * m[2][0] - m[1][0] * m[2][2]) * inv_det,
-            (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * inv_det,
-            (m[0][2] * m[1][0] - m[0][0] * m[1][2]) * inv_det,
-        ],
-        [
-            (m[1][0] * m[2][1] - m[1][1] * m[2][0]) * inv_det,
-            (m[0][1] * m[2][0] - m[0][0] * m[2][1]) * inv_det,
-            (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * inv_det,
-        ],
-    ]
-}
-
-/// Outer product: a ⊗ b.
-#[inline]
-fn outer3(a: [f64; 3], b: [f64; 3]) -> [[f64; 3]; 3] {
-    let mut r = [[0.0; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            r[i][j] = a[i] * b[j];
         }
     }
     r
@@ -959,7 +907,7 @@ impl ArticulatedBody {
 
         // Pass 3: forward propagation of accelerations
         let mut qdd_out = vec![0.0f64; n];
-        for i in 0..n {
+        for (i, qdd_slot) in qdd_out.iter_mut().enumerate() {
             let parent = self.links[i].parent;
             let a_parent = if parent < 0 {
                 SpatialVec::zero()
@@ -978,7 +926,7 @@ impl ArticulatedBody {
             let s = self.links[i].joint.s_matrix;
             let qdd_i =
                 (self.links[i].u_tau - self.links[i].u_aba.dot(&a_parent_c)) / self.links[i].d_aba;
-            qdd_out[i] = qdd_i;
+            *qdd_slot = qdd_i;
             self.links[i].qdd = qdd_i;
             self.links[i].body_acc = a_parent_c.add(&s.scale(qdd_i));
         }
@@ -1389,11 +1337,14 @@ pub fn pseudo_inverse_fat(j: &[Vec<f64>]) -> Vec<Vec<f64>> {
 
     // J * J^T (m×m)
     let mut jjt = vec![vec![0.0f64; m]; m];
-    for i in 0..m {
-        for k in 0..m {
-            for l in 0..n {
-                jjt[i][k] += j[i][l] * j[k][l];
-            }
+    for (i, jjt_row) in jjt.iter_mut().enumerate() {
+        for (k, jjt_ik) in jjt_row.iter_mut().enumerate() {
+            *jjt_ik = j[i]
+                .iter()
+                .take(n)
+                .zip(j[k].iter().take(n))
+                .map(|(a, b)| a * b)
+                .sum();
         }
     }
 
@@ -1723,8 +1674,8 @@ mod tests {
         body.forward_kinematics();
         let h = body.crba();
         // Diagonal of CRBA should be positive
-        for i in 0..3 {
-            assert!(h[i][i] > 0.0, "H[{i}][{i}]={}", h[i][i]);
+        for (i, row) in h.iter().enumerate() {
+            assert!(row[i] > 0.0, "H[{i}][{i}]={}", row[i]);
         }
     }
 
@@ -1733,12 +1684,11 @@ mod tests {
         let mut body = build_serial_chain(3, 1.0, 1.0, [0.0, 0.0, 0.0]);
         body.forward_kinematics();
         let h = body.crba();
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in h.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (h[i][j] - h[j][i]).abs() < 1e-8,
-                    "H not symmetric at ({i},{j}): {} vs {}",
-                    h[i][j],
+                    (val - h[j][i]).abs() < 1e-8,
+                    "H not symmetric at ({i},{j}): {val} vs {}",
                     h[j][i]
                 );
             }

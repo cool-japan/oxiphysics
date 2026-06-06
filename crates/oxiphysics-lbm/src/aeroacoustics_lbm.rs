@@ -11,8 +11,6 @@
 //! - Curle's analogy approximation for vortex sound power
 //! - Ring-buffer pressure history tracking at monitor points
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ============================================================================

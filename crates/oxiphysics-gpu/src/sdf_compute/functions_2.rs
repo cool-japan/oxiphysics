@@ -1,9 +1,6 @@
 //! Auto-generated module
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
-
-#[allow(unused_imports)]
-use super::functions::*;
 use rayon::prelude::*;
 
 use super::types::{DistanceQuery, GpuSdfGrid, SdfGrid, SdfShape};
@@ -146,6 +143,7 @@ pub fn projected_area_xy(grid: &SdfGrid) -> f64 {
 }
 #[cfg(test)]
 mod tests_new_sdf {
+    use super::super::functions::*;
     use super::*;
 
     fn sphere_grid(n: usize, dx: f64, radius: f64) -> SdfGrid {

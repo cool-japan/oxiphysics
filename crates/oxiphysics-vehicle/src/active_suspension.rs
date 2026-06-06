@@ -14,7 +14,6 @@
 /// Used to compute control forces for a quarter-car model where:
 /// - `z_b` is the sprung (body) displacement,
 /// - `z_w` is the unsprung (wheel) displacement.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ActiveSuspension {
     /// Skyhook damping coefficient (N·s/m).
@@ -42,7 +41,6 @@ impl ActiveSuspension {
     }
 
     /// Create with fully specified parameters.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(c_sky: f64, c_ground: f64, c_passive: f64, k_spring: f64, force_max_n: f64) -> Self {
         Self {
             c_sky,
@@ -123,7 +121,6 @@ pub fn groundhook_force(ctrl: &ActiveSuspension, z_b_dot: f64, z_w_dot: f64) -> 
 /// * `force_max`— Actuator saturation limit (N).
 ///
 /// Returns the optimal control force in N.
-#[allow(clippy::too_many_arguments)]
 pub fn linear_quadratic_suspension(
     k_gain: [f64; 3],
     z_b: f64,
@@ -138,7 +135,6 @@ pub fn linear_quadratic_suspension(
 /// Magnetorheological (MR) damper with Bouc-Wen hysteresis.
 ///
 /// Represents a field-controlled variable-damping element.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MagnetoRheologicalDamper {
     /// Pre-yield viscous damping (N·s/m).

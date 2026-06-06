@@ -17,18 +17,6 @@
 
 use std::f64::consts::PI;
 
-/// Speed of light in atomic units (a.u.) — used for rate conversions.
-#[allow(dead_code)]
-const SPEED_OF_LIGHT_AU: f64 = 137.035_999_084;
-
-/// Reduced Planck constant ħ in eV·fs.
-#[allow(dead_code)]
-const HBAR_EV_FS: f64 = 0.658_211_951;
-
-/// Boltzmann constant in eV/K.
-#[allow(dead_code)]
-const KB_EV: f64 = 8.617_333_262e-5;
-
 // ---------------------------------------------------------------------------
 // ExcitedState
 // ---------------------------------------------------------------------------
@@ -173,7 +161,6 @@ impl SurfaceHoppingMd {
     }
 
     /// Set the non-adiabatic coupling velocity projection d_{kl} · v̇.
-    #[allow(clippy::too_many_arguments)]
     pub fn set_nac_velocity(&mut self, k: usize, l: usize, value: f64) {
         self.nac_velocity[k * self.n_states + l] = value;
         self.nac_velocity[l * self.n_states + k] = -value;
@@ -470,7 +457,6 @@ pub struct EnergyTransfer {
 
 impl EnergyTransfer {
     /// Create a new `EnergyTransfer`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         donor_lifetime_ns: f64,
         forster_radius_nm: f64,
@@ -744,15 +730,6 @@ impl EmissionSpectrum {
 // ---------------------------------------------------------------------------
 // Helper utilities (private)
 // ---------------------------------------------------------------------------
-
-/// Compute the dot product of two flat 3N-dimensional vectors stored as `Vec<[f64;3]>`.
-#[allow(dead_code)]
-fn dot_vec3_list(a: &[[f64; 3]], b: &[[f64; 3]]) -> f64 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(ai, bi)| ai[0] * bi[0] + ai[1] * bi[1] + ai[2] * bi[2])
-        .sum()
-}
 
 // ---------------------------------------------------------------------------
 // Tests

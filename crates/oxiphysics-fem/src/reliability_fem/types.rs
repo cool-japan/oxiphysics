@@ -2,11 +2,12 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg, clippy::type_complexity)]
-#[allow(unused_imports)]
 use super::functions::*;
 use rand::RngExt;
 use std::f64::consts::PI;
+
+/// Type alias for a thread-safe evaluation closure used in reliability limit-state functions.
+type EvalFn = Box<dyn Fn(&[f64]) -> f64 + Send + Sync>;
 
 /// Karhunen–Loève expansion of a one-dimensional random field on \[0, L\].
 ///
@@ -105,10 +106,10 @@ impl RandomField {
     pub fn sample(&self, xi: &[f64]) -> Vec<f64> {
         let n = self.n_pts;
         let mut field = vec![0.0_f64; n];
-        for k in 0..self.n_terms.min(xi.len()) {
-            let scale = self.eigenvalues[k].sqrt() * xi[k];
-            for i in 0..n {
-                field[i] += scale * self.eigenvectors[k * n + i];
+        for (k, &xi_k) in xi.iter().enumerate().take(self.n_terms.min(xi.len())) {
+            let scale = self.eigenvalues[k].sqrt() * xi_k;
+            for (i, fi) in field.iter_mut().enumerate().take(n) {
+                *fi += scale * self.eigenvectors[k * n + i];
             }
         }
         field
@@ -121,7 +122,7 @@ impl RandomField {
         }
         self.eigenvalues.iter().sum::<f64>() / total
     }
-    fn normalise(v: &mut Vec<f64>) {
+    fn normalise(v: &mut [f64]) {
         let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
         if norm > 1e-300 {
             for x in v.iter_mut() {
@@ -344,7 +345,7 @@ pub struct LimitState {
     pub mean: Vec<f64>,
     /// Standard deviations of the input random variables.
     pub std_dev: Vec<f64>,
-    pub(super) eval: Box<dyn Fn(&[f64]) -> f64 + Send + Sync>,
+    pub(super) eval: EvalFn,
 }
 impl LimitState {
     /// Create a new limit-state function.

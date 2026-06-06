@@ -122,7 +122,6 @@ impl PacejkaTire {
     ///
     /// The friction ellipse scales the pure-slip forces so that the resultant
     /// magnitude does not exceed mu*Fz.
-    #[allow(dead_code)]
     pub fn combined_slip_friction_ellipse(
         &self,
         slip_angle: Real,
@@ -326,7 +325,6 @@ impl TireModel for LinearTire {
 /// dF/dt = (v / sigma) * (F_steady - F)
 ///
 /// where sigma is the relaxation length and v is the forward speed.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TireRelaxation {
     /// Lateral relaxation length (m).
@@ -339,7 +337,6 @@ pub struct TireRelaxation {
     pub fx: f64,
 }
 
-#[allow(dead_code)]
 impl TireRelaxation {
     /// Create a new relaxation model with typical relaxation lengths.
     pub fn new(sigma_lat: f64, sigma_lon: f64) -> Self {
@@ -403,7 +400,6 @@ impl TireRelaxation {
 ///
 /// This captures the well-known effect that tire grip per unit load degrades
 /// as the tire is loaded more heavily.
-#[allow(dead_code)]
 pub struct LoadSensitivity {
     /// Reference friction coefficient at `fz_ref`.
     pub mu_ref: f64,
@@ -413,7 +409,6 @@ pub struct LoadSensitivity {
     pub exponent: f64,
 }
 
-#[allow(dead_code)]
 impl LoadSensitivity {
     /// Create a new load sensitivity model.
     pub fn new(mu_ref: f64, fz_ref: f64, exponent: f64) -> Self {
@@ -456,7 +451,6 @@ impl LoadSensitivity {
 /// Fy_camber = C_gamma * gamma * Fz / Fz_ref
 ///
 /// where gamma is the camber angle and C_gamma is the camber stiffness.
-#[allow(dead_code)]
 pub struct CamberThrust {
     /// Camber stiffness (N/rad at reference load).
     pub c_gamma: f64,
@@ -464,7 +458,6 @@ pub struct CamberThrust {
     pub fz_ref: f64,
 }
 
-#[allow(dead_code)]
 impl CamberThrust {
     /// Create a new camber thrust model.
     pub fn new(c_gamma: f64, fz_ref: f64) -> Self {
@@ -508,7 +501,6 @@ impl CamberThrust {
 /// Mz = -t_p * Fy
 ///
 /// where t_p is the pneumatic trail (m).
-#[allow(dead_code)]
 pub struct SelfAligningTorque {
     /// Maximum pneumatic trail at zero slip (m).
     pub trail_max: f64,
@@ -518,7 +510,6 @@ pub struct SelfAligningTorque {
     pub mechanical_trail: f64,
 }
 
-#[allow(dead_code)]
 impl SelfAligningTorque {
     /// Create a new self-aligning torque model.
     pub fn new(trail_max: f64, alpha_half: f64, mechanical_trail: f64) -> Self {
@@ -586,7 +577,6 @@ impl SelfAligningTorque {
 /// The combined lateral slip is: sigma_alpha' = tan(alpha) / (1 + kappa)
 /// The combined longitudinal slip is: kappa' = kappa / (1 + kappa)
 /// The resultant force is limited by the friction ellipse.
-#[allow(dead_code)]
 pub fn pacejka_combined_slip(
     tire: &PacejkaTire,
     slip_angle: Real,
@@ -625,7 +615,6 @@ pub fn pacejka_combined_slip(
 ///
 /// Tires have an optimal operating temperature window.  Below optimum the
 /// compound is cold and hard (low grip); above it the compound degrades.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TireTemperatureModel {
     /// Optimal (peak-grip) temperature in °C.
@@ -644,7 +633,6 @@ pub struct TireTemperatureModel {
     pub cooling_coefficient: f64,
 }
 
-#[allow(dead_code)]
 impl TireTemperatureModel {
     /// Typical sport slick tire parameters.
     pub fn default_slick() -> Self {
@@ -708,7 +696,6 @@ impl TireTemperatureModel {
 ///
 /// Wear rate increases with slip speed and normal force, similar to
 /// Archard's law of abrasive wear.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TireWearModel {
     /// Current wear level (0 = new, 1 = fully worn).
@@ -719,7 +706,6 @@ pub struct TireWearModel {
     pub hardness: f64,
 }
 
-#[allow(dead_code)]
 impl TireWearModel {
     /// Typical soft-compound tire (fast wear, high grip new).
     pub fn new_soft_compound() -> Self {
@@ -784,7 +770,6 @@ impl TireWearModel {
 ///
 /// where `s` is arc-length travelled, `σ_input` is the kinematic slip, and
 /// `σ_length` is the contact patch half-length.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TransientBrushModel {
     /// Lateral cornering stiffness (N/rad).
@@ -798,7 +783,6 @@ pub struct TransientBrushModel {
 }
 
 /// State of the transient brush model.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct TransientBrushState {
     /// Current transient lateral slip.
@@ -807,7 +791,6 @@ pub struct TransientBrushState {
     pub slip_lon: f64,
 }
 
-#[allow(dead_code)]
 impl TransientBrushModel {
     /// Create a transient brush model with typical passenger-car parameters.
     pub fn new(
@@ -825,7 +808,6 @@ impl TransientBrushModel {
     }
 }
 
-#[allow(dead_code)]
 impl TransientBrushState {
     /// Update the transient slip state.
     ///
@@ -873,7 +855,6 @@ impl TransientBrushState {
 /// The loaded radius decreases under load due to carcass deflection.
 ///
 /// `r_load = r_free - Fz / (2 · k_radial)`
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LoadedRadiusModel {
     /// Unloaded (free) rolling radius in m.
@@ -884,7 +865,6 @@ pub struct LoadedRadiusModel {
     pub min_radius: f64,
 }
 
-#[allow(dead_code)]
 impl LoadedRadiusModel {
     /// Create a model for a typical 245/40 R18 passenger tire.
     pub fn new_passenger_tire() -> Self {
@@ -923,7 +903,6 @@ impl LoadedRadiusModel {
 ///
 /// Approximates the 2-D pressure distribution in the contact patch as an
 /// elliptical (Hertzian) profile.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ContactPatchPressure {
     /// Free rolling radius in m.
@@ -936,7 +915,6 @@ pub struct ContactPatchPressure {
     pub inflation_pressure: f64,
 }
 
-#[allow(dead_code)]
 impl ContactPatchPressure {
     /// Typical passenger tire (245/40 R18).
     pub fn new_passenger_tire() -> Self {

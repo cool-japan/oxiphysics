@@ -9,8 +9,6 @@
 //! 2. Polar-decompose F = R * S to extract the rotation **R**.
 //! 3. Compute elastic forces: **f = R * Ke * (R^T * x - X0)**.
 
-#![allow(clippy::needless_range_loop)]
-
 mod math_helpers;
 
 pub mod corot_functions;

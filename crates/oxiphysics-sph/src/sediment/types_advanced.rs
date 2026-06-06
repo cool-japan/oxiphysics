@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 //\! Advanced sediment transport types
 //\!
 //\! Contains KynchSettling, TurbidityCurrentSph, ShieldsParam, and other
@@ -88,7 +87,6 @@ pub struct TurbidityCurrentSph {
 }
 impl TurbidityCurrentSph {
     /// Construct a turbidity current model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         layer_thickness: f64,
         concentration: f64,
@@ -274,10 +272,10 @@ impl ShorelineEvolution {
             return;
         }
         let mut new_pos = self.position.clone();
-        for i in 1..n - 1 {
+        for (i, np_i) in new_pos.iter_mut().enumerate().take(n - 1).skip(1) {
             let d2y = (self.position[i + 1] - 2.0 * self.position[i] + self.position[i - 1])
                 / (self.dx * self.dx);
-            new_pos[i] += dt * self.diffusivity * d2y;
+            *np_i += dt * self.diffusivity * d2y;
         }
         self.position = new_pos;
     }
@@ -546,8 +544,8 @@ impl DuneMigration {
         }
         let c = self.migration_velocity();
         let mut new_bed = self.bed_elevation.clone();
-        for i in 1..n {
-            new_bed[i] = self.bed_elevation[i]
+        for (i, nb_i) in new_bed.iter_mut().enumerate().take(n).skip(1) {
+            *nb_i = self.bed_elevation[i]
                 - dt * c * (self.bed_elevation[i] - self.bed_elevation[i - 1]) / self.dx;
         }
         self.bed_elevation = new_bed;

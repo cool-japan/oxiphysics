@@ -7,9 +7,6 @@
 //!
 //! All functions use SI units unless otherwise stated.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 // ---------------------------------------------------------------------------
 // PolymerChain
 // ---------------------------------------------------------------------------

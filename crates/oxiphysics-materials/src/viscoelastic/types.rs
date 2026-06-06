@@ -2,8 +2,8 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
 use super::functions::*;
+
 /// Kelvin-Voigt chain (series of KV elements).
 ///
 /// Creep compliance J(t) = sum_i (1/E_i) * (1 - exp(-t*E_i/eta_i))

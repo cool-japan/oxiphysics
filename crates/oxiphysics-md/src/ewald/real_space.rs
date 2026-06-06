@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -21,7 +20,6 @@ use super::summation::EwaldSummation;
 /// * `charges`   - atom charges (e).
 /// * `alpha`     - Ewald splitting parameter (angstrom^-1).
 /// * `cutoff`    - real-space cutoff (angstrom).
-#[allow(dead_code)]
 pub fn ewald_real_space_energy(
     positions: &[[f64; 3]],
     charges: &[f64],
@@ -53,7 +51,6 @@ pub fn ewald_real_space_energy(
 /// * `charges`   - atom charges (e).
 /// * `k_vecs`    - k-vectors in reciprocal space (angstrom^-1), e.g. from `k_vector_list`.
 /// * `volume`    - box volume (angstrom^3).
-#[allow(dead_code)]
 pub fn ewald_reciprocal_energy(
     positions: &[[f64; 3]],
     charges: &[f64],
@@ -100,7 +97,6 @@ pub fn ewald_reciprocal_energy(
 /// ```text
 /// E_self = -COULOMB_K * alpha / sqrt(pi) * Σᵢ qᵢ²
 /// ```
-#[allow(dead_code)]
 pub fn ewald_self_energy_fn(charges: &[f64], alpha: f64) -> f64 {
     let sum_q2: f64 = charges.iter().map(|q| q * q).sum();
     -COULOMB_K * alpha / std::f64::consts::PI.sqrt() * sum_q2
@@ -110,7 +106,6 @@ pub fn ewald_self_energy_fn(charges: &[f64], alpha: f64) -> f64 {
 ///
 /// Returns a `Vec` of force vectors for each atom.  No PBC — caller should
 /// supply minimum-image positions if periodic boundaries are needed.
-#[allow(dead_code)]
 pub fn ewald_real_forces(
     positions: &[[f64; 3]],
     charges: &[f64],
@@ -160,7 +155,6 @@ pub fn ewald_real_forces(
 /// Virial W = Σᵢ Σⱼ>ᵢ r_ij · F_ij (kJ mol⁻¹).
 /// Pressure contribution: P_elec = W / (3V) in kJ mol⁻¹ Å⁻³.
 /// Convert to bar: × 16 605.4.
-#[allow(dead_code)]
 pub fn ewald_real_space_virial(
     positions: &[[f64; 3]],
     charges: &[f64],
@@ -202,7 +196,6 @@ pub fn ewald_real_space_virial(
 /// Electrostatic pressure contribution (bar) from Ewald real-space virial.
 ///
 /// P = W / (3 V) * 16 605.4 bar / (kJ mol⁻¹ Å⁻³)
-#[allow(dead_code)]
 pub fn ewald_real_space_pressure(
     positions: &[[f64; 3]],
     charges: &[f64],
@@ -226,7 +219,6 @@ pub fn ewald_real_space_pressure(
 /// E = COULOMB_K * Σᵢ<ⱼ qᵢ qⱼ / rᵢⱼ
 ///
 /// No cutoff — sums all pairs. For testing and comparison with Ewald.
-#[allow(dead_code)]
 pub fn coulomb_energy_direct(positions: &[[f64; 3]], charges: &[f64]) -> f64 {
     let n = positions.len();
     let mut energy = 0.0;
@@ -249,7 +241,6 @@ pub fn coulomb_energy_direct(positions: &[[f64; 3]], charges: &[f64]) -> f64 {
 /// Direct Coulomb forces (kJ mol⁻¹ Å⁻¹) without Ewald splitting.
 ///
 /// No cutoff — sums all pairs.  Returns one force vector per atom.
-#[allow(dead_code)]
 pub fn coulomb_forces_direct(positions: &[[f64; 3]], charges: &[f64]) -> Vec<[f64; 3]> {
     let n = positions.len();
     let mut forces = vec![[0.0f64; 3]; n];
@@ -288,7 +279,6 @@ pub fn coulomb_forces_direct(positions: &[[f64; 3]], charges: &[f64]) -> Vec<[f6
 /// Only the real-space contribution is included here (the reciprocal
 /// contribution requires Fourier transforms; for simplicity we return
 /// the real-space virial only).
-#[allow(dead_code)]
 pub fn ewald_virial_tensor(
     positions: &[[f64; 3]],
     charges: &[f64],
@@ -336,7 +326,6 @@ pub fn ewald_virial_tensor(
 /// P = (N k_B T - (1/3) Tr(W)) / V
 ///
 /// where W is the virial tensor and V = Lx*Ly*Lz.
-#[allow(dead_code)]
 pub fn ewald_pressure_from_virial(
     virial: &[[f64; 3]; 3],
     n_atoms: usize,
@@ -612,12 +601,12 @@ mod tests {
         let charges = vec![1.0, -1.0];
         let params = EwaldParams::new(9.0);
         let v = ewald_virial_tensor(&pos, &charges, &params, [20.0, 20.0, 20.0]);
-        for a in 0..3 {
-            for b in 0..3 {
+        for (a, row) in v.iter().enumerate() {
+            for (b, &vab) in row.iter().enumerate() {
                 assert!(
-                    (v[a][b] - v[b][a]).abs() < 1e-10,
+                    (vab - v[b][a]).abs() < 1e-10,
                     "virial tensor must be symmetric: v[{a}][{b}]={} vs v[{b}][{a}]={}",
-                    v[a][b],
+                    vab,
                     v[b][a]
                 );
             }

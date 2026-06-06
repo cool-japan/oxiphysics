@@ -7,9 +7,6 @@
 //! and metal-organic frameworks (MOFs).  All functions use SI units unless
 //! stated otherwise; pressures are given in bar and temperatures in Kelvin.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 /// Universal gas constant (J / mol·K).
@@ -18,8 +15,6 @@ const R_GAS: f64 = 8.314;
 const M_H2: f64 = 2.016e-3;
 /// Lower heating value of H₂ (MJ / kg).
 const LHV_H2_MJ_KG: f64 = 119.96;
-/// Van der Waals constant *a* for H₂ (Pa·m⁶/mol²).
-const VDW_A_H2: f64 = 0.02476e0; // 0.02476 L²·atm/mol² → converted to Pa·m⁶/mol²
 /// Van der Waals constant *b* for H₂ (m³/mol).
 const VDW_B_H2: f64 = 26.61e-6; // 26.61 cm³/mol
 
@@ -177,7 +172,6 @@ pub struct MofAdsorption {
 
 impl MofAdsorption {
     /// Construct a new MOF adsorption model.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         surface_area_m2g: f64,
         pore_volume: f64,
@@ -731,7 +725,6 @@ pub fn bep_relationship(barrier: f64, delta_e: f64, alpha: f64) -> f64 {
 ///
 /// Encapsulates capacity, operating temperature and pressure, and an
 /// Arrhenius activation energy for desorption kinetics.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HydrideStorage {
     /// Maximum gravimetric capacity \[wt%\].

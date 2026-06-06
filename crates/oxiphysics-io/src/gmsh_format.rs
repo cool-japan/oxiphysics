@@ -21,7 +21,6 @@ pub struct GmshNode {
 
 /// Gmsh element types (subset used in practice).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum GmshElementType {
     /// 2-node line.
     Line2 = 1,

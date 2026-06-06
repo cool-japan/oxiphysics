@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -13,33 +12,12 @@
 //! - **Boundary conditions** for IGA (Dirichlet and Neumann)
 //! - **Trimmed NURBS** with trimming curve support
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
-#[allow(unused_imports)]
+#[cfg(test)]
 use std::f64::consts::PI;
 
 // ---------------------------------------------------------------------------
 // Helper math
 // ---------------------------------------------------------------------------
-
-/// Dot product of two slices.
-#[inline]
-fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
-}
-
-/// Euclidean norm of a slice.
-#[inline]
-fn norm(a: &[f64]) -> f64 {
-    dot(a, a).sqrt()
-}
-
-/// 2D cross product (scalar result).
-#[inline]
-fn cross2d(a: [f64; 2], b: [f64; 2]) -> f64 {
-    a[0] * b[1] - a[1] * b[0]
-}
 
 /// 3D cross product.
 #[inline]
@@ -49,15 +27,6 @@ fn cross3d(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
         a[2] * b[0] - a[0] * b[2],
         a[0] * b[1] - a[1] * b[0],
     ]
-}
-
-/// Distance between two 3D points.
-#[inline]
-fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    let dz = a[2] - b[2];
-    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
 // ---------------------------------------------------------------------------
@@ -129,20 +98,15 @@ impl BSplineBasis {
     }
 
     /// Create a uniform open (clamped) knot vector for `n` basis functions of degree `p`.
-    #[allow(clippy::same_item_push)]
     pub fn uniform_open(n: usize, p: usize) -> Self {
         let m = n + p + 1;
         let mut knots = Vec::with_capacity(m);
-        for _ in 0..=p {
-            knots.push(0.0);
-        }
+        knots.extend(std::iter::repeat_n(0.0, p + 1));
         let interior = n - p;
         for i in 1..interior {
             knots.push(i as f64 / interior as f64);
         }
-        for _ in 0..=p {
-            knots.push(1.0);
-        }
+        knots.extend(std::iter::repeat_n(1.0, p + 1));
         Self { knots, degree: p }
     }
 
@@ -362,8 +326,8 @@ impl NurbsCurve {
             let w = self.control_points[i].weight;
             let nw = basis_val * w;
             denominator += nw;
-            for d in 0..3 {
-                numerator[d] += nw * self.control_points[i].pos[d];
+            for (d, num_d) in numerator.iter_mut().enumerate() {
+                *num_d += nw * self.control_points[i].pos[d];
             }
         }
 
@@ -533,8 +497,8 @@ impl NurbsSurface {
                 let cp = self.control_point(i, j);
                 let nw = nu * nv * cp.weight;
                 denominator += nw;
-                for d in 0..3 {
-                    numerator[d] += nw * cp.pos[d];
+                for (d, num_d) in numerator.iter_mut().enumerate() {
+                    *num_d += nw * cp.pos[d];
                 }
             }
         }
@@ -731,10 +695,10 @@ impl IgaElement {
 
         let mut weighted = Vec::new();
         let mut w_sum = 0.0;
-        for j in 0..surface.num_v {
-            for i in 0..surface.num_u {
+        for (j, &nv_j) in nv_vals.iter().enumerate().take(surface.num_v) {
+            for (i, &nu_i) in nu_vals.iter().enumerate().take(surface.num_u) {
                 let idx = j * surface.num_u + i;
-                let val = nu_vals[i] * nv_vals[j] * surface.control_points[idx].weight;
+                let val = nu_i * nv_j * surface.control_points[idx].weight;
                 weighted.push(val);
                 w_sum += val;
             }
@@ -1418,9 +1382,11 @@ pub fn solve_cg(a: &[f64], b: &[f64], n: usize, max_iter: usize, tol: f64) -> Ve
         }
         let alpha = rs_old / p_ap;
 
-        for i in 0..n {
-            x[i] += alpha * p[i];
-            r[i] -= alpha * ap[i];
+        for ((x_i, r_i), (&p_i, &ap_i)) in
+            x.iter_mut().zip(r.iter_mut()).zip(p.iter().zip(ap.iter()))
+        {
+            *x_i += alpha * p_i;
+            *r_i -= alpha * ap_i;
         }
 
         let rs_new: f64 = r.iter().map(|v| v * v).sum();
@@ -1429,8 +1395,8 @@ pub fn solve_cg(a: &[f64], b: &[f64], n: usize, max_iter: usize, tol: f64) -> Ve
         }
 
         let beta = rs_new / rs_old;
-        for i in 0..n {
-            p[i] = r[i] + beta * p[i];
+        for (p_i, &r_i) in p.iter_mut().zip(r.iter()) {
+            *p_i = r_i + beta * (*p_i);
         }
         rs_old = rs_new;
     }
@@ -1510,7 +1476,7 @@ mod tests {
         assert_eq!(grev.len(), 4);
         // Greville abscissae should be in [0, 1]
         for g in &grev {
-            assert!(*g >= 0.0 && *g <= 1.0);
+            assert!((0.0..=1.0).contains(g));
         }
     }
 
@@ -1748,7 +1714,7 @@ mod tests {
         assert!((integral - 2.0).abs() < 1e-14);
         // All points should be in [0, 2]
         for p in &mapped_pts {
-            assert!(*p >= 0.0 && *p <= 2.0);
+            assert!((0.0..=2.0).contains(p));
         }
     }
 

@@ -788,7 +788,6 @@ pub fn log_normalize(values: &[f64]) -> Vec<f64> {
         .collect()
 }
 /// Catmull-Rom interpolation for a single `f32` channel.
-#[allow(dead_code)]
 pub fn catmull_rom_f32(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
     let t2 = t * t;
     let t3 = t2 * t;
@@ -798,7 +797,6 @@ pub fn catmull_rom_f32(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
         + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
 }
 /// Catmull-Rom interpolation between four `Color` values.
-#[allow(dead_code)]
 pub fn catmull_rom_color(p0: Color, p1: Color, p2: Color, p3: Color, t: f32) -> Color {
     Color {
         r: catmull_rom_f32(p0.r, p1.r, p2.r, p3.r, t).clamp(0.0, 1.0),
@@ -808,7 +806,6 @@ pub fn catmull_rom_color(p0: Color, p1: Color, p2: Color, p3: Color, t: f32) -> 
     }
 }
 /// Linear blend between two `Color` values.
-#[allow(dead_code)]
 pub fn lerp_color(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     Color {
@@ -819,7 +816,6 @@ pub fn lerp_color(a: Color, b: Color, t: f32) -> Color {
     }
 }
 /// Sample the twilight cyclic colormap at `t` in \[0, 1\].
-#[allow(dead_code)]
 pub fn sample_twilight(t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let (r, g, b) = if t < 0.25 {
@@ -840,7 +836,6 @@ pub fn sample_twilight(t: f32) -> Color {
 /// Sample the phase cyclic colormap at `t` in \[0, 1\].
 ///
 /// Produces a cyan–yellow–cyan cycle suitable for phase/angle data.
-#[allow(dead_code)]
 pub fn sample_phase(t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let angle = t * std::f32::consts::TAU;
@@ -860,7 +855,6 @@ pub fn sample_phase(t: f32) -> Color {
 ///
 /// Coefficients are a piecewise-polynomial approximation taken from the
 /// original Google AI blog post.
-#[allow(dead_code)]
 pub fn sample_turbo(t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let r = (0.1357 + t * (4.5974 + t * (-4.6115 + t * 2.7842))).clamp(0.0, 1.0);
@@ -873,7 +867,6 @@ pub fn sample_turbo(t: f32) -> Color {
 /// Jet has known perceptual shortcomings (false detail near yellow/cyan).
 /// Prefer [`sample_turbo`] for new work.  This implementation is provided for
 /// backward compatibility and comparison purposes.
-#[allow(dead_code)]
 pub fn sample_jet(t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let r = (1.5 - (4.0 * t - 3.0).abs()).clamp(0.0, 1.0);
@@ -886,7 +879,6 @@ pub fn sample_jet(t: f32) -> Color {
 /// This works like [`colormap_uniformity_score`] but operates on an arbitrary
 /// sampler closure rather than a [`Colormap`] variant, making it suitable for
 /// `SplineColormap`, `CustomColormapBuilder`, or any other sampler.
-#[allow(dead_code)]
 pub fn custom_colormap_uniformity_score<F>(sampler: F, n: usize) -> f64
 where
     F: Fn(f64) -> Color,
@@ -906,12 +898,10 @@ where
 }
 /// Convert a [`Color`] to an \[L*, a*, b*\] triplet without going through the
 /// `rgb_to_lab` public API (avoids an extra `f64` cast layer).
-#[allow(dead_code)]
 pub fn color_to_lab(c: Color) -> (f64, f64, f64) {
     rgb_to_lab(c.r as f64, c.g as f64, c.b as f64)
 }
 /// Return the lightness (L*) of a `Color` in CIELAB.
-#[allow(dead_code)]
 pub fn lightness(c: Color) -> f64 {
     let (l, _, _) = color_to_lab(c);
     l
@@ -919,7 +909,6 @@ pub fn lightness(c: Color) -> f64 {
 /// Check whether a colormap is monotone in lightness (always increasing or
 /// always decreasing).  Returns `true` if the lightness sequence is monotone,
 /// `false` otherwise.
-#[allow(dead_code)]
 pub fn is_monotone_lightness<F>(sampler: F, n: usize) -> bool
 where
     F: Fn(f64) -> Color,
@@ -935,7 +924,6 @@ where
 /// Adjust the brightness of a `Color` by a multiplicative `factor`.
 ///
 /// Channels are clamped to \[0, 1\].
-#[allow(dead_code)]
 pub fn adjust_brightness(c: Color, factor: f32) -> Color {
     Color {
         r: (c.r * factor).clamp(0.0, 1.0),
@@ -949,7 +937,6 @@ pub fn adjust_brightness(c: Color, factor: f32) -> Color {
 /// `factor = 0.0` → fully desaturated (grey).
 /// `factor = 1.0` → unchanged.
 /// `factor > 1.0` → over-saturated (clamped).
-#[allow(dead_code)]
 pub fn adjust_saturation(c: Color, factor: f32) -> Color {
     let (h, s, v) = rgb_to_hsv(c.r as f64, c.g as f64, c.b as f64);
     let new_s = (s * factor as f64).clamp(0.0, 1.0);
@@ -965,7 +952,6 @@ pub fn adjust_saturation(c: Color, factor: f32) -> Color {
 ///
 /// Equivalent to [`map_scalar`] but for custom colormaps.  `value` is
 /// normalized using `min`/`max` before sampling.
-#[allow(dead_code)]
 pub fn map_scalar_custom<F>(value: f64, min: f64, max: f64, sampler: F) -> Color
 where
     F: Fn(f64) -> Color,
@@ -978,7 +964,6 @@ where
     sampler(t)
 }
 /// Apply a custom colormap sampler to a slice of values, returning RGBA bytes.
-#[allow(dead_code)]
 pub fn apply_custom_colormap<F>(values: &[f64], vmin: f64, vmax: f64, sampler: F) -> Vec<[u8; 4]>
 where
     F: Fn(f64) -> Color,

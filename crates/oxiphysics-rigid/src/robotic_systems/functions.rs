@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 #[inline]
 pub(super) fn vec3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
@@ -149,15 +148,15 @@ pub(super) fn solve_linear(a: &[Vec<f64>], b: &[f64]) -> Option<Vec<f64>> {
         if diag.abs() < 1e-14 {
             return None;
         }
-        for k in col..=n {
-            aug[col][k] /= diag;
+        for a in aug[col][col..=n].iter_mut() {
+            *a /= diag;
         }
         for r in 0..n {
             if r != col {
                 let factor = aug[r][col];
-                for k in col..=n {
-                    let val = aug[col][k];
-                    aug[r][k] -= factor * val;
+                let pivot_copy: Vec<f64> = aug[col][col..=n].to_vec();
+                for (a_rk, &a_ck) in aug[r][col..=n].iter_mut().zip(pivot_copy.iter()) {
+                    *a_rk -= factor * a_ck;
                 }
             }
         }
@@ -165,7 +164,7 @@ pub(super) fn solve_linear(a: &[Vec<f64>], b: &[f64]) -> Option<Vec<f64>> {
     Some((0..n).map(|i| aug[i][n]).collect())
 }
 /// Compute determinant of a 3×3 matrix stored as `Vec<Vec`f64`>`.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn det3x3(m: &[Vec<f64>]) -> f64 {
     if m.len() < 3 || m[0].len() < 3 {
         return 0.0;
@@ -204,8 +203,8 @@ pub(super) fn det_nxn(m: &[Vec<f64>]) -> f64 {
             return 0.0;
         }
         det *= diag;
-        for k in col..n {
-            a[col][k] /= diag;
+        for a_k in a[col][col..n].iter_mut() {
+            *a_k /= diag;
         }
         for r in 0..n {
             if r != col {
@@ -213,42 +212,14 @@ pub(super) fn det_nxn(m: &[Vec<f64>]) -> f64 {
                 if factor.abs() < 1e-300 {
                     continue;
                 }
-                for k in col..n {
-                    let val = a[col][k];
-                    a[r][k] -= factor * val;
+                let pivot_copy: Vec<f64> = a[col][col..n].to_vec();
+                for (a_rk, &a_ck) in a[r][col..n].iter_mut().zip(pivot_copy.iter()) {
+                    *a_rk -= factor * a_ck;
                 }
             }
         }
     }
     det
-}
-/// Select active (non-zero) position rows from the 6×n Jacobian matrix.
-///
-/// Returns at most `n` rows that have meaningful (non-zero) norms, so the
-/// resulting system is well-conditioned.
-#[allow(dead_code)]
-pub(super) fn active_position_jacobian(j_mat: &[Vec<f64>], n: usize) -> Vec<Vec<f64>> {
-    let pos_rows: Vec<Vec<f64>> = j_mat[..3.min(j_mat.len())]
-        .iter()
-        .filter(|row| row.iter().map(|x| x * x).sum::<f64>().sqrt() > 1e-12)
-        .cloned()
-        .collect();
-    pos_rows[..n.min(pos_rows.len())].to_vec()
-}
-/// Extract the error components corresponding to the active Jacobian rows.
-#[allow(dead_code)]
-pub(super) fn active_error(err: &[f64; 3], active_j: &[Vec<f64>], full_j: &[Vec<f64>]) -> Vec<f64> {
-    let pos_rows: Vec<(usize, Vec<f64>)> = full_j[..3.min(full_j.len())]
-        .iter()
-        .enumerate()
-        .filter(|(_, row)| row.iter().map(|x| x * x).sum::<f64>().sqrt() > 1e-12)
-        .map(|(i, row)| (i, row.clone()))
-        .collect();
-    let n_active = active_j.len();
-    pos_rows[..n_active]
-        .iter()
-        .map(|(i, _)| if *i < 3 { err[*i] } else { 0.0 })
-        .collect()
 }
 /// Compute a tangent vector orthogonal to `n`.
 pub(super) fn tangent_vec(n: [f64; 3]) -> [f64; 3] {
@@ -735,10 +706,10 @@ mod tests {
     fn mat4_mul_identity() {
         let eye = mat4_eye();
         let result = mat4_mul(&eye, &eye);
-        for i in 0..4 {
-            for j in 0..4 {
+        for (i, row) in result.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((result[i][j] - expected).abs() < 1e-10);
+                assert!((val - expected).abs() < 1e-10);
             }
         }
     }

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,9 +8,6 @@
 //! boundaries, point/line acoustic sources and receivers, sound speed
 //! derivation, acoustic energy density, frequency response, acoustic
 //! impedance, far-field approximation, and broadband noise prediction.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -34,8 +30,6 @@ const D2Q9_W: [f64; 9] = [
     1.0 / 36.0,
     1.0 / 36.0,
 ];
-/// D2Q9 opposite direction indices.
-const D2Q9_OPP: [usize; 9] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -194,9 +188,9 @@ impl AcousticLBM {
     /// Add a pressure perturbation `dp` at cell (x, y) by distributing
     /// it according to D2Q9 weights (monopole source injection).
     pub fn add_pressure_source(&mut self, x: usize, y: usize, dp: f64) {
-        for q in 0..9 {
+        for (q, &w) in D2Q9_W.iter().enumerate() {
             let idx = self.idx(x, y, q);
-            self.f[idx] += D2Q9_W[q] * dp;
+            self.f[idx] += w * dp;
         }
     }
 
@@ -245,24 +239,26 @@ impl PmlLayer {
         let mut d_y = vec![0.0_f64; ny];
         let d = thickness as f64;
         // Left boundary
-        for i in 0..thickness.min(nx) {
+        for (i, dx_i) in d_x.iter_mut().enumerate().take(thickness.min(nx)) {
             let xi = (thickness - i) as f64 / d;
-            d_x[i] = sigma_max * xi * xi;
+            *dx_i = sigma_max * xi * xi;
         }
         // Right boundary
-        for i in (nx.saturating_sub(thickness))..nx {
+        let right_start = nx.saturating_sub(thickness);
+        for (i, dx_i) in d_x.iter_mut().enumerate().skip(right_start) {
             let xi = (i + thickness + 1 - nx) as f64 / d;
-            d_x[i] = sigma_max * xi * xi;
+            *dx_i = sigma_max * xi * xi;
         }
         // Bottom boundary
-        for j in 0..thickness.min(ny) {
+        for (j, dy_j) in d_y.iter_mut().enumerate().take(thickness.min(ny)) {
             let xi = (thickness - j) as f64 / d;
-            d_y[j] = sigma_max * xi * xi;
+            *dy_j = sigma_max * xi * xi;
         }
         // Top boundary
-        for j in (ny.saturating_sub(thickness))..ny {
+        let top_start = ny.saturating_sub(thickness);
+        for (j, dy_j) in d_y.iter_mut().enumerate().skip(top_start) {
             let xi = (j + thickness + 1 - ny) as f64 / d;
-            d_y[j] = sigma_max * xi * xi;
+            *dy_j = sigma_max * xi * xi;
         }
         Self {
             thickness,
@@ -575,7 +571,7 @@ impl FrequencyResponse {
         let mut phase = vec![0.0_f64; n_fft];
         let mut frequencies = vec![0.0_f64; n_fft];
 
-        for k in 0..n_fft {
+        for (k, mag_k) in magnitude.iter_mut().enumerate() {
             let mut re = 0.0_f64;
             let mut im = 0.0_f64;
             for (t, &s) in signal.iter().enumerate() {
@@ -583,7 +579,7 @@ impl FrequencyResponse {
                 re += s * angle.cos();
                 im += s * angle.sin();
             }
-            magnitude[k] = (re * re + im * im).sqrt() / n as f64;
+            *mag_k = (re * re + im * im).sqrt() / n as f64;
             phase[k] = im.atan2(re);
             frequencies[k] = k as f64 * sample_rate / n as f64;
         }

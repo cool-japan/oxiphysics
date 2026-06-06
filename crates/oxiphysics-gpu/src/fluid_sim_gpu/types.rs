@@ -2,14 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
-use super::functions_2::*;
-use std::f64::consts::PI;
-
-#[allow(unused_imports)]
 use super::functions::*;
 use super::functions::{D2Q9_CX, D2Q9_CY, D2Q9_OPP, D2Q9_Q, D2Q9_W};
+use std::f64::consts::PI;
 
 /// A full FLIP/PIC fluid simulation (CPU mock of GPU dispatch).
 #[derive(Debug, Clone)]
@@ -415,8 +410,7 @@ impl LbmD2Q9 {
                 if self.cell_type[y * nx + x] != LbmCellType::Solid {
                     continue;
                 }
-                for q in 0..D2Q9_Q {
-                    let opp = D2Q9_OPP[q];
+                for (q, &opp) in D2Q9_OPP.iter().enumerate().take(D2Q9_Q) {
                     let val = self.get_f(x, y, q);
                     updates.push((x, y, opp, val));
                 }

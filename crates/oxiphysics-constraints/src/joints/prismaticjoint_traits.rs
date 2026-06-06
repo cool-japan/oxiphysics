@@ -13,10 +13,7 @@ use oxiphysics_core::BodyHandle;
 use oxiphysics_core::math::Vec3;
 use oxiphysics_rigid::RigidBodySet;
 
-use super::functions::JOINT_BAUMGARTE;
-#[allow(unused_imports)]
-use super::functions::*;
-use super::functions::{apply_angular_impulse, apply_pair_impulse, read_body};
+use super::functions::{JOINT_BAUMGARTE, apply_angular_impulse, apply_pair_impulse, read_body};
 use super::types::PrismaticJoint;
 
 impl Constraint for PrismaticJoint {

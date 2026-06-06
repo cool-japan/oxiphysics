@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -16,18 +15,11 @@
 //! - [`wavelength`]: Acoustic wavelength λ = c / f
 //! - [`cfl_acoustic`]: CFL time-step limit for acoustic SPH
 
-#![allow(dead_code)]
-
 use std::f64::consts::PI;
 
 // ============================================================================
 // Math helpers (private)
 // ============================================================================
-
-#[inline]
-fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
 
 #[inline]
 fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -52,22 +44,6 @@ fn len3(v: [f64; 3]) -> f64 {
 // ============================================================================
 // SPH kernel (cubic spline)
 // ============================================================================
-
-fn cubic_kernel(r: f64, h: f64) -> f64 {
-    if h < 1e-300 {
-        return 0.0;
-    }
-    let q = r / h;
-    let alpha = 1.0 / (PI * h * h * h);
-    if q < 1.0 {
-        alpha * (1.0 - 1.5 * q * q + 0.75 * q * q * q)
-    } else if q < 2.0 {
-        let t = 2.0 - q;
-        alpha * 0.25 * t * t * t
-    } else {
-        0.0
-    }
-}
 
 fn cubic_kernel_grad(r_ij: [f64; 3], h: f64) -> [f64; 3] {
     let r = len3(r_ij);
@@ -115,7 +91,6 @@ pub struct AcousticParticle {
 
 impl AcousticParticle {
     /// Create a new `AcousticParticle`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         position: [f64; 3],
         velocity: [f64; 3],
@@ -251,8 +226,8 @@ impl AcousticSPH {
 
         // Integrate
         for i in 0..n {
-            for k in 0..3 {
-                self.particles[i].velocity[k] += dt * accel[i][k];
+            for (k, ak) in accel[i].iter().enumerate() {
+                self.particles[i].velocity[k] += dt * ak;
                 self.particles[i].position[k] += dt * self.particles[i].velocity[k];
             }
             self.particles[i].density += dt * drho_dt[i];
@@ -424,8 +399,8 @@ impl AbsorbingBoundary {
 
     /// Check whether a position is inside the PML region.
     pub fn is_in_pml(&self, pos: [f64; 3]) -> bool {
-        for axis in 0..3 {
-            if self.pml_factor(pos[axis], axis) > 0.0 {
+        for (axis, &p) in pos.iter().enumerate() {
+            if self.pml_factor(p, axis) > 0.0 {
                 return true;
             }
         }

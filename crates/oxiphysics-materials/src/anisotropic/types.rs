@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
 /// Classical laminate plate theory (CLT) single ply in a laminate stack.
 ///
 /// Represents one ply with its orientation angle (in degrees from the
@@ -26,7 +24,6 @@ pub struct Ply {
 }
 impl Ply {
     /// Create a new `Ply`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(e1: f64, e2: f64, nu12: f64, g12: f64, thickness: f64, angle_deg: f64) -> Self {
         Self {
             e1,
@@ -162,12 +159,11 @@ impl ThermalConductivityTensor {
     /// Compute the heat flux vector `q = -κ · ∇T`.
     ///
     /// `grad_t` is the temperature gradient vector \[K/m\].
-    #[allow(clippy::needless_range_loop)]
     pub fn heat_flux(&self, grad_t: [f64; 3]) -> [f64; 3] {
         let mut q = [0.0f64; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                q[i] -= self.kappa[i][j] * grad_t[j];
+        for (i, qi) in q.iter_mut().enumerate() {
+            for (j, &gt_j) in grad_t.iter().enumerate() {
+                *qi -= self.kappa[i][j] * gt_j;
             }
         }
         q
@@ -175,12 +171,11 @@ impl ThermalConductivityTensor {
     /// Effective thermal conductivity along a direction `n` (unit vector).
     ///
     /// κ_eff = nᵀ · κ · n
-    #[allow(clippy::needless_range_loop)]
     pub fn effective_conductivity(&self, n: [f64; 3]) -> f64 {
         let mut kn = [0.0f64; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                kn[i] += self.kappa[i][j] * n[j];
+        for (i, kni) in kn.iter_mut().enumerate() {
+            for (j, &n_j) in n.iter().enumerate() {
+                *kni += self.kappa[i][j] * n_j;
             }
         }
         n[0] * kn[0] + n[1] * kn[1] + n[2] * kn[2]
@@ -214,7 +209,6 @@ pub struct LaRCFailureCriteria {
 }
 impl LaRCFailureCriteria {
     /// Create with explicit parameters.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(xt: f64, xc: f64, yis: f64, sis: f64, phi0: f64, eta: f64) -> Self {
         Self {
             xt,
@@ -369,6 +363,47 @@ impl BraidedComposite {
         (1.0 / 3.0) * q66 + (2.0 / 3.0) * qb66_bias
     }
 }
+/// The 13 independent compliance components of a monoclinic material
+/// (Voigt notation, symmetry plane = plane 1-2).
+///
+/// ```text
+/// S = [S11 S12 S13  0   0  S16 ]
+///     [S12 S22 S23  0   0  S26 ]
+///     [S13 S23 S33  0   0  S36 ]
+///     [ 0   0   0  S44 S45  0  ]
+///     [ 0   0   0  S45 S55  0  ]
+///     [S16 S26 S36  0   0  S66 ]
+/// ```
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MonoclinicCompliance {
+    /// S11 compliance component \[1/Pa\]
+    pub s11: f64,
+    /// S12 compliance component \[1/Pa\]
+    pub s12: f64,
+    /// S13 compliance component \[1/Pa\]
+    pub s13: f64,
+    /// S16 coupling compliance component \[1/Pa\]
+    pub s16: f64,
+    /// S22 compliance component \[1/Pa\]
+    pub s22: f64,
+    /// S23 compliance component \[1/Pa\]
+    pub s23: f64,
+    /// S26 coupling compliance component \[1/Pa\]
+    pub s26: f64,
+    /// S33 compliance component \[1/Pa\]
+    pub s33: f64,
+    /// S36 coupling compliance component \[1/Pa\]
+    pub s36: f64,
+    /// S44 compliance component \[1/Pa\]
+    pub s44: f64,
+    /// S45 coupling compliance component \[1/Pa\]
+    pub s45: f64,
+    /// S55 compliance component \[1/Pa\]
+    pub s55: f64,
+    /// S66 compliance component \[1/Pa\]
+    pub s66: f64,
+}
+
 /// Monoclinic linear elastic material (single symmetry plane = plane 1-2).
 ///
 /// Has 13 independent elastic constants (compared to 21 for triclinic).
@@ -412,37 +447,23 @@ pub struct MonoclinicMaterial {
     pub s66: f64,
 }
 impl MonoclinicMaterial {
-    /// Build from the 13 independent compliance values.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        s11: f64,
-        s12: f64,
-        s13: f64,
-        s16: f64,
-        s22: f64,
-        s23: f64,
-        s26: f64,
-        s33: f64,
-        s36: f64,
-        s44: f64,
-        s45: f64,
-        s55: f64,
-        s66: f64,
-    ) -> Self {
+    /// Build from a [`MonoclinicCompliance`] parameter struct holding all 13
+    /// independent compliance values.
+    pub fn new(c: MonoclinicCompliance) -> Self {
         Self {
-            s11,
-            s12,
-            s13,
-            s16,
-            s22,
-            s23,
-            s26,
-            s33,
-            s36,
-            s44,
-            s45,
-            s55,
-            s66,
+            s11: c.s11,
+            s12: c.s12,
+            s13: c.s13,
+            s16: c.s16,
+            s22: c.s22,
+            s23: c.s23,
+            s26: c.s26,
+            s33: c.s33,
+            s36: c.s36,
+            s44: c.s44,
+            s45: c.s45,
+            s55: c.s55,
+            s66: c.s66,
         }
     }
     /// Effective in-plane Young's modulus E₁ = 1 / S₁₁.
@@ -563,7 +584,6 @@ pub struct OrthotropicMaterial {
 }
 impl OrthotropicMaterial {
     /// Create with explicit parameters. Symmetry requires `nu_ij/Ei = nu_ji/Ej`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         e1: f64,
         e2: f64,
@@ -754,12 +774,11 @@ impl DiffusionTensor {
         Self::new(d)
     }
     /// Compute the diffusive flux vector `J = -D · ∇c`.
-    #[allow(clippy::needless_range_loop)]
     pub fn diffusive_flux(&self, grad_c: [f64; 3]) -> [f64; 3] {
         let mut j = [0.0f64; 3];
-        for i in 0..3 {
-            for j_idx in 0..3 {
-                j[i] -= self.d[i][j_idx] * grad_c[j_idx];
+        for (i, ji) in j.iter_mut().enumerate() {
+            for (j_idx, &gc_j) in grad_c.iter().enumerate() {
+                *ji -= self.d[i][j_idx] * gc_j;
             }
         }
         j
@@ -900,7 +919,6 @@ pub struct HashinFailureCriteria {
 }
 impl HashinFailureCriteria {
     /// Create a new Hashin failure criteria set.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(xt: f64, xc: f64, yt: f64, yc: f64, s12: f64, s23: f64) -> Self {
         Self {
             xt,
@@ -1107,24 +1125,22 @@ impl SymmetryOperation {
         Self::new([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])
     }
     /// Apply this operation to a 3-vector.
-    #[allow(clippy::needless_range_loop)]
     pub fn apply(&self, v: [f64; 3]) -> [f64; 3] {
         let mut out = [0.0f64; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                out[i] += self.matrix[i][j] * v[j];
+        for (i, oi) in out.iter_mut().enumerate() {
+            for (j, &v_j) in v.iter().enumerate() {
+                *oi += self.matrix[i][j] * v_j;
             }
         }
         out
     }
     /// Compose this operation with another: `self * other`.
-    #[allow(clippy::needless_range_loop)]
     pub fn compose(&self, other: &SymmetryOperation) -> SymmetryOperation {
         let mut m = [[0.0f64; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in m.iter_mut().enumerate() {
+            for (j, mij) in row.iter_mut().enumerate() {
                 for k in 0..3 {
-                    m[i][j] += self.matrix[i][k] * other.matrix[k][j];
+                    *mij += self.matrix[i][k] * other.matrix[k][j];
                 }
             }
         }

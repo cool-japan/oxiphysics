@@ -1,5 +1,3 @@
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_range_contains)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 //! Crystal plasticity FEM: slip systems, dislocation density, texture evolution.
@@ -15,9 +13,6 @@
 //! - [`PolycrystalFem`]: Taylor/self-consistent aggregate models
 //! - [`OdfRepresentation`]: orientation distribution function
 //! - [`RecrystallizationModel`]: JMAK nucleation and growth kinetics
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -151,11 +146,11 @@ impl CrystalPlasticity {
     pub fn update_crss(&mut self, gamma_dot: &[f64], dt: f64) {
         let n = self.n_slip;
         let old = self.crss.clone();
-        for a in 0..n {
+        for (a, (crss_a, &old_a)) in self.crss.iter_mut().zip(old.iter()).enumerate().take(n) {
             let delta: f64 = (0..n)
                 .map(|b| self.hardening_matrix[a * n + b] * gamma_dot[b].abs())
                 .sum();
-            self.crss[a] = old[a] + dt * delta;
+            *crss_a = old_a + dt * delta;
         }
     }
 
@@ -509,8 +504,8 @@ impl TextureEvolution {
             }
         }
         let mut new_r = [0.0_f64; 9];
-        for i in 0..9 {
-            new_r[i] = r[i] + dr[i];
+        for (new_r_i, (&r_i, &dr_i)) in new_r.iter_mut().zip(r.iter().zip(dr.iter())) {
+            *new_r_i = r_i + dr_i;
         }
         self.rotation = gram_schmidt_3x3(new_r);
     }
@@ -589,8 +584,8 @@ impl PolycrystalFem {
         let mut avg = [0.0_f64; 6];
         for (i, s) in self.grain_stresses.iter().enumerate() {
             let f = self.volume_fractions[i];
-            for k in 0..6 {
-                avg[k] += f * s[k];
+            for (avg_k, &s_k) in avg.iter_mut().zip(s.iter()) {
+                *avg_k += f * s_k;
             }
         }
         avg
@@ -1081,7 +1076,7 @@ mod tests {
         // Euler angles of identity rotation ~ (0, 0, 0) or within valid range
         let (phi1, phi, phi2) = te.euler_angles();
         let _ = (phi1, phi, phi2); // just check it doesn't panic
-        assert!(phi >= 0.0 && phi <= PI);
+        assert!((0.0..=PI).contains(&phi));
     }
 
     #[test]

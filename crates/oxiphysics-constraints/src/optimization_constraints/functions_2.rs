@@ -2,10 +2,7 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
-#[allow(unused_imports)]
-use super::functions::*;
-use super::functions::{dot, mat_t_vec, mat_vec, norm, solve_spd};
+use super::functions::{dot, mat_t_vec, mat_vec, norm, prox_l1, solve_spd};
 use super::types::{DualDecompResult, PenaltyResult, ProxGradResult};
 
 /// FISTA (Fast ISTA) - accelerated proximal gradient method.
@@ -134,26 +131,19 @@ pub fn dual_decomposition(
             };
         }
         let inv_num = 1.0 / num_sub as f64;
-        for j in 0..n {
-            z[j] = 0.0;
-            for i in 0..num_sub {
-                z[j] += x_locals[i][j];
-            }
-            z[j] *= inv_num;
+        for (j, z_j) in z.iter_mut().enumerate() {
+            *z_j = x_locals.iter().map(|xl| xl[j]).sum::<f64>() * inv_num;
         }
         let mut residual = vec![0.0; n];
-        for i in 0..num_sub {
-            for j in 0..n {
-                residual[j] += (x_locals[i][j] - z[j]).abs();
+        for xl in x_locals.iter() {
+            for (j, (res_j, z_j)) in residual.iter_mut().zip(z.iter()).enumerate() {
+                *res_j += (xl[j] - z_j).abs();
             }
         }
         let res_norm = norm(&residual);
-        for j in 0..n {
-            let mut avg_diff = 0.0;
-            for i in 0..num_sub {
-                avg_diff += x_locals[i][j] - z[j];
-            }
-            y[j] += step_size * avg_diff / num_sub as f64;
+        for (j, y_j) in y.iter_mut().enumerate() {
+            let avg_diff: f64 = x_locals.iter().map(|xl| xl[j] - z[j]).sum::<f64>();
+            *y_j += step_size * avg_diff / num_sub as f64;
         }
         if res_norm < tol {
             converged = true;
@@ -259,7 +249,7 @@ pub fn identity_matrix(n: usize) -> Vec<f64> {
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::*;
     pub(super) const TOL: f64 = 1e-6;
     #[test]
     fn test_dot_product() {
@@ -354,7 +344,19 @@ mod tests {
         let a = [-1.0];
         let b = [-1.0];
         let x0 = [2.0];
-        let result = barrier_method(&f, &a, &b, 1, 1, &x0, 1.0, 0.5, 50, 50, 1e-6);
+        let result = barrier_method(BarrierMethodParams {
+            f: &f,
+            a_ineq: &a,
+            b_ineq: &b,
+            n: 1,
+            m: 1,
+            x0: &x0,
+            mu_init: 1.0,
+            mu_factor: 0.5,
+            outer_iter: 50,
+            inner_iter: 50,
+            tol: 1e-6,
+        });
         assert!((result.x[0] - 1.0).abs() < 0.1, "x={}", result.x[0]);
     }
     #[test]
@@ -363,7 +365,19 @@ mod tests {
         let c = [0.0, 0.0];
         let a_eq = [1.0, 1.0];
         let b_eq = [1.0];
-        let result = augmented_lagrangian(&h, &c, &a_eq, &b_eq, 2, 1, 1.0, 2.0, 50, 50, 1e-6);
+        let result = augmented_lagrangian(AugLagParams {
+            h: &h,
+            c: &c,
+            a_eq: &a_eq,
+            b_eq: &b_eq,
+            n: 2,
+            m: 1,
+            rho_init: 1.0,
+            rho_factor: 2.0,
+            outer_iter: 50,
+            inner_iter: 50,
+            tol: 1e-6,
+        });
         assert!(result.converged, "violation={}", result.violation);
         assert!((result.x[0] - 0.5).abs() < 0.01, "x[0]={}", result.x[0]);
         assert!((result.x[1] - 0.5).abs() < 0.01, "x[1]={}", result.x[1]);
@@ -374,7 +388,19 @@ mod tests {
         let c = [0.0];
         let a_eq = [1.0];
         let b_eq = [3.0];
-        let result = augmented_lagrangian(&h, &c, &a_eq, &b_eq, 1, 1, 1.0, 2.0, 50, 50, 1e-6);
+        let result = augmented_lagrangian(AugLagParams {
+            h: &h,
+            c: &c,
+            a_eq: &a_eq,
+            b_eq: &b_eq,
+            n: 1,
+            m: 1,
+            rho_init: 1.0,
+            rho_factor: 2.0,
+            outer_iter: 50,
+            inner_iter: 50,
+            tol: 1e-6,
+        });
         assert!((result.x[0] - 3.0).abs() < 0.01, "x={}", result.x[0]);
     }
     #[test]

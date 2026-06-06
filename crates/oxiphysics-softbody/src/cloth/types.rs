@@ -2,9 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{
     add, apply_wrinkling, compute_dihedral_angle, compute_lift_force, cross, dot, length,
     normalize, resolve_cloth_floor_collision, resolve_cloth_sphere_collision,
@@ -15,13 +12,11 @@ use crate::particle::{SoftBody, SoftParticle};
 use oxiphysics_core::math::{Real, Vec3};
 
 /// A collection of seam constraints acting on a flat position array.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct SeamSystem {
     /// All seam constraints.
     pub seams: Vec<SeamConstraint>,
 }
-#[allow(dead_code)]
 impl SeamSystem {
     /// Create an empty seam system.
     pub fn new() -> Self {
@@ -34,7 +29,7 @@ impl SeamSystem {
     /// Apply one PBD iteration of all seam constraints.
     ///
     /// `positions` and `inv_masses` are modified in place.
-    pub fn solve(&mut self, positions: &mut Vec<[f64; 3]>, inv_masses: &[f64]) {
+    pub fn solve(&mut self, positions: &mut [[f64; 3]], inv_masses: &[f64]) {
         let n = self.seams.len();
         for idx in 0..n {
             let (da, db) = {
@@ -81,7 +76,6 @@ impl XpbdClothMesh {
     /// * `width`, `height` - physical dimensions of the cloth.
     /// * `mass_per_particle` - mass assigned to each particle.
     /// * `compliance` - XPBD compliance for the generated constraints.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         nx: usize,
         ny: usize,
@@ -855,7 +849,6 @@ pub struct ClothVertex {
     pub normal: [f64; 3],
 }
 /// A rigid sphere obstacle.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RigidSphere {
     /// Centre of the sphere.
@@ -1041,7 +1034,6 @@ impl PbdClothMesh {
         self.pinned.contains(&idx)
     }
     /// One XPBD timestep under gravity with `iterations` constraint passes.
-    #[allow(clippy::too_many_arguments)]
     pub fn step(&mut self, dt: f64, gravity: [f64; 3], iterations: usize) {
         let n = self.positions.len();
         let mut pred: Vec<[f64; 3]> = Vec::with_capacity(n);
@@ -1141,13 +1133,13 @@ impl PbdClothMesh {
                 }
             }
         }
-        for i in 0..n {
+        for (i, p) in pred.iter().enumerate().take(n) {
             if self.is_pinned(i) {
                 self.velocities[i] = [0.0; 3];
                 continue;
             }
-            self.velocities[i] = scale(sub(pred[i], self.positions[i]), 1.0 / dt);
-            self.positions[i] = pred[i];
+            self.velocities[i] = scale(sub(*p, self.positions[i]), 1.0 / dt);
+            self.positions[i] = *p;
         }
     }
     /// Apply aerodynamic wind/drag to each particle using triangle normals.
@@ -1220,7 +1212,6 @@ impl PbdClothMesh {
 ///
 /// When `rest_distance` is 0 the constraint acts as a hard weld; non-zero
 /// values model an elastic seam.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SeamConstraint {
     /// Index of the first vertex (in the mesh vertex array).
@@ -1236,7 +1227,6 @@ pub struct SeamConstraint {
     /// Strain threshold above which the seam tears.
     pub tear_threshold: f64,
 }
-#[allow(dead_code)]
 impl SeamConstraint {
     /// Create a seam welding `a` to `b` at their current distance.
     pub fn new_weld(a: usize, b: usize, stiffness: f64) -> Self {

@@ -6,12 +6,6 @@
 //! Provides a standalone rope model with catenary sag, natural frequency,
 //! wind drag, and energy computations using plain `[f64; 3]` arrays.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
-#[allow(unused_imports)]
-use std::f64::consts::PI;
-
 // ---------------------------------------------------------------------------
 // Vector helpers
 // ---------------------------------------------------------------------------

@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -11,9 +10,6 @@
 //! - [`CrowdDensity`] — density map, local velocity field, fundamental diagram (v vs ρ)
 //! - [`EmergentBehavior`] — lane formation, oscillation at bottleneck, arch formation
 //! - [`EvacuationSimulation`] — exit choice, bottleneck congestion, evacuation time
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 use std::f64::consts::PI;
 
@@ -909,8 +905,6 @@ pub struct EvacuationSimulation {
     pub flow_rate_history: Vec<(f64, f64)>,
     /// Bottleneck congestion indicator.
     pub bottleneck_density: f64,
-    /// Random seed for stochastic behavior.
-    rng_state: u64,
 }
 
 impl EvacuationSimulation {
@@ -926,17 +920,7 @@ impl EvacuationSimulation {
             evacuation_times: Vec::new(),
             flow_rate_history: Vec::new(),
             bottleneck_density: 0.0,
-            rng_state: 12345,
         }
-    }
-
-    /// Simple LCG random float in \[0, 1).
-    fn rand_f64(&mut self) -> f64 {
-        self.rng_state = self
-            .rng_state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        (self.rng_state >> 33) as f64 / (1u64 << 31) as f64
     }
 
     /// Add a pedestrian to the simulation at `position`.
@@ -996,11 +980,11 @@ impl EvacuationSimulation {
         let n = self.pedestrians.len();
         let mut forces = vec![[0.0f64; 2]; n];
 
-        for i in 0..n {
+        for (i, force) in forces.iter_mut().enumerate() {
             if self.pedestrians[i].evacuated {
                 continue;
             }
-            forces[i] = SocialForceModel::total_force(
+            *force = SocialForceModel::total_force(
                 &self.pedestrians[i],
                 &self.pedestrians,
                 &self.obstacles,
@@ -1008,12 +992,12 @@ impl EvacuationSimulation {
         }
 
         // Integrate
-        for i in 0..n {
+        for (i, force) in forces.into_iter().enumerate() {
             if self.pedestrians[i].evacuated {
                 continue;
             }
             self.pedestrians[i].update_desired_direction();
-            self.pedestrians[i].integrate(forces[i], dt);
+            self.pedestrians[i].integrate(force, dt);
         }
 
         // Check for evacuation
@@ -1185,18 +1169,18 @@ impl CrowdSimulationWorld {
         // Compute and apply forces.
         let n = self.pedestrians.len();
         let mut forces = vec![[0.0f64; 2]; n];
-        for i in 0..n {
+        for (i, force) in forces.iter_mut().enumerate() {
             if !self.pedestrians[i].evacuated {
-                forces[i] = SocialForceModel::total_force(
+                *force = SocialForceModel::total_force(
                     &self.pedestrians[i],
                     &self.pedestrians,
                     &self.obstacles,
                 );
             }
         }
-        for i in 0..n {
+        for (i, force) in forces.into_iter().enumerate() {
             if !self.pedestrians[i].evacuated {
-                self.pedestrians[i].integrate(forces[i], dt);
+                self.pedestrians[i].integrate(force, dt);
             }
         }
 

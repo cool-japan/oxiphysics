@@ -5,9 +5,6 @@
 //! shadow map pass configuration, deferred shading G-buffer pass,
 //! particle rendering pass, post-processing passes, and the render frame graph.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use crate::wasm_helpers::to_js_value;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;

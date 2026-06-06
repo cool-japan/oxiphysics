@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -14,7 +13,6 @@ use super::config::{Ensemble, KB_REDUCED, MdConfig, MdState};
 ///
 /// Operates on [`MdState`] with an explicit velocity-Verlet integration loop
 /// and optional velocity-rescaling thermostat.
-#[allow(dead_code)]
 pub struct MdSim {
     /// Run configuration.
     pub config: MdConfig,
@@ -24,7 +22,6 @@ pub struct MdSim {
 
 impl MdSim {
     /// Create a new simulation.
-    #[allow(dead_code)]
     pub fn new(config: MdConfig, state: MdState) -> Self {
         Self { config, state }
     }
@@ -36,7 +33,6 @@ impl MdSim {
     /// Compute kinetic energy (kJ mol⁻¹) from current velocities and masses.
     ///
     /// KE = ½ Σᵢ mᵢ |vᵢ|²
-    #[allow(dead_code)]
     pub fn compute_kinetic_energy(&self) -> f64 {
         self.state
             .velocities
@@ -56,7 +52,6 @@ impl MdSim {
     /// Compute instantaneous temperature (K) from kinetic energy.
     ///
     /// T = 2 KE / (3 N k_B)
-    #[allow(dead_code)]
     pub fn compute_temperature(&self) -> f64 {
         let n = self.state.n_atoms() as f64;
         if n == 0.0 {
@@ -76,7 +71,6 @@ impl MdSim {
     ///
     /// where W is the virial (kJ mol⁻¹) and V is the box volume (Å³).
     /// Result converted to bar: 1 kJ mol⁻¹ Å⁻³ ≈ 16.6054 bar.
-    #[allow(dead_code)]
     pub fn compute_pressure(&self, virial: f64) -> f64 {
         let n = self.state.n_atoms() as f64;
         let v =
@@ -98,7 +92,6 @@ impl MdSim {
     /// Perform one velocity-Verlet step with an external force function.
     ///
     /// `forces_fn(positions, box_lengths) -> forces`
-    #[allow(dead_code)]
     pub fn velocity_verlet_step(
         &mut self,
         forces_fn: impl Fn(&[[f64; 3]], &[f64; 3]) -> Vec<[f64; 3]>,
@@ -150,7 +143,6 @@ impl MdSim {
     /// Apply simple velocity-rescaling thermostat to hit `target_T` (K).
     ///
     /// Scales all velocities by √(T_target / T_current).
-    #[allow(dead_code)]
     pub fn apply_velocity_rescaling(&mut self, target_t: f64) {
         let t_current = self.compute_temperature();
         if t_current < 1e-10 {
@@ -172,7 +164,6 @@ impl MdSim {
     ///
     /// Uses a zero-force placeholder; real simulations should call
     /// `velocity_verlet_step` directly with a physical force function.
-    #[allow(dead_code)]
     pub fn step(&mut self) {
         let zero_forces = |pos: &[[f64; 3]], _box: &[f64; 3]| vec![[0.0f64; 3]; pos.len()];
         self.velocity_verlet_step(zero_forces);
@@ -193,7 +184,6 @@ impl MdSim {
     }
 
     /// Run for `n_steps` steps, recording (KE, PE, T) every `record_every` steps.
-    #[allow(dead_code)]
     pub fn run_with_forces(
         &mut self,
         forces_fn: impl Fn(&[[f64; 3]], &[f64; 3]) -> Vec<[f64; 3]>,
@@ -236,7 +226,6 @@ impl MdSim {
 /// ```text
 /// scale = sqrt(1 + dt/tau * (T_target / T_current - 1))
 /// ```
-#[allow(dead_code)]
 pub struct BerendsenRescaler {
     /// Coupling time constant (ps).
     pub tau: f64,
@@ -244,14 +233,12 @@ pub struct BerendsenRescaler {
 
 impl BerendsenRescaler {
     /// Create a new Berendsen rescaler.
-    #[allow(dead_code)]
     pub fn new(tau: f64) -> Self {
         assert!(tau > 0.0, "tau must be positive");
         Self { tau }
     }
 
     /// Compute the velocity scaling factor for this time step.
-    #[allow(dead_code)]
     pub fn scale_factor(&self, t_current: f64, target_t: f64, dt: f64) -> f64 {
         if t_current < 1e-10 {
             return 1.0;
@@ -263,7 +250,6 @@ impl BerendsenRescaler {
 
 impl MdSim {
     /// Apply Berendsen velocity rescaling with coupling time `tau` (ps).
-    #[allow(dead_code)]
     pub fn apply_berendsen_thermostat(&mut self, target_t: f64, tau: f64) {
         let t_current = self.compute_temperature();
         let rescaler = BerendsenRescaler::new(tau);
@@ -276,7 +262,6 @@ impl MdSim {
     }
 
     /// Remove centre-of-mass velocity from the system.
-    #[allow(dead_code)]
     pub fn remove_com_velocity(&mut self) {
         let n = self.state.n_atoms();
         if n == 0 {
@@ -284,47 +269,48 @@ impl MdSim {
         }
         let mut total_mass = 0.0;
         let mut com_vel = [0.0; 3];
-        for i in 0..n {
-            let m = self.state.masses[i];
+        for (&m, vel) in self
+            .state
+            .masses
+            .iter()
+            .zip(self.state.velocities.iter())
+            .take(n)
+        {
             total_mass += m;
-            for a in 0..3 {
-                com_vel[a] += m * self.state.velocities[i][a];
+            for (cv, &v) in com_vel.iter_mut().zip(vel.iter()) {
+                *cv += m * v;
             }
         }
         if total_mass > 0.0 {
-            for a in 0..3 {
-                com_vel[a] /= total_mass;
+            for cv in com_vel.iter_mut() {
+                *cv /= total_mass;
             }
-            for i in 0..n {
-                for a in 0..3 {
-                    self.state.velocities[i][a] -= com_vel[a];
+            for vel in self.state.velocities.iter_mut().take(n) {
+                for (v, &cv) in vel.iter_mut().zip(com_vel.iter()) {
+                    *v -= cv;
                 }
             }
         }
     }
 
     /// Compute total momentum \[px, py, pz\] (amu Å ps⁻¹).
-    #[allow(dead_code)]
     pub fn total_momentum(&self) -> [f64; 3] {
         let mut p = [0.0; 3];
-        for i in 0..self.state.n_atoms() {
-            let m = self.state.masses[i];
-            for a in 0..3 {
-                p[a] += m * self.state.velocities[i][a];
+        for (&m, vel) in self.state.masses.iter().zip(self.state.velocities.iter()) {
+            for (pa, &v) in p.iter_mut().zip(vel.iter()) {
+                *pa += m * v;
             }
         }
         p
     }
 
     /// Compute total energy (kinetic + potential) from stored state (kJ mol⁻¹).
-    #[allow(dead_code)]
     pub fn total_energy(&self) -> f64 {
         self.state.kinetic_energy + self.state.potential_energy
     }
 
     /// Perform a full MD step using an external force function and Berendsen
     /// thermostat (NVT) or simple velocity-Verlet (NVE).
-    #[allow(dead_code)]
     pub fn step_with_forces(
         &mut self,
         forces_fn: impl Fn(&[[f64; 3]], &[f64; 3]) -> Vec<[f64; 3]>,

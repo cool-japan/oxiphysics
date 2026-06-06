@@ -2,17 +2,14 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::mesh_simplification::HalfEdgeMesh;
     use crate::mesh_simplification::ProgressiveMesh;
     use crate::mesh_simplification::QemConfig;
     use crate::mesh_simplification::SymMat4;
     use crate::mesh_simplification::TextureSeamFlags;
+    use crate::mesh_simplification::*;
     /// Create a simple unit cube mesh (8 vertices, 12 triangles).
     fn make_cube_mesh() -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
         let verts = vec![

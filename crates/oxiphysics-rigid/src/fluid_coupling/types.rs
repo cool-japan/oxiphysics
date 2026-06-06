@@ -2,17 +2,13 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-use std::f64::consts::PI;
-
-#[allow(unused_imports)]
-use super::functions::*;
 use super::functions::{add, cross, length, normalize, scale, sub};
+use std::f64::consts::PI;
 
 /// Hull resistance model using the Froude number.
 ///
 /// Separates resistance into frictional, residual (wave-making), and
 /// air-resistance components.
-#[allow(dead_code)]
 pub struct HullResistance {
     /// Wetted surface area (m²).
     pub s_wet: f64,
@@ -147,7 +143,6 @@ impl AddedMass {
 /// When a body tilts, the submerged volume changes and the buoyancy force
 /// shifts laterally (metacentric height effect). This model uses a capsule/box
 /// approximation to compute orientation-dependent buoyancy.
-#[allow(dead_code)]
 pub struct OrientedBuoyancy {
     /// Fluid density (kg/m³).
     pub rho: f64,
@@ -200,7 +195,6 @@ impl OrientedBuoyancy {
 ///
 /// The added mass tensor relates body acceleration to the reaction force from
 /// the surrounding fluid:  F_am = -\[m_a\] * a_body.
-#[allow(dead_code)]
 pub struct AddedMassTensor {
     /// Diagonal entries \[m_a_x, m_a_y, m_a_z\] (kg).
     pub diagonal: [f64; 3],
@@ -286,7 +280,6 @@ impl VivParams {
 ///
 /// For small bodies (ka ≪ 1, k = wave number, a = body radius) the
 /// diffraction force is negligible and only Froude-Krylov matters.
-#[allow(dead_code)]
 pub struct FroudeKrylovForce {
     /// Body volume (m³).
     pub volume: f64,
@@ -502,7 +495,6 @@ impl MorisonElement {
 ///
 /// The sloshing is modelled as a simple pendulum whose effective mass and
 /// length are derived from the fluid fill level.  See Abramson (1966).
-#[allow(dead_code)]
 pub struct SloshingModel {
     /// Tank half-length in the sloshing direction (m).
     pub half_length: f64,
@@ -746,7 +738,6 @@ impl FloatingBody {
 ///
 /// For the simplified model we use a linear K_T(J) fit:
 /// K_T(J) = k_t0 - k_t1 * J
-#[allow(dead_code)]
 pub struct PropellerThrust {
     /// Propeller diameter (m).
     pub diameter: f64,
@@ -849,7 +840,6 @@ impl FluidCoupling {
     /// - `fluid_accel` : fluid acceleration vector (m/s²)
     /// - `fluid_vel`   : fluid velocity vector (m/s)
     /// - `body_vel`    : body velocity vector (m/s)
-    #[allow(clippy::too_many_arguments)]
     pub fn compute_morrison_force(
         &self,
         diameter: f64,
@@ -951,7 +941,6 @@ pub enum FlowRegime {
     SuperCritical,
 }
 /// Reynolds number and related non-dimensional parameters.
-#[allow(dead_code)]
 pub struct ReynoldsUtils;
 impl ReynoldsUtils {
     /// Reynolds number: Re = ρ * U * L / μ.
@@ -1127,7 +1116,6 @@ impl HydrodynamicDrag {
 pub struct WaveForce;
 impl WaveForce {
     /// Morison force: F = 0.5·ρ·Cd·A·(u_rel|u_rel) + ρ·V·Cm·a.
-    #[allow(clippy::too_many_arguments)]
     pub fn morison_force(
         diameter: f64,
         length_val: f64,
@@ -1188,7 +1176,6 @@ impl WaveForce {
     ///
     /// u = A*ω * cosh(k*(z+d)) / sinh(k*d) * cos(kx - ωt)
     /// w = A*ω * sinh(k*(z+d)) / sinh(k*d) * sin(kx - ωt)  (note: sign from convention)
-    #[allow(clippy::too_many_arguments)]
     pub fn wave_velocity_with_depth(
         amplitude: f64,
         omega: f64,
@@ -1240,7 +1227,6 @@ impl WaveForce {
     }
 }
 /// Froude number utilities and flow regime classification.
-#[allow(dead_code)]
 pub struct FroudeNumber;
 impl FroudeNumber {
     /// Froude number: Fr = U / sqrt(g * L).
@@ -1291,7 +1277,6 @@ impl FroudeNumber {
 /// Tools to compute buoyancy forces from submerged volume fractions.
 ///
 /// Supports sphere, cylinder, and rectangular box geometries.
-#[allow(dead_code)]
 pub struct SubmergedVolumeFraction;
 impl SubmergedVolumeFraction {
     /// Submerged volume fraction for a sphere whose centre is at height `z_c`

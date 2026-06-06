@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,9 +6,6 @@
 //! Models hair strands as chains of oriented segments. Each segment carries a
 //! position and a frame (tangent/normal/binormal) to capture bending and
 //! twisting along the strand axis.
-
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Vector helpers (no nalgebra: use [f64; 3])
@@ -37,16 +33,6 @@ fn v3_scale(a: [f64; 3], s: f64) -> [f64; 3] {
 #[inline]
 fn v3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-/// Cross product of two 3-vectors.
-#[inline]
-fn v3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 /// Euclidean norm of a 3-vector.
@@ -351,17 +337,17 @@ pub fn discrete_elastic_rod(strand: &HairStrand) -> Vec<[f64; 3]> {
     let eps = 1e-7;
     let e0 = bending_energy(strand) + stretch_energy(strand) + twisting_energy(strand);
     // Finite-difference gradient.
-    for i in 0..n {
+    for (i, force) in forces.iter_mut().enumerate() {
         if strand.nodes[i].is_static() {
             continue;
         }
-        for k in 0..3 {
+        for (k, f_k) in force.iter_mut().enumerate() {
             let mut perturbed = strand.clone();
             perturbed.nodes[i].position[k] += eps;
             let e1 = bending_energy(&perturbed)
                 + stretch_energy(&perturbed)
                 + twisting_energy(&perturbed);
-            forces[i][k] = -(e1 - e0) / eps;
+            *f_k = -(e1 - e0) / eps;
         }
     }
     forces
@@ -460,29 +446,29 @@ pub fn style_target(strand: &mut HairStrand, target_positions: &[[f64; 3]]) {
 pub fn step_strand(strand: &mut HairStrand, gravity: [f64; 3], dt: f64) {
     // Compute elastic forces.
     let elastic_forces = discrete_elastic_rod(strand);
-    let n = strand.nodes.len();
+    let _n = strand.nodes.len();
     // Velocity damping coefficient (per step): prevents explosion with stiff springs.
     let damping = 0.98_f64;
-    for i in 0..n {
-        if strand.nodes[i].is_static() {
+    for (i, (node, el_force)) in strand
+        .nodes
+        .iter_mut()
+        .zip(elastic_forces.iter())
+        .enumerate()
+    {
+        let _ = i;
+        if node.is_static() {
             continue;
         }
-        let m_inv = strand.nodes[i].inv_mass;
+        let m_inv = node.inv_mass;
         let mass = 1.0 / m_inv.max(1e-15);
         // Gravity force = mass × g.
         let grav_f = v3_scale(gravity, mass);
-        let total_force = v3_add(v3_add(strand.nodes[i].force, elastic_forces[i]), grav_f);
+        let total_force = v3_add(v3_add(node.force, *el_force), grav_f);
         let accel = v3_scale(total_force, m_inv);
-        let new_vel = v3_scale(
-            v3_add(strand.nodes[i].velocity, v3_scale(accel, dt)),
-            damping,
-        );
-        strand.nodes[i].velocity = new_vel;
-        strand.nodes[i].position = v3_add(
-            strand.nodes[i].position,
-            v3_scale(strand.nodes[i].velocity, dt),
-        );
-        strand.nodes[i].force = [0.0; 3];
+        let new_vel = v3_scale(v3_add(node.velocity, v3_scale(accel, dt)), damping);
+        node.velocity = new_vel;
+        node.position = v3_add(node.position, v3_scale(node.velocity, dt));
+        node.force = [0.0; 3];
     }
 }
 

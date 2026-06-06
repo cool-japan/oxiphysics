@@ -17,8 +17,6 @@
 //! - [`WcsphBoundary`]: Dynamic boundary particles, Lennard-Jones, Adami BC
 //! - [`WcsphMultiPhase`]: Multi-phase WCSPH with surface tension
 
-#![allow(dead_code)]
-
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -324,7 +322,6 @@ impl ArtificialViscosity {
     }
 
     /// Compute artificial viscosity term Π_ij.
-    #[allow(clippy::too_many_arguments)]
     pub fn compute(
         &self,
         v_ij: [f64; 3],
@@ -480,7 +477,6 @@ impl RiemannSph {
     ///
     /// Returns (p_star, v_star_n) where v_star_n is the normal velocity at
     /// the Riemann interface.
-    #[allow(clippy::too_many_arguments)]
     pub fn acoustic_riemann(
         &self,
         p_l: f64,

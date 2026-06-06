@@ -8,8 +8,6 @@
 //! body motions in a single algebraic object.  They are particularly well
 //! suited for screw-motion interpolation (ScLERP).
 
-#![allow(dead_code)]
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Quaternion
 // ─────────────────────────────────────────────────────────────────────────────
@@ -544,7 +542,6 @@ impl ScrewMotion {
 /// This is the standard blending used in dual quaternion skinning (GPU-friendly).
 ///
 /// If all weights sum to zero the identity dual quaternion is returned.
-#[allow(dead_code)]
 pub fn dual_quaternion_blend(dqs: &[DualQuaternion], weights: &[f64]) -> DualQuaternion {
     let n = dqs.len().min(weights.len());
     if n == 0 {
@@ -583,7 +580,6 @@ impl DualQuaternion {
     ///
     /// Cheaper than ScLERP; less accurate for large rotations.
     /// Both dual quaternions are normalised before blending.
-    #[allow(dead_code)]
     pub fn nlerp(&self, other: &DualQuaternion, t: f64) -> DualQuaternion {
         let a = self.normalize();
         let b = other.normalize();
@@ -605,25 +601,21 @@ impl DualQuaternion {
     ///
     /// The resulting transformation first applies `self`, then `other`.
     /// Equivalent to `other.mul(self)`.
-    #[allow(dead_code)]
     pub fn compose_transforms(&self, other: &DualQuaternion) -> DualQuaternion {
         other.mul(self)
     }
 
     /// Invert a unit dual quaternion (conjugate of the real and dual parts).
-    #[allow(dead_code)]
     pub fn invert(&self) -> DualQuaternion {
         self.conjugate()
     }
 
     /// Apply this rigid transform to a list of points.
-    #[allow(dead_code)]
     pub fn transform_points(&self, points: &[[f64; 3]]) -> Vec<[f64; 3]> {
         points.iter().map(|&p| self.transform_point(p)).collect()
     }
 
     /// Extract the rotation angle (in radians) from the real quaternion.
-    #[allow(dead_code)]
     pub fn rotation_angle(&self) -> f64 {
         let q = self.real.normalize();
         2.0 * q.w.clamp(-1.0, 1.0).acos()
@@ -632,7 +624,6 @@ impl DualQuaternion {
     /// Extract the rotation axis (unit vector) from the real quaternion.
     ///
     /// Returns \[0, 0, 1\] for the identity rotation.
-    #[allow(dead_code)]
     pub fn rotation_axis(&self) -> [f64; 3] {
         let q = self.real.normalize();
         let s = (1.0 - q.w * q.w).sqrt();
@@ -652,7 +643,6 @@ impl DualQuaternion {
 /// `start` and `end` (including both endpoints).
 ///
 /// Uses ScLERP for each intermediate pose.
-#[allow(dead_code)]
 pub fn sclerp_sequence(
     start: &DualQuaternion,
     end: &DualQuaternion,
@@ -939,7 +929,6 @@ impl VelocityScrew {
 ///
 /// # Returns
 /// A dual quaternion representing the combined rigid transform.
-#[allow(clippy::too_many_arguments)]
 pub fn dh_transform(a: f64, alpha: f64, d: f64, theta: f64) -> DualQuaternion {
     // Step 1+2: rotate theta about z then translate d along z
     let q_theta = Quaternion::from_axis_angle([0.0, 0.0, 1.0], theta);

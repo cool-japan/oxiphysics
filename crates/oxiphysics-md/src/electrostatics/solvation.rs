@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -22,7 +21,6 @@ use super::coulomb::COULOMB_K;
 ///
 /// where `f_GB = sqrt(r^2 + R_i * R_j * exp(-r^2 / (4 * R_i * R_j)))`.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct GeneralizedBorn {
     /// Interior dielectric constant (protein/solute).
     pub epsilon_in: f64,
@@ -34,7 +32,6 @@ pub struct GeneralizedBorn {
 
 impl GeneralizedBorn {
     /// Create a new GB model.
-    #[allow(dead_code)]
     pub fn new(epsilon_in: f64, epsilon_out: f64, born_radii: Vec<f64>) -> Self {
         Self {
             epsilon_in,
@@ -48,7 +45,6 @@ impl GeneralizedBorn {
     /// ```text
     /// f_GB(r, R_i, R_j) = sqrt(r^2 + R_i * R_j * exp(-r^2 / (4 * R_i * R_j)))
     /// ```
-    #[allow(dead_code)]
     pub fn f_gb(r: f64, r_i: f64, r_j: f64) -> f64 {
         let ri_rj = r_i * r_j;
         if ri_rj < 1e-20 {
@@ -59,7 +55,6 @@ impl GeneralizedBorn {
     }
 
     /// GB pair energy (kJ mol^-1).
-    #[allow(dead_code)]
     pub fn pair_energy(&self, q_i: f64, q_j: f64, r: f64, i: usize, j: usize) -> f64 {
         let factor = 1.0 / self.epsilon_in - 1.0 / self.epsilon_out;
         let f = Self::f_gb(r, self.born_radii[i], self.born_radii[j]);
@@ -74,7 +69,6 @@ impl GeneralizedBorn {
     /// ```text
     /// E_self = -K * (1/epsilon_in - 1/epsilon_out) * q^2 / (2*R)
     /// ```
-    #[allow(dead_code)]
     pub fn self_energy(&self, q: f64, i: usize) -> f64 {
         let r_born = self.born_radii[i];
         if r_born < 1e-20 {
@@ -85,13 +79,12 @@ impl GeneralizedBorn {
     }
 
     /// Total GB energy for a system of charges.
-    #[allow(dead_code)]
     pub fn total_energy(&self, positions: &[[f64; 3]], charges: &[f64]) -> f64 {
         let n = positions.len();
         let mut energy = 0.0;
         // Self terms
-        for i in 0..n {
-            energy += self.self_energy(charges[i], i);
+        for (i, &q) in charges.iter().enumerate() {
+            energy += self.self_energy(q, i);
         }
         // Pair terms
         for i in 0..n {
@@ -118,13 +111,11 @@ impl GeneralizedBorn {
 /// Places an image charge `-q_i` at the mirror position across the z=0 plane
 /// for each real charge `q_i` at position `(x_i, y_i, z_i)`.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct ImageChargeMethod {
     /// Position of the conducting plane (z coordinate, Å).
     pub plane_z: f64,
 }
 
-#[allow(dead_code)]
 impl ImageChargeMethod {
     /// Create a new image-charge method with the conducting plane at `z = plane_z`.
     pub fn new(plane_z: f64) -> Self {
@@ -192,13 +183,11 @@ impl ImageChargeMethod {
 ///
 /// ΔG_Born = -(COULOMB_K / 2) * q² * (1 - 1/ε) / a
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct BornSolvation {
     /// Dielectric constant of the solvent.
     pub epsilon: f64,
 }
 
-#[allow(dead_code)]
 impl BornSolvation {
     /// Create a Born solvation model with solvent dielectric `epsilon`.
     pub fn new(epsilon: f64) -> Self {
@@ -240,7 +229,6 @@ impl BornSolvation {
 ///
 /// Reference: Sigalov et al., J. Chem. Phys. 122, 094511 (2005).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AnalyticalPoissonBoltzmann {
     /// Solvent dielectric.
     pub epsilon_solvent: f64,
@@ -252,7 +240,6 @@ pub struct AnalyticalPoissonBoltzmann {
     pub epsilon_solute: f64,
 }
 
-#[allow(dead_code)]
 impl AnalyticalPoissonBoltzmann {
     /// Create a new ALPB model.
     pub fn new(

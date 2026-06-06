@@ -2,8 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
-#[allow(unused_imports)]
 use super::functions::*;
 /// Kernel that integrates positions given velocities.
 pub struct IntegratePositionKernel;
@@ -122,7 +120,6 @@ impl ContactBatchProcessor {
     ///
     /// `n_bodies` is the total body count; the returned `Vec` has one entry
     /// per body, initialised to zero and populated by this function.
-    #[allow(clippy::too_many_arguments)]
     pub fn process_contacts(
         &self,
         contacts: &[ContactPoint],
@@ -230,14 +227,14 @@ impl IslandSolver {
         let mut island_map = std::collections::HashMap::new();
         let mut island_ids = vec![0usize; num_bodies];
         let mut next_id = 0usize;
-        for i in 0..num_bodies {
+        for (i, island_id) in island_ids.iter_mut().enumerate() {
             let root = find(&mut parent, i);
             let id = *island_map.entry(root).or_insert_with(|| {
                 let id = next_id;
                 next_id += 1;
                 id
             });
-            island_ids[i] = id;
+            *island_id = id;
         }
         Self {
             island_ids,
@@ -326,14 +323,14 @@ pub struct AccumulatedImpulse {
 impl AccumulatedImpulse {
     /// Add a linear impulse contribution.
     pub fn add_linear(&mut self, impulse: [f64; 3]) {
-        for k in 0..3 {
-            self.linear[k] += impulse[k];
+        for (l, &imp) in self.linear.iter_mut().zip(impulse.iter()) {
+            *l += imp;
         }
     }
     /// Add an angular impulse contribution.
     pub fn add_angular(&mut self, impulse: [f64; 3]) {
-        for k in 0..3 {
-            self.angular[k] += impulse[k];
+        for (a, &imp) in self.angular.iter_mut().zip(impulse.iter()) {
+            *a += imp;
         }
     }
     /// Apply the accumulated impulse to a body state.
@@ -680,9 +677,9 @@ impl ContactGenerationKernel {
                 continue;
             }
             let correction = c.depth / w_total;
-            for k in 0..3 {
-                positions[a][k] -= w_a * correction * c.normal[k];
-                positions[b][k] += w_b * correction * c.normal[k];
+            for (k, &n_k) in c.normal.iter().enumerate() {
+                positions[a][k] -= w_a * correction * n_k;
+                positions[b][k] += w_b * correction * n_k;
             }
             let rel_vel = [
                 velocities[b][0] - velocities[a][0],
@@ -693,9 +690,9 @@ impl ContactGenerationKernel {
                 rel_vel[0] * c.normal[0] + rel_vel[1] * c.normal[1] + rel_vel[2] * c.normal[2];
             if vel_along_normal < 0.0 {
                 let j = -(1.0 + restitution) * vel_along_normal / w_total;
-                for k in 0..3 {
-                    velocities[a][k] -= w_a * j * c.normal[k];
-                    velocities[b][k] += w_b * j * c.normal[k];
+                for (k, &n_k) in c.normal.iter().enumerate() {
+                    velocities[a][k] -= w_a * j * n_k;
+                    velocities[b][k] += w_b * j * n_k;
                 }
             }
         }

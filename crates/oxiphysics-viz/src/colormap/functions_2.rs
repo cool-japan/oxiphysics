@@ -2,14 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#[allow(unused_imports)]
-use super::functions::*;
-#[allow(unused_imports)]
-use super::types::*;
 #[cfg(test)]
 mod tests_new_colormap {
-    use super::*;
     use crate::Color;
+    use crate::colormap::*;
     #[test]
     fn test_builder_empty_returns_black() {
         let builder = CustomColormapBuilder::new();

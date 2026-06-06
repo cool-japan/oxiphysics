@@ -1,4 +1,3 @@
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,7 +5,6 @@
 //! contact maps, and principal axes via Jacobi iteration.
 
 /// A single frame of an MD trajectory.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TrajectoryFrame {
     /// Atom positions (Å or nm, consistent units).
@@ -21,17 +19,14 @@ pub struct TrajectoryFrame {
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
-#[allow(dead_code)]
 fn vec3_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-#[allow(dead_code)]
 fn vec3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-#[allow(dead_code)]
 fn vec3_norm(a: [f64; 3]) -> f64 {
     vec3_dot(a, a).sqrt()
 }
@@ -42,7 +37,6 @@ fn vec3_norm(a: [f64; 3]) -> f64 {
 ///
 /// Both slices must have the same length (number of atoms).
 /// No mass-weighting; all atoms contribute equally.
-#[allow(dead_code)]
 pub fn rmsd(ref_pos: &[[f64; 3]], cur_pos: &[[f64; 3]]) -> f64 {
     assert_eq!(
         ref_pos.len(),
@@ -69,7 +63,6 @@ pub fn rmsd(ref_pos: &[[f64; 3]], cur_pos: &[[f64; 3]]) -> f64 {
 /// Mass-weighted radius of gyration.
 ///
 /// `positions` and `masses` must have the same length.
-#[allow(dead_code)]
 pub fn radius_of_gyration(positions: &[[f64; 3]], masses: &[f64]) -> f64 {
     assert_eq!(
         positions.len(),
@@ -111,7 +104,6 @@ pub fn radius_of_gyration(positions: &[[f64; 3]], masses: &[f64]) -> f64 {
 ///
 /// Returns a `Vec`f64` of length `frames.len()` where entry `t` is the
 /// squared displacement from frame 0 to frame `t`.
-#[allow(dead_code)]
 pub fn mean_square_displacement(frames: &[TrajectoryFrame], atom_idx: usize) -> Vec<f64> {
     if frames.is_empty() {
         return Vec::new();
@@ -129,7 +121,6 @@ pub fn mean_square_displacement(frames: &[TrajectoryFrame], atom_idx: usize) -> 
 // ── End-to-end distance ────────────────────────────────────────────────────
 
 /// Euclidean distance between atom `first` and atom `last` in `positions`.
-#[allow(dead_code)]
 pub fn end_to_end_distance(positions: &[[f64; 3]], first: usize, last: usize) -> f64 {
     let d = vec3_sub(positions[last], positions[first]);
     vec3_norm(d)
@@ -139,7 +130,6 @@ pub fn end_to_end_distance(positions: &[[f64; 3]], first: usize, last: usize) ->
 
 /// Boolean contact matrix: `map\[i\]\[j\]` is `true` when the distance between
 /// atoms `i` and `j` is ≤ `cutoff`.
-#[allow(dead_code)]
 pub fn contact_map(positions: &[[f64; 3]], cutoff: f64) -> Vec<Vec<bool>> {
     let n = positions.len();
     let cutoff2 = cutoff * cutoff;
@@ -166,7 +156,6 @@ pub fn contact_map(positions: &[[f64; 3]], cutoff: f64) -> Vec<Vec<bool>> {
 ///
 /// Uses the classical Jacobi iterative method for the symmetric 3×3 inertia
 /// tensor.  Convergence is typically reached in < 100 sweeps.
-#[allow(dead_code)]
 pub fn principal_axes(positions: &[[f64; 3]], masses: &[f64]) -> ([[f64; 3]; 3], [f64; 3]) {
     assert_eq!(positions.len(), masses.len());
 
@@ -178,8 +167,8 @@ pub fn principal_axes(positions: &[[f64; 3]], masses: &[f64]) -> ([[f64; 3]; 3],
             com[k] += m * pos[k];
         }
     }
-    for k in 0..3 {
-        com[k] /= total_mass;
+    for c in &mut com {
+        *c /= total_mass;
     }
 
     // Build inertia tensor I (3×3, flattened row-major)
@@ -204,8 +193,8 @@ pub fn principal_axes(positions: &[[f64; 3]], masses: &[f64]) -> ([[f64; 3]; 3],
 fn jacobi3x3(mut a: [[f64; 3]; 3]) -> ([[f64; 3]; 3], [f64; 3]) {
     // V accumulates the rotation matrix (columns = eigenvectors)
     let mut v = [[0.0f64; 3]; 3];
-    for i in 0..3 {
-        v[i][i] = 1.0;
+    for (i, row) in v.iter_mut().enumerate() {
+        row[i] = 1.0;
     }
 
     for _ in 0..100 {
@@ -258,11 +247,11 @@ fn jacobi3x3(mut a: [[f64; 3]; 3]) -> ([[f64; 3]; 3], [f64; 3]) {
         a[q][r] = a_rq;
 
         // Accumulate eigenvectors
-        for i in 0..3 {
-            let v_ip = c * v[i][p] - s * v[i][q];
-            let v_iq = s * v[i][p] + c * v[i][q];
-            v[i][p] = v_ip;
-            v[i][q] = v_iq;
+        for row in v.iter_mut() {
+            let v_ip = c * row[p] - s * row[q];
+            let v_iq = s * row[p] + c * row[q];
+            row[p] = v_ip;
+            row[q] = v_iq;
         }
     }
 
@@ -286,7 +275,6 @@ fn jacobi3x3(mut a: [[f64; 3]; 3]) -> ([[f64; 3]; 3], [f64; 3]) {
 ///
 /// Returns a new frame at fractional time `t` ∈ [0, 1] between `frame_a`
 /// (at t=0) and `frame_b` (at t=1).
-#[allow(dead_code)]
 pub fn interpolate_frames(
     frame_a: &TrajectoryFrame,
     frame_b: &TrajectoryFrame,
@@ -347,7 +335,6 @@ pub fn interpolate_frames(
 /// Translate positions so that their centroid is at the origin.
 ///
 /// Returns the centroid that was subtracted.
-#[allow(dead_code)]
 pub fn center_positions(positions: &mut [[f64; 3]]) -> [f64; 3] {
     let n = positions.len();
     if n == 0 {
@@ -376,8 +363,7 @@ pub fn center_positions(positions: &mut [[f64; 3]]) -> [f64; 3] {
 /// Align `mobile` positions to `reference` by translating centroids.
 ///
 /// Modifies `mobile` in place. Returns the RMSD after alignment.
-#[allow(dead_code)]
-pub fn align_by_centroid(reference: &[[f64; 3]], mobile: &mut Vec<[f64; 3]>) -> f64 {
+pub fn align_by_centroid(reference: &[[f64; 3]], mobile: &mut [[f64; 3]]) -> f64 {
     assert_eq!(reference.len(), mobile.len());
     let n = reference.len();
     if n == 0 {
@@ -400,9 +386,14 @@ pub fn align_by_centroid(reference: &[[f64; 3]], mobile: &mut Vec<[f64; 3]>) -> 
     }
 
     // Translate mobile to match reference centroid
-    for i in 0..n {
-        for k in 0..3 {
-            mobile[i][k] += ref_com[k] - mob_com[k];
+    let shift = [
+        ref_com[0] - mob_com[0],
+        ref_com[1] - mob_com[1],
+        ref_com[2] - mob_com[2],
+    ];
+    for m in mobile.iter_mut().take(n) {
+        for (mk, &s) in m.iter_mut().zip(shift.iter()) {
+            *mk += s;
         }
     }
 
@@ -419,7 +410,6 @@ pub fn align_by_centroid(reference: &[[f64; 3]], mobile: &mut Vec<[f64; 3]>) -> 
 /// a continuous trajectory.
 ///
 /// Modifies `frames` in place.
-#[allow(dead_code)]
 pub fn unwrap_pbc(frames: &mut [TrajectoryFrame]) {
     if frames.len() < 2 {
         return;
@@ -429,18 +419,25 @@ pub fn unwrap_pbc(frames: &mut [TrajectoryFrame]) {
     for t in 1..frames.len() {
         let box_l = frames[t].box_lengths;
         for i in 0..n_atoms {
-            for k in 0..3 {
-                let mut diff = frames[t].positions[i][k] - frames[t - 1].positions[i][k];
-                if box_l[k] > 0.0 {
+            let prev_pos = frames[t - 1].positions[i];
+            for (k, (cur, &bl)) in frames[t].positions[i]
+                .iter_mut()
+                .zip(box_l.iter())
+                .enumerate()
+            {
+                let _ = k;
+                let prev = prev_pos[k];
+                let mut diff = *cur - prev;
+                if bl > 0.0 {
                     // Apply minimum image convention
-                    while diff > 0.5 * box_l[k] {
-                        diff -= box_l[k];
+                    while diff > 0.5 * bl {
+                        diff -= bl;
                     }
-                    while diff < -0.5 * box_l[k] {
-                        diff += box_l[k];
+                    while diff < -0.5 * bl {
+                        diff += bl;
                     }
                 }
-                frames[t].positions[i][k] = frames[t - 1].positions[i][k] + diff;
+                *cur = prev + diff;
             }
         }
     }
@@ -451,7 +448,6 @@ pub fn unwrap_pbc(frames: &mut [TrajectoryFrame]) {
 /// Compute bond angle (in radians) between three atoms i-j-k.
 ///
 /// The angle is at atom j: angle(r_ji, r_jk).
-#[allow(dead_code)]
 pub fn bond_angle(positions: &[[f64; 3]], i: usize, j: usize, k: usize) -> f64 {
     let rji = vec3_sub(positions[i], positions[j]);
     let rjk = vec3_sub(positions[k], positions[j]);
@@ -467,7 +463,6 @@ pub fn bond_angle(positions: &[[f64; 3]], i: usize, j: usize, k: usize) -> f64 {
 
 // ── Dihedral angle computation ────────────────────────────────────────────
 
-#[allow(dead_code)]
 fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -479,7 +474,6 @@ fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// Compute dihedral angle (in radians) for atoms i-j-k-l.
 ///
 /// Uses the atan2 convention to return values in (-π, π].
-#[allow(dead_code)]
 pub fn dihedral_angle(positions: &[[f64; 3]], i: usize, j: usize, k: usize, l: usize) -> f64 {
     let b1 = vec3_sub(positions[j], positions[i]);
     let b2 = vec3_sub(positions[k], positions[j]);
@@ -508,7 +502,6 @@ pub fn dihedral_angle(positions: &[[f64; 3]], i: usize, j: usize, k: usize, l: u
 ///
 /// Returns a vector of length `max_lag + 1` with C(0), C(1), ..., C(max_lag).
 /// C(0) = 1 by definition.
-#[allow(dead_code)]
 pub fn autocorrelation(data: &[f64], max_lag: usize) -> Vec<f64> {
     let n = data.len();
     if n == 0 {
@@ -544,7 +537,6 @@ pub fn autocorrelation(data: &[f64], max_lag: usize) -> Vec<f64> {
 ///
 /// Returns a vector of cluster indices (length = number of frames) and
 /// the list of representative frame indices.
-#[allow(dead_code)]
 pub fn rmsd_cluster(frames: &[TrajectoryFrame], cutoff: f64) -> (Vec<usize>, Vec<usize>) {
     if frames.is_empty() {
         return (vec![], vec![]);
@@ -574,7 +566,6 @@ pub fn rmsd_cluster(frames: &[TrajectoryFrame], cutoff: f64) -> (Vec<usize>, Vec
 /// Cluster population counts.
 ///
 /// Returns a vector of counts, one per cluster, in cluster index order.
-#[allow(dead_code)]
 pub fn cluster_populations(assignments: &[usize], n_clusters: usize) -> Vec<usize> {
     let mut counts = vec![0usize; n_clusters];
     for &a in assignments {
@@ -588,7 +579,6 @@ pub fn cluster_populations(assignments: &[usize], n_clusters: usize) -> Vec<usiz
 // ── PCA of trajectory ─────────────────────────────────────────────────────
 
 /// Flatten a trajectory frame into a coordinate vector of length 3N.
-#[allow(dead_code)]
 pub fn frame_to_vector(frame: &TrajectoryFrame) -> Vec<f64> {
     frame
         .positions
@@ -603,7 +593,6 @@ pub fn frame_to_vector(frame: &TrajectoryFrame) -> Vec<f64> {
 /// is of size 3N × 3N and is returned row-major as a `Vec<Vec`f64`>`.
 ///
 /// This is an expensive O(n_frames × (3N)²) operation; use for small systems.
-#[allow(dead_code)]
 pub fn trajectory_covariance(frames: &[TrajectoryFrame]) -> Vec<Vec<f64>> {
     if frames.is_empty() {
         return vec![];
@@ -637,10 +626,12 @@ pub fn trajectory_covariance(frames: &[TrajectoryFrame]) -> Vec<Vec<f64>> {
         }
     }
     for i in 0..dim {
-        cov[i][i] /= n_frames as f64;
-        for j in i + 1..dim {
-            cov[i][j] /= n_frames as f64;
-            cov[j][i] = cov[i][j];
+        let (top, bot) = cov.split_at_mut(i + 1);
+        top[i][i] /= n_frames as f64;
+        for (jj, row_j) in bot.iter_mut().enumerate() {
+            let j = i + 1 + jj;
+            top[i][j] /= n_frames as f64;
+            row_j[i] = top[i][j];
         }
     }
     cov
@@ -650,7 +641,6 @@ pub fn trajectory_covariance(frames: &[TrajectoryFrame]) -> Vec<Vec<f64>> {
 /// (columns of `pc_matrix`, each of length `dim`).
 ///
 /// Returns a Vec of length `n_frames`, each entry being a Vec of length `n_pcs`.
-#[allow(dead_code)]
 pub fn project_onto_pcs(frames: &[TrajectoryFrame], pcs: &[Vec<f64>]) -> Vec<Vec<f64>> {
     if frames.is_empty() || pcs.is_empty() {
         return vec![];
@@ -697,7 +687,6 @@ pub fn project_onto_pcs(frames: &[TrajectoryFrame], pcs: &[Vec<f64>]) -> Vec<Vec
 ///
 /// Returns an N×N correlation matrix where N is the number of atoms.
 /// Values in [−1, 1] where +1 means fully correlated motion.
-#[allow(dead_code)]
 pub fn dynamic_cross_correlation(frames: &[TrajectoryFrame]) -> Vec<Vec<f64>> {
     let n_frames = frames.len();
     if n_frames < 2 {
@@ -737,24 +726,22 @@ pub fn dynamic_cross_correlation(frames: &[TrajectoryFrame]) -> Vec<Vec<f64>> {
                 ]
             })
             .collect();
-        for i in 0..n_atoms {
-            for j in i..n_atoms {
-                let dot = deltas[i][0] * deltas[j][0]
-                    + deltas[i][1] * deltas[j][1]
-                    + deltas[i][2] * deltas[j][2];
+        for (i, (&di, var_i)) in deltas.iter().zip(var.iter_mut()).enumerate() {
+            for (j, &dj) in deltas.iter().enumerate().skip(i) {
+                let dot = di[0] * dj[0] + di[1] * dj[1] + di[2] * dj[2];
                 cov[i][j] += dot;
                 if j > i {
                     cov[j][i] += dot;
                 }
             }
-            var[i] += deltas[i][0].powi(2) + deltas[i][1].powi(2) + deltas[i][2].powi(2);
+            *var_i += di[0].powi(2) + di[1].powi(2) + di[2].powi(2);
         }
     }
-    for i in 0..n_atoms {
-        for j in 0..n_atoms {
-            cov[i][j] /= nf;
+    for (cov_row, var_i) in cov.iter_mut().zip(var.iter_mut()) {
+        for c in cov_row.iter_mut() {
+            *c /= nf;
         }
-        var[i] /= nf;
+        *var_i /= nf;
     }
 
     // Normalise
@@ -780,7 +767,6 @@ pub fn dynamic_cross_correlation(frames: &[TrajectoryFrame]) -> Vec<Vec<f64>> {
 /// are within `cutoff` of each other.
 ///
 /// Returns an N×N matrix of contact frequencies ∈ \[0, 1\].
-#[allow(dead_code)]
 pub fn contact_frequency_map(frames: &[TrajectoryFrame], cutoff: f64) -> Vec<Vec<f64>> {
     if frames.is_empty() {
         return vec![];
@@ -790,11 +776,11 @@ pub fn contact_frequency_map(frames: &[TrajectoryFrame], cutoff: f64) -> Vec<Vec
     let mut freq = vec![vec![0.0f64; n]; n];
 
     for frame in frames {
-        for i in 0..n {
-            for j in 0..n {
+        for (i, freq_row) in freq.iter_mut().enumerate() {
+            for (j, f) in freq_row.iter_mut().enumerate() {
                 let d = vec3_sub(frame.positions[j], frame.positions[i]);
                 if vec3_dot(d, d) <= cutoff2 {
-                    freq[i][j] += 1.0;
+                    *f += 1.0;
                 }
             }
         }
@@ -814,7 +800,6 @@ pub fn contact_frequency_map(frames: &[TrajectoryFrame], cutoff: f64) -> Vec<Vec
 ///
 /// Computes the coordinate-space mean position and returns the index of
 /// the frame whose positions are closest (min RMSD) to the mean.
-#[allow(dead_code)]
 pub fn representative_structure(frames: &[TrajectoryFrame]) -> Option<usize> {
     if frames.is_empty() {
         return None;
@@ -853,7 +838,6 @@ pub fn representative_structure(frames: &[TrajectoryFrame]) -> Option<usize> {
 /// RMSF_i = sqrt(⟨|r_i − ⟨r_i⟩|²⟩)
 ///
 /// Returns a vector of length N.
-#[allow(dead_code)]
 pub fn rmsf(frames: &[TrajectoryFrame]) -> Vec<f64> {
     if frames.is_empty() {
         return vec![];
@@ -973,8 +957,8 @@ mod tests {
         let pos = ring_positions(4, 1.0);
         let map = contact_map(&pos, 0.1);
         // Each atom is at distance 0 from itself → always in contact
-        for i in 0..4 {
-            assert!(map[i][i], "atom {i} should be self-contact");
+        for (i, row) in map.iter().enumerate() {
+            assert!(row[i], "atom {i} should be self-contact");
         }
     }
 
@@ -1412,12 +1396,11 @@ mod tests {
             })
             .collect();
         let dccm = dynamic_cross_correlation(&frames);
-        for i in 0..2 {
-            for j in 0..2 {
+        for (i, row) in dccm.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    dccm[i][j] >= -1.0 - 1e-10 && dccm[i][j] <= 1.0 + 1e-10,
-                    "DCCM[{i}][{j}] = {} out of range",
-                    dccm[i][j]
+                    (-1.0 - 1e-10..=1.0 + 1e-10).contains(&val),
+                    "DCCM[{i}][{j}] = {val} out of range"
                 );
             }
         }

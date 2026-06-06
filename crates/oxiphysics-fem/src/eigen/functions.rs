@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop, clippy::ptr_arg)]
 use super::types::ModalAnalysis;
 
 /// Find the dominant eigenvalue and eigenvector of a dense n x n matrix
@@ -11,7 +10,6 @@ use super::types::ModalAnalysis;
 /// Returns `Some((eigenvalue, eigenvector))` if converged within `max_iter`
 /// iterations, or `None` if the iteration failed to converge or the matrix
 /// is degenerate.
-#[allow(dead_code)]
 pub fn power_iteration(
     a: &[Vec<f64>],
     n: usize,
@@ -59,8 +57,7 @@ pub fn power_iteration(
 /// After deflation: A <- A - lambda * phi * phi^T
 /// This allows the next call to `power_iteration` to find the next
 /// dominant eigenvalue.
-#[allow(dead_code)]
-pub fn deflate(a: &mut Vec<Vec<f64>>, eigenval: f64, eigenvec: &[f64]) {
+pub fn deflate(a: &mut [Vec<f64>], eigenval: f64, eigenvec: &[f64]) {
     let n = eigenvec.len();
     for i in 0..n {
         for j in 0..n {
@@ -74,7 +71,6 @@ pub fn deflate(a: &mut Vec<Vec<f64>>, eigenval: f64, eigenvec: &[f64]) {
 /// i-th eigenvector (column), sorted in ascending order of eigenvalue.
 ///
 /// Uses cyclic Jacobi sweeps until off-diagonal elements are below tolerance.
-#[allow(dead_code)]
 pub fn jacobi_eigen_dense(a: &[Vec<f64>], n: usize) -> (Vec<f64>, Vec<Vec<f64>>) {
     pub(super) const MAX_SWEEPS: usize = 200;
     pub(super) const EPS: f64 = 1e-14;
@@ -88,10 +84,10 @@ pub fn jacobi_eigen_dense(a: &[Vec<f64>], n: usize) -> (Vec<f64>, Vec<Vec<f64>>)
         .collect();
     for _ in 0..MAX_SWEEPS {
         let mut off = 0.0_f64;
-        for i in 0..n {
-            for j in 0..n {
+        for (i, row) in mat.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 if i != j {
-                    off += mat[i][j] * mat[i][j];
+                    off += val * val;
                 }
             }
         }
@@ -118,7 +114,7 @@ pub fn jacobi_eigen_dense(a: &[Vec<f64>], n: usize) -> (Vec<f64>, Vec<Vec<f64>>)
                 mat[q][q] = aqq + t * apq;
                 mat[p][q] = 0.0;
                 mat[q][p] = 0.0;
-                for r in 0..n {
+                for (r, _row) in (0..n).enumerate() {
                     if r == p || r == q {
                         continue;
                     }
@@ -131,7 +127,7 @@ pub fn jacobi_eigen_dense(a: &[Vec<f64>], n: usize) -> (Vec<f64>, Vec<Vec<f64>>)
                     mat[r][q] = new_arq;
                     mat[q][r] = new_arq;
                 }
-                for k in 0..n {
+                for (k, _col) in (0..n).enumerate() {
                     let vkp = v[k][p];
                     let vkq = v[k][q];
                     v[k][p] = c * vkp - s * vkq;
@@ -162,7 +158,6 @@ pub fn jacobi_eigen_dense(a: &[Vec<f64>], n: usize) -> (Vec<f64>, Vec<Vec<f64>>)
 ///
 /// Returns `num_modes` sorted `(omega^2, mode_shape)` pairs in ascending order
 /// of omega^2.
-#[allow(dead_code)]
 pub fn generalized_eigen_shift(
     k: &[Vec<f64>],
     m_diag: &[f64],
@@ -204,7 +199,6 @@ pub fn generalized_eigen_shift(
 }
 /// Perform modal analysis: solve K*phi = omega^2*M*phi and return natural frequencies
 /// and mode shapes.
-#[allow(dead_code)]
 pub fn modal_analysis(k: &[Vec<f64>], m_diag: &[f64], num_modes: usize) -> ModalAnalysis {
     let n = k.len();
     let pairs = generalized_eigen_shift(k, m_diag, n, num_modes);
@@ -227,7 +221,6 @@ pub fn modal_analysis(k: &[Vec<f64>], m_diag: &[f64], num_modes: usize) -> Modal
 /// Consistent mass matrix for a 2-node bar element with 2 DOFs per node (4x4).
 ///
 /// Formula: `rho * A * L / 6 * [[2,0,1,0\],[0,2,0,1],[1,0,2,0],[0,1,0,2]]`
-#[allow(dead_code)]
 pub fn consistent_mass_matrix_bar(length: f64, rho: f64, area: f64) -> [[f64; 4]; 4] {
     let scale = rho * area * length / 6.0;
     [
@@ -243,7 +236,6 @@ pub fn consistent_mass_matrix_bar(length: f64, rho: f64, area: f64) -> [[f64; 4]
 /// Starts with `p` random initial vectors and iteratively refines them.
 /// Returns up to `p` converged `(eigenvalue, eigenvector)` pairs sorted
 /// in ascending order.
-#[allow(dead_code)]
 pub fn subspace_iteration(
     a: &[Vec<f64>],
     n: usize,
@@ -258,9 +250,9 @@ pub fn subspace_iteration(
     let mut q: Vec<Vec<f64>> = (0..p)
         .map(|k| {
             let mut v = vec![0.0; n];
-            for i in 0..n {
+            for (i, vi) in v.iter_mut().enumerate() {
                 let seed = ((i + 1) * (k + 1) * 73 + 17) % 1000;
-                v[i] = (seed as f64) / 1000.0 - 0.5;
+                *vi = (seed as f64) / 1000.0 - 0.5;
             }
             v
         })
@@ -269,8 +261,8 @@ pub fn subspace_iteration(
     let mut eigenvalues = vec![0.0; p];
     for _iter in 0..max_iter {
         let mut y: Vec<Vec<f64>> = Vec::with_capacity(p);
-        for k in 0..p {
-            y.push(matvec_dense(a, &q[k], n));
+        for qk in q.iter().take(p) {
+            y.push(matvec_dense(a, qk, n));
         }
         let mut b_reduced: Vec<Vec<f64>> = vec![vec![0.0; p]; p];
         for i in 0..p {
@@ -297,10 +289,10 @@ pub fn subspace_iteration(
                 }
             }
         }
-        for k in 0..p {
-            let norm = vec_norm(&q_new[k]);
+        for qk in q_new.iter_mut().take(p) {
+            let norm = vec_norm(qk);
             if norm > 1e-60 {
-                for x in q_new[k].iter_mut() {
+                for x in qk.iter_mut() {
                     *x /= norm;
                 }
             }
@@ -320,7 +312,6 @@ pub fn subspace_iteration(
 ///
 /// This implementation includes full reorthogonalization to maintain
 /// numerical stability.
-#[allow(dead_code)]
 pub fn lanczos(
     a: &[Vec<f64>],
     n: usize,
@@ -350,14 +341,10 @@ pub fn lanczos(
         for i in 0..n {
             w[i] -= alpha * lanczos_vecs[j][i] + beta_prev * v_prev[i];
         }
-        for k in 0..=j {
-            let dot: f64 = w
-                .iter()
-                .zip(lanczos_vecs[k].iter())
-                .map(|(a, b)| a * b)
-                .sum();
-            for i in 0..n {
-                w[i] -= dot * lanczos_vecs[k][i];
+        for lv in lanczos_vecs.iter().take(j + 1) {
+            let dot: f64 = w.iter().zip(lv.iter()).map(|(a, b)| a * b).sum();
+            for (wi, lvi) in w.iter_mut().zip(lv.iter()) {
+                *wi -= dot * lvi;
             }
         }
         let beta = vec_norm(&w);
@@ -409,7 +396,6 @@ pub fn lanczos(
 /// This is useful for finding interior eigenvalues near a specified shift.
 ///
 /// Returns eigenpairs sorted by proximity to `sigma`.
-#[allow(dead_code)]
 pub fn shift_invert_power(
     a: &[Vec<f64>],
     n: usize,
@@ -422,8 +408,8 @@ pub fn shift_invert_power(
         return Vec::new();
     }
     let mut a_shifted: Vec<Vec<f64>> = a.to_vec();
-    for i in 0..n {
-        a_shifted[i][i] -= sigma;
+    for (i, row) in a_shifted.iter_mut().enumerate().take(n) {
+        row[i] -= sigma;
     }
     let lu = lu_decompose(&a_shifted, n);
     let mut results: Vec<(f64, Vec<f64>)> = Vec::new();
@@ -476,7 +462,6 @@ pub fn shift_invert_power(
     results
 }
 /// Sort eigenvalues by magnitude (ascending).
-#[allow(dead_code)]
 pub fn sort_eigenvalues_ascending(
     eigenvalues: &[f64],
     eigenvectors: &[Vec<f64>],
@@ -492,7 +477,6 @@ pub fn sort_eigenvalues_ascending(
     (sorted_vals, sorted_vecs)
 }
 /// Sort eigenvalues by absolute magnitude (ascending).
-#[allow(dead_code)]
 pub fn sort_eigenvalues_by_magnitude(
     eigenvalues: &[f64],
     eigenvectors: &[Vec<f64>],
@@ -515,7 +499,6 @@ pub fn sort_eigenvalues_by_magnitude(
 /// MAC = (phi_a^T * phi_b)^2 / ((phi_a^T * phi_a) * (phi_b^T * phi_b))
 /// ```
 /// A MAC value near 1 indicates the modes are the same; near 0 they are different.
-#[allow(dead_code)]
 pub fn mac_value(phi_a: &[f64], phi_b: &[f64]) -> f64 {
     let ab: f64 = phi_a.iter().zip(phi_b.iter()).map(|(a, b)| a * b).sum();
     let aa: f64 = phi_a.iter().map(|a| a * a).sum();
@@ -529,7 +512,6 @@ pub fn mac_value(phi_a: &[f64], phi_b: &[f64]) -> f64 {
 ///
 /// Returns an `m x n` matrix where `m` is the number of modes in set A
 /// and `n` is the number in set B.
-#[allow(dead_code)]
 pub fn mac_matrix(modes_a: &[Vec<f64>], modes_b: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let m = modes_a.len();
     let n = modes_b.len();
@@ -545,7 +527,6 @@ pub fn mac_matrix(modes_a: &[Vec<f64>], modes_b: &[Vec<f64>]) -> Vec<Vec<f64>> {
 ///
 /// Returns a mapping: `result[i]` is the index in `modes_new` that best
 /// corresponds to mode `i` in `modes_old`.
-#[allow(dead_code)]
 pub fn track_modes(modes_old: &[Vec<f64>], modes_new: &[Vec<f64>]) -> Vec<usize> {
     let mac = mac_matrix(modes_old, modes_new);
     let m = modes_old.len();
@@ -577,7 +558,6 @@ pub fn track_modes(modes_old: &[Vec<f64>], modes_new: &[Vec<f64>]) -> Vec<usize>
 ///
 /// Returns `Gamma^2 * m_modal` where `Gamma = phi^T * M * r` and
 /// `m_modal = phi^T * M * phi`.
-#[allow(dead_code)]
 pub fn effective_modal_mass(phi: &[f64], m_diag: &[f64], direction: &[f64]) -> f64 {
     let n = phi.len();
     let mut gamma = 0.0;
@@ -602,7 +582,7 @@ pub(super) fn vec_norm(v: &[f64]) -> f64 {
     v.iter().map(|x| x * x).sum::<f64>().sqrt()
 }
 /// Normalize a vector in-place (L2 norm = 1).
-pub(super) fn normalize(v: &mut Vec<f64>) {
+pub(super) fn normalize(v: &mut [f64]) {
     let norm = vec_norm(v);
     if norm > 1e-60 {
         for x in v.iter_mut() {
@@ -611,8 +591,7 @@ pub(super) fn normalize(v: &mut Vec<f64>) {
     }
 }
 /// Gram-Schmidt orthogonalization of a set of vectors.
-#[allow(dead_code)]
-pub(super) fn gram_schmidt(vectors: &mut Vec<Vec<f64>>, n: usize) {
+pub(super) fn gram_schmidt(vectors: &mut [Vec<f64>], n: usize) {
     let p = vectors.len();
     for i in 0..p {
         for j in 0..i {
@@ -621,8 +600,9 @@ pub(super) fn gram_schmidt(vectors: &mut Vec<Vec<f64>>, n: usize) {
                 .zip(vectors[j].iter())
                 .map(|(a, b)| a * b)
                 .sum();
-            for k in 0..n {
-                vectors[i][k] -= dot * vectors[j][k];
+            let (left, right) = vectors.split_at_mut(i);
+            for (vi_k, &vj_k) in right[0].iter_mut().take(n).zip(left[j].iter().take(n)) {
+                *vi_k -= dot * vj_k;
             }
         }
         let norm = vec_norm(&vectors[i]);
@@ -635,7 +615,6 @@ pub(super) fn gram_schmidt(vectors: &mut Vec<Vec<f64>>, n: usize) {
 }
 /// Simple LU decomposition (Doolittle, no pivoting) for dense matrix.
 /// Returns (L, U) stored in a single matrix (L below diagonal, U on/above diagonal).
-#[allow(dead_code)]
 pub(super) fn lu_decompose(a: &[Vec<f64>], n: usize) -> Vec<Vec<f64>> {
     let mut lu: Vec<Vec<f64>> = a.to_vec();
     for k in 0..n {
@@ -653,7 +632,6 @@ pub(super) fn lu_decompose(a: &[Vec<f64>], n: usize) -> Vec<Vec<f64>> {
     lu
 }
 /// Solve LU * x = b given the combined LU matrix.
-#[allow(dead_code)]
 pub(super) fn lu_solve(lu: &[Vec<f64>], b: &[f64], n: usize) -> Vec<f64> {
     let mut y = b.to_vec();
     for i in 0..n {
@@ -913,13 +891,13 @@ mod tests {
             vec![0.0, 0.0, 1.0],
         ];
         let mat = mac_matrix(&modes, &modes);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in mat.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (mat[i][j] - expected).abs() < 1e-12,
+                    (val - expected).abs() < 1e-12,
                     "MAC[{i}][{j}] = {}, expected {expected}",
-                    mat[i][j]
+                    val
                 );
             }
         }

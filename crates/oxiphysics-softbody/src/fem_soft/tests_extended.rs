@@ -3,8 +3,6 @@
 
 //! Extended tests for FEM soft body modules.
 
-#![allow(clippy::needless_range_loop)]
-
 use super::math_helpers::*;
 use super::*;
 
@@ -83,13 +81,13 @@ mod extended_fem_tests {
     fn test_polar_identity_gives_identity_rotation() {
         let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let r = CorotFemTet::polar_decompose_rotation(id);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in r.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let exp = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (r[i][j] - exp).abs() < 1e-8,
+                    (val - exp).abs() < 1e-8,
                     "polar(I)[{i}][{j}]={} != {exp}",
-                    r[i][j]
+                    val
                 );
             }
         }
@@ -102,13 +100,13 @@ mod extended_fem_tests {
         let r = CorotFemTet::polar_decompose_rotation(f);
         let rt = transpose3x3(r);
         let rtr = mul3x3(rt, r);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in rtr.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let exp = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (rtr[i][j] - exp).abs() < 1e-6,
+                    (val - exp).abs() < 1e-6,
                     "R^T R [{i}][{j}] = {}, expected {exp}",
-                    rtr[i][j]
+                    val
                 );
             }
         }
@@ -127,12 +125,12 @@ mod extended_fem_tests {
         let f = [[1.3, 0.2, 0.1], [0.0, 1.1, 0.05], [0.0, 0.0, 0.9]];
         let (r, s) = CorotationalTet::polar_decompose(&f);
         let rs = mul3x3(r, s);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in rs.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (rs[i][j] - f[i][j]).abs() < 1e-5,
+                    (val - f[i][j]).abs() < 1e-5,
                     "RS[{i}][{j}]={} != F[{i}][{j}]={}",
-                    rs[i][j],
+                    val,
                     f[i][j]
                 );
             }
@@ -143,12 +141,12 @@ mod extended_fem_tests {
     fn test_polar_decompose_s_is_symmetric() {
         let f = [[1.5, 0.2, 0.0], [0.1, 1.0, 0.3], [0.0, 0.0, 0.8]];
         let (_r, s) = CorotationalTet::polar_decompose(&f);
-        for i in 0..3 {
-            for j in i + 1..3 {
+        for (i, row) in s.iter().enumerate() {
+            for j in (i + 1)..3 {
                 assert!(
-                    (s[i][j] - s[j][i]).abs() < 1e-5,
+                    (row[j] - s[j][i]).abs() < 1e-5,
                     "S not symmetric: S[{i}][{j}]={} vs S[{j}][{i}]={}",
-                    s[i][j],
+                    row[j],
                     s[j][i]
                 );
             }
@@ -160,12 +158,12 @@ mod extended_fem_tests {
         // 90° about Z
         let rot = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
         let (r, _s) = CorotationalTet::polar_decompose(&rot);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in r.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (r[i][j] - rot[i][j]).abs() < 1e-6,
+                    (val - rot[i][j]).abs() < 1e-6,
                     "R[{i}][{j}]={} != expected {}",
-                    r[i][j],
+                    val,
                     rot[i][j]
                 );
             }
@@ -189,13 +187,10 @@ mod extended_fem_tests {
         let pos = unit_pos();
         let elem = CorotFemElement4::new([0, 1, 2, 3], &pos, 1000.0, 0.3);
         let f = elem.deformation_gradient(&pos);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in f.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let exp = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (f[i][j] - exp).abs() < 1e-10,
-                    "F[{i}][{j}] should be I at rest"
-                );
+                assert!((val - exp).abs() < 1e-10, "F[{i}][{j}] should be I at rest");
             }
         }
     }
@@ -337,15 +332,15 @@ mod extended_fem_tests {
         let f = assemble_internal_forces(&deformed, &[e1]);
         let mut sum = [0.0f64; 3];
         for fi in &f {
-            for d in 0..3 {
-                sum[d] += fi[d];
+            for (d, &fval) in fi.iter().enumerate() {
+                sum[d] += fval;
             }
         }
-        for d in 0..3 {
+        for (d, &s) in sum.iter().enumerate() {
             assert!(
-                sum[d].abs() < 1e-7,
+                s.abs() < 1e-7,
                 "total internal force[{d}] = {} should be 0",
-                sum[d]
+                s
             );
         }
     }
@@ -367,15 +362,15 @@ mod extended_fem_tests {
         // Sum over all nodes must be zero (momentum)
         let mut sum = [0.0f64; 3];
         for f in &forces {
-            for d in 0..3 {
-                sum[d] += f[d];
+            for (d, &fval) in f.iter().enumerate() {
+                sum[d] += fval;
             }
         }
-        for d in 0..3 {
+        for (d, &s) in sum.iter().enumerate() {
             assert!(
-                sum[d].abs() < 1e-6,
+                s.abs() < 1e-6,
                 "two-element force sum[{d}] = {} should be 0",
-                sum[d]
+                s
             );
         }
     }
@@ -438,13 +433,13 @@ mod extended_fem_tests {
         let f1 = tet.elastic_forces(&deformed, mu, lambda);
         let elem = CorotFemElement4::new([0, 1, 2, 3], &pos, 1000.0, 0.3);
         let f2 = elem.elastic_forces(&deformed);
-        for k in 0..4 {
-            for d in 0..3 {
+        for (k, (force1, force2)) in f1.iter().zip(f2.iter()).enumerate() {
+            for (d, (&v1, &v2)) in force1.iter().zip(force2.iter()).enumerate() {
                 assert!(
-                    (f1[k][d] - f2[k][d]).abs() < 1e-6,
+                    (v1 - v2).abs() < 1e-6,
                     "force mismatch at node {k} dim {d}: {}-{}",
-                    f1[k][d],
-                    f2[k][d]
+                    v1,
+                    v2
                 );
             }
         }
@@ -644,7 +639,6 @@ mod extended_fem_tests {
     ///
     /// Stores accumulated equivalent plastic strain `ε_p` per node.
     #[derive(Debug, Clone)]
-    #[allow(dead_code)]
     struct PlasticStrainAccumulator {
         /// Equivalent plastic strain per node.
         pub equiv_plastic_strain: Vec<f64>,
@@ -654,7 +648,6 @@ mod extended_fem_tests {
         pub hardening: f64,
     }
 
-    #[allow(dead_code)]
     impl PlasticStrainAccumulator {
         fn new(n_nodes: usize, yield_stress: f64, hardening: f64) -> Self {
             Self {
@@ -966,13 +959,13 @@ mod extended_fem_tests {
         let m = [[2.0, 1.0, 0.0], [0.0, 3.0, 1.0], [1.0, 0.0, 2.0]];
         let inv = inv3x3(m);
         let prod = mul3x3(m, inv);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in prod.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let exp = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (prod[i][j] - exp).abs() < 1e-10,
+                    (val - exp).abs() < 1e-10,
                     "M*inv(M)[{i}][{j}]={} != {exp}",
-                    prod[i][j]
+                    val
                 );
             }
         }
@@ -990,10 +983,10 @@ mod extended_fem_tests {
     fn test_transpose_is_own_inverse() {
         let m = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
         let tt = transpose3x3(transpose3x3(m));
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in tt.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (tt[i][j] - m[i][j]).abs() < 1e-14,
+                    (val - m[i][j]).abs() < 1e-14,
                     "transpose(transpose(M)) != M"
                 );
             }
@@ -1007,13 +1000,13 @@ mod extended_fem_tests {
         let c = [[1.0, 1.0, 0.0], [0.0, 2.0, 1.0], [1.0, 0.0, 1.0]];
         let ab_c = mul3x3(mul3x3(a, b), c);
         let a_bc = mul3x3(a, mul3x3(b, c));
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, (ab_c_row, a_bc_row)) in ab_c.iter().zip(a_bc.iter()).enumerate() {
+            for (j, (&v1, &v2)) in ab_c_row.iter().zip(a_bc_row.iter()).enumerate() {
                 assert!(
-                    (ab_c[i][j] - a_bc[i][j]).abs() < 1e-10,
+                    (v1 - v2).abs() < 1e-10,
                     "(AB)C[{i}][{j}]={} vs A(BC)={}",
-                    ab_c[i][j],
-                    a_bc[i][j]
+                    v1,
+                    v2
                 );
             }
         }
@@ -1040,12 +1033,12 @@ mod extended_fem_tests {
         let mat = NeoHookeanMaterial::from_young_poisson(1000.0, 0.3);
         let piola = mat.piola_kirchhoff(f);
         let sigma = cauchy_stress(piola, f);
-        for i in 0..3 {
-            for j in i + 1..3 {
+        for (i, row) in sigma.iter().enumerate() {
+            for j in (i + 1)..3 {
                 assert!(
-                    (sigma[i][j] - sigma[j][i]).abs() < 1e-8,
+                    (row[j] - sigma[j][i]).abs() < 1e-8,
                     "Cauchy stress not symmetric: [{i},{j}]={} vs [{j},{i}]={}",
-                    sigma[i][j],
+                    row[j],
                     sigma[j][i]
                 );
             }
@@ -1124,8 +1117,8 @@ mod extended_fem_tests {
         assert_eq!(pos[0], [1.0, 0.0, 0.0]);
         assert_eq!(pos[1], [0.0, 1.0, 0.0]);
         assert_eq!(pos[2], [0.0, 0.0, 1.0]);
-        for i in 0..3 {
-            assert_eq!(vel[i], [0.0; 3]);
+        for v in &vel {
+            assert_eq!(*v, [0.0; 3]);
         }
     }
 
@@ -1204,13 +1197,13 @@ mod corot_extended_tests {
     fn test_polar_decompose_identity() {
         let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let r = polar_decompose_r(identity);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in r.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (r[i][j] - expected).abs() < 1e-8,
+                    (val - expected).abs() < 1e-8,
                     "polar_decompose_r(I)[{i}][{j}] = {}, expected {expected}",
-                    r[i][j]
+                    val
                 );
             }
         }
@@ -1227,12 +1220,12 @@ mod corot_extended_tests {
         ];
         let r = polar_decompose_r(f);
         // R should equal F for a pure rotation
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in r.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (r[i][j] - f[i][j]).abs() < 1e-7,
+                    (val - f[i][j]).abs() < 1e-7,
                     "r[{i}][{j}] = {}, f[{i}][{j}] = {}",
-                    r[i][j],
+                    val,
                     f[i][j]
                 );
             }
@@ -1245,13 +1238,13 @@ mod corot_extended_tests {
         let r = polar_decompose_r(f);
         let rt = transpose3x3(r);
         let rrt = mul3x3(r, rt);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in rrt.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 let expected = if i == j { 1.0 } else { 0.0 };
                 assert!(
-                    (rrt[i][j] - expected).abs() < 1e-7,
+                    (val - expected).abs() < 1e-7,
                     "R*R^T[{i}][{j}] = {}, expected {expected}",
-                    rrt[i][j]
+                    val
                 );
             }
         }
@@ -1269,12 +1262,12 @@ mod corot_extended_tests {
             [0.0, 0.0, 1.0],
         ];
         let eps = corotational_strain(r, r);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in eps.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    eps[i][j].abs() < 1e-7,
+                    val.abs() < 1e-7,
                     "strain[{i}][{j}] = {} for pure rotation",
-                    eps[i][j]
+                    val
                 );
             }
         }
@@ -1285,10 +1278,10 @@ mod corot_extended_tests {
         let f = [[1.1, 0.05, 0.0], [0.05, 1.0, 0.02], [0.0, 0.02, 0.95]];
         let r = polar_decompose_r(f);
         let eps = corotational_strain(r, f);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in eps.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (eps[i][j] - eps[j][i]).abs() < 1e-10,
+                    (val - eps[j][i]).abs() < 1e-10,
                     "strain not symmetric at [{i}][{j}]"
                 );
             }
@@ -1301,9 +1294,9 @@ mod corot_extended_tests {
     fn test_corot_cauchy_stress_zero_strain() {
         let eps = [[0.0_f64; 3]; 3];
         let sigma = corot_cauchy_stress(eps, 1e5, 7e4);
-        for i in 0..3 {
-            for j in 0..3 {
-                assert_eq!(sigma[i][j], 0.0, "sigma[{i}][{j}] should be zero");
+        for (i, row) in sigma.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert_eq!(val, 0.0, "sigma[{i}][{j}] should be zero");
             }
         }
     }
@@ -1313,19 +1306,19 @@ mod corot_extended_tests {
         // Uniform volumetric strain: eps = e * I
         let e = 0.01;
         let mut eps = [[0.0_f64; 3]; 3];
-        for i in 0..3 {
-            eps[i][i] = e;
-        }
+        eps[0][0] = e;
+        eps[1][1] = e;
+        eps[2][2] = e;
         let lambda = 1e5;
         let mu = 7e4;
         let sigma = corot_cauchy_stress(eps, lambda, mu);
         // Expected: sigma_ii = (lambda + 2*mu) * e + lambda * 2*e = (3*lambda + 2*mu)*e
         let expected = (3.0 * lambda + 2.0 * mu) * e;
-        for i in 0..3 {
+        for (i, row) in sigma.iter().enumerate() {
             assert!(
-                (sigma[i][i] - expected).abs() < 1.0,
+                (row[i] - expected).abs() < 1.0,
                 "sigma[{i}][{i}] = {}, expected {expected}",
-                sigma[i][i]
+                row[i]
             );
         }
     }
@@ -1338,10 +1331,10 @@ mod corot_extended_tests {
         eps[0][0] = 0.01;
         eps[1][1] = 0.008;
         let sigma = corot_cauchy_stress(eps, 1.2e5, 8e4);
-        for i in 0..3 {
-            for j in 0..3 {
+        for (i, row) in sigma.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
                 assert!(
-                    (sigma[i][j] - sigma[j][i]).abs() < 1e-8,
+                    (val - sigma[j][i]).abs() < 1e-8,
                     "sigma not symmetric at [{i}][{j}]"
                 );
             }
@@ -1409,12 +1402,12 @@ mod corot_extended_tests {
             [0.0, 0.0, 1.0],
         ];
         let forces = corot_internal_forces(rest, rest, 1e5, 7e4);
-        for a in 0..4 {
-            for d in 0..3 {
+        for (a, force) in forces.iter().enumerate() {
+            for (d, &val) in force.iter().enumerate() {
                 assert!(
-                    forces[a][d].abs() < 1e-8,
+                    val.abs() < 1e-8,
                     "internal force at rest [{a}][{d}] = {}",
-                    forces[a][d]
+                    val
                 );
             }
         }

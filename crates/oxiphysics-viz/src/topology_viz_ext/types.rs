@@ -2,11 +2,9 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::too_many_arguments)]
 use std::collections::HashMap;
 
 use super::functions::Point3;
-#[allow(unused_imports)]
 use super::functions::*;
 
 /// A topological noise candidate (a low-persistence feature to be removed).

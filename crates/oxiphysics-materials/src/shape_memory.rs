@@ -8,9 +8,6 @@
 //! thermoelastic martensite theory, pseudoelastic loading/unloading, and
 //! two-way shape memory effect.
 
-#![allow(dead_code)]
-#![allow(clippy::too_many_arguments)]
-
 use std::f64::consts::PI;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -427,6 +424,7 @@ pub fn nitinol_phase_diagram() -> [(f64, f64); 4] {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Smooth cosine interpolation used in transformation models, ∈ \[0, 1\].
+#[cfg(test)]
 fn cosine_interpolate(x: f64) -> f64 {
     0.5 * (1.0 - (PI * x).cos())
 }

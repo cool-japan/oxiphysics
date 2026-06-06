@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-#![allow(clippy::needless_range_loop)]
 use std::collections::BinaryHeap;
 
 use super::types::{
@@ -460,8 +459,7 @@ pub fn geodesic_voronoi(
             area: 0.0,
         })
         .collect();
-    for i in 0..n {
-        let si = label[i];
+    for (i, &si) in label.iter().enumerate().take(n) {
         if si < num_sites {
             cells[si].vertices.push(i);
             cells[si].area += mesh.voronoi_area(i);
@@ -476,7 +474,6 @@ pub fn geodesic_voronoi(
 ///
 /// This uses an iterative unfolding approach: the tangent vector is projected
 /// onto successive triangles along the traced direction.
-#[allow(clippy::too_many_arguments)]
 pub fn discrete_exp_map(
     mesh: &GeodesicMesh,
     source: usize,

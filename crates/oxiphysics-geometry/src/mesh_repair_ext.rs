@@ -1,5 +1,3 @@
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::needless_range_loop)]
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 //! Extended mesh repair: remeshing, smoothing, simplification, quality metrics.
@@ -13,8 +11,6 @@
 //! - Loop subdivision scheme
 //! - Mesh Boolean operations
 //! - Per-vertex normal estimation (area-weighted, angle-weighted)
-
-#![allow(dead_code)]
 
 /// A vertex position in 3D space.
 pub type Vertex = [f64; 3];
@@ -38,18 +34,6 @@ fn vec_len(v: &[f64; 3]) -> f64 {
 #[inline]
 fn vec_sub(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-/// Adds two vectors.
-#[inline]
-fn vec_add(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-/// Scales a vector by a scalar.
-#[inline]
-fn vec_scale(v: &[f64; 3], s: f64) -> [f64; 3] {
-    [v[0] * s, v[1] * s, v[2] * s]
 }
 
 /// Computes the dot product of two vectors.
@@ -601,7 +585,7 @@ impl RemeshingUniform {
     }
 
     /// Collapses any edge shorter than 4/5 * L to its midpoint.
-    pub fn collapse_short_edges(&self, vertices: &mut Vec<Vertex>, faces: &mut Vec<Face>) {
+    pub fn collapse_short_edges(&self, vertices: &mut [Vertex], faces: &mut Vec<Face>) {
         let threshold = (4.0 / 5.0) * self.target_edge_length;
         let mut collapsed = vec![false; vertices.len()];
         let mut i = 0;
@@ -801,7 +785,7 @@ impl MeshDecimation {
     }
 
     /// Performs greedy decimation: collapses cheapest edges until target_faces reached.
-    pub fn decimate(&mut self, vertices: &mut Vec<Vertex>, faces: &mut Vec<Face>) {
+    pub fn decimate(&mut self, vertices: &mut [Vertex], faces: &mut Vec<Face>) {
         while faces.len() > self.target_faces {
             // Find the cheapest edge among current faces
             let mut best_cost = f64::INFINITY;
@@ -980,16 +964,6 @@ impl MeshBoolean {
     /// Creates a MeshBoolean operator with the given tolerance.
     pub fn new(tolerance: f64) -> Self {
         Self { tolerance }
-    }
-
-    /// Tests if a point p is inside a bounding box defined by \[min, max\].
-    fn point_in_bbox(p: &[f64; 3], mn: &[f64; 3], mx: &[f64; 3]) -> bool {
-        p[0] >= mn[0]
-            && p[0] <= mx[0]
-            && p[1] >= mn[1]
-            && p[1] <= mx[1]
-            && p[2] >= mn[2]
-            && p[2] <= mx[2]
     }
 
     /// Returns the axis-aligned bounding box of a set of vertices.
@@ -1535,8 +1509,8 @@ mod tests {
         let smoothed = smoother.smooth(&verts, &faces);
         assert_eq!(smoothed.len(), verts.len());
         for v in &smoothed {
-            for k in 0..3 {
-                assert!(v[k].is_finite(), "vertex component[{k}] is not finite");
+            for (k, &vk) in v.iter().enumerate() {
+                assert!(vk.is_finite(), "vertex component[{k}] is not finite");
             }
         }
     }

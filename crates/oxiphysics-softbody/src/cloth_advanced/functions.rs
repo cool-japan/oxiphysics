@@ -23,9 +23,6 @@ pub(super) fn normalize3(v: [f64; 3]) -> [f64; 3] {
         [v[0] / n, v[1] / n, v[2] / n]
     }
 }
-pub(super) fn lerp(a: f64, b: f64, t: f64) -> f64 {
-    a + (b - a) * t
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,7 +270,6 @@ mod tests {
     }
 }
 /// Approximate erfc for fabric thermal calculations.
-#[allow(dead_code)]
 pub(super) fn erfc_fabric(x: f64) -> f64 {
     if x < 0.0 {
         return 2.0 - erfc_fabric(-x);

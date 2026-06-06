@@ -5,9 +5,6 @@
 //!
 //! Exposes A*-based pathfinding over a triangle navigation mesh.
 
-#![allow(missing_docs)]
-#![allow(dead_code)]
-
 use oxiphysics::navmesh::{Circle2D, NavMesh};
 use pyo3::prelude::*;
 
