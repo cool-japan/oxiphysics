@@ -1,6 +1,6 @@
 # OxiPhysics Development Roadmap
 
-> **Status (2026-06-06):** 19 phases complete; v0.1.2 correctness fixes shipped (doctest re-exports, Python CSG + IMLS reconstruction, RRT collision, LbmGrid3D::step). 75 of 75 roadmap items done; post-v0.2.0 deferred items remain hardware/registry-blocked.
+> **Status (2026-06-06):** 19 phases complete; 75 of 75 roadmap items done, with post-v0.2.0 deferred items remaining hardware/registry-blocked. Current focus on v0.1.3 is the workspace-wide `#[allow]` purge campaign (P2/P3/P4 lint cleanup): P2 (mechanical lint purge), P3 (`dead_code` audit), P4a (`missing_docs` + `non_snake_case`), and P4b (`too_many_arguments`) are complete. Remaining: the P2b full-purge continuation and the oxiphysics-core baseline purge.
 
 ## Phase 1: Foundation
 - [x] Project scaffold and workspace setup

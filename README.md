@@ -21,7 +21,7 @@ dynamics), and **CalculiX** (FEM) — with no C or Fortran dependencies, no
 | `oxiphysics-collision` | **Stable** | 2,443 | GJK/EPA, SAP, BVH, CCD, ray casting, contact graphs |
 | `oxiphysics-materials` | **Stable** | 4,506 | Material models, hyperelastic, composites, biomaterials, smart materials |
 | `oxiphysics-fem` | **Stable** | 4,620 | Linear+nonlinear FEM, XFEM, spectral, stochastic FEM, 124 source files |
-| `oxiphysics-gpu` | **Alpha** | 2,811 | CPU-fallback compute backend, ParticleSystem, parallel sort |
+| `oxiphysics-gpu` | **Stable** | 2,811 | wgpu compute backend (SPH/LBM/BVH WGSL kernels) + Rayon CPU fallback, ParticleSystem |
 | `oxiphysics-io` | **Stable** | 4,879 | VTK, PDB, LAMMPS, OpenFOAM, GLTF, HDF5, 80+ format modules |
 | `oxiphysics-lbm` | **Stable** | 5,320 | LBM D3Q19/D3Q27, MRT, multiphase, MHD, biofluid, traffic |
 | `oxiphysics-md` | **Stable** | 5,171 | MD forcefield, QM/MM, REMD, free energy, LAMMPS/AMBER compat |
@@ -65,7 +65,7 @@ What is already implemented in each domain:
 - **Molecular Dynamics (MD)** — Lennard-Jones, Buckingham, Morse, and custom pair potentials; ReaxFF reactive force field; QM/MM coupling; REMD; free energy perturbation; LAMMPS and AMBER file compatibility.
 - **Soft body** — mass-spring; PBD (position-based dynamics); XPBD; cloth with self-collision; hair simulation; Cosserat elastic rods; surgical simulation model.
 - **Materials** — hyperelastic (Neo-Hookean, Mooney-Rivlin, Ogden); elasto-plastic (von Mises, Drucker-Prager); composite laminates; biomaterials; shape-memory alloys; piezoelectric.
-- **GPU/compute backend** — CPU-fallback work-stealing scheduler; parallel radix sort; particle system; pipeline for SPH and LBM kernels; ready for future GPU back-ends.
+- **GPU/compute backend** — wgpu compute backend with WGSL kernels for SPH density, LBM D3Q19 BGK (streaming + collision), and BVH traversal, each parity-tested vs the CPU reference; `wgpu-backend` is enabled by default on desktop with transparent Rayon CPU fallback; parallel radix sort; particle system; optional `cuda-backend` (cudarc) pending hardware verification.
 - **I/O** — VTK XML/legacy; PDB/mmCIF; LAMMPS dump; OpenFOAM; GLTF 2.0; HDF5; JSON/MessagePack checkpointing; 80+ format modules.
 - **Visualization** — CPU software rasteriser; Phong + PBR shading; isosurface extraction (Marching Cubes); volume rendering; scientific line/scatter/contour plots; VR-ready camera rigs.
 

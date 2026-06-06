@@ -1,6 +1,6 @@
 # oxiphysics-core
 
-**[Alpha]** Core types, mathematics, and simulation infrastructure for the OxiPhysics engine.
+**[Stable]** Core types, mathematics, and simulation infrastructure for the OxiPhysics engine.
 
 [![Tests](https://img.shields.io/badge/tests-5378-brightgreen)](https://github.com/cool-japan/oxiphysics)
 [![docs.rs](https://img.shields.io/docsrs/oxiphysics-core)](https://docs.rs/oxiphysics_core)

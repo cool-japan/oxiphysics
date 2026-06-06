@@ -1,6 +1,6 @@
 # OxiPhysics
 
-**Status: Alpha** — functional umbrella re-export crate.
+**Status: Stable** — functional umbrella re-export crate.
 
 A unified, pure-Rust physics engine covering rigid body dynamics, fluid simulation, finite
 element analysis, molecular dynamics, soft body simulation, and more.

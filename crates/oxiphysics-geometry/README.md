@@ -1,6 +1,6 @@
 # oxiphysics-geometry
 
-**[Alpha]** Geometric shapes, mesh processing, and spatial algorithms for the OxiPhysics engine.
+**[Stable]** Geometric shapes, mesh processing, and spatial algorithms for the OxiPhysics engine.
 
 [![Tests](https://img.shields.io/badge/tests-3120-brightgreen)](https://github.com/cool-japan/oxiphysics)
 [![docs.rs](https://img.shields.io/docsrs/oxiphysics-geometry)](https://docs.rs/oxiphysics_geometry)

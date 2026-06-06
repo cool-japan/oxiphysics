@@ -1,6 +1,6 @@
 # oxiphysics-vehicle
 
-**Status:** Alpha | **Version:** 0.1.3 | **Tests:** 2,687
+**Status:** Stable | **Version:** 0.1.3 | **Tests:** 2,687
 
 Full-featured vehicle dynamics simulation for the [OxiPhysics](https://github.com/cool-japan/oxiphysics) engine.
 

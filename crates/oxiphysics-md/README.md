@@ -1,6 +1,6 @@
 # oxiphysics-md
 
-**Status: Alpha** | Version 0.1.3 | 2026-06-06
+**Status: Stable** | Version 0.1.3 | 2026-06-06
 
 Molecular dynamics simulation for the OxiPhysics engine. Pure Rust.
 

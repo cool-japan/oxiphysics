@@ -25,22 +25,22 @@ Last updated: 2026-06-06 / v0.1.3
 - [x] Integration tests (2,748 public items, 2,811 tests, 0 stubs)
 - [x] Performance benchmarks (basic)
 
-## Phase 3: GPU backends (planned)
-- [x] wgpu backend skeleton (v0.2.0 — `wgpu_backend` module with `WgpuBackend` struct, feature-gated stub)
-  - [x] wgpu device/adapter initialization (stub — see `WgpuBackend::try_new` TODO comment)
-  - [x] Buffer upload/download via wgpu (stub with CPU shadow + `write_buffer`/`read_buffer`)
+## Phase 3: GPU backends (shipped — wgpu real; CUDA optional/pending hardware)
+- [x] wgpu backend (`wgpu_backend` module — real `WgpuBackendReal` with `wgpu` Instance/Adapter/Device/Queue; the `WgpuBackend` struct remains as the CPU-shadow fallback)
+  - [x] wgpu device/adapter initialization (real — `WgpuBackendReal::try_new` / `try_new_async` via `pollster::block_on`)
+  - [x] Buffer upload/download via wgpu (real — `queue.write_buffer` + staging-buffer `map_async` readback)
   - [x] WGSL compute shaders for particle kernels (`WGSL_SPH_DENSITY`, `WGSL_PARALLEL_SCAN`)
   - [x] wgpu-based BVH traversal (`WGSL_BVH_TRAVERSAL`)
-- [x] CUDA backend skeleton via cudarc (v0.3.0 — `cuda_backend` module with `CudaBackend` struct, `CudaBufferHandle`, `CudaDeviceInfo`, `CudaInitError`, PTX kernel stubs)
-  - [x] cudarc device context (stub with `try_new(ordinal)` and TODO comments for real impl)
+- [x] CUDA backend via cudarc (`cuda_backend` module with `CudaBackend`, `CudaBufferHandle`, `CudaDeviceInfo`, `CudaInitError`) — behind the optional, non-default `cuda-backend` feature; pending RTX-class hardware verification
+  - [x] cudarc device context (`try_new(ordinal)`)
   - [x] CUDA kernel launch wrappers (`launch`, `register_kernel`, `compile_and_register`)
-  - [x] Unified memory support (`alloc_unified` — stub; real impl via `cudarc::alloc_zeros_unified`)
+  - [x] Unified memory support (`alloc_unified` via `cudarc::alloc_zeros_unified`)
 - [x] Benchmark: CPU vs wgpu vs CUDA (`gpu_bench` — `GpuBenchHarness`, SPH density + LBM + scan timing across backends)
 - [x] Extended examples (GPU-accelerated SPH, LBM) (`sph_gpu` — WCSPH CPU+wgpu, `lbm_gpu` — D3Q19 BGK lid-driven cavity)
 
-## Phase 4: wgpu Backend Activation (v0.2.0)
+## Phase 4: wgpu Backend Activation (shipped — root TODO Phase 22 / KF-4, 2026-05-14)
 
-> **Goal:** Promote `wgpu-backend` from compiling-stub to a real compute path. Today `WgpuBackend::try_new` holds a TODO comment and operates on CPU `Vec<f64>` shadows; the `dispatch()` function does not dispatch to GPU. Phase 4 turns the scaffold into a working pipeline with measurable speedup over the Rayon CPU baseline.
+> **Status:** Complete. The `wgpu-backend` feature is a real compute path via `WgpuBackendReal` (real `wgpu::Device`/`Queue`, `queue.write_buffer`, staging readback, cached `ComputePipeline` dispatch) and is enabled by default on desktop. SPH density, LBM D3Q19 BGK, and BVH traversal kernels run end-to-end with CPU-parity tests. The ≥5× speedup regression test is env-gated (`OXIPHYSICS_RTX_BENCH=1`) and requires RTX-class hardware; no measured speedup is claimed here.
 
 ### 4.1 Real device initialization
 - [x] `WgpuBackend::try_new` — real `Instance / Adapter / (Device, Queue)` via `pollster::block_on` (planned 2026-04-24; bundles 4.1–4.1d)

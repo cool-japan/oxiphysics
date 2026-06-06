@@ -1,6 +1,6 @@
 # oxiphysics-collision
 
-**[Alpha]** High-performance collision detection pipeline for the OxiPhysics engine.
+**[Stable]** High-performance collision detection pipeline for the OxiPhysics engine.
 
 [![Tests](https://img.shields.io/badge/tests-2443-brightgreen)](https://github.com/cool-japan/oxiphysics)
 [![docs.rs](https://img.shields.io/docsrs/oxiphysics-collision)](https://docs.rs/oxiphysics_collision)
