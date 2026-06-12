@@ -104,7 +104,7 @@
 ## v0.2.0 — Solvers & saddle-point
 
 ### Matrix-free high-order operators
-- [ ] Matrix-free sum-factorized high-order operators
+- [x] Matrix-free sum-factorized high-order operators (done 2026-06-12)
   - **Goal:** p=4 Poisson matvec at <40 bytes/DOF, ≥2× faster than assembled SpMV at equal DOF.
   - **Design:** tensor-product (sum-factorization) element-operator evaluation, no global matrix. Kronbichler-Kormann 2012.
   - **Delta:** MISSING — no matrix-free path today; complements the assembled CSR + AMG baseline rather than replacing it.

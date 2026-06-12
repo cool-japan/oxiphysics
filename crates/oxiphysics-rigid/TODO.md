@@ -85,11 +85,12 @@ Exit gate: all seven Goal scenarios pass as crate-level scenario tests at defaul
 
 ### Contact response & restitution
 
-- [ ] TGS-Soft contact response
+- [x] TGS-Soft contact response (done 2026-06-12)
   - **Goal:** stiffness specified as (hertz, damping-ratio) per contact; 100-box stack shows no jitter at 30 Hz; soft contacts converge independent of mass ratio up to 1e4.
   - **Design:** Jolt-style soft constraints — bias/mass/impulse coefficients from ω=2πf, ζ (Catto soft-constraint derivation), applied in TGS position iterations; existing `soft_constraints.rs` is penalty springs only — keep, but route the solver path through oxiphysics-constraints TGS.
   - **Depends:** oxiphysics-constraints v0.2.0 soft-constraint parameterization (hz, ζ across PGS/TGS)
   - **Tests:** 100-box stack jitter metric at 30 Hz; mass-ratio ladder 1e0–1e4 convergence
+  - **Done:** `oxiphysics-constraints` already depends on `oxiphysics-rigid` (cycle), so `SoftParams::{from_frequency, rigid, is_rigid}` is self-contained in `src/solver/soft.rs` (Catto/Box2D-v3 formula, kept in sync with the constraints crate). `SolverConfig` gains `contact_hertz` / `contact_damping_ratio` / `use_soft_contacts` (default off ⇒ byte-identical legacy path). Both `PhysicsWorld::step` and `step_small_steps` route contacts through `apply_soft_normal_constraint` when enabled: full 6-DoF contact Jacobian `J=[n, r_a×n, −n, −(r_b×n)]` (angular terms vanish for the sphere narrowphase but are exact for off-centre contacts), accumulated unilateral λ warm-started across iterations/sub-steps, `target = max(bias_rate·depth, restitution)` (never summed — P2 lesson), `hz` capped to `0.25/h` (Catto). Tests: `tests/tgs_soft.rs` (soft-off byte-identity for both step paths, jitter-free 5-stack with non-increasing KE tail, dt-invariant settle time across 1/60–1/240, 100:1 heavy-on-light, restitution preservation) + 5 unit tests in `src/solver/soft.rs`. world/types.rs 1772 lines (no split).
 
 - [ ] Speculative contacts integrated with solver
   - **Goal:** 50 m/s sphere vs 1 cm wall never tunnels, no CCD substep, no ghost bounce.

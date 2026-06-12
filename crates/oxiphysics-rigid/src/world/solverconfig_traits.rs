@@ -18,6 +18,9 @@ impl Default for SolverConfig {
             restitution_threshold: 1.0,
             substeps: 1,
             restitution: 0.3,
+            contact_hertz: 0.0,
+            contact_damping_ratio: 1.0,
+            use_soft_contacts: false,
         }
     }
 }

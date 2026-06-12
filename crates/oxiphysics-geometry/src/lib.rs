@@ -229,6 +229,7 @@ pub mod architectural_geometry;
 pub mod fractal_geometry;
 
 pub mod computational_geometry;
+pub use computational_geometry::delaunay_3d;
 
 pub mod implicit_geometry;
 

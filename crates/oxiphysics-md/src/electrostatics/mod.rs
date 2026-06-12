@@ -16,6 +16,7 @@
 
 mod coulomb;
 mod multipole;
+pub mod lj_pme;
 pub mod pme;
 mod polarization;
 mod reaction_field;
@@ -23,6 +24,7 @@ mod solvation;
 
 pub use coulomb::*;
 pub use multipole::*;
+pub use lj_pme::{lj_pme_energy_and_forces, LjPmeError, LjPmeParams};
 pub use pme::{
     ewald_real_space_energy, pme_reciprocal_energy, pme_reciprocal_forces, pme_self_energy,
 };

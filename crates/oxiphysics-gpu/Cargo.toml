@@ -34,6 +34,12 @@ pollster = { workspace = true, optional = true }
 bytemuck = { workspace = true, optional = true }
 cudarc = { workspace = true, optional = true }
 
+[dev-dependencies]
+# Pure-Rust WGSL front-end + validator (already in the wgpu dependency graph),
+# used by the shader-validation tests to prove every built-in/SPH WGSL kernel
+# actually parses and type-checks under naga — not just substring checks.
+naga = { workspace = true, features = ["wgsl-in"] }
+
 [[test]]
 name = "wgpu_kernels"
 path = "tests/wgpu_kernels.rs"
@@ -45,6 +51,10 @@ path = "tests/lbm_kernels.rs"
 [[test]]
 name = "cuda_backend_tests"
 path = "tests/cuda_backend_tests.rs"
+
+[[test]]
+name = "wgsl_validation"
+path = "tests/wgsl_validation.rs"
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

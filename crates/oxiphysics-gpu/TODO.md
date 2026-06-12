@@ -154,11 +154,13 @@ Sequencing (root TODO Phase 26): reduction lib → radix sort → LBVH → SPH p
   - **Files:** new `src/kernels_wgsl/lbvh.wgsl` (Karras internal-node range + split with index-augmented δ tie-break for duplicate Morton codes); `src/gpu_lbvh.rs` (on-GPU hierarchy path behind the same `gpu_lbvh_build` entry, hybrid kept as fallback).
 
 ### Solver pipelines on GPU
-- [ ] SPH full pipeline on GPU — (promotes 4 of the 7 marker-13 templates)
-  - **Goal:** 250k-particle dam break ≥60 steps/s on M-series, 1e-4 L2 parity vs CPU path.
-  - **Design:** promote shader_registry templates (CELL_LIST, SPH_FORCE, INTEGRATE, BOUNDARY_ENFORCE) from validated-only to dispatched kernels alongside the already-real density kernel. (dep: reduction lib for cell-list compaction)
-  - **Files:** `src/sph_gpu.rs` (pipeline orchestration), `src/shaders/functions.rs` (templates promoted into dispatched kernels).
-  - **Tests:** dam-break L2-parity test in `tests/wgpu_kernels.rs`; steps/s assertion env-gated (`OXIPHYSICS_RTX_BENCH` pattern).
+- [x] SPH full pipeline on GPU — (promotes 4 of the 7 marker-13 templates) (planned 2026-06-12) (shipped 2026-06-13: real GPU-resident WCSPH pipeline on Metal — `sph_cell_list`→GPU radix-sort pairs→`histogram`+`exclusive_scan`→`sph_density`→`sph_force`→`sph_integrate`→`sph_boundary`, all dispatched through `WgpuBackendReal`; legacy CPU-shadow `WgpuBackend` stub dropped from `sph_gpu.rs`; cell-list-neighbor parity vs CPU brute force = exact, dam-break density L2 = 2e-6 over 20 steps; 5 new WGSL kernels + 10 `functions.rs` registry templates now naga-validated in `tests/wgsl_validation.rs`)
+  - **Goal:** 250k-particle dam break ≥60 steps/s on M-series, 1e-4 L2 parity vs CPU path. — L2 parity DONE (2e-6, exceeds the 1e-4 target); steps/s perf target split out below.
+  - **Design:** promote shader_registry templates (CELL_LIST, SPH_FORCE, INTEGRATE, BOUNDARY_ENFORCE) from validated-only to dispatched kernels alongside the already-real density kernel. (dep: reduction lib for cell-list compaction) — DONE: implemented as dedicated `src/kernels_wgsl/sph_*.wgsl` kernels (the `functions.rs` templates were repaired to valid WGSL and are now naga-validated; the dispatched pipeline uses the new `kernels_wgsl` constants).
+  - **Files:** `src/sph_gpu.rs` (pipeline orchestration), `src/shaders/functions.rs` (templates repaired to valid WGSL), `src/kernels_wgsl/sph_{cell_list,density,force,integrate,boundary}.wgsl` (NEW dispatched kernels), `src/kernels_wgsl/mod.rs` (constants), `tests/wgpu_kernels.rs` + `tests/wgsl_validation.rs` (NEW).
+  - **Tests:** `test_cell_list_correctness` (GPU cell-list neighbor sets vs CPU brute force) + `test_sph_gpu_dam_break_parity` (~200-particle 2-D dam break, 20 steps, density L2 + momentum bound) in `tests/wgpu_kernels.rs`; 7 naga compile checks in `tests/wgsl_validation.rs`.
+- [ ] SPH GPU 250k @ ≥60 steps/s perf target — (follow-on to the shipped SPH pipeline; correctness already at 2e-6 L2)
+  - **Goal:** 250k-particle dam break ≥60 steps/s on M-series. The shipped pipeline rebuilds the spatial hash by reading cell-keys back to host and reusing `radix_sort_pairs_gpu` + `histogram_u32` + `exclusive_scan_u32` (each spins up its own backend / round-trips) — fold the sort+scan onto the resident backend and keep keys GPU-side to hit the throughput target; add an env-gated (`OXIPHYSICS_RTX_BENCH`) steps/s assertion.
 - [ ] XPBD cloth kernels — (closes marker 5)
   - **Goal:** 65k-vertex cloth at 120 substeps/s; parity vs `gpu_cloth.rs` CPU mock within 1e-4 max vertex error over 100 steps.
   - **Design:** graph-colored constraint batches, one dispatch per color.

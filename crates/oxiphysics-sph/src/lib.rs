@@ -27,6 +27,7 @@ pub mod free_surface;
 pub mod granular;
 pub mod iisph;
 pub mod immiscible;
+pub mod isph;
 pub mod kernel;
 pub mod multiphase;
 pub mod neighbor;

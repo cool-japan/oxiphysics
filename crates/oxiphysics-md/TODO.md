@@ -103,9 +103,9 @@ dispersion, and complete the NEMD transport toolkit.
     - [ ] Long-run NPT density validation (SPC/E 298 K ±1%) — requires
           multi-hour run, not CI-feasible
 
-- [ ] LJ-PME / long-range dispersion — **Goal:** liquid-Ar surface tension
+- [x] LJ-PME / long-range dispersion (done 2026-06-12) — **Goal:** liquid-Ar surface tension
       cutoff-independent to <1% for r_c=2.5–4σ. **Design:** reciprocal-space
-      r⁻⁶ via existing PME machinery. in 't Veld 2007. *(MISSING.)* (oxifft)
+      r⁻⁶ via existing PME machinery. in 't Veld 2007. (oxifft)
 
 - [ ] PME auto-tuning — **Goal:** force error < 1e-4 with auto-selected α/grid;
       ≥2× faster than untuned. **Design:** Kolafa-Perram error-estimate-driven

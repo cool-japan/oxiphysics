@@ -29,3 +29,18 @@ pub const RADIX_SCATTER_WGSL: &str = include_str!("radix_scatter.wgsl");
 
 /// Radix-sort stable scatter kernel for key+payload pairs (`radix_scatter_pairs` entry point).
 pub const RADIX_SCATTER_PAIRS_WGSL: &str = include_str!("radix_scatter_pairs.wgsl");
+
+/// SPH spatial-hash cell-key generation (`sph_cell_list` entry point).
+pub const SPH_CELL_LIST_WGSL: &str = include_str!("sph_cell_list.wgsl");
+
+/// SPH density summation over the cell-list (`sph_density` entry point).
+pub const SPH_DENSITY_GRID_WGSL: &str = include_str!("sph_density.wgsl");
+
+/// SPH pressure + viscosity + gravity acceleration (`sph_force` entry point).
+pub const SPH_FORCE_GRID_WGSL: &str = include_str!("sph_force.wgsl");
+
+/// SPH symplectic-Euler integration (`sph_integrate` entry point).
+pub const SPH_INTEGRATE_WGSL: &str = include_str!("sph_integrate.wgsl");
+
+/// SPH axis-aligned box boundary enforcement (`sph_boundary` entry point).
+pub const SPH_BOUNDARY_WGSL: &str = include_str!("sph_boundary.wgsl");

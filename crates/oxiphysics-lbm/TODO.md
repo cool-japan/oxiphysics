@@ -239,7 +239,7 @@ Theme: sharp interfaces, local resolution, and memory-efficient domains —
 the geometry capabilities that diffuse-interface multiphase and dense grids
 cannot cover.
 
-- [ ] Free-surface LBM (VOF mass tracking) — **Goal:** 2D dam break front
+- [~] (planned 2026-06-12) Free-surface LBM (VOF mass tracking) — **Goal:** 2D dam break front
       within 8% of experiment; mass conserved to 1e-4. **Design:** per-cell
       fill level φ, interface reconstruction, mass-exchange +
       fluid/interface/gas flag reinit. Körner 2005; Thürey. *(Shipped:

@@ -92,16 +92,18 @@ geometry — all pure Rust.
   - [x] Stress corpus: 1000 near-degenerate booleans (coincident faces, near-coincident rotated/translated), 0 failures; coincident-cube watertight gate
   - [ ] full-BSP exact booleans (intersection-curve re-triangulation; the degenerate-band classifier shipped now makes coincident-FACE booleans watertight via orient3d+SoS, but arbitrary mid-triangle intersections still need a BSP/CDT rebuild for guaranteed manifoldness and an exact triangle-triangle intersection segment). Boundary: whole-triangle centroid selection cannot re-triangulate where a face is pierced through its interior, so the volume identity holds only to a whole-triangle-selection tolerance there and Intersection of face-touching solids is the zero-volume degenerate case (correctly removed).
 
-- [ ] 3D Delaunay + constrained Delaunay + alpha shapes
+- [x] 3D Delaunay + constrained Delaunay + alpha shapes (delivered 2026-06-12; CDT facet recovery deferred — see sub-item)
   - **Goal:** tetrahedralize 10⁴ points with empty-sphere property holding for all tets; α-shape recovers known surface.
-  - **Design:** incremental Bowyer-Watson 3D + CDT + α-complex. Edelsbrunner-Mücke 1994.
-  - Verified: `computational_geometry` has 2D `delaunay_2d` + `voronoi_from_delaunay` (see Completed); 3D/CDT/alpha are the open parts.
-  - Depends on: core exact `insphere` predicate for robust empty-sphere tests.
-  - [ ] Incremental Bowyer-Watson 3D with walk-based point location
-  - [ ] Cavity retriangulation + degenerate-input handling via exact predicates
-  - [ ] Constrained Delaunay: boundary facet recovery
-  - [ ] α-complex filtration + α-shape extraction with known-surface recovery test
-  - [ ] Empty-sphere audit over every tet of a 10⁴-point tetrahedralization
+  - **Files:** `computational_geometry/delaunay_3d.rs` (new, ~1440 L < 2000); wired through `computational_geometry/mod.rs` + `lib.rs` (`pub use computational_geometry::delaunay_3d`).
+  - **Design:** incremental Bowyer-Watson 3D + star-shaped-cavity repair + α-complex. Edelsbrunner-Mücke 1994; Bowyer/Watson 1981; predicates Shewchuk 1997; SoS Edelsbrunner-Mücke 1990.
+  - Verified: `computational_geometry` has 2D `delaunay_2d` + `voronoi_from_delaunay` (see Completed); 3D + α now delivered, CDT still open.
+  - Depends on: core exact `insphere` predicate for robust empty-sphere tests (consumed via `oxiphysics_core::exact_predicates::{insphere, orient3d}`).
+  - Delivered: exact Bowyer-Watson driven by core `orient3d`/`insphere`; every tet kept positively oriented; all degeneracies (cospherical/coplanar/grid) resolved by parity-of-lowest-index SoS (matching `mesh_boolean::sos_sign`); walk-based point location with brute-force fallback; circumsphere flood + **star-shaped-cavity repair** (face-visibility test that absorbs non-visible neighbours, guaranteeing the refill is gap/overlap-free — this was the key to correct volumes under cospherical degeneracy); full face-adjacency (`neigh`) rebuild; super-tetra strip + compaction. `Tetrahedralization::{circumradius_sq, alpha_shape, verify_empty_sphere}`. Tests: single-tet, bipyramid 2-tet known case, cube (8 cospherical corners, volume==1), random 400/1000-pt empty-sphere audits (default-run) + env-gated 10⁴-pt audit, α-shape closed-surface (sphere cloud + convex hull, every edge twice), α=0 empty, duplicate tolerance. clippy `-D warnings` clean; no `#[allow]`; no production `unwrap()`.
+  - [x] Incremental Bowyer-Watson 3D with walk-based point location
+  - [x] Cavity retriangulation + degenerate-input handling via exact predicates
+  - [ ] Constrained Delaunay: boundary facet recovery — follow-on; unconstrained Delaunay + α-shapes shipped now, but enforcing prescribed boundary facets (Steiner-point insertion / facet recovery) is a distinct effort filed for a later pass.
+  - [x] α-complex filtration + α-shape extraction with known-surface recovery test
+  - [x] Empty-sphere audit over every tet of a 10⁴-point tetrahedralization (`verify_empty_sphere`; `random_cloud_10k_empty_sphere_audit`, env-gated `OXIPHYSICS_DELAUNAY_10K`)
 
 - [ ] ABF++ parameterization + LSCM v2
   - **Goal:** disk-topology mesh UV area distortion < 5% vs current simplified LSCM.

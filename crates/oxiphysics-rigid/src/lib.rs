@@ -102,6 +102,7 @@ pub mod ccd;
 pub mod impulse;
 pub mod motors;
 pub mod pipeline;
+pub mod solver;
 pub mod world;
 
 pub mod ragdoll;

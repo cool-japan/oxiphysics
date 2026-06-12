@@ -12,7 +12,9 @@ use crate::types::ContactManifold;
 use oxiphysics_geometry::{BoxShape, Capsule, Sphere};
 
 use super::box_manifold::box_box_manifold;
-use super::functions::{gjk_fallback_dispatch, sphere_capsule_dispatch, type_name};
+use super::functions::{
+    convex_manifold_dispatch, gjk_fallback_dispatch, sphere_capsule_dispatch, type_name,
+};
 use super::types::{NarrowPhaseDispatcher, NarrowPhaseResult, ShapeType};
 use crate::narrowphase::specialized;
 
@@ -137,6 +139,22 @@ impl Default for NarrowPhaseDispatcher {
             sphere_capsule_dispatch,
         );
         d.register_pair(ShapeType::Box, ShapeType::Capsule, gjk_fallback_dispatch);
+        // Convex-convex full manifolds: ConvexHull vs ConvexHull and ConvexHull
+        // vs Box both route through the shared face-clip / edge-edge helper
+        // (`convex_manifold_dispatch`), producing 4-point manifolds instead of a
+        // single EPA witness. The (Box, ConvexHull) registration is canonicalised
+        // to (Box, ConvexHull) order (Box ordinal < ConvexHull ordinal), so the
+        // reversed-argument case is handled by the dispatcher's flip-normal path.
+        d.register_pair(
+            ShapeType::ConvexHull,
+            ShapeType::ConvexHull,
+            convex_manifold_dispatch,
+        );
+        d.register_pair(
+            ShapeType::Box,
+            ShapeType::ConvexHull,
+            convex_manifold_dispatch,
+        );
         d
     }
 }

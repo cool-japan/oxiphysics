@@ -19,15 +19,10 @@ use oxiphysics_core::Transform;
 use oxiphysics_core::math::Vec3;
 use oxiphysics_geometry::BoxShape;
 
+use super::convex_manifold::{Polyhedron, polyhedron_manifold_from_normal};
 use super::types::NarrowPhaseResult;
-use crate::contact_generation::{
-    add3, clip_polygon_by_plane, cross3, dot3, find_incident_face, norm3, normalize3, scale3, sub3,
-};
+use crate::contact_generation::{add3, cross3, dot3, norm3, normalize3, scale3, sub3};
 use crate::types::{CollisionPair, Contact, ContactManifold};
-
-/// Contacts shallower than this distance below the reference plane are still
-/// kept so that resting (near-zero penetration) faces yield a full manifold.
-const CONTACT_SLOP: f64 = 1e-3;
 
 /// Reciprocal of the spatial grid used to quantise contact sort keys. The grid
 /// (1e-4 m) is far above floating-point noise yet far below the separation of
@@ -61,11 +56,17 @@ fn projection_radius(half: [f64; 3], axes: [[f64; 3]; 3], l: [f64; 3]) -> f64 {
 }
 
 /// Which separating axis won the SAT minimisation.
+///
+/// The face variants are payload-free: the face-face manifold is built by the
+/// shared convex helper, which re-selects the reference/incident faces from the
+/// world normals, so the SAT axis index is no longer needed downstream. The
+/// edge variant keeps both local edge-axis indices because the edge-edge witness
+/// path restricts its segment search to those parallel edges.
 enum BoxSatAxis {
-    /// Face normal of box A (local axis index).
-    FaceA(usize),
-    /// Face normal of box B (local axis index).
-    FaceB(usize),
+    /// Face normal of box A won the minimisation.
+    FaceA,
+    /// Face normal of box B won the minimisation.
+    FaceB,
     /// Cross product of A's local edge `i` and B's local edge `j`.
     EdgeEdge(usize, usize),
 }
@@ -111,17 +112,17 @@ fn box_box_sat_detailed(
     };
 
     let mut min_overlap = f64::INFINITY;
-    let mut best_axis = BoxSatAxis::FaceA(0);
+    let mut best_axis = BoxSatAxis::FaceA;
     let mut best_dir = [0.0_f64, 0.0, 0.0];
 
     // Face axes of A first.
-    for (i, ax) in axes_a.iter().enumerate() {
+    for ax in axes_a.iter() {
         match overlap_on(*ax) {
             None => return None,
             Some(overlap) => {
                 if overlap < min_overlap {
                     min_overlap = overlap;
-                    best_axis = BoxSatAxis::FaceA(i);
+                    best_axis = BoxSatAxis::FaceA;
                     best_dir = *ax;
                 }
             }
@@ -129,13 +130,13 @@ fn box_box_sat_detailed(
     }
 
     // Face axes of B next.
-    for (j, ax) in axes_b.iter().enumerate() {
+    for ax in axes_b.iter() {
         match overlap_on(*ax) {
             None => return None,
             Some(overlap) => {
                 if overlap < min_overlap {
                     min_overlap = overlap;
-                    best_axis = BoxSatAxis::FaceB(j);
+                    best_axis = BoxSatAxis::FaceB;
                     best_dir = *ax;
                 }
             }
@@ -188,87 +189,6 @@ fn box_box_sat_detailed(
         normal: n,
         axis: best_axis,
     })
-}
-
-/// Reference/incident face selection for a face-axis SAT result.
-struct RefIncidentFaces {
-    /// Whether box A is the reference (clipping) box.
-    ref_is_a: bool,
-    /// Reference face index (into `face_vertex_indices`).
-    ref_face_idx: usize,
-    /// Reference outward normal in world space (reference -> incident).
-    ref_outward_normal: [f64; 3],
-    /// Incident face index (into `face_vertex_indices`).
-    inc_face_idx: usize,
-}
-
-/// Choose the reference and incident faces for a face-axis overlap.
-///
-/// The reference box owns the winning face normal; the incident box contributes
-/// the face most anti-parallel to the reference outward normal. `EdgeEdge`
-/// results are never routed here (the manifold builder handles edges directly);
-/// should one arrive it is treated like `FaceA` so the function stays total.
-fn select_reference_incident(
-    sat: &BoxSatResult,
-    transform_a: &Transform,
-    transform_b: &Transform,
-) -> RefIncidentFaces {
-    // Read the winning local-axis index straight from the SAT result; the
-    // reference face is one of that axis's two faces. EdgeEdge never reaches
-    // here (the manifold builder handles edges separately) but is mapped onto
-    // A's axis 0 so the function stays total.
-    let (ref_is_a, ref_axis) = match sat.axis {
-        BoxSatAxis::FaceA(i) => (true, i),
-        BoxSatAxis::FaceB(j) => (false, j),
-        BoxSatAxis::EdgeEdge(i, _) => (true, i),
-    };
-
-    // `sat.normal` is B->A. Outward must point reference -> incident.
-    // reference = A: outward (A->B) = -normal. reference = B: outward (B->A) = +normal.
-    let ref_outward_normal = if ref_is_a {
-        normalize3([-sat.normal[0], -sat.normal[1], -sat.normal[2]])
-    } else {
-        normalize3(sat.normal)
-    };
-
-    let (transform_ref, transform_inc) = if ref_is_a {
-        (transform_a, transform_b)
-    } else {
-        (transform_b, transform_a)
-    };
-
-    // Reference face: of the SAT-winning axis's two faces (+axis = 2*ai,
-    // -axis = 2*ai+1 in the [+X,-X,+Y,-Y,+Z,-Z] ordering), pick the one whose
-    // world normal is most parallel to the outward normal.
-    let pos_face = 2 * ref_axis;
-    let neg_face = 2 * ref_axis + 1;
-    let face_normals = BoxShape::face_normals();
-    let pos_wn = transform_ref.transform_vector(&Vec3::from(face_normals[pos_face]));
-    let neg_wn = transform_ref.transform_vector(&Vec3::from(face_normals[neg_face]));
-    let pos_dot = dot3([pos_wn.x, pos_wn.y, pos_wn.z], ref_outward_normal);
-    let neg_dot = dot3([neg_wn.x, neg_wn.y, neg_wn.z], ref_outward_normal);
-    let ref_face_idx = if pos_dot >= neg_dot {
-        pos_face
-    } else {
-        neg_face
-    };
-
-    // Incident face: world face normal most anti-parallel to the outward normal.
-    let incident_world_normals: Vec<[f64; 3]> = BoxShape::face_normals()
-        .iter()
-        .map(|&ln| {
-            let wn = transform_inc.transform_vector(&Vec3::from(ln));
-            [wn.x, wn.y, wn.z]
-        })
-        .collect();
-    let (inc_face_idx, _) = find_incident_face(&incident_world_normals, ref_outward_normal);
-
-    RefIncidentFaces {
-        ref_is_a,
-        ref_face_idx,
-        ref_outward_normal,
-        inc_face_idx,
-    }
 }
 
 /// World-space endpoints of the box edges parallel to local axis `axis`.
@@ -485,102 +405,24 @@ pub fn box_box_manifold(
     let mut contacts: Vec<Contact> = Vec::new();
 
     match sat.axis {
-        BoxSatAxis::FaceA(_) | BoxSatAxis::FaceB(_) => {
-            let rif = select_reference_incident(&sat, transform_a, transform_b);
-            let (box_ref, transform_ref, box_inc, transform_inc) = if rif.ref_is_a {
-                (box_a, transform_a, box_b, transform_b)
-            } else {
-                (box_b, transform_b, box_a, transform_a)
-            };
-
-            // Reference face world polygon.
-            let ref_verts_local = box_ref.vertex_list();
-            let ref_idxs = BoxShape::face_vertex_indices()[rif.ref_face_idx];
-            let ref_poly: Vec<[f64; 3]> = ref_idxs
-                .iter()
-                .map(|&k| {
-                    let p = transform_ref.transform_point(&Vec3::from(ref_verts_local[k]));
-                    [p.x, p.y, p.z]
-                })
-                .collect();
-
-            // Incident face world polygon.
-            let inc_verts_local = box_inc.vertex_list();
-            let inc_idxs = BoxShape::face_vertex_indices()[rif.inc_face_idx];
-            let inc_poly: Vec<[f64; 3]> = inc_idxs
-                .iter()
-                .map(|&k| {
-                    let p = transform_inc.transform_point(&Vec3::from(inc_verts_local[k]));
-                    [p.x, p.y, p.z]
-                })
-                .collect();
-
-            // Clip the incident polygon against the reference face's side planes.
-            let mut clipped = inc_poly.clone();
-            let nref = ref_poly.len();
-            for i in 0..nref {
-                if clipped.is_empty() {
-                    break;
-                }
-                let es = ref_poly[i];
-                let ee = ref_poly[(i + 1) % nref];
-                let edge_dir = sub3(ee, es);
-                let side_normal = normalize3(cross3(rif.ref_outward_normal, edge_dir));
-                clipped = clip_polygon_by_plane(&clipped, es, side_normal);
-            }
-
-            for p in &clipped {
-                let pen = dot3(sub3(ref_poly[0], *p), rif.ref_outward_normal);
-                if pen > -CONTACT_SLOP {
-                    let depth_point = pen.max(0.0);
-                    // The surviving clip point `p` lies on the INCIDENT face; its
-                    // projection back onto the reference plane along the outward
-                    // normal lies on the REFERENCE face. Assigning point_a to the
-                    // actual A-surface point and point_b to the actual B-surface
-                    // point is what makes BOTH dispatch orders consistent:
-                    //
-                    //   reference = A: ref_outward = -n_ba (A->B); incident face is
-                    //     B's -> p on B (point_b), p_ref on A (point_a).
-                    //   reference = B: ref_outward = +n_ba (B->A); incident face is
-                    //     A's -> p on A (point_a), p_ref on B (point_b).
-                    //
-                    // In both, Contact.normal = n_ba (B->A). Swapping A<->B turns
-                    // this box's reference into that box's incident (same physical
-                    // surfaces), so point_a<->point_b swap and the normal negates;
-                    // the manifold is geometrically identical. See
-                    // test_normal_sign_both_orders.
-                    let p_ref = add3(*p, scale3(rif.ref_outward_normal, pen));
-                    let (pa_arr, pb_arr) = if rif.ref_is_a {
-                        (p_ref, *p)
-                    } else {
-                        (*p, p_ref)
-                    };
-                    contacts.push(Contact::new(
-                        Vec3::from(pa_arr),
-                        Vec3::from(pb_arr),
-                        n_ba,
-                        depth_point,
-                    ));
-                }
-            }
-
-            // Fallback: if the clip produced nothing (degenerate orientation),
-            // synthesise a single contact at the reference-face centroid.
-            if contacts.is_empty() {
-                let m = if !ref_poly.is_empty() {
-                    let mut acc = Vec3::zeros();
-                    for p in &ref_poly {
-                        acc += Vec3::from(*p);
-                    }
-                    acc / (ref_poly.len() as f64)
-                } else {
-                    (Vec3::from(center_a) + Vec3::from(center_b)) * 0.5
-                };
-                let d = sat.depth.max(0.0);
-                let pa = m + n_ba * (d * 0.5);
-                let pb = m - n_ba * (d * 0.5);
-                contacts.push(Contact::new(pa, pb, n_ba, d));
-            }
+        BoxSatAxis::FaceA | BoxSatAxis::FaceB => {
+            // Face-face overlap: delegate to the shared convex face-clip helper.
+            // Two oriented boxes become world-space polygon polyhedra and the
+            // generic Sutherland-Hodgman reference/incident clip produces the
+            // contacts — the same algorithm the box-specific path used to inline,
+            // now shared with the general convex-convex manifold so both stay in
+            // lock-step. The helper picks ref/incident faces by `most_parallel`
+            // dot, which for a box agrees with the SAT-axis face selection, and
+            // applies the same reduce-to-4 + stable spatial sort.
+            let poly_a = Polyhedron::from_box(box_a, transform_a);
+            let poly_b = Polyhedron::from_box(box_b, transform_b);
+            return NarrowPhaseResult::contact(polyhedron_manifold_from_normal(
+                &poly_a,
+                &poly_b,
+                sat.normal,
+                sat.depth,
+                pair,
+            ));
         }
         BoxSatAxis::EdgeEdge(edge_axis_a, edge_axis_b) => {
             let verts_a = box_a.vertex_list();
@@ -694,10 +536,9 @@ mod tests {
         let sat =
             box_box_sat_detailed(center_a, IDENTITY_AXES, half, center_b, IDENTITY_AXES, half)
                 .expect("overlap");
-        assert!(matches!(
-            sat.axis,
-            BoxSatAxis::FaceA(1) | BoxSatAxis::FaceB(1)
-        ));
+        // A face axis must win (not an edge axis); the +y normal confirms it is
+        // specifically the y face that produced the minimum overlap.
+        assert!(matches!(sat.axis, BoxSatAxis::FaceA | BoxSatAxis::FaceB));
         assert!(sat.normal[1] > 0.9);
         assert!((sat.depth - 0.01).abs() < 1e-3);
     }
@@ -736,35 +577,6 @@ mod tests {
         assert!(matches!(sat.axis, BoxSatAxis::EdgeEdge(_, _)));
         assert!(sat.depth > 0.0);
         assert!((norm3(sat.normal) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_reference_incident_face_selection() {
-        let half = [0.5, 0.5, 0.5];
-        // B is the lower box (top at y = 0); A rests just above it.
-        let tb = Transform::from_position(Vec3::new(0.0, -0.5, 0.0));
-        let ta = Transform::from_position(Vec3::new(0.0, 0.5 - 0.005, 0.0));
-        let center_a = [ta.position.x, ta.position.y, ta.position.z];
-        let center_b = [tb.position.x, tb.position.y, tb.position.z];
-        let axes_a = world_axes(&ta);
-        let axes_b = world_axes(&tb);
-        let sat =
-            box_box_sat_detailed(center_a, axes_a, half, center_b, axes_b, half).expect("overlap");
-        let rif = select_reference_incident(&sat, &ta, &tb);
-
-        let transform_inc = if rif.ref_is_a { &tb } else { &ta };
-
-        if rif.ref_is_a {
-            // Reference is the UPPER box (A): outward points down toward B.
-            assert!(rif.ref_outward_normal[1] < -0.9);
-        } else {
-            // Reference is the LOWER box (B): outward points up toward A.
-            assert!(rif.ref_outward_normal[1] > 0.9);
-        }
-
-        let wn =
-            transform_inc.transform_vector(&Vec3::from(BoxShape::face_normals()[rif.inc_face_idx]));
-        assert!(dot3([wn.x, wn.y, wn.z], rif.ref_outward_normal) < -0.9);
     }
 
     #[test]

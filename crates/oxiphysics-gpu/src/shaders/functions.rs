@@ -8,21 +8,20 @@ use super::types::ShaderMetadata;
 
 /// WGSL compute shader for SPH density computation.
 pub const SPH_DENSITY_WGSL: &str = r#"
-// Binding layout:
-// @group(0) @binding(0) var<storage, read> positions: array<vec4<f32>>;
-// @group(0) @binding(1) var<storage, read> masses: array<f32>;
-// @group(0) @binding(2) var<storage, read_write> densities: array<f32>;
-// @group(0) @binding(3) var<uniform> params: SphParams;
-
-pub(super) struct SphParams {
+struct SphParams {
     n_particles: u32,
     h: f32,
     h2: f32,
     h3: f32,
 }
 
+@group(0) @binding(0) var<storage, read>       positions: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read>       masses:    array<f32>;
+@group(0) @binding(2) var<storage, read_write> densities: array<f32>;
+@group(0) @binding(3) var<uniform>             params:    SphParams;
+
 @compute @workgroup_size(64)
-pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if (i >= params.n_particles) { return; }
 
@@ -43,15 +42,15 @@ pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 "#;
 /// WGSL shader for particle integration (velocity Verlet half-step).
 pub const INTEGRATE_WGSL: &str = r#"
-pub(super) struct Particle { pos: vec4<f32>, vel: vec4<f32>, }
-pub(super) struct IntegParams { dt: f32, gravity_y: f32, n: u32, _pad: u32, }
+struct Particle { pos: vec4<f32>, vel: vec4<f32>, }
+struct IntegParams { dt: f32, gravity_y: f32, n: u32, _pad: u32, }
 
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(1) var<storage, read> forces: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: IntegParams;
 
 @compute @workgroup_size(64)
-pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if (i >= params.n) { return; }
 
@@ -66,7 +65,7 @@ pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 pub const LBM_BGK_D2Q9_WGSL: &str = r#"
 // D2Q9 LBM BGK collision kernel
 // Layout: f[node * 9 + direction]
-pub(super) struct LbmParams { nx: u32, ny: u32, tau: f32, _pad: u32, }
+struct LbmParams { nx: u32, ny: u32, tau: f32, _pad: u32, }
 
 @group(0) @binding(0) var<storage, read_write> f: array<f32>;
 @group(0) @binding(1) var<storage, read_write> rho: array<f32>;
@@ -75,7 +74,7 @@ pub(super) struct LbmParams { nx: u32, ny: u32, tau: f32, _pad: u32, }
 @group(0) @binding(4) var<uniform> params: LbmParams;
 
 @compute @workgroup_size(64)
-pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let idx = id.x;
     if (idx >= params.nx * params.ny) { return; }
 
@@ -107,7 +106,7 @@ pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 "#;
 /// WGSL compute shader for parallel cell-list construction.
 pub const CELL_LIST_WGSL: &str = r#"
-pub(super) struct CellParams {
+struct CellParams {
     nx:      u32,
     ny:      u32,
     nz:      u32,
@@ -123,7 +122,7 @@ pub(super) struct CellParams {
 @group(0) @binding(2) var<uniform>             params:       CellParams;
 
 @compute @workgroup_size(64)
-pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let atom_id = id.x;
     if (atom_id >= params.n_atoms) { return; }
 
@@ -140,7 +139,7 @@ pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 "#;
 /// WGSL compute shader that computes a sphere SDF on the GPU.
 pub const SDF_COMPUTE_WGSL: &str = r#"
-pub(super) struct SdfSphereParams {
+struct SdfSphereParams {
     nx:       u32,
     ny:       u32,
     nz:       u32,
@@ -159,7 +158,7 @@ pub(super) struct SdfSphereParams {
 @group(0) @binding(1) var<uniform>             params:     SdfSphereParams;
 
 @compute @workgroup_size(64)
-pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let total = params.nx * params.ny * params.nz;
     let idx   = id.x;
     if (idx >= total) { return; }
@@ -181,14 +180,14 @@ pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 pub const LBM_STREAMING_SHADER: &str = r#"
 // LBM D3Q19 streaming step
 // Distributes f values from source to destination according to lattice velocities.
-pub(super) struct StreamParams { nx: u32, ny: u32, nz: u32, _pad: u32, }
+struct StreamParams { nx: u32, ny: u32, nz: u32, _pad: u32, }
 
 @group(0) @binding(0) var<storage, read>       f_src:  array<f32>;
 @group(0) @binding(1) var<storage, read_write> f_dst:  array<f32>;
 @group(0) @binding(2) var<uniform>             params: StreamParams;
 
 @compute @workgroup_size(64)
-pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let nx = params.nx;
     let ny = params.ny;
     let nz = params.nz;
@@ -217,20 +216,20 @@ pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 /// WGSL compute shader for rigid body semi-implicit Euler integration.
 pub const RIGID_INTEGRATE_SHADER: &str = r#"
 // Semi-implicit Euler integration for rigid bodies.
-pub(super) struct RigidBody {
+struct RigidBody {
     pos:       vec4<f32>,  // xyz = position, w = mass
     vel:       vec4<f32>,  // xyz = linear velocity, w unused
     ang_vel:   vec4<f32>,  // xyz = angular velocity, w unused
     force:     vec4<f32>,  // xyz = accumulated force, w unused
     torque:    vec4<f32>,  // xyz = accumulated torque, w unused
 }
-pub(super) struct IntegRigidParams { dt: f32, n: u32, _pad0: u32, _pad1: u32, }
+struct IntegRigidParams { dt: f32, n: u32, _pad0: u32, _pad1: u32, }
 
 @group(0) @binding(0) var<storage, read_write> bodies: array<RigidBody>;
 @group(0) @binding(1) var<uniform>             params: IntegRigidParams;
 
 @compute @workgroup_size(64)
-pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if (i >= params.n) { return; }
 
@@ -253,14 +252,14 @@ pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 pub const BROADPHASE_SORT_SHADER: &str = r#"
 // Bitonic sort pass for SAP broadphase.
 // Each invocation compares and optionally swaps one pair of elements.
-pub(super) struct SortParams { n: u32, step: u32, stage: u32, _pad: u32, }
+struct SortParams { n: u32, step: u32, stage: u32, _pad: u32, }
 
 @group(0) @binding(0) var<storage, read_write> keys:   array<f32>;
 @group(0) @binding(1) var<storage, read_write> values: array<u32>;
 @group(0) @binding(2) var<uniform>             params: SortParams;
 
 @compute @workgroup_size(64)
-pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let idx = id.x;
     let n   = params.n;
     if (idx >= n / 2u) { return; }
@@ -286,7 +285,7 @@ pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 "#;
 /// WGSL compute shader for SPH pressure force computation.
 pub const SPH_FORCE_WGSL: &str = r#"
-pub(super) struct SphForceParams {
+struct SphForceParams {
     n_particles: u32,
     h: f32,
     mu: f32,
@@ -302,7 +301,7 @@ pub(super) struct SphForceParams {
 @group(0) @binding(6) var<uniform>             params:     SphForceParams;
 
 @compute @workgroup_size(64)
-pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if (i >= params.n_particles) { return; }
 
@@ -337,7 +336,7 @@ pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 "#;
 /// WGSL compute shader for boundary condition enforcement.
 pub const BOUNDARY_ENFORCE_WGSL: &str = r#"
-pub(super) struct BoundaryParams {
+struct BoundaryParams {
     n: u32,
     box_min_x: f32,
     box_min_y: f32,
@@ -353,7 +352,7 @@ pub(super) struct BoundaryParams {
 @group(0) @binding(2) var<uniform>             params:     BoundaryParams;
 
 @compute @workgroup_size(64)
-pub(super) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if (i >= params.n) { return; }
 

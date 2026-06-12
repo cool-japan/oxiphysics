@@ -27,6 +27,7 @@ wasm-bindgen-test = "0.3.71"
 web-sys = { version = "0.3.98", features = ["console", "Window", "Performance"] }
 rayon = "1"
 wgpu = "29"
+naga = "29"
 bitvec = "1"
 oxiarc-zstd = "0.3.3"
 oxifft = "0.3.2"

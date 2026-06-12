@@ -89,11 +89,11 @@ Exit gate: Miri-clean dispatch (local script), 4-point one-shot manifolds restin
   - **Tests:** box-on-ground 4-point manifold rests in 1 iter (no rocking); tilted-edge 2-point; feature-ID stable; normal sign both dispatch orders
   - **Risk:** SAT axis/face mapping must be exact — unit-test face selection first
 
-- [ ] Convex-convex one-shot full manifolds (general polyhedra)
+- [x] Convex-convex one-shot full manifolds (general polyhedra) (completed 2026-06-12)
   - **Goal:** extend the box-box face-clip manifold (shipped 2026-06-12 in `narrowphase/dispatch/box_manifold.rs`) to arbitrary convex hulls — Sutherland-Hodgman reference/incident face clipping for ConvexHull vs ConvexHull and ConvexHull vs Box, replacing single-point GJK/EPA results.
-  - **Design:** reuse `box_box_sat_detailed`'s reference/incident face-selection + `clip_polygon_by_plane` pattern; needs per-hull face enumeration (face normals + face vertex loops) and an edge-edge witness path. Box-box (`box_manifold.rs`) is the reference implementation.
-  - **Files:** `narrowphase/dispatch/box_manifold.rs` (generalize) or a new `convex_manifold.rs`, `contact_generation.rs`
-  - **Tests:** tetra-on-ground multi-point rest; hull-vs-box 4-point; normal sign both dispatch orders
+  - **Done:** new `narrowphase/dispatch/convex_manifold.rs` exposes `polyhedron_manifold_from_normal` + `convex_pair_manifold`; box-box face path now delegates to the shared helper (regression-tested identical). ConvexHull×ConvexHull and Box×ConvexHull dispatch arms registered, producing full 4-point manifolds from the EPA normal, with an edge-edge witness fallback (`FACE_ALIGN_MIN` heuristic) and curved shapes kept single-point. Face data is extracted robustly via direct supporting-plane enumeration (`extract_convex_faces`) rather than the triangle-soup `ConvexHull3D` builder, which produced malformed hulls (dropped vertices, duplicate triangles) for prisms.
+  - **Files:** `narrowphase/dispatch/convex_manifold.rs` (new), `narrowphase/dispatch/box_manifold.rs` (face path delegates), `narrowphase/dispatch/functions.rs` (`convex_manifold_dispatch`, `world_hull_vertices`), `narrowphase/dispatch/narrowphasedispatcher_traits.rs` (registration)
+  - **Tests:** `tests/convex_manifold.rs` (box-box regression, tetra-on-box 3-point + COM-stationary, hull-hull face-to-face, edge-edge, both dispatch orders) + source unit tests (hex-prism 8-face extraction, cube merge, witness consistency). Full suite 2472/2472 green; clippy clean.
 
 - [x] Enable the GJK warm-start cache by default in the dispatch pipeline (planned 2026-06-11)
   - **Goal:** >90% warm-start hit rate on coherent scenes, measured by a new hit-rate benchmark.

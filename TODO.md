@@ -650,3 +650,18 @@ Housekeeping (cross-file gaps spotted during the 2026-06-11 audit):
 ---
 
 Last Updated: 2026-06-11 — version 0.1.3
+
+## Stubs to implement (added 2026-06-12 by /cooljapan-stub-check)
+
+- [ ] `oxiphysics-gpu`: `crates/oxiphysics-gpu/src/compute/wgpu_backend.rs:133` — implement WgpuBackend::try_new with real wgpu adapter enumeration (gated by `wgpu-backend` feature)
+  - Priority: P2 | Scope: medium | Hint: none
+- [ ] `oxiphysics-gpu`: `crates/oxiphysics-gpu/src/compute/wgpu_backend.rs:245,271` — implement remaining wgpu compute dispatch methods (two additional TODO stubs in same file)
+  - Priority: P2 | Scope: medium | Hint: none
+- [ ] `oxiphysics-gpu`: `crates/oxiphysics-gpu/src/scheduler.rs:528` — replace placeholder 4-byte output with real GPU result readback
+  - Priority: P2 | Scope: small | Hint: none
+- [ ] `oxiphysics-vehicle`: `crates/oxiphysics-vehicle/src/autonomous_vehicle/types.rs:5` — resolve P4 public API churn (tracked as TODO(P4))
+  - Priority: P2 | Scope: small | Hint: none
+- [ ] `oxiphysics-geometry`: `crates/oxiphysics-geometry/src/computational_geometry/types.rs:5` — implement `ops::Add`/`Sub` impls for `Point2` to replace current method-based approach
+  - Priority: P2 | Scope: trivial | Hint: none
+- [ ] `oxiphysics-core`: `crates/oxiphysics-core/src/exact_predicates.rs:348,400,469,562` — implement Shewchuk adaptive intermediate stages (C-stage for orient2d, B/C/D for incircle, adaptive stages for insphere)
+  - Priority: P2 | Scope: medium | Hint: none

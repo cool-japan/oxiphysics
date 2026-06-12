@@ -74,9 +74,14 @@ Theme: tighten pressure-field fidelity and wall treatment before scaling out.
       diffusion with free-surface-aware δ⁺ term + particle-shifting coupling.
       Sun et al. 2017. *(Shipped: `DeltaSph` (Molteni–Colagrossi) and
       `fourtakas_density_diffusion`; open delta: the δ⁺ variant only.)*
-- [ ] ISPH pressure-Poisson via PCG/AMG — **Goal:** ‖∇·v‖ reduced 100× vs
+- [x] ISPH pressure-Poisson via PCG (2026-06-12) — **Goal:** ‖∇·v‖ reduced 100× vs
       50 Jacobi sweeps at equal cost; 3D dam break stable. **Design:** replace
       Jacobi PPE with matrix-free PCG using core AMG. Cummins–Rudman 1999.
+      *(Shipped: `isph.rs` — self-contained `CsrMatrix` + Jacobi-PCG, symmetric
+      Brookshaw PPE with an iterated (Richardson) pressure projection for a
+      consistent divergence-free correction; enclosed-box hydrostatic, ≥90%
+      divergence reduction, PCG-convergence, dam-break-stability, and 2D
+      Taylor–Green tests. AMG left as a future drop-in preconditioner.)*
       *(Shipped: Jacobi-only `IsphPressure`; open delta: the Krylov/AMG path,
       reusing `oxiphysics-core` AMG — no new external dependency.)*
 

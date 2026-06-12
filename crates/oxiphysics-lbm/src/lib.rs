@@ -16,6 +16,7 @@
 #![warn(missing_docs)]
 
 pub mod acoustics_lbm;
+pub mod free_surface;
 pub mod aeroacoustics;
 pub mod biofluid_lbm;
 pub mod boundary;
@@ -119,6 +120,7 @@ pub use electrokinetic::{
     ZetaPotentialEstimator, poisson_boltzmann_1d, streaming_potential,
 };
 pub use error::{Error, Result};
+pub use free_surface::{CellState as FreeSurfaceCellState, FreeSurfaceState, free_surface_step};
 pub use grid::{LbmGrid2D, LbmGrid3D};
 pub use lattice::{Lattice, LatticeType};
 pub use mrt::{MrtCollision2D, MrtD3Q19, MrtRelaxation, mrt_inverse_matrix, mrt_transform_matrix};

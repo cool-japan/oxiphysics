@@ -4,6 +4,7 @@ pub mod amg;
 pub mod assembly_coloring;
 pub mod functions;
 pub mod functions_2;
+pub mod matrix_free;
 pub mod solvererror_traits;
 pub mod types;
 
@@ -14,4 +15,5 @@ pub use amg::{
 };
 pub use functions::*;
 pub use functions_2::*;
+pub use matrix_free::{MatrixFreeError, MatrixFreeOperator, MatrixFreePcg, SumFactPoisson};
 pub use types::*;

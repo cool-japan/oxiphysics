@@ -7,8 +7,9 @@ use crate::narrowphase::gjk::{Gjk, GjkResult};
 use crate::narrowphase::specialized;
 use crate::types::{CollisionPair, Contact, ContactManifold};
 use oxiphysics_core::Transform;
-use oxiphysics_geometry::{BoxShape, Capsule, Shape, Sphere};
+use oxiphysics_geometry::{BoxShape, Capsule, ConvexHull, Shape, Sphere};
 
+use super::convex_manifold::{ConvexSeparation, convex_pair_manifold};
 use super::types::{
     CompoundDispatchResult, CompoundShape, ConcaveMesh, ContactPatch, MeshTriangle,
     NarrowPhaseDispatcher, NarrowPhaseResult, ShapeType, SimpleHeightField, SpeculativeConfig,
@@ -121,6 +122,94 @@ pub(super) fn gjk_fallback_dispatch(
         Some(manifold) => NarrowPhaseResult::contact(manifold),
         None => NarrowPhaseResult::separated(),
     }
+}
+/// World-space convex hull vertices of a polyhedral `Shape`.
+///
+/// Returns the world positions of every vertex for a [`BoxShape`] (8 corners) or
+/// a [`ConvexHull`] (its vertex list), or `None` for curved/non-polyhedral shapes
+/// (sphere, capsule, cylinder, …) which keep the single-point GJK/EPA path.
+pub(super) fn world_hull_vertices(
+    shape: &dyn Shape,
+    transform: &Transform,
+) -> Option<Vec<[f64; 3]>> {
+    use oxiphysics_core::math::Vec3;
+    if let Some(b) = shape.as_any().downcast_ref::<BoxShape>() {
+        return Some(
+            b.vertex_list()
+                .iter()
+                .map(|&v| {
+                    let p = transform.transform_point(&Vec3::from(v));
+                    [p.x, p.y, p.z]
+                })
+                .collect(),
+        );
+    }
+    if let Some(h) = shape.as_any().downcast_ref::<ConvexHull>() {
+        return Some(
+            h.vertices
+                .iter()
+                .map(|v| {
+                    let p = transform.transform_point(v);
+                    [p.x, p.y, p.z]
+                })
+                .collect(),
+        );
+    }
+    None
+}
+/// Full one-shot manifold for a convex polyhedron pair (ConvexHull / Box).
+///
+/// Runs GJK/EPA for the separating normal and penetration depth, then builds a
+/// full face-clip (or edge-edge) manifold via the shared convex helper instead of
+/// returning EPA's single witness. Falls back to the single-point GJK/EPA path
+/// when either shape is not polyhedral (no world hull vertices) or is degenerate.
+pub(super) fn convex_manifold_dispatch(
+    shape_a: &dyn Shape,
+    transform_a: &Transform,
+    shape_b: &dyn Shape,
+    transform_b: &Transform,
+    pair: CollisionPair,
+) -> NarrowPhaseResult {
+    // EPA witness (normal B->A, depth, contact points) seeds the manifold.
+    let epa_manifold = match gjk_epa(shape_a, transform_a, shape_b, transform_b, pair) {
+        Some(m) => m,
+        None => return NarrowPhaseResult::separated(),
+    };
+    let Some(epa_contact) = epa_manifold.contacts.first() else {
+        return NarrowPhaseResult::separated();
+    };
+    let sep_normal = [
+        epa_contact.normal.x,
+        epa_contact.normal.y,
+        epa_contact.normal.z,
+    ];
+    let depth = epa_contact.depth;
+    let epa_point_a = [
+        epa_contact.point_a.x,
+        epa_contact.point_a.y,
+        epa_contact.point_a.z,
+    ];
+    let epa_point_b = [
+        epa_contact.point_b.x,
+        epa_contact.point_b.y,
+        epa_contact.point_b.z,
+    ];
+
+    let (Some(verts_a), Some(verts_b)) = (
+        world_hull_vertices(shape_a, transform_a),
+        world_hull_vertices(shape_b, transform_b),
+    ) else {
+        // One side is curved/non-polyhedral: keep the EPA single-point manifold.
+        return NarrowPhaseResult::contact(epa_manifold);
+    };
+
+    let sep = ConvexSeparation {
+        normal: sep_normal,
+        depth,
+        point_a: epa_point_a,
+        point_b: epa_point_b,
+    };
+    convex_pair_manifold(&verts_a, &verts_b, sep, pair)
 }
 /// Dispatch against a compound shape by testing each child shape individually
 /// and collecting all contacts.
@@ -562,13 +651,15 @@ mod tests {
     #[test]
     fn test_registered_count() {
         let dispatcher = NarrowPhaseDispatcher::default();
-        assert_eq!(dispatcher.registered_count(), 6);
+        // sphere-sphere, sphere-box, box-box, capsule-capsule, sphere-capsule,
+        // box-capsule, convexhull-convexhull, box-convexhull.
+        assert_eq!(dispatcher.registered_count(), 8);
     }
     #[test]
     fn test_registered_keys() {
         let dispatcher = NarrowPhaseDispatcher::default();
         let keys = dispatcher.registered_keys();
-        assert_eq!(keys.len(), 6);
+        assert_eq!(keys.len(), 8);
     }
     #[test]
     fn test_has_pair() {
