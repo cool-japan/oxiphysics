@@ -284,12 +284,20 @@ fn lj_pme_reciprocal_energy_and_potential(
     let mut energy = 0.0f64;
 
     for ix in 0..mx {
-        let nx = if ix <= mx / 2 { ix as i64 } else { ix as i64 - mx as i64 };
+        let nx = if ix <= mx / 2 {
+            ix as i64
+        } else {
+            ix as i64 - mx as i64
+        };
         let kx = two_pi * nx as f64 / box_len[0];
         let bc_x = bspline_correction_sq(nx, mx, BSPLINE_ORDER);
 
         for iy in 0..my {
-            let ny = if iy <= my / 2 { iy as i64 } else { iy as i64 - my as i64 };
+            let ny = if iy <= my / 2 {
+                iy as i64
+            } else {
+                iy as i64 - my as i64
+            };
             let ky = two_pi * ny as f64 / box_len[1];
             let bc_y = bspline_correction_sq(ny, my, BSPLINE_ORDER);
 
@@ -297,7 +305,11 @@ fn lj_pme_reciprocal_energy_and_potential(
                 if ix == 0 && iy == 0 && iz == 0 {
                     continue; // k=0 term vanishes (no monopole dispersion)
                 }
-                let nz = if iz <= mz / 2 { iz as i64 } else { iz as i64 - mz as i64 };
+                let nz = if iz <= mz / 2 {
+                    iz as i64
+                } else {
+                    iz as i64 - mz as i64
+                };
                 let kz = two_pi * nz as f64 / box_len[2];
                 let bc_z = bspline_correction_sq(nz, mz, BSPLINE_ORDER);
 
@@ -763,7 +775,10 @@ mod tests {
         let params = LjPmeParams::new(0.35, [16, 16, 16], 10.0);
         let e = lj_pme_real_space_energy(&positions, &c6, box_len, &params)
             .expect("real-space energy failed");
-        assert!(e < 0.0, "dispersion real-space energy should be negative, got {e}");
+        assert!(
+            e < 0.0,
+            "dispersion real-space energy should be negative, got {e}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -772,17 +787,13 @@ mod tests {
     #[test]
     fn test_lj_pme_forces_finite_diff() {
         let box_len = [12.0f64; 3];
-        let positions = [
-            [1.5, 2.0, 3.0],
-            [6.0, 5.5, 4.0],
-            [2.5, 9.0, 8.5],
-        ];
+        let positions = [[1.5, 2.0, 3.0], [6.0, 5.5, 4.0], [2.5, 9.0, 8.5]];
         let c6 = [800.0f64, 1200.0, 1000.0];
         let params = default_params();
         let h = 1e-3_f64;
 
-        let forces = lj_pme_reciprocal_forces(&positions, &c6, box_len, &params)
-            .expect("forces failed");
+        let forces =
+            lj_pme_reciprocal_forces(&positions, &c6, box_len, &params).expect("forces failed");
 
         for atom in 0..positions.len() {
             for dim in 0..3usize {

@@ -215,7 +215,13 @@ pub(crate) fn lagrange_at(nodes: &[f64], quad_pts: &[f64]) -> (Vec<f64>, Vec<f64
 /// is row-major `np × np`: `op1d[out*np + inp]` multiplies the input index
 /// `inp` to accumulate into output index `out` along `axis`
 /// (`0 → i`, `1 → j`, `2 → k`). `output` is fully overwritten.
-pub(crate) fn contract_axis(input: &[f64], output: &mut [f64], op1d: &[f64], np: usize, axis: usize) {
+pub(crate) fn contract_axis(
+    input: &[f64],
+    output: &mut [f64],
+    op1d: &[f64],
+    np: usize,
+    axis: usize,
+) {
     match axis {
         0 => {
             for j in 0..np {

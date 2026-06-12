@@ -274,7 +274,10 @@ fn order_face_ccw(
         } else {
             [0.0, 1.0, 0.0]
         };
-        normalize3(sub3(trial, scale3(outward_normal, dot3(trial, outward_normal))))
+        normalize3(sub3(
+            trial,
+            scale3(outward_normal, dot3(trial, outward_normal)),
+        ))
     };
     let v = cross3(outward_normal, u);
 
@@ -326,11 +329,8 @@ pub fn polyhedron_manifold_from_normal(
     };
 
     // Incident face: most anti-parallel to the reference outward normal.
-    let inc_face_idx = poly_inc.most_parallel_face([
-        -ref_outward[0],
-        -ref_outward[1],
-        -ref_outward[2],
-    ]);
+    let inc_face_idx =
+        poly_inc.most_parallel_face([-ref_outward[0], -ref_outward[1], -ref_outward[2]]);
 
     let ref_poly = poly_ref.face_polygon(ref_face_idx);
     let inc_poly = poly_inc.face_polygon(inc_face_idx);
@@ -777,11 +777,7 @@ mod tests {
         for sx in [-1.0, 1.0] {
             for sy in [-1.0, 1.0] {
                 for sz in [-1.0, 1.0] {
-                    v.push([
-                        center[0] + sx * h,
-                        center[1] + sy * h,
-                        center[2] + sz * h,
-                    ]);
+                    v.push([center[0] + sx * h, center[1] + sy * h, center[2] + sz * h]);
                 }
             }
         }

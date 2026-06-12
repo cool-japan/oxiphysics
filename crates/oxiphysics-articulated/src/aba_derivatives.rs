@@ -26,9 +26,7 @@
 //! Rigid Body Dynamics Algorithms", Robotics: Science and Systems (RSS), 2018.
 
 use crate::{
-    aba::aba,
-    crba::compute_mass_matrix_crba,
-    model::ArticulatedModel,
+    aba::aba, crba::compute_mass_matrix_crba, model::ArticulatedModel,
     rnea_derivatives::rnea_derivatives,
 };
 
@@ -60,10 +58,9 @@ impl std::fmt::Display for AbaDerivativeError {
                 f,
                 "mass matrix is not positive-definite at pivot index {index}"
             ),
-            Self::DimensionMismatch { expected, got } => write!(
-                f,
-                "dimension mismatch: expected {expected}, got {got}"
-            ),
+            Self::DimensionMismatch { expected, got } => {
+                write!(f, "dimension mismatch: expected {expected}, got {got}")
+            }
         }
     }
 }

@@ -100,7 +100,13 @@ fn soft_off_is_byte_identical() {
     );
     // Sanity: the scene actually evolved (bodies fell).
     assert!(
-        reference.get_body(ref_handles[0]).expect("present").transform.position.y < 10.5,
+        reference
+            .get_body(ref_handles[0])
+            .expect("present")
+            .transform
+            .position
+            .y
+            < 10.5,
         "scene did not evolve — test would be vacuous"
     );
 
@@ -170,7 +176,10 @@ fn soft_stack_settles_without_jitter() {
     for h in &handles {
         let b = world.get_body(*h).expect("dynamic body present");
         let p = &b.transform.position;
-        assert!(p.x.is_finite() && p.y.is_finite() && p.z.is_finite(), "non-finite position");
+        assert!(
+            p.x.is_finite() && p.y.is_finite() && p.z.is_finite(),
+            "non-finite position"
+        );
         assert!(p.y > 0.0, "body tunnelled below ground centre: y = {}", p.y);
     }
 
@@ -186,7 +195,11 @@ fn soft_stack_settles_without_jitter() {
     // Energy: bounded peak and a non-increasing settled tail (gravity injects a
     // little KE between solves each step, hence the tolerance).
     let max_ke = ke_history.iter().cloned().fold(0.0_f64, f64::max);
-    assert!(max_ke.is_finite() && max_ke < 500.0, "peak KE diverged: {}", max_ke);
+    assert!(
+        max_ke.is_finite() && max_ke < 500.0,
+        "peak KE diverged: {}",
+        max_ke
+    );
     let n = ke_history.len();
     for i in (n - 40)..n {
         assert!(
@@ -415,8 +428,15 @@ fn soft_small_steps_stack_stable() {
         let b = world.get_body(*h).expect("dynamic body present");
         assert!(b.body_type == BodyType::Dynamic);
         let p = &b.transform.position;
-        assert!(p.x.is_finite() && p.y.is_finite() && p.z.is_finite(), "non-finite position");
+        assert!(
+            p.x.is_finite() && p.y.is_finite() && p.z.is_finite(),
+            "non-finite position"
+        );
         assert!(p.y > 0.0, "body tunnelled below ground centre: y = {}", p.y);
     }
-    assert!(max_depth < 0.05, "soft small-steps penetration too large: {}", max_depth);
+    assert!(
+        max_depth < 0.05,
+        "soft small-steps penetration too large: {}",
+        max_depth
+    );
 }

@@ -172,7 +172,16 @@ fn element_stiffness_dense(p: usize, h: f64) -> Vec<f64> {
 
 /// Closed-form global DOF index of local node `(i,j,k)` in element `(ex,ey,ez)`
 /// for a mesh with `ndir = n*p + 1` nodes per axis.
-fn global_dof(ex: usize, ey: usize, ez: usize, i: usize, j: usize, k: usize, p: usize, ndir: usize) -> usize {
+fn global_dof(
+    ex: usize,
+    ey: usize,
+    ez: usize,
+    i: usize,
+    j: usize,
+    k: usize,
+    p: usize,
+    ndir: usize,
+) -> usize {
     let gi = ex * p + i;
     let gj = ey * p + j;
     let gk = ez * p + k;
@@ -364,7 +373,12 @@ fn matfree_matvec_matches_assembled_p1() {
     // p = 1, 2×2×2 elements → 27 DOFs.
     let op = SumFactPoisson::new(2, 1);
     assert_eq!(op.n_dofs(), 27, "expected 27 DOFs, got {}", op.n_dofs());
-    assert_eq!(op.dofs_per_dir(), 3, "expected 3 dofs/dir, got {}", op.dofs_per_dir());
+    assert_eq!(
+        op.dofs_per_dir(),
+        3,
+        "expected 3 dofs/dir, got {}",
+        op.dofs_per_dir()
+    );
 
     let (n_dofs, k_global) = assembled_gll_stiffness_dense(2, 1);
     assert_eq!(n_dofs, 27, "baseline n_dofs mismatch: {n_dofs}");
@@ -387,7 +401,12 @@ fn matfree_matvec_matches_assembled_p1() {
     // ── Second sub-check at p=2 on a 2×2×2 mesh (125 DOFs). p=1 has identity φ
     // and constant dφ, hiding p-dependent bugs; p=2 genuinely exercises dφ.
     let op2 = SumFactPoisson::new(2, 2);
-    assert_eq!(op2.n_dofs(), 125, "p=2 expected 125 DOFs, got {}", op2.n_dofs());
+    assert_eq!(
+        op2.n_dofs(),
+        125,
+        "p=2 expected 125 DOFs, got {}",
+        op2.n_dofs()
+    );
     let (n_dofs2, k_global2) = assembled_gll_stiffness_dense(2, 2);
     assert_eq!(n_dofs2, 125, "p=2 baseline n_dofs mismatch: {n_dofs2}");
 
@@ -479,7 +498,10 @@ fn matfree_pcg_poisson_h_convergence_p2() {
             }
         }
 
-        let dop = DirichletOp { inner: &op, mask: &mask };
+        let dop = DirichletOp {
+            inner: &op,
+            mask: &mask,
+        };
         let diag_inv = op.jacobi_diag_inverse(&mask);
         let precond = JacobiPreconditioner { diag_inv };
 
@@ -510,9 +532,7 @@ fn matfree_pcg_poisson_h_convergence_p2() {
     }
     let r1 = errors[0].1 / errors[1].1;
     let r2 = errors[1].1 / errors[2].1;
-    eprintln!(
-        "[Test2] convergence ratios: err(4)/err(8)={r1:.3}, err(8)/err(16)={r2:.3}"
-    );
+    eprintln!("[Test2] convergence ratios: err(4)/err(8)={r1:.3}, err(8)/err(16)={r2:.3}");
     // h² convergence for p=2 gives ~4×; we require ≥ 3.0 for safety margin.
     assert!(
         r1 >= 3.0,
@@ -564,7 +584,10 @@ fn sumfac_tensor_contraction_matches_bruteforce_p3() {
     let p = 3usize;
     let op = SumFactPoisson::new(1, p); // single element → 4³ = 64 DOFs, local map.
     let n_dofs = op.n_dofs();
-    assert_eq!(n_dofs, 64, "single p=3 element should have 64 DOFs, got {n_dofs}");
+    assert_eq!(
+        n_dofs, 64,
+        "single p=3 element should have 64 DOFs, got {n_dofs}"
+    );
 
     // brute-force dense element stiffness on the single unit element (h=1).
     let ke = element_stiffness_dense(p, 1.0);

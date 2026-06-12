@@ -42,7 +42,9 @@ fn halton(index: usize, base: u32) -> f32 {
 
 #[cfg(feature = "wgpu-backend")]
 mod gpu_tests {
-    use oxiphysics_gpu::bvh::{Aabb, Bvh, BvhNode, BvhPrimitive, LbvhPrimitive, compute_bvh_from_sorted};
+    use oxiphysics_gpu::bvh::{
+        Aabb, Bvh, BvhNode, BvhPrimitive, LbvhPrimitive, compute_bvh_from_sorted,
+    };
     use oxiphysics_gpu::compute::wgpu_backend::real::WgpuBackendReal;
     use oxiphysics_gpu::gpu_lbvh::{gpu_lbvh_build, gpu_morton_sort};
 
@@ -239,7 +241,10 @@ mod gpu_tests {
         let bvh = gpu_lbvh_build(vec![]);
         assert!(bvh.root.is_none(), "empty input must yield no root");
         assert_eq!(bvh.node_count(), 0, "empty input must yield zero nodes");
-        assert!(bvh.primitives.is_empty(), "empty input must yield no primitives");
+        assert!(
+            bvh.primitives.is_empty(),
+            "empty input must yield no primitives"
+        );
     }
 
     // ── C) Single edge ────────────────────────────────────────────────────────
@@ -255,7 +260,11 @@ mod gpu_tests {
         )];
         let bvh = gpu_lbvh_build(prims);
         assert!(bvh.root.is_some(), "single input must yield a root");
-        assert_eq!(bvh.primitives.len(), 1, "single input must keep one primitive");
+        assert_eq!(
+            bvh.primitives.len(),
+            1,
+            "single input must keep one primitive"
+        );
         assert_eq!(
             bvh.primitives[0].object_id, 42,
             "single primitive object_id must be preserved"

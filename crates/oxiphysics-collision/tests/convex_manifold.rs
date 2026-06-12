@@ -81,7 +81,11 @@ fn test_box_box_regression_four_contacts() {
         CollisionPair::new(0, 1),
     );
     let m = result.manifold.expect("overlapping boxes -> manifold");
-    assert_eq!(m.contacts.len(), 4, "box-on-ground must be a 4-point manifold");
+    assert_eq!(
+        m.contacts.len(),
+        4,
+        "box-on-ground must be a 4-point manifold"
+    );
 
     let first_depth = m.contacts[0].depth;
     for c in &m.contacts {
@@ -206,7 +210,10 @@ fn test_tetra_on_box_com_stationary() {
     }
 
     let w_norm = (w_a[0] * w_a[0] + w_a[1] * w_a[1] + w_a[2] * w_a[2]).sqrt();
-    assert!(w_norm < 1e-2, "resting tetra should not spin: |w| = {w_norm}");
+    assert!(
+        w_norm < 1e-2,
+        "resting tetra should not spin: |w| = {w_norm}"
+    );
     assert!(v_a[0].abs() < 1e-2, "no x drift: {}", v_a[0]);
     assert!(v_a[2].abs() < 1e-2, "no z drift: {}", v_a[2]);
 }
@@ -362,8 +369,14 @@ fn test_both_dispatch_orders_consistent() {
             (best.normal + c1.normal).norm() < 1e-6,
             "normals should be opposite between dispatch orders"
         );
-        assert!((c1.point_a - best.point_b).norm() < 1e-6, "A<->B witness swap");
-        assert!((c1.point_b - best.point_a).norm() < 1e-6, "A<->B witness swap");
+        assert!(
+            (c1.point_a - best.point_b).norm() < 1e-6,
+            "A<->B witness swap"
+        );
+        assert!(
+            (c1.point_b - best.point_a).norm() < 1e-6,
+            "A<->B witness swap"
+        );
     }
 }
 

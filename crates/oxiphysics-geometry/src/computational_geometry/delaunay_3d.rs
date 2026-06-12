@@ -378,7 +378,12 @@ impl Builder {
     fn face_side_of_point(&self, ti: usize, fi: usize, p_gi: usize) -> i32 {
         let t = &self.tets[ti];
         let f = t.face(fi);
-        let o = orient3d(self.pos(f[0]), self.pos(f[1]), self.pos(f[2]), self.pos(p_gi));
+        let o = orient3d(
+            self.pos(f[0]),
+            self.pos(f[1]),
+            self.pos(f[2]),
+            self.pos(p_gi),
+        );
         sos_sign(o, &[f[0], f[1], f[2], p_gi])
     }
 
@@ -399,7 +404,12 @@ impl Builder {
         let f = t.face(fi);
         let apex = t.v[fi];
         let interior = self.orient_sign(f[0], f[1], f[2], apex);
-        match orient3d(self.pos(f[0]), self.pos(f[1]), self.pos(f[2]), self.pos(p_gi)) {
+        match orient3d(
+            self.pos(f[0]),
+            self.pos(f[1]),
+            self.pos(f[2]),
+            self.pos(p_gi),
+        ) {
             Orientation::Positive => interior > 0,
             Orientation::Negative => interior < 0,
             Orientation::Degenerate => false,
@@ -1005,7 +1015,10 @@ fn refill_cavity(
         }
     }
 
-    new_tets.last().copied().unwrap_or_else(|| live_from(builder, 0))
+    new_tets
+        .last()
+        .copied()
+        .unwrap_or_else(|| live_from(builder, 0))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -417,11 +417,7 @@ pub fn box_box_manifold(
             let poly_a = Polyhedron::from_box(box_a, transform_a);
             let poly_b = Polyhedron::from_box(box_b, transform_b);
             return NarrowPhaseResult::contact(polyhedron_manifold_from_normal(
-                &poly_a,
-                &poly_b,
-                sat.normal,
-                sat.depth,
-                pair,
+                &poly_a, &poly_b, sat.normal, sat.depth, pair,
             ));
         }
         BoxSatAxis::EdgeEdge(edge_axis_a, edge_axis_b) => {

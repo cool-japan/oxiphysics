@@ -1149,7 +1149,11 @@ impl PhysicsWorld {
             return;
         }
         let n = Vec3::new(cp.normal[0], cp.normal[1], cp.normal[2]);
-        let point = Vec3::new(cp.contact_point[0], cp.contact_point[1], cp.contact_point[2]);
+        let point = Vec3::new(
+            cp.contact_point[0],
+            cp.contact_point[1],
+            cp.contact_point[2],
+        );
         let r_a = point - com_a;
         let r_b = point - com_b;
         let ra_x_n = r_a.cross(&n);
@@ -1179,15 +1183,11 @@ impl PhysicsWorld {
         let lambda_new = (*lambda_acc + impulse_raw).max(0.0);
         let d_lambda = lambda_new - *lambda_acc;
         *lambda_acc = lambda_new;
-        if a_dynamic
-            && let Some(ba) = self.bodies.get_mut(cp.body_a)
-        {
+        if a_dynamic && let Some(ba) = self.bodies.get_mut(cp.body_a) {
             ba.velocity += n * (d_lambda * inv_ma);
             ba.angular_velocity += inv_i_a * (ra_x_n * d_lambda);
         }
-        if b_dynamic
-            && let Some(bb) = self.bodies.get_mut(cp.body_b)
-        {
+        if b_dynamic && let Some(bb) = self.bodies.get_mut(cp.body_b) {
             bb.velocity -= n * (d_lambda * inv_mb);
             bb.angular_velocity -= inv_i_b * (rb_x_n * d_lambda);
         }

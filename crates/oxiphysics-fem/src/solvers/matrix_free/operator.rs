@@ -259,10 +259,7 @@ mod tests {
 
     #[test]
     fn pcg_dimension_mismatch() {
-        let op = DenseOp {
-            a: vec![1.0],
-            n: 1,
-        };
+        let op = DenseOp { a: vec![1.0], n: 1 };
         let precond = IdentityPrecond { n: 1 };
         let b = [1.0, 2.0];
         let mut x = [0.0];

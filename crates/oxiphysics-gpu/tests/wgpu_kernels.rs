@@ -456,9 +456,7 @@ fn sph_density(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     /// Deterministic LCG in [0, 1).
     fn lcg_unit(state: &mut u32) -> f32 {
-        *state = state
-            .wrapping_mul(1_664_525)
-            .wrapping_add(1_013_904_223);
+        *state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         (*state >> 8) as f32 / (1u32 << 24) as f32
     }
 
@@ -730,7 +728,8 @@ fn sph_density(@builtin(global_invocation_id) gid: vec3<u32>) {
                         ax[i] += pf * dx / r;
                         ay[i] += pf * dy / r;
                         az[i] += pf * dz / r;
-                        let vdotr = (vx[i] - vx[j]) * dx + (vy[i] - vy[j]) * dy + (vz[i] - vz[j]) * dz;
+                        let vdotr =
+                            (vx[i] - vx[j]) * dx + (vy[i] - vy[j]) * dy + (vz[i] - vz[j]) * dz;
                         if vdotr < 0.0 {
                             let vf = nu * m / rhj * vdotr / (r2 + 0.01 * h * h) * dw / r;
                             ax[i] += vf * dx;

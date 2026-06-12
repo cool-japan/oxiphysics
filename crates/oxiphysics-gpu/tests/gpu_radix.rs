@@ -124,8 +124,7 @@ mod gpu_tests {
         assert_eq!(payload_out.len(), n, "payload_out length mismatch");
         for j in 0..n {
             assert_eq!(
-                keys_out[j],
-                keys[payload_out[j] as usize],
+                keys_out[j], keys[payload_out[j] as usize],
                 "payload misaligned at output position {j}"
             );
         }

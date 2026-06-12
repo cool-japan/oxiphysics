@@ -643,10 +643,8 @@ mod gpu_pipeline {
                 vel[i * 3 + 1] = state.vel_y[i] as f32;
                 vel[i * 3 + 2] = state.vel_z[i] as f32;
             }
-            self.backend
-                .queue_write_buffer_f32(&self.positions, &pos);
-            self.backend
-                .queue_write_buffer_f32(&self.velocities, &vel);
+            self.backend.queue_write_buffer_f32(&self.positions, &pos);
+            self.backend.queue_write_buffer_f32(&self.velocities, &vel);
 
             // 1–3: rebuild the spatial-hash cell list on the GPU.
             if !self.rebuild_cell_list(cfg) {
@@ -749,7 +747,9 @@ mod gpu_pipeline {
             let (sorted_keys, sorted_ids) = crate::gpu_radix::radix_sort_pairs_gpu(keys, ids);
             let counts = crate::gpu_primitives::histogram_u32(&sorted_keys, self.num_cells);
             let starts = crate::gpu_primitives::exclusive_scan_u32(&counts);
-            if sorted_ids.len() < n || counts.len() < self.num_cells || starts.len() < self.num_cells
+            if sorted_ids.len() < n
+                || counts.len() < self.num_cells
+                || starts.len() < self.num_cells
             {
                 return false;
             }
@@ -921,7 +921,8 @@ mod gpu_pipeline {
         if keys.len() < n || ids.len() < n {
             return None;
         }
-        let (sorted_keys, sorted_ids) = crate::gpu_radix::radix_sort_pairs_gpu(&keys[..n], &ids[..n]);
+        let (sorted_keys, sorted_ids) =
+            crate::gpu_radix::radix_sort_pairs_gpu(&keys[..n], &ids[..n]);
         let cell_count = crate::gpu_primitives::histogram_u32(&sorted_keys, num_cells);
         let cell_start = crate::gpu_primitives::exclusive_scan_u32(&cell_count);
         if sorted_ids.len() < n || cell_count.len() < num_cells || cell_start.len() < num_cells {

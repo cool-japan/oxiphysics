@@ -439,9 +439,9 @@ pub fn free_surface_step(grid: &mut CellGrid2D, fs: &mut FreeSurfaceState) {
                     // Reconstruction: feq(atm, u_i) direction a
                     //               + feq(atm, u_i) direction ā
                     //               − f_i^{ā}   (post-stream value)
-                    let reconstructed =
-                        feq(RHO_ATM, ux_i, uy_i, a) + feq(RHO_ATM, ux_i, uy_i, a_bar)
-                            - cell_i.f[a_bar];
+                    let reconstructed = feq(RHO_ATM, ux_i, uy_i, a)
+                        + feq(RHO_ATM, ux_i, uy_i, a_bar)
+                        - cell_i.f[a_bar];
                     new_f[a] = reconstructed;
                 }
             }
@@ -800,7 +800,6 @@ mod tests {
         }
     }
 
-
     // ── 1. Mass conservation — dam break ────────────────────────────────────
     /// Run a 60×40 dam-break for 100 steps and assert relative mass deviation
     /// stays below 1e-4.
@@ -900,8 +899,7 @@ mod tests {
         for iy in 0..ny {
             for ix in 0..nx {
                 let k = fs.idx(ix, iy);
-                if matches!(fs.state[k], CellState::Interface | CellState::Fluid)
-                    && ix > rightmost
+                if matches!(fs.state[k], CellState::Interface | CellState::Fluid) && ix > rightmost
                 {
                     rightmost = ix;
                 }
@@ -1025,4 +1023,3 @@ mod tests {
         }
     }
 }
-

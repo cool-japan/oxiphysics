@@ -1,8 +1,8 @@
 //! Auto-generated module structure
 
 mod box_manifold;
-mod convex_manifold;
 pub mod compoundshape_traits;
+mod convex_manifold;
 pub mod dispatchconfig_traits;
 pub mod dispatchqueue_traits;
 mod functions;

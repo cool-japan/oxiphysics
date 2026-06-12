@@ -306,7 +306,6 @@ fn masked_rms(values: &[f64], mask: &[bool]) -> f64 {
     (sum / count as f64).sqrt()
 }
 
-
 /// Shared per-step SPH field context (frozen positions, masses, densities,
 /// neighbor lists, kernel, and smoothing length).  Bundling these keeps the
 /// per-particle operators to a small argument count.
@@ -395,9 +394,8 @@ impl SphField<'_> {
                 }
                 let gw = grad(&self.kernel, rij, self.h);
                 let kappa = dot3(rij, gw) / (r2 + eta2); // ≤ 0
-                let c =
-                    (self.masses[i] + self.masses[j]) / (self.densities[i] * self.densities[j])
-                        * (-kappa);
+                let c = (self.masses[i] + self.masses[j]) / (self.densities[i] * self.densities[j])
+                    * (-kappa);
                 diagonal[i] += c;
                 if !dirichlet[j] {
                     off_diagonals[i].push((j, -c));
@@ -836,10 +834,8 @@ mod tests {
             let nls = neighbor_closure(&snapshot, cfg.smoothing_length);
             let nfn = |i: usize, _h: f64| nls[i].clone();
             last = Some(
-                isph_step_with_walls(
-                    &mut pos, &mut vel, &masses, &mut dens, &is_wall, &cfg, &nfn,
-                )
-                .expect("hydrostatic step"),
+                isph_step_with_walls(&mut pos, &mut vel, &masses, &mut dens, &is_wall, &cfg, &nfn)
+                    .expect("hydrostatic step"),
             );
         }
         let result = last.expect("ran 10 steps");
