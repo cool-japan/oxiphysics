@@ -641,6 +641,7 @@ pub mod gpu_nn;
 pub mod gpu_particle_system;
 pub mod gpu_particles;
 pub mod gpu_primitives;
+pub mod gpu_radix;
 pub mod gpu_ray_tracing;
 pub mod gpu_reduction;
 pub mod gpu_rigid;

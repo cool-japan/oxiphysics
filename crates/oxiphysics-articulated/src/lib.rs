@@ -118,6 +118,7 @@ pub mod joint_limits;
 pub mod model;
 pub mod osc;
 pub mod rnea;
+pub mod rnea_derivatives;
 pub mod spatial;
 
 pub use joint::HelicalJoint;

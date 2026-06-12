@@ -20,3 +20,12 @@ pub const COMPACT_WGSL: &str = include_str!("compact.wgsl");
 
 /// Histogram kernel (`histogram_main` entry point) over `u32`.
 pub const HISTOGRAM_WGSL: &str = include_str!("histogram.wgsl");
+
+/// Radix-sort digit histogram kernel (`radix_histogram` entry point) over `u32`.
+pub const RADIX_HISTOGRAM_WGSL: &str = include_str!("radix_histogram.wgsl");
+
+/// Radix-sort stable scatter kernel, keys only (`radix_scatter` entry point).
+pub const RADIX_SCATTER_WGSL: &str = include_str!("radix_scatter.wgsl");
+
+/// Radix-sort stable scatter kernel for key+payload pairs (`radix_scatter_pairs` entry point).
+pub const RADIX_SCATTER_PAIRS_WGSL: &str = include_str!("radix_scatter_pairs.wgsl");
