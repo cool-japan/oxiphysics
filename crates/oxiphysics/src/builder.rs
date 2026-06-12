@@ -325,7 +325,13 @@ impl RigidBodyBuilder {
 
     /// Start building a capsule rigid body.
     pub fn capsule(radius: f64, half_height: f64) -> Self {
-        Self::new_inner(ShapeKind::Capsule { radius, half_height }, radius)
+        Self::new_inner(
+            ShapeKind::Capsule {
+                radius,
+                half_height,
+            },
+            radius,
+        )
     }
 
     fn new_inner(shape: ShapeKind, radius: f64) -> Self {
@@ -980,7 +986,11 @@ mod tests {
     #[test]
     fn test_rigid_body_builder_capsule() {
         let body = RigidBodyBuilder::capsule(0.3, 0.7).build();
-        if let ShapeKind::Capsule { radius, half_height } = body.shape {
+        if let ShapeKind::Capsule {
+            radius,
+            half_height,
+        } = body.shape
+        {
             assert!((radius - 0.3).abs() < 1e-12);
             assert!((half_height - 0.7).abs() < 1e-12);
         } else {
@@ -1064,7 +1074,9 @@ mod tests {
 
     #[test]
     fn test_rigid_body_builder_damping() {
-        let body = RigidBodyBuilder::sphere(1.0).with_damping(0.1, 0.05).build();
+        let body = RigidBodyBuilder::sphere(1.0)
+            .with_damping(0.1, 0.05)
+            .build();
         assert!((body.linear_damping - 0.1).abs() < 1e-12);
         assert!((body.angular_damping - 0.05).abs() < 1e-12);
     }
@@ -1156,9 +1168,7 @@ mod tests {
 
     #[test]
     fn test_sph_builder_iisph() {
-        let cfg = SphSimBuilder::new(100)
-            .with_pressure_solver_iisph()
-            .build();
+        let cfg = SphSimBuilder::new(100).with_pressure_solver_iisph().build();
         assert_eq!(cfg.pressure_solver, SphPressureSolver::Iisph);
     }
 
@@ -1214,9 +1224,7 @@ mod tests {
 
     #[test]
     fn test_fem_builder_hex() {
-        let cfg = FemBuilder::new()
-            .add_hex([0, 1, 2, 3, 4, 5, 6, 7])
-            .build();
+        let cfg = FemBuilder::new().add_hex([0, 1, 2, 3, 4, 5, 6, 7]).build();
         assert!(matches!(cfg.elements[0], FemElement::Hex(_)));
     }
 
@@ -1239,9 +1247,7 @@ mod tests {
 
     #[test]
     fn test_fem_builder_dirichlet() {
-        let cfg = FemBuilder::new()
-            .with_dirichlet(0, 1, 0.0)
-            .build();
+        let cfg = FemBuilder::new().with_dirichlet(0, 1, 0.0).build();
         assert_eq!(cfg.dirichlet_bcs.len(), 1);
         assert_eq!(cfg.dirichlet_bcs[0].node, 0);
         assert_eq!(cfg.dirichlet_bcs[0].dof, 1);

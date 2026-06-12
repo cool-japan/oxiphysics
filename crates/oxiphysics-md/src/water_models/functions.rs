@@ -4,7 +4,9 @@
 
 use std::f64::consts::PI;
 
-use super::types::{WaterGeometry, WaterModelSummary, WaterModelType, WaterMolecule, WaterParams, WaterVelocities};
+use super::types::{
+    WaterGeometry, WaterModelSummary, WaterModelType, WaterMolecule, WaterParams, WaterVelocities,
+};
 use crate::MdError;
 
 pub(super) fn dist(a: &[f64; 3], b: &[f64; 3]) -> f64 {
@@ -827,9 +829,7 @@ pub fn settle_positions(
     let sinpsi = ((b1[2] - c1[2]) / (2.0 * rc * cosphi)).clamp(-1.0, 1.0);
     let cospsi = (1.0 - sinpsi * sinpsi).sqrt();
     if !cospsi.is_finite() {
-        return Err(MdError::SettleDegenerate(
-            "cospsi non-finite".to_string(),
-        ));
+        return Err(MdError::SettleDegenerate("cospsi non-finite".to_string()));
     }
 
     // Apply the out-of-plane rotations R = Ry(psi) * Rx(phi) to the canonical
@@ -845,7 +845,11 @@ pub fn settle_positions(
     // share the COM (origin), the optimal angle is
     //   theta = atan2( Σ m (x_r y_u − y_r x_u),  Σ m (x_r x_u + y_r y_u) ).
     // This closed form equals the Miyamoto-Kollman θ.
-    let rigid_xy = [(o_pp[0], o_pp[1]), (h1_pp[0], h1_pp[1]), (h2_pp[0], h2_pp[1])];
+    let rigid_xy = [
+        (o_pp[0], o_pp[1]),
+        (h1_pp[0], h1_pp[1]),
+        (h2_pp[0], h2_pp[1]),
+    ];
     let uncon_xy = [(a1[0], a1[1]), (b1[0], b1[1]), (c1[0], c1[1])];
     let masses = [m_o, m_h, m_h];
     let mut sum_sin = 0.0_f64;
@@ -1022,15 +1026,24 @@ pub fn settle_velocities(
 
     let new_va = vec3_add(
         v_a,
-        vec3_scale(vec3_sub(vec3_scale(vab, tau_ab), vec3_scale(vca, tau_ca)), w_a),
+        vec3_scale(
+            vec3_sub(vec3_scale(vab, tau_ab), vec3_scale(vca, tau_ca)),
+            w_a,
+        ),
     );
     let new_vb = vec3_add(
         v_b,
-        vec3_scale(vec3_sub(vec3_scale(vbc, tau_bc), vec3_scale(vab, tau_ab)), w_b),
+        vec3_scale(
+            vec3_sub(vec3_scale(vbc, tau_bc), vec3_scale(vab, tau_ab)),
+            w_b,
+        ),
     );
     let new_vc = vec3_add(
         v_c,
-        vec3_scale(vec3_sub(vec3_scale(vca, tau_ca), vec3_scale(vbc, tau_bc)), w_c),
+        vec3_scale(
+            vec3_sub(vec3_scale(vca, tau_ca), vec3_scale(vbc, tau_bc)),
+            w_c,
+        ),
     );
     if !(vec3_finite(new_va) && vec3_finite(new_vb) && vec3_finite(new_vc)) {
         return Err(MdError::SettleDegenerate(

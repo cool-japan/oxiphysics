@@ -1024,8 +1024,7 @@ mod soft_params_tests {
             let va = [v, 0.0, 0.0, 0.0, 0.0, 0.0];
             let vb = [0.0f64; 6];
             let (dl_i, _, _) = row_iter.solve_iteration(&va, &vb);
-            let (dl_s, _, _) =
-                row_soft.solve_iteration_soft(&va, &vb, 0.0, &SoftParams::rigid());
+            let (dl_s, _, _) = row_soft.solve_iteration_soft(&va, &vb, 0.0, &SoftParams::rigid());
             assert!(
                 (dl_i - dl_s).abs() < 1e-9,
                 "sweep v={v}: iter={dl_i} soft={dl_s}"
@@ -1062,7 +1061,10 @@ mod soft_params_tests {
         ];
         for (hz, zeta, h) in cases {
             let sp = SoftParams::from_frequency(hz, zeta, h);
-            assert!(sp.bias_rate > 0.0, "bias_rate must be positive (hz={hz}, zeta={zeta})");
+            assert!(
+                sp.bias_rate > 0.0,
+                "bias_rate must be positive (hz={hz}, zeta={zeta})"
+            );
             assert!(
                 sp.mass_scale > 0.0 && sp.mass_scale <= 1.0,
                 "mass_scale must be in (0,1] (hz={hz}, zeta={zeta}), got {}",

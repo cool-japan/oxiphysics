@@ -18,8 +18,7 @@
 pub fn exclusive_scan_u32(data: &[u32]) -> Vec<u32> {
     #[cfg(feature = "wgpu-backend")]
     {
-        if let Ok(mut backend) =
-            crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
+        if let Ok(mut backend) = crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
             && let Ok(result) = gpu::exclusive_scan_u32(&mut backend, data)
         {
             return result;
@@ -32,8 +31,7 @@ pub fn exclusive_scan_u32(data: &[u32]) -> Vec<u32> {
 pub fn reduce_sum_f32(data: &[f32]) -> f32 {
     #[cfg(feature = "wgpu-backend")]
     {
-        if let Ok(mut backend) =
-            crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
+        if let Ok(mut backend) = crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
             && let Ok(result) = gpu::reduce_sum_f32(&mut backend, data)
         {
             return result;
@@ -46,8 +44,7 @@ pub fn reduce_sum_f32(data: &[f32]) -> f32 {
 pub fn reduce_max_f32(data: &[f32]) -> f32 {
     #[cfg(feature = "wgpu-backend")]
     {
-        if let Ok(mut backend) =
-            crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
+        if let Ok(mut backend) = crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
             && let Ok(result) = gpu::reduce_max_f32(&mut backend, data)
         {
             return result;
@@ -65,8 +62,7 @@ pub fn compact_u32(values: &[u32], keep: &[u32]) -> Vec<u32> {
     }
     #[cfg(feature = "wgpu-backend")]
     {
-        if let Ok(mut backend) =
-            crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
+        if let Ok(mut backend) = crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
             && let Ok(result) = gpu::compact_u32(&mut backend, values, keep)
         {
             return result;
@@ -79,8 +75,7 @@ pub fn compact_u32(values: &[u32], keep: &[u32]) -> Vec<u32> {
 pub fn histogram_u32(data: &[u32], num_bins: usize) -> Vec<u32> {
     #[cfg(feature = "wgpu-backend")]
     {
-        if let Ok(mut backend) =
-            crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
+        if let Ok(mut backend) = crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
             && let Ok(result) = gpu::histogram_u32(&mut backend, data, num_bins)
         {
             return result;
@@ -141,8 +136,8 @@ mod cpu {
 
 #[cfg(feature = "wgpu-backend")]
 mod gpu {
-    use crate::compute::wgpu_backend::real::WgpuBackendReal;
     use crate::compute::wgpu_backend::WgpuInitError;
+    use crate::compute::wgpu_backend::real::WgpuBackendReal;
     use crate::kernels_wgsl::{
         COMPACT_WGSL, HISTOGRAM_WGSL, REDUCE_WGSL, SCAN_ADD_WGSL, SCAN_WGSL,
     };
@@ -377,7 +372,11 @@ mod gpu {
         backend.dispatch_wgsl(
             HISTOGRAM_WGSL,
             "histogram_main",
-            &[(data_buf, ro()), (global_bins_buf, rw()), (params_buf, ro())],
+            &[
+                (data_buf, ro()),
+                (global_bins_buf, rw()),
+                (params_buf, ro()),
+            ],
             workgroups,
         )?;
 
@@ -417,7 +416,10 @@ mod tests {
 
     #[test]
     fn cpu_histogram_basic() {
-        assert_eq!(cpu::histogram_u32(&[0, 1, 1, 2, 2, 2, 5], 4), vec![1, 2, 3, 1]);
+        assert_eq!(
+            cpu::histogram_u32(&[0, 1, 1, 2, 2, 2, 5], 4),
+            vec![1, 2, 3, 1]
+        );
         assert_eq!(cpu::histogram_u32(&[0, 1], 0), Vec::<u32>::new());
     }
 

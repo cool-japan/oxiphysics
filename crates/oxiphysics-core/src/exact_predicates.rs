@@ -869,10 +869,17 @@ mod tests {
                 4 => &mut pc[0],
                 _ => &mut pc[1],
             };
-            *target = if up { target.next_up() } else { target.next_down() };
+            *target = if up {
+                target.next_up()
+            } else {
+                target.next_down()
+            };
             let got = orient2d(pa, pb, pc);
             let oracle = from_isign(orient2d_oracle(pa, pb, pc));
-            assert_eq!(got, oracle, "mismatch at iter {i}: pa={pa:?} pb={pb:?} pc={pc:?}");
+            assert_eq!(
+                got, oracle,
+                "mismatch at iter {i}: pa={pa:?} pb={pb:?} pc={pc:?}"
+            );
         }
     }
 
@@ -899,7 +906,11 @@ mod tests {
                 6 => &mut pd[0],
                 _ => &mut pd[1],
             };
-            *target = if up { target.next_up() } else { target.next_down() };
+            *target = if up {
+                target.next_up()
+            } else {
+                target.next_down()
+            };
             let got = incircle(pa, pb, pc, pd);
             let oracle = from_isign(incircle_oracle(pa, pb, pc, pd));
             assert_eq!(
@@ -937,7 +948,11 @@ mod tests {
                 10 => &mut pd[1],
                 _ => &mut pd[2],
             };
-            *target = if up { target.next_up() } else { target.next_down() };
+            *target = if up {
+                target.next_up()
+            } else {
+                target.next_down()
+            };
             let got = orient3d(pa, pb, pc, pd);
             let oracle = from_isign(orient3d_oracle(pa, pb, pc, pd));
             assert_eq!(
@@ -965,7 +980,11 @@ mod tests {
             let co = (rng.next_f64() * 3.0) as usize % 3;
             let up = rng.next_f64() < 0.5;
             let target = &mut points[pt][co];
-            *target = if up { target.next_up() } else { target.next_down() };
+            *target = if up {
+                target.next_up()
+            } else {
+                target.next_down()
+            };
             let got = insphere(points);
             let oracle = from_isign(insphere_oracle(points));
             assert_eq!(got, oracle, "mismatch at iter {i}: points={points:?}");
@@ -1003,7 +1022,11 @@ mod tests {
                     4 => &mut pc[0],
                     _ => &mut pc[1],
                 };
-                *target = if up { target.next_up() } else { target.next_down() };
+                *target = if up {
+                    target.next_up()
+                } else {
+                    target.next_down()
+                };
                 assert_eq!(
                     orient2d(pa, pb, pc),
                     from_isign(orient2d_oracle(pa, pb, pc)),
@@ -1030,7 +1053,11 @@ mod tests {
                     6 => &mut pd[0],
                     _ => &mut pd[1],
                 };
-                *target = if up { target.next_up() } else { target.next_down() };
+                *target = if up {
+                    target.next_up()
+                } else {
+                    target.next_down()
+                };
                 assert_eq!(
                     incircle(pa, pb, pc, pd),
                     from_isign(incircle_oracle(pa, pb, pc, pd)),
@@ -1059,8 +1086,8 @@ mod tests {
         // catastrophic misrounding the exact predicate defends against -- so the
         // demonstration point is chosen near `b` where the naive value survives.)
         let c_near = [(12.0f64).next_up(), 12.0];
-        let naive_c_near = (a[0] - c_near[0]) * (b[1] - c_near[1])
-            - (a[1] - c_near[1]) * (b[0] - c_near[0]);
+        let naive_c_near =
+            (a[0] - c_near[0]) * (b[1] - c_near[1]) - (a[1] - c_near[1]) * (b[0] - c_near[0]);
         // Demonstrate the naive determinant is nonzero for this off-line point.
         assert!(
             naive_c_near != 0.0,
@@ -1086,14 +1113,19 @@ mod tests {
         let mut any_naive_nonzero = false;
         for triple in &batch {
             let [pa, pb, pc] = *triple;
-            assert_eq!(orient2d(pa, pb, pc), from_isign(orient2d_oracle(pa, pb, pc)));
-            let naive =
-                (pa[0] - pc[0]) * (pb[1] - pc[1]) - (pa[1] - pc[1]) * (pb[0] - pc[0]);
+            assert_eq!(
+                orient2d(pa, pb, pc),
+                from_isign(orient2d_oracle(pa, pb, pc))
+            );
+            let naive = (pa[0] - pc[0]) * (pb[1] - pc[1]) - (pa[1] - pc[1]) * (pb[0] - pc[0]);
             if naive != 0.0 {
                 any_naive_nonzero = true;
             }
         }
-        assert!(any_naive_nonzero, "expected at least one nonzero naive determinant");
+        assert!(
+            any_naive_nonzero,
+            "expected at least one nonzero naive determinant"
+        );
         // The genuinely collinear triple stays exactly Degenerate.
         assert_eq!(orient2d(a, b, c), Orientation::Degenerate);
     }

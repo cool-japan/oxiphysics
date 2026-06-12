@@ -141,10 +141,7 @@ impl DeterministicReducer {
         if xs.is_empty() {
             return 0.0;
         }
-        let partials: Vec<f64> = xs
-            .chunks(self.chunk)
-            .map(neumaier_sum)
-            .collect();
+        let partials: Vec<f64> = xs.chunks(self.chunk).map(neumaier_sum).collect();
         pairwise_sum(&partials)
     }
 
@@ -169,9 +166,8 @@ impl DeterministicReducer {
         let data: Arc<Vec<f64>> = Arc::new(xs.to_vec());
 
         // Pre-allocate one mutex-protected slot per chunk.
-        let partials: Arc<Vec<Mutex<f64>>> = Arc::new(
-            (0..n_chunks).map(|_| Mutex::new(0.0_f64)).collect(),
-        );
+        let partials: Arc<Vec<Mutex<f64>>> =
+            Arc::new((0..n_chunks).map(|_| Mutex::new(0.0_f64)).collect());
 
         let pool = WorkStealingPool::new(n_threads);
 
@@ -184,9 +180,7 @@ impl DeterministicReducer {
 
             pool.submit(move || {
                 let partial = neumaier_sum(&data_clone[start..end]);
-                let mut slot = partials_clone[i]
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
+                let mut slot = partials_clone[i].lock().unwrap_or_else(|e| e.into_inner());
                 *slot = partial;
             });
         }
@@ -222,7 +216,9 @@ mod tests {
         // Generate values using simple LCG pattern
         let xs: Vec<f64> = (0_u64..1024)
             .scan(6364136223846793005_u64, |state, _| {
-                *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                *state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 Some((*state as f64) / u64::MAX as f64 - 0.5)
             })
             .collect();
@@ -236,7 +232,9 @@ mod tests {
         // Build 1_000_000 values with a simple pattern
         let xs: Vec<f64> = (0_u64..1_000_000)
             .scan(1234567890_u64, |state, _| {
-                *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                *state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 Some((*state as f64) / u64::MAX as f64 * 200.0 - 100.0)
             })
             .collect();
@@ -245,7 +243,8 @@ mod tests {
         for &n in &[1_usize, 2, 4, 8] {
             let parallel = reducer.par_sum(&xs, n);
             assert_eq!(
-                serial.to_bits(), parallel.to_bits(),
+                serial.to_bits(),
+                parallel.to_bits(),
                 "par_sum(n_threads={n}) not bit-identical to sum(): serial={serial} parallel={parallel}"
             );
         }

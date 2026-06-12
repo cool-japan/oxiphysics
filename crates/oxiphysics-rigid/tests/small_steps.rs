@@ -80,11 +80,7 @@ fn test_small_steps_100_sphere_pile_stable() {
         .iter()
         .map(|c| c.depth)
         .fold(0.0_f64, f64::max);
-    assert!(
-        max_depth < 0.05,
-        "max penetration too large: {}",
-        max_depth
-    );
+    assert!(max_depth < 0.05, "max penetration too large: {}", max_depth);
 }
 
 #[test]
@@ -142,11 +138,7 @@ fn test_small_steps_fast_body_no_energy_gain() {
 
     // One fast dynamic unit sphere at x = -3, moving toward the wall at 50 m/s.
     let ball = spawn_sphere(&mut world, -3.0, 0.0, 0.0);
-    world
-        .get_body_mut(ball)
-        .expect("ball present")
-        .velocity
-        .x = 50.0;
+    world.get_body_mut(ball).expect("ball present").velocity.x = 50.0;
 
     // Initial KE = 0.5 * 1 * 50^2 = 1250 J.
     for _ in 0..60 {
@@ -160,7 +152,11 @@ fn test_small_steps_fast_body_no_energy_gain() {
         final_ke
     );
 
-    let p = &world.get_body(ball).expect("ball present").transform.position;
+    let p = &world
+        .get_body(ball)
+        .expect("ball present")
+        .transform
+        .position;
     assert!(p.x.is_finite());
     assert!(p.y.is_finite());
     assert!(p.z.is_finite());

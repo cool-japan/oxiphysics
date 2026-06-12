@@ -83,7 +83,9 @@ impl PhysicsTimer {
 
     /// Return the total accumulated time (including any currently-running interval).
     pub fn elapsed(&self) -> Duration {
-        if self.running && let Some(t0) = self.start_instant {
+        if self.running
+            && let Some(t0) = self.start_instant
+        {
             return self.accumulated + t0.elapsed();
         }
         self.accumulated
@@ -290,16 +292,12 @@ impl ConstraintDiagnostics {
         if self.solver_iterations.is_empty() {
             return 0.0;
         }
-        self.solver_iterations.iter().sum::<usize>() as f64
-            / self.solver_iterations.len() as f64
+        self.solver_iterations.iter().sum::<usize>() as f64 / self.solver_iterations.len() as f64
     }
 
     /// Return the maximum residual across all recorded steps.
     pub fn max_residual(&self) -> f64 {
-        self.residuals
-            .iter()
-            .cloned()
-            .fold(0.0_f64, f64::max)
+        self.residuals.iter().cloned().fold(0.0_f64, f64::max)
     }
 
     /// Return the number of recorded steps.
@@ -429,9 +427,15 @@ impl PerformanceSummary {
         println!("Steps          : {}", self.simulation.step_count);
         println!("Sim time       : {:.4} s", self.simulation.sim_time);
         println!("Wall time      : {:.4} s", self.simulation.wall_time);
-        println!("Real-time factor: {:.2}x", self.simulation.real_time_factor());
+        println!(
+            "Real-time factor: {:.2}x",
+            self.simulation.real_time_factor()
+        );
         println!("Rigid bodies   : {}", self.simulation.n_rigid_bodies);
-        println!("Sleeping frac  : {:.1}%", self.simulation.sleeping_fraction() * 100.0);
+        println!(
+            "Sleeping frac  : {:.1}%",
+            self.simulation.sleeping_fraction() * 100.0
+        );
         println!("Contacts       : {}", self.simulation.n_contacts);
         if !self.constraints.is_empty() {
             println!("Avg solver iters: {:.1}", self.constraints.avg_iterations());

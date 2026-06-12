@@ -61,10 +61,10 @@ impl SymplecticComposition {
     /// Reference: Yoshida, H. (1990). *Construction of higher order symplectic
     /// integrators*. Physics Letters A, 150(5–7), 262–268. Table 1, Solution A.
     pub fn yoshida6() -> Self {
-        let w1 =  0.784_513_610_477_557_3_f64;
-        let w2 =  0.235_573_213_359_358_13_f64;
+        let w1 = 0.784_513_610_477_557_3_f64;
+        let w2 = 0.235_573_213_359_358_13_f64;
         let w3 = -1.177_679_984_178_871_f64;
-        let w4 =  1.315_186_320_683_911_2_f64;
+        let w4 = 1.315_186_320_683_911_2_f64;
         Self {
             w: vec![w1, w2, w3, w4, w3, w2, w1],
         }
@@ -96,10 +96,10 @@ impl SymplecticComposition {
         let w_minus = 1.0 - 2.0 * w_plus;
 
         // Inner 6th-order palindromic sequence (7 stages).
-        let w6_1 =  0.784_513_610_477_557_3_f64;
-        let w6_2 =  0.235_573_213_359_358_13_f64;
+        let w6_1 = 0.784_513_610_477_557_3_f64;
+        let w6_2 = 0.235_573_213_359_358_13_f64;
         let w6_3 = -1.177_679_984_178_871_f64;
-        let w6_4 =  1.315_186_320_683_911_2_f64;
+        let w6_4 = 1.315_186_320_683_911_2_f64;
         let inner = [w6_1, w6_2, w6_3, w6_4, w6_3, w6_2, w6_1];
 
         // Build the 21-stage 8th-order sequence.

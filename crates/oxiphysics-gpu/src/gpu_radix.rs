@@ -20,8 +20,7 @@
 pub fn radix_sort_u32_gpu(keys: &[u32]) -> Vec<u32> {
     #[cfg(feature = "wgpu-backend")]
     {
-        if let Ok(mut backend) =
-            crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
+        if let Ok(mut backend) = crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
             && let Ok(result) = gpu::radix_sort_u32(&mut backend, keys)
         {
             return result;
@@ -40,8 +39,7 @@ pub fn radix_sort_pairs_gpu(keys: &[u32], payload: &[u32]) -> (Vec<u32>, Vec<u32
     }
     #[cfg(feature = "wgpu-backend")]
     {
-        if let Ok(mut backend) =
-            crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
+        if let Ok(mut backend) = crate::compute::wgpu_backend::real::WgpuBackendReal::try_new()
             && let Ok(result) = gpu::radix_sort_pairs(&mut backend, keys, payload)
         {
             return result;
@@ -101,11 +99,9 @@ mod cpu {
 
 #[cfg(feature = "wgpu-backend")]
 mod gpu {
-    use crate::compute::wgpu_backend::real::WgpuBackendReal;
     use crate::compute::wgpu_backend::WgpuInitError;
-    use crate::kernels_wgsl::{
-        RADIX_HISTOGRAM_WGSL, RADIX_SCATTER_PAIRS_WGSL, RADIX_SCATTER_WGSL,
-    };
+    use crate::compute::wgpu_backend::real::WgpuBackendReal;
+    use crate::kernels_wgsl::{RADIX_HISTOGRAM_WGSL, RADIX_SCATTER_PAIRS_WGSL, RADIX_SCATTER_WGSL};
 
     const TILE: usize = 256;
 
@@ -174,7 +170,12 @@ mod gpu {
             backend.dispatch_wgsl(
                 RADIX_SCATTER_WGSL,
                 "radix_scatter",
-                &[(buf_a, ro()), (buf_b, rw()), (base_buf, ro()), (params_buf, ro())],
+                &[
+                    (buf_a, ro()),
+                    (buf_b, rw()),
+                    (base_buf, ro()),
+                    (params_buf, ro()),
+                ],
                 [num_tiles as u32, 1, 1],
             )?;
 
@@ -309,7 +310,10 @@ mod tests {
     fn empty_and_single() {
         assert_eq!(radix_sort_u32_gpu(&[]), Vec::<u32>::new());
         assert_eq!(radix_sort_u32_gpu(&[42]), vec![42]);
-        assert_eq!(radix_sort_pairs_gpu(&[], &[]), (Vec::<u32>::new(), Vec::<u32>::new()));
+        assert_eq!(
+            radix_sort_pairs_gpu(&[], &[]),
+            (Vec::<u32>::new(), Vec::<u32>::new())
+        );
         assert_eq!(radix_sort_pairs_gpu(&[7], &[9]), (vec![7], vec![9]));
     }
 

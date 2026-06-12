@@ -170,7 +170,8 @@ mod tests {
         let mut mol = WaterMolecule::new([0.0, 0.0, 0.0]);
         mol.hydrogen1[0] += 0.05;
         mol.hydrogen2[1] -= 0.03;
-        rigid_water_settle(&mut mol, 0.001).expect("settle should succeed for ideal-reference compat wrapper");
+        rigid_water_settle(&mut mol, 0.001)
+            .expect("settle should succeed for ideal-reference compat wrapper");
         let geom = WaterGeometry::tip3p();
         assert!(
             mol.check_constraints(&geom, 0.01),
@@ -791,8 +792,7 @@ mod tests {
         let mut max_dev = 0.0_f64;
         for i in 0..2_000 {
             let o = [(i as f64) * 0.002, 1.0, -(i as f64) * 0.001];
-            let (reference, mut unconstrained) =
-                make_reference_and_perturbed(o, &geom, &mut rng);
+            let (reference, mut unconstrained) = make_reference_and_perturbed(o, &geom, &mut rng);
             let com_before = com_of(&unconstrained, params.mass_o, params.mass_h);
             settle_positions(
                 &reference,
@@ -807,10 +807,7 @@ mod tests {
                 max_dev = max_dev.max((before - after).abs());
             }
         }
-        assert!(
-            max_dev < 1e-14,
-            "COM drift {max_dev} exceeds 1e-14"
-        );
+        assert!(max_dev < 1e-14, "COM drift {max_dev} exceeds 1e-14");
     }
 
     /// Analytic SETTLE is the least-displacement rigid solution: its mass-weighted
@@ -827,8 +824,7 @@ mod tests {
         let mut rng = Lcg::new(0x0f0f_0f0f_1234_9999);
         for i in 0..1_000 {
             let o = [(i as f64) * 0.003, 0.5, (i as f64) * 0.0011];
-            let (reference, unconstrained) =
-                make_reference_and_perturbed(o, &geom, &mut rng);
+            let (reference, unconstrained) = make_reference_and_perturbed(o, &geom, &mut rng);
 
             // Analytic SETTLE.
             let mut analytic = unconstrained.clone();
@@ -875,7 +871,12 @@ mod tests {
             let bonds = [
                 (mol.oxygen, mol.hydrogen1, vel.v_oxygen, vel.v_hydrogen1),
                 (mol.oxygen, mol.hydrogen2, vel.v_oxygen, vel.v_hydrogen2),
-                (mol.hydrogen1, mol.hydrogen2, vel.v_hydrogen1, vel.v_hydrogen2),
+                (
+                    mol.hydrogen1,
+                    mol.hydrogen2,
+                    vel.v_hydrogen1,
+                    vel.v_hydrogen2,
+                ),
             ];
             for (ri, rj, vi, vj) in bonds {
                 let dr = [ri[0] - rj[0], ri[1] - rj[1], ri[2] - rj[2]];
@@ -908,8 +909,7 @@ mod tests {
                 (m_o * vel.v_oxygen[1] + m_h * vel.v_hydrogen1[1] + m_h * vel.v_hydrogen2[1]) / m_t,
                 (m_o * vel.v_oxygen[2] + m_h * vel.v_hydrogen1[2] + m_h * vel.v_hydrogen2[2]) / m_t,
             ];
-            settle_velocities(&mol, &mut vel, m_o, m_h)
-                .expect("settle_velocities should succeed");
+            settle_velocities(&mol, &mut vel, m_o, m_h).expect("settle_velocities should succeed");
             let com_v_after = [
                 (m_o * vel.v_oxygen[0] + m_h * vel.v_hydrogen1[0] + m_h * vel.v_hydrogen2[0]) / m_t,
                 (m_o * vel.v_oxygen[1] + m_h * vel.v_hydrogen1[1] + m_h * vel.v_hydrogen2[1]) / m_t,
@@ -919,7 +919,10 @@ mod tests {
                 max_dev = max_dev.max((before - after).abs());
             }
         }
-        assert!(max_dev < 1e-14, "COM velocity drift {max_dev} exceeds 1e-14");
+        assert!(
+            max_dev < 1e-14,
+            "COM velocity drift {max_dev} exceeds 1e-14"
+        );
     }
 
     /// Degenerate / non-finite reference geometries must return an error.
@@ -935,14 +938,16 @@ mod tests {
             m_site: None,
         };
         let mut unconstrained = WaterMolecule::with_geometry([0.0, 0.0, 0.0], &geom);
-        assert!(settle_positions(
-            &collinear,
-            &mut unconstrained,
-            &geom,
-            params.mass_o,
-            params.mass_h
-        )
-        .is_err());
+        assert!(
+            settle_positions(
+                &collinear,
+                &mut unconstrained,
+                &geom,
+                params.mass_o,
+                params.mass_h
+            )
+            .is_err()
+        );
         // Zero-area (all identical).
         let coincident = WaterMolecule {
             oxygen: [1.0, 1.0, 1.0],
@@ -951,26 +956,16 @@ mod tests {
             m_site: None,
         };
         let mut u2 = WaterMolecule::with_geometry([0.0, 0.0, 0.0], &geom);
-        assert!(settle_positions(
-            &coincident,
-            &mut u2,
-            &geom,
-            params.mass_o,
-            params.mass_h
-        )
-        .is_err());
+        assert!(
+            settle_positions(&coincident, &mut u2, &geom, params.mass_o, params.mass_h).is_err()
+        );
         // Non-finite input.
         let mut nan_u = WaterMolecule::with_geometry([0.0, 0.0, 0.0], &geom);
         nan_u.hydrogen1[0] = f64::NAN;
         let reference = WaterMolecule::with_geometry([0.0, 0.0, 0.0], &geom);
-        assert!(settle_positions(
-            &reference,
-            &mut nan_u,
-            &geom,
-            params.mass_o,
-            params.mass_h
-        )
-        .is_err());
+        assert!(
+            settle_positions(&reference, &mut nan_u, &geom, params.mass_o, params.mass_h).is_err()
+        );
         // Non-positive mass.
         let mut u3 = WaterMolecule::with_geometry([0.0, 0.0, 0.0], &geom);
         assert!(settle_positions(&reference, &mut u3, &geom, 0.0, params.mass_h).is_err());
@@ -984,8 +979,7 @@ mod tests {
         let mut rng = Lcg::new(0x7777_8888_9999_aaaa);
         for i in 0..5_000 {
             let o = [(i as f64) * 0.004, -(i as f64) * 0.002, 1.0];
-            let (reference, mut unconstrained) =
-                make_reference_and_perturbed(o, &geom, &mut rng);
+            let (reference, mut unconstrained) = make_reference_and_perturbed(o, &geom, &mut rng);
             settle_positions(
                 &reference,
                 &mut unconstrained,

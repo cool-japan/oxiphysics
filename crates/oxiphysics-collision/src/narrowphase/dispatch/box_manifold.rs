@@ -247,7 +247,11 @@ fn select_reference_incident(
     let neg_wn = transform_ref.transform_vector(&Vec3::from(face_normals[neg_face]));
     let pos_dot = dot3([pos_wn.x, pos_wn.y, pos_wn.z], ref_outward_normal);
     let neg_dot = dot3([neg_wn.x, neg_wn.y, neg_wn.z], ref_outward_normal);
-    let ref_face_idx = if pos_dot >= neg_dot { pos_face } else { neg_face };
+    let ref_face_idx = if pos_dot >= neg_dot {
+        pos_face
+    } else {
+        neg_face
+    };
 
     // Incident face: world face normal most anti-parallel to the outward normal.
     let incident_world_normals: Vec<[f64; 3]> = BoxShape::face_normals()
@@ -680,16 +684,16 @@ mod tests {
     use oxiphysics_core::Transform;
     use std::f64::consts::FRAC_PI_4;
 
-    const IDENTITY_AXES: [[f64; 3]; 3] =
-        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    const IDENTITY_AXES: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
     #[test]
     fn test_sat_axisymmetric_box_on_box_picks_face_y() {
         let half = [0.5, 0.5, 0.5];
         let center_b = [0.0, 0.0, 0.0];
         let center_a = [0.0, 0.99, 0.0];
-        let sat = box_box_sat_detailed(center_a, IDENTITY_AXES, half, center_b, IDENTITY_AXES, half)
-            .expect("overlap");
+        let sat =
+            box_box_sat_detailed(center_a, IDENTITY_AXES, half, center_b, IDENTITY_AXES, half)
+                .expect("overlap");
         assert!(matches!(
             sat.axis,
             BoxSatAxis::FaceA(1) | BoxSatAxis::FaceB(1)
@@ -725,8 +729,8 @@ mod tests {
         let center_b = [tb.position.x, tb.position.y, tb.position.z];
         let axes_a = world_axes(&ta);
         let axes_b = world_axes(&tb);
-        let sat = box_box_sat_detailed(center_a, axes_a, half, center_b, axes_b, half)
-            .expect("overlap");
+        let sat =
+            box_box_sat_detailed(center_a, axes_a, half, center_b, axes_b, half).expect("overlap");
         // STRICT path: the diagonal corner-to-edge configuration selects an
         // edge-edge axis with a unit normal and positive depth.
         assert!(matches!(sat.axis, BoxSatAxis::EdgeEdge(_, _)));
@@ -744,8 +748,8 @@ mod tests {
         let center_b = [tb.position.x, tb.position.y, tb.position.z];
         let axes_a = world_axes(&ta);
         let axes_b = world_axes(&tb);
-        let sat = box_box_sat_detailed(center_a, axes_a, half, center_b, axes_b, half)
-            .expect("overlap");
+        let sat =
+            box_box_sat_detailed(center_a, axes_a, half, center_b, axes_b, half).expect("overlap");
         let rif = select_reference_incident(&sat, &ta, &tb);
 
         let transform_inc = if rif.ref_is_a { &tb } else { &ta };
@@ -758,9 +762,8 @@ mod tests {
             assert!(rif.ref_outward_normal[1] > 0.9);
         }
 
-        let wn = transform_inc.transform_vector(&Vec3::from(
-            BoxShape::face_normals()[rif.inc_face_idx],
-        ));
+        let wn =
+            transform_inc.transform_vector(&Vec3::from(BoxShape::face_normals()[rif.inc_face_idx]));
         assert!(dot3([wn.x, wn.y, wn.z], rif.ref_outward_normal) < -0.9);
     }
 
@@ -817,8 +820,7 @@ mod tests {
             ]
         };
         let dot3 = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-        let mul_diag =
-            |d: [f64; 3], v: [f64; 3]| [d[0] * v[0], d[1] * v[1], d[2] * v[2]];
+        let mul_diag = |d: [f64; 3], v: [f64; 3]| [d[0] * v[0], d[1] * v[1], d[2] * v[2]];
 
         let inv_mass_a = 1.0_f64;
         let inv_inertia_a = [6.0_f64, 6.0, 6.0];
@@ -835,36 +837,34 @@ mod tests {
         let n_contacts = manifold.contacts.len();
         let mut acc = vec![0.0_f64; n_contacts];
 
-        let run_pass =
-            |v_a: &mut [f64; 3], w_a: &mut [f64; 3], acc: &mut [f64]| {
-                for (i, c) in manifold.contacts.iter().enumerate() {
-                    let r_a = [
-                        c.point_a.x - c_a[0],
-                        c.point_a.y - c_a[1],
-                        c.point_a.z - c_a[2],
-                    ];
-                    let n = [c.normal.x, c.normal.y, c.normal.z];
-                    let wxr = cross3(*w_a, r_a);
-                    let v_point_a = [v_a[0] + wxr[0], v_a[1] + wxr[1], v_a[2] + wxr[2]];
-                    let vn = dot3(v_point_a, n);
-                    let rxn = cross3(r_a, n);
-                    let denom =
-                        inv_mass_a + dot3(n, cross3(mul_diag(inv_inertia_a, rxn), r_a));
-                    let d_lambda = -vn / denom;
-                    let old = acc[i];
-                    let new = (old + d_lambda).max(0.0);
-                    let applied = new - old;
-                    acc[i] = new;
-                    v_a[0] += n[0] * inv_mass_a * applied;
-                    v_a[1] += n[1] * inv_mass_a * applied;
-                    v_a[2] += n[2] * inv_mass_a * applied;
-                    let dl = cross3(r_a, [n[0] * applied, n[1] * applied, n[2] * applied]);
-                    let dw = mul_diag(inv_inertia_a, dl);
-                    w_a[0] += dw[0];
-                    w_a[1] += dw[1];
-                    w_a[2] += dw[2];
-                }
-            };
+        let run_pass = |v_a: &mut [f64; 3], w_a: &mut [f64; 3], acc: &mut [f64]| {
+            for (i, c) in manifold.contacts.iter().enumerate() {
+                let r_a = [
+                    c.point_a.x - c_a[0],
+                    c.point_a.y - c_a[1],
+                    c.point_a.z - c_a[2],
+                ];
+                let n = [c.normal.x, c.normal.y, c.normal.z];
+                let wxr = cross3(*w_a, r_a);
+                let v_point_a = [v_a[0] + wxr[0], v_a[1] + wxr[1], v_a[2] + wxr[2]];
+                let vn = dot3(v_point_a, n);
+                let rxn = cross3(r_a, n);
+                let denom = inv_mass_a + dot3(n, cross3(mul_diag(inv_inertia_a, rxn), r_a));
+                let d_lambda = -vn / denom;
+                let old = acc[i];
+                let new = (old + d_lambda).max(0.0);
+                let applied = new - old;
+                acc[i] = new;
+                v_a[0] += n[0] * inv_mass_a * applied;
+                v_a[1] += n[1] * inv_mass_a * applied;
+                v_a[2] += n[2] * inv_mass_a * applied;
+                let dl = cross3(r_a, [n[0] * applied, n[1] * applied, n[2] * applied]);
+                let dw = mul_diag(inv_inertia_a, dl);
+                w_a[0] += dw[0];
+                w_a[1] += dw[1];
+                w_a[2] += dw[2];
+            }
+        };
 
         for _ in 0..10 {
             run_pass(&mut v_a, &mut w_a, &mut acc);
@@ -895,9 +895,10 @@ mod tests {
         let t_b = Transform::from_position(Vec3::new(0.0, 1.5 - 0.01, 0.0));
 
         // ground (A=lower) vs cube A (B=upper): normal B->A points down.
-        let m_ground_a = box_box_manifold(&ground, &t_ground, &cube_a, &t_a, CollisionPair::new(0, 1))
-            .manifold
-            .expect("ground-A overlap");
+        let m_ground_a =
+            box_box_manifold(&ground, &t_ground, &cube_a, &t_a, CollisionPair::new(0, 1))
+                .manifold
+                .expect("ground-A overlap");
         assert_eq!(m_ground_a.contacts.len(), 4);
         // cube A (lower) vs cube B (upper).
         let m_a_b = box_box_manifold(&cube_a, &t_a, &cube_b, &t_b, CollisionPair::new(1, 2))
@@ -913,14 +914,17 @@ mod tests {
             ]
         };
         let dot3 = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-        let mul_diag =
-            |d: [f64; 3], v: [f64; 3]| [d[0] * v[0], d[1] * v[1], d[2] * v[2]];
+        let mul_diag = |d: [f64; 3], v: [f64; 3]| [d[0] * v[0], d[1] * v[1], d[2] * v[2]];
 
         // Bodies: index 0 = ground (static), 1 = cube A, 2 = cube B.
         let inv_mass = [0.0_f64, 1.0, 1.0];
         let inv_inertia = [[0.0_f64, 0.0, 0.0], [6.0, 6.0, 6.0], [6.0, 6.0, 6.0]];
         let centers = [
-            [t_ground.position.x, t_ground.position.y, t_ground.position.z],
+            [
+                t_ground.position.x,
+                t_ground.position.y,
+                t_ground.position.z,
+            ],
             [t_a.position.x, t_a.position.y, t_a.position.z],
             [t_b.position.x, t_b.position.y, t_b.position.z],
         ];
@@ -1042,10 +1046,9 @@ mod tests {
         assert!(dx < 1e-3, "top box drifted in x: {dx}");
         assert!(dz < 1e-3, "top box drifted in z: {dz}");
         let _ = b_start;
-        let wb = (omega[2][0] * omega[2][0]
-            + omega[2][1] * omega[2][1]
-            + omega[2][2] * omega[2][2])
-            .sqrt();
+        let wb =
+            (omega[2][0] * omega[2][0] + omega[2][1] * omega[2][1] + omega[2][2] * omega[2][2])
+                .sqrt();
         assert!(wb < 1e-3, "top box spun: |w_b| = {wb}");
     }
 

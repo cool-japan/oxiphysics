@@ -15,7 +15,7 @@
 //! - **Mesh stitching** — combining split surfaces into a watertight result.
 //! - **Result cleanup** — degenerate triangle removal, vertex welding.
 
-use oxiphysics_core::exact_predicates::{orient3d, Orientation};
+use oxiphysics_core::exact_predicates::{Orientation, orient3d};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Vector helpers (no nalgebra in non-core crates)
@@ -990,11 +990,7 @@ fn sos_sign(base: Orientation, indices: &[u64]) -> i32 {
             // Lowest involved global index drives the virtual perturbation order;
             // its parity gives a deterministic, total (never-zero) tie-break.
             let lowest = indices.iter().copied().min().unwrap_or(0);
-            if lowest % 2 == 0 {
-                1
-            } else {
-                -1
-            }
+            if lowest % 2 == 0 { 1 } else { -1 }
         }
     }
 }
@@ -1075,11 +1071,7 @@ pub fn exact_classify_point_vs_mesh(mesh: &SimpleMesh, p: V3) -> bool {
     // of the box; the extra 2*diag + 1 clears the whole box plus a safety margin so
     // q is strictly outside the AABB and hence outside the closed mesh.
     let reach = (mx[0] - p[0]).abs() + 2.0 * diag + 1.0;
-    let q = [
-        p[0] + reach,
-        p[1] + reach * 1.0e-3,
-        p[2] + reach * 1.0e-6,
-    ];
+    let q = [p[0] + reach, p[1] + reach * 1.0e-3, p[2] + reach * 1.0e-6];
 
     // Synthetic indices for p and q: give them the two highest u64 values so SoS
     // perturbs them last / most predictably (they are not mesh vertices).

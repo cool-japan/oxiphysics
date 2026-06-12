@@ -31,8 +31,24 @@ fn assert_order_independent(
     label: &str,
 ) {
     let pair = CollisionPair::new(0, 1);
-    let ab = dispatcher.dispatch(shape_a, type_a, transform_a, shape_b, type_b, transform_b, pair);
-    let ba = dispatcher.dispatch(shape_b, type_b, transform_b, shape_a, type_a, transform_a, pair);
+    let ab = dispatcher.dispatch(
+        shape_a,
+        type_a,
+        transform_a,
+        shape_b,
+        type_b,
+        transform_b,
+        pair,
+    );
+    let ba = dispatcher.dispatch(
+        shape_b,
+        type_b,
+        transform_b,
+        shape_a,
+        type_a,
+        transform_a,
+        pair,
+    );
 
     assert_eq!(
         ab.has_contact(),
@@ -172,7 +188,10 @@ fn reversed_order_does_not_panic_in_release_or_debug() {
         &at(1.5),
         pair,
     );
-    assert!(r.has_contact(), "overlapping box-sphere must produce contact");
+    assert!(
+        r.has_contact(),
+        "overlapping box-sphere must produce contact"
+    );
 }
 
 #[test]

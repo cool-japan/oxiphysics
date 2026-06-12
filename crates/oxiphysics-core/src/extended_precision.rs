@@ -255,7 +255,10 @@ impl Dd {
             return Dd::ZERO;
         }
         if self.hi < 0.0 {
-            return Dd { hi: f64::NAN, lo: f64::NAN };
+            return Dd {
+                hi: f64::NAN,
+                lo: f64::NAN,
+            };
         }
         let x = 1.0 / self.hi.sqrt();
         let ax = self.hi * x;
@@ -267,7 +270,10 @@ impl Dd {
 impl std::ops::Neg for Dd {
     type Output = Dd;
     fn neg(self) -> Dd {
-        Dd { hi: -self.hi, lo: -self.lo }
+        Dd {
+            hi: -self.hi,
+            lo: -self.lo,
+        }
     }
 }
 
