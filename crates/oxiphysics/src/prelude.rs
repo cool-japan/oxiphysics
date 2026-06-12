@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn test_round_trip_arr_vec3() {
-        let orig = [1.5, -2.5, 3.14];
+        let orig = [1.5, -2.5, 3.15];
         let v = arr_to_vec3(orig);
         let back = vec3_to_arr(v);
         for (a, b) in orig.iter().zip(back.iter()) {
@@ -556,8 +556,8 @@ mod tests {
 
     #[test]
     fn test_physics_scalar_type() {
-        let s: PhysicsScalar = 3.14;
-        assert!((s - 3.14).abs() < 1e-12);
+        let s: PhysicsScalar = 3.15;
+        assert!((s - 3.15).abs() < 1e-12);
     }
 
     #[test]

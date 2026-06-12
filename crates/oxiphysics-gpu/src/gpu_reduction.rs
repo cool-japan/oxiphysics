@@ -1,7 +1,7 @@
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
-//! GPU reduction and scan operations (CPU mock implementation).
+//! GPU reduction and scan operations — CPU reference implementation (parity oracle for [`crate::gpu_primitives`]).
 //!
 //! Provides parallel-style reductions (sum, max, min, dot product),
 //! exclusive prefix scan, radix sort (counting sort mock), and histogram.

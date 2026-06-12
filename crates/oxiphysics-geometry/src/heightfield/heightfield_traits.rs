@@ -16,6 +16,10 @@ use super::functions::ray_triangle;
 use super::types::HeightField;
 
 impl Shape for HeightField {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn bounding_box(&self) -> Aabb {
         let (min_h, max_h) = self.height_bounds();
         Aabb::new(

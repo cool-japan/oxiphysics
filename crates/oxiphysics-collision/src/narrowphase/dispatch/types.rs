@@ -2,8 +2,10 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
+use crate::narrowphase::gjk_cache::{GjkCacheRegistry, GjkCacheStats};
 use crate::types::{CollisionPair, Contact, ContactManifold};
 use oxiphysics_core::Transform;
+use oxiphysics_core::math::Vec3;
 use oxiphysics_geometry::Shape;
 use std::collections::HashMap;
 
@@ -46,6 +48,13 @@ pub struct DispatchConfig {
     pub max_epa_iterations: usize,
     /// Tolerance for contact detection.
     pub contact_tolerance: f64,
+    /// Whether the GJK fallback warm-starts from the per-pair simplex cache.
+    ///
+    /// Enabled by default. Honoured by the stateful [`NarrowPhaseDispatcher::dispatch_cached`]
+    /// entry point, which reuses the cached simplex/direction across frames for
+    /// coherent motion. The stateless [`NarrowPhaseDispatcher::dispatch`] is
+    /// unaffected (it holds no cache state).
+    pub enable_warm_start: bool,
 }
 /// A leaf triangle for mesh mid-phase.
 #[derive(Debug, Clone, Copy)]
@@ -171,23 +180,31 @@ pub type BatchCollisionPair<'a> = (
 pub struct NarrowPhaseDispatcher {
     /// Registered pair algorithms.
     pub(super) table: HashMap<DispatchKey, NarrowPhaseFn>,
-    /// Configuration (reserved for future dispatch tuning).
-    pub(super) _config: DispatchConfig,
+    /// Dispatch configuration (GJK/EPA fallback tuning, warm-start toggle).
+    pub(super) config: DispatchConfig,
+    /// Persistent per-pair GJK warm-start cache used by [`Self::dispatch_cached`].
+    pub(super) gjk_registry: GjkCacheRegistry,
 }
 impl NarrowPhaseDispatcher {
     /// Create an empty dispatcher (no registered algorithms).
     pub fn empty() -> Self {
         NarrowPhaseDispatcher {
             table: HashMap::new(),
-            _config: DispatchConfig::default(),
+            config: DispatchConfig::default(),
+            gjk_registry: GjkCacheRegistry::new(),
         }
     }
     /// Create an empty dispatcher with custom configuration.
     pub fn with_config(config: DispatchConfig) -> Self {
         NarrowPhaseDispatcher {
             table: HashMap::new(),
-            _config: config,
+            config,
+            gjk_registry: GjkCacheRegistry::new(),
         }
+    }
+    /// Read-only access to the dispatcher configuration.
+    pub fn config(&self) -> &DispatchConfig {
+        &self.config
     }
     /// Register a collision algorithm for the given shape-type pair.
     pub fn register_pair(&mut self, type_a: ShapeType, type_b: ShapeType, func: NarrowPhaseFn) {
@@ -213,7 +230,57 @@ impl NarrowPhaseDispatcher {
     pub fn registered_keys(&self) -> Vec<DispatchKey> {
         self.table.keys().copied().collect()
     }
+    /// Invoke a registered pair function with canonical argument order.
+    ///
+    /// Registered functions assume the lower-ordinal shape type is the first
+    /// argument (the order their [`DispatchKey`] was canonicalised from). When
+    /// the caller's arguments are reversed, this swaps them before the call and
+    /// flips the resulting manifold (negates normals, swaps witness points,
+    /// restores the original `pair`) so the output is expressed in the caller's
+    /// argument order. Shared by [`Self::dispatch`] and [`Self::dispatch_cached`].
+    fn invoke_canonical(
+        func: NarrowPhaseFn,
+        shape_a: &dyn Shape,
+        type_a: ShapeType,
+        transform_a: &Transform,
+        shape_b: &dyn Shape,
+        type_b: ShapeType,
+        transform_b: &Transform,
+        pair: CollisionPair,
+    ) -> NarrowPhaseResult {
+        if shape_type_ordinal(type_a) > shape_type_ordinal(type_b) {
+            let swapped_pair = CollisionPair::new(pair.b, pair.a);
+            let mut result = func(shape_b, transform_b, shape_a, transform_a, swapped_pair);
+            if let Some(ref mut manifold) = result.manifold {
+                for contact in &mut manifold.contacts {
+                    contact.normal = -contact.normal;
+                    std::mem::swap(&mut contact.point_a, &mut contact.point_b);
+                }
+                manifold.pair = pair;
+            }
+            result
+        } else {
+            func(shape_a, transform_a, shape_b, transform_b, pair)
+        }
+    }
+    /// World-space support point of `shape` (under `transform`) in `dir`.
+    ///
+    /// Mirrors the Minkowski support convention used by [`crate::narrowphase::gjk`]
+    /// so warm-started queries agree with the cold GJK/EPA path.
+    fn world_support(shape: &dyn Shape, transform: &Transform, dir: [f64; 3]) -> [f64; 3] {
+        let d = Vec3::new(dir[0], dir[1], dir[2]);
+        let local_dir = transform.rotation.inverse() * d;
+        let local = shape.support_point(&local_dir);
+        let world = transform.transform_point(&local);
+        [world.x, world.y, world.z]
+    }
     /// Dispatch a collision query between two shapes.
+    ///
+    /// The argument order is canonicalised before invoking the registered pair
+    /// function, so unordered pairs (e.g. `(Box, Sphere)` where only the
+    /// `(Sphere, Box)` algorithm is registered) are handled soundly: the
+    /// arguments are swapped and the resulting normal/witness points flipped
+    /// back. Pairs with no registered algorithm fall through to GJK/EPA.
     pub fn dispatch(
         &self,
         shape_a: &dyn Shape,
@@ -225,16 +292,27 @@ impl NarrowPhaseDispatcher {
         pair: CollisionPair,
     ) -> NarrowPhaseResult {
         let key = DispatchKey::new(type_a, type_b);
-        if let Some(func) = self.table.get(&key) {
-            return func(shape_a, transform_a, shape_b, transform_b, pair);
+        if let Some(&func) = self.table.get(&key) {
+            return Self::invoke_canonical(
+                func,
+                shape_a,
+                type_a,
+                transform_a,
+                shape_b,
+                type_b,
+                transform_b,
+                pair,
+            );
         }
         match gjk_epa(shape_a, transform_a, shape_b, transform_b, pair) {
             Some(manifold) => NarrowPhaseResult::contact(manifold),
             None => NarrowPhaseResult::separated(),
         }
     }
-    /// Dispatch with swapped result: if the registered algorithm expects
-    /// (A,B) but we have (B,A), swap the inputs and flip the contact normal.
+    /// Order-independent dispatch.
+    ///
+    /// Retained as a stable public entry point; [`Self::dispatch`] now performs
+    /// the same canonicalisation, so this delegates directly to it.
     pub fn dispatch_symmetric(
         &self,
         shape_a: &dyn Shape,
@@ -245,27 +323,86 @@ impl NarrowPhaseDispatcher {
         transform_b: &Transform,
         pair: CollisionPair,
     ) -> NarrowPhaseResult {
+        self.dispatch(
+            shape_a,
+            type_a,
+            transform_a,
+            shape_b,
+            type_b,
+            transform_b,
+            pair,
+        )
+    }
+    /// Dispatch with the persistent GJK warm-start cache active.
+    ///
+    /// Identical to [`Self::dispatch`] for pairs with a registered specialised
+    /// algorithm. For pairs that fall through to GJK/EPA, when
+    /// [`DispatchConfig::enable_warm_start`] is set (the default) a warm-started
+    /// proximity query reuses the per-pair cached simplex/direction across frames
+    /// — giving a high warm-start hit rate on coherent motion. That query only
+    /// advances the cache and records hit-rate stats; the authoritative contact
+    /// is produced by the same GJK+EPA fallback as [`Self::dispatch`], so cold and
+    /// warm dispatch return identical manifolds.
+    pub fn dispatch_cached(
+        &mut self,
+        shape_a: &dyn Shape,
+        type_a: ShapeType,
+        transform_a: &Transform,
+        shape_b: &dyn Shape,
+        type_b: ShapeType,
+        transform_b: &Transform,
+        pair: CollisionPair,
+    ) -> NarrowPhaseResult {
         let key = DispatchKey::new(type_a, type_b);
-        if let Some(func) = self.table.get(&key) {
-            let need_swap = shape_type_ordinal(type_a) > shape_type_ordinal(type_b);
-            if need_swap {
-                let swapped_pair = CollisionPair::new(pair.b, pair.a);
-                let mut result = func(shape_b, transform_b, shape_a, transform_a, swapped_pair);
-                if let Some(ref mut manifold) = result.manifold {
-                    for contact in &mut manifold.contacts {
-                        contact.normal = -contact.normal;
-                        std::mem::swap(&mut contact.point_a, &mut contact.point_b);
-                    }
-                    manifold.pair = pair;
-                }
-                return result;
-            }
-            return func(shape_a, transform_a, shape_b, transform_b, pair);
+        if let Some(&func) = self.table.get(&key) {
+            return Self::invoke_canonical(
+                func,
+                shape_a,
+                type_a,
+                transform_a,
+                shape_b,
+                type_b,
+                transform_b,
+                pair,
+            );
+        }
+        if !self.config.enable_warm_start {
+            return match gjk_epa(shape_a, transform_a, shape_b, transform_b, pair) {
+                Some(manifold) => NarrowPhaseResult::contact(manifold),
+                None => NarrowPhaseResult::separated(),
+            };
+        }
+        let id_a = pair.a as u64;
+        let id_b = pair.b as u64;
+        {
+            let mut support_a = |d: [f64; 3]| Self::world_support(shape_a, transform_a, d);
+            let mut support_b = |d: [f64; 3]| Self::world_support(shape_b, transform_b, d);
+            // Advance the persistent per-pair simplex cache and record the
+            // warm-start hit-rate. The proximity witness is advisory; the
+            // authoritative contact comes from the GJK+EPA fallback below, so
+            // cold and warm dispatch produce identical manifolds.
+            let _ = self
+                .gjk_registry
+                .query(id_a, id_b, &mut support_a, &mut support_b);
         }
         match gjk_epa(shape_a, transform_a, shape_b, transform_b, pair) {
             Some(manifold) => NarrowPhaseResult::contact(manifold),
             None => NarrowPhaseResult::separated(),
         }
+    }
+    /// Aggregate warm-start cache statistics across all tracked body-pairs.
+    pub fn gjk_cache_stats(&self) -> GjkCacheStats {
+        self.gjk_registry.aggregate_stats()
+    }
+    /// Number of body-pairs currently held in the warm-start cache.
+    pub fn gjk_cache_pair_count(&self) -> usize {
+        self.gjk_registry.len()
+    }
+    /// Drop all warm-start cache entries that reference body `id`
+    /// (e.g. when the body is destroyed). The next query for an affected pair
+    /// starts cold.
+    pub fn remove_body(&mut self, id: usize) {
+        self.gjk_registry.remove_body(id as u64);
     }
     /// Generate contacts between two shapes (original API, no type hint needed).
     pub fn generate_contacts(

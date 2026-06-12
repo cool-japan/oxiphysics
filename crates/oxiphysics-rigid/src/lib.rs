@@ -15,6 +15,66 @@
 //! * [`update_sleeping`] — velocity-threshold sleeping detection.
 //! * [`apply_force_and_wake`] — apply a force to a body and wake it if needed.
 //! * [`BodyActivationEvent`] — enum signalling wake/sleep transitions.
+//!
+//! ## Examples
+//!
+//! ### Gravity integration
+//!
+//! ```rust
+//! use oxiphysics_rigid::{RigidBodySet, RigidBody, integrate_bodies};
+//! use oxiphysics_core::math::Vec3;
+//!
+//! let mut set = RigidBodySet::new();
+//! let h = set.insert({
+//!     let mut b = RigidBody::new(1.0);
+//!     b.linear_damping = 0.0;
+//!     b
+//! });
+//! let gravity = Vec3::new(0.0, -9.81, 0.0);
+//! // After 10 steps of dt=0.1 s, the body should have fallen
+//! for _ in 0..10 {
+//!     integrate_bodies(&mut set, 0.1, &gravity);
+//! }
+//! let body = set.get(h).expect("body must exist");
+//! assert!(body.transform.position.y < 0.0, "body should have fallen");
+//! ```
+//!
+//! ### Apply force wakes a sleeping body
+//!
+//! ```rust
+//! use oxiphysics_rigid::{RigidBodySet, RigidBody, BodyState, apply_force_and_wake};
+//! use oxiphysics_core::math::Vec3;
+//!
+//! let mut set = RigidBodySet::new();
+//! let h = set.insert({
+//!     let mut b = RigidBody::new(1.0);
+//!     b.state = BodyState::Sleeping;
+//!     b
+//! });
+//! apply_force_and_wake(&mut set, h, Vec3::new(10.0, 0.0, 0.0));
+//! let body = set.get(h).expect("body must exist");
+//! assert_eq!(body.state, BodyState::Active, "body should be awake after force");
+//! ```
+//!
+//! ### Stationary body falls asleep
+//!
+//! ```rust
+//! use oxiphysics_rigid::{RigidBodySet, RigidBody, BodyActivationEvent, update_sleeping};
+//! use oxiphysics_core::math::Vec3;
+//!
+//! let mut set = RigidBodySet::new();
+//! // Body at rest (zero velocity), will fall asleep after ~0.5s
+//! set.insert(RigidBody::new(1.0));
+//! let dt = 0.1_f64;
+//! let mut fell_asleep = false;
+//! for _ in 0..20 {
+//!     let events = update_sleeping(&mut set, dt, 0.05, 0.05);
+//!     if events.iter().any(|e| matches!(e, BodyActivationEvent::FellAsleep(_))) {
+//!         fell_asleep = true;
+//!     }
+//! }
+//! assert!(fell_asleep, "stationary body should fall asleep");
+//! ```
 #![warn(missing_docs)]
 
 mod error;

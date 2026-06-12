@@ -25,8 +25,8 @@ pub use tgs_solver::TgsSolver;
 
 pub mod joints;
 pub use joints::{
-    BallJoint, FixedJoint, GearJoint, MotorJoint, PrismaticJoint, PulleyJoint, RackPinionJoint,
-    RevoluteJoint, SpringJoint,
+    BallJoint, DistanceJoint, FixedJoint, GearJoint, MotorJoint, PrismaticJoint, PulleyJoint,
+    RackPinionJoint, RevoluteJoint, SphericalJoint, SpringJoint, WeldJoint,
 };
 
 pub mod islands;

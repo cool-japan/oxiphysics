@@ -57,13 +57,19 @@ pub(super) fn sphere_capsule_dispatch(
     pair: CollisionPair,
 ) -> NarrowPhaseResult {
     use oxiphysics_core::math::Vec3;
-    // SAFETY: this function is registered in the dispatch table under the
-    // (Sphere, Capsule) key, so the dispatcher only invokes it when `shape_a` is
-    // a concrete `Sphere` and `shape_b` a concrete `Capsule` — the caller pairs
-    // each shape with its matching `ShapeType`, and for this mixed pair the
-    // arguments arrive in the registered positional order (Sphere first, Capsule
-    // second). The reborrows keep the input lifetimes; both targets are plain
-    // structs with alignment no stricter than `dyn Shape`.
+    // Recover the concrete shapes via safe `Any` downcasts. This function is
+    // registered under the (Sphere, Capsule) key, so in canonical dispatch order
+    // `shape_a` is a `Sphere` and `shape_b` a `Capsule`. Should a mismatched pair
+    // ever reach here (e.g. a direct call), the downcast yields `None` and we
+    // fall back to the GJK/EPA path instead of triggering UB.
+    let (Some(sphere), Some(capsule)) = (
+        shape_a.as_any().downcast_ref::<Sphere>(),
+        shape_b.as_any().downcast_ref::<Capsule>(),
+    ) else {
+        return gjk_fallback_dispatch(shape_a, transform_a, shape_b, transform_b, pair);
+    };
+    // Invariant documentation: in canonical order these always hold (the
+    // downcasts above succeeded), so the asserts never fire on the hot path.
     debug_assert!(
         type_name(shape_a) == "Sphere",
         "narrowphase dispatch: shape_a must be Sphere for sphere_capsule_dispatch (registration/order invariant)"
@@ -72,8 +78,6 @@ pub(super) fn sphere_capsule_dispatch(
         type_name(shape_b) == "Capsule",
         "narrowphase dispatch: shape_b must be Capsule for sphere_capsule_dispatch (registration/order invariant)"
     );
-    let sphere = unsafe { &*(shape_a as *const dyn Shape as *const Sphere) };
-    let capsule = unsafe { &*(shape_b as *const dyn Shape as *const Capsule) };
     let sphere_center = transform_a.position;
     let half_h = capsule.half_height;
     let cap_up = transform_b.rotation * Vec3::new(0.0, half_h, 0.0);
@@ -231,34 +235,13 @@ pub(super) fn type_name(shape: &dyn Shape) -> &'static str {
     }
 }
 pub(super) fn as_sphere(shape: &dyn Shape) -> Option<&Sphere> {
-    let s = shape.support_point(&oxiphysics_core::math::Vec3::new(1.0, 0.0, 0.0));
-    let radius = s.x;
-    if radius > 0.0 {
-        let ptr = shape as *const dyn Shape as *const Sphere;
-        // SAFETY: the sole caller, `try_specialized`, only reaches this branch
-        // after `type_name(shape)` reported "Sphere" (matched on the Debug
-        // representation), so `shape` is a concrete `Sphere`. The reborrow keeps
-        // `shape`'s lifetime and `Sphere` is no more aligned than `dyn Shape`.
-        Some(unsafe { &*ptr })
-    } else {
-        None
-    }
+    shape.as_any().downcast_ref::<Sphere>()
 }
 pub(super) fn as_box(shape: &dyn Shape) -> Option<&BoxShape> {
-    let ptr = shape as *const dyn Shape as *const BoxShape;
-    // SAFETY: the sole caller, `try_specialized`, only invokes `as_box` after
-    // `type_name(shape)` reported "BoxShape" (matched on the Debug
-    // representation), so `shape` is a concrete `BoxShape`. The reborrow keeps
-    // `shape`'s lifetime and `BoxShape` is no more aligned than `dyn Shape`.
-    Some(unsafe { &*ptr })
+    shape.as_any().downcast_ref::<BoxShape>()
 }
 pub(super) fn as_capsule(shape: &dyn Shape) -> Option<&Capsule> {
-    let ptr = shape as *const dyn Shape as *const Capsule;
-    // SAFETY: the sole caller, `try_specialized`, only invokes `as_capsule`
-    // after `type_name(shape)` reported "Capsule" (matched on the Debug
-    // representation), so `shape` is a concrete `Capsule`. The reborrow keeps
-    // `shape`'s lifetime and `Capsule` is no more aligned than `dyn Shape`.
-    Some(unsafe { &*ptr })
+    shape.as_any().downcast_ref::<Capsule>()
 }
 /// Dispatch compound vs compound using O(n²) brute-force with optional AABB pruning.
 ///
@@ -721,6 +704,7 @@ mod tests {
             max_gjk_iterations: 32,
             max_epa_iterations: 32,
             contact_tolerance: 1e-4,
+            enable_warm_start: true,
         };
         let dispatcher = NarrowPhaseDispatcher::with_config(config);
         assert_eq!(dispatcher.registered_count(), 0);

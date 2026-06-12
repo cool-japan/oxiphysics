@@ -1,8 +1,11 @@
 # oxiphysics-articulated TODO
 
-Last updated: 2026-06-06
+**Version:** 0.1.3 | **Updated:** 2026-06-11 | **Status:** v0.1.x complete — production baseline; forward roadmap active
+**Scale:** 2,780 SLoC | ~25 tests (not yet listed in the README status table — see v0.2.0 housekeeping)
 
-## Phase 1: Foundation ✅ (shipped 2026-05-11)
+## Completed (v0.1.0 – v0.1.3)
+
+### Foundation (shipped 2026-05-11)
 
 - [x] Core types: `ArticulatedModel`, `Body`, `Joint`, `SpatialVec6`, `SpatialInertia`, `SpatialTransform`
 - [x] Spatial algebra (`spatial.rs`, 878 LoC): velocity/force/inertia transforms, Featherstone cross-product, 6×6 inertia tensor manipulation
@@ -13,16 +16,105 @@ Last updated: 2026-06-06
 - [x] Integration tests: 1-DoF pendulum, 2-DoF arm, 6-DoF robot energy conservation
 - [x] Wired into umbrella `oxiphysics` crate (2026-05-13): `pub use oxiphysics_articulated as articulated`
 
-## Phase 2: Extended Joint Types (v0.2.0)
+### Extended joint types (planned 2026-05-13, shipped within v0.1.x)
 
-- [x] Universal joint (2-DoF, cardan/Hooke joint) — needed for steering columns, driveshafts (planned 2026-05-13)
-- [x] Spherical joint (3-DoF ball-and-socket) — needed for shoulder/hip joints in humanoid robots (planned 2026-05-13)
-- [x] 6-DoF free joint — floating-base robots (SLAM / legged locomotion) (planned 2026-05-13)
-- [x] Helical (screw) joint — lead-screw actuators (planned 2026-05-13)
+- [x] Universal joint (2-DoF, cardan/Hooke joint) — needed for steering columns, driveshafts
+- [x] Spherical joint (3-DoF ball-and-socket) — needed for shoulder/hip joints in humanoid robots
+- [x] 6-DoF free joint — floating-base robots (SLAM / legged locomotion)
+- [x] Helical (screw) joint — lead-screw actuators
 
-## Phase 3: Dynamics Extensions (v0.2.0)
+### Dynamics extensions (planned 2026-05-13, shipped within v0.1.x)
 
-- [x] Centroidal momentum matrix (CMM) — legged locomotion planning (planned 2026-05-13)
-- [x] Composite rigid-body algorithm (CRBA) — faster mass-matrix computation for dense problems (planned 2026-05-13)
-- [x] Operational-space control (task-space Jacobian + inertia projection) (planned 2026-05-13)
-- [x] Soft joint limits via penalty forces (planned 2026-05-13)
+- [x] Centroidal momentum matrix (CMM) — legged locomotion planning
+- [x] Composite rigid-body algorithm (CRBA) — faster mass-matrix computation for dense problems
+- [x] Operational-space control (task-space Jacobian + inertia projection) — `osc.rs`
+- [x] Soft joint limits via penalty forces
+
+### Baseline verification (2026-06-11)
+
+- [x] Roadmap code audit: `rnea.rs` / `aba.rs` confirmed forward passes only — no derivative code anywhere in the crate; this gap drives the v0.2.0 theme below
+
+## v0.2.0 — Robotics parity (Pinocchio-class derivatives, IK, import)
+
+Everything below builds on the existing forward-pass Featherstone stack (`spatial.rs`, `rnea.rs`, `aba.rs`); no breaking changes to `ArticulatedModel` expected.
+
+### Housekeeping
+
+- [ ] Add oxiphysics-articulated to README status table — the crate is currently absent from the workspace "Implementation Status" table; add its row (2,780 SLoC, ~25 tests) alongside the other crates
+
+### Analytical derivatives
+
+- [ ] Analytical derivatives of RNEA (∂τ/∂q, ∂τ/∂q̇)
+  - **Goal:** matches central finite differences to 1e-6 and self-consistent adjoint identities to 1e-10 on a 7-DoF arm; ≥10x faster than finite differences.
+  - **Design:** Carpentier & Mansard 2018 recursive analytic derivatives over the existing spatial algebra (`spatial.rs`); crate currently has no derivative code (verified: `rnea.rs`/`aba.rs` forward passes only).
+  - **Files:** `spatial.rs`, `rnea.rs`, new derivatives module
+
+- [ ] ABA derivatives (∂q̈/∂q, ∂q̇, ∂τ)
+  - **Goal:** same tolerances via the identity ∂q̈ = −M⁻¹·∂RNEA.
+  - **Design:** reuse RNEA derivatives + Cholesky of CRBA mass matrix; cache factorization per step.
+  - **Files:** `aba.rs`, CRBA module, shared derivatives module
+
+- [ ] Sparse LTL/LTDL mass-matrix factorization
+  - **Goal:** factorization+solve beats dense Cholesky ≥2x on a 36-DoF humanoid tree.
+  - **Design:** Featherstone 2008 ch. 8 branching-induced sparsity (expanded-parent array), in-place LTDL; optional oxiblas (new dep) only for the dense fallback.
+
+### Kinematics, import, and actuation
+
+- [ ] IK: damped least squares + null-space projection
+  - **Goal:** 7-DoF arm reaches random reachable poses <1 mm / <0.1° in <50 iters; secondary posture task in null space verified.
+  - **Design:** Levenberg-Marquardt-damped pseudo-inverse on the OSC Jacobian (exists in `osc.rs`); selectively-damped SVD near singularities; io already defines `IkSolution` types (`robotics_io/types.rs:236`).
+  - **Cross-crate:** result types shared with oxiphysics-io `robotics_io`.
+
+- [ ] URDF import
+  - **Goal:** load a 7-DoF arm URDF into `ArticulatedModel`; RNEA gravity torques match the hand-built model to 1e-12.
+  - **Design:** consume oxiphysics-io `UrdfRobot`/`UrdfLink`/`UrdfJoint`/`UrdfInertial` (exist at `robotics_io/types.rs:181-1068`); map to the 7 existing joint types.
+  - **Risk:** parser completeness in io may need finishing (types exist, end-to-end XML parse unverified).
+  - **Cross-crate:** oxiphysics-io `robotics_io` URDF parser.
+
+- [ ] Actuator/transmission models
+  - **Goal:** reflected rotor inertia (n²·I_rotor) and Stribeck joint friction change ABA results matching MuJoCo `armature`+friction semantics on a pendulum.
+  - **Design:** per-joint armature term added to the articulated inertia, friction as torque-level model in the ABA loop.
+
+## v0.3.0 — Loops, contact, and optimal control
+
+Unlocks parallel mechanisms, humanoid contact, and trajectory optimization; loop closure is the item other crates wait on.
+
+- [ ] Kinematic loop closure
+  - **Goal:** four-bar linkage simulates with constraint violation <1e-8; validates against the analytic `FourBarLinkage` in oxiphysics-rigid (`mechanism_rigid/types.rs:723`).
+  - **Design:** spanning-tree + loop-closure Lagrange multipliers with Baumgarte (or constraint embedding per Featherstone ch. 8); enables parallel robots and the vehicle-crate suspension linkages.
+  - **Cross-crate:** oxiphysics-vehicle v0.2.0 "Multibody suspension from real linkage geometry" explicitly depends on this item.
+
+- [ ] Contact-aware articulated dynamics
+  - **Goal:** humanoid foot-ground contact resolves with complementarity residual <1e-8; energy decay monotone.
+  - **Design:** Delassus operator via sparse LTDL solves + cone-constrained solve delegated to oxiphysics-constraints (Lemke/NCP); Featherstone+LCP per Todorov 2014 (MuJoCo-style soft option too).
+  - **Cross-crate:** consumes oxiphysics-constraints direct LCP solvers (its v0.2.0) and NCP (its v0.3.0).
+
+- [ ] DDP/iLQR on articulated dynamics
+  - **Goal:** cart-pole and acrobot swing-up converge <100 iterations using analytical derivatives.
+  - **Design:** iLQR/DDP already exist generically in oxiphysics-constraints `optimal_control/` (verified: `DifferentialDynamicProgramming`, iLQR, LQR/DARE) — this item wires ABA + analytic derivatives in as the `DynamicsModel`, not a new solver.
+  - **Cross-crate:** oxiphysics-constraints `optimal_control/` provides the solver side.
+
+- [ ] MJCF import + floating-base state estimation
+  - **Goal:** load a MuJoCo humanoid MJCF; contact-aided floating-base estimator drift <1% over 10 s walking replay.
+  - **Design:** MJCF parser in oxiphysics-io (new module alongside robotics_io), complementary filter / EKF on `FreeFloatingJoint` state.
+  - **Cross-crate:** new MJCF module lands in oxiphysics-io.
+
+## v1.0 — Production & validation
+
+Freeze the robotics API surface only after derivatives and loop closure have proven the generalized-coordinate layout.
+
+- [ ] Dynamics cross-validation suite
+  - **Goal:** RNEA↔ABA roundtrip τ→q̈→τ to 1e-10; CRBA M equals column-wise RNEA M to 1e-12; 10 s free-swing energy drift <1e-8 (already partially covered by existing energy tests — extend to all 7 joint types and floating base).
+  - **Design:** golden-model tests, randomized trees via proptest (≤64 bodies, no NaN).
+
+- [ ] Performance gates
+  - **Goal:** ABA 7-DoF <1 µs, 36-DoF humanoid <8 µs per call on reference hardware; zero heap allocation in hot loops.
+  - **Design:** criterion benches + allocation-counting test harness; gates run as local scripts (no new CI workflow yamls).
+
+- [ ] API stability for the robotics surface
+  - **Goal:** `Joint` trait sealed or `#[non_exhaustive]`; semver-checked (cargo-semver-checks local script).
+  - **Design:** finalize generalized-coordinate layout docs (q ordering for quaternion joints).
+
+---
+
+History: the pre-2026-06-11 TODO (last updated 2026-06-06) is preserved in full under "Completed"; the forward roadmap derives from the code-verified dynamics design brief of 2026-06-11.

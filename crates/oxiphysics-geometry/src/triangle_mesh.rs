@@ -778,6 +778,10 @@ impl Ord for OrdF64 {
 // -----------------------------------------------------------------------
 
 impl Shape for TriangleMesh {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn bounding_box(&self) -> Aabb {
         if self.vertices.is_empty() {
             return Aabb::new(Vec3::zeros(), Vec3::zeros());

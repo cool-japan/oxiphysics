@@ -121,7 +121,8 @@ pub use oxiphysics_viz as viz;
 /// File I/O and serialization.
 pub use oxiphysics_io as io;
 
-/// WebAssembly bindings.
+/// WebAssembly bindings (requires the `wasm` feature).
+#[cfg(feature = "wasm")]
 pub use oxiphysics_wasm as wasm;
 
 /// Full physics simulation pipeline.
@@ -129,6 +130,15 @@ pub mod pipeline;
 
 /// Performance regression testing infrastructure.
 pub mod perf_regression;
+
+/// Fluent builder API for configuring physics simulations.
+pub mod builder;
+
+/// Diagnostics and performance monitoring for OxiPhysics simulations.
+pub mod diagnostics;
+
+/// Commonly used types, traits, and functions — import with `use oxiphysics::prelude::*`.
+pub mod prelude;
 
 /// Spatial force fields (gravity wells, vortex, wind, explosion).
 pub mod force_field;

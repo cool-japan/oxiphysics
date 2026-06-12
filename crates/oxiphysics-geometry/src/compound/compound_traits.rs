@@ -15,6 +15,10 @@ use oxiphysics_core::math::{Mat3, Real, Vec3};
 use super::types::Compound;
 
 impl Shape for Compound {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn bounding_box(&self) -> Aabb {
         if self.children.is_empty() {
             return Aabb::new(Vec3::zeros(), Vec3::zeros());

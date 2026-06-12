@@ -18,9 +18,21 @@ pub struct RayHit {
 }
 
 /// Trait for geometric shapes used in physics simulation.
-pub trait Shape: std::fmt::Debug + Send + Sync {
+///
+/// The `'static` bound makes every shape downcastable through [`Shape::as_any`],
+/// which the narrow-phase dispatcher relies on for sound, panic-free concrete
+/// shape recovery (no raw-pointer transmutes). All concrete shapes are owned
+/// value types, so the bound is satisfied automatically.
+pub trait Shape: std::fmt::Debug + Send + Sync + 'static {
     /// Compute the axis-aligned bounding box of this shape (in local space).
     fn bounding_box(&self) -> Aabb;
+
+    /// Upcast to [`std::any::Any`] for safe concrete-type recovery.
+    ///
+    /// Used by the narrow-phase dispatcher to downcast a `&dyn Shape` back to a
+    /// concrete shape via [`std::any::Any::downcast_ref`] instead of an `unsafe`
+    /// pointer cast. Every implementor returns `self`.
+    fn as_any(&self) -> &dyn std::any::Any;
 
     /// Compute the support point in the given direction (for GJK).
     fn support_point(&self, direction: &Vec3) -> Vec3;

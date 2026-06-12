@@ -701,6 +701,10 @@ fn cbrt_real(x: f64) -> f64 {
 }
 
 impl Shape for Torus {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn bounding_box(&self) -> Aabb {
         let half = self.bounding_box_extents();
         Aabb::new(-half, half)

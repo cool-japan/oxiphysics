@@ -194,6 +194,7 @@ impl GjkCacheRegistry {
             agg.queries += cache.stats.queries;
             agg.iterations += cache.stats.iterations;
             agg.warm_start_saved += cache.stats.warm_start_saved;
+            agg.warm_started += cache.stats.warm_started;
         }
         agg
     }
@@ -986,6 +987,8 @@ pub struct GjkCacheStats {
     pub warm_start_saved: u64,
     /// Number of queries performed.
     pub queries: u64,
+    /// Number of queries that were warm-started (reused a cached simplex).
+    pub warm_started: u64,
 }
 impl GjkCacheStats {
     /// Create zeroed stats.
@@ -996,8 +999,11 @@ impl GjkCacheStats {
     pub fn record_query(&mut self, iters: u64, was_warm: bool, cold_estimate: u64) {
         self.queries += 1;
         self.iterations += iters;
-        if was_warm && cold_estimate > iters {
-            self.warm_start_saved += cold_estimate - iters;
+        if was_warm {
+            self.warm_started += 1;
+            if cold_estimate > iters {
+                self.warm_start_saved += cold_estimate - iters;
+            }
         }
     }
     /// Average iterations per query.
@@ -1006,6 +1012,14 @@ impl GjkCacheStats {
             0.0
         } else {
             self.iterations as f64 / self.queries as f64
+        }
+    }
+    /// Warm-start hit ratio: fraction of queries that reused a cached simplex (0.0–1.0).
+    pub fn hit_ratio(&self) -> f64 {
+        if self.queries == 0 {
+            0.0
+        } else {
+            self.warm_started as f64 / self.queries as f64
         }
     }
 }

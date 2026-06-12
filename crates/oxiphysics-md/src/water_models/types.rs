@@ -171,6 +171,35 @@ impl WaterMolecule {
             && (r_hh - geom.r_hh()).abs() < tol
     }
 }
+
+/// Atom velocities for a water molecule (Å/time-unit), parallel to `WaterMolecule` positions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaterVelocities {
+    /// Velocity of the oxygen atom.
+    pub v_oxygen: [f64; 3],
+    /// Velocity of the first hydrogen.
+    pub v_hydrogen1: [f64; 3],
+    /// Velocity of the second hydrogen.
+    pub v_hydrogen2: [f64; 3],
+}
+impl WaterVelocities {
+    /// Construct from the three atom velocities.
+    pub fn new(v_oxygen: [f64; 3], v_hydrogen1: [f64; 3], v_hydrogen2: [f64; 3]) -> Self {
+        Self {
+            v_oxygen,
+            v_hydrogen1,
+            v_hydrogen2,
+        }
+    }
+    /// All-zero velocities.
+    pub fn zero() -> Self {
+        Self {
+            v_oxygen: [0.0; 3],
+            v_hydrogen1: [0.0; 3],
+            v_hydrogen2: [0.0; 3],
+        }
+    }
+}
 /// Geometric parameters for a water model.
 #[derive(Debug, Clone)]
 pub struct WaterGeometry {

@@ -13,6 +13,60 @@
 //! - **Boundary conditions** (Dirichlet and Neumann)
 //! - **Iterative solvers** (CG, preconditioned CG)
 //! - **Static analysis** driver ([`analysis::LinearStaticAnalysis`])
+//!
+//! # Examples
+//!
+//! ## Beam mesh node and element counts
+//!
+//! ```
+//! use oxiphysics_fem::mesh::TetrahedralMesh;
+//! let mesh = TetrahedralMesh::generate_beam(1.0, 0.1, 0.1, 2, 1, 1);
+//! assert_eq!(mesh.num_nodes(), 3 * 2 * 2);  // (nx+1)*(ny+1)*(nz+1) = 3*2*2 = 12
+//! assert_eq!(mesh.num_elements(), 5 * 2 * 1 * 1);  // 5*nx*ny*nz = 10
+//! ```
+//!
+//! ## Material construction and shear modulus
+//!
+//! ```
+//! use oxiphysics_fem::constitutive::LinearElasticMaterial;
+//! let mat = LinearElasticMaterial::new(200e9, 0.3);
+//! let g = mat.shear_modulus();
+//! // G = E / (2*(1+nu)) = 200e9 / 2.6 ≈ 76.92e9
+//! assert!((g - 200e9 / (2.0 * 1.3)).abs() < 1e6);
+//! ```
+//!
+//! ## Minimal linear static solve
+//!
+//! ```
+//! use oxiphysics_fem::{
+//!     analysis::LinearStaticAnalysis,
+//!     boundary::DirichletBc,
+//!     constitutive::LinearElasticMaterial,
+//!     mesh::TetrahedralMesh,
+//! };
+//! use oxiphysics_core::math::Vec3;
+//!
+//! // Tiny 1-cell beam (8 nodes, 5 elements)
+//! let mesh = TetrahedralMesh::generate_beam(1.0, 1.0, 1.0, 1, 1, 1);
+//! let mat = LinearElasticMaterial::new(1e6, 0.3);
+//!
+//! // Pin left face (x=0): node_idx = iz*2*2 + iy*2 + ix, ix=0 → [0,2,4,6]
+//! let mut bcs = Vec::new();
+//! for &node in &[0usize, 2, 4, 6] {
+//!     for dof in 0..3 {
+//!         bcs.push(DirichletBc::new(node, dof, 0.0));
+//!     }
+//! }
+//!
+//! // Gravity body force downward
+//! let body_force = Vec3::new(0.0, -1000.0, 0.0);
+//! let result = LinearStaticAnalysis::new().solve(&mesh, &mat, &bcs, &[], &body_force);
+//! assert_eq!(result.displacements.len(), mesh.num_nodes());
+//! // All displacements should be finite
+//! for d in &result.displacements {
+//!     assert!(d.x.is_finite() && d.y.is_finite() && d.z.is_finite());
+//! }
+//! ```
 #![warn(missing_docs)]
 
 pub mod adaptive_mesh;

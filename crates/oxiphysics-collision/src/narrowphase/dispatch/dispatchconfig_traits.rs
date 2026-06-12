@@ -17,6 +17,7 @@ impl Default for DispatchConfig {
             max_gjk_iterations: 64,
             max_epa_iterations: 64,
             contact_tolerance: 1e-6,
+            enable_warm_start: true,
         }
     }
 }

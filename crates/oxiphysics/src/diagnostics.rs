@@ -83,10 +83,8 @@ impl PhysicsTimer {
 
     /// Return the total accumulated time (including any currently-running interval).
     pub fn elapsed(&self) -> Duration {
-        if self.running {
-            if let Some(t0) = self.start_instant {
-                return self.accumulated + t0.elapsed();
-            }
+        if self.running && let Some(t0) = self.start_instant {
+            return self.accumulated + t0.elapsed();
         }
         self.accumulated
     }

@@ -845,6 +845,58 @@ pub mod real {
             result
         }
 
+        /// Download raw `u32` values from the GPU buffer at `handle`.
+        ///
+        /// Mirrors [`read_buffer_f32`](Self::read_buffer_f32) but reinterprets
+        /// the mapped bytes as `u32`.  This is required for integer readbacks
+        /// (scan, compaction, histogram) where a float round-trip would corrupt
+        /// NaN-pattern bit values.
+        ///
+        /// Returns an empty `Vec` if the handle is invalid or the readback fails.
+        pub fn read_buffer_u32(&self, handle: WgpuBufferHandle) -> Vec<u32> {
+            let buf = match self.buffers.get(handle.0).and_then(|b| b.as_ref()) {
+                Some(b) => b.clone(),
+                None => return Vec::new(),
+            };
+            let size = self.buffer_sizes[handle.0];
+
+            let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("oxiphysics_staging_readback_u32"),
+                size,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            encoder.copy_buffer_to_buffer(&buf, 0, &staging, 0, size);
+            self.queue.submit(std::iter::once(encoder.finish()));
+
+            let slice = staging.slice(..);
+            let (tx, rx) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |result| {
+                let _ = tx.send(result);
+            });
+
+            if let Err(_e) = self.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            }) {
+                return Vec::new();
+            }
+
+            if rx.recv().ok().and_then(|r| r.ok()).is_none() {
+                return Vec::new();
+            }
+
+            let mapped = slice.get_mapped_range();
+            let result: Vec<u32> = bytemuck::cast_slice::<u8, u32>(&mapped).to_vec();
+            drop(mapped);
+            staging.unmap();
+            result
+        }
+
         // ── Dispatch ──────────────────────────────────────────────────────────
 
         /// Compute the 3-D workgroup dispatch counts for `n_items` elements.

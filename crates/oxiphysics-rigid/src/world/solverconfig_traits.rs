@@ -16,6 +16,8 @@ impl Default for SolverConfig {
             position_iterations: 3,
             baumgarte_factor: 0.2,
             restitution_threshold: 1.0,
+            substeps: 1,
+            restitution: 0.3,
         }
     }
 }

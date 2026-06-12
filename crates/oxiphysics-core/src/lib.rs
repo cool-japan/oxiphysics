@@ -12,8 +12,11 @@
 #![warn(missing_docs)]
 
 pub mod collision;
+pub mod compensated;
 pub mod complex;
 pub mod dual_quaternion;
+pub mod exact_predicates;
+pub mod extended_precision;
 mod error;
 pub mod graph;
 pub mod interpolation;

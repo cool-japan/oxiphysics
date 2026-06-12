@@ -27,12 +27,13 @@ oxiphysics-materials = { workspace = true }
 oxiphysics-gpu = { workspace = true }
 oxiphysics-viz = { workspace = true }
 oxiphysics-io = { workspace = true }
-oxiphysics-wasm = { workspace = true }
+oxiphysics-wasm = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 [features]
 default = []
+wasm = ["dep:oxiphysics-wasm"]
 
 [dev-dependencies]
 criterion = { workspace = true }

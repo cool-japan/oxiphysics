@@ -1,7 +1,7 @@
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
-//! GPU-style grid-based reduction and aggregation kernels.
+//! GPU-style grid-based reduction and aggregation kernels — CPU reference implementation (parity oracle for [`crate::gpu_primitives`]).
 //!
 //! Provides tiled parallel reductions, segmented scans, work-group min/max/sum
 //! operations, warp-level primitives (simulated on CPU), stream compaction

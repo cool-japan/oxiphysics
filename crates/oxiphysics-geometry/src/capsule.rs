@@ -892,6 +892,10 @@ impl CurvedCapsulePath {
 }
 
 impl Shape for Capsule {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn bounding_box(&self) -> Aabb {
         let r = self.radius;
         let h = self.half_height + r;

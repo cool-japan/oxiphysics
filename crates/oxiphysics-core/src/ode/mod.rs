@@ -10,6 +10,7 @@ pub mod impliciteulernewton_traits;
 pub mod leapfrog_traits;
 pub mod types;
 pub mod verlet_traits;
+pub mod symplectic;
 
 // Re-export all types
 pub use functions::*;

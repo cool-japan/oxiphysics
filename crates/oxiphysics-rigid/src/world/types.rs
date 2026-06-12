@@ -4,6 +4,7 @@
 use super::functions::*;
 use crate::body::{BodyState, BodyType, RigidBody};
 use crate::collider::Collider;
+use crate::impulse::SubStepRestitutionCorrector;
 use crate::pipeline::BodySnapshot;
 use crate::sets::{ColliderSet, RigidBodySet};
 use oxiphysics_core::math::Vec3;
@@ -500,6 +501,18 @@ pub struct ContactPair {
     /// World-space contact point.
     pub contact_point: [f64; 3],
 }
+/// A contact cached at frame start for the small-steps solver. Stores the body
+/// handles, the frame-start normal (from B toward A), and the two sphere radii
+/// so penetration depth can be RE-PROJECTED from current body transforms each
+/// substep without re-running broad/narrowphase.
+#[derive(Debug, Clone)]
+struct CachedContact {
+    body_a: BodyHandle,
+    body_b: BodyHandle,
+    normal: [f64; 3],
+    radius_a: f64,
+    radius_b: f64,
+}
 /// Result of a raycast query against the world.
 #[derive(Debug, Clone)]
 pub struct RaycastResult {
@@ -559,6 +572,10 @@ pub struct SolverConfig {
     /// Minimum restitution threshold — below this value restitution is treated
     /// as zero to avoid jitter.
     pub restitution_threshold: f64,
+    /// Number of velocity sub-steps per frame for the small-steps solver (default 1 = legacy single-step behaviour).
+    pub substeps: usize,
+    /// Coefficient of restitution used by the small-steps solver normal response.
+    pub restitution: f64,
 }
 /// A ray defined by an origin and a direction (need not be normalised; `t` is
 /// in *ray-space* units i.e. multiples of the direction length).
@@ -1250,6 +1267,253 @@ impl PhysicsWorld {
                 force_mag * vz / v_mag,
             );
             body.apply_force(f);
+        }
+    }
+}
+impl PhysicsWorld {
+    /// Advance the simulation by one frame using the PhysX-5 / Macklin et al.
+    /// 2019 "Small Steps" sub-stepping scheme.
+    ///
+    /// # The small-steps contract
+    ///
+    /// Unlike [`step`](Self::step) (which runs the whole pipeline once per
+    /// frame) and unlike the naive [`step_substep`](Self::step_substep) (which
+    /// re-runs the *entire* broad/narrowphase + solve pipeline for every
+    /// sub-`dt`), this method performs collision **detection exactly ONCE per
+    /// frame on the frame-start state**. The detected contacts are cached
+    /// together with their frame-start normal (which points from B toward A)
+    /// and the two sphere radii. The frame is then advanced over `N =
+    /// self.solver_config.substeps` sub-steps of size `h = dt / N`, where
+    /// `dt = self.dt`.
+    ///
+    /// Each sub-step:
+    /// 1. integrates gravity into velocity over `h` (`integrate_forces`);
+    /// 2. runs **one** velocity solve over the cached contacts. The penetration
+    ///    depth is **RE-PROJECTED from the CURRENT body transforms along the
+    ///    cached normal** — broad/narrowphase is **NOT** re-run, and the normal
+    ///    is held fixed at its frame-start value (this is the defining
+    ///    "re-project, do not re-detect" contract of small steps). Any contact
+    ///    whose re-projected depth has become negative (the bodies have
+    ///    separated) is **SKIPPED** for that sub-step;
+    /// 3. integrates position over `h` (`integrate_velocity`).
+    ///
+    /// After the sub-step loop a short final **relax pass** (two iterations
+    /// with Baumgarte bias and restitution disabled) removes residual approach
+    /// velocity for stack stability. Simulation time is advanced by the full
+    /// `dt` once at the end (NOT per sub-step).
+    ///
+    /// This scheme supersedes [`step_substep`](Self::step_substep) on the hot
+    /// path because detecting once and re-projecting is dramatically cheaper
+    /// and far more stable for stacks than re-running the full pipeline per
+    /// sub-`dt`. The legacy [`step`](Self::step) and
+    /// [`step_substep`](Self::step_substep) entry points are left unchanged;
+    /// `self.dt` controls the frame step and `self.solver_config.substeps`
+    /// controls the sub-step count (default `1`, i.e. a single small step).
+    ///
+    /// # Restitution threshold clamping
+    ///
+    /// The [`SubStepRestitutionCorrector`] is constructed with its velocity
+    /// threshold clamped to `restitution_threshold.min(0.5)`. The default
+    /// `restitution_threshold` is `1.0` m/s, which would erroneously suppress a
+    /// genuine `0.5` m/s bounce; clamping to `0.5` keeps resting-jitter
+    /// suppression while still allowing real bounces through. (The per-sub-step
+    /// restitution `e_sub` does not currently consume the velocity threshold —
+    /// the corrector is constructed exactly as specified for documentation and
+    /// forward-compatibility, and `e_sub` is its
+    /// [`per_substep_restitution`](SubStepRestitutionCorrector::per_substep_restitution)
+    /// output.)
+    pub fn step_small_steps(&mut self) {
+        let dt = self.dt;
+        let substeps = self.solver_config.substeps.max(1);
+        let h = dt / substeps as f64;
+        let gravity = self.gravity;
+        let g_vec = Vec3::new(gravity[0], gravity[1], gravity[2]);
+
+        // Detect ONCE on frame-start state.
+        let pairs = self.broadphase_pairs();
+        let contacts = self.narrowphase_contacts(&pairs);
+        self.last_contacts = contacts.clone();
+
+        let mut cached: Vec<CachedContact> = Vec::with_capacity(contacts.len());
+        for cp in &contacts {
+            let (ra, rb) = {
+                let ba = match self.bodies.get(cp.body_a) {
+                    Some(b) => b,
+                    None => continue,
+                };
+                let bb = match self.bodies.get(cp.body_b) {
+                    Some(b) => b,
+                    None => continue,
+                };
+                let ra = if ba.mass > 0.0 {
+                    ba.mass.cbrt() * 0.5
+                } else {
+                    0.5_f64
+                };
+                let ra = ra.max(0.1);
+                let rb = if bb.mass > 0.0 {
+                    bb.mass.cbrt() * 0.5
+                } else {
+                    0.5_f64
+                };
+                let rb = rb.max(0.1);
+                (ra, rb)
+            };
+            cached.push(CachedContact {
+                body_a: cp.body_a,
+                body_b: cp.body_b,
+                normal: cp.normal,
+                radius_a: ra,
+                radius_b: rb,
+            });
+        }
+
+        let corrector = SubStepRestitutionCorrector::new(
+            self.solver_config.restitution,
+            self.solver_config.restitution_threshold.min(0.5),
+            substeps,
+        );
+        let e_sub = corrector.per_substep_restitution();
+
+        // Move (not clone) into the vec iterated by the solve loops so we never
+        // hold a borrow of `self.bodies` across the position/velocity writes.
+        let cached_clone = cached;
+
+        for _ in 0..substeps {
+            for (_, body) in self.bodies.iter_mut() {
+                body.integrate_forces(h, &g_vec);
+            }
+            for c in &cached_clone {
+                self.solve_cached_contact_velocity(c, e_sub, h, true);
+            }
+            for (_, body) in self.bodies.iter_mut() {
+                body.integrate_velocity(h);
+            }
+        }
+
+        // Final relax pass: settle residual approach velocity for stack
+        // stability (Baumgarte bias and restitution disabled).
+        for _ in 0..2 {
+            for c in &cached_clone {
+                self.solve_cached_contact_velocity(c, 0.0, h, false);
+            }
+        }
+
+        self.time += dt;
+    }
+    /// One velocity-level solve for a single cached small-steps contact.
+    ///
+    /// The penetration depth is **re-projected from the CURRENT body
+    /// transforms** (`depth = (radius_a + radius_b) - |pa - pb|`) while the
+    /// contact normal is held **fixed** at its cached frame-start value; if the
+    /// re-projected depth is negative the bodies have separated and the contact
+    /// is skipped.
+    ///
+    /// Sign convention: the normal points from B toward A. A resting /
+    /// penetrating contact has `rel_vn` slightly negative and (in bias mode)
+    /// `bias > 0`, so the solved impulse `j > 0` pushes A along `+n` and B along
+    /// `-n` (apart). A fast impact has `rel_vn` strongly negative and
+    /// `restitution_term = -e_sub * rel_vn > 0`, producing a large `j` and hence
+    /// a bounce. `j` is clamped `>= 0` so bodies are never pulled together. The
+    /// solve target is `max(bias, restitution_term)` — the *larger* of the
+    /// Baumgarte position-correction bias and the restitution bias, never their
+    /// sum — so the penetration push cannot inflate the bounce. Energy stays
+    /// bounded because `j` is bounded by `|rel_vn|` plus the larger of
+    /// `e_sub * |rel_vn|` (with `e_sub < 1`) and the position-correction bias.
+    ///
+    /// When `with_bias` is `false` (the relax/settle pass) both the Baumgarte
+    /// position-correction bias and the restitution term are disabled, leaving a
+    /// pure non-penetration velocity projection.
+    fn solve_cached_contact_velocity(
+        &mut self,
+        c: &CachedContact,
+        e_sub: f64,
+        h: f64,
+        with_bias: bool,
+    ) {
+        let pa = match self.bodies.get(c.body_a) {
+            Some(b) => [
+                b.transform.position.x,
+                b.transform.position.y,
+                b.transform.position.z,
+            ],
+            None => return,
+        };
+        let pb = match self.bodies.get(c.body_b) {
+            Some(b) => [
+                b.transform.position.x,
+                b.transform.position.y,
+                b.transform.position.z,
+            ],
+            None => return,
+        };
+        let dx = pa[0] - pb[0];
+        let dy = pa[1] - pb[1];
+        let dz = pa[2] - pb[2];
+        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+        let depth = (c.radius_a + c.radius_b) - dist;
+        if depth < 0.0 {
+            return;
+        }
+        let (va, inv_ma) = match self.bodies.get(c.body_a) {
+            Some(b) => {
+                let im = if b.body_type == BodyType::Dynamic {
+                    b.inverse_mass
+                } else {
+                    0.0
+                };
+                ([b.velocity.x, b.velocity.y, b.velocity.z], im)
+            }
+            None => return,
+        };
+        let (vb, inv_mb) = match self.bodies.get(c.body_b) {
+            Some(b) => {
+                let im = if b.body_type == BodyType::Dynamic {
+                    b.inverse_mass
+                } else {
+                    0.0
+                };
+                ([b.velocity.x, b.velocity.y, b.velocity.z], im)
+            }
+            None => return,
+        };
+        let n = c.normal;
+        let rel_vn = (va[0] - vb[0]) * n[0] + (va[1] - vb[1]) * n[1] + (va[2] - vb[2]) * n[2];
+        let denom = inv_ma + inv_mb;
+        if denom < 1e-30 {
+            return;
+        }
+        let bias = if with_bias {
+            let slop = 0.005;
+            let beta = self.solver_config.baumgarte_factor;
+            (beta / h) * (depth - slop).max(0.0)
+        } else {
+            0.0
+        };
+        let restitution_term = if rel_vn < 0.0 { -e_sub * rel_vn } else { 0.0 };
+        // Post-solve target separation speed: the LARGER of the Baumgarte
+        // position-correction bias and the restitution bias, NOT their sum.
+        // Summing double-counts (the penetration push would inflate the bounce
+        // and inject energy); taking the maximum is the standard Catto/Box2D
+        // rule and keeps a real bounce while bounding energy.
+        let target = bias.max(restitution_term);
+        let mut j = (target - rel_vn) / denom;
+        if j < 0.0 {
+            j = 0.0;
+        }
+        if let Some(ba) = self.bodies.get_mut(c.body_a)
+            && ba.body_type == BodyType::Dynamic
+        {
+            ba.velocity.x += j * n[0] * inv_ma;
+            ba.velocity.y += j * n[1] * inv_ma;
+            ba.velocity.z += j * n[2] * inv_ma;
+        }
+        if let Some(bb) = self.bodies.get_mut(c.body_b)
+            && bb.body_type == BodyType::Dynamic
+        {
+            bb.velocity.x -= j * n[0] * inv_mb;
+            bb.velocity.y -= j * n[1] * inv_mb;
+            bb.velocity.z -= j * n[2] * inv_mb;
         }
     }
 }

@@ -593,6 +593,10 @@ impl Cylinder {
 }
 
 impl Shape for Cylinder {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn bounding_box(&self) -> Aabb {
         Aabb::new(
             Vec3::new(-self.radius, -self.half_height, -self.radius),

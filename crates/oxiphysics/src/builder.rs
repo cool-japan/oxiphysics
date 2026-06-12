@@ -36,20 +36,15 @@
 // ---------------------------------------------------------------------------
 
 /// Selects the broadphase collision-detection algorithm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BroadphaseType {
     /// Dynamic AABB tree — good for scenes with many moving objects.
     DynamicAabb,
     /// Sweep-and-prune along a primary axis — efficient for convex bodies.
+    #[default]
     SweepAndPrune,
     /// Brute-force O(n²) check — useful for tiny scenes or debugging.
     BruteForce,
-}
-
-impl Default for BroadphaseType {
-    fn default() -> Self {
-        Self::SweepAndPrune
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -226,20 +221,15 @@ pub enum ShapeKind {
 // ---------------------------------------------------------------------------
 
 /// Motion type of a rigid body.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BodyKind {
     /// Infinitely massive body that never moves.
     Static,
     /// Moves according to an externally provided trajectory.
     Kinematic,
     /// Fully simulated body obeying Newton's laws.
+    #[default]
     Dynamic,
-}
-
-impl Default for BodyKind {
-    fn default() -> Self {
-        Self::Dynamic
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -449,20 +439,15 @@ impl RigidBodyBuilder {
 // ---------------------------------------------------------------------------
 
 /// Selects the LBM collision operator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum LbmCollisionOp {
     /// Single-relaxation-time (BGK) operator.
+    #[default]
     Bgk,
     /// Multiple-relaxation-time (MRT) operator.
     Mrt,
     /// Two-relaxation-time (TRT) operator.
     Trt,
-}
-
-impl Default for LbmCollisionOp {
-    fn default() -> Self {
-        Self::Bgk
-    }
 }
 
 /// Selects the dimensionality of the LBM grid.
@@ -595,20 +580,15 @@ impl FluidSimBuilder {
 // ---------------------------------------------------------------------------
 
 /// SPH pressure solver variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SphPressureSolver {
     /// Weakly Compressible SPH (equation of state).
+    #[default]
     WcSph,
     /// Implicit Incompressible SPH (IISPH).
     Iisph,
     /// Predictive-corrective incompressible SPH (PCISPH).
     Pcisph,
-}
-
-impl Default for SphPressureSolver {
-    fn default() -> Self {
-        Self::WcSph
-    }
 }
 
 /// Fully resolved configuration for an SPH simulation.

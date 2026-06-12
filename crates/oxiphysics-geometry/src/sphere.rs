@@ -618,6 +618,10 @@ fn subdivide_icosphere(
 }
 
 impl Shape for Sphere {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn bounding_box(&self) -> Aabb {
         let extent = Vec3::new(self.radius, self.radius, self.radius);
         Aabb::new(-extent, extent)

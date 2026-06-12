@@ -4,7 +4,8 @@
 
 use std::f64::consts::PI;
 
-use super::types::{WaterGeometry, WaterModelSummary, WaterModelType, WaterMolecule, WaterParams};
+use super::types::{WaterGeometry, WaterModelSummary, WaterModelType, WaterMolecule, WaterParams, WaterVelocities};
+use crate::MdError;
 
 pub(super) fn dist(a: &[f64; 3], b: &[f64; 3]) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
@@ -101,18 +102,28 @@ pub fn water_tip4p_pair_energy(
 pub fn spce_self_polarisation_energy() -> f64 {
     5.22
 }
-/// SETTLE rigid-body constraint algorithm stub.
+/// Backward-compatible SETTLE entry point.
 ///
-/// Projects the hydrogen positions back so that:
-/// - Each O-H bond length equals the target from `geom`.
-/// - The H-H distance is consistent with the bond angle.
-pub fn rigid_water_settle(mol: &mut WaterMolecule, _dt: f64) {
-    rigid_water_settle_geom(mol, &WaterGeometry::tip3p());
+/// Real SETTLE ([`settle_positions`]) needs BOTH the start-of-step reference
+/// positions and the post-move unconstrained positions. This compat wrapper is
+/// used when only a single molecule is available: it synthesizes an *idealized*
+/// reference triangle via [`WaterMolecule::with_geometry`] (rigid TIP3P geometry
+/// centered on the current oxygen) and then applies the analytic
+/// [`settle_positions`] to constrain `mol` onto the rigid reference. For true MD
+/// stepping, call [`settle_positions`] directly with the genuine reference.
+pub fn rigid_water_settle(mol: &mut WaterMolecule, _dt: f64) -> Result<(), MdError> {
+    let geom = WaterGeometry::tip3p();
+    let reference = WaterMolecule::with_geometry(mol.oxygen, &geom);
+    let params = WaterParams::tip3p();
+    settle_positions(&reference, mol, &geom, params.mass_o, params.mass_h)
 }
-/// SETTLE with explicit geometry parameters.
+/// Iterative distance-projection (SHAKE-like) constraint with explicit geometry.
 ///
-/// Iteratively projects bond distances until convergence.
-pub fn rigid_water_settle_geom(mol: &mut WaterMolecule, geom: &WaterGeometry) {
+/// This is NOT the analytic SETTLE: it repeatedly rescales each bond vector to
+/// its target length (up to 50 sweeps) until the O-H and H-H distances converge.
+/// It does not preserve the molecular centre of mass and does not use a reference
+/// orientation. For the closed-form analytic algorithm use [`settle_positions`].
+pub fn rigid_water_project_geom(mol: &mut WaterMolecule, geom: &WaterGeometry) {
     let target_oh = geom.r_oh;
     let target_hh = geom.r_hh();
     for _ in 0..50 {
@@ -128,6 +139,13 @@ pub fn rigid_water_settle_geom(mol: &mut WaterMolecule, geom: &WaterGeometry) {
     if geom.has_m_site() {
         mol.update_m_site(geom);
     }
+}
+/// Iterative distance-projection constraint using the default TIP3P geometry.
+///
+/// Thin public alias of [`rigid_water_project_geom`] preserving the original
+/// iterative entry point. NOT analytic SETTLE — see [`settle_positions`].
+pub fn rigid_water_project(mol: &mut WaterMolecule, geom: &WaterGeometry) {
+    rigid_water_project_geom(mol, geom);
 }
 /// Move `b` along the b-a axis so that |b - a| = `target_dist`.
 pub(super) fn project_to_distance(a: &[f64; 3], b: &mut [f64; 3], target_dist: f64) {
@@ -586,6 +604,445 @@ pub fn spce_polarisation_correction(mu_model_debye: f64) -> f64 {
     let delta_mu = mu_model_debye - mu_gas;
     delta_mu * delta_mu / (2.0 * alpha_a3) * conv
 }
+// --- Small private vector helpers for the analytic SETTLE solver -------------
+// (named with a `vec3_` prefix to avoid clashing with the existing `dist`/`dist3`.)
+
+/// Vector subtraction `a - b`.
+#[inline]
+fn vec3_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+/// Vector addition `a + b`.
+#[inline]
+fn vec3_add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+/// Scalar multiple `s * a`.
+#[inline]
+fn vec3_scale(a: [f64; 3], s: f64) -> [f64; 3] {
+    [a[0] * s, a[1] * s, a[2] * s]
+}
+/// Dot product `a · b`.
+#[inline]
+fn vec3_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+/// Cross product `a × b`.
+#[inline]
+fn vec3_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+/// Euclidean norm `|a|`.
+#[inline]
+fn vec3_norm(a: [f64; 3]) -> f64 {
+    vec3_dot(a, a).sqrt()
+}
+/// Normalize `a`; returns `Err(SettleDegenerate)` if the norm is below `eps`
+/// or the result is non-finite.
+#[inline]
+fn vec3_normalize(a: [f64; 3], eps: f64, what: &str) -> Result<[f64; 3], MdError> {
+    let n = vec3_norm(a);
+    if !n.is_finite() || n < eps {
+        return Err(MdError::SettleDegenerate(format!(
+            "cannot normalize {what}: |v| = {n}"
+        )));
+    }
+    let inv = 1.0 / n;
+    let v = [a[0] * inv, a[1] * inv, a[2] * inv];
+    if !(v[0].is_finite() && v[1].is_finite() && v[2].is_finite()) {
+        return Err(MdError::SettleDegenerate(format!(
+            "non-finite normalized {what}"
+        )));
+    }
+    Ok(v)
+}
+/// True if all three components are finite.
+#[inline]
+fn vec3_finite(a: [f64; 3]) -> bool {
+    a[0].is_finite() && a[1].is_finite() && a[2].is_finite()
+}
+/// Rotate `(x, y, z)` about the body x' axis by angle with the given sin/cos.
+#[inline]
+fn rot_x(p: [f64; 3], s: f64, c: f64) -> [f64; 3] {
+    [p[0], p[1] * c - p[2] * s, p[1] * s + p[2] * c]
+}
+/// Rotate `(x, y, z)` about the body y' axis by angle with the given sin/cos.
+#[inline]
+fn rot_y(p: [f64; 3], s: f64, c: f64) -> [f64; 3] {
+    [p[0] * c + p[2] * s, p[1], -p[0] * s + p[2] * c]
+}
+/// Rotate `(x, y, z)` about the body z' axis by angle with the given sin/cos.
+#[inline]
+fn rot_z(p: [f64; 3], s: f64, c: f64) -> [f64; 3] {
+    [p[0] * c - p[1] * s, p[0] * s + p[1] * c, p[2]]
+}
+
+/// Analytic Miyamoto-Kollman SETTLE for a single rigid water molecule.
+///
+/// Closed-form (NON-iterative) constraint solver from
+/// Miyamoto & Kollman, *J. Comput. Chem.* **13**(8):952-962 (1992), the same
+/// algorithm used by GROMACS and OpenMM. Given the start-of-step `reference`
+/// triangle (which fixes the rigid bond/angle geometry and supplies the body
+/// frame) and the post-move `unconstrained` positions, it computes the rigid
+/// placement of the molecule that (a) satisfies all three distance constraints
+/// (O-H1, O-H2, H1-H2) to machine precision *by construction*, (b) preserves the
+/// centre of mass of `unconstrained` exactly, and (c) is the least-displacement
+/// rigid fit to `unconstrained`. The constrained coordinates are written back
+/// into `unconstrained`.
+///
+/// # Arguments
+/// * `reference` — start-of-step positions (define the rigid geometry & frame).
+/// * `unconstrained` — post-move positions; overwritten with constrained result.
+/// * `geom` — water geometry (provides r_OH, the H-O-H angle, and the M-site).
+/// * `m_o` — oxygen mass (must be > 0).
+/// * `m_h` — hydrogen mass (must be > 0).
+///
+/// # Errors
+/// Returns [`MdError::SettleDegenerate`] if masses or `r_oh` are non-positive,
+/// any input coordinate is non-finite, the reference triangle is collinear /
+/// zero-area, or an intermediate quantity becomes degenerate (e.g. the molecule
+/// would have to rotate ~90° out of the reference plane).
+pub fn settle_positions(
+    reference: &WaterMolecule,
+    unconstrained: &mut WaterMolecule,
+    geom: &WaterGeometry,
+    m_o: f64,
+    m_h: f64,
+) -> Result<(), MdError> {
+    // ---- guards ----------------------------------------------------------
+    if m_o <= 0.0 || m_o.is_nan() || m_h <= 0.0 || m_h.is_nan() {
+        return Err(MdError::SettleDegenerate(format!(
+            "non-positive mass: m_o = {m_o}, m_h = {m_h}"
+        )));
+    }
+    if geom.r_oh <= 0.0 || geom.r_oh.is_nan() {
+        return Err(MdError::SettleDegenerate(format!(
+            "non-positive r_oh = {}",
+            geom.r_oh
+        )));
+    }
+    for v in [
+        reference.oxygen,
+        reference.hydrogen1,
+        reference.hydrogen2,
+        unconstrained.oxygen,
+        unconstrained.hydrogen1,
+        unconstrained.hydrogen2,
+    ] {
+        if !vec3_finite(v) {
+            return Err(MdError::SettleDegenerate(
+                "non-finite input coordinate".to_string(),
+            ));
+        }
+    }
+
+    let m_t = m_o + 2.0 * m_h;
+
+    // ---- (1) canonical rigid-triangle half-dimensions in the body frame ---
+    // O is on +y', the two H atoms at (±rc, -rb, 0); COM at the origin.
+    let rc = 0.5 * geom.r_hh(); // half the H-H distance
+    let doh_proj = geom.r_oh * geom.half_angle_rad().cos(); // O -> HH-midpoint distance
+    let ra = (2.0 * m_h / m_t) * doh_proj; // O distance from COM along +y'
+    let rb = (m_o / m_t) * doh_proj; // H distance from COM along -y'
+    if !(ra.is_finite() && rb.is_finite() && rc.is_finite()) || rc <= 0.0 || ra <= 0.0 {
+        return Err(MdError::SettleDegenerate(
+            "degenerate canonical triangle".to_string(),
+        ));
+    }
+    // Canonical body-frame points (COM at origin); this exact rigid triangle is
+    // rotated below, so all constraints hold to machine precision regardless of
+    // how well the orientation matches the unconstrained points.
+    let o_canon = [0.0, ra, 0.0];
+    let h1_canon = [-rc, -rb, 0.0];
+    let h2_canon = [rc, -rb, 0.0];
+
+    // ---- (2) centres of mass (preserved by SETTLE) ------------------------
+    let com = vec3_scale(
+        vec3_add(
+            vec3_scale(unconstrained.oxygen, m_o),
+            vec3_add(
+                vec3_scale(unconstrained.hydrogen1, m_h),
+                vec3_scale(unconstrained.hydrogen2, m_h),
+            ),
+        ),
+        1.0 / m_t,
+    );
+    let com_ref = vec3_scale(
+        vec3_add(
+            vec3_scale(reference.oxygen, m_o),
+            vec3_add(
+                vec3_scale(reference.hydrogen1, m_h),
+                vec3_scale(reference.hydrogen2, m_h),
+            ),
+        ),
+        1.0 / m_t,
+    );
+
+    // ---- (3) orthonormal body frame from the REFERENCE triangle -----------
+    let a0 = vec3_sub(reference.oxygen, com_ref);
+    let b0 = vec3_sub(reference.hydrogen1, com_ref);
+    let c0 = vec3_sub(reference.hydrogen2, com_ref);
+    // z' = unit normal of the reference plane.
+    let normal = vec3_cross(vec3_sub(b0, a0), vec3_sub(c0, a0));
+    let axis_z = vec3_normalize(normal, 1e-10, "plane normal")?;
+    // y' = in-plane component of the O direction (a0), normalized.
+    let a0_perp = vec3_sub(a0, vec3_scale(axis_z, vec3_dot(a0, axis_z)));
+    let axis_y = vec3_normalize(a0_perp, 1e-10, "in-plane O axis")?;
+    // x' = y' × z'  (right-handed: x = y × z).
+    let axis_x = vec3_cross(axis_y, axis_z);
+    if !(vec3_finite(axis_x) && vec3_finite(axis_y) && vec3_finite(axis_z)) {
+        return Err(MdError::SettleDegenerate(
+            "non-finite body axis".to_string(),
+        ));
+    }
+
+    // Project a lab vector into body coordinates (x', y', z').
+    let to_body = |v: [f64; 3]| -> [f64; 3] {
+        [
+            vec3_dot(v, axis_x),
+            vec3_dot(v, axis_y),
+            vec3_dot(v, axis_z),
+        ]
+    };
+
+    // ---- (4) unconstrained positions relative to COM, in body frame -------
+    let a1 = to_body(vec3_sub(unconstrained.oxygen, com));
+    let b1 = to_body(vec3_sub(unconstrained.hydrogen1, com));
+    let c1 = to_body(vec3_sub(unconstrained.hydrogen2, com));
+
+    // ---- (5) Miyamoto-Kollman analytic angles -----------------------------
+    // phi: rotation about body x'. O's out-of-plane (z') coordinate is ra*sin(phi).
+    let sinphi = (a1[2] / ra).clamp(-1.0, 1.0);
+    let cosphi = (1.0 - sinphi * sinphi).sqrt();
+    if !cosphi.is_finite() || cosphi < 1e-9 {
+        return Err(MdError::SettleDegenerate(format!(
+            "cosphi degenerate: cosphi = {cosphi}"
+        )));
+    }
+    // psi: rotation about body y'. (zb - zc) = 2*rc*cosphi*sin(psi).
+    let sinpsi = ((b1[2] - c1[2]) / (2.0 * rc * cosphi)).clamp(-1.0, 1.0);
+    let cospsi = (1.0 - sinpsi * sinpsi).sqrt();
+    if !cospsi.is_finite() {
+        return Err(MdError::SettleDegenerate(
+            "cospsi non-finite".to_string(),
+        ));
+    }
+
+    // Apply the out-of-plane rotations R = Ry(psi) * Rx(phi) to the canonical
+    // points. Because these are exact rotation matrices, the rigid triangle stays
+    // rigid (all pairwise distances preserved to machine precision).
+    let o_pp = rot_y(rot_x(o_canon, sinphi, cosphi), sinpsi, cospsi);
+    let h1_pp = rot_y(rot_x(h1_canon, sinphi, cosphi), sinpsi, cospsi);
+    let h2_pp = rot_y(rot_x(h2_canon, sinphi, cosphi), sinpsi, cospsi);
+
+    // theta: in-plane rotation about z'. Solve the exact 2-D Procrustes / Kabsch
+    // problem aligning the (already phi,psi-rotated) rigid triangle to the
+    // unconstrained points projected on the body x'y' plane. Because both sets
+    // share the COM (origin), the optimal angle is
+    //   theta = atan2( Σ m (x_r y_u − y_r x_u),  Σ m (x_r x_u + y_r y_u) ).
+    // This closed form equals the Miyamoto-Kollman θ.
+    let rigid_xy = [(o_pp[0], o_pp[1]), (h1_pp[0], h1_pp[1]), (h2_pp[0], h2_pp[1])];
+    let uncon_xy = [(a1[0], a1[1]), (b1[0], b1[1]), (c1[0], c1[1])];
+    let masses = [m_o, m_h, m_h];
+    let mut sum_sin = 0.0_f64;
+    let mut sum_cos = 0.0_f64;
+    for ((&(xr, yr), &(xu, yu)), &mass) in rigid_xy.iter().zip(uncon_xy.iter()).zip(masses.iter()) {
+        sum_sin += mass * (xr * yu - yr * xu);
+        sum_cos += mass * (xr * xu + yr * yu);
+    }
+    let theta = sum_sin.atan2(sum_cos);
+    let costh = theta.cos();
+    let sinth = theta.sin();
+
+    // Apply the in-plane theta rotation about z' to complete R = Rz * Ry * Rx.
+    let o_body = rot_z(o_pp, sinth, costh);
+    let h1_body = rot_z(h1_pp, sinth, costh);
+    let h2_body = rot_z(h2_pp, sinth, costh);
+
+    // Constraints are satisfied by construction (rigid canonical triangle);
+    // verify only in debug builds.
+    debug_assert!(
+        ((vec3_norm(vec3_sub(o_body, h1_body)) - geom.r_oh).abs() < 1e-9)
+            && ((vec3_norm(vec3_sub(o_body, h2_body)) - geom.r_oh).abs() < 1e-9)
+            && ((vec3_norm(vec3_sub(h1_body, h2_body)) - geom.r_hh()).abs() < 1e-9),
+        "SETTLE body-frame triangle violates constraints"
+    );
+
+    // ---- (6) transform back to the lab frame and add the COM --------------
+    let to_lab = |p: [f64; 3]| -> [f64; 3] {
+        vec3_add(
+            com,
+            vec3_add(
+                vec3_scale(axis_x, p[0]),
+                vec3_add(vec3_scale(axis_y, p[1]), vec3_scale(axis_z, p[2])),
+            ),
+        )
+    };
+    let new_o = to_lab(o_body);
+    let new_h1 = to_lab(h1_body);
+    let new_h2 = to_lab(h2_body);
+
+    // ---- (8) final non-finite guard ---------------------------------------
+    if !(vec3_finite(new_o) && vec3_finite(new_h1) && vec3_finite(new_h2)) {
+        return Err(MdError::SettleDegenerate(
+            "non-finite output coordinate".to_string(),
+        ));
+    }
+    unconstrained.oxygen = new_o;
+    unconstrained.hydrogen1 = new_h1;
+    unconstrained.hydrogen2 = new_h2;
+
+    // ---- (7) reconstruct the M-site if present ----------------------------
+    if geom.has_m_site() || unconstrained.m_site.is_some() {
+        unconstrained.update_m_site(geom);
+    }
+    Ok(())
+}
+
+/// Analytic SETTLE velocity (RATTLE) step for a single rigid water molecule.
+///
+/// Removes the velocity components along the three bonds (O-H1, H1-H2, H2-O) so
+/// that the time derivative of every distance constraint vanishes, i.e. for each
+/// bonded pair (i, j): `(v_i − v_j) · (r_i − r_j) = 0` after correction. This is
+/// the velocity half of SETTLE (Miyamoto & Kollman, 1992): three Lagrange
+/// multipliers `tau` for the three bonds are found by solving a 3×3 linear system
+/// (via Cramer's rule), then applied to the velocities. The correction conserves
+/// linear (centre-of-mass) momentum exactly.
+///
+/// # Arguments
+/// * `positions` — current (constrained) positions; define the bond directions.
+/// * `velocities` — velocities to correct in place.
+/// * `m_o` — oxygen mass (> 0).
+/// * `m_h` — hydrogen mass (> 0).
+///
+/// # Errors
+/// Returns [`MdError::SettleDegenerate`] for non-positive masses, non-finite
+/// inputs, or a singular 3×3 system (degenerate geometry).
+pub fn settle_velocities(
+    positions: &WaterMolecule,
+    velocities: &mut WaterVelocities,
+    m_o: f64,
+    m_h: f64,
+) -> Result<(), MdError> {
+    if m_o <= 0.0 || m_o.is_nan() || m_h <= 0.0 || m_h.is_nan() {
+        return Err(MdError::SettleDegenerate(format!(
+            "non-positive mass: m_o = {m_o}, m_h = {m_h}"
+        )));
+    }
+    let r_a = positions.oxygen;
+    let r_b = positions.hydrogen1;
+    let r_c = positions.hydrogen2;
+    let v_a = velocities.v_oxygen;
+    let v_b = velocities.v_hydrogen1;
+    let v_c = velocities.v_hydrogen2;
+    for v in [r_a, r_b, r_c, v_a, v_b, v_c] {
+        if !vec3_finite(v) {
+            return Err(MdError::SettleDegenerate(
+                "non-finite velocity-step input".to_string(),
+            ));
+        }
+    }
+
+    // Bond vectors (a=O, b=H1, c=H2):
+    //   vab = r_a - r_b (O-H1), vbc = r_b - r_c (H1-H2), vca = r_c - r_a (H2-O).
+    let vab = vec3_sub(r_a, r_b);
+    let vbc = vec3_sub(r_b, r_c);
+    let vca = vec3_sub(r_c, r_a);
+
+    // Inverse masses.
+    let w_a = 1.0 / m_o;
+    let w_b = 1.0 / m_h;
+    let w_c = 1.0 / m_h;
+
+    // Corrected velocities are
+    //   v_a' = v_a + w_a ( tau_ab vab - tau_ca vca )
+    //   v_b' = v_b + w_b ( tau_bc vbc - tau_ab vab )
+    //   v_c' = v_c + w_c ( tau_ca vca - tau_bc vbc )
+    // Imposing (v_i' - v_j')·v_ij = 0 for each bond gives M·tau = rhs, where:
+    //
+    //   v_a' - v_b' = (v_a - v_b) + (w_a+w_b) tau_ab vab
+    //                 - w_a tau_ca vca - w_b tau_bc vbc
+    // dotted with vab ->
+    //   row AB:  (w_a+w_b)|vab|^2 tau_ab - w_b (vbc·vab) tau_bc - w_a (vca·vab) tau_ca
+    //            = -(v_a - v_b)·vab
+    //   row BC: -w_b (vab·vbc) tau_ab + (w_b+w_c)|vbc|^2 tau_bc - w_c (vca·vbc) tau_ca
+    //            = -(v_b - v_c)·vbc
+    //   row CA: -w_a (vab·vca) tau_ab - w_c (vbc·vca) tau_bc + (w_c+w_a)|vca|^2 tau_ca
+    //            = -(v_c - v_a)·vca
+    let d_ab_ab = vec3_dot(vab, vab);
+    let d_bc_bc = vec3_dot(vbc, vbc);
+    let d_ca_ca = vec3_dot(vca, vca);
+    let d_bc_ab = vec3_dot(vbc, vab);
+    let d_ca_ab = vec3_dot(vca, vab);
+    let d_ab_bc = d_bc_ab; // symmetric
+    let d_ca_bc = vec3_dot(vca, vbc);
+    let d_ab_ca = d_ca_ab; // symmetric
+    let d_bc_ca = d_ca_bc; // symmetric
+
+    let m11 = (w_a + w_b) * d_ab_ab;
+    let m12 = -w_b * d_bc_ab;
+    let m13 = -w_a * d_ca_ab;
+    let m21 = -w_b * d_ab_bc;
+    let m22 = (w_b + w_c) * d_bc_bc;
+    let m23 = -w_c * d_ca_bc;
+    let m31 = -w_a * d_ab_ca;
+    let m32 = -w_c * d_bc_ca;
+    let m33 = (w_c + w_a) * d_ca_ca;
+
+    let rhs1 = -vec3_dot(vec3_sub(v_a, v_b), vab);
+    let rhs2 = -vec3_dot(vec3_sub(v_b, v_c), vbc);
+    let rhs3 = -vec3_dot(vec3_sub(v_c, v_a), vca);
+
+    // Cramer's rule.
+    let det = m11 * (m22 * m33 - m23 * m32) - m12 * (m21 * m33 - m23 * m31)
+        + m13 * (m21 * m32 - m22 * m31);
+    if !det.is_finite() || det.abs() < 1e-14 {
+        return Err(MdError::SettleDegenerate(format!(
+            "singular velocity-constraint matrix: det = {det}"
+        )));
+    }
+    let det_ab = rhs1 * (m22 * m33 - m23 * m32) - m12 * (rhs2 * m33 - m23 * rhs3)
+        + m13 * (rhs2 * m32 - m22 * rhs3);
+    let det_bc = m11 * (rhs2 * m33 - m23 * rhs3) - rhs1 * (m21 * m33 - m23 * m31)
+        + m13 * (m21 * rhs3 - rhs2 * m31);
+    let det_ca = m11 * (m22 * rhs3 - rhs2 * m32) - m12 * (m21 * rhs3 - rhs2 * m31)
+        + rhs1 * (m21 * m32 - m22 * m31);
+    let tau_ab = det_ab / det;
+    let tau_bc = det_bc / det;
+    let tau_ca = det_ca / det;
+    if !(tau_ab.is_finite() && tau_bc.is_finite() && tau_ca.is_finite()) {
+        return Err(MdError::SettleDegenerate(
+            "non-finite velocity multiplier".to_string(),
+        ));
+    }
+
+    let new_va = vec3_add(
+        v_a,
+        vec3_scale(vec3_sub(vec3_scale(vab, tau_ab), vec3_scale(vca, tau_ca)), w_a),
+    );
+    let new_vb = vec3_add(
+        v_b,
+        vec3_scale(vec3_sub(vec3_scale(vbc, tau_bc), vec3_scale(vab, tau_ab)), w_b),
+    );
+    let new_vc = vec3_add(
+        v_c,
+        vec3_scale(vec3_sub(vec3_scale(vca, tau_ca), vec3_scale(vbc, tau_bc)), w_c),
+    );
+    if !(vec3_finite(new_va) && vec3_finite(new_vb) && vec3_finite(new_vc)) {
+        return Err(MdError::SettleDegenerate(
+            "non-finite corrected velocity".to_string(),
+        ));
+    }
+    velocities.v_oxygen = new_va;
+    velocities.v_hydrogen1 = new_vb;
+    velocities.v_hydrogen2 = new_vc;
+    Ok(())
+}
+
 /// Euclidean distance between two 3-D points (Å).
 #[inline]
 pub(super) fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
