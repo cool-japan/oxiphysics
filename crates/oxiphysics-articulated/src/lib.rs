@@ -110,6 +110,7 @@
 #![deny(unsafe_code)]
 
 pub mod aba;
+pub mod aba_derivatives;
 pub mod body;
 pub mod centroidal;
 pub mod crba;

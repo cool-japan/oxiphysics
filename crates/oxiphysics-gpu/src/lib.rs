@@ -634,6 +634,7 @@ pub mod gpu_fem_assembly;
 pub mod gpu_fluid;
 pub mod gpu_fluid_euler;
 pub mod gpu_lbm;
+pub mod gpu_lbvh;
 pub mod gpu_md_solver;
 pub mod gpu_mesh_processing;
 pub mod gpu_neural_solver;

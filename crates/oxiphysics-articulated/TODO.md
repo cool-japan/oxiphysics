@@ -44,21 +44,23 @@ Everything below builds on the existing forward-pass Featherstone stack (`spatia
 
 ### Analytical derivatives
 
-- [~] Analytical derivatives of RNEA (∂τ/∂q, ∂τ/∂q̇) (planned 2026-06-12)
+- [x] Analytical derivatives of RNEA (∂τ/∂q, ∂τ/∂q̇) (shipped 2026-06-12)
   - **Goal:** matches central finite differences to 1e-6 and self-consistent adjoint identities to 1e-10 on a 7-DoF arm; ≥10x faster than finite differences.
   - **Design:** Carpentier & Mansard 2018 recursive analytic derivatives over the existing spatial algebra (`spatial.rs`); crate currently has no derivative code (verified: `rnea.rs`/`aba.rs` forward passes only).
   - **Files:** `spatial.rs`, `rnea.rs`, new derivatives module
   - **Files:** new `src/rnea_derivatives.rs` (analytic forward/backward derivative passes) + `src/spatial.rs` helpers + `src/lib.rs` registration
   - **Tests:** 1-DoF pendulum, 2-DoF arm, 7-DoF serial chain; ∂τ/∂q and ∂τ/∂q̇ vs central finite differences (h=1e-6) < 1e-6; spatial-derivative helpers unit-tested vs FD in isolation
   - **Risk:** spatial cross-product derivative operators (∂(X·v)/∂q = −S×(X·v)) are the crux; honest-split FD fallback above verified DoF if analytic parity not reached
+  - **Verified 2026-06-12:** analytic forward-mode (tangent) recursion in `src/rnea_derivatives.rs` matches central FD (h=1e-6) to <1e-6 on 1-DoF pendulum, 2-DoF arm, AND 7-DoF serial chain (all 49 entries strict); crux transform-tangent helpers (`joint_transform_tangent`, `d_apply_velocity`, `d_apply_force`) unit-tested vs FD; FD fallback (`rnea_derivatives_fd_h`) retained for multi-DoF joints (universal/spherical/free). 8 new tests, 0 warnings.
 
-- [~] ABA derivatives (∂q̈/∂q, ∂q̇, ∂τ) (planned 2026-06-12)
+- [x] ABA derivatives (∂q̈/∂q, ∂q̇, ∂τ) (shipped 2026-06-12)
   - **Goal:** same tolerances via the identity ∂q̈ = −M⁻¹·∂RNEA.
   - **Design:** reuse RNEA derivatives + Cholesky of CRBA mass matrix; cache factorization per step.
   - **Files:** `aba.rs`, CRBA module, shared derivatives module
   - **Files:** new `src/aba_derivatives.rs` (∂q̈/∂x = −M⁻¹·∂RNEA/∂x, ∂q̈/∂τ = M⁻¹) reusing crba `compute_mass_matrix_crba` + local SPD Cholesky; `src/lib.rs` registration
   - **Tests:** ∂q̈/∂q = −M⁻¹·∂τ/∂q to 1e-8; ∂q̈/∂τ = M⁻¹ matches central FD of aba wrt τ; symmetry/consistency check on M
   - **Risk:** depends on RNEA-derivative correctness; Cholesky must guard SPD (return Result, no unwrap in production)
+  - **Verified 2026-06-12:** `src/aba_derivatives.rs` implements ∂q̈/∂τ = M⁻¹, ∂q̈/∂q = −M⁻¹·∂RNEA/∂q, ∂q̈/∂q̇ = −M⁻¹·∂RNEA/∂q̇ via local SPD Cholesky (returns `AbaDerivativeError`, no unwrap). ∂q̈/∂q vs −M⁻¹·∂τ/∂q to 1e-8; ∂q̈/∂τ and ∂q̈/∂q,∂q̈/∂q̇ vs central FD of aba to 1e-6 (2-link), 7-DoF ∂q̈/∂τ vs FD to 1e-5; M⁻¹ symmetry to 1e-10. 9 new tests, 0 warnings.
 
 - [ ] Sparse LTL/LTDL mass-matrix factorization
   - **Goal:** factorization+solve beats dense Cholesky ≥2x on a 36-DoF humanoid tree.

@@ -138,17 +138,20 @@ Sequencing (root TODO Phase 26): reduction lib → radix sort → LBVH → SPH p
   - **Files:** NEW src/kernels_wgsl/{scan,reduce,compact,histogram}.wgsl (include_str!), NEW src/gpu_primitives.rs (wrappers: exclusive_scan_u32, reduce_sum_f32/reduce_max_f32, compact_u32, histogram_u32 via WgpuBackendReal); gpu_reduction.rs + grid_reduce.rs re-documented as CPU reference implementations
   - **Tests:** parity vs CPU mocks at sizes {1, 255, 256, 257, 65k, 1M, 16M} incl. non-power-of-two (skip_if_no_gpu! pattern); f32 sum tolerance ∝ n·ε; histogram exact; compact order-stable; perf targets env-gated (OXIPHYSICS_GPU_BENCH=1), not hard asserts
   - **Risk:** wgpu 29 WGSL reserved words (`pass`) — avoid in identifiers; Blelloch block-sums recursion for >256² elements; naga validation at test time
-- [~] GPU radix sort (u32/u64 key, 8-bit digit, 4/8 passes) — (closes marker 6) (planned 2026-06-12)
+- [x] GPU radix sort (u32/u64 key, 8-bit digit, 4/8 passes) — (closes marker 6) (planned 2026-06-12) (shipped 2026-06-12; real WGSL histogram+scatter dispatched on Metal, stable per-tile decoupled scatter, GPU exclusive-scan offsets)
   - **Goal:** 10M keys sorted <15 ms; parity vs `parallel_sort.rs` CPU radix. (dep: reduction lib)
   - **Design:** per-pass digit histogram + exclusive scan + scatter, built directly on the reduction lib (the structure `parallel_sort.rs:1022` already simulates on CPU).
   - **Files:** `src/kernels_wgsl/{radix_histogram,radix_scatter}.wgsl` (NEW); new `src/gpu_radix.rs` driver (`radix_sort_u32_gpu`, `radix_sort_pairs_gpu`); `parallel_sort.rs` stays as the parity reference.
   - **Tests:** radix parity vs CPU `radix_sort_u32` at {255,256,257,1024,65536,1_000_000} incl. duplicate-heavy + reverse-sorted; 16M env-gated behind `OXIPHYSICS_GPU_BENCH`; pairs sort keeps payload aligned to keys.
   - **Risk:** wgpu 29 reserved word `pass` (avoid in identifiers); ping-pong key+payload buffers across 4 LSD passes; stable scatter = global_digit_offset[digit] + local_rank_within_digit.
-- [~] Radix-sort LBVH build on GPU (Morton + Karras topology) (planned 2026-06-12)
+- [x] Radix-sort LBVH build on GPU (Morton + Karras topology) (planned 2026-06-12) (shipped 2026-06-12 as HYBRID: GPU radix sort of (morton,id) pairs → CPU compute_bvh_from_sorted hierarchy; bit-identical to CPU reference, 100k-leaf topology+ray parity on Metal)
   - **Goal:** rebuild 1M-leaf BVH <8 ms; hit-parity vs `bvh/cpu.rs` builder on the existing 10^5-leaf traversal test. (dep: radix sort)
   - **Files:** new `src/gpu_lbvh.rs` (`gpu_lbvh_build`); `src/kernels_wgsl/lbvh.wgsl` (Karras 2012 internal-node range/split); reuses `gpu_radix::radix_sort_pairs_gpu` for (morton,id) sort and `bvh::compute_bvh_from_sorted` as the CPU reference.
   - **Tests:** LBVH 1M-leaf (or 100k to match existing budget) build → topology or ray-hit parity vs CPU `compute_bvh_from_sorted`; empty + single-element edge cases (no panic).
   - **Risk:** Karras longest-common-prefix (δ) with index-augmented tie-break for duplicate Morton codes; fall back to GPU-sort + CPU `compute_bvh_from_sorted` hierarchy if on-GPU topology parity is flaky.
+- [ ] On-GPU Karras hierarchy kernel (replace the hybrid's CPU `compute_bvh_from_sorted` step) — (follow-on to the shipped hybrid LBVH)
+  - **Goal:** build the BVH internal-node hierarchy fully on the GPU via the Karras 2012 parallel longest-common-prefix (LCP) radix tree, eliminating the CPU hierarchy step; ray-hit parity vs the hybrid on the 100k-leaf scene.
+  - **Files:** new `src/kernels_wgsl/lbvh.wgsl` (Karras internal-node range + split with index-augmented δ tie-break for duplicate Morton codes); `src/gpu_lbvh.rs` (on-GPU hierarchy path behind the same `gpu_lbvh_build` entry, hybrid kept as fallback).
 
 ### Solver pipelines on GPU
 - [ ] SPH full pipeline on GPU — (promotes 4 of the 7 marker-13 templates)
