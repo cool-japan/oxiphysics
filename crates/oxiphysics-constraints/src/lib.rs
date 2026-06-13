@@ -34,6 +34,8 @@ pub mod islands;
 pub mod island;
 pub use island::{Island, IslandManager};
 
+pub mod lcp;
+
 pub mod pbd;
 
 pub mod warm_start;

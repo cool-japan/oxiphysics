@@ -68,7 +68,7 @@ Everything below builds on the existing forward-pass Featherstone stack (`spatia
 
 ### Kinematics, import, and actuation
 
-- [ ] IK: damped least squares + null-space projection
+- [x] IK: damped least squares + null-space projection (shipped 2026-06-12)
   - **Goal:** 7-DoF arm reaches random reachable poses <1 mm / <0.1° in <50 iters; secondary posture task in null space verified.
   - **Design:** Levenberg-Marquardt-damped pseudo-inverse on the OSC Jacobian (exists in `osc.rs`); selectively-damped SVD near singularities; io already defines `IkSolution` types (`robotics_io/types.rs:236`).
   - **Cross-crate:** result types shared with oxiphysics-io `robotics_io`.

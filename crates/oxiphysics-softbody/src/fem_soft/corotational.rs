@@ -228,3 +228,178 @@ impl FemSoftBody {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Invertible corotational element (Irving 2004 / Stomakhin 2012)
+// ---------------------------------------------------------------------------
+
+/// A tetrahedral element that stays stable under inversion via signed SVD.
+///
+/// Uses the rotation-variant (signed) 3x3 SVD with reflection convention to
+/// diagonalise the deformation gradient `F = U diag(sigma) V^T`, clamps the
+/// singular values away from zero, evaluates the (Neo-Hookean) first
+/// Piola-Kirchhoff stress in the principal frame, and rotates it back. This
+/// lets a fully inverted tet (`det F < 0`) produce finite restoring forces
+/// and recover to its rest shape with no NaN at `J <= 0`.
+#[derive(Debug, Clone)]
+pub struct CorotationalInvertibleElement {
+    /// Node indices `[i0, i1, i2, i3]`.
+    pub indices: [usize; 4],
+    /// Rest-shape inverse of the edge matrix (Dm^{-1}), row-major.
+    pub rest_inv: [[f64; 3]; 3],
+    /// Rest volume.
+    pub rest_volume: f64,
+    /// First Lame parameter mu (shear modulus).
+    pub mu: f64,
+    /// Second Lame parameter lambda.
+    pub lambda: f64,
+    /// Lower clamp applied to singular-value magnitudes (prevents NaN at J=0).
+    pub sigma_clamp: f64,
+}
+
+impl CorotationalInvertibleElement {
+    /// Build from node positions and Young's modulus / Poisson's ratio.
+    pub fn new(indices: [usize; 4], positions: &[[f64; 3]], young: f64, poisson: f64) -> Self {
+        use crate::fem_soft::math_helpers::{det3x3, edge_matrix_raw, inv3x3};
+        let p0 = positions[indices[0]];
+        let p1 = positions[indices[1]];
+        let p2 = positions[indices[2]];
+        let p3 = positions[indices[3]];
+        let dm = edge_matrix_raw(p0, p1, p2, p3);
+        let rest_volume = det3x3(dm).abs() / 6.0;
+        let rest_inv = inv3x3(dm);
+        let mu = young / (2.0 * (1.0 + poisson));
+        let lambda = young * poisson / ((1.0 + poisson) * (1.0 - 2.0 * poisson));
+        Self {
+            indices,
+            rest_inv,
+            rest_volume,
+            mu,
+            lambda,
+            sigma_clamp: 0.05,
+        }
+    }
+
+    /// Deformation gradient `F = Ds * Dm^{-1}` (row-major).
+    pub fn deformation_gradient(&self, positions: &[[f64; 3]]) -> [[f64; 3]; 3] {
+        use crate::fem_soft::math_helpers::{edge_matrix_raw, mul3x3};
+        let p0 = positions[self.indices[0]];
+        let p1 = positions[self.indices[1]];
+        let p2 = positions[self.indices[2]];
+        let p3 = positions[self.indices[3]];
+        let ds = edge_matrix_raw(p0, p1, p2, p3);
+        mul3x3(ds, self.rest_inv)
+    }
+
+    /// Compute restoring forces on the four nodes, stable under inversion.
+    pub fn compute_forces(&self, positions: &[[f64; 3]]) -> [[f64; 3]; 4] {
+        use crate::fem_soft::math_helpers::{mul3x3, transpose3x3};
+        use crate::fem_soft::svd_helpers::signed_svd3;
+
+        let f = self.deformation_gradient(positions);
+        let (u, sigma, vt) = signed_svd3(f);
+
+        // Clamp singular-value magnitudes away from zero, preserving sign so
+        // an inverted tet (sigma[2] < 0) keeps pushing outward.
+        let clamp = |s: f64| {
+            if s >= 0.0 {
+                s.max(self.sigma_clamp)
+            } else {
+                s.min(-self.sigma_clamp)
+            }
+        };
+        let sc = [clamp(sigma[0]), clamp(sigma[1]), clamp(sigma[2])];
+
+        // Neo-Hookean first Piola stress in the principal (diagonal) frame:
+        //   P_hat_i = mu (sigma_i - 1/sigma_i) + lambda ln(J) / sigma_i
+        let j = sc[0] * sc[1] * sc[2];
+        let ln_j = j.abs().ln();
+        let mut p_hat = [0.0f64; 3];
+        for i in 0..3 {
+            p_hat[i] = self.mu * (sc[i] - 1.0 / sc[i]) + self.lambda * ln_j / sc[i];
+        }
+
+        // Rotate stress back to world frame: P = U diag(P_hat) V^T.
+        let p_diag = [
+            [p_hat[0], 0.0, 0.0],
+            [0.0, p_hat[1], 0.0],
+            [0.0, 0.0, p_hat[2]],
+        ];
+        let p = mul3x3(mul3x3(u, p_diag), vt);
+
+        // Forces: H = -V * P * Dm^{-T}, distributed to the four vertices.
+        let dm_inv_t = transpose3x3(self.rest_inv);
+        let h = mul3x3(p, dm_inv_t);
+        let mut forces = [[0.0f64; 3]; 4];
+        for i in 0..3 {
+            forces[1][i] = -self.rest_volume * h[i][0];
+            forces[2][i] = -self.rest_volume * h[i][1];
+            forces[3][i] = -self.rest_volume * h[i][2];
+            forces[0][i] = -(forces[1][i] + forces[2][i] + forces[3][i]);
+        }
+        forces
+    }
+}
+
+#[cfg(test)]
+mod tests_invertible {
+    use super::*;
+    use crate::fem_soft::math_helpers::det3x3;
+
+    #[test]
+    fn test_invertible_tet_recovery() {
+        // Rest tet (unit corner tetrahedron).
+        let rest = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let elem = CorotationalInvertibleElement::new([0, 1, 2, 3], &rest, 1.0e4, 0.3);
+
+        // Invert the tet by mirroring node 3 below the base plane.
+        let mut pos = rest;
+        pos[3][2] = -0.5;
+        // Confirm inversion (det of deformation gradient < 0).
+        let f0 = elem.deformation_gradient(&pos);
+        assert!(
+            det3x3(f0) < 0.0,
+            "initial tet must be inverted: det={}",
+            det3x3(f0)
+        );
+
+        let mut vel = [[0.0f64; 3]; 4];
+        let mass = 1.0;
+        let dt = 1.0e-3;
+        let damping = 0.02;
+
+        let mut recovered_step = None;
+        for step in 0..2000 {
+            let forces = elem.compute_forces(&pos);
+            for k in 0..4 {
+                for d in 0..3 {
+                    assert!(forces[k][d].is_finite(), "force NaN/Inf at step {step}");
+                    vel[k][d] += forces[k][d] / mass * dt;
+                    vel[k][d] *= 1.0 - damping;
+                    pos[k][d] += vel[k][d] * dt;
+                    assert!(pos[k][d].is_finite(), "position NaN/Inf at step {step}");
+                }
+            }
+            let f = elem.deformation_gradient(&pos);
+            if det3x3(f) > 0.05 && recovered_step.is_none() {
+                recovered_step = Some(step);
+            }
+        }
+        // The tet must have un-inverted (positive volume) by the end.
+        let f_final = elem.deformation_gradient(&pos);
+        assert!(
+            det3x3(f_final) > 0.0,
+            "tet failed to recover: final det={}",
+            det3x3(f_final)
+        );
+        assert!(
+            recovered_step.is_some(),
+            "tet never reached positive volume"
+        );
+    }
+}

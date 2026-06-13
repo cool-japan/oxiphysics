@@ -1,0 +1,11 @@
+/Users/kitasan/work/oxiphysics/target-sbtask/debug/deps/rand_core-4d160d831eafd19b.d: /Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/lib.rs /Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/block.rs /Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/utils.rs /Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/seedable_rng.rs /Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/unwrap_err.rs /Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/word.rs /Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/../README.md
+
+/Users/kitasan/work/oxiphysics/target-sbtask/debug/deps/librand_core-4d160d831eafd19b.rmeta: /Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/lib.rs /Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/block.rs /Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/utils.rs /Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/seedable_rng.rs /Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/unwrap_err.rs /Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/word.rs /Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/../README.md
+
+/Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/lib.rs:
+/Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/block.rs:
+/Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/utils.rs:
+/Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/seedable_rng.rs:
+/Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/unwrap_err.rs:
+/Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/word.rs:
+/Users/kitasan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.10.1/src/../README.md:

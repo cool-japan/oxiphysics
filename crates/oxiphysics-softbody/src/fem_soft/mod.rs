@@ -16,7 +16,9 @@ pub mod corot_sim;
 pub mod corotational;
 pub mod integrators;
 pub mod materials;
+pub mod stable_neohookean_xpbd;
 pub mod stress;
+pub mod svd_helpers;
 
 #[cfg(test)]
 mod tests;
@@ -29,4 +31,6 @@ pub use corot_sim::*;
 pub use corotational::*;
 pub use integrators::*;
 pub use materials::*;
+pub use stable_neohookean_xpbd::*;
 pub use stress::*;
+pub use svd_helpers::*;

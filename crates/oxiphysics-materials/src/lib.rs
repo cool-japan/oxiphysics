@@ -37,6 +37,7 @@ pub mod fiber_composites;
 pub mod fracture;
 pub mod geological;
 pub mod geomechanics;
+pub mod homogenization;
 pub mod hydrogen_storage;
 pub mod hyperelastic;
 pub mod metamaterials;

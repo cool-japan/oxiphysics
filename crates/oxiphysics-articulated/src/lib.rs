@@ -114,6 +114,7 @@ pub mod aba_derivatives;
 pub mod body;
 pub mod centroidal;
 pub mod crba;
+pub mod ik;
 pub mod joint;
 pub mod joint_limits;
 pub mod model;

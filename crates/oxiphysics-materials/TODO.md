@@ -45,7 +45,7 @@
 ## v0.2.0 — Homogenization & constitutive infrastructure
 
 ### Spectral homogenization
-- [ ] FFT-based spectral homogenization (Moulinec-Suquet) (oxifft)
+- [x] (planned 2026-06-12) FFT-based spectral homogenization (Moulinec-Suquet) (oxifft)
   - **Goal:** 2-phase effective stiffness within Hashin-Shtrikman bounds; converges at phase contrast up to 1000.
   - **Design:** periodic Lippmann-Schwinger fixed-point + polarization / Eyre-Milton accelerated scheme via oxifft. Moulinec-Suquet 1998.
   - **Delta:** MISSING.

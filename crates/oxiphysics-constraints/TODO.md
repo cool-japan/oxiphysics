@@ -72,7 +72,7 @@ Exit gate: dt-invariant softness on joints and contacts, 50-joint rigid-limit XP
 
 ### Exact small-system solvers
 
-- [ ] Direct LCP solvers (Lemke + Dantzig) + comparison harness
+- [~] (planned 2026-06-12) Direct LCP solvers (Lemke + Dantzig) + comparison harness
   - **Goal:** exact solve for ≤64-contact systems; harness reports iteration count/residual for PGS vs TGS vs LCP on canonical scenes; LCP residual <1e-10.
   - **Design:** principal pivoting (Dantzig per ODE's box-friction approximation) and Lemke with lexicographic anti-cycling; dense matrices via nalgebra (already a workspace dep).
   - **Files:** new `lcp/` module (dense nalgebra path)
