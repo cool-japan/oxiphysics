@@ -81,12 +81,12 @@ The MPM headline ("add MLS-MPM") is already shipped — see baseline details abo
 
 ### FEM and cloth robustness
 
-- [~] (planned 2026-06-13) Invertible FEM elements via true 3×3 SVD
+- [x] Invertible FEM elements via true 3×3 SVD
   - **Goal:** fully inverted tet mesh recovers to rest shape; no NaN at J ≤ 0.
   - **Design:** Irving et al. 2004 / Stomakhin 2012 rotation-variant SVD with reflection convention; `fem_soft/corotational.rs:66` currently uses an approximate iterative "SVD-like" polar decomposition — replace with exact branch-free SVD (McAdams 2011).
   - **Files:** `fem_soft/corotational.rs`
 
-- [~] (planned 2026-06-13) Stable Neo-Hookean
+- [x] Stable Neo-Hookean
   - **Goal:** Smith et al. 2018 energy as both FEM element and XPBD constraint; no element locking at ν=0.499; classic vs stable energies agree in small strain to 1%.
   - **Design:** add to `fem_soft/materials.rs` (classic `NeoHookeanMaterial` exists at line 252) and as XPBD two-block constraint (deviatoric+hydrostatic, Macklin & Müller 2021).
   - **Files:** `fem_soft/materials.rs`, XPBD constraint set

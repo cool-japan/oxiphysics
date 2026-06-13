@@ -120,8 +120,8 @@ mod tests {
     fn test_signed_svd3_inverted() {
         // Start from a well-conditioned matrix, flip one column to make det < 0.
         let mut f = [[2.0, 0.1, 0.0], [0.0, 1.5, 0.2], [0.1, 0.0, 1.2]];
-        for r in 0..3 {
-            f[r][0] = -f[r][0];
+        for row in &mut f {
+            row[0] = -row[0];
         }
         assert!(det3x3(f) < 0.0, "test matrix must be inverted");
         let (u, sigma, vt) = signed_svd3(f);

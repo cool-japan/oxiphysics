@@ -289,8 +289,8 @@ fn gaussian_solve(a: &mut [Vec<f64>], b: &mut [f64]) -> Result<Vec<f64>, ()> {
         // Partial pivot: largest magnitude in/below the diagonal.
         let mut pivot_row = col;
         let mut pivot_mag = a[col][col].abs();
-        for r in (col + 1)..n {
-            let mag = a[r][col].abs();
+        for (r, a_row) in a.iter().enumerate().skip(col + 1) {
+            let mag = a_row[col].abs();
             if mag > pivot_mag {
                 pivot_mag = mag;
                 pivot_row = r;
@@ -304,14 +304,16 @@ fn gaussian_solve(a: &mut [Vec<f64>], b: &mut [f64]) -> Result<Vec<f64>, ()> {
 
         // Eliminate below the pivot.
         let pivot = a[col][col];
+        // Snapshot the pivot row's tail (read-only during the elimination
+        // below); this sidesteps the simultaneous borrow of a[col] and a[r].
+        let pivot_row_vals: Vec<f64> = a[col][col..n].to_vec();
         for r in (col + 1)..n {
             let factor = a[r][col] / pivot;
             if factor == 0.0 {
                 continue;
             }
-            for c in col..n {
-                let delta = factor * a[col][c];
-                a[r][c] -= delta;
+            for (target, &piv_c) in a[r][col..n].iter_mut().zip(pivot_row_vals.iter()) {
+                *target -= factor * piv_c;
             }
             b[r] -= factor * b[col];
         }

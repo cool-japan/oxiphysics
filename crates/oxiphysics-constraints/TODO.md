@@ -72,13 +72,14 @@ Exit gate: dt-invariant softness on joints and contacts, 50-joint rigid-limit XP
 
 ### Exact small-system solvers
 
-- [~] (planned 2026-06-12) Direct LCP solvers (Lemke + Dantzig) + comparison harness
+- [x] Direct LCP solvers (Lemke + Dantzig) + comparison harness (2026-06-13)
   - **Goal:** exact solve for ≤64-contact systems; harness reports iteration count/residual for PGS vs TGS vs LCP on canonical scenes; LCP residual <1e-10.
-  - **Design:** principal pivoting (Dantzig per ODE's box-friction approximation) and Lemke with lexicographic anti-cycling; dense matrices via nalgebra (already a workspace dep).
-  - **Files:** new `lcp/` module (dense nalgebra path)
+  - **Design:** principal pivoting (Dantzig per ODE's `dSolveLCP`) and Lemke with lexicographic anti-cycling; hand-rolled dense `f64` pivoting tableau — nalgebra-free, matching the crate's plain-`f64`-array house style.
+  - **Files:** `lcp/{mod,dense,lemke,dantzig,harness}.rs`; tests in `tests/lcp.rs`
   - **Tests:** canonical harness scenes (stack, wedge, high-mass-ratio) with residual/iteration reporting
   - **Risk:** Lemke cycling on degenerate problems — lexicographic ordering must be property-tested
   - **Note:** the harness doubles as the engine for the v1.0 solver conformance matrix
+  - **Shipped:** Lemke + Dantzig both shipped; lexicographic anti-cycling property-tested (degenerate + identical-q + 20 random PSD trials); all three canonical scenes solve to residual 0.0 (gate 1e-10); Lemke/Dantzig agree to 1e-10; 2236 crate tests pass, clippy clean.
 
 ### Joint-level dynamics
 

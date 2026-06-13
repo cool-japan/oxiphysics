@@ -19,6 +19,9 @@
 
 use super::{dantzig_solve, lemke_solve};
 
+/// A scene builder: returns the `(M, q)` of a canonical contact LCP.
+type SceneBuilder = fn() -> (Vec<Vec<f64>>, Vec<f64>);
+
 /// A box stack of three contacts under gravity.
 ///
 /// The three stacked contacts couple through the shared bodies, so `M` has
@@ -120,7 +123,7 @@ pub struct HarnessResult {
 /// or `None` (Dantzig) rather than aborting the whole harness, so the report
 /// always covers all scenes.
 pub fn run_harness() -> Vec<HarnessResult> {
-    let scenes: [(&'static str, fn() -> (Vec<Vec<f64>>, Vec<f64>)); 3] = [
+    let scenes: [(&'static str, SceneBuilder); 3] = [
         ("box_stack", scene_box_stack),
         ("wedge", scene_wedge),
         ("high_mass_ratio", scene_high_mass_ratio),
@@ -199,11 +202,10 @@ mod tests {
     #[test]
     fn test_scenes_are_psd_symmetric() {
         for (m, _q) in [scene_box_stack(), scene_wedge(), scene_high_mass_ratio()] {
-            let n = m.len();
-            for i in 0..n {
-                for j in 0..n {
+            for (i, row) in m.iter().enumerate() {
+                for (j, &m_ij) in row.iter().enumerate() {
                     assert!(
-                        (m[i][j] - m[j][i]).abs() < 1e-12,
+                        (m_ij - m[j][i]).abs() < 1e-12,
                         "M not symmetric at ({i},{j})"
                     );
                 }

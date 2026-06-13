@@ -493,18 +493,37 @@ fn cofactor3(f: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 /// through inversion.
 #[derive(Debug, Clone, Copy)]
 pub struct StableNeoHookeanMaterial {
-    /// First Lame parameter mu (shear modulus).
+    /// Effective shear constant used internally. NOTE: `from_young_poisson`
+    /// stores the Smith-2018 remapped value `(4/3)*mu`, not the textbook Lame
+    /// `mu`, so the stable model matches classic linear elasticity at small
+    /// strain. Construct via `from_young_poisson` unless you have already
+    /// applied the remap yourself.
     pub mu: f64,
-    /// Second Lame parameter lambda.
+    /// Effective volumetric constant used internally. NOTE: `from_young_poisson`
+    /// stores the Smith-2018 remapped value `lambda + (5/6)*mu`, not the
+    /// textbook Lame `lambda`.
     pub lambda: f64,
 }
 
 impl StableNeoHookeanMaterial {
     /// Create from Young's modulus and Poisson's ratio.
+    ///
+    /// The Smith et al. (2018) "Stable Neo-Hookean Flesh Simulation" energy does
+    /// not linearize to the standard Lame constants when fed the classic
+    /// `mu`/`lambda`. The paper derives a remapping so the stable model
+    /// reproduces the same small-strain (linear-elastic) limit as the classic
+    /// Neo-Hookean: `mu_hat = (4/3) mu` and `lambda_hat = lambda + (5/6) mu`.
+    /// These hat values are stored so that around `F = I` the stable stress
+    /// matches classic linear elasticity.
     pub fn from_young_poisson(young: f64, poisson: f64) -> Self {
         let mu = young / (2.0 * (1.0 + poisson));
         let lambda = young * poisson / ((1.0 + poisson) * (1.0 - 2.0 * poisson));
-        Self { mu, lambda }
+        let mu_hat = 4.0 / 3.0 * mu;
+        let lambda_hat = lambda + 5.0 / 6.0 * mu;
+        Self {
+            mu: mu_hat,
+            lambda: lambda_hat,
+        }
     }
 
     /// Rest-stability constant `alpha = 1 + mu/lambda - mu/(4 lambda)`.
@@ -649,9 +668,9 @@ mod tests_stable_neohookean {
         // At F = I the stable model is (near) stress-free by construction of alpha.
         let mat = StableNeoHookeanMaterial::from_young_poisson(1000.0, 0.3);
         let p = mat.piola_kirchhoff(identity());
-        for i in 0..3 {
-            for j in 0..3 {
-                assert!(p[i][j].abs() < 1e-9, "rest stress P[{i}][{j}]={}", p[i][j]);
+        for (i, row) in p.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert!(val.abs() < 1e-9, "rest stress P[{i}][{j}]={val}");
             }
         }
     }

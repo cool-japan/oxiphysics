@@ -299,24 +299,40 @@ impl CorotationalInvertibleElement {
         let f = self.deformation_gradient(positions);
         let (u, sigma, vt) = signed_svd3(f);
 
-        // Clamp singular-value magnitudes away from zero, preserving sign so
-        // an inverted tet (sigma[2] < 0) keeps pushing outward.
-        let clamp = |s: f64| {
-            if s >= 0.0 {
-                s.max(self.sigma_clamp)
-            } else {
-                s.min(-self.sigma_clamp)
-            }
-        };
-        let sc = [clamp(sigma[0]), clamp(sigma[1]), clamp(sigma[2])];
+        // Irving et al. (2004), "Invertible Finite Elements For Robust
+        // Simulation of Large Deformation", reflection handling. The signed SVD
+        // gives `det(U) = det(V) = +1`, so a reflected (inverted) element is
+        // encoded by `sigma[2] < 0`. Evaluating the principal Neo-Hookean stress
+        // on the *signed* singular values makes the reflected rest state
+        // `sigma = (1,1,-1)` a spurious zero-force equilibrium
+        // (`mu(sigma - 1/sigma) = mu(-1 + 1) = 0`, `ln|J| = 0`), so a relaxing
+        // tet settles at the mirrored shape (`det F = -1`).
+        //
+        // The remedy is to evaluate the constitutive stress on the POSITIVE
+        // (magnitude) singular values, clamped away from zero. A
+        // compressed/inverted axis (`|sigma| < 1`) then yields a genuinely
+        // compressive principal stress `mu(|sigma| - 1/|sigma|) < 0` that pushes
+        // the axis to expand back toward `|sigma| = 1`. The reflection
+        // orientation already lives in the signed `U`/`V^T` from the SVD, so the
+        // world-frame reconstruction `P = U diag(P_hat) V^T` directs this
+        // restoring stress to drive the inverted node back through the rest
+        // plane and un-invert the element -- no extra sign flip is required (and
+        // flipping the most-inverted axis would reverse the force back toward
+        // the reflected rest, deepening the inversion).
+        let sc = [
+            sigma[0].abs().max(self.sigma_clamp),
+            sigma[1].abs().max(self.sigma_clamp),
+            sigma[2].abs().max(self.sigma_clamp),
+        ];
 
-        // Neo-Hookean first Piola stress in the principal (diagonal) frame:
-        //   P_hat_i = mu (sigma_i - 1/sigma_i) + lambda ln(J) / sigma_i
-        let j = sc[0] * sc[1] * sc[2];
-        let ln_j = j.abs().ln();
+        // Neo-Hookean first Piola stress in the principal (diagonal) frame,
+        // evaluated on the positive clamped sigmas (Jp = product > 0):
+        //   P_hat_i = mu (sigma_i - 1/sigma_i) + lambda ln(Jp) / sigma_i
+        let jp = sc[0] * sc[1] * sc[2];
+        let ln_jp = jp.ln();
         let mut p_hat = [0.0f64; 3];
         for i in 0..3 {
-            p_hat[i] = self.mu * (sc[i] - 1.0 / sc[i]) + self.lambda * ln_j / sc[i];
+            p_hat[i] = self.mu * (sc[i] - 1.0 / sc[i]) + self.lambda * ln_jp / sc[i];
         }
 
         // Rotate stress back to world frame: P = U diag(P_hat) V^T.
