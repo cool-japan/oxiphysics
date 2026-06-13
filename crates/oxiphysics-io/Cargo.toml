@@ -13,6 +13,7 @@ keywords = ["physics", "io", "vtk", "hdf5", "serialization"]
 [dependencies]
 thiserror = { workspace = true }
 oxiphysics-core = { workspace = true }
+oxiphysics-articulated = { workspace = true }
 oxiarc-zstd = { workspace = true }
 
 [dev-dependencies]

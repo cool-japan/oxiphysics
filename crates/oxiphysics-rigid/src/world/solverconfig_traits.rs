@@ -21,6 +21,8 @@ impl Default for SolverConfig {
             contact_hertz: 0.0,
             contact_damping_ratio: 1.0,
             use_soft_contacts: false,
+            use_speculative: false,
+            speculative_margin: 0.0,
         }
     }
 }

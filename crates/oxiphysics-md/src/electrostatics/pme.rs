@@ -513,6 +513,53 @@ fn erfc_fast(x: f64) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
+// Re-exports from pme_tuning
+// ---------------------------------------------------------------------------
+
+pub use crate::electrostatics::pme_tuning::{
+    pme_real_space_rms_force_error, pme_reciprocal_rms_force_error, next_good_grid_size,
+    PmeAutoTuner, PmeParams, PmeTuningError,
+};
+
+/// Convenience wrapper: compute PME reciprocal energy using [`PmeParams`].
+impl PmeParams {
+    /// Reciprocal-space PME energy (kJ mol⁻¹).
+    pub fn reciprocal_energy(
+        &self,
+        positions: &[[f64; 3]],
+        charges: &[f64],
+        box_lengths: [f64; 3],
+    ) -> f64 {
+        pme_reciprocal_energy(positions, charges, box_lengths, self.alpha, self.grid)
+    }
+
+    /// PME self-energy correction (kJ mol⁻¹).
+    pub fn self_energy(&self, charges: &[f64]) -> f64 {
+        pme_self_energy(charges, self.alpha)
+    }
+
+    /// Real-space Ewald energy (kJ mol⁻¹) with minimum-image convention.
+    pub fn real_space_energy(
+        &self,
+        positions: &[[f64; 3]],
+        charges: &[f64],
+        box_lengths: [f64; 3],
+    ) -> f64 {
+        ewald_real_space_energy(positions, charges, box_lengths, self.alpha, self.r_cut)
+    }
+
+    /// Reciprocal-space PME forces (kJ mol⁻¹ Å⁻¹).
+    pub fn reciprocal_forces(
+        &self,
+        positions: &[[f64; 3]],
+        charges: &[f64],
+        box_lengths: [f64; 3],
+    ) -> Vec<[f64; 3]> {
+        pme_reciprocal_forces(positions, charges, box_lengths, self.alpha, self.grid)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

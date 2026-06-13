@@ -591,6 +591,19 @@ pub struct SolverConfig {
     /// (the default) the solver uses the existing rigid impulse path, which is
     /// byte-identical to prior behaviour.
     pub use_soft_contacts: bool,
+    /// Enable speculative contact response for tunnelling prevention. When
+    /// `false` (the default) the solver ignores separated contacts (depth < 0),
+    /// preserving byte-identical legacy behaviour. When `true`, contacts within
+    /// `speculative_margin` of contact (even while still separated) are
+    /// admitted with a distance-clamped target velocity so the bodies converge
+    /// without tunnelling — no CCD sub-stepping required.
+    pub use_speculative: bool,
+    /// Effective margin (metres) for speculative contact admission. Separated
+    /// contacts with `depth >= -speculative_margin` are admitted when
+    /// `use_speculative` is `true`. Default: `0.0` (disabled margin, only
+    /// active contacts processed unless `use_speculative` is `true` with a
+    /// positive margin). A sensible starting value is `0.01` (1 cm).
+    pub speculative_margin: f64,
 }
 /// A ray defined by an origin and a direction (need not be normalised; `t` is
 /// in *ray-space* units i.e. multiples of the direction length).
@@ -891,7 +904,7 @@ impl PhysicsWorld {
             let mut lambda_acc = vec![0.0_f64; contacts.len()];
             for _ in 0..iters {
                 for (i, cp) in contacts.iter().enumerate() {
-                    self.solve_contact_velocity_soft(cp, &soft, &mut lambda_acc[i]);
+                    self.solve_contact_velocity_soft(cp, &soft, &mut lambda_acc[i], dt);
                 }
             }
         } else {
@@ -1108,7 +1121,24 @@ impl PhysicsWorld {
         restitution: f64,
         restitution_threshold: f64,
         lambda_acc: &mut f64,
+        dt: f64,
     ) {
+        // SPECULATIVE: determine whether this contact is in the speculative regime.
+        // A contact is speculative if use_speculative is true and the penetration
+        // depth is negative (gap exists) but within speculative_margin.
+        // When use_speculative is false the depth is clamped to 0 (legacy path).
+        let is_speculative = self.solver_config.use_speculative
+            && cp.depth < 0.0
+            && cp.depth >= -self.solver_config.speculative_margin;
+        if cp.depth < 0.0 && !is_speculative {
+            // Non-speculative mode or gap exceeds margin: skip separated contacts.
+            return;
+        }
+        let depth = if is_speculative {
+            cp.depth // signed negative: gap exists
+        } else {
+            cp.depth.max(0.0) // legacy: clamp to non-negative
+        };
         let (com_a, va, wa, inv_ma, inv_i_a, a_dynamic) = match self.bodies.get(cp.body_a) {
             Some(b) => {
                 let dyn_a = b.body_type == BodyType::Dynamic;
@@ -1170,14 +1200,33 @@ impl PhysicsWorld {
         // Relative normal velocity at the contact point (separating > 0,
         // approaching < 0); normal points from B toward A.
         let jv = n.dot(&(va - vb)) + ra_x_n.dot(&wa) - rb_x_n.dot(&wb);
-        let depth = cp.depth.max(0.0);
-        let soft_bias = soft.bias_rate * depth;
-        let restitution_term = if jv < -restitution_threshold {
-            -restitution * jv
+        let (soft_bias, effective_restitution) = if is_speculative {
+            // Speculative contact: gap = -depth (positive gap distance).
+            // Target closing velocity = gap / dt so the bodies arrive at contact
+            // in exactly one step. No restitution (zero) to prevent ghost bounce.
+            let gap = -depth;
+            let closing_target = if dt > 1e-12 { -(gap / dt) } else { 0.0 };
+            // closing_target is negative (approaching), jv convention: separating > 0
+            // We only apply impulse if approaching faster than needed:
+            // jv < closing_target means approaching too fast (more negative).
+            // bias = -closing_target in the separating-velocity frame.
+            (closing_target, 0.0)
         } else {
-            0.0
+            (soft.bias_rate * depth, restitution)
         };
-        let target = soft_bias.max(restitution_term);
+        let target = if is_speculative {
+            // For speculative contacts the target is the clamped closing velocity.
+            // soft_bias here is closing_target (negative = approaching target).
+            // We want jv to reach soft_bias. No restitution.
+            soft_bias
+        } else {
+            let restitution_term = if jv < -restitution_threshold {
+                -effective_restitution * jv
+            } else {
+                0.0
+            };
+            soft_bias.max(restitution_term)
+        };
         let numerator = soft.mass_scale * (jv - target) + soft.impulse_scale * *lambda_acc;
         let impulse_raw = -numerator / eff_mass;
         let lambda_new = (*lambda_acc + impulse_raw).max(0.0);
@@ -1197,15 +1246,24 @@ impl PhysicsWorld {
     /// [`SolverConfig`] (the threshold is clamped to `0.5` to match the
     /// small-steps rule); `lambda_acc` is the caller-owned accumulated normal
     /// impulse for this contact, warm-started across velocity iterations.
+    /// `dt` is the current step size, passed to the speculative contact path.
     fn solve_contact_velocity_soft(
         &mut self,
         cp: &ContactPair,
         soft: &SoftParams,
         lambda_acc: &mut f64,
+        dt: f64,
     ) {
         let restitution = self.solver_config.restitution;
         let restitution_threshold = self.solver_config.restitution_threshold.min(0.5);
-        self.apply_soft_normal_constraint(cp, soft, restitution, restitution_threshold, lambda_acc);
+        self.apply_soft_normal_constraint(
+            cp,
+            soft,
+            restitution,
+            restitution_threshold,
+            lambda_acc,
+            dt,
+        );
     }
     /// Soft (TGS-Soft) velocity solve for one cached small-steps contact.
     ///
@@ -1223,6 +1281,7 @@ impl PhysicsWorld {
         soft: &SoftParams,
         e_sub: f64,
         lambda_acc: &mut f64,
+        dt: f64,
     ) {
         let pa = match self.bodies.get(c.body_a) {
             Some(b) => b.transform.position,
@@ -1235,7 +1294,14 @@ impl PhysicsWorld {
         let delta = pa - pb;
         let dist = delta.norm();
         let depth = (c.radius_a + c.radius_b) - dist;
-        if depth < 0.0 {
+        // SPECULATIVE: admit contacts within the speculative margin even when
+        // depth < 0 (gap exists). The apply_soft_normal_constraint function
+        // handles the admission check and target velocity, so we gate here only
+        // on the non-speculative rejection path.
+        let is_speculative_candidate = self.solver_config.use_speculative
+            && depth < 0.0
+            && depth >= -self.solver_config.speculative_margin;
+        if depth < 0.0 && !is_speculative_candidate {
             return;
         }
         // Sphere-sphere contact point: on A's surface toward B. The normal
@@ -1253,7 +1319,7 @@ impl PhysicsWorld {
             contact_point,
         };
         let restitution_threshold = self.solver_config.restitution_threshold.min(0.5);
-        self.apply_soft_normal_constraint(&cp, soft, e_sub, restitution_threshold, lambda_acc);
+        self.apply_soft_normal_constraint(&cp, soft, e_sub, restitution_threshold, lambda_acc, dt);
     }
 }
 impl PhysicsWorld {
@@ -1616,7 +1682,13 @@ impl PhysicsWorld {
                     body.integrate_forces(h, &g_vec);
                 }
                 for (i, c) in cached_clone.iter().enumerate() {
-                    self.solve_cached_contact_velocity_soft(c, &soft, e_sub, &mut lambda_acc[i]);
+                    self.solve_cached_contact_velocity_soft(
+                        c,
+                        &soft,
+                        e_sub,
+                        &mut lambda_acc[i],
+                        h,
+                    );
                 }
                 for (_, body) in self.bodies.iter_mut() {
                     body.integrate_velocity(h);
@@ -1627,7 +1699,15 @@ impl PhysicsWorld {
             let relax = SoftParams::rigid();
             for _ in 0..2 {
                 for (i, c) in cached_clone.iter().enumerate() {
-                    self.solve_cached_contact_velocity_soft(c, &relax, 0.0, &mut lambda_acc[i]);
+                    // Relax pass uses rigid params; speculative target velocity
+                    // uses dt=h so the solver knows the current sub-step size.
+                    self.solve_cached_contact_velocity_soft(
+                        c,
+                        &relax,
+                        0.0,
+                        &mut lambda_acc[i],
+                        h,
+                    );
                 }
             }
         } else {

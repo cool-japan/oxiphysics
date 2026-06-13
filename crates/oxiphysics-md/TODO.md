@@ -107,10 +107,13 @@ dispersion, and complete the NEMD transport toolkit.
       cutoff-independent to <1% for r_c=2.5–4σ. **Design:** reciprocal-space
       r⁻⁶ via existing PME machinery. in 't Veld 2007. (oxifft)
 
-- [ ] PME auto-tuning — **Goal:** force error < 1e-4 with auto-selected α/grid;
+- [x] PME auto-tuning (done 2026-06-13) — **Goal:** force error < 1e-4 with auto-selected α/grid;
       ≥2× faster than untuned. **Design:** Kolafa-Perram error-estimate-driven
       real/reciprocal split optimization. *(Verified: PME exists in `ewald/`;
       auto-tuning missing.)* (oxifft)
+    - **Files:** NEW src/electrostatics/pme_tuning.rs; MODIFY src/electrostatics/pme.rs, src/electrostatics/mod.rs
+    - **Tests:** KP real-space estimate ~10-20% accuracy; Deserno-Holm reciprocal estimate ~factor-2; auto-tune achieves RMS force error < 1e-4 vs Ewald reference; ≥2× faster than fine-grid baseline
+    - **Risk:** Deserno-Holm constant factors — de-risked by measured-RMS-vs-Ewald gate
 
 - [ ] Green-Kubo/NEMD transport completion — **Goal:** LJ shear viscosity agrees
       within 10% between GK and NEMD at one state point. **Design:** add SLLOD +

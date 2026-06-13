@@ -297,8 +297,19 @@ pub(super) fn gjk_epa(
     let result = Gjk::query(shape_a, transform_a, shape_b, transform_b);
     match result {
         GjkResult::Intersecting(simplex) => {
-            let contact =
-                Epa::penetration_depth(shape_a, transform_a, shape_b, transform_b, &simplex)?;
+            let contact = match Epa::penetration_depth(
+                shape_a,
+                transform_a,
+                shape_b,
+                transform_b,
+                &simplex,
+            ) {
+                Some(c) => c,
+                // EPA failed on a degenerate simplex — fall back to MPR (XenoCollide).
+                None => {
+                    crate::narrowphase::gjk::mpr_contact(shape_a, transform_a, shape_b, transform_b)?
+                }
+            };
             let mut manifold = ContactManifold::new(pair);
             manifold.add_contact(contact);
             Some(manifold)

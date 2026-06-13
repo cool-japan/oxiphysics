@@ -113,7 +113,12 @@
   - **Tests (proposed):** `unit::sumfac_matches_dense_p2`, `integration::matfree_poisson_p4_matches_assembled`, `bench::matfree_vs_spmv_p4`
 
 ### Saddle-point preconditioning
-- [ ] Block-diagonal / Schur preconditioner + Chebyshev-accelerated smoother
+- [x] Block-diagonal / Schur preconditioner + Chebyshev-accelerated smoother (shipped 2026-06-13)
+    - **Goal:** Stokes GMRES iteration count ≤10% variation across 3 mesh refinements with block-Schur PC
+    - **Design:** Chebyshev smoother (3-term recurrence, spectral radius via power_iteration_spectral_radius) + block-diagonal Silvester-Wathen PC (AMG velocity block + pressure mass matrix Schur)
+    - **Files:** NEW src/solvers/amg/chebyshev_smoother.rs, NEW src/solvers/block_schur_pc.rs; MODIFY src/solvers/amg/mod.rs, src/solvers/mod.rs
+    - **Tests:** Chebyshev smoothing factor < GS; block-Schur GMRES mesh-independence ±10%; parity vs dense-direct on small Stokes
+    - **Risk:** Saddle-point GMRES coupling + pressure-Schur spectral equivalence — validate ±10% gate directly
   - **Goal:** Taylor-Hood Stokes GMRES iterations mesh-independent (±10% over 3 refinements).
   - **Design:** block-diagonal/Schur preconditioner + Chebyshev-accelerated smoother on the existing AMG.
   - **Delta:** Ruge-Stüben + SA AMG, PCG/GMRES, SUPG/PSPG/VMS, Taylor-Hood `inf_sup_check`, and `MortarContact` all ship — only the Chebyshev smoother + block-Schur wrapper are new.

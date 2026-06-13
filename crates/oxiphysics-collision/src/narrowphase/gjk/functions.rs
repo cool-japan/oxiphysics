@@ -629,10 +629,9 @@ pub fn gjk_cast_ray_minkowski(
     }
     None
 }
-/// Minkowski Portal Refinement algorithm for convex-convex intersection.
+/// Minkowski Portal Refinement (XenoCollide) convex-convex intersection query.
 ///
-/// MPR (XenoCollide) finds a "portal" through the Minkowski difference that
-/// contains the origin, confirming intersection and providing a contact normal.
+/// Thin wrapper over the full XenoCollide implementation in [`super::mpr`].
 ///
 /// Reference: Gary Snethen, "XenoCollide: Complex Collision Made Simple",
 /// Game Programming Gems 7, 2008.
@@ -642,123 +641,7 @@ pub fn mpr_query(
     shape_b: &dyn Shape,
     transform_b: &Transform,
 ) -> MprResult {
-    let v0_vec = transform_b.position - transform_a.position;
-    if v0_vec.norm_squared() < TOLERANCE * TOLERANCE {
-        return MprResult::Intersecting {
-            normal: Vec3::new(0.0, 1.0, 0.0),
-            depth: 0.0,
-            point: transform_a.position,
-        };
-    }
-    let v0 = SupportPoint {
-        point: v0_vec,
-        support_a: transform_a.position,
-        support_b: transform_b.position,
-    };
-    let dir0 = -v0_vec;
-    let v1 = support(shape_a, transform_a, shape_b, transform_b, &dir0);
-    if v1.point.dot(&dir0) < 0.0 {
-        return MprResult::Separated;
-    }
-    let dir1 = dir0.cross(&v1.point).cross(&v1.point);
-    let dir1 = if dir1.norm_squared() < TOLERANCE {
-        let perp = if dir0.x.abs() < 0.9 {
-            Vec3::new(1.0, 0.0, 0.0)
-        } else {
-            Vec3::new(0.0, 1.0, 0.0)
-        };
-        dir0.cross(&perp)
-    } else {
-        dir1
-    };
-    let mut v1 = v1;
-    let mut v2 = support(shape_a, transform_a, shape_b, transform_b, &dir1);
-    for _ in 0..MAX_ITERATIONS {
-        let portal_normal = (v1.point - v0.point).cross(&(v2.point - v0.point));
-        let pn_len = portal_normal.norm();
-        if pn_len < TOLERANCE {
-            break;
-        }
-        let pn = portal_normal / pn_len;
-        if pn.dot(&v1.point) >= 0.0 {
-            let depth = pn.dot(&v1.point).abs();
-            let point = (v1.point + v2.point) * 0.5;
-            return MprResult::Intersecting {
-                normal: pn,
-                depth,
-                point,
-            };
-        }
-        let v3 = support(shape_a, transform_a, shape_b, transform_b, &pn);
-        if v3.point.dot(&pn) < 0.0 {
-            return MprResult::Separated;
-        }
-        let d1 = (v3.point - v0.point).cross(&(v1.point - v0.point));
-        if d1.dot(&(-v0.point)) > 0.0 {
-            v2 = v3;
-        } else {
-            v1 = v3;
-        }
-    }
-    MprResult::Separated
-}
-/// Internal recursive portal refinement step for MPR.
-pub fn mpr_refine_portal(
-    shape_a: &dyn Shape,
-    transform_a: &Transform,
-    shape_b: &dyn Shape,
-    transform_b: &Transform,
-    v0: &SupportPoint,
-    v1: &SupportPoint,
-    v2: &SupportPoint,
-    depth: usize,
-) -> MprResult {
-    if depth > MAX_ITERATIONS {
-        return MprResult::Separated;
-    }
-    let portal_normal = (v1.point - v0.point).cross(&(v2.point - v0.point));
-    let pn_len = portal_normal.norm();
-    if pn_len < TOLERANCE {
-        return MprResult::Separated;
-    }
-    let pn = portal_normal / pn_len;
-    if pn.dot(&v1.point) >= 0.0 {
-        let penetration_depth = pn.dot(&v1.point).abs();
-        let contact_point = (v1.point + v2.point) * 0.5;
-        return MprResult::Intersecting {
-            normal: pn,
-            depth: penetration_depth,
-            point: contact_point,
-        };
-    }
-    let v3 = support(shape_a, transform_a, shape_b, transform_b, &pn);
-    if v3.point.dot(&pn) < 0.0 {
-        return MprResult::Separated;
-    }
-    let d1 = (v3.point - v0.point).cross(&(v1.point - v0.point));
-    if d1.dot(&(-v0.point)) > 0.0 {
-        mpr_refine_portal(
-            shape_a,
-            transform_a,
-            shape_b,
-            transform_b,
-            v0,
-            v1,
-            &v3,
-            depth + 1,
-        )
-    } else {
-        mpr_refine_portal(
-            shape_a,
-            transform_a,
-            shape_b,
-            transform_b,
-            v0,
-            &v3,
-            v2,
-            depth + 1,
-        )
-    }
+    super::mpr::mpr_full(shape_a, transform_a, shape_b, transform_b)
 }
 /// Compute time-of-impact using a bisection refinement after conservative advancement.
 ///

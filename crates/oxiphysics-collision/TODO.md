@@ -104,10 +104,13 @@ Exit gate: Miri-clean dispatch (local script), 4-point one-shot manifolds restin
   - **Tests:** coherent-motion 60-frame scene asserting hit-ratio > 50%; cache invalidation on body removal
   - **Risk:** dispatcher may need &mut/state for the registry — keep API additive
 
-- [ ] MPR (Minkowski Portal Refinement)
+- [~] MPR (Minkowski Portal Refinement) (planned 2026-06-13)
   - **Goal:** penetration depth within 1% of EPA on 1e5 random convex pairs at >2x EPA speed; used as EPA fallback on simplex degeneracy.
   - **Design:** Snethen XenoCollide portal refinement.
   - **Tests:** 1e5 random convex-pair depth comparison vs EPA; degenerate-simplex fallback trigger cases
+    - **Files:** NEW narrowphase/gjk/mpr.rs (full XenoCollide); MODIFY narrowphase/gjk/functions.rs (remove/relocate simplified mpr_query), narrowphase/gjk/types.rs, narrowphase/dispatch/functions.rs (EPA-fallback wiring), narrowphase/gjk/mod.rs, narrowphase/mod.rs, lib.rs; NEW tests/mpr_epa_parity.rs
+    - **Tests:** 1e5 random convex pairs depth within 1% of EPA; degenerate-simplex fallback triggers; smoke case parity; criterion bench >2x (env-gated)
+    - **Risk:** Portal sub-region replacement signs — validate discovery phase on sphere/sphere first
 
 - [ ] Vertex-face/edge-edge continuous CCD with cubic root solver
   - **Goal:** zero missed collisions on cloth-vs-cloth benchmark at 5 m/s, dt=1/60.

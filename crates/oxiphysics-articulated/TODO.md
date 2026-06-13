@@ -62,9 +62,13 @@ Everything below builds on the existing forward-pass Featherstone stack (`spatia
   - **Risk:** depends on RNEA-derivative correctness; Cholesky must guard SPD (return Result, no unwrap in production)
   - **Verified 2026-06-12:** `src/aba_derivatives.rs` implements ∂q̈/∂τ = M⁻¹, ∂q̈/∂q = −M⁻¹·∂RNEA/∂q, ∂q̈/∂q̇ = −M⁻¹·∂RNEA/∂q̇ via local SPD Cholesky (returns `AbaDerivativeError`, no unwrap). ∂q̈/∂q vs −M⁻¹·∂τ/∂q to 1e-8; ∂q̈/∂τ and ∂q̈/∂q,∂q̈/∂q̇ vs central FD of aba to 1e-6 (2-link), 7-DoF ∂q̈/∂τ vs FD to 1e-5; M⁻¹ symmetry to 1e-10. 9 new tests, 0 warnings.
 
-- [ ] Sparse LTL/LTDL mass-matrix factorization
+- [x] Sparse LTL/LTDL mass-matrix factorization (shipped 2026-06-13)
   - **Goal:** factorization+solve beats dense Cholesky ≥2x on a 36-DoF humanoid tree.
   - **Design:** Featherstone 2008 ch. 8 branching-induced sparsity (expanded-parent array), in-place LTDL; optional oxiblas (new dep) only for the dense fallback.
+    - **Files:** NEW src/ltdl.rs (312 LoC); MODIFY src/lib.rs
+    - **Tests:** λ correctness on branched tree; factor+solve vs dense Cholesky to 1e-10; no-fill-in sparsity; LᵀDL reconstruction to 1e-9; dim-mismatch + non-SPD error paths; solve_columns parity; perf-ratio gate ≥2x vs dense on a 36-DoF tree
+    - **Risk:** 0-based index translation in λ — dense-Cholesky parity gate catches index slips
+    - **Verified 2026-06-13:** `src/ltdl.rs` implements `build_lambda` (expanded-parent array, 1-based; skips 0-DOF ancestors), in-place `ltdl_factor_inplace` (H = LᵀDL, zero fill-in), three-pass `ltdl_solve`, and the `SparseMassFactorization` struct (+`factor_crba` convenience) with a no-thiserror `LtdlError` (plain enum, manual Display/Error matching `AbaDerivativeError`). Crate stays dependency-free (no criterion: perf test uses a local dense Cholesky + `std::time::Instant`). Hard gates: H·x=b parity to 1e-10 (`test_ltdl_factor_solve_vs_dense_cholesky`); dense/sparse factor+solve ratio ≈7.9x at n=36 (`test_sparse_beats_dense_cholesky_2x`). 9 new tests, 0 warnings, clippy `-D warnings --all-targets` clean. Solve pass-directions corrected vs the original sketch: Phase 1 (Lᵀz=b) descends, Phase 3 (Lx=y) ascends — deep 36-DOF branched tree exposed the off-by-direction (residual 6.6e3 → 2.1e-14); LᵀDL reconstruction ‖LᵀDL−H‖∞ ≈ 4e-16.
 
 ### Kinematics, import, and actuation
 

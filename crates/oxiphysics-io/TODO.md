@@ -74,7 +74,8 @@ Definition of done for every parser/codec item from here on:
 Fixture policy: prefer official/public-domain references (NIST STEP files, OpenFOAM tutorial cases, RCSB structures); tool-generated fixtures (gmx, h5py) are committed together with a regeneration script so they stay auditable.
 
 ### Robotics interop (headline)
-- [ ] URDF XML parser → `ArticulatedModel` import — (closes marker 13; feeds root Phase 29 robotics round-trip demos)
+- [x] URDF XML parser → `ArticulatedModel` import — (closes marker 13; feeds root Phase 29 robotics round-trip demos)
+  - **Impl files (2026-06-13):** NEW src/robotics_io/{xml.rs, urdf_parser.rs, articulated_map.rs, urdf_writer.rs, urdf_error.rs}; MODIFY Cargo.toml, src/robotics_io/mod.rs; NEW tests/urdf_roundtrip.rs, tests/fixtures/two_link_pendulum.urdf
   - **Goal:** round-trips 3 reference robots incl. KUKA iiwa with joint limits/inertials/mesh refs; imported model's ABA gravity torques match analytic 2-link within 1e-6.
   - **Note:** data model exists (`robotics_io/types.rs` — `UrdfJoint`, `UrdfVisualElement`, `UrdfGeometry`); the XML parse + articulated mapping are new; pure-Rust XML layer.
   - **Files:** `src/robotics_io/` (XML parser NEW next to `types.rs`, articulated mapping NEW); reference URDF fixtures committed under test data.

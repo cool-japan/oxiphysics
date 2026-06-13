@@ -4,6 +4,7 @@
 //! Algebraic Multigrid (AMG) solver module.
 
 pub mod aggregation;
+pub mod chebyshev_smoother;
 pub mod classical;
 pub mod cycle;
 pub mod galerkin;
@@ -13,6 +14,7 @@ pub mod preconditioner;
 pub mod smoothed_aggregation;
 pub mod smoothers;
 
+pub use chebyshev_smoother::chebyshev_smoother;
 pub use classical::AmgClassical;
 pub use cycle::{AmgHierarchy, AmgLevel, CycleKind};
 pub use preconditioner::{AmgPreconditioner, Preconditioner};

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot name="two_link_pendulum">
+  <link name="world"/>
+  <joint name="world_to_link1" type="fixed">
+    <parent link="world"/>
+    <child link="link1"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="link1">
+    <inertial>
+      <origin xyz="0 0 0.5" rpy="0 0 0"/>
+      <mass value="1.0"/>
+      <inertia ixx="0.083" iyy="0.083" izz="0.0" ixy="0.0" ixz="0.0" iyz="0.0"/>
+    </inertial>
+  </link>
+  <joint name="joint1" type="revolute">
+    <parent link="link1"/>
+    <child link="link2"/>
+    <origin xyz="0 0 1.0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="100" velocity="10"/>
+  </joint>
+  <link name="link2">
+    <inertial>
+      <origin xyz="0 0 0.5" rpy="0 0 0"/>
+      <mass value="1.0"/>
+      <inertia ixx="0.083" iyy="0.083" izz="0.0" ixy="0.0" ixz="0.0" iyz="0.0"/>
+    </inertial>
+  </link>
+  <!-- second revolute joint at end of link2 -->
+  <joint name="joint2" type="revolute">
+    <parent link="link2"/>
+    <child link="end_effector"/>
+    <origin xyz="0 0 1.0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="100" velocity="10"/>
+  </joint>
+  <link name="end_effector">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.1"/>
+      <inertia ixx="0.001" iyy="0.001" izz="0.001" ixy="0.0" ixz="0.0" iyz="0.0"/>
+    </inertial>
+  </link>
+</robot>
