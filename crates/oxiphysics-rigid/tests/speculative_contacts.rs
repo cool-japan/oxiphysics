@@ -137,7 +137,12 @@ fn test_speculative_no_tunnel_slow() {
     let mut static_body = RigidBody::new_static();
     static_body.mass = 1.0; // so radius formula gives 0.5
     let _hb = world.add_rigid_body(static_body);
-    if let Some(b) = world.bodies.iter_mut().find(|(h, _)| *h != ha).map(|(_, b)| b) {
+    if let Some(b) = world
+        .bodies
+        .iter_mut()
+        .find(|(h, _)| *h != ha)
+        .map(|(_, b)| b)
+    {
         b.transform.position.x = 0.0;
     }
 
@@ -186,7 +191,12 @@ fn test_speculative_no_ghost_bounce() {
     let mut static_body = RigidBody::new_static();
     static_body.mass = 1.0;
     let _hb = world.add_rigid_body(static_body);
-    if let Some(b) = world.bodies.iter_mut().find(|(h, _)| *h != ha).map(|(_, b)| b) {
+    if let Some(b) = world
+        .bodies
+        .iter_mut()
+        .find(|(h, _)| *h != ha)
+        .map(|(_, b)| b)
+    {
         b.transform.position.x = 0.0;
     }
 

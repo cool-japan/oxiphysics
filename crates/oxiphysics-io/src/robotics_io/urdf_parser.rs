@@ -5,7 +5,7 @@ use super::types::{
     UrdfVisualElement,
 };
 use super::urdf_error::{UrdfError, UrdfResult};
-use super::xml::{parse_float_str, parse_vec3_str, parse_xml, XmlElement};
+use super::xml::{XmlElement, parse_float_str, parse_vec3_str, parse_xml};
 use std::collections::{HashMap, HashSet};
 
 /// Parse a URDF XML document into a [`UrdfRobot`].
@@ -20,10 +20,12 @@ pub fn parse_urdf(xml_str: &str) -> UrdfResult<UrdfRobot> {
             root.name
         )));
     }
-    let name = root.attr("name").ok_or_else(|| UrdfError::MissingAttribute {
-        element: "robot".into(),
-        attr: "name".into(),
-    })?;
+    let name = root
+        .attr("name")
+        .ok_or_else(|| UrdfError::MissingAttribute {
+            element: "robot".into(),
+            attr: "name".into(),
+        })?;
     let mut robot = UrdfRobot::new(name);
     for link_el in root.children_named("link") {
         robot.add_link(parse_link(link_el)?);
@@ -83,16 +85,21 @@ fn parse_inertial(el: &XmlElement) -> UrdfResult<UrdfInertial> {
 
 /// Parse a `<visual>` or `<collision>` element into a [`UrdfVisualElement`].
 fn parse_visual(el: &XmlElement) -> UrdfResult<UrdfVisualElement> {
-    let geom_el = el.child("geometry").ok_or_else(|| UrdfError::MissingAttribute {
-        element: "visual/collision".into(),
-        attr: "geometry".into(),
-    })?;
+    let geom_el = el
+        .child("geometry")
+        .ok_or_else(|| UrdfError::MissingAttribute {
+            element: "visual/collision".into(),
+            attr: "geometry".into(),
+        })?;
     let geometry = parse_geometry(geom_el)?;
     let mut ve = UrdfVisualElement::new(geometry);
     ve.name = el.attr("name").map(String::from);
     ve.origin_xyz = opt_vec3(el.child("origin"), "xyz", [0.0; 3])?;
     ve.origin_rpy = opt_vec3(el.child("origin"), "rpy", [0.0; 3])?;
-    ve.material = el.child("material").and_then(|m| m.attr("name")).map(String::from);
+    ve.material = el
+        .child("material")
+        .and_then(|m| m.attr("name"))
+        .map(String::from);
     Ok(ve)
 }
 
@@ -271,7 +278,10 @@ pub fn validate_tree(robot: &UrdfRobot) -> UrdfResult<String> {
             ));
         }
         if !robot.links.contains_key(&joint.child) {
-            return Err(UrdfError::UnknownLink(joint.child.clone(), joint.name.clone()));
+            return Err(UrdfError::UnknownLink(
+                joint.child.clone(),
+                joint.name.clone(),
+            ));
         }
         child_set.insert(joint.child.as_str());
     }

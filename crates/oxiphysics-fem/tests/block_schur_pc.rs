@@ -80,7 +80,9 @@ fn chebyshev_smoothing_factor() {
 
     // High-frequency (checkerboard) error mode; b = 0 ⇒ x is the error itself.
     let b = vec![0.0f64; n];
-    let x0: Vec<f64> = (0..n).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+    let x0: Vec<f64> = (0..n)
+        .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+        .collect();
     let norm0 = l2(&x0);
 
     let degree = 5;
@@ -101,8 +103,14 @@ fn chebyshev_smoothing_factor() {
         "Chebyshev high-frequency damping factor {factor_cheb:.4} not < 0.6"
     );
     // Both smoothers reduce the error (Chebyshev is competitive with GS).
-    assert!(factor_cheb < 1.0, "Chebyshev did not converge: {factor_cheb:.4}");
-    assert!(factor_gs < 1.0, "Gauss-Seidel did not converge: {factor_gs:.4}");
+    assert!(
+        factor_cheb < 1.0,
+        "Chebyshev did not converge: {factor_cheb:.4}"
+    );
+    assert!(
+        factor_gs < 1.0,
+        "Gauss-Seidel did not converge: {factor_gs:.4}"
+    );
 }
 
 // ── Test 2: block-Schur GMRES mesh-independence (headline gate) ──────────────

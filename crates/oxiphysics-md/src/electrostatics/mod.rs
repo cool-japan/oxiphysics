@@ -27,9 +27,9 @@ pub use coulomb::*;
 pub use lj_pme::{LjPmeError, LjPmeParams, lj_pme_energy_and_forces};
 pub use multipole::*;
 pub use pme::{
-    ewald_real_space_energy, next_good_grid_size, pme_real_space_rms_force_error,
-    pme_reciprocal_energy, pme_reciprocal_forces, pme_reciprocal_rms_force_error, pme_self_energy,
-    PmeAutoTuner, PmeParams, PmeTuningError,
+    PmeAutoTuner, PmeParams, PmeTuningError, ewald_real_space_energy, next_good_grid_size,
+    pme_real_space_rms_force_error, pme_reciprocal_energy, pme_reciprocal_forces,
+    pme_reciprocal_rms_force_error, pme_self_energy,
 };
 pub use polarization::*;
 pub use reaction_field::*;

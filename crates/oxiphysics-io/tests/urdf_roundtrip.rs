@@ -79,7 +79,10 @@ fn test_urdf_to_articulated_two_link() {
     assert_eq!(model.num_bodies(), 4, "expected 4 bodies");
 
     let n_dof = model.total_dof();
-    assert_eq!(n_dof, 2, "expected 2 DOFs from 2 revolute joints, got {n_dof}");
+    assert_eq!(
+        n_dof, 2,
+        "expected 2 DOFs from 2 revolute joints, got {n_dof}"
+    );
 
     let q = vec![0.0; n_dof];
     let qd = vec![0.0; n_dof];

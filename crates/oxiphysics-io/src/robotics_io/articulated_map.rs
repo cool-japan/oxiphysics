@@ -46,7 +46,9 @@ pub fn urdf_to_articulated(
     let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
     for name in &robot.joint_order {
         if let Some(j) = robot.joints.get(name) {
-            adj.entry(j.parent.as_str()).or_default().push(j.child.as_str());
+            adj.entry(j.parent.as_str())
+                .or_default()
+                .push(j.child.as_str());
         }
     }
     for children in adj.values_mut() {
@@ -98,7 +100,9 @@ pub fn urdf_to_articulated(
             let parent_transform = spatial_transform_from_origin(pj.origin_xyz, pj.origin_rpy);
             let joint: Box<dyn Joint> = match pj.joint_type {
                 JointType::Fixed => Box::new(FixedJoint),
-                JointType::Revolute | JointType::Continuous => Box::new(RevoluteJoint::new(pj.axis)),
+                JointType::Revolute | JointType::Continuous => {
+                    Box::new(RevoluteJoint::new(pj.axis))
+                }
                 JointType::Prismatic => Box::new(PrismaticJoint::new(pj.axis)),
                 JointType::Floating => Box::new(FreeFloatingJoint),
                 JointType::Planar => return Err(UrdfError::UnsupportedJointType("planar".into())),
@@ -161,10 +165,8 @@ mod tests {
     #[test]
     fn yaw_rotation_is_about_z() {
         // A 90-degree yaw rotates +x onto +y (column 0 of the rotation matrix).
-        let t = spatial_transform_from_origin(
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, std::f64::consts::FRAC_PI_2],
-        );
+        let t =
+            spatial_transform_from_origin([0.0, 0.0, 0.0], [0.0, 0.0, std::f64::consts::FRAC_PI_2]);
         assert!((t.rot[0][0] - 0.0).abs() < 1e-12);
         assert!((t.rot[1][0] - 1.0).abs() < 1e-12);
         assert!((t.rot[2][2] - 1.0).abs() < 1e-12);

@@ -306,9 +306,12 @@ pub(super) fn gjk_epa(
             ) {
                 Some(c) => c,
                 // EPA failed on a degenerate simplex — fall back to MPR (XenoCollide).
-                None => {
-                    crate::narrowphase::gjk::mpr_contact(shape_a, transform_a, shape_b, transform_b)?
-                }
+                None => crate::narrowphase::gjk::mpr_contact(
+                    shape_a,
+                    transform_a,
+                    shape_b,
+                    transform_b,
+                )?,
             };
             let mut manifold = ContactManifold::new(pair);
             manifold.add_contact(contact);

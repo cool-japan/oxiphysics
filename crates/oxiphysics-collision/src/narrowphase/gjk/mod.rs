@@ -2,8 +2,8 @@
 
 mod functions;
 mod functions_2;
-pub mod mpr;
 pub mod gjksolver_traits;
+pub mod mpr;
 pub mod simplex_traits;
 mod types;
 pub mod warmstartgjk_traits;

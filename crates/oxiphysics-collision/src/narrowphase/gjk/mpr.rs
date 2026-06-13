@@ -333,10 +333,7 @@ mod tests {
         let s2 = Sphere::new(0.5);
         let t1 = Transform::from_position(Vec3::new(0.0, 0.0, 0.0));
         let t2 = Transform::from_position(Vec3::new(5.0, 0.0, 0.0));
-        assert!(matches!(
-            mpr_full(&s1, &t1, &s2, &t2),
-            MprResult::Separated
-        ));
+        assert!(matches!(mpr_full(&s1, &t1, &s2, &t2), MprResult::Separated));
     }
 
     #[test]
@@ -346,7 +343,11 @@ mod tests {
         let t1 = Transform::from_position(Vec3::new(0.0, 0.0, 0.0));
         let t2 = Transform::from_position(Vec3::new(1.0, 0.0, 0.0));
         let contact = mpr_contact(&s1, &t1, &s2, &t2).expect("spheres overlap");
-        assert!((contact.depth - 1.0).abs() < 1e-3, "depth {}", contact.depth);
+        assert!(
+            (contact.depth - 1.0).abs() < 1e-3,
+            "depth {}",
+            contact.depth
+        );
         assert!(contact.normal.x.abs() > 0.99, "normal {:?}", contact.normal);
     }
 }

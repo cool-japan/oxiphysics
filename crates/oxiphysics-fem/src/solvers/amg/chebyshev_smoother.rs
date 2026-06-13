@@ -203,7 +203,9 @@ mod tests {
         let n = 33;
         let a = poisson_1d_dense(n);
         let b = vec![0.0f64; n];
-        let x0: Vec<f64> = (0..n).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        let x0: Vec<f64> = (0..n)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
         let norm0 = l2(&x0);
 
         let mut x = x0.clone();
@@ -226,12 +228,20 @@ mod tests {
 
         let mut ax = vec![0.0f64; n];
         dense_matvec(&a, &x, &mut ax);
-        let r0 = l2(&b.iter().zip(ax.iter()).map(|(bi, ai)| bi - ai).collect::<Vec<_>>());
+        let r0 = l2(&b
+            .iter()
+            .zip(ax.iter())
+            .map(|(bi, ai)| bi - ai)
+            .collect::<Vec<_>>());
 
         chebyshev_smoother(&a, &b, &mut x, 8);
 
         dense_matvec(&a, &x, &mut ax);
-        let r1 = l2(&b.iter().zip(ax.iter()).map(|(bi, ai)| bi - ai).collect::<Vec<_>>());
+        let r1 = l2(&b
+            .iter()
+            .zip(ax.iter())
+            .map(|(bi, ai)| bi - ai)
+            .collect::<Vec<_>>());
 
         assert!(r1 < r0, "Chebyshev did not reduce residual: {r0} -> {r1}");
     }
@@ -242,7 +252,9 @@ mod tests {
         let n = 33;
         let a = poisson_1d_dense(n);
         let b = vec![0.0f64; n];
-        let x0: Vec<f64> = (0..n).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        let x0: Vec<f64> = (0..n)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
         let norm0 = l2(&x0);
 
         let mut x2 = x0.clone();

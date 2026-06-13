@@ -28,7 +28,10 @@ impl XmlElement {
     }
 
     /// Returns an iterator over direct children whose tag name equals `name`.
-    pub fn children_named<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a XmlElement> + 'a {
+    pub fn children_named<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> impl Iterator<Item = &'a XmlElement> + 'a {
         self.children.iter().filter(move |c| c.name == name)
     }
 
@@ -198,10 +201,7 @@ pub fn parse_xml(input: &str) -> Result<XmlElement, String> {
         if chars[i] == '<' {
             i += 1;
             let start = i;
-            while i < chars.len()
-                && !chars[i].is_whitespace()
-                && chars[i] != '/'
-                && chars[i] != '>'
+            while i < chars.len() && !chars[i].is_whitespace() && chars[i] != '/' && chars[i] != '>'
             {
                 i += 1;
             }

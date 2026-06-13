@@ -517,8 +517,8 @@ fn erfc_fast(x: f64) -> f64 {
 // ---------------------------------------------------------------------------
 
 pub use crate::electrostatics::pme_tuning::{
-    pme_real_space_rms_force_error, pme_reciprocal_rms_force_error, next_good_grid_size,
-    PmeAutoTuner, PmeParams, PmeTuningError,
+    PmeAutoTuner, PmeParams, PmeTuningError, next_good_grid_size, pme_real_space_rms_force_error,
+    pme_reciprocal_rms_force_error,
 };
 
 /// Convenience wrapper: compute PME reciprocal energy using [`PmeParams`].

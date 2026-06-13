@@ -294,7 +294,10 @@ fn test_factor_crba_convenience() {
     let b = vec![1.0; n];
     let x = fact.solve(&b).expect("solve");
     assert_eq!(x.len(), n);
-    assert!(x.iter().all(|v| v.is_finite()), "all solution entries finite");
+    assert!(
+        x.iter().all(|v| v.is_finite()),
+        "all solution entries finite"
+    );
 }
 
 #[test]
@@ -345,7 +348,8 @@ fn test_dimension_mismatch_errors() {
 
 #[test]
 fn test_not_positive_definite_errors() {
-    let res = SparseMassFactorization::factor(vec![vec![-1.0, 0.0], vec![0.0, 1.0]], vec![0, 0, 0], 2);
+    let res =
+        SparseMassFactorization::factor(vec![vec![-1.0, 0.0], vec![0.0, 1.0]], vec![0, 0, 0], 2);
     let err = res.expect_err("factor of indefinite matrix must error");
     assert_eq!(err, LtdlError::NotPositiveDefinite { index: 0 });
 }

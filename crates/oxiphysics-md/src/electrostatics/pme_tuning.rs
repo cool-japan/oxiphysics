@@ -97,10 +97,7 @@ pub fn pme_reciprocal_rms_force_error(
     };
 
     let p = spline_order as f64;
-    q / ((n as f64 * volume).sqrt())
-        * c_p
-        * (h * alpha).powf(p)
-        * (-(PI * h * alpha).powi(2)).exp()
+    q / ((n as f64 * volume).sqrt()) * c_p * (h * alpha).powf(p) * (-(PI * h * alpha).powi(2)).exp()
 }
 
 // ---------------------------------------------------------------------------
@@ -111,9 +108,7 @@ pub fn pme_reciprocal_rms_force_error(
 #[derive(Debug, Error)]
 pub enum PmeTuningError {
     /// Real-space error is irreducible — cannot find alpha achieving the target.
-    #[error(
-        "Failed to find valid alpha for target error {0}: real-space error irreducible"
-    )]
+    #[error("Failed to find valid alpha for target error {0}: real-space error irreducible")]
     AlphaNotFound(f64),
     /// Reciprocal error requires a grid larger than the configured maximum.
     #[error("Grid too large: reciprocal error not achievable within max grid {0}")]
@@ -224,9 +219,7 @@ impl PmeAutoTuner {
     ) -> Result<PmeParams, PmeTuningError> {
         let n = charges.len();
         if n == 0 {
-            return Err(PmeTuningError::InvalidParameter(
-                "no particles".to_owned(),
-            ));
+            return Err(PmeTuningError::InvalidParameter("no particles".to_owned()));
         }
         let volume = box_lengths[0] * box_lengths[1] * box_lengths[2];
         if volume <= 0.0 {
@@ -246,9 +239,7 @@ impl PmeAutoTuner {
         // => exp(-α²·rc²) = target_each / (2·Q·√(1/(N·rc·V)))
         // => -α²·rc² = ln(ratio)
         // => α = √(-ln(ratio) / rc²)
-        let prefactor = 2.0
-            * q_sq_sum.sqrt()
-            * (1.0 / (n as f64 * self.r_cut * volume)).sqrt();
+        let prefactor = 2.0 * q_sq_sum.sqrt() * (1.0 / (n as f64 * self.r_cut * volume)).sqrt();
 
         let alpha = if prefactor <= 0.0 || q_sq_sum < 1e-30 {
             // No charge, use a small default alpha
@@ -259,9 +250,7 @@ impl PmeAutoTuner {
                 // Real-space error already below budget at α→0; use small alpha
                 0.1 / self.r_cut
             } else if ratio <= 0.0 {
-                return Err(PmeTuningError::AlphaNotFound(
-                    self.target_rms_force_error,
-                ));
+                return Err(PmeTuningError::AlphaNotFound(self.target_rms_force_error));
             } else {
                 let ln_ratio = ratio.ln(); // ln_ratio < 0 since ratio < 1
                 (-ln_ratio / (self.r_cut * self.r_cut)).sqrt()
@@ -322,7 +311,11 @@ impl PmeAutoTuner {
 pub fn next_good_grid_size(n: usize) -> usize {
     // Enforce minimum of 4 and round up to at least the next even number.
     let start = n.max(4);
-    let mut candidate = if start.is_multiple_of(2) { start } else { start + 1 };
+    let mut candidate = if start.is_multiple_of(2) {
+        start
+    } else {
+        start + 1
+    };
     loop {
         if is_good_size(candidate) {
             return candidate;
@@ -407,8 +400,7 @@ mod tests {
         );
 
         // Sanity: increasing alpha should decrease the real-space error
-        let err_high_alpha =
-            pme_real_space_rms_force_error(q_sq_sum, n, rc, volume, alpha * 2.0);
+        let err_high_alpha = pme_real_space_rms_force_error(q_sq_sum, n, rc, volume, alpha * 2.0);
         assert!(
             err_high_alpha < err,
             "higher alpha should give smaller real-space error"
@@ -459,11 +451,15 @@ mod tests {
         let q_sq_sum: f64 = charges.iter().map(|q| q * q).sum();
         let volume = box_len * box_len * box_len;
 
-        let err_real = pme_real_space_rms_force_error(
-            q_sq_sum, n, r_cut, volume, params.alpha,
-        );
+        let err_real = pme_real_space_rms_force_error(q_sq_sum, n, r_cut, volume, params.alpha);
         let err_recip = pme_reciprocal_rms_force_error(
-            q_sq_sum, n, volume, params.alpha, params.grid, box_lengths, 4,
+            q_sq_sum,
+            n,
+            volume,
+            params.alpha,
+            params.grid,
+            box_lengths,
+            4,
         );
         // Each component must be ≤ target / √2
         let target_each = target / 2_f64.sqrt();
@@ -502,8 +498,8 @@ mod tests {
         let r_cut = 5.0_f64;
 
         // Auto-tune for target accuracy 1e-4
-        let params = PmeParams::auto_tune(&charges, box_lengths, 1e-4, r_cut)
-            .expect("auto_tune failed");
+        let params =
+            PmeParams::auto_tune(&charges, box_lengths, 1e-4, r_cut).expect("auto_tune failed");
 
         let cells_tuned: usize = params.grid.iter().product();
 

@@ -1682,13 +1682,7 @@ impl PhysicsWorld {
                     body.integrate_forces(h, &g_vec);
                 }
                 for (i, c) in cached_clone.iter().enumerate() {
-                    self.solve_cached_contact_velocity_soft(
-                        c,
-                        &soft,
-                        e_sub,
-                        &mut lambda_acc[i],
-                        h,
-                    );
+                    self.solve_cached_contact_velocity_soft(c, &soft, e_sub, &mut lambda_acc[i], h);
                 }
                 for (_, body) in self.bodies.iter_mut() {
                     body.integrate_velocity(h);
@@ -1701,13 +1695,7 @@ impl PhysicsWorld {
                 for (i, c) in cached_clone.iter().enumerate() {
                     // Relax pass uses rigid params; speculative target velocity
                     // uses dt=h so the solver knows the current sub-step size.
-                    self.solve_cached_contact_velocity_soft(
-                        c,
-                        &relax,
-                        0.0,
-                        &mut lambda_acc[i],
-                        h,
-                    );
+                    self.solve_cached_contact_velocity_soft(c, &relax, 0.0, &mut lambda_acc[i], h);
                 }
             }
         } else {

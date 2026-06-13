@@ -118,7 +118,10 @@ impl Preconditioner for BlockSchurPreconditioner {
         self.vel_pc.apply(r_vel, z_vel);
 
         // Pressure block: Ŝ⁻¹ ≈ (1/ν)·Mp⁻¹ via the lumped mass diagonal.
-        for (zp, (rp, &mp)) in z_pres.iter_mut().zip(r_pres.iter().zip(self.mp_diag.iter())) {
+        for (zp, (rp, &mp)) in z_pres
+            .iter_mut()
+            .zip(r_pres.iter().zip(self.mp_diag.iter()))
+        {
             let denom = self.nu * mp;
             *zp = if denom.abs() > TINY { *rp / denom } else { *rp };
         }
