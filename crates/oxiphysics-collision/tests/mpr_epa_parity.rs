@@ -34,6 +34,17 @@ fn mpr_depth(a: &dyn Shape, ta: &Transform, b: &dyn Shape, tb: &Transform) -> Op
     }
 }
 
+/// Exact penetration depth for two spheres, or `None` when separated.
+///
+/// Spheres have a closed-form depth (`rA + rB - center_distance`), so the
+/// sphere/sphere oracle avoids the iterative EPA path entirely. This is both
+/// exact and immune to the EPA degenerate-overlap loop.
+fn sphere_sphere_depth(ra: f64, rb: f64, ca: Vec3, cb: Vec3) -> Option<f64> {
+    let d = (cb - ca).norm();
+    let pen = ra + rb - d;
+    if pen > 0.0 { Some(pen) } else { None }
+}
+
 /// Deterministic SplitMix64 RNG so the parity sweeps reproduce bit-for-bit.
 struct Lcg(u64);
 
@@ -175,11 +186,7 @@ fn mpr_contact_returns_some_on_overlap() {
     let tb = Transform::from_position(Vec3::new(1.9, 0.0, 0.0));
 
     let c = mpr_contact(&a, &ta, &b, &tb).expect("overlapping boxes must produce a contact");
-    assert!(
-        c.depth > 0.0,
-        "contact depth must be positive, got {}",
-        c.depth
-    );
+    assert!(c.depth > 0.0, "contact depth must be positive, got {}", c.depth);
     assert!(
         c.point_a.norm().is_finite() && c.point_b.norm().is_finite(),
         "contact witness points must be finite: a={:?} b={:?}",
@@ -226,10 +233,15 @@ fn run_parity(n: usize, seed: u64) -> (usize, usize, f64) {
 
         let (e, m) = match kind {
             0 => {
-                let a = Sphere::new(rng.range(0.5, 2.0));
-                let b = Sphere::new(rng.range(0.5, 2.0));
+                let ra = rng.range(0.5, 2.0);
+                let rb = rng.range(0.5, 2.0);
+                let a = Sphere::new(ra);
+                let b = Sphere::new(rb);
                 let tb = Transform::from_position(pos_b);
-                (epa_depth(&a, &ta, &b, &tb), mpr_depth(&a, &ta, &b, &tb))
+                (
+                    sphere_sphere_depth(ra, rb, Vec3::zeros(), pos_b),
+                    mpr_depth(&a, &ta, &b, &tb),
+                )
             }
             1 => {
                 let a = Sphere::new(rng.range(0.5, 2.0));
@@ -261,24 +273,24 @@ fn run_parity(n: usize, seed: u64) -> (usize, usize, f64) {
         };
 
         // Robustness: MPR must not miss an overlap EPA found above threshold.
-        if let Some(ev) = e {
-            if ev > 1e-4 {
-                assert!(
-                    m.is_some(),
-                    "MPR separated where EPA found overlap ev={ev} kind={kind} pos_b={pos_b:?}"
-                );
-            }
+        if let Some(ev) = e
+            && ev > 1e-4
+        {
+            assert!(
+                m.is_some(),
+                "MPR separated where EPA found overlap ev={ev} kind={kind} pos_b={pos_b:?}"
+            );
         }
 
         // Parity statistics over comparable overlaps.
-        if let (Some(ev), Some(mv)) = (e, m) {
-            if ev > 1e-4 {
-                compared += 1;
-                intersecting += 1;
-                let rel = (mv - ev).abs() / ev;
-                if rel > max_rel_err {
-                    max_rel_err = rel;
-                }
+        if let (Some(ev), Some(mv)) = (e, m)
+            && ev > 1e-4
+        {
+            compared += 1;
+            intersecting += 1;
+            let rel = (mv - ev).abs() / ev;
+            if rel > max_rel_err {
+                max_rel_err = rel;
             }
         }
     }
@@ -360,170 +372,21 @@ fn mpr_rotated_box_parity_smoke() {
 
         let e = epa_depth(&a, &ta, &b, &tb);
         let m = mpr_depth(&a, &ta, &b, &tb);
-        if let (Some(ev), Some(mv)) = (e, m) {
-            if ev > 1e-3 {
-                compared += 1;
-                let rel = (mv - ev).abs() / ev;
-                if rel > max_rel_err {
-                    max_rel_err = rel;
-                }
-                assert!(
-                    rel < 0.15,
-                    "rotated box parity {rel} exceeded 15% at i={i}: epa={ev} mpr={mv}"
-                );
+        if let (Some(ev), Some(mv)) = (e, m)
+            && ev > 1e-3
+        {
+            compared += 1;
+            let rel = (mv - ev).abs() / ev;
+            if rel > max_rel_err {
+                max_rel_err = rel;
             }
+            assert!(
+                rel < 0.15,
+                "rotated box parity {rel} exceeded 15% at i={i}: epa={ev} mpr={mv}"
+            );
         }
     }
 
     eprintln!("mpr_rotated_box_parity_smoke: compared={compared} max_rel_err={max_rel_err}");
     assert!(compared > 0, "no rotated box pairs were comparable");
 }
-
-// TEMP-DIAG-START
-#[test]
-fn temp_diag_mpr_box_detail() {
-    // MPR box overlap detail: what does mpr_full actually return?
-    let a = BoxShape::new(Vec3::new(1.0, 1.0, 1.0));
-    let b = BoxShape::new(Vec3::new(1.0, 1.0, 1.0));
-    let ta = Transform::from_position(Vec3::zeros());
-    for off in [1.0_f64, 1.5, 1.9] {
-        let tb = Transform::from_position(Vec3::new(off, 0.0, 0.0));
-        match mpr_full(&a, &ta, &b, &tb) {
-            MprResult::Intersecting {
-                normal,
-                depth,
-                point,
-            } => {
-                eprintln!(
-                    "MPR box off={off}: Intersecting depth={depth} normal=[{:.4},{:.4},{:.4}] point=[{:.4},{:.4},{:.4}]",
-                    normal.x, normal.y, normal.z, point.x, point.y, point.z
-                );
-            }
-            MprResult::Separated => eprintln!("MPR box off={off}: Separated"),
-        }
-        match epa_depth(&a, &ta, &b, &tb) {
-            Some(d) => eprintln!("EPA box off={off}: depth={d}"),
-            None => eprintln!("EPA box off={off}: None"),
-        }
-    }
-    // also a sphere control to confirm MPR works there
-    let s = Sphere::new(1.0);
-    let ts = Transform::from_position(Vec3::new(1.0, 0.0, 0.0));
-    if let MprResult::Intersecting { depth, .. } = mpr_full(&s, &ta, &s, &ts) {
-        eprintln!("MPR sphere control off=1.0: depth={depth}");
-    }
-}
-
-#[test]
-fn temp_diag_find_hang_config() {
-    // Replicate run_parity's RNG stream for seed 0xC0FFEE and, for each iter,
-    // print the config BEFORE calling EPA so the last line printed is the hang.
-    // We only call MPR (fast) for the first 60 iters to find the box configs,
-    // then print every box/box config so we can identify the hang candidate.
-    // IMPORTANT: do NOT call epa_depth here (it hangs). Just dump configs.
-    let mut rng = Lcg::new(0x00C0_FFEE);
-    for it in 0..200usize {
-        let kind = (rng.next_u64() % 3) as u8;
-        let pos_b = Vec3::new(
-            rng.range(-1.0, 1.0),
-            rng.range(-1.0, 1.0),
-            rng.range(-1.0, 1.0),
-        );
-        match kind {
-            0 => {
-                let _ra = rng.range(0.5, 2.0);
-                let _rb = rng.range(0.5, 2.0);
-            }
-            1 => {
-                let _ra = rng.range(0.5, 2.0);
-                let hb = Vec3::new(
-                    rng.range(0.5, 2.0),
-                    rng.range(0.5, 2.0),
-                    rng.range(0.5, 2.0),
-                );
-                eprintln!(
-                    "iter={it} kind=sphere_box pos_b=[{:.4},{:.4},{:.4}] hb=[{:.4},{:.4},{:.4}]",
-                    pos_b.x, pos_b.y, pos_b.z, hb.x, hb.y, hb.z
-                );
-            }
-            _ => {
-                let ha = Vec3::new(
-                    rng.range(0.5, 2.0),
-                    rng.range(0.5, 2.0),
-                    rng.range(0.5, 2.0),
-                );
-                let hb = Vec3::new(
-                    rng.range(0.5, 2.0),
-                    rng.range(0.5, 2.0),
-                    rng.range(0.5, 2.0),
-                );
-                eprintln!(
-                    "iter={it} kind=box_box pos_b=[{:.4},{:.4},{:.4}] ha=[{:.4},{:.4},{:.4}] hb=[{:.4},{:.4},{:.4}]",
-                    pos_b.x, pos_b.y, pos_b.z, ha.x, ha.y, ha.z, hb.x, hb.y, hb.z
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn temp_diag_bisect_hang() {
-    // Run epa_depth on the FIRST N box/box and sphere/box configs from seed
-    // 0xC0FFEE, one at a time with eprintln BEFORE each call, so the LAST
-    // printed "calling EPA iter=K" with no following "ok iter=K" is the hang.
-    // We replicate the exact stream and call epa_depth only for box-involving
-    // kinds (the suspected hang). Bounded to first 120 iters.
-    let mut rng = Lcg::new(0x00C0_FFEE);
-    for it in 0..400usize {
-        let kind = (rng.next_u64() % 3) as u8;
-        let ta = Transform::from_position(Vec3::zeros());
-        let pos_b = Vec3::new(
-            rng.range(-1.0, 1.0),
-            rng.range(-1.0, 1.0),
-            rng.range(-1.0, 1.0),
-        );
-        match kind {
-            0 => {
-                let a = Sphere::new(rng.range(0.5, 2.0));
-                let b = Sphere::new(rng.range(0.5, 2.0));
-                let tb = Transform::from_position(pos_b);
-                let _ = epa_depth(&a, &ta, &b, &tb);
-            }
-            1 => {
-                let a = Sphere::new(rng.range(0.5, 2.0));
-                let hb = Vec3::new(
-                    rng.range(0.5, 2.0),
-                    rng.range(0.5, 2.0),
-                    rng.range(0.5, 2.0),
-                );
-                let b = BoxShape::new(hb);
-                let tb = Transform::from_position(pos_b);
-                eprintln!("calling EPA iter={it} kind=sphere_box");
-                let d = epa_depth(&a, &ta, &b, &tb);
-                eprintln!("ok iter={it} d={d:?}");
-            }
-            _ => {
-                let ha = Vec3::new(
-                    rng.range(0.5, 2.0),
-                    rng.range(0.5, 2.0),
-                    rng.range(0.5, 2.0),
-                );
-                let hb = Vec3::new(
-                    rng.range(0.5, 2.0),
-                    rng.range(0.5, 2.0),
-                    rng.range(0.5, 2.0),
-                );
-                let a = BoxShape::new(ha);
-                let b = BoxShape::new(hb);
-                let tb = Transform::from_position(pos_b);
-                eprintln!(
-                    "calling EPA iter={it} kind=box_box pos_b=[{:.4},{:.4},{:.4}] ha=[{:.4},{:.4},{:.4}] hb=[{:.4},{:.4},{:.4}]",
-                    pos_b.x, pos_b.y, pos_b.z, ha.x, ha.y, ha.z, hb.x, hb.y, hb.z
-                );
-                let d = epa_depth(&a, &ta, &b, &tb);
-                eprintln!("ok iter={it} d={d:?}");
-            }
-        }
-    }
-}
-// TEMP-DIAG-END

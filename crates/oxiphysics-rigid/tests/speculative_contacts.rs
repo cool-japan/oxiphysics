@@ -13,7 +13,7 @@
 
 use oxiphysics_core::BodyHandle;
 use oxiphysics_rigid::world::{PhysicsWorld, SolverConfig};
-use oxiphysics_rigid::{BodyType, RigidBody};
+use oxiphysics_rigid::RigidBody;
 
 // ───────────────────────── helpers ────────────────────────────────────────────
 

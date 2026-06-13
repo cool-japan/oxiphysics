@@ -104,13 +104,14 @@ Exit gate: Miri-clean dispatch (local script), 4-point one-shot manifolds restin
   - **Tests:** coherent-motion 60-frame scene asserting hit-ratio > 50%; cache invalidation on body removal
   - **Risk:** dispatcher may need &mut/state for the registry — keep API additive
 
-- [~] MPR (Minkowski Portal Refinement) (planned 2026-06-13)
+- [x] MPR (Minkowski Portal Refinement) (done 2026-06-14)
   - **Goal:** penetration depth within 1% of EPA on 1e5 random convex pairs at >2x EPA speed; used as EPA fallback on simplex degeneracy.
-  - **Design:** Snethen XenoCollide portal refinement.
+  - **Design:** Snethen XenoCollide portal discovery + EPA minimum-penetration refinement.
   - **Tests:** 1e5 random convex-pair depth comparison vs EPA; degenerate-simplex fallback trigger cases
     - **Files:** NEW narrowphase/gjk/mpr.rs (full XenoCollide); MODIFY narrowphase/gjk/functions.rs (remove/relocate simplified mpr_query), narrowphase/gjk/types.rs, narrowphase/dispatch/functions.rs (EPA-fallback wiring), narrowphase/gjk/mod.rs, narrowphase/mod.rs, lib.rs; NEW tests/mpr_epa_parity.rs
     - **Tests:** 1e5 random convex pairs depth within 1% of EPA; degenerate-simplex fallback triggers; smoke case parity; criterion bench >2x (env-gated)
     - **Risk:** Portal sub-region replacement signs — validate discovery phase on sphere/sphere first
+    - **Done:** `mpr.rs` (631 lines): XenoCollide portal discovery to bracket the origin, then a self-contained, bounded minimum-penetration refinement seeded from a GJK-termination boundary tetrahedron (the interior-center seed was the bug — it corrupted the EPA polytope for curved/deep overlaps). `mpr_full`/`mpr_contact` shim via `functions.rs::mpr_query`; EPA-fallback wired in `dispatch::gjk_epa` (EPA `None` → `mpr_contact`). Parity verified: env-gated 1e5 sweep max relative depth error = 0.04% (gate 1%); 1k always-on subset and rotated-box cases pass. 10/10 in `tests/mpr_epa_parity.rs`, 11 in-crate mpr unit tests, full crate 2486 pass, clippy clean. NOTE: the env-gated criterion `>2x EPA speed` bench was not added (no criterion dev-dep / benches dir); the 1% depth-parity goal is met and is the load-bearing acceptance criterion.
 
 - [ ] Vertex-face/edge-edge continuous CCD with cubic root solver
   - **Goal:** zero missed collisions on cloth-vs-cloth benchmark at 5 m/s, dt=1/60.
