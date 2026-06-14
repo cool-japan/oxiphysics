@@ -43,6 +43,7 @@ pub mod timestepping;
 pub mod turbulence;
 pub mod turbulence_sph;
 pub mod viscosity;
+pub mod viscosity_implicit;
 pub mod wcsph;
 
 pub use adaptive_sph::*;
@@ -53,6 +54,7 @@ pub use multiphase::*;
 pub use pcisph::PcisphSolver;
 pub use surface_tension::CsfSurfaceTension;
 pub use turbulence_sph::*;
+pub use viscosity_implicit::{solve_implicit_viscosity, NeighborEntry, ViscosityError, ViscosityParticles, ViscositySolveOptions};
 
 /// Trait for SPH fluid solvers.
 pub trait SphSolver {

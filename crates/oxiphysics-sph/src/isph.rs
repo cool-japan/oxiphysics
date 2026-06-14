@@ -132,7 +132,7 @@ impl CsrMatrix {
     /// Assemble a CSR matrix from per-row off-diagonal entries plus an explicit
     /// diagonal.  Each row's columns are emitted in ascending order with the
     /// diagonal inserted at its sorted position.
-    fn from_rows(nrows: usize, off_diagonals: &[Vec<(usize, f64)>], diagonal: &[f64]) -> Self {
+    pub(crate) fn from_rows(nrows: usize, off_diagonals: &[Vec<(usize, f64)>], diagonal: &[f64]) -> Self {
         let mut row_ptr = Vec::with_capacity(nrows + 1);
         let mut col_idx = Vec::new();
         let mut values = Vec::new();

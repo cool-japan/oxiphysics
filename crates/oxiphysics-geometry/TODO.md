@@ -143,7 +143,7 @@ geometry — all pure Rust.
   - [ ] Quad extraction + T-vertex cleanup
   - [ ] Metrics gate: >85% quad ratio, singularities only at field defects
 
-- [ ] Jump-flooding SDF + screened-Poisson reconstruction
+- [~] (planned 2026-06-14) Jump-flooding SDF + screened-Poisson reconstruction
   - **Goal:** JFA SDF within 1 voxel of exact; Poisson recon reproduces sphere to <1% radius error.
   - **Design:** JFA voxel SDF + Kazhdan screened-Poisson surface reconstruction from oriented points. Rong-Tan 2006; Kazhdan-Hoppe 2013.
   - Verified: `signed_distance_field/fmm.rs` + `octree.rs` already ship (see Completed) — JFA + Poisson reconstruction are the open parts.

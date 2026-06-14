@@ -204,7 +204,7 @@ fn block_schur_dense_parity() {
         vec![0.0, 0.0, -1.0, 4.0],
     ];
     // Full-row-rank divergence block B (2 × 4).
-    let b_block = vec![vec![1.0, 0.5, 0.0, 0.0], vec![0.0, 0.0, 0.5, 1.0]];
+    let b_block = [vec![1.0, 0.5, 0.0, 0.0], vec![0.0, 0.0, 0.5, 1.0]];
     // Consistent SPD pressure mass matrix.
     let mp_block = vec![vec![2.0, 0.5], vec![0.5, 2.0]];
 

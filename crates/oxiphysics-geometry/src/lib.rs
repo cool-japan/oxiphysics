@@ -260,3 +260,5 @@ pub mod nurbs_geometry;
 pub mod offset_geometry;
 pub mod signed_distance_field;
 pub mod topology_geometry;
+pub mod reconstruction;
+pub use reconstruction::{OrientedPoint, PoissonError, PoissonSurface, screened_poisson_reconstruct};

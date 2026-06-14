@@ -279,7 +279,7 @@ unit-CFL on-lattice baseline.
       with controlled diffusion. **Design:** off-lattice departure-point
       interpolation. Krämer et al. 2017. *(Code-verified missing
       2026-06-11.)*
-- [ ] Wall-modeled LES coupling — **Goal:** turbulent channel Re_τ=180 mean
+- [x] Wall-modeled LES coupling (done 2026-06-14) — **Goal:** turbulent channel Re_τ=180 mean
       u⁺ within 5% of DNS in the log layer. **Design:** wire existing
       Spalding/Werner–Wengle wall stress to Smagorinsky/k-ω-SST as a WMLES
       BC. Malaspinas–Sagaut 2014. *(Shipped: `wall_model.rs` (Spalding,

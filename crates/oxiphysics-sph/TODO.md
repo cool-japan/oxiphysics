@@ -86,10 +86,10 @@ Theme: tighten pressure-field fidelity and wall treatment before scaling out.
       reusing `oxiphysics-core` AMG — no new external dependency.)*
 
 ### Viscosity & wall treatment
-- [ ] Implicit/semi-implicit viscosity solver — **Goal:** stable lid-driven
+- [x] Implicit/semi-implicit viscosity solver — **Goal:** stable lid-driven
       cavity at Re=1 with dt 100× the explicit viscous limit. **Design:**
       matrix-free CG on implicit velocity-Laplacian operator. Takahashi 2015.
-      *(Code-verified missing 2026-06-11.)*
+      *(Implemented 2026-06-14: `viscosity_implicit.rs` — Morris symmetric Laplacian assembled as an SPD M-matrix `(I − dt·ν·L)`, solved with the in-crate Jacobi-PCG; stability gate at 100× the explicit viscous limit, explicit/implicit steady-state agreement, SPD, and CG-convergence tests.)*
 - [ ] Semi-analytic boundary integrals — **Goal:** hydrostatic pressure on flat
       wall within 1% of analytic, no boundary particles. **Design:** wall
       renormalization factor γ + boundary flux (USAW). Ferrand et al. 2013.

@@ -30,6 +30,7 @@
 mod combinators;
 mod fmm;
 mod helpers;
+mod jfa;
 mod marching_cubes;
 mod narrow_band;
 mod octree;
@@ -47,6 +48,8 @@ pub use combinators::{
 };
 
 pub use fmm::FastMarchingMethod;
+
+pub use jfa::JfaGrid;
 
 pub use marching_cubes::{
     EDGE_VERTICES, MC_TABLE, MarchingCubes, MarchingCubesResult, MeshTriangle, MeshVertex,
