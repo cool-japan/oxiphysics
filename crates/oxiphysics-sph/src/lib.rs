@@ -54,7 +54,10 @@ pub use multiphase::*;
 pub use pcisph::PcisphSolver;
 pub use surface_tension::CsfSurfaceTension;
 pub use turbulence_sph::*;
-pub use viscosity_implicit::{solve_implicit_viscosity, NeighborEntry, ViscosityError, ViscosityParticles, ViscositySolveOptions};
+pub use viscosity_implicit::{
+    NeighborEntry, ViscosityError, ViscosityParticles, ViscositySolveOptions,
+    solve_implicit_viscosity,
+};
 
 /// Trait for SPH fluid solvers.
 pub trait SphSolver {

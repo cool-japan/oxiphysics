@@ -229,10 +229,22 @@ impl GearConstraint {
         //   ω_C += I_C⁻¹ · (+r·a₂) · λ
         //   ω_D += I_D⁻¹ · (−r·a₂) · λ
         // ------------------------------------------------------------------
-        *body_a.omega = add3(*body_a.omega, diag_mul(body_a.inv_inertia, scale3(a1, -lambda)));
-        *body_b.omega = add3(*body_b.omega, diag_mul(body_b.inv_inertia, scale3(a1, lambda)));
-        *body_c.omega = add3(*body_c.omega, diag_mul(body_c.inv_inertia, scale3(a2, r * lambda)));
-        *body_d.omega = add3(*body_d.omega, diag_mul(body_d.inv_inertia, scale3(a2, -r * lambda)));
+        *body_a.omega = add3(
+            *body_a.omega,
+            diag_mul(body_a.inv_inertia, scale3(a1, -lambda)),
+        );
+        *body_b.omega = add3(
+            *body_b.omega,
+            diag_mul(body_b.inv_inertia, scale3(a1, lambda)),
+        );
+        *body_c.omega = add3(
+            *body_c.omega,
+            diag_mul(body_c.inv_inertia, scale3(a2, r * lambda)),
+        );
+        *body_d.omega = add3(
+            *body_d.omega,
+            diag_mul(body_d.inv_inertia, scale3(a2, -r * lambda)),
+        );
 
         lambda
     }

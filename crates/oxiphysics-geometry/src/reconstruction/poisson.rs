@@ -50,7 +50,10 @@ impl std::fmt::Display for PoissonError {
                 write!(f, "screened-Poisson linear solver failed: {s}")
             }
             PoissonError::MarchingCubesFailed => {
-                write!(f, "marching cubes produced no surface from the solved field")
+                write!(
+                    f,
+                    "marching cubes produced no surface from the solved field"
+                )
             }
         }
     }
@@ -162,9 +165,7 @@ pub fn screened_poisson_reconstruct(
     let h = side / n as f64;
 
     if !h.is_finite() || h <= 0.0 {
-        return Err(PoissonError::SolverFailed(
-            "degenerate bounding box".into(),
-        ));
+        return Err(PoissonError::SolverFailed("degenerate bounding box".into()));
     }
 
     let origin = [
@@ -215,8 +216,7 @@ pub fn screened_poisson_reconstruct(
         for j in 0..nn {
             for i in 0..nn {
                 let id = idx(i, j, k);
-                let is_boundary =
-                    i == 0 || i == n || j == 0 || j == n || k == 0 || k == n;
+                let is_boundary = i == 0 || i == n || j == 0 || j == n || k == 0 || k == n;
                 if is_boundary {
                     // Dirichlet identity row pins χ = 0 on the boundary.
                     diagonal[id] = 1.0;
@@ -400,7 +400,11 @@ fn pcg_solve(a: &CsrMatrix, b: &[f64], x: &mut [f64], tol: f64, max_iters: usize
     if res <= tol {
         return (0, res);
     }
-    let mut z: Vec<f64> = r.iter().zip(inv_diag.iter()).map(|(&ri, &di)| ri * di).collect();
+    let mut z: Vec<f64> = r
+        .iter()
+        .zip(inv_diag.iter())
+        .map(|(&ri, &di)| ri * di)
+        .collect();
     let mut p = z.clone();
     let mut rz_old = dot(&r, &z);
     let mut ap = vec![0.0_f64; n];

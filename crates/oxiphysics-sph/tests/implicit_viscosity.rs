@@ -8,10 +8,10 @@
 //! `Δt < h²/(2·d·ν)` without blowing up, while still dissipating kinetic energy
 //! monotonically.
 
-use oxiphysics_sph::kernel::{grad, CubicSplineKernel};
+use oxiphysics_sph::kernel::{CubicSplineKernel, grad};
 use oxiphysics_sph::viscosity_implicit::{
-    solve_implicit_viscosity, NeighborEntry, ViscosityError, ViscosityParticles,
-    ViscositySolveOptions,
+    NeighborEntry, ViscosityError, ViscosityParticles, ViscositySolveOptions,
+    solve_implicit_viscosity,
 };
 
 const MORRIS_EPSILON: f64 = 0.01;
@@ -49,7 +49,15 @@ fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 /// Public-API replica of the private Morris coupling `c_ij ≥ 0`, used only to
 /// reconstruct the system matrix for the SPD test.
-fn coupling(entry: &NeighborEntry, mu_i: f64, mu_j: f64, rho_i: f64, rho_j: f64, m_j: f64, h: f64) -> f64 {
+fn coupling(
+    entry: &NeighborEntry,
+    mu_i: f64,
+    mu_j: f64,
+    rho_i: f64,
+    rho_j: f64,
+    m_j: f64,
+    h: f64,
+) -> f64 {
     let r2 = dot3(entry.r_ij, entry.r_ij);
     if r2 < 1.0e-24 {
         return 0.0;
@@ -207,7 +215,13 @@ fn implicit_matches_explicit_steady_state() {
 
     // Step profile: left half +1, right half −1.
     let initial: Vec<[f64; 3]> = (0..n)
-        .map(|i| if i < n / 2 { [1.0, 0.0, 0.0] } else { [-1.0, 0.0, 0.0] })
+        .map(|i| {
+            if i < n / 2 {
+                [1.0, 0.0, 0.0]
+            } else {
+                [-1.0, 0.0, 0.0]
+            }
+        })
         .collect();
 
     let t_final = 0.5_f64;
@@ -228,8 +242,7 @@ fn implicit_matches_explicit_steady_state() {
                         return 0.0;
                     }
                     let denom = r2 + MORRIS_EPSILON * h * h;
-                    (masses[entry.j] / densities[entry.j])
-                        * (viscosities[i] + viscosities[entry.j])
+                    (masses[entry.j] / densities[entry.j]) * (viscosities[i] + viscosities[entry.j])
                         / densities[i]
                         * (-dot3(entry.r_ij, entry.grad_w_ij) / denom)
                 })
@@ -251,8 +264,7 @@ fn implicit_matches_explicit_steady_state() {
                     continue;
                 }
                 let denom = r2 + MORRIS_EPSILON * h * h;
-                let c = (masses[j] / densities[j])
-                    * (viscosities[i] + viscosities[j])
+                let c = (masses[j] / densities[j]) * (viscosities[i] + viscosities[j])
                     / densities[i]
                     * (-dot3(entry.r_ij, entry.grad_w_ij) / denom);
                 for k in 0..3 {
@@ -304,7 +316,10 @@ fn implicit_matches_explicit_steady_state() {
     // Sanity: total momentum is conserved by both (equal masses, symmetric op).
     let p_e: f64 = (0..n).map(|i| masses[i] * v_explicit[i][0]).sum();
     let p_i: f64 = (0..n).map(|i| masses[i] * v_implicit[i][0]).sum();
-    assert!((p_e - p_i).abs() < 1e-6, "momentum mismatch: {p_e} vs {p_i}");
+    assert!(
+        (p_e - p_i).abs() < 1e-6,
+        "momentum mismatch: {p_e} vs {p_i}"
+    );
 }
 
 /// Test 3 — SPD check on a small 5-particle configuration: the assembled system

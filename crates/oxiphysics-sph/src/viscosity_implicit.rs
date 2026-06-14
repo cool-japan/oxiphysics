@@ -47,7 +47,7 @@
 //! The linear algebra (`CsrMatrix`, [`pcg_solve`]) is reused from the ISPH
 //! module — self-contained, pure Rust, no external sparse-solver dependency.
 
-use crate::isph::{pcg_solve, CsrMatrix};
+use crate::isph::{CsrMatrix, pcg_solve};
 
 /// Small dimensionless regulariser for the Morris denominator `|r_ij|² + ε h²`.
 ///
@@ -298,7 +298,7 @@ pub fn solve_implicit_viscosity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::{grad, CubicSplineKernel};
+    use crate::kernel::{CubicSplineKernel, grad};
 
     /// Build a neighbour list for a set of positions using the cubic-spline
     /// kernel and support radius `2h`.  Shared by several tests.

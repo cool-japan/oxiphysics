@@ -202,12 +202,8 @@ impl JfaGrid {
         for z in 0..nz {
             for y in 0..ny {
                 for x in 0..nx {
-                    let on_boundary = x == 0
-                        || x == nx - 1
-                        || y == 0
-                        || y == ny - 1
-                        || z == 0
-                        || z == nz - 1;
+                    let on_boundary =
+                        x == 0 || x == nx - 1 || y == 0 || y == ny - 1 || z == 0 || z == nz - 1;
                     if !on_boundary {
                         continue;
                     }
@@ -348,7 +344,11 @@ mod tests {
                 "distance should be finite or MAX: {}",
                 d
             );
-            assert!(d > 0.0, "with no seeds everything should be positive: {}", d);
+            assert!(
+                d > 0.0,
+                "with no seeds everything should be positive: {}",
+                d
+            );
         }
     }
 }

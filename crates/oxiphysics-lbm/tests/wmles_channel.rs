@@ -3,7 +3,9 @@
 
 //! Integration tests for WMLES channel coupling.
 
-use oxiphysics_lbm::turbulence::{WmlesChannelCoupling, collide_stream_wmles, wmles_eddy_viscosity_profile};
+use oxiphysics_lbm::turbulence::{
+    WmlesChannelCoupling, collide_stream_wmles, wmles_eddy_viscosity_profile,
+};
 use oxiphysics_lbm::turbulent_channel::ChannelFlow;
 use oxiphysics_lbm::wall_model::WallModeledLes;
 
@@ -96,7 +98,10 @@ fn wmles_momentum_balance() {
             nu_t.is_finite(),
             "nu_t must be finite at y={y}: nu_t={nu_t}"
         );
-        assert!(nu_t >= &0.0, "nu_t must be non-negative at y={y}: nu_t={nu_t}");
+        assert!(
+            nu_t >= &0.0,
+            "nu_t must be non-negative at y={y}: nu_t={nu_t}"
+        );
     }
 }
 

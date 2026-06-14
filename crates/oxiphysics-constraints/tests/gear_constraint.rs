@@ -131,7 +131,10 @@ fn backlash_dead_zone() {
         }
     }
 
-    assert!(crossed, "theta1 never exceeded 0.1 in {max_extra} iterations");
+    assert!(
+        crossed,
+        "theta1 never exceeded 0.1 in {max_extra} iterations"
+    );
 
     // After crossing, run a few more iterations and confirm D is moving
     for _ in 0..100 {

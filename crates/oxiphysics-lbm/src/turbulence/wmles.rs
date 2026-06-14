@@ -144,7 +144,9 @@ pub fn collide_stream_wmles(channel: &mut ChannelFlow, coupling: &WmlesChannelCo
                 // Near-wall: use WMLES eddy viscosity
                 let y_match = j.min(ny - 1 - j) as f64;
                 let u_match = ux.abs();
-                let nu_t = coupling.wall_model.eddy_viscosity(y_match.max(1e-30), u_match);
+                let nu_t = coupling
+                    .wall_model
+                    .eddy_viscosity(y_match.max(1e-30), u_match);
                 let nu_eff = nu + nu_t;
                 let tau_wall = 3.0 * nu_eff + 0.5;
                 1.0 / tau_wall.max(0.5 + 1e-10)
@@ -205,10 +207,7 @@ pub fn wmles_eddy_viscosity_profile(
     (0..ny)
         .map(|j| {
             let y_match = j.min(ny - 1 - j) as f64;
-            let mean_u: f64 = (0..nx)
-                .map(|i| channel.u[i * ny + j][0])
-                .sum::<f64>()
-                / nx as f64;
+            let mean_u: f64 = (0..nx).map(|i| channel.u[i * ny + j][0]).sum::<f64>() / nx as f64;
             let nu_t = if j == 0 || j == ny - 1 {
                 0.0
             } else {
