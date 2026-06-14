@@ -186,7 +186,11 @@ fn mpr_contact_returns_some_on_overlap() {
     let tb = Transform::from_position(Vec3::new(1.9, 0.0, 0.0));
 
     let c = mpr_contact(&a, &ta, &b, &tb).expect("overlapping boxes must produce a contact");
-    assert!(c.depth > 0.0, "contact depth must be positive, got {}", c.depth);
+    assert!(
+        c.depth > 0.0,
+        "contact depth must be positive, got {}",
+        c.depth
+    );
     assert!(
         c.point_a.norm().is_finite() && c.point_b.norm().is_finite(),
         "contact witness points must be finite: a={:?} b={:?}",

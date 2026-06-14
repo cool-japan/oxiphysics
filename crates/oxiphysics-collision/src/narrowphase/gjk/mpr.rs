@@ -466,8 +466,9 @@ fn epa_min_penetration(
     }
     if faces.len() < 4 {
         // Degenerate tetra: recover a contact from three of its vertices.
-        let face_dir = safe_normalize((pts[1].point - pts[0].point).cross(&(pts[2].point - pts[0].point)))
-            .unwrap_or_else(|| Vec3::new(0.0, 1.0, 0.0));
+        let face_dir =
+            safe_normalize((pts[1].point - pts[0].point).cross(&(pts[2].point - pts[0].point)))
+                .unwrap_or_else(|| Vec3::new(0.0, 1.0, 0.0));
         return extract_penetration(&pts[0], &pts[1], &pts[2], face_dir);
     }
 
