@@ -604,6 +604,12 @@ pub struct SolverConfig {
     /// active contacts processed unless `use_speculative` is `true` with a
     /// positive margin). A sensible starting value is `0.01` (1 cm).
     pub speculative_margin: f64,
+    /// Enable implicit gyroscopic angular-velocity correction (Catto, GDC 2015).
+    /// When `false` (the default) the angular integration is unchanged — output
+    /// is byte-identical to the pre-feature path. When `true`, each dynamic
+    /// body's angular velocity is corrected by one backward-Euler Newton step
+    /// in the body frame after the constraint solver.
+    pub use_implicit_gyroscopic: bool,
 }
 /// A ray defined by an origin and a direction (need not be normalised; `t` is
 /// in *ray-space* units i.e. multiples of the direction length).
@@ -912,6 +918,36 @@ impl PhysicsWorld {
                 for cp in &contacts {
                     self.solve_contact_velocity(cp);
                 }
+            }
+        }
+        // Implicit gyroscopic angular-velocity correction (Catto, GDC 2015).
+        // Runs after constraint impulses are applied, before position integration.
+        // Skipped entirely when the flag is off — byte-identical to prior behaviour.
+        let use_gyro = self.solver_config.use_implicit_gyroscopic;
+        if use_gyro {
+            for (_, body) in self.bodies.iter_mut() {
+                if body.body_type != BodyType::Dynamic || body.state == BodyState::Sleeping {
+                    continue;
+                }
+                let omega_world = [
+                    body.angular_velocity.x,
+                    body.angular_velocity.y,
+                    body.angular_velocity.z,
+                ];
+                let q_inner = body.transform.rotation.quaternion();
+                let q_arr = [q_inner.i, q_inner.j, q_inner.k, q_inner.w];
+                let inertia_diag = [
+                    body.local_inertia[(0, 0)],
+                    body.local_inertia[(1, 1)],
+                    body.local_inertia[(2, 2)],
+                ];
+                let new_omega = crate::gyroscopic::gyroscopic_implicit_step(
+                    omega_world,
+                    q_arr,
+                    inertia_diag,
+                    dt,
+                );
+                body.angular_velocity = Vec3::new(new_omega[0], new_omega[1], new_omega[2]);
             }
         }
         for (_, body) in self.bodies.iter_mut() {

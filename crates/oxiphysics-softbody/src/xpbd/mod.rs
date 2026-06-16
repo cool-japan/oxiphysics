@@ -6,5 +6,5 @@ pub mod types;
 
 // Re-export all types
 pub use functions::*;
-pub use strain_limit::{apply_strain_limiting, StrainLimitConfig};
+pub use strain_limit::{StrainLimitConfig, apply_strain_limiting};
 pub use types::*;

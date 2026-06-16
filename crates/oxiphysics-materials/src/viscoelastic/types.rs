@@ -1143,10 +1143,7 @@ impl GeneralizedMaxwell {
             new_hist.push(h_new);
         }
         let mut stress = [0.0_f64; 6];
-        for (sk, (&bk, &ek)) in stress
-            .iter_mut()
-            .zip(branch_sum.iter().zip(strain.iter()))
-        {
+        for (sk, (&bk, &ek)) in stress.iter_mut().zip(branch_sum.iter().zip(strain.iter())) {
             *sk = self.spring_inf * ek + bk;
         }
         let mut tangent = [[0.0_f64; 6]; 6];

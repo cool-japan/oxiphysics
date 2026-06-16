@@ -1026,12 +1026,7 @@ fn mat6_vec6(c: &[[f64; 6]; 6], v: &[f64; 6]) -> [f64; 6] {
 
 impl ConstitutiveModel for LinearElastic {
     type State = ();
-    fn stress_update(
-        &self,
-        strain: &[f64; 6],
-        _state: &(),
-        _dt: f64,
-    ) -> ConstitutiveResponse<()> {
+    fn stress_update(&self, strain: &[f64; 6], _state: &(), _dt: f64) -> ConstitutiveResponse<()> {
         let c = self.stress_strain_matrix_3d();
         let stress = mat6_vec6(&c, strain);
         ConstitutiveResponse {
@@ -1047,12 +1042,7 @@ impl ConstitutiveModel for LinearElastic {
 
 impl ConstitutiveModel for IsotropicElastic {
     type State = ();
-    fn stress_update(
-        &self,
-        strain: &[f64; 6],
-        _state: &(),
-        _dt: f64,
-    ) -> ConstitutiveResponse<()> {
+    fn stress_update(&self, strain: &[f64; 6], _state: &(), _dt: f64) -> ConstitutiveResponse<()> {
         let c = LinearElastic::new(self.e, self.nu).stress_strain_matrix_3d();
         let stress = mat6_vec6(&c, strain);
         ConstitutiveResponse {
@@ -1068,12 +1058,7 @@ impl ConstitutiveModel for IsotropicElastic {
 
 impl ConstitutiveModel for OrthotropicElastic {
     type State = ();
-    fn stress_update(
-        &self,
-        strain: &[f64; 6],
-        _state: &(),
-        _dt: f64,
-    ) -> ConstitutiveResponse<()> {
+    fn stress_update(&self, strain: &[f64; 6], _state: &(), _dt: f64) -> ConstitutiveResponse<()> {
         let c = crate::constitutive::unflatten_6x6(&self.stiffness_voigt());
         let stress = mat6_vec6(&c, strain);
         ConstitutiveResponse {
@@ -1089,12 +1074,7 @@ impl ConstitutiveModel for OrthotropicElastic {
 
 impl ConstitutiveModel for TransverselyIsotropicElastic {
     type State = ();
-    fn stress_update(
-        &self,
-        strain: &[f64; 6],
-        _state: &(),
-        _dt: f64,
-    ) -> ConstitutiveResponse<()> {
+    fn stress_update(&self, strain: &[f64; 6], _state: &(), _dt: f64) -> ConstitutiveResponse<()> {
         let c = crate::constitutive::unflatten_6x6(&self.stiffness_voigt());
         let stress = mat6_vec6(&c, strain);
         ConstitutiveResponse {

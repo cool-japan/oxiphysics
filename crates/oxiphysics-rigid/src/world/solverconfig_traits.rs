@@ -23,6 +23,7 @@ impl Default for SolverConfig {
             use_soft_contacts: false,
             use_speculative: false,
             speculative_margin: 0.0,
+            use_implicit_gyroscopic: false,
         }
     }
 }

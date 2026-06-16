@@ -536,11 +536,7 @@ fn rayleigh_quotient(a: &CsrMatrix, b: Option<&CsrMatrix>, x: &[f64]) -> f64 {
     let bx = apply_b_vec(b, x);
     let num = dot(x, &ax);
     let den = dot(x, &bx);
-    if den.abs() > 1e-300 {
-        num / den
-    } else {
-        0.0
-    }
+    if den.abs() > 1e-300 { num / den } else { 0.0 }
 }
 
 /// `B`-orthonormalize a list of columns by re-orthogonalizing modified

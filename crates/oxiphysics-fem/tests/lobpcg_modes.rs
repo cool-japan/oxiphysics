@@ -10,7 +10,7 @@
 //! All tests are deterministic: the solver seeds its initial block with a fixed
 //! seed and no global RNG is used.
 
-use oxiphysics_fem::eigenvalue::{lobpcg_solve, LobpcgConfig};
+use oxiphysics_fem::eigenvalue::{LobpcgConfig, lobpcg_solve};
 use oxiphysics_fem::parallel_solver::CsrMatrix;
 
 /// Build the 1-D Laplacian (`n × n`, tridiagonal, diag `2`, off-diag `-1`).
@@ -174,7 +174,8 @@ fn amg_preconditioner_efficacy() {
         use_amg_preconditioner: use_amg,
     };
 
-    let amg = lobpcg_solve(&a, None, &cfg(true)).expect("AMG-preconditioned solve returned an error");
+    let amg =
+        lobpcg_solve(&a, None, &cfg(true)).expect("AMG-preconditioned solve returned an error");
     let jacobi =
         lobpcg_solve(&a, None, &cfg(false)).expect("Jacobi-preconditioned solve returned an error");
 

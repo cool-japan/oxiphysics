@@ -20,7 +20,7 @@
 //! - [`ModalTruncation`] — reduced-order model from retained modes
 
 pub mod lobpcg;
-pub use lobpcg::{lobpcg_solve, LobpcgConfig, LobpcgResult, EigensolverError};
+pub use lobpcg::{EigensolverError, LobpcgConfig, LobpcgResult, lobpcg_solve};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Utilities

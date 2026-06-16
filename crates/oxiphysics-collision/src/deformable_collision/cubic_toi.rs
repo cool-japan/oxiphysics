@@ -158,12 +158,10 @@ fn triple_product_cubic(
     w3: [f64; 3],
 ) -> (f64, f64, f64, f64) {
     let a = v3_dot(w1, v3_cross(w2, w3));
-    let b = v3_dot(r1, v3_cross(w2, w3))
-        + v3_dot(w1, v3_cross(r2, w3))
-        + v3_dot(w1, v3_cross(w2, r3));
-    let c = v3_dot(r1, v3_cross(r2, w3))
-        + v3_dot(r1, v3_cross(w2, r3))
-        + v3_dot(w1, v3_cross(r2, r3));
+    let b =
+        v3_dot(r1, v3_cross(w2, w3)) + v3_dot(w1, v3_cross(r2, w3)) + v3_dot(w1, v3_cross(w2, r3));
+    let c =
+        v3_dot(r1, v3_cross(r2, w3)) + v3_dot(r1, v3_cross(w2, r3)) + v3_dot(w1, v3_cross(r2, r3));
     let d = v3_dot(r1, v3_cross(r2, r3));
     (a, b, c, d)
 }

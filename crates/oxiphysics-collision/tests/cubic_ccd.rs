@@ -1,7 +1,7 @@
+use oxiphysics_collision::deformable_collision::{ccd_edge_edge, ccd_vertex_face};
 use oxiphysics_collision::deformable_collision::{
     cubic_toi_edge_edge, cubic_toi_vertex_face, solve_cubic_in_01,
 };
-use oxiphysics_collision::deformable_collision::{ccd_edge_edge, ccd_vertex_face};
 
 struct Rng(u64);
 impl Rng {
@@ -61,9 +61,21 @@ fn parity_vertex_face() {
     let mut bisect_hit = 0usize;
     let mut agreements = 0usize;
     for _ in 0..500 {
-        let a0 = [rng.range(-1.0, 1.0), rng.range(-1.0, 1.0), rng.range(-1.0, 1.0)];
-        let b0 = [rng.range(-1.0, 1.0), rng.range(-1.0, 1.0), rng.range(-1.0, 1.0)];
-        let c0 = [rng.range(-1.0, 1.0), rng.range(-1.0, 1.0), rng.range(-1.0, 1.0)];
+        let a0 = [
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+        ];
+        let b0 = [
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+        ];
+        let c0 = [
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+        ];
         let centroid = [
             (a0[0] + b0[0] + c0[0]) / 3.0,
             (a0[1] + b0[1] + c0[1]) / 3.0,
@@ -76,12 +88,28 @@ fn parity_vertex_face() {
         let n = normalize(normal);
         let d = rng.range(1.0, 3.0);
         let v0 = add(centroid, scale(n, d));
-        let small_offset = [rng.range(-0.1, 0.1), rng.range(-0.1, 0.1), rng.range(-0.1, 0.1)];
+        let small_offset = [
+            rng.range(-0.1, 0.1),
+            rng.range(-0.1, 0.1),
+            rng.range(-0.1, 0.1),
+        ];
         let v1 = add(centroid, small_offset);
         let vv = sub(v1, v0);
-        let av = [rng.range(-0.2, 0.2), rng.range(-0.2, 0.2), rng.range(-0.2, 0.2)];
-        let bv = [rng.range(-0.2, 0.2), rng.range(-0.2, 0.2), rng.range(-0.2, 0.2)];
-        let cv = [rng.range(-0.2, 0.2), rng.range(-0.2, 0.2), rng.range(-0.2, 0.2)];
+        let av = [
+            rng.range(-0.2, 0.2),
+            rng.range(-0.2, 0.2),
+            rng.range(-0.2, 0.2),
+        ];
+        let bv = [
+            rng.range(-0.2, 0.2),
+            rng.range(-0.2, 0.2),
+            rng.range(-0.2, 0.2),
+        ];
+        let cv = [
+            rng.range(-0.2, 0.2),
+            rng.range(-0.2, 0.2),
+            rng.range(-0.2, 0.2),
+        ];
         let a1 = add(a0, av);
         let b1 = add(b0, bv);
         let c1 = add(c0, cv);
@@ -123,7 +151,10 @@ fn parity_vertex_face() {
     // (t_cubic >= t_bisect - 1e-6) and the two are close (difference < 0.2). Exact
     // 1e-5 parity is NOT expected and is intentionally not asserted.
     let _ = both_hit;
-    assert!(total_valid > 200, "expected many valid configs, got {total_valid}");
+    assert!(
+        total_valid > 200,
+        "expected many valid configs, got {total_valid}"
+    );
     assert!(
         cubic_hit as f64 >= bisect_hit as f64 * 0.98,
         "cubic should catch at least 98% of bisection hits: cubic_hit={cubic_hit}, bisect_hit={bisect_hit}"
@@ -144,8 +175,16 @@ fn parity_edge_edge() {
     let mut bisect_hit = 0usize;
     let mut agreements = 0usize;
     for _ in 0..500 {
-        let p0s = [rng.range(-1.0, 1.0), rng.range(-1.0, 1.0), rng.range(-1.0, 1.0)];
-        let dir1_raw = [rng.range(-1.0, 1.0), rng.range(-1.0, 1.0), rng.range(-1.0, 1.0)];
+        let p0s = [
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+        ];
+        let dir1_raw = [
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+        ];
         if len(dir1_raw) < 1e-6 {
             continue;
         }
@@ -153,12 +192,20 @@ fn parity_edge_edge() {
         let len1 = rng.range(0.5, 2.0);
         let p1s = add(p0s, scale(dir1, len1));
         let mid1 = scale(add(p0s, p1s), 0.5);
-        let dir2_raw = [rng.range(-1.0, 1.0), rng.range(-1.0, 1.0), rng.range(-1.0, 1.0)];
+        let dir2_raw = [
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+        ];
         if len(dir2_raw) < 1e-6 {
             continue;
         }
         let dir2 = normalize(dir2_raw);
-        let sweep_raw = [rng.range(-1.0, 1.0), rng.range(-1.0, 1.0), rng.range(-1.0, 1.0)];
+        let sweep_raw = [
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+            rng.range(-1.0, 1.0),
+        ];
         if len(sweep_raw) < 1e-6 {
             continue;
         }
@@ -167,12 +214,24 @@ fn parity_edge_edge() {
         let center2 = add(mid1, scale(sweep_dir, dist));
         let q0s = sub(center2, scale(dir2, 0.5));
         let q1s = add(center2, scale(dir2, 0.5));
-        let jitter = [rng.range(-0.1, 0.1), rng.range(-0.1, 0.1), rng.range(-0.1, 0.1)];
+        let jitter = [
+            rng.range(-0.1, 0.1),
+            rng.range(-0.1, 0.1),
+            rng.range(-0.1, 0.1),
+        ];
         let base = add(sub(mid1, center2), jitter);
         let vq0 = base;
         let vq1 = base;
-        let vp0 = [rng.range(-0.1, 0.1), rng.range(-0.1, 0.1), rng.range(-0.1, 0.1)];
-        let vp1 = [rng.range(-0.1, 0.1), rng.range(-0.1, 0.1), rng.range(-0.1, 0.1)];
+        let vp0 = [
+            rng.range(-0.1, 0.1),
+            rng.range(-0.1, 0.1),
+            rng.range(-0.1, 0.1),
+        ];
+        let vp1 = [
+            rng.range(-0.1, 0.1),
+            rng.range(-0.1, 0.1),
+            rng.range(-0.1, 0.1),
+        ];
         let p0e = add(p0s, vp0);
         let p1e = add(p1s, vp1);
         let q0e = add(q0s, vq0);
@@ -211,7 +270,10 @@ fn parity_edge_edge() {
     // earlier. So both-hit cases satisfy t_cubic >= t_bisect - 1e-6 and are close
     // (< 0.2). Exact 1e-5 parity is NOT expected.
     let _ = both_hit;
-    assert!(total_valid > 200, "expected many valid configs, got {total_valid}");
+    assert!(
+        total_valid > 200,
+        "expected many valid configs, got {total_valid}"
+    );
     assert!(
         cubic_hit as f64 >= bisect_hit as f64 * 0.98,
         "cubic should catch at least 98% of bisection hits: cubic_hit={cubic_hit}, bisect_hit={bisect_hit}"
@@ -244,7 +306,8 @@ fn zero_missed_vertex_face() {
             let vv = sub(vend, v0);
             let v1 = vend;
             assert!(
-                cubic_toi_vertex_face(a, b, c, v0, [0.0; 3], [0.0; 3], [0.0; 3], vv, 0.01).is_some(),
+                cubic_toi_vertex_face(a, b, c, v0, [0.0; 3], [0.0; 3], [0.0; 3], vv, 0.01)
+                    .is_some(),
                 "cubic missed interior VF hit at i={i}, j={j}"
             );
             assert!(

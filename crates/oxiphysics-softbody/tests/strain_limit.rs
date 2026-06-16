@@ -3,16 +3,12 @@
 
 //! Integration tests for SVD-based per-triangle strain limiting.
 
-use oxiphysics_softbody::xpbd::strain_limit::{apply_strain_limiting, StrainLimitConfig};
+use oxiphysics_softbody::xpbd::strain_limit::{StrainLimitConfig, apply_strain_limiting};
 
 // ─────────────────────────── helper ──────────────────────────────────────────
 
 /// Compute max singular value of the 2×2 deformation gradient for one triangle.
-fn max_stretch(
-    positions: &[[f64; 3]],
-    rest_positions: &[[f64; 3]],
-    tri: [usize; 3],
-) -> f64 {
+fn max_stretch(positions: &[[f64; 3]], rest_positions: &[[f64; 3]], tri: [usize; 3]) -> f64 {
     let [i0, i1, i2] = tri;
     let q0 = rest_positions[i0];
     let q1 = rest_positions[i1];
@@ -57,10 +53,7 @@ fn max_stretch(
     let f0 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
     let f1 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
 
-    let ds = [
-        [dot3(f0, t1), dot3(f1, t1)],
-        [dot3(f0, t2), dot3(f1, t2)],
-    ];
+    let ds = [[dot3(f0, t1), dot3(f1, t1)], [dot3(f0, t2), dot3(f1, t2)]];
 
     // F = Ds * Dm_inv
     let f_2d = mat2x2_mul(ds, dm_inv);

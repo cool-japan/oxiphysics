@@ -97,10 +97,10 @@ pub use composite::{
     max_stress_failure, ply_by_ply_stress, progressive_failure_analysis, reuss_modulus,
     thermal_residual_stresses, tsai_wu_failure, voigt_density, voigt_modulus, voigt_poisson,
 };
+pub use constitutive::{ConstitutiveModel, ConstitutiveResponse};
 pub use creep::functions::*;
 pub use creep::types::*;
 pub use elastic::{LinearElastic, NeoHookean};
-pub use constitutive::{ConstitutiveModel, ConstitutiveResponse};
 pub use eos::{
     EosWithEnergy, EquationOfState, IdealGasEos, MieGruneisenEos as MieGruneisenEosShock,
     PolynomialEos, StiffenedGasEos, TaitEos, TillotsonEos, VanDerWaalsEos,

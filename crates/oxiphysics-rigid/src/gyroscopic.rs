@@ -276,6 +276,193 @@ pub fn torque_free_motion(gyro: &mut Gyroscope, dt: f64) {
 }
 
 // ---------------------------------------------------------------------------
+// Implicit gyroscopic step (Catto, GDC 2015)
+// ---------------------------------------------------------------------------
+
+/// Build the 3×3 rotation matrix R from a unit quaternion in scalar-last form
+/// `[qx, qy, qz, qw]`.  R satisfies: `v_world = R · v_body`.
+#[inline]
+fn quat_to_rotation_matrix(qx: f64, qy: f64, qz: f64, qw: f64) -> [[f64; 3]; 3] {
+    [
+        [
+            1.0 - 2.0 * (qy * qy + qz * qz),
+            2.0 * (qx * qy - qz * qw),
+            2.0 * (qx * qz + qy * qw),
+        ],
+        [
+            2.0 * (qx * qy + qz * qw),
+            1.0 - 2.0 * (qx * qx + qz * qz),
+            2.0 * (qy * qz - qx * qw),
+        ],
+        [
+            2.0 * (qx * qz - qy * qw),
+            2.0 * (qy * qz + qx * qw),
+            1.0 - 2.0 * (qx * qx + qy * qy),
+        ],
+    ]
+}
+
+/// Multiply 3×3 matrix `m` by vector `v`: returns `m · v`.
+#[inline]
+fn mat3_mul_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+/// Multiply the *transpose* of `m` by vector `v`: returns `mᵀ · v`.
+#[inline]
+fn mat3_transpose_mul_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+    [
+        m[0][0] * v[0] + m[1][0] * v[1] + m[2][0] * v[2],
+        m[0][1] * v[0] + m[1][1] * v[1] + m[2][1] * v[2],
+        m[0][2] * v[0] + m[1][2] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+/// Solve the 3×3 linear system `a · x = b` via Gaussian elimination with
+/// partial pivoting.  Returns `None` if the matrix is singular (pivot < 1e-30).
+fn solve_3x3(a: [[f64; 3]; 3], b: [f64; 3]) -> Option<[f64; 3]> {
+    // Augmented matrix [A | b]
+    let mut m = [
+        [a[0][0], a[0][1], a[0][2], b[0]],
+        [a[1][0], a[1][1], a[1][2], b[1]],
+        [a[2][0], a[2][1], a[2][2], b[2]],
+    ];
+
+    for col in 0..3 {
+        // Partial pivot: find the row with the largest absolute value in this column.
+        let mut max_row = col;
+        let mut max_val = m[col][col].abs();
+        for row in (col + 1)..3 {
+            let v = m[row][col].abs();
+            if v > max_val {
+                max_val = v;
+                max_row = row;
+            }
+        }
+        if max_val < 1e-30 {
+            return None;
+        }
+        m.swap(col, max_row);
+
+        let pivot = m[col][col];
+        for row in (col + 1)..3 {
+            let factor = m[row][col] / pivot;
+            for k in col..4 {
+                let val = m[col][k];
+                m[row][k] -= factor * val;
+            }
+        }
+    }
+
+    // Back-substitution.
+    let mut x = [0.0_f64; 3];
+    for i in (0..3).rev() {
+        x[i] = m[i][3];
+        for j in (i + 1)..3 {
+            x[i] -= m[i][j] * x[j];
+        }
+        if m[i][i].abs() < 1e-30 {
+            return None;
+        }
+        x[i] /= m[i][i];
+    }
+    Some(x)
+}
+
+/// Implicit gyroscopic integration step (Catto, GDC 2015).
+///
+/// Applies one backward-Euler Newton iteration (two sub-steps) to the body-frame
+/// Euler equation:
+/// ```text
+/// f(ω₁) = I·(ω₁ − ω₀)/dt + ω₁ × (I·ω₁) = 0
+/// ```
+/// with analytic Jacobian `J = I/dt + [ω₁]× · I − [I·ω₁]×`.
+///
+/// # Arguments
+/// * `omega_world` — angular velocity in the **world** frame (rad/s).
+/// * `rotation` — body orientation quaternion, **scalar-last** `[x, y, z, w]`.
+/// * `local_inertia` — diagonal principal moments of inertia `[Ix, Iy, Iz]` (kg·m²).
+/// * `dt` — time step (s).
+///
+/// # Returns
+/// Corrected angular velocity in the **world** frame (rad/s).
+pub fn gyroscopic_implicit_step(
+    omega_world: [f64; 3],
+    rotation: [f64; 4],
+    local_inertia: [f64; 3],
+    dt: f64,
+) -> [f64; 3] {
+    if dt < 1e-30 {
+        return omega_world;
+    }
+
+    // Build rotation matrix R (v_world = R · v_body).
+    let [qx, qy, qz, qw] = rotation;
+    let r = quat_to_rotation_matrix(qx, qy, qz, qw);
+
+    // Transform ω from world frame to body frame: ω₀_body = Rᵀ · ω_world.
+    let omega0_body = mat3_transpose_mul_vec(r, omega_world);
+
+    let [ix, iy, iz] = local_inertia;
+    let mut omega1 = omega0_body; // initial guess = ω₀_body
+
+    // Two Newton iterations (one is usually enough; two add robustness).
+    for _ in 0..2 {
+        let [wx, wy, wz] = omega1;
+        let lx = ix * wx;
+        let ly = iy * wy;
+        let lz = iz * wz;
+
+        // Residual: f = I(ω₁ − ω₀)/dt + ω₁ × (I·ω₁)
+        // Cross product ω₁ × L components:
+        //   x: wy*lz − wz*ly
+        //   y: wz*lx − wx*lz
+        //   z: wx*ly − wy*lx
+        let f = [
+            ix * (wx - omega0_body[0]) / dt + wy * lz - wz * ly,
+            iy * (wy - omega0_body[1]) / dt + wz * lx - wx * lz,
+            iz * (wz - omega0_body[2]) / dt + wx * ly - wy * lx,
+        ];
+
+        // Analytic Jacobian: J = I/dt + [ω₁]×·I_diag − [L]×
+        //
+        // Derived element-by-element (see derivation in doc):
+        //   J[0][0] = Ix/dt
+        //   J[0][1] = ωz*(Iz−Iy)
+        //   J[0][2] = ωy*(Iz−Iy)    ← note: this uses ωy, not ωz
+        //   J[1][0] = ωz*(Ix−Iz)
+        //   J[1][1] = Iy/dt
+        //   J[1][2] = ωx*(Ix−Iz)
+        //   J[2][0] = ωy*(Iy−Ix)
+        //   J[2][1] = ωx*(Iy−Ix)
+        //   J[2][2] = Iz/dt
+        let jac = [
+            [ix / dt, wz * (iz - iy), wy * (iz - iy)],
+            [wz * (ix - iz), iy / dt, wx * (ix - iz)],
+            [wy * (iy - ix), wx * (iy - ix), iz / dt],
+        ];
+
+        // Newton step: solve J·Δω = −f, then ω₁ ← ω₁ + Δω.
+        let rhs = [-f[0], -f[1], -f[2]];
+        if let Some(delta) = solve_3x3(jac, rhs) {
+            omega1[0] += delta[0];
+            omega1[1] += delta[1];
+            omega1[2] += delta[2];
+        } else {
+            // Singular Jacobian (degenerate body); return input unchanged.
+            return omega_world;
+        }
+    }
+
+    // Transform corrected ω back to world frame: ω_world = R · ω₁_body.
+    mat3_mul_vec(r, omega1)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

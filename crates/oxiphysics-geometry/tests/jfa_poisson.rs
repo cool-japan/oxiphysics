@@ -41,7 +41,8 @@ fn test_jfa_sphere_distance_accuracy() {
     let grid = JfaGrid::build(dims, voxel_size, &seeds);
 
     // Build a set for quick seed membership lookup
-    let seed_set: std::collections::HashSet<(usize, usize, usize)> = seeds.iter().copied().collect();
+    let seed_set: std::collections::HashSet<(usize, usize, usize)> =
+        seeds.iter().copied().collect();
 
     // Sample ~200 voxels stepping by 3 in each axis, check non-seed ones
     let mut checked = 0usize;
@@ -199,19 +200,31 @@ fn test_screened_poisson_sphere_vertices() {
         } else {
             [0.0, 1.0, 0.0]
         };
-        pts.push(OrientedPoint { position: pos, normal });
+        pts.push(OrientedPoint {
+            position: pos,
+            normal,
+        });
     }
 
     let result = screened_poisson_reconstruct(&pts, 24, 10.0, 0.2);
-    assert!(result.is_ok(), "reconstruction should succeed: {:?}", result.as_ref().err().map(|e| e.to_string()));
+    assert!(
+        result.is_ok(),
+        "reconstruction should succeed: {:?}",
+        result.as_ref().err().map(|e| e.to_string())
+    );
 
     let surface = result.unwrap();
-    assert!(!surface.vertices.is_empty(), "reconstructed surface must have vertices");
+    assert!(
+        !surface.vertices.is_empty(),
+        "reconstructed surface must have vertices"
+    );
 
     let vertex_count = surface.vertices.len();
-    let sum_radius: f64 = surface.vertices.iter().map(|v| {
-        (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
-    }).sum();
+    let sum_radius: f64 = surface
+        .vertices
+        .iter()
+        .map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt())
+        .sum();
     let mean_radius = sum_radius / vertex_count as f64;
 
     assert!(
@@ -239,9 +252,8 @@ fn test_laplacian_fd_quadratic() {
         x * x + y * y + z * z
     };
 
-    let flat = |ix: usize, iy: usize, iz: usize| -> usize {
-        iz * dims[1] * dims[0] + iy * dims[0] + ix
-    };
+    let flat =
+        |ix: usize, iy: usize, iz: usize| -> usize { iz * dims[1] * dims[0] + iy * dims[0] + ix };
 
     let mut values = vec![0.0_f64; dims[0] * dims[1] * dims[2]];
     for iz in 0..dims[2] {

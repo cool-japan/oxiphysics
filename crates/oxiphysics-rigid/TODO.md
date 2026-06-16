@@ -113,7 +113,7 @@ Exit gate: all seven Goal scenarios pass as crate-level scenario tests at defaul
   - **Files:** `impulse/functions.rs` (coupled cone clamp), `contact_dynamics.rs` (rolling helpers promoted into solver rows)
   - **Tests:** bowling-ball stopping distance vs analytic ±2%; sledge directional-μ scenario
 
-- [ ] Implicit gyroscopic integration
+- [~] Implicit gyroscopic integration (planned 2026-06-16)
   - **Goal:** spinning top (T-handle/Dzhanibekov) energy-bounded for 60 s at dt=1/60 without clamping.
   - **Design:** one local Newton step on ω in body frame (Catto, GDC 2015); existing `gyroscopic.rs` has explicit Euler equations + RK4 only — add implicit path to the body integrator.
   - **Files:** `gyroscopic.rs`, body integrator entry point

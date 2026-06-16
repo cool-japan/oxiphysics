@@ -191,10 +191,7 @@ fn compute_u(f: [[f64; 2]; 2], vt: [[f64; 2]; 2], s1: f64, s2: f64) -> [[f64; 2]
     };
 
     // Return as row-major: U[row][col].
-    [
-        [u_col0[0], u_col1[0]],
-        [u_col0[1], u_col1[1]],
-    ]
+    [[u_col0[0], u_col1[0]], [u_col0[1], u_col1[1]]]
 }
 
 // ─────────────────────────── main API ────────────────────────────────────────
@@ -267,10 +264,7 @@ pub fn apply_strain_limiting(
             let f1 = sub3(p2, p0);
 
             // Ds (current shape matrix in local frame).
-            let ds: [[f64; 2]; 2] = [
-                [dot3(f0, t1), dot3(f1, t1)],
-                [dot3(f0, t2), dot3(f1, t2)],
-            ];
+            let ds: [[f64; 2]; 2] = [[dot3(f0, t1), dot3(f1, t1)], [dot3(f0, t2), dot3(f1, t2)]];
 
             // Deformation gradient F_2d = Ds * Dm_inv.
             let f_2d = mat2_mul(ds, dm_inv);
@@ -290,8 +284,7 @@ pub fn apply_strain_limiting(
             }
 
             // Reconstruct F' = U * diag(sigma') * Vt.
-            let sigma_clamped_mat: [[f64; 2]; 2] =
-                [[sigma0_clamped, 0.0], [0.0, sigma1_clamped]];
+            let sigma_clamped_mat: [[f64; 2]; 2] = [[sigma0_clamped, 0.0], [0.0, sigma1_clamped]];
             let f_prime = mat2_mul(mat2_mul(u, sigma_clamped_mat), vt);
 
             // Delta_F = F' - F_2d (in local frame).
@@ -318,10 +311,7 @@ pub fn apply_strain_limiting(
                 if denom < 1e-30 {
                     ([0.0_f64; 3], [0.0_f64; 3])
                 } else {
-                    (
-                        scale3(delta_e0, -w0 / denom),
-                        scale3(delta_e0, w1 / denom),
-                    )
+                    (scale3(delta_e0, -w0 / denom), scale3(delta_e0, w1 / denom))
                 }
             };
 
@@ -331,10 +321,7 @@ pub fn apply_strain_limiting(
                 if denom < 1e-30 {
                     ([0.0_f64; 3], [0.0_f64; 3])
                 } else {
-                    (
-                        scale3(delta_e1, -w0 / denom),
-                        scale3(delta_e1, w2 / denom),
-                    )
+                    (scale3(delta_e1, -w0 / denom), scale3(delta_e1, w2 / denom))
                 }
             };
 

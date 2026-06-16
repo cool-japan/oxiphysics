@@ -74,7 +74,11 @@ fn apply_c0(lambda0: f64, mu0: f64, eps: &[f64; 6]) -> [f64; 6] {
 fn isotropic_solve(lam_eff: f64, mu_eff: f64, v: [f64; 6]) -> [f64; 6] {
     let tr_v = v[0] + v[1] + v[2];
     let denom = 2.0 * mu_eff * (3.0 * lam_eff + 2.0 * mu_eff);
-    let lam_factor = if denom.abs() > 1e-300 { lam_eff / denom } else { 0.0 };
+    let lam_factor = if denom.abs() > 1e-300 {
+        lam_eff / denom
+    } else {
+        0.0
+    };
     [
         v[0] / (2.0 * mu_eff) - lam_factor * tr_v,
         v[1] / (2.0 * mu_eff) - lam_factor * tr_v,
@@ -310,8 +314,7 @@ pub(crate) fn eyre_milton_inner(
 
         // IFFT ε̂ → ε
         for m in 0..6 {
-            let (re, _) =
-                oxifft::ifft3d_split::<f64>(&eps_hat_re[m], &eps_hat_im[m], nx, ny, nz);
+            let (re, _) = oxifft::ifft3d_split::<f64>(&eps_hat_re[m], &eps_hat_im[m], nx, ny, nz);
             for (idx, val) in re.into_iter().enumerate() {
                 eps[idx][m] = val;
             }
