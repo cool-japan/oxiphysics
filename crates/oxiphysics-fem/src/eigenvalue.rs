@@ -18,6 +18,7 @@
 //! - [`EigensolverConfig`] — iteration / convergence configuration
 //! - [`SpectralNorm`] — largest singular value via power iteration
 //! - [`ModalTruncation`] — reduced-order model from retained modes
+//! - [`lobpcg_solve`] — LOBPCG with optional shift-invert for sparse `CsrMatrix` pencils
 
 pub mod lobpcg;
 pub use lobpcg::{EigensolverError, LobpcgConfig, LobpcgResult, lobpcg_solve};

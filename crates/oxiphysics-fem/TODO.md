@@ -127,7 +127,7 @@
   - **Tests (proposed):** `unit::chebyshev_reduces_high_frequency_error`, `integration::stokes_gmres_mesh_independent`
 
 ### Eigensolvers
-- [~] (planned 2026-06-15) LOBPCG shift-invert eigensolver
+- [x] LOBPCG shift-invert eigensolver
   - **Goal:** first 20 plate modes within 0.5% of analytic; ≥3× fewer factorizations than Lanczos for 20 modes.
   - **Design:** LOBPCG with shift-invert spectral transform. Knyazev 2001.
   - **Delta:** `LanczosMethod` exists; LOBPCG + shift-invert are new.

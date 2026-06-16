@@ -336,12 +336,14 @@ fn solve_3x3(a: [[f64; 3]; 3], b: [f64; 3]) -> Option<[f64; 3]> {
         // Partial pivot: find the row with the largest absolute value in this column.
         let mut max_row = col;
         let mut max_val = m[col][col].abs();
-        for row in (col + 1)..3 {
-            let v = m[row][col].abs();
+        let mut prow = col + 1;
+        while prow < 3 {
+            let v = m[prow][col].abs();
             if v > max_val {
                 max_val = v;
-                max_row = row;
+                max_row = prow;
             }
+            prow += 1;
         }
         if max_val < 1e-30 {
             return None;
@@ -349,12 +351,16 @@ fn solve_3x3(a: [[f64; 3]; 3], b: [f64; 3]) -> Option<[f64; 3]> {
         m.swap(col, max_row);
 
         let pivot = m[col][col];
-        for row in (col + 1)..3 {
+        let mut row = col + 1;
+        while row < 3 {
             let factor = m[row][col] / pivot;
-            for k in col..4 {
+            let mut k = col;
+            while k < 4 {
                 let val = m[col][k];
                 m[row][k] -= factor * val;
+                k += 1;
             }
+            row += 1;
         }
     }
 

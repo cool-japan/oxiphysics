@@ -25,33 +25,6 @@ fn quat_integrate_test(q: [f64; 4], omega: [f64; 3], dt: f64) -> [f64; 4] {
     [nqx / norm, nqy / norm, nqz / norm, nqw / norm]
 }
 
-/// Rotate a vector by a quaternion [x,y,z,w] (scalar-last): returns R·v (world = R·body).
-fn quat_rotate(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
-    let [qx, qy, qz, qw] = q;
-    let r = [
-        [
-            1.0 - 2.0 * (qy * qy + qz * qz),
-            2.0 * (qx * qy - qz * qw),
-            2.0 * (qx * qz + qy * qw),
-        ],
-        [
-            2.0 * (qx * qy + qz * qw),
-            1.0 - 2.0 * (qx * qx + qz * qz),
-            2.0 * (qy * qz - qx * qw),
-        ],
-        [
-            2.0 * (qx * qz - qy * qw),
-            2.0 * (qy * qz + qx * qw),
-            1.0 - 2.0 * (qx * qx + qy * qy),
-        ],
-    ];
-    [
-        r[0][0] * v[0] + r[0][1] * v[1] + r[0][2] * v[2],
-        r[1][0] * v[0] + r[1][1] * v[1] + r[1][2] * v[2],
-        r[2][0] * v[0] + r[2][1] * v[1] + r[2][2] * v[2],
-    ]
-}
-
 /// Rotate a vector by the TRANSPOSE of the rotation matrix of q: v_body = Rᵀ·v_world.
 fn quat_rotate_inverse(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
     let [qx, qy, qz, qw] = q;

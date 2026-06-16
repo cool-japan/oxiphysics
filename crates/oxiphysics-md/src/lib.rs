@@ -102,6 +102,7 @@ pub mod membrane_sim;
 pub mod metal_alloy_md;
 pub mod monte_carlo_md;
 pub mod nanoparticle_md;
+pub mod nemd;
 pub mod nucleation;
 pub mod photochemistry_md;
 pub mod polarizable_md;
@@ -143,6 +144,10 @@ pub use forcefield::{
 pub use integrator::{Integrator, LeapfrogIntegrator, RespaIntegrator, VelocityVerlet};
 pub use ml_potential::{MlPotential, SymmetryFunction, SymmetryFunctionSet, cutoff_function};
 pub use neighbor::{CellList, PeriodicBox, VerletList, build_verlet_list, distance_pbc};
+pub use nemd::{
+    MpConfig, MpResult, SllodConfig, SllodResult, gaussian_isokinetic_alpha, run_muller_plathe,
+    run_sllod,
+};
 pub use nn_potential::{Activation, DenseLayer, FeedForwardPotential};
 pub use potential::{Coulomb, HarmonicBond, LennardJones, Morse, Potential};
 pub use sampling::{UmbrellaSampling, WhamAnalysis};

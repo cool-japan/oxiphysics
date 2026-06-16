@@ -19,10 +19,12 @@
 //!   `OP = (A − σ_work B)⁻¹ B`. The eigenvalues of `OP` are `μ = 1/(λ − σ_work)`,
 //!   so the eigenpairs nearest `σ` are those of largest `|μ|`. `A − σ_work B` is
 //!   assembled explicitly over the union sparsity pattern and is symmetric
-//!   **indefinite** (CG/PCG break down), so `OP` is applied by restarted GMRES.
-//!   `σ_work = σ + 1e-7·(1 + |σ|)` perturbs `σ` off any exact eigenvalue. The
-//!   shift-invert operator `OP` doubles as the preconditioner for the residual,
-//!   which is what drives LOBPCG to the interior of the spectrum.
+//!   **indefinite** (CG/PCG break down), so it is factorized **once** by a sparse
+//!   banded LU with partial pivoting; each `OP` application is then a cheap
+//!   triangular back-substitution. `σ_work = σ + 1e-7·(1 + |σ|)` perturbs `σ` off
+//!   any exact eigenvalue. The shift-invert operator `OP` doubles as the
+//!   preconditioner for the residual, which is what drives LOBPCG to the interior
+//!   of the spectrum.
 //!
 //! ## Numerical core
 //!
@@ -38,7 +40,7 @@ use std::collections::BTreeMap;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
-use crate::parallel_solver::{CsrMatrix, ParallelGmresSolver, ParallelPcgSolver};
+use crate::parallel_solver::{CsrMatrix, ParallelPcgSolver};
 use crate::solvers::amg::classical::AmgClassical;
 use crate::solvers::amg::cycle::CycleKind;
 use crate::solvers::amg::preconditioner::{AmgPreconditioner, Preconditioner};
@@ -65,20 +67,19 @@ pub struct LobpcgConfig {
     pub shift: Option<f64>,
     /// In **standard** mode, selects the AMG V-cycle preconditioner (`true`) or
     /// the Jacobi/diagonal preconditioner (`false`). In **interior** mode this
-    /// flag is ignored: AMG on the indefinite shifted operator is unreliable, so
-    /// diagonal-preconditioned restarted GMRES is always used for the
-    /// shift-invert solves.
-    pub use_amg_preconditioner: bool,
+    /// flag is ignored: a one-time sparse banded LU factorization of `A − σB` is
+    /// used for the shift-invert solves.
+    pub use_amg: bool,
 }
 
 impl Default for LobpcgConfig {
     fn default() -> Self {
         Self {
-            num_eigenvalues: 1,
-            max_iter: 300,
-            tol: 1e-6,
+            num_eigenvalues: 6,
+            max_iter: 500,
+            tol: 1e-8,
             shift: None,
-            use_amg_preconditioner: true,
+            use_amg: true,
         }
     }
 }
@@ -89,13 +90,18 @@ impl Default for LobpcgConfig {
 /// the `j`-th eigenvalue and `eigenvectors[j]` is its corresponding eigenvector
 /// (a vector of length `n`, the matrix dimension). In interior mode the
 /// eigenvalues are the genuine eigenvalues of `(A, B)` nearest `σ` (recovered by
-/// Rayleigh quotient), still sorted ascending.
+/// Rayleigh quotient), still sorted ascending. `residual_norms[j]` holds the
+/// absolute residual 2-norm of the `j`-th returned eigenpair, element-wise
+/// aligned with `eigenvalues`/`eigenvectors`.
 #[derive(Debug, Clone)]
 pub struct LobpcgResult {
     /// Eigenvalues, ascending.
     pub eigenvalues: Vec<f64>,
     /// Eigenvectors; `eigenvectors[j]` (length `n`) pairs with `eigenvalues[j]`.
     pub eigenvectors: Vec<Vec<f64>>,
+    /// Absolute residual 2-norms `‖A x_j − λ_j B x_j‖₂`, aligned element-wise
+    /// with `eigenvalues`/`eigenvectors` (ascending order).
+    pub residual_norms: Vec<f64>,
     /// Number of outer LOBPCG iterations performed.
     pub iterations: usize,
     /// Whether every requested column reached the tolerance.
@@ -144,12 +150,12 @@ pub fn lobpcg_solve(
             "LOBPCG: num_eigenvalues exceeds the matrix dimension".into(),
         ));
     }
-    if let Some(bm) = b {
-        if bm.nrows != n || bm.ncols != n {
-            return Err(EigensolverError::General(
-                "LOBPCG: B must have the same dimensions as A".into(),
-            ));
-        }
+    if let Some(bm) = b
+        && (bm.nrows != n || bm.ncols != n)
+    {
+        return Err(EigensolverError::General(
+            "LOBPCG: B must have the same dimensions as A".into(),
+        ));
     }
 
     match config.shift {
@@ -174,7 +180,7 @@ fn solve_standard(
         recover_rayleigh: false,
     };
 
-    if config.use_amg_preconditioner {
+    if config.use_amg {
         // Build the AMG hierarchy and preconditioner ONCE and reuse every iter.
         let mut amg = AmgClassical::new();
         amg.coarse_cutoff = 8;
@@ -225,21 +231,18 @@ fn solve_interior(
     let sigma_work = sigma + 1e-7 * (1.0 + sigma.abs());
     let a_shift = assemble_a_minus_sigma_b(a, b, sigma_work);
 
-    // A_shift is symmetric indefinite ⇒ GMRES (CG/PCG break down). AMG on an
-    // indefinite operator is unreliable, so diagonal-preconditioned GMRES is
-    // always used here, regardless of `config.use_amg_preconditioner`.
-    let gmres = ParallelGmresSolver {
-        krylov_dim: 60,
-        max_restarts: 50,
-        tolerance: 1e-9,
-    };
+    // A − σ_work B is symmetric indefinite and near-singular (CG/PCG break down,
+    // and restarted GMRES burns its whole budget on every apply). Factorize it
+    // ONCE by a sparse banded LU with partial pivoting; each OP application is
+    // then a cheap triangular back-substitution. `config.use_amg` plays no role
+    // in interior mode.
+    let lu = band_lu_factor(&a_shift)?;
 
     // OP v = (A − σ_work B)⁻¹ (B v). Used as BOTH the Rayleigh–Ritz operator and
     // the residual preconditioner (the shift-invert accelerator).
     let op = |v: &[f64]| -> Vec<f64> {
         let rhs = apply_b_vec(b, v);
-        let mut w = vec![0.0f64; n];
-        let _ = gmres.solve(&a_shift, &rhs, &mut w);
+        let w = band_lu_solve(&lu, &rhs);
         if w.iter().all(|x| x.is_finite()) {
             w
         } else {
@@ -255,7 +258,7 @@ fn solve_interior(
         selection: Selection::LargestAbsK,
         recover_rayleigh: true,
     };
-    lobpcg_driver(a, b, &spec, &op, &op)
+    lobpcg_driver(a, b, &spec, |v| op(v), |v| op(v))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -485,10 +488,27 @@ fn lobpcg_driver(
     });
     let eigenvalues: Vec<f64> = order.iter().map(|&i| lambda[i]).collect();
     let eigenvectors: Vec<Vec<f64>> = order.iter().map(|&i| x_cols[i].clone()).collect();
+    // Absolute residual 2-norm ‖A x − λ B x‖₂ per returned pair, in the SAME
+    // ascending order as `eigenvalues`/`eigenvectors`.
+    let residual_norms: Vec<f64> = order
+        .iter()
+        .map(|&i| {
+            let x = &x_cols[i];
+            let ax = spmv_vec(a, x);
+            let bx = apply_b_vec(b, x);
+            let r: Vec<f64> = ax
+                .iter()
+                .zip(bx.iter())
+                .map(|(av, bv)| av - lambda[i] * bv)
+                .collect();
+            norm2(&r)
+        })
+        .collect();
 
     Ok(LobpcgResult {
         eigenvalues,
         eigenvectors,
+        residual_norms,
         iterations,
         converged,
     })
@@ -723,6 +743,157 @@ fn assemble_a_minus_sigma_b(a: &CsrMatrix, b: Option<&CsrMatrix>, sigma: f64) ->
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Sparse banded LU (shift-invert direct solver)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Sparse banded LU factorization (LAPACK `dgbtrf`-style) of `A − σ B`.
+///
+/// The shifted operator in interior mode is symmetric indefinite and
+/// near-singular, so it is factorized **once** with partial pivoting and stored
+/// in LAPACK band layout. Each shift-invert apply is then a pair of cheap
+/// triangular back-substitutions (see [`band_lu_solve`]).
+struct BandedLu {
+    /// Matrix dimension.
+    n: usize,
+    /// Lower half-bandwidth (`max |row − col|`).
+    kl: usize,
+    /// Upper half-bandwidth (`max |row − col|`).
+    ku: usize,
+    /// Leading dimension of the band array (`2·kl + ku + 1`).
+    ldab: usize,
+    /// Band storage, column-major, `ldab × n`; the top `kl` rows are pivot fill.
+    ab: Vec<f64>,
+    /// Partial-pivot row indices, one per column.
+    ipiv: Vec<usize>,
+}
+
+/// Factorize `a_shift = A − σ B` by banded LU with partial pivoting
+/// (LAPACK `dgbtrf`-style).
+///
+/// # Errors
+///
+/// Returns [`EigensolverError`] when a pivot column is numerically singular
+/// (i.e. `A − σ B` is effectively singular at the working shift).
+fn band_lu_factor(a_shift: &CsrMatrix) -> Result<BandedLu, EigensolverError> {
+    let n = a_shift.nrows;
+
+    // Half-bandwidths: the largest |row − col| over every stored nonzero.
+    let mut band = 0usize;
+    for i in 0..n {
+        for kk in a_shift.row_offsets[i]..a_shift.row_offsets[i + 1] {
+            band = band.max(i.abs_diff(a_shift.col_indices[kk]));
+        }
+    }
+    let kl = band;
+    let ku = band;
+    let ldab = 2 * kl + ku + 1;
+    let mut ab = vec![0.0f64; ldab * n];
+    let mut ipiv = vec![0usize; n];
+
+    // Band index of entry (i, j). `kl + ku + i − j` never underflows over the
+    // ranges touched below, so it is computed as `(kl + ku + i) − j`.
+    let idx = |i: usize, j: usize| -> usize { (kl + ku + i) - j + j * ldab };
+
+    // Scatter A into band storage (diagonal A[j, j] lands at offset kl + ku).
+    for i in 0..n {
+        for kk in a_shift.row_offsets[i]..a_shift.row_offsets[i + 1] {
+            let j = a_shift.col_indices[kk];
+            ab[idx(i, j)] = a_shift.values[kk];
+        }
+    }
+
+    for j in 0..n {
+        let i_last = (j + kl).min(n - 1);
+        let jj_last = (j + kl + ku).min(n - 1);
+
+        // Partial-pivot search over rows j..=i_last of column j.
+        let mut p = j;
+        let mut best = ab[idx(j, j)].abs();
+        for i in (j + 1)..=i_last {
+            let cand = ab[idx(i, j)].abs();
+            if cand > best {
+                best = cand;
+                p = i;
+            }
+        }
+        ipiv[j] = p;
+
+        if ab[idx(p, j)].abs() < 1e-300 {
+            return Err(EigensolverError::General(
+                "LOBPCG shift-invert: A - sigma*B is numerically singular".into(),
+            ));
+        }
+
+        // Swap band rows j and p across the affected columns.
+        if p != j {
+            for jj in j..=jj_last {
+                ab.swap(idx(j, jj), idx(p, jj));
+            }
+        }
+
+        // Eliminate below the pivot, storing the multipliers in the L slots.
+        let pivot = ab[idx(j, j)];
+        for i in (j + 1)..=i_last {
+            let m = ab[idx(i, j)] / pivot;
+            ab[idx(i, j)] = m;
+            for jj in (j + 1)..=jj_last {
+                let update = m * ab[idx(j, jj)];
+                ab[idx(i, jj)] -= update;
+            }
+        }
+    }
+
+    Ok(BandedLu {
+        n,
+        kl,
+        ku,
+        ldab,
+        ab,
+        ipiv,
+    })
+}
+
+/// Solve `(A − σ B) x = rhs` for one right-hand side from a banded LU
+/// factorization (LAPACK `dgbtrs`-style).
+fn band_lu_solve(lu: &BandedLu, rhs: &[f64]) -> Vec<f64> {
+    let n = lu.n;
+    let kl = lu.kl;
+    let ku = lu.ku;
+    let ldab = lu.ldab;
+    let ab = &lu.ab;
+    let ipiv = &lu.ipiv;
+    let idx = |i: usize, j: usize| -> usize { (kl + ku + i) - j + j * ldab };
+
+    let mut x = rhs.to_vec();
+
+    // Apply row pivots and forward-substitute the unit lower-triangular L.
+    for j in 0..n {
+        let p = ipiv[j];
+        if p != j {
+            x.swap(j, p);
+        }
+        let i_last = (j + kl).min(n - 1);
+        for i in (j + 1)..=i_last {
+            let update = ab[idx(i, j)] * x[j];
+            x[i] -= update;
+        }
+    }
+
+    // Back-substitute the upper-triangular U.
+    for j in (0..n).rev() {
+        let diag = ab[idx(j, j)];
+        x[j] /= diag;
+        let i_start = j.saturating_sub(kl + ku);
+        for i in i_start..j {
+            let update = ab[idx(i, j)] * x[j];
+            x[i] -= update;
+        }
+    }
+
+    x
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Unit tests for the private numerical core
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -761,15 +932,54 @@ mod tests {
         // 2x2 identity, shift by 0.5 -> diag becomes 0.5.
         let a = CsrMatrix::identity(2);
         let shifted = assemble_a_minus_sigma_b(&a, None, 0.5);
-        let mut d = vec![0.0f64; 2];
-        for i in 0..2 {
+        let mut d = [0.0f64; 2];
+        for (i, di) in d.iter_mut().enumerate() {
             for kk in shifted.row_offsets[i]..shifted.row_offsets[i + 1] {
                 if shifted.col_indices[kk] == i {
-                    d[i] = shifted.values[kk];
+                    *di = shifted.values[kk];
                 }
             }
         }
         assert!((d[0] - 0.5).abs() < 1e-14);
         assert!((d[1] - 0.5).abs() < 1e-14);
+    }
+
+    #[test]
+    fn band_lu_solves_indefinite_tridiagonal() {
+        // Symmetric INDEFINITE tridiagonal A = Laplacian1D − 2.5·I, n = 6:
+        // diagonal = −0.5, off-diagonals (i, i±1) = −1.0 (each interior row is
+        // [-1.0, -0.5, -1.0]).
+        let n = 6;
+        let mut row_offsets = vec![0usize];
+        let mut col_indices: Vec<usize> = Vec::new();
+        let mut values: Vec<f64> = Vec::new();
+        for i in 0..n {
+            if i > 0 {
+                col_indices.push(i - 1);
+                values.push(-1.0);
+            }
+            col_indices.push(i);
+            values.push(-0.5);
+            if i + 1 < n {
+                col_indices.push(i + 1);
+                values.push(-1.0);
+            }
+            row_offsets.push(col_indices.len());
+        }
+        let a = CsrMatrix {
+            nrows: n,
+            ncols: n,
+            row_offsets,
+            col_indices,
+            values,
+        };
+
+        let x_true = [1.0, -2.0, 3.0, -4.0, 5.0, -6.0];
+        let rhs = spmv_vec(&a, &x_true);
+        let lu = band_lu_factor(&a).expect("factor");
+        let x = band_lu_solve(&lu, &rhs);
+        for (got, want) in x.iter().zip(x_true.iter()) {
+            assert!((got - want).abs() < 1e-9, "got {got}, want {want}");
+        }
     }
 }

@@ -63,7 +63,7 @@ fn plate_modes_within_half_percent() {
         max_iter: 300,
         tol: 1e-6,
         shift: None,
-        use_amg_preconditioner: true,
+        use_amg: true,
     };
     let res = lobpcg_solve(&a, None, &cfg).expect("LOBPCG standard solve returned an error");
 
@@ -74,14 +74,22 @@ fn plate_modes_within_half_percent() {
     );
     assert_eq!(res.eigenvalues.len(), 20, "expected 20 eigenpairs");
 
-    for i in 0..20 {
-        let rel = (res.eigenvalues[i] - analytic[i]).abs() / analytic[i];
+    for (i, &analytic_i) in analytic.iter().enumerate().take(20) {
+        let rel = (res.eigenvalues[i] - analytic_i).abs() / analytic_i;
         assert!(
             rel < 0.005,
             "mode {i}: computed {} vs analytic {} (relative error {:.3e})",
             res.eigenvalues[i],
-            analytic[i],
+            analytic_i,
             rel
+        );
+    }
+
+    assert_eq!(res.residual_norms.len(), 20, "expected 20 residual norms");
+    for (i, &rn) in res.residual_norms.iter().enumerate() {
+        assert!(
+            rn.is_finite() && rn < 1e-3,
+            "residual_norms[{i}] = {rn:.3e} not finite/below 1e-3"
         );
     }
 }
@@ -98,7 +106,7 @@ fn lobpcg_b_orthonormal() {
         max_iter: 300,
         tol: 1e-6,
         shift: None,
-        use_amg_preconditioner: true,
+        use_amg: true,
     };
     let res = lobpcg_solve(&a, None, &cfg).expect("LOBPCG solve returned an error");
     assert_eq!(res.eigenvectors.len(), k, "expected {k} eigenvectors");
@@ -133,7 +141,7 @@ fn shift_invert_interior_targeting() {
         max_iter: 300,
         tol: 1e-6,
         shift: Some(sigma),
-        use_amg_preconditioner: false,
+        use_amg: false,
     };
     let res = lobpcg_solve(&a, None, &cfg).expect("LOBPCG interior solve returned an error");
     assert_eq!(res.eigenvalues.len(), 3, "expected 3 interior eigenpairs");
@@ -171,7 +179,7 @@ fn amg_preconditioner_efficacy() {
         max_iter: 300,
         tol: 1e-6,
         shift: None,
-        use_amg_preconditioner: use_amg,
+        use_amg,
     };
 
     let amg =
