@@ -1,53 +1,33 @@
 // Copyright 2026 COOLJAPAN OU (Team KitaSan)
 // SPDX-License-Identifier: Apache-2.0
 
-//! Eyre–Milton (1999) accelerated polarization scheme for the periodic
-//! Lippmann–Schwinger equation.
+//! Polarization-based ADMM solver for the periodic Lippmann-Schwinger equation.
 //!
-//! The basic Moulinec–Suquet scheme converges at a rate governed by the phase
-//! contrast: roughly `O(contrast)` iterations. The Eyre–Milton accelerated
-//! scheme reformulates the problem on the **polarization field**
-//! `p(x) = (C(x) − C⁰):ε(x)` and reaches the same fixed point in
-//! `O(√contrast)` iterations by choosing the reference stiffness C⁰ at the
-//! geometric/arithmetic midpoint of the local stiffness spectrum and using an
-//! over-relaxation factor.
+//! Implements the Brisard-Dormieux (2010) polarization scheme, which alternates
+//! between a Fourier strain-update step (applying the reference Green operator
+//! Γ⁰) and a local per-voxel polarization-update step.
 //!
-//! # Scheme
+//! Given reference medium (λ₀, μ₀) the iteration is:
 //!
-//! With an isotropic reference C⁰ = (λ₀, μ₀) and relaxation factor `ω`:
+//! ```text
+//! τ₀ = 0
+//! ε^{n+1}(ξ) = ε̄ − Γ⁰(ξ) τ̂^n(ξ)          (Fourier update; DC = N·ε̄)
+//! σ^{n+1}    = C : ε^{n+1}                   (local stress)
+//! rhs        = σ^{n+1} − C₀ : ε^{n+1} − τⁿ (residual polarization)
+//! ψ          = (C + C₀)⁻¹ : rhs              (local solve per voxel)
+//! τ^{n+1}    = τⁿ + 2·C₀ : ψ               (polarization update, factor 2)
+//! ```
 //!
-//! 1. ε(x) = ε̄ − Γ⁰ * p(x)            (strain from polarization; DC enforces ε̄)
-//! 2. q(x) = (C(x) − C⁰):ε(x)          (target polarization)
-//! 3. p(x) ← p(x) + ω·(q(x) − p(x))     (relaxed update)
-//!
-//! repeated until the equilibrium residual `‖ξ·σ̂(ξ)‖` falls below `tol`.
-//!
-//! The reference modulus is taken at the midpoint of the bounds `λ⁻, λ⁺` on the
-//! eigenvalues of `C(x)` (Eyre–Milton's optimal choice), and the over-relaxation
-//! factor `ω = 2` realizes the accelerated convergence. Step 1 uses the same
-//! `oxifft` transforms and Green operator as the basic scheme.
+//! With a geometric-mean reference `C₀ = (√(λ_min·λ_max), √(μ_min·μ_max))` and
+//! phase contrast κ, the spectral radius of the error propagator is
+//! approximately `|c₀/(c+c₀)|` for each mode/phase, giving O(√κ) convergence.
 
-use super::green_operator::{apply_gamma0, voigt_to_pair};
+use super::green_operator::apply_gamma0;
 use super::lippmann_schwinger::LsOutcome;
 use crate::homogenization::HomogenizationError;
 
-/// Apply a 6×6 Voigt matrix to a Voigt vector.
-#[inline]
-fn matvec6(c: &[[f64; 6]; 6], v: &[f64; 6]) -> [f64; 6] {
-    let mut out = [0.0_f64; 6];
-    for (i, oi) in out.iter_mut().enumerate() {
-        let row = &c[i];
-        *oi = row[0] * v[0]
-            + row[1] * v[1]
-            + row[2] * v[2]
-            + row[3] * v[3]
-            + row[4] * v[4]
-            + row[5] * v[5];
-    }
-    out
-}
+// ─────────────────────────────────── helpers ──────────────────────────────────
 
-/// Wrapped integer frequency for FFT index `i` on a grid of size `n`.
 #[inline]
 fn wrapped_freq(i: usize, n: usize) -> f64 {
     if i <= n / 2 {
@@ -57,37 +37,141 @@ fn wrapped_freq(i: usize, n: usize) -> f64 {
     }
 }
 
-/// Build the isotropic reference 6×6 stiffness from Lamé parameters.
-fn isotropic_c(lambda0: f64, mu0: f64) -> [[f64; 6]; 6] {
-    let mut c = [[0.0_f64; 6]; 6];
-    let diag = lambda0 + 2.0 * mu0;
-    c[0][0] = diag;
-    c[1][1] = diag;
-    c[2][2] = diag;
-    c[0][1] = lambda0;
-    c[0][2] = lambda0;
-    c[1][0] = lambda0;
-    c[1][2] = lambda0;
-    c[2][0] = lambda0;
-    c[2][1] = lambda0;
-    c[3][3] = mu0;
-    c[4][4] = mu0;
-    c[5][5] = mu0;
-    c
+#[inline]
+fn matvec6(c: &[[f64; 6]; 6], v: &[f64; 6]) -> [f64; 6] {
+    let mut out = [0.0_f64; 6];
+    for i in 0..6 {
+        for j in 0..6 {
+            out[i] += c[i][j] * v[j];
+        }
+    }
+    out
 }
 
-/// Solve the periodic Lippmann–Schwinger problem by the Eyre–Milton accelerated
-/// polarization scheme.
+/// Apply the isotropic reference stiffness C₀ : ε.
 ///
-/// # Arguments
-/// * `c_field`     — flat voxel stiffness field, length `nx*ny*nz`.
-/// * `dims`        — grid dimensions `[nx, ny, nz]`.
-/// * `mean_strain` — prescribed macroscopic strain ε̄ (engineering-strain Voigt).
-/// * `ref_moduli`  — reference medium `(λ₀, μ₀)`. For best acceleration this
-///   should sit near the midpoint of the phase stiffness spectrum; callers using
-///   [`crate::homogenization::compute_c_eff`] receive an auto-selected value.
-/// * `tol`         — relative equilibrium-residual tolerance.
-/// * `max_iter`    — maximum number of iterations.
+/// For Voigt engineering strain `eps` (shear entries γ = 2ε):
+///   σ_nn = λ₀·tr(ε) + 2μ₀·ε_nn
+///   σ_ij = μ₀·γ_ij   (i≠j)
+fn apply_c0(lambda0: f64, mu0: f64, eps: &[f64; 6]) -> [f64; 6] {
+    let trace = eps[0] + eps[1] + eps[2];
+    [
+        lambda0 * trace + 2.0 * mu0 * eps[0],
+        lambda0 * trace + 2.0 * mu0 * eps[1],
+        lambda0 * trace + 2.0 * mu0 * eps[2],
+        mu0 * eps[3],
+        mu0 * eps[4],
+        mu0 * eps[5],
+    ]
+}
+
+/// Solve `(C_iso) : ψ = v` for an isotropic stiffness with Lamé moduli
+/// `(lam_eff, mu_eff)`.
+///
+/// Input `v` is a Voigt stress (shear entries are plain tensor components).
+/// Output is a Voigt engineering strain (shear entries γ = 2ε).
+#[inline]
+fn isotropic_solve(lam_eff: f64, mu_eff: f64, v: [f64; 6]) -> [f64; 6] {
+    let tr_v = v[0] + v[1] + v[2];
+    let denom = 2.0 * mu_eff * (3.0 * lam_eff + 2.0 * mu_eff);
+    let lam_factor = if denom.abs() > 1e-300 { lam_eff / denom } else { 0.0 };
+    [
+        v[0] / (2.0 * mu_eff) - lam_factor * tr_v,
+        v[1] / (2.0 * mu_eff) - lam_factor * tr_v,
+        v[2] / (2.0 * mu_eff) - lam_factor * tr_v,
+        v[3] / mu_eff,
+        v[4] / mu_eff,
+        v[5] / mu_eff,
+    ]
+}
+
+/// General 6×6 linear solve via Gauss elimination with partial pivoting.
+///
+/// Solves `M·x = b`, returning `Some(x)` or `None` if the system is singular.
+fn solve_6x6(m: &[[f64; 6]; 6], b: &[f64; 6]) -> Option<[f64; 6]> {
+    const N: usize = 6;
+    let mut aug = [[0.0_f64; 7]; N];
+    for i in 0..N {
+        for j in 0..N {
+            aug[i][j] = m[i][j];
+        }
+        aug[i][N] = b[i];
+    }
+    for col in 0..N {
+        let mut max_row = col;
+        let mut max_val = aug[col][col].abs();
+        for (offset, aug_row) in aug[(col + 1)..N].iter().enumerate() {
+            let row = col + 1 + offset;
+            let v = aug_row[col].abs();
+            if v > max_val {
+                max_val = v;
+                max_row = row;
+            }
+        }
+        if max_val < 1e-300 {
+            return None;
+        }
+        aug.swap(col, max_row);
+        let inv_pivot = 1.0 / aug[col][col];
+        for row in (col + 1)..N {
+            let factor = aug[row][col] * inv_pivot;
+            let col_row: [f64; 7] = aug[col];
+            for (k_off, &col_val) in col_row[col..=N].iter().enumerate() {
+                let k = col + k_off;
+                aug[row][k] -= factor * col_val;
+            }
+        }
+    }
+    let mut x = [0.0_f64; N];
+    for i in (0..N).rev() {
+        x[i] = aug[i][N];
+        for j in (i + 1)..N {
+            x[i] -= aug[i][j] * x[j];
+        }
+        x[i] /= aug[i][i];
+    }
+    Some(x)
+}
+
+/// Solve `(C(x) + C₀) : ψ = rhs` at a single voxel.
+///
+/// Uses the fast isotropic path when `C(x)` is isotropic (detected from its
+/// structure), falling back to Gauss elimination for anisotropic phases.
+fn local_solve(c: &[[f64; 6]; 6], lambda0: f64, mu0: f64, rhs: [f64; 6]) -> [f64; 6] {
+    // Fast path: extract Lamé params assuming isotropic structure.
+    // For isotropic C: C[5][5] = mu_x, C[0][0] = lambda_x + 2*mu_x, C[0][1] = lambda_x.
+    let mu_x = c[5][5];
+    let lam_x = c[0][0] - 2.0 * mu_x;
+    let iso_ok = (c[0][1] - lam_x).abs() < 1e-6 * (lam_x.abs() + 1.0)
+        && (c[1][2] - lam_x).abs() < 1e-6 * (lam_x.abs() + 1.0)
+        && c[0][3].abs() < 1e-6 * (mu_x.abs() + 1.0)
+        && (c[3][3] - mu_x).abs() < 1e-6 * (mu_x.abs() + 1.0)
+        && (c[4][4] - mu_x).abs() < 1e-6 * (mu_x.abs() + 1.0);
+    if iso_ok {
+        return isotropic_solve(lam_x + lambda0, mu_x + mu0, rhs);
+    }
+    // General path: build M = C + C0 and solve via Gauss elimination.
+    let mut m = *c;
+    let lam2mu0 = lambda0 + 2.0 * mu0;
+    m[0][0] += lam2mu0;
+    m[1][1] += lam2mu0;
+    m[2][2] += lam2mu0;
+    m[0][1] += lambda0;
+    m[1][0] += lambda0;
+    m[0][2] += lambda0;
+    m[2][0] += lambda0;
+    m[1][2] += lambda0;
+    m[2][1] += lambda0;
+    m[3][3] += mu0;
+    m[4][4] += mu0;
+    m[5][5] += mu0;
+    solve_6x6(&m, &rhs).unwrap_or([0.0; 6])
+}
+
+// ─────────────────────────────── public API ───────────────────────────────────
+
+/// Solve the periodic Lippmann-Schwinger problem using the Brisard-Dormieux
+/// polarization ADMM scheme with the supplied reference medium.
 ///
 /// Returns the converged strain field and the iteration count, or
 /// [`HomogenizationError::NotConverged`] if the residual never reached `tol`.
@@ -110,7 +194,15 @@ pub fn eyre_milton(
     }
 }
 
-/// Core sweep returning the final field, residual and convergence flag.
+/// Core ADMM polarization iteration.
+///
+/// Alternates between:
+/// 1. Fourier step: apply Γ⁰ to update strain from current polarization.
+/// 2. Local step: update polarization τ via the per-voxel proximal operator.
+///
+/// The iteration terminates when the relative polarization update
+/// ‖Δτ‖/‖σ₀‖ falls below `tol`, where ‖σ₀‖ = N·‖C₀ : ε̄‖₂ is a fixed
+/// reference scale computed once before the loop.
 pub(crate) fn eyre_milton_inner(
     c_field: &[[[f64; 6]; 6]],
     dims: [usize; 3],
@@ -125,110 +217,144 @@ pub(crate) fn eyre_milton_inner(
         Some(v) if v > 0 => v,
         _ => {
             return Err(HomogenizationError::InvalidGrid(format!(
-                "grid {nx}×{ny}×{nz} has zero or overflowing voxel count"
+                "grid {nx}x{ny}x{nz} has zero or overflowing voxel count"
             )));
         }
     };
     if c_field.len() != n_total {
         return Err(HomogenizationError::InvalidGrid(format!(
-            "c_field length {} does not match grid {nx}×{ny}×{nz} = {n_total}",
+            "c_field length {} does not match grid {nx}x{ny}x{nz} = {n_total}",
             c_field.len()
         )));
     }
 
     let (lambda0, mu0) = ref_moduli;
-    let c0 = isotropic_c(lambda0, mu0);
-    let n_f = n_total as f64;
-
-    // Over-relaxation factor (Eyre–Milton accelerated convergence).
-    let omega = 2.0_f64;
-
-    // Polarization field p(x) = (C(x) − C⁰):ε(x), initialized from ε = ε̄.
-    let mut polar = vec![[0.0_f64; 6]; n_total];
-    for (idx, c) in c_field.iter().enumerate() {
-        let cm_c0 = matvec6(c, &mean_strain);
-        let c0_e = matvec6(&c0, &mean_strain);
-        for m in 0..6 {
-            polar[idx][m] = cm_c0[m] - c0_e[m];
-        }
-    }
-
-    // Reusable real-space strain field.
-    let mut strain = vec![mean_strain; n_total];
     let zero_imag = vec![0.0_f64; n_total];
+    let n_f64 = n_total as f64;
+
+    // Fixed reference scale = N * ||C₀ : ε̄||₂
+    let c0_eps_mean = apply_c0(lambda0, mu0, &mean_strain);
+    let sigma0_scale = {
+        let sq: f64 = c0_eps_mean.iter().map(|v| v * v).sum();
+        n_f64 * sq.sqrt().max(1e-300)
+    };
+
+    // ── Scratch buffers ───────────────────────────────────────────────────────
+    // Real-space polarization τ(x), initialised to zero.
+    let mut tau: Vec<[f64; 6]> = vec![[0.0_f64; 6]; n_total];
+    // Fourier τ̂ components (initialised to zero = transform of zero field).
+    let mut tau_hat_re: [Vec<f64>; 6] = std::array::from_fn(|_| vec![0.0; n_total]);
+    let mut tau_hat_im: [Vec<f64>; 6] = std::array::from_fn(|_| vec![0.0; n_total]);
+
+    // Real-space strain ε(x), initialised to uniform mean strain.
+    let mut eps: Vec<[f64; 6]> = vec![mean_strain; n_total];
+
+    // Fourier strain ε̂ — recomputed each iteration.
+    let mut eps_hat_re: [Vec<f64>; 6] = std::array::from_fn(|_| vec![0.0; n_total]);
+    let mut eps_hat_im: [Vec<f64>; 6] = std::array::from_fn(|_| vec![0.0; n_total]);
+
+    // Scratch for FFT of each τ component.
+    let mut tau_re_comp: [Vec<f64>; 6] = std::array::from_fn(|_| vec![0.0; n_total]);
+
+    // Real-space sigma σ(x) = C : ε(x)
+    let mut sigma_re: [Vec<f64>; 6] = std::array::from_fn(|_| vec![0.0; n_total]);
 
     let mut iterations = 0usize;
+    let mut tau_update_sq = 0.0_f64;
+    let mut best_residual = f64::INFINITY;
+
     for it in 0..max_iter {
         iterations = it + 1;
 
-        // ---- Step 1: ε(x) = ε̄ − Γ⁰ * p(x) -------------------------------
-        // FFT each polarization component.
-        let mut polar_re: [Vec<f64>; 6] = std::array::from_fn(|_| vec![0.0; n_total]);
-        for (idx, p) in polar.iter().enumerate() {
-            for m in 0..6 {
-                polar_re[m][idx] = p[m];
-            }
-        }
-        let mut polar_hat_re: [Vec<f64>; 6] = std::array::from_fn(|_| Vec::new());
-        let mut polar_hat_im: [Vec<f64>; 6] = std::array::from_fn(|_| Vec::new());
+        // ── Step 1: Fourier strain update ε̂ = ε̄ − Γ⁰ · τ̂ ──────────────────
+        // FFT τ → τ̂
         for m in 0..6 {
-            let (re, im) = oxifft::fft3d_split::<f64>(&polar_re[m], &zero_imag, nx, ny, nz);
-            polar_hat_re[m] = re;
-            polar_hat_im[m] = im;
+            for (idx, t) in tau.iter().enumerate() {
+                tau_re_comp[m][idx] = t[m];
+            }
+            let (re, im) = oxifft::fft3d_split::<f64>(&tau_re_comp[m], &zero_imag, nx, ny, nz);
+            tau_hat_re[m] = re;
+            tau_hat_im[m] = im;
         }
 
-        // ε̂(ξ) = −Γ⁰(ξ):p̂(ξ)  for ξ≠0;  ε̂(0) = N·ε̄.
-        let mut strain_hat_re: [Vec<f64>; 6] = std::array::from_fn(|_| vec![0.0; n_total]);
-        let mut strain_hat_im: [Vec<f64>; 6] = std::array::from_fn(|_| vec![0.0; n_total]);
+        // DC: ε̂(0) = N · ε̄
+        for m in 0..6 {
+            eps_hat_re[m][0] = n_f64 * mean_strain[m];
+            eps_hat_im[m][0] = 0.0;
+        }
+
+        // Non-DC: ε̂(ξ) = −Γ⁰(ξ) · τ̂(ξ)
         for ix in 0..nx {
-            let kx = wrapped_freq(ix, nx);
             for iy in 0..ny {
-                let ky = wrapped_freq(iy, ny);
                 for iz in 0..nz {
-                    let flat = ix * ny * nz + iy * nz + iz;
                     if ix == 0 && iy == 0 && iz == 0 {
                         continue;
                     }
-                    let xi = [kx, ky, wrapped_freq(iz, nz)];
-                    let tau_re: [f64; 6] = std::array::from_fn(|m| polar_hat_re[m][flat]);
-                    let tau_im: [f64; 6] = std::array::from_fn(|m| polar_hat_im[m][flat]);
-                    let e_re = apply_gamma0(xi, tau_re, lambda0, mu0);
-                    let e_im = apply_gamma0(xi, tau_im, lambda0, mu0);
+                    let flat = ix * ny * nz + iy * nz + iz;
+                    let xi = [
+                        wrapped_freq(ix, nx),
+                        wrapped_freq(iy, ny),
+                        wrapped_freq(iz, nz),
+                    ];
+                    let tr: [f64; 6] = std::array::from_fn(|m| tau_hat_re[m][flat]);
+                    let ti: [f64; 6] = std::array::from_fn(|m| tau_hat_im[m][flat]);
+                    let gr = apply_gamma0(xi, tr, lambda0, mu0);
+                    let gi = apply_gamma0(xi, ti, lambda0, mu0);
                     for m in 0..6 {
-                        strain_hat_re[m][flat] = -e_re[m];
-                        strain_hat_im[m][flat] = -e_im[m];
+                        eps_hat_re[m][flat] = -gr[m];
+                        eps_hat_im[m][flat] = -gi[m];
                     }
                 }
             }
         }
+
+        // IFFT ε̂ → ε
         for m in 0..6 {
-            strain_hat_re[m][0] = mean_strain[m] * n_f;
-            strain_hat_im[m][0] = 0.0;
-        }
-        for m in 0..6 {
-            let (re, _im) =
-                oxifft::ifft3d_split::<f64>(&strain_hat_re[m], &strain_hat_im[m], nx, ny, nz);
-            for (idx, value) in re.into_iter().enumerate() {
-                strain[idx][m] = value;
+            let (re, _) =
+                oxifft::ifft3d_split::<f64>(&eps_hat_re[m], &eps_hat_im[m], nx, ny, nz);
+            for (idx, val) in re.into_iter().enumerate() {
+                eps[idx][m] = val;
             }
         }
 
-        // ---- Step 2+3: relaxed polarization update ------------------------
-        // q(x) = (C(x) − C⁰):ε(x);  p ← p + ω(q − p).
-        for (idx, c) in c_field.iter().enumerate() {
-            let c_e = matvec6(c, &strain[idx]);
-            let c0_e = matvec6(&c0, &strain[idx]);
+        // ── Step 2: Compute σ = C : ε in real space ──────────────────────────
+        for (idx, (c, e)) in c_field.iter().zip(eps.iter()).enumerate() {
+            let s = matvec6(c, e);
             for m in 0..6 {
-                let q = c_e[m] - c0_e[m];
-                polar[idx][m] += omega * (q - polar[idx][m]);
+                sigma_re[m][idx] = s[m];
             }
         }
 
-        // ---- Convergence: equilibrium residual of σ = C:ε ----------------
-        let residual = equilibrium_residual(c_field, &strain, dims, &zero_imag);
+        // ── Step 3: Local polarization update τ^{n+1} = τⁿ + 2·C₀ : ψ ────────
+        tau_update_sq = 0.0_f64;
+        for (idx, (c, e)) in c_field.iter().zip(eps.iter()).enumerate() {
+            let sigma_x: [f64; 6] = std::array::from_fn(|m| sigma_re[m][idx]);
+            let c0_eps = apply_c0(lambda0, mu0, e);
+            let mut rhs = [0.0_f64; 6];
+            for m in 0..6 {
+                rhs[m] = sigma_x[m] - c0_eps[m] - tau[idx][m];
+            }
+            let psi = local_solve(c, lambda0, mu0, rhs);
+            let c0_psi = apply_c0(lambda0, mu0, &psi);
+            for m in 0..6 {
+                let delta = 2.0 * c0_psi[m];
+                tau_update_sq += delta * delta;
+                tau[idx][m] += delta;
+            }
+        }
+
+        // ── Step 4: Check convergence via polarization-update criterion ─────────
+        let residual = tau_update_sq.sqrt() / sigma0_scale;
+        // Divergence guard: break early on NaN or catastrophic growth.
+        if !residual.is_finite() || residual > best_residual * 1.0e6 {
+            break;
+        }
+        if residual < best_residual {
+            best_residual = residual;
+        }
         if residual <= tol {
             return Ok(LsOutcome {
-                field: strain,
+                field: eps,
                 iterations,
                 residual,
                 converged: true,
@@ -236,74 +362,12 @@ pub(crate) fn eyre_milton_inner(
         }
     }
 
-    let residual = equilibrium_residual(c_field, &strain, dims, &zero_imag);
+    // Not converged — return the final field with the last polarization-update residual.
+    let final_residual = tau_update_sq.sqrt() / sigma0_scale;
     Ok(LsOutcome {
-        field: strain,
+        field: eps,
         iterations,
-        residual,
+        residual: final_residual,
         converged: false,
     })
-}
-
-/// Normalized equilibrium residual `‖ξ·σ̂(ξ)‖ / ‖σ̂(0)‖` for σ = C:ε.
-fn equilibrium_residual(
-    c_field: &[[[f64; 6]; 6]],
-    strain: &[[f64; 6]],
-    dims: [usize; 3],
-    zero_imag: &[f64],
-) -> f64 {
-    let [nx, ny, nz] = dims;
-    let n_total = nx * ny * nz;
-    let mut sigma_hat_re: [Vec<f64>; 6] = std::array::from_fn(|_| Vec::new());
-    let mut sigma_hat_im: [Vec<f64>; 6] = std::array::from_fn(|_| Vec::new());
-    for m in 0..6 {
-        let comp: Vec<f64> = (0..n_total)
-            .map(|idx| matvec6(&c_field[idx], &strain[idx])[m])
-            .collect();
-        let (re, im) = oxifft::fft3d_split::<f64>(&comp, zero_imag, nx, ny, nz);
-        sigma_hat_re[m] = re;
-        sigma_hat_im[m] = im;
-    }
-
-    let full = |hat: &[Vec<f64>; 6], flat: usize| -> [[f64; 3]; 3] {
-        let mut t = [[0.0_f64; 3]; 3];
-        for (v, row) in hat.iter().enumerate() {
-            let (i, j) = voigt_to_pair(v);
-            t[i][j] = row[flat];
-            t[j][i] = row[flat];
-        }
-        t
-    };
-
-    let mut residual_sq = 0.0_f64;
-    let mut mean_norm_sq = 0.0_f64;
-    for ix in 0..nx {
-        let kx = wrapped_freq(ix, nx);
-        for iy in 0..ny {
-            let ky = wrapped_freq(iy, ny);
-            for iz in 0..nz {
-                let flat = ix * ny * nz + iy * nz + iz;
-                if ix == 0 && iy == 0 && iz == 0 {
-                    for s_re in sigma_hat_re.iter() {
-                        mean_norm_sq += s_re[flat] * s_re[flat];
-                    }
-                    continue;
-                }
-                let xi = [kx, ky, wrapped_freq(iz, nz)];
-                let sr = full(&sigma_hat_re, flat);
-                let si = full(&sigma_hat_im, flat);
-                for i in 0..3 {
-                    let dr = sr[i][0] * xi[0] + sr[i][1] * xi[1] + sr[i][2] * xi[2];
-                    let di = si[i][0] * xi[0] + si[i][1] * xi[1] + si[i][2] * xi[2];
-                    residual_sq += dr * dr + di * di;
-                }
-            }
-        }
-    }
-    let denom = mean_norm_sq.sqrt();
-    if denom > 0.0 {
-        residual_sq.sqrt() / denom
-    } else {
-        residual_sq.sqrt()
-    }
 }

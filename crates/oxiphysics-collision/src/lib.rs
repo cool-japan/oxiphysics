@@ -201,6 +201,7 @@ pub mod compound_shapes;
 pub mod contact_generation;
 pub mod contact_manifold;
 pub mod deformable_collision;
+pub use deformable_collision::cubic_toi;
 pub mod fluid_collision;
 pub mod gjk_enhanced;
 pub mod gjk_extended;

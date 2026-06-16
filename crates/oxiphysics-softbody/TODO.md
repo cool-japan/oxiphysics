@@ -91,7 +91,7 @@ The MPM headline ("add MLS-MPM") is already shipped — see baseline details abo
   - **Design:** add to `fem_soft/materials.rs` (classic `NeoHookeanMaterial` exists at line 252) and as XPBD two-block constraint (deviatoric+hydrostatic, Macklin & Müller 2021).
   - **Files:** `fem_soft/materials.rs`, XPBD constraint set
 
-- [ ] Strain limiting for cloth
+- [x] Strain limiting for cloth
   - **Goal:** stretch ≤105% of rest under 100x gravity hang.
   - **Design:** per-triangle SVD clamp (Wang 2010) as post-XPBD pass, slotted in per substep — small-steps XPBD substepping already exists (`SubstepConfig`, `xpbd/types.rs:705`; see baseline details).
 

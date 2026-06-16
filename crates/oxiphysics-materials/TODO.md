@@ -46,6 +46,7 @@
 
 ### Spectral homogenization
 - [x] (planned 2026-06-12) FFT-based spectral homogenization (Moulinec-Suquet) (oxifft)
+  - [x] Fix basic Moulinec-Suquet divergence → HS-bounds NaN (reference-modulus + divergence guard) (planned 2026-06-15)
   - **Goal:** 2-phase effective stiffness within Hashin-Shtrikman bounds; converges at phase contrast up to 1000.
   - **Design:** periodic Lippmann-Schwinger fixed-point + polarization / Eyre-Milton accelerated scheme via oxifft. Moulinec-Suquet 1998.
   - **Delta:** MISSING.
@@ -54,13 +55,16 @@
   - **Tests (proposed):** `unit::green_operator_symmetry`, `integration::fft_homog_within_hs_bounds`, `integration::accelerated_converges_high_contrast`
 
 ### Constitutive trait
-- [ ] Unified ConstitutiveModel / UMAT-style trait
+- [x] (done 2026-06-14) Unified ConstitutiveModel / UMAT-style trait
   - **Goal:** the 5 existing models (elastic, J2, neo-Hookean, viscoelastic, crystal-plasticity) implement one stress-update + consistent-tangent trait, drivable directly by FEM.
   - **Design:** material-point trait mirroring the Abaqus UMAT contract.
   - **Delta:** only the `FailureCriteria` trait exists in `elastic.rs`; there is no unified material-point interface yet.
   - **Validation:** all 5 models implement the trait and reproduce their existing standalone stress/tangent outputs to 1e-12; an FEM element drives them through the trait.
   - **Files (proposed):** `constitutive/mod.rs` (trait `ConstitutiveModel`), `constitutive/state.rs`, impls wired into existing model modules
   - **Tests (proposed):** `unit::trait_roundtrip_matches_standalone_all_models`, `integration::fem_drives_constitutive_trait`
+  - **Status (2026-06-14):** DONE. `ConstitutiveModel` trait + `ConstitutiveResponse<S>` live in `constitutive/mod.rs`; state types `J2State` / `ViscoelasticState` in `constitutive/state.rs`. Implemented for: `LinearElastic`, `IsotropicElastic`, `OrthotropicElastic`, `TransverselyIsotropicElastic` (stateless), `J2ReturnMapping` (isotropic hardening, 7 SDVs, delegates to `return_map` + `J2ConsistentTangent::compute_consistent_tangent`), and `GeneralizedMaxwell` (new concrete `voigt_stress_update` exact-integration step + per-branch history state). 11 integration tests in `tests/constitutive_trait.rs` (parity gate at 1e-12 relative trait-vs-concrete for all wired models, virgin step, `n_state_vars`, generic driver) + 5 unit tests; clippy clean; all touched files < 2000 lines.
+  - [ ] Follow-on: wire `crystal_plasticity` into `ConstitutiveModel`. The current `crystal_plasticity.rs` is a kinematics/texture point model (Schmid tensor, Taylor factor, slip-system creep) — it exposes NO Voigt-6 stress-update closure and NO consistent 6×6 tangent, so it cannot meet the 1e-12 parity gate today. Requires either (a) a closed `stress_update(strain)->(stress,tangent)` slip-system integrator with an analytic/algorithmic tangent, or (b) a numerical (finite-difference) tangent over a real stress-update. Tracked as a scope-split from the 2026-06-14 trait work.
+  - [ ] Follow-on: wire `NeoHookean` (finite-strain) into `ConstitutiveModel` once a small-strain/Voigt adapter or a deformation-gradient-based trait variant is defined (the current trait takes a Voigt-6 small-strain tensor; the hyperelastic models are large-strain PK1/F-based).
 
 ### Differentiable constitutivity
 - [ ] Differentiable return-mapping (scirs2-autograd — add dep)

@@ -580,6 +580,119 @@ pub fn detect_self_collision(
     }
     contacts
 }
+/// Number of uniform sub-intervals for the coarse CCD pre-scan.
+///
+/// A naive monotone bisection fails when the distance-vs-time curve dips below
+/// `thickness` mid-path while both endpoints stay above it (e.g. a thin shell
+/// the primitive passes straight through). The coarse pre-scan locates the
+/// earliest sub-interval that brackets such a crossing so the subsequent
+/// bisection converges to the true earliest time of impact.
+pub(super) const CCD_PRESCAN_SUBDIVISIONS: usize = 128;
+/// Coarse uniform pre-scan followed by bisection refinement.
+///
+/// `dist` maps a time `t` in `[0, 1]` to the (non-squared) distance between the
+/// two moving primitives. Returns the earliest time in `[0, 1]` whose distance
+/// is strictly below `thickness`, or `None` if the primitives never come within
+/// `thickness` over the interval.
+///
+/// The caller is responsible for the `t == 0` early-out; this routine scans
+/// sub-interval right endpoints `t = k/N` for `k` in `1..=N` and refines the
+/// first bracket that dips below `thickness`. If no sample dips below, it also
+/// refines around the interior minimum sample to catch a thin dip that falls
+/// entirely between two coarse samples.
+pub(super) fn ccd_prescan_bisect(thickness: f64, dist: impl Fn(f64) -> f64) -> Option<f64> {
+    let n = CCD_PRESCAN_SUBDIVISIONS;
+    let inv_n = 1.0 / n as f64;
+    // Coarse uniform pre-scan. Track the minimum sample for the fallback. The
+    // `t = 0` sample is the caller's early-out responsibility but is still
+    // included here so an interior minimum is detected relative to it.
+    let mut min_dist = dist(0.0);
+    let mut kmin = 0usize;
+    for k in 1..=n {
+        let t = k as f64 * inv_n;
+        let d = dist(t);
+        if d < min_dist {
+            min_dist = d;
+            kmin = k;
+        }
+        if d < thickness {
+            // First sub-interval whose right endpoint dips below thickness:
+            // [lo, hi] brackets a crossing because the left endpoint sample at
+            // (k-1)/N is, by construction of this left-to-right scan, still
+            // >= thickness.
+            let lo = (k - 1) as f64 * inv_n;
+            let hi = t;
+            return Some(refine_crossing(lo, hi, thickness, &dist));
+        }
+    }
+    // No coarse sample dipped below thickness. Guard against a thin dip that
+    // lives entirely inside a sub-interval around the global minimum.
+    if (1..=n - 1).contains(&kmin) {
+        let lo = (kmin - 1) as f64 * inv_n;
+        let hi = (kmin + 1) as f64 * inv_n;
+        if let Some(t) = refine_minimum(lo, hi, thickness, &dist) {
+            return Some(t);
+        }
+    }
+    None
+}
+/// Bisect `[lo, hi]` where `dist(lo) >= thickness` and `dist(hi) < thickness`,
+/// converging on the earliest time whose distance is below `thickness`.
+fn refine_crossing(mut lo: f64, mut hi: f64, thickness: f64, dist: impl Fn(f64) -> f64) -> f64 {
+    let mut best_t = hi;
+    for _ in 0..CCD_MAX_ITER {
+        let mid = (lo + hi) * 0.5;
+        if dist(mid) < thickness {
+            hi = mid;
+            best_t = mid;
+        } else {
+            lo = mid;
+        }
+        if (hi - lo) < 1e-8 {
+            break;
+        }
+    }
+    best_t
+}
+/// Narrow `[lo, hi]` toward an interior minimum looking for any sub-thickness
+/// time. Returns the earliest such time, or `None` if the dip never reaches
+/// below `thickness`. Endpoints are not assumed to bracket a crossing.
+fn refine_minimum(
+    mut lo: f64,
+    mut hi: f64,
+    thickness: f64,
+    dist: impl Fn(f64) -> f64,
+) -> Option<f64> {
+    let mut found: Option<f64> = None;
+    let mut d_lo = dist(lo);
+    let mut d_hi = dist(hi);
+    for _ in 0..CCD_MAX_ITER {
+        let mid = (lo + hi) * 0.5;
+        let d_mid = dist(mid);
+        if d_mid < thickness {
+            // Sub-thickness time located. Both `lo` and `hi` are still
+            // >= thickness here (the initial endpoints came from above-thickness
+            // pre-scan samples and every endpoint update moved to an
+            // above-thickness `mid`), so `[lo, mid]` brackets a crossing.
+            // Refine it for the earliest sub-thickness time.
+            found = Some(refine_crossing(lo, mid, thickness, &dist));
+            break;
+        }
+        // Move the endpoint with the larger distance inward toward the smaller,
+        // walking the bracket toward the minimum.
+        if d_lo >= d_hi {
+            lo = mid;
+            d_lo = d_mid;
+        } else {
+            hi = mid;
+            d_hi = d_mid;
+        }
+        if (hi - lo) < 1e-8 {
+            break;
+        }
+    }
+    found
+}
 /// Vertex-face CCD using bisection: does the moving vertex cross the moving
 /// triangle during \[0, 1\]?
 pub fn ccd_vertex_face(
@@ -597,36 +710,18 @@ pub fn ccd_vertex_face(
     if dist0.sqrt() < thickness {
         return Some(0.0);
     }
-    let mut lo = 0.0_f64;
-    let mut hi = 1.0_f64;
-    let mut found = false;
-    let mut best_t = 1.0;
-    for _ in 0..CCD_MAX_ITER {
-        let mid = (lo + hi) * 0.5;
-        let vm = v3_lerp(v0, v1, mid);
-        let am = v3_lerp(a0, a1, mid);
-        let bm = v3_lerp(b0, b1, mid);
-        let cm = v3_lerp(c0, c1, mid);
+    // Coarse uniform pre-scan + bisection: a thin shell the vertex passes
+    // straight through has both endpoints above `thickness` while the true
+    // minimum is mid-path, so a naive monotone bisection would walk away from
+    // it. The pre-scan brackets the earliest crossing before refining.
+    ccd_prescan_bisect(thickness, |t| {
+        let vm = v3_lerp(v0, v1, t);
+        let am = v3_lerp(a0, a1, t);
+        let bm = v3_lerp(b0, b1, t);
+        let cm = v3_lerp(c0, c1, t);
         let (_, _, dsq) = closest_point_on_triangle(vm, am, bm, cm);
-        let d = dsq.sqrt();
-        if d < thickness {
-            hi = mid;
-            found = true;
-            best_t = mid;
-        } else {
-            lo = mid;
-        }
-        if (hi - lo) < 1e-8 {
-            break;
-        }
-    }
-    if !found {
-        let (_, _, dist1) = closest_point_on_triangle(v1, a1, b1, c1);
-        if dist1.sqrt() < thickness {
-            return Some(1.0);
-        }
-    }
-    if found { Some(best_t) } else { None }
+        dsq.sqrt()
+    })
 }
 /// Edge-edge CCD using bisection.
 pub fn ccd_edge_edge(
@@ -644,30 +739,68 @@ pub fn ccd_edge_edge(
     if dist0.sqrt() < thickness {
         return Some(0.0);
     }
-    let mut lo = 0.0_f64;
-    let mut hi = 1.0_f64;
-    let mut found = false;
-    let mut best_t = 1.0;
-    for _ in 0..CCD_MAX_ITER {
-        let mid = (lo + hi) * 0.5;
-        let pm0 = v3_lerp(p0_start, p0_end, mid);
-        let pm1 = v3_lerp(p1_start, p1_end, mid);
-        let qm0 = v3_lerp(q0_start, q0_end, mid);
-        let qm1 = v3_lerp(q1_start, q1_end, mid);
+    // Coarse uniform pre-scan + bisection (see `ccd_vertex_face`): the edges may
+    // sweep through each other with both endpoints above `thickness`, so bracket
+    // the earliest crossing before refining.
+    ccd_prescan_bisect(thickness, |t| {
+        let pm0 = v3_lerp(p0_start, p0_end, t);
+        let pm1 = v3_lerp(p1_start, p1_end, t);
+        let qm0 = v3_lerp(q0_start, q0_end, t);
+        let qm1 = v3_lerp(q1_start, q1_end, t);
         let (_, _, _, _, dsq) = closest_points_edge_edge(pm0, pm1, qm0, qm1);
-        let d = dsq.sqrt();
-        if d < thickness {
-            hi = mid;
-            found = true;
-            best_t = mid;
-        } else {
-            lo = mid;
-        }
-        if (hi - lo) < 1e-8 {
-            break;
-        }
+        dsq.sqrt()
+    })
+}
+/// Vertex-face CCD via analytic cubic solver, falling back to bisection on miss
+/// for numerical robustness. Arg order matches `ccd_vertex_face`.
+pub fn ccd_vertex_face_analytic(
+    v0: [f64; 3],
+    v1: [f64; 3],
+    a0: [f64; 3],
+    a1: [f64; 3],
+    b0: [f64; 3],
+    b1: [f64; 3],
+    c0: [f64; 3],
+    c1: [f64; 3],
+    thickness: f64,
+) -> Option<f64> {
+    let vv = v3_sub(v1, v0);
+    let av = v3_sub(a1, a0);
+    let bv = v3_sub(b1, b0);
+    let cv = v3_sub(c1, c0);
+    if let Some(t) =
+        super::cubic_toi::cubic_toi_vertex_face(a0, b0, c0, v0, av, bv, cv, vv, thickness)
+    {
+        return Some(t);
     }
-    if found { Some(best_t) } else { None }
+    ccd_vertex_face(v0, v1, a0, a1, b0, b1, c0, c1, thickness)
+}
+
+/// Edge-edge CCD via analytic cubic solver, falling back to bisection on miss.
+/// Edge 1 = p0->p1, Edge 2 = q0->q1. Arg order matches `ccd_edge_edge`.
+pub fn ccd_edge_edge_analytic(
+    p0_start: [f64; 3],
+    p0_end: [f64; 3],
+    p1_start: [f64; 3],
+    p1_end: [f64; 3],
+    q0_start: [f64; 3],
+    q0_end: [f64; 3],
+    q1_start: [f64; 3],
+    q1_end: [f64; 3],
+    thickness: f64,
+) -> Option<f64> {
+    let v_p0 = v3_sub(p0_end, p0_start);
+    let v_p1 = v3_sub(p1_end, p1_start);
+    let v_q0 = v3_sub(q0_end, q0_start);
+    let v_q1 = v3_sub(q1_end, q1_start);
+    if let Some(t) = super::cubic_toi::cubic_toi_edge_edge(
+        p0_start, p1_start, q0_start, q1_start, v_p0, v_p1, v_q0, v_q1, thickness,
+    ) {
+        return Some(t);
+    }
+    ccd_edge_edge(
+        p0_start, p0_end, p1_start, p1_end, q0_start, q0_end, q1_start, q1_end, thickness,
+    )
 }
 /// Run CCD over an entire deformable mesh pair. Returns the earliest contact.
 pub fn ccd_deformable_deformable(

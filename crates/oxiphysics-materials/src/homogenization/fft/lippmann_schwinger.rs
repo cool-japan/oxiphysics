@@ -136,14 +136,32 @@ pub(crate) fn lippmann_schwinger_inner(
 
     let (lambda0, mu0) = ref_moduli;
 
-    // Strain field, initialized to the uniform macroscopic strain.
-    let mut strain = vec![mean_strain; n_total];
+    let n_f = n_total as f64;
+
+    // Initialize strain_hat in Fourier space: DC = mean_strain * N, all others 0.
+    // This avoids re-FFTing the strain field every iteration (saves 6 FFTs/iter).
+    let mut strain_hat_re: [Vec<f64>; 6] = std::array::from_fn(|_| vec![0.0; n_total]);
+    let mut strain_hat_im: [Vec<f64>; 6] = std::array::from_fn(|_| vec![0.0; n_total]);
+    for m in 0..6 {
+        strain_hat_re[m][0] = mean_strain[m] * n_f;
+    }
+
+    // Initial real-space strain field from the initial strain_hat (uniform mean strain).
+    let mut strain = vec![[0.0_f64; 6]; n_total];
+    for m in 0..6 {
+        let (re, _im) =
+            oxifft::ifft3d_split::<f64>(&strain_hat_re[m], &strain_hat_im[m], nx, ny, nz);
+        for (idx, value) in re.into_iter().enumerate() {
+            strain[idx][m] = value;
+        }
+    }
 
     // Reusable split-complex buffers: 6 Voigt components of the stress field.
     let mut sigma_re: [Vec<f64>; 6] = std::array::from_fn(|_| vec![0.0; n_total]);
     let zero_imag = vec![0.0_f64; n_total];
 
     let mut iterations = 0usize;
+    let mut best_residual = f64::INFINITY;
     for it in 0..max_iter {
         iterations = it + 1;
 
@@ -155,7 +173,7 @@ pub(crate) fn lippmann_schwinger_inner(
             }
         }
 
-        // 2. Forward FFT of each stress component.
+        // 2. Forward FFT of each stress component (6 FFTs).
         let mut sigma_hat_re: [Vec<f64>; 6] = std::array::from_fn(|_| Vec::new());
         let mut sigma_hat_im: [Vec<f64>; 6] = std::array::from_fn(|_| Vec::new());
         for m in 0..6 {
@@ -164,11 +182,9 @@ pub(crate) fn lippmann_schwinger_inner(
             sigma_hat_im[m] = im;
         }
 
-        // 3. Apply Γ⁰ in Fourier space and accumulate the equilibrium residual.
-        //    ε̂(ξ) ← −Γ⁰(ξ):σ̂(ξ)   for ξ ≠ 0.
-        let mut strain_hat_re: [Vec<f64>; 6] = std::array::from_fn(|_| vec![0.0; n_total]);
-        let mut strain_hat_im: [Vec<f64>; 6] = std::array::from_fn(|_| vec![0.0; n_total]);
-
+        // 3. Apply Γ⁰ update in Fourier space and accumulate equilibrium residual.
+        //    ε̂(ξ) ← ε̂(ξ) − Γ⁰(ξ):σ̂(ξ)   for ξ ≠ 0  (increment form).
+        //    strain_hat is maintained across iterations — no re-FFT of strain needed.
         let mut residual_sq = 0.0_f64;
         let mut mean_stress_norm_sq = 0.0_f64;
 
@@ -200,9 +216,10 @@ pub(crate) fn lippmann_schwinger_inner(
                     let tau_im: [f64; 6] = std::array::from_fn(|m| sigma_hat_im[m][flat]);
                     let eps_re = apply_gamma0(xi, tau_re, lambda0, mu0);
                     let eps_im = apply_gamma0(xi, tau_im, lambda0, mu0);
+                    // Increment form: ε̂ ← ε̂ − Γ⁰:σ̂  (NOT replacement).
                     for m in 0..6 {
-                        strain_hat_re[m][flat] = -eps_re[m];
-                        strain_hat_im[m][flat] = -eps_im[m];
+                        strain_hat_re[m][flat] -= eps_re[m];
+                        strain_hat_im[m][flat] -= eps_im[m];
                     }
                 }
             }
@@ -211,13 +228,12 @@ pub(crate) fn lippmann_schwinger_inner(
         // 4. Enforce the prescribed mean strain at the DC component.
         //    The inverse FFT divides by N, so the DC coefficient must be
         //    N·ε̄ to recover a real-space mean of ε̄.
-        let n_f = n_total as f64;
         for m in 0..6 {
             strain_hat_re[m][0] = mean_strain[m] * n_f;
             strain_hat_im[m][0] = 0.0;
         }
 
-        // 5. Inverse FFT back to the real-space strain field.
+        // 5. Inverse FFT back to the real-space strain field (6 IFFTs).
         for m in 0..6 {
             let (re, _im) =
                 oxifft::ifft3d_split::<f64>(&strain_hat_re[m], &strain_hat_im[m], nx, ny, nz);
@@ -226,13 +242,21 @@ pub(crate) fn lippmann_schwinger_inner(
             }
         }
 
-        // 6. Convergence test on the normalized equilibrium residual.
+        // 7. Convergence test on the normalized equilibrium residual.
         let denom = mean_stress_norm_sq.sqrt();
         let residual = if denom > 0.0 {
             residual_sq.sqrt() / denom
         } else {
             residual_sq.sqrt()
         };
+        // Divergence guard: break early if residual is non-finite or has grown
+        // catastrophically (spectral radius >= 1 → geometric blow-up → NaN).
+        if !residual.is_finite() || residual > best_residual * 1.0e6 {
+            break;
+        }
+        if residual < best_residual {
+            best_residual = residual;
+        }
         if residual <= tol {
             return Ok(LsOutcome {
                 field: strain,

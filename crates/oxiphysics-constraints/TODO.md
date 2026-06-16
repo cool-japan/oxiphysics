@@ -83,12 +83,12 @@ Exit gate: dt-invariant softness on joints and contacts, 50-joint rigid-limit XP
 
 ### Joint-level dynamics
 
-- [ ] Mimic/gear dynamic constraint
+- [x] Mimic/gear dynamic constraint
   - **Goal:** two revolute joints coupled with ratio r maintain |θ₁ − r·θ₂| < 1e-6 rad under load.
   - **Design:** single-row Jacobian constraint (Bullet btGearConstraint); note kinematic-only `GearPair` exists in `mechanism/types.rs:237` — this adds the solver row.
-  - **Files:** `mechanism/types.rs` (kinematic reference), new gear row in the joint solver
-  - **Tests:** ratio-coupled pendulum pair under load; drift assertion <1e-6 rad
-  - **Note:** kinematic `GearPair` stays for pure-kinematic mechanism use
+  - **Files:** `mechanism/gear_constraint.rs` (new `GearConstraint` + `BodyState`), `mechanism/mod.rs` (re-export)
+  - **Tests:** `rigid_gear_ratio_correctness`, `backlash_dead_zone`, `ratio_one_identity`, `no_energy_injection` — all 4 pass; 2240 crate tests pass, clippy clean.
+  - **Note:** kinematic `GearPair` stays for pure-kinematic mechanism use; shipped 2026-06-15
 
 - [ ] Joint friction + backlash in the solver
   - **Goal:** Stribeck breakaway and dead-zone backlash reproduce hysteresis loop on a driven pendulum.

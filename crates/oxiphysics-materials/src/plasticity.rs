@@ -13,6 +13,8 @@
 //! - Plastic dissipation computation
 //! - Limit load (collapse load factor)
 
+use crate::constitutive::{ConstitutiveModel, ConstitutiveResponse, J2State};
+
 // ─── Isotropic Hardening ──────────────────────────────────────────────────────
 
 /// Linear isotropic hardening law.
@@ -1023,6 +1025,68 @@ impl CamClayPreconsolidation {
     /// p'_cs = p'_c / 2 (for Modified Cam-Clay).
     pub fn critical_state_pressure(&self, pc: f64) -> f64 {
         pc / 2.0
+    }
+}
+
+/// σ = C · ε for a flat row-major 6×6 Voigt stiffness.
+fn flat36_vec6(c: &[f64; 36], v: &[f64; 6]) -> [f64; 6] {
+    let mut out = [0.0_f64; 6];
+    for (i, o) in out.iter_mut().enumerate() {
+        let mut acc = 0.0;
+        for (j, &vj) in v.iter().enumerate() {
+            acc += c[i * 6 + j] * vj;
+        }
+        *o = acc;
+    }
+    out
+}
+
+impl ConstitutiveModel for J2ReturnMapping {
+    type State = J2State;
+    fn stress_update(
+        &self,
+        strain: &[f64; 6],
+        state: &J2State,
+        _dt: f64,
+    ) -> ConstitutiveResponse<J2State> {
+        let tan = J2ConsistentTangent::new(
+            self.shear_modulus,
+            self.bulk_modulus,
+            self.hardening_modulus,
+        );
+        let c_e_flat = tan.elastic_stiffness();
+        let mut elastic_strain = [0.0_f64; 6];
+        for (es, (&eps, &ep)) in elastic_strain
+            .iter_mut()
+            .zip(strain.iter().zip(state.plastic_strain.iter()))
+        {
+            *es = eps - ep;
+        }
+        let trial_stress = flat36_vec6(&c_e_flat, &elastic_strain);
+
+        let (updated_stress, delta_eps_p, delta_gamma) =
+            self.return_map(&trial_stress, state.equiv_plastic_strain);
+
+        let tangent_flat = tan.compute_consistent_tangent(&trial_stress, delta_gamma);
+        let tangent = crate::constitutive::unflatten_6x6(&tangent_flat);
+
+        let mut new_plastic = state.plastic_strain;
+        for (np, &dep) in new_plastic.iter_mut().zip(delta_eps_p.iter()) {
+            *np += dep;
+        }
+        let new_state = J2State {
+            plastic_strain: new_plastic,
+            equiv_plastic_strain: state.equiv_plastic_strain + delta_gamma,
+        };
+
+        ConstitutiveResponse {
+            stress: updated_stress,
+            tangent,
+            state: new_state,
+        }
+    }
+    fn n_state_vars(&self) -> usize {
+        7
     }
 }
 

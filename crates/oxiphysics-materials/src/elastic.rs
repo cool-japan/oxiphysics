@@ -3,6 +3,8 @@
 
 //! Elastic material models (linear, orthotropic, transversely isotropic, and hyperelastic).
 
+use crate::constitutive::{ConstitutiveModel, ConstitutiveResponse};
+
 // ---------------------------------------------------------------------------
 // LinearElastic (isotropic)
 // ---------------------------------------------------------------------------
@@ -1008,6 +1010,101 @@ impl ElasticMaterial {
             v_s23,
             v_s13,
         }
+    }
+}
+
+/// σ = C · ε for a nested 6×6 Voigt stiffness.
+fn mat6_vec6(c: &[[f64; 6]; 6], v: &[f64; 6]) -> [f64; 6] {
+    let mut out = [0.0_f64; 6];
+    for (i, row) in c.iter().enumerate() {
+        for (j, &cij) in row.iter().enumerate() {
+            out[i] += cij * v[j];
+        }
+    }
+    out
+}
+
+impl ConstitutiveModel for LinearElastic {
+    type State = ();
+    fn stress_update(
+        &self,
+        strain: &[f64; 6],
+        _state: &(),
+        _dt: f64,
+    ) -> ConstitutiveResponse<()> {
+        let c = self.stress_strain_matrix_3d();
+        let stress = mat6_vec6(&c, strain);
+        ConstitutiveResponse {
+            stress,
+            tangent: c,
+            state: (),
+        }
+    }
+    fn n_state_vars(&self) -> usize {
+        0
+    }
+}
+
+impl ConstitutiveModel for IsotropicElastic {
+    type State = ();
+    fn stress_update(
+        &self,
+        strain: &[f64; 6],
+        _state: &(),
+        _dt: f64,
+    ) -> ConstitutiveResponse<()> {
+        let c = LinearElastic::new(self.e, self.nu).stress_strain_matrix_3d();
+        let stress = mat6_vec6(&c, strain);
+        ConstitutiveResponse {
+            stress,
+            tangent: c,
+            state: (),
+        }
+    }
+    fn n_state_vars(&self) -> usize {
+        0
+    }
+}
+
+impl ConstitutiveModel for OrthotropicElastic {
+    type State = ();
+    fn stress_update(
+        &self,
+        strain: &[f64; 6],
+        _state: &(),
+        _dt: f64,
+    ) -> ConstitutiveResponse<()> {
+        let c = crate::constitutive::unflatten_6x6(&self.stiffness_voigt());
+        let stress = mat6_vec6(&c, strain);
+        ConstitutiveResponse {
+            stress,
+            tangent: c,
+            state: (),
+        }
+    }
+    fn n_state_vars(&self) -> usize {
+        0
+    }
+}
+
+impl ConstitutiveModel for TransverselyIsotropicElastic {
+    type State = ();
+    fn stress_update(
+        &self,
+        strain: &[f64; 6],
+        _state: &(),
+        _dt: f64,
+    ) -> ConstitutiveResponse<()> {
+        let c = crate::constitutive::unflatten_6x6(&self.stiffness_voigt());
+        let stress = mat6_vec6(&c, strain);
+        ConstitutiveResponse {
+            stress,
+            tangent: c,
+            state: (),
+        }
+    }
+    fn n_state_vars(&self) -> usize {
+        0
     }
 }
 

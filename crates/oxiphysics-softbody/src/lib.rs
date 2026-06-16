@@ -40,6 +40,7 @@ pub use fracture_dynamics::*;
 pub use inflatable::*;
 pub use particle::{SoftBody, SoftParticle};
 pub use rope::{HairStrand, HairSystem, Rope, RopeSolver, XpbdRope};
+pub use xpbd::{apply_strain_limiting, StrainLimitConfig};
 pub use shape_matching::ShapeMatching;
 pub use solver::XpbdSolver;
 

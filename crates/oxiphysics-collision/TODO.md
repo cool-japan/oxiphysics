@@ -113,7 +113,7 @@ Exit gate: Miri-clean dispatch (local script), 4-point one-shot manifolds restin
     - **Risk:** Portal sub-region replacement signs — validate discovery phase on sphere/sphere first
     - **Done:** `mpr.rs` (631 lines): XenoCollide portal discovery to bracket the origin, then a self-contained, bounded minimum-penetration refinement seeded from a GJK-termination boundary tetrahedron (the interior-center seed was the bug — it corrupted the EPA polytope for curved/deep overlaps). `mpr_full`/`mpr_contact` shim via `functions.rs::mpr_query`; EPA-fallback wired in `dispatch::gjk_epa` (EPA `None` → `mpr_contact`). Parity verified: env-gated 1e5 sweep max relative depth error = 0.04% (gate 1%); 1k always-on subset and rotated-box cases pass. 10/10 in `tests/mpr_epa_parity.rs`, 11 in-crate mpr unit tests, full crate 2486 pass, clippy clean. NOTE: the env-gated criterion `>2x EPA speed` bench was not added (no criterion dev-dep / benches dir); the 1% depth-parity goal is met and is the load-bearing acceptance criterion.
 
-- [ ] Vertex-face/edge-edge continuous CCD with cubic root solver
+- [x] Vertex-face/edge-edge continuous CCD with cubic root solver
   - **Goal:** zero missed collisions on cloth-vs-cloth benchmark at 5 m/s, dt=1/60.
   - **Design:** coplanarity cubic (Provot 1997 / Bridson 2002), conservative Bernstein root isolation + Newton polish; discrete VF/EE proximity already exists (`deformable_collision/functions.rs:145,225`) — add the time-of-impact path for oxiphysics-softbody.
   - **Files:** `deformable_collision/functions.rs`, new TOI path under `ccd/`

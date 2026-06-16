@@ -23,6 +23,7 @@ pub mod combination;
 pub mod composite;
 pub mod composite_failure;
 pub mod composite_materials;
+pub mod constitutive;
 pub mod construction;
 pub mod creep;
 pub mod crystal_plasticity;
@@ -99,6 +100,7 @@ pub use composite::{
 pub use creep::functions::*;
 pub use creep::types::*;
 pub use elastic::{LinearElastic, NeoHookean};
+pub use constitutive::{ConstitutiveModel, ConstitutiveResponse};
 pub use eos::{
     EosWithEnergy, EquationOfState, IdealGasEos, MieGruneisenEos as MieGruneisenEosShock,
     PolynomialEos, StiffenedGasEos, TaitEos, TillotsonEos, VanDerWaalsEos,

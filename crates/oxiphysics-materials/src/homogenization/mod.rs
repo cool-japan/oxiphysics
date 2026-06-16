@@ -212,6 +212,16 @@ pub fn compute_c_eff_with(
         for row_arr in c_eff.iter_mut() {
             row_arr[m] *= inv_v;
         }
+        // Guard: if the averaged column contains non-finite values, the solver
+        // diverged.  Return an error rather than silently propagating NaN.
+        for row_arr in c_eff.iter() {
+            if !row_arr[m].is_finite() {
+                return Err(HomogenizationError::NotConverged {
+                    max_iter,
+                    residual: outcome.residual,
+                });
+            }
+        }
     }
 
     Ok(HomogenizationResult {
@@ -244,6 +254,57 @@ fn matvec6(c: &[[f64; 6]; 6], eps: &[f64; 6]) -> [f64; 6] {
 pub fn reference_from_two_phase(lambda_a: f64, mu_a: f64, lambda_b: f64, mu_b: f64) -> (f64, f64) {
     let lambda0 = 0.5 * (lambda_a.min(lambda_b) + lambda_a.max(lambda_b));
     let mu0 = 0.5 * (mu_a.min(mu_b) + mu_a.max(mu_b));
+    (lambda0, mu0)
+}
+
+/// Suggest reference Lamé moduli `(λ₀, μ₀)` for use with the **basic**
+/// Moulinec–Suquet scheme on a two-phase problem.
+///
+/// The basic fixed-point map has spectral radius < 1 only when the reference
+/// medium is stiffer than **both** phases in both λ and μ.  Using the maximum
+/// of the two-phase values (with a small safety margin) guarantees convergence
+/// for any phase contrast.
+///
+/// Contrast with [`reference_from_two_phase`], which computes the midpoint —
+/// the correct choice for the Eyre–Milton accelerated scheme but not for the
+/// basic scheme at high contrast.
+pub fn reference_stiffer_than_both(
+    lambda_a: f64,
+    mu_a: f64,
+    lambda_b: f64,
+    mu_b: f64,
+) -> (f64, f64) {
+    let safety = 1.01_f64;
+    let lambda0 = lambda_a.max(lambda_b) * safety;
+    let mu0 = mu_a.max(mu_b) * safety;
+    (lambda0, mu0)
+}
+
+/// Suggest reference Lamé moduli `(λ₀, μ₀)` for the **Eyre–Milton** accelerated
+/// scheme on a two-phase problem with high phase contrast.
+///
+/// The optimal reference for Eyre–Milton is the **geometric mean** of the phase
+/// moduli, which gives `O(√contrast)` convergence.  Contrast with
+/// [`reference_from_two_phase`], which uses the arithmetic mean and performs
+/// poorly at contrast > 100.
+///
+/// `λ₀ = √(λ_min · λ_max)`, `μ₀ = √(μ_min · μ_max)` over the two phases.
+/// If either minimum is zero (or negative), falls back to the arithmetic mean.
+pub fn reference_geometric_mean(lambda_a: f64, mu_a: f64, lambda_b: f64, mu_b: f64) -> (f64, f64) {
+    let lambda_min = lambda_a.min(lambda_b);
+    let lambda_max = lambda_a.max(lambda_b);
+    let mu_min = mu_a.min(mu_b);
+    let mu_max = mu_a.max(mu_b);
+    let lambda0 = if lambda_min > 0.0 {
+        (lambda_min * lambda_max).sqrt()
+    } else {
+        0.5 * (lambda_min + lambda_max)
+    };
+    let mu0 = if mu_min > 0.0 {
+        (mu_min * mu_max).sqrt()
+    } else {
+        0.5 * (mu_min + mu_max)
+    };
     (lambda0, mu0)
 }
 
@@ -380,14 +441,14 @@ mod tests {
         let vf = 0.3;
         let (field, actual_vf) = two_phase_field(c_m, c_i, n, vf);
 
-        let ref_moduli = reference_from_two_phase(
+        let ref_moduli = reference_stiffer_than_both(
             matrix.lame_lambda(),
             matrix.lame_mu(),
             incl.lame_lambda(),
             incl.lame_mu(),
         );
 
-        let result = compute_c_eff(&field, n, n, n, ref_moduli, 1e-6, 2000)
+        let result = compute_c_eff(&field, n, n, n, ref_moduli, 1e-6, 500)
             .expect("two-phase solve must succeed");
 
         let k_eff = result.effective_bulk_modulus();
@@ -432,13 +493,13 @@ mod tests {
         let vf = 0.05;
         let (field, actual_vf) = two_phase_field(c_m, c_i, n, vf);
 
-        let ref_moduli = reference_from_two_phase(
+        let ref_moduli = reference_stiffer_than_both(
             matrix.lame_lambda(),
             matrix.lame_mu(),
             incl.lame_lambda(),
             incl.lame_mu(),
         );
-        let result = compute_c_eff(&field, n, n, n, ref_moduli, 1e-6, 3000)
+        let result = compute_c_eff(&field, n, n, n, ref_moduli, 1e-6, 500)
             .expect("dilute solve must succeed");
         let k_eff = result.effective_bulk_modulus();
 
@@ -477,7 +538,7 @@ mod tests {
 
         let n = 8;
         let (field, _vf) = two_phase_field(c_m, c_i, n, 0.2);
-        let ref_moduli = reference_from_two_phase(
+        let ref_moduli = reference_geometric_mean(
             matrix.lame_lambda(),
             matrix.lame_mu(),
             incl.lame_lambda(),
@@ -489,7 +550,7 @@ mod tests {
             [n, n, n],
             ref_moduli,
             1e-4,
-            5000,
+            500,
             Scheme::Accelerated,
         )
         .expect("accelerated high-contrast solve must succeed");
@@ -506,3 +567,6 @@ mod tests {
         );
     }
 }
+
+
+
