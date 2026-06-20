@@ -8,9 +8,7 @@
 //! with deterministic, seeded initialisation (no `thread_rng`).
 
 use oxiphysics_md::analysis::compute_viscosity_green_kubo;
-use oxiphysics_md::nemd::{
-    MpConfig, SllodConfig, run_muller_plathe, run_sllod,
-};
+use oxiphysics_md::nemd::{MpConfig, SllodConfig, run_muller_plathe, run_sllod};
 
 const RC: f64 = 2.3;
 const RC2: f64 = RC * RC;
@@ -376,14 +374,7 @@ fn sllod_viscosity(
         dt,
         target_temperature: temperature,
     };
-    let res = run_sllod(
-        &mut pos,
-        &mut mom,
-        masses,
-        box_lengths,
-        lj_forces_le,
-        &cfg,
-    );
+    let res = run_sllod(&mut pos, &mut mom, masses, box_lengths, lj_forces_le, &cfg);
     (res.viscosity, res.viscosity_stderr)
 }
 
@@ -411,7 +402,15 @@ fn test_gk_vs_sllod_cross_method() {
 
     let mut pos = init_positions(k, l);
     let mut vel = init_velocities(n, &masses, temperature, 0x1234_5678_9abc_def1);
-    equilibrate(&mut pos, &mut vel, &masses, box_lengths, temperature, 5_000, dt);
+    equilibrate(
+        &mut pos,
+        &mut vel,
+        &masses,
+        box_lengths,
+        temperature,
+        5_000,
+        dt,
+    );
 
     // Green-Kubo (equilibrium): collect P_xy on pure NVE force-shifted dynamics.
     let mut gk_pos = pos.clone();
@@ -445,18 +444,33 @@ fn test_gk_vs_sllod_cross_method() {
     let gammas = [0.2, 0.3, 0.4];
     let mut etas = Vec::with_capacity(gammas.len());
     for &g in &gammas {
-        let (e, err) =
-            sllod_viscosity(&pos, &vel, &masses, box_lengths, temperature, g, dt, 4_000, 120_000);
+        let (e, err) = sllod_viscosity(
+            &pos,
+            &vel,
+            &masses,
+            box_lengths,
+            temperature,
+            g,
+            dt,
+            4_000,
+            120_000,
+        );
         eprintln!("  SLLOD η(γ={g}) = {e:.4} ± {err:.4}");
         etas.push(e);
     }
     let eta_sllod = etas.iter().sum::<f64>() / etas.len() as f64;
 
     assert!(eta_gk > 0.0, "GK viscosity must be positive, got {eta_gk}");
-    assert!(eta_sllod > 0.0, "SLLOD viscosity must be positive, got {eta_sllod}");
+    assert!(
+        eta_sllod > 0.0,
+        "SLLOD viscosity must be positive, got {eta_sllod}"
+    );
 
     let rel = (eta_sllod - eta_gk).abs() / eta_gk;
-    eprintln!("GK = {eta_gk:.4} | SLLOD = {eta_sllod:.4} | relative difference = {:.1}%", rel * 100.0);
+    eprintln!(
+        "GK = {eta_gk:.4} | SLLOD = {eta_sllod:.4} | relative difference = {:.1}%",
+        rel * 100.0
+    );
     // DEVIATION NOTE (10% goal not robustly met): both estimators are correctly
     // implemented and individually well-converged (SLLOD is stable and flat
     // across γ with tight error bars; GK plateaus cleanly).  The residual ~15%
@@ -487,7 +501,15 @@ fn test_sllod_zero_shear_pxy_vanishes() {
 
     let mut pos = init_positions(k, l);
     let mut vel = init_velocities(n, &masses, temperature, 0xdead_beef_0000_0001);
-    equilibrate(&mut pos, &mut vel, &masses, box_lengths, temperature, 3_000, dt);
+    equilibrate(
+        &mut pos,
+        &mut vel,
+        &masses,
+        box_lengths,
+        temperature,
+        3_000,
+        dt,
+    );
 
     let mut mom: Vec<[f64; 3]> = vel.clone();
     let cfg = SllodConfig {
@@ -497,14 +519,7 @@ fn test_sllod_zero_shear_pxy_vanishes() {
         dt,
         target_temperature: temperature,
     };
-    let res = run_sllod(
-        &mut pos,
-        &mut mom,
-        &masses,
-        box_lengths,
-        lj_forces_le,
-        &cfg,
-    );
+    let res = run_sllod(&mut pos, &mut mom, &masses, box_lengths, lj_forces_le, &cfg);
 
     let series = &res.pressure_xy_series;
     let mean: f64 = series.iter().sum::<f64>() / series.len() as f64;
@@ -521,7 +536,10 @@ fn test_sllod_zero_shear_pxy_vanishes() {
         })
         .collect();
     let bm_mean: f64 = block_means.iter().sum::<f64>() / n_blocks as f64;
-    let bm_var: f64 = block_means.iter().map(|m| (m - bm_mean).powi(2)).sum::<f64>()
+    let bm_var: f64 = block_means
+        .iter()
+        .map(|m| (m - bm_mean).powi(2))
+        .sum::<f64>()
         / (n_blocks as f64 - 1.0);
     let block_stderr = (bm_var / n_blocks as f64).sqrt();
     eprintln!("zero-shear <P_xy> = {mean:.5}, block stderr = {block_stderr:.5}");
@@ -548,7 +566,15 @@ fn test_muller_plathe_momentum_conservation() {
 
     let mut pos = init_positions(k, l);
     let mut vel = init_velocities(n, &masses, temperature, 0x0bad_f00d_1234_5678);
-    equilibrate(&mut pos, &mut vel, &masses, box_lengths, temperature, 2_000, dt);
+    equilibrate(
+        &mut pos,
+        &mut vel,
+        &masses,
+        box_lengths,
+        temperature,
+        2_000,
+        dt,
+    );
 
     let total_px_before: f64 = vel.iter().zip(&masses).map(|(v, m)| m * v[0]).sum();
 
@@ -590,12 +616,38 @@ fn test_sllod_linear_response() {
 
     let mut pos = init_positions(k, l);
     let mut vel = init_velocities(n, &masses, temperature, 0xfeed_face_cafe_0001);
-    equilibrate(&mut pos, &mut vel, &masses, box_lengths, temperature, 4_000, dt);
+    equilibrate(
+        &mut pos,
+        &mut vel,
+        &masses,
+        box_lengths,
+        temperature,
+        4_000,
+        dt,
+    );
 
-    let (eta1, err1) =
-        sllod_viscosity(&pos, &vel, &masses, box_lengths, temperature, 0.1, dt, 4_000, 100_000);
-    let (eta2, err2) =
-        sllod_viscosity(&pos, &vel, &masses, box_lengths, temperature, 0.2, dt, 4_000, 100_000);
+    let (eta1, err1) = sllod_viscosity(
+        &pos,
+        &vel,
+        &masses,
+        box_lengths,
+        temperature,
+        0.1,
+        dt,
+        4_000,
+        100_000,
+    );
+    let (eta2, err2) = sllod_viscosity(
+        &pos,
+        &vel,
+        &masses,
+        box_lengths,
+        temperature,
+        0.2,
+        dt,
+        4_000,
+        100_000,
+    );
     eprintln!("SLLOD η(0.1) = {eta1:.4}±{err1:.4}, η(0.2) = {eta2:.4}±{err2:.4}");
 
     assert!(eta1 > 0.0 && eta2 > 0.0, "viscosities must be positive");

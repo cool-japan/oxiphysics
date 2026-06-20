@@ -391,8 +391,7 @@ fn viscosity_from_pxy(pxy: &[f64], gamma: f64) -> (f64, f64) {
         etas.push(-bmean / gamma);
     }
     let emean: f64 = etas.iter().sum::<f64>() / etas.len() as f64;
-    let var: f64 =
-        etas.iter().map(|e| (e - emean).powi(2)).sum::<f64>() / (etas.len() - 1) as f64;
+    let var: f64 = etas.iter().map(|e| (e - emean).powi(2)).sum::<f64>() / (etas.len() - 1) as f64;
     let stderr = (var / etas.len() as f64).sqrt();
     (viscosity, stderr)
 }
@@ -403,12 +402,7 @@ fn viscosity_from_pxy(pxy: &[f64], gamma: f64) -> (f64, f64) {
 /// `m v_x` are exchanged so that `Σ m v_x` is preserved to floating-point
 /// roundoff.  Returns the x-momentum delivered from the cold particle to the
 /// hot particle, `m_cold v_cold - m_hot v_hot`.
-fn swap_x_momentum(
-    velocities: &mut [[f64; 3]],
-    masses: &[f64],
-    cold: usize,
-    hot: usize,
-) -> f64 {
+fn swap_x_momentum(velocities: &mut [[f64; 3]], masses: &[f64], cold: usize, hot: usize) -> f64 {
     let p_cold = masses[cold] * velocities[cold][0];
     let p_hot = masses[hot] * velocities[hot][0];
     // Exchange momenta: each particle adopts the other's x-momentum.
