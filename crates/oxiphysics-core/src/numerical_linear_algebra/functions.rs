@@ -394,6 +394,45 @@ mod tests {
         assert!(!res.eigenvalues.is_empty());
     }
     #[test]
+    fn test_hessenberg_eigenvalues_symmetric_2x2() {
+        // [[2,-1],[-1,2]] has eigenvalues 1 and 3.  The old fabrication returned
+        // the diagonal {2,2}.
+        let h = vec![2.0, -1.0, -1.0, 2.0];
+        let ev = EigenSolver::hessenberg_eigenvalues(&h, 2);
+        assert_eq!(ev.len(), 2);
+        assert!((ev[0] - 1.0).abs() < 1e-9, "ev0 = {}", ev[0]);
+        assert!((ev[1] - 3.0).abs() < 1e-9, "ev1 = {}", ev[1]);
+    }
+    #[test]
+    fn test_hessenberg_eigenvalues_tridiagonal_3x3() {
+        // 1-D Laplacian (n=3): eigenvalues 2-√2, 2, 2+√2.  Old code: {2,2,2}.
+        let h = vec![2.0, -1.0, 0.0, -1.0, 2.0, -1.0, 0.0, -1.0, 2.0];
+        let ev = EigenSolver::hessenberg_eigenvalues(&h, 3);
+        let s2 = std::f64::consts::SQRT_2;
+        let expected = [2.0 - s2, 2.0, 2.0 + s2];
+        assert_eq!(ev.len(), 3);
+        for (got, want) in ev.iter().zip(expected.iter()) {
+            assert!((got - want).abs() < 1e-8, "got {got}, want {want}");
+        }
+    }
+    #[test]
+    fn test_hessenberg_eigenvalues_nonsymmetric_companion() {
+        // Upper-Hessenberg companion matrix of (x-1)(x-2)(x-4) =
+        // x³ - 7x² + 14x - 8, eigenvalues {1, 2, 4}.  This is non-symmetric, so
+        // the diagonal {7,0,0} bears no resemblance to the real spectrum.
+        let h = vec![
+            7.0, -14.0, 8.0, //
+            1.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0,
+        ];
+        let ev = EigenSolver::hessenberg_eigenvalues(&h, 3);
+        let expected = [1.0, 2.0, 4.0];
+        assert_eq!(ev.len(), 3);
+        for (got, want) in ev.iter().zip(expected.iter()) {
+            assert!((got - want).abs() < 1e-6, "got {got}, want {want}");
+        }
+    }
+    #[test]
     fn test_lanczos_symmetric() {
         let lap = laplacian(8);
         let res = EigenSolver::lanczos(&lap, 4, 8, 1e-8);

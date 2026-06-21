@@ -8,6 +8,7 @@ use wasm_bindgen::prelude::*;
 
 use super::config::SimulationConfig;
 use super::state::{SimulationState, SimulationStats, StepResult};
+use crate::wasm_helpers::now_ms;
 
 // ---------------------------------------------------------------------------
 // SimulationController
@@ -53,8 +54,15 @@ impl SimulationController {
         let mut result = StepResult::new();
 
         if !self.state.is_active() {
+            // Nothing was simulated; report zero elapsed work, not a sentinel.
+            result.perf_ms = 0.0;
             return result;
         }
+
+        // Real wall-clock measurement around the fixed-step work. `now_ms`
+        // uses `std::time::Instant` natively and `performance.now()` on wasm;
+        // it returns `None` only when no clock is reachable on the target.
+        let t_start = now_ms();
 
         self.accumulator += frame_time;
         let dt = self.config.timestep;
@@ -72,7 +80,13 @@ impl SimulationController {
             self.state = SimulationState::Paused;
         }
 
-        result.perf_ms = frame_time * 1_000.0 * 0.01; // mock
+        // Real elapsed time in this step, or an honest NaN sentinel if the
+        // target exposes no clock (caller should then measure via JS
+        // `performance.now()`).
+        result.perf_ms = match (t_start, now_ms()) {
+            (Some(start), Some(end)) => (end - start).max(0.0),
+            _ => f64::NAN,
+        };
         result
     }
 

@@ -52,6 +52,64 @@ fn compute_sph_densities(particles: &[WasmSphParticle], h: f64) -> Vec<f64> {
     densities
 }
 
+/// Largest eigenvalue of a symmetric 3×3 matrix via cyclic Jacobi rotations.
+///
+/// Operates on plain `[[f64; 3]; 3]` arrays (no nalgebra dependency, matching
+/// this crate's convention). The input is assumed symmetric; only the
+/// eigenvalues are required, so eigenvectors are not accumulated. Used by the
+/// FTLE computation to extract `λ_max` of the right Cauchy–Green tensor.
+fn largest_eigenvalue_sym3(m: &[[f64; 3]; 3]) -> f64 {
+    // The three distinct off-diagonal index pairs of a symmetric 3×3 matrix.
+    const PAIRS: [(usize, usize); 3] = [(0, 1), (0, 2), (1, 2)];
+    let mut a = *m;
+    for _ in 0..64 {
+        // Locate the largest off-diagonal magnitude.
+        let (mut p, mut q) = (0usize, 1usize);
+        let mut max_val = 0.0_f64;
+        for &(i, j) in &PAIRS {
+            let v = a[i][j].abs();
+            if v > max_val {
+                max_val = v;
+                p = i;
+                q = j;
+            }
+        }
+        if max_val < 1e-14 {
+            break;
+        }
+        // The remaining index `r` not in {p, q}.
+        let r = 3 - p - q;
+        // Jacobi rotation angle that zeroes a[p][q].
+        let theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
+        let t = if theta >= 0.0 {
+            1.0 / (theta + (1.0 + theta * theta).sqrt())
+        } else {
+            1.0 / (theta - (1.0 + theta * theta).sqrt())
+        };
+        let cos = 1.0 / (1.0 + t * t).sqrt();
+        let sin = t * cos;
+        let a_pp = a[p][p];
+        let a_qq = a[q][q];
+        let a_pq = a[p][q];
+        // Rotate the affected diagonal/off-diagonal entries.
+        a[p][p] = cos * cos * a_pp - 2.0 * sin * cos * a_pq + sin * sin * a_qq;
+        a[q][q] = sin * sin * a_pp + 2.0 * sin * cos * a_pq + cos * cos * a_qq;
+        a[p][q] = 0.0;
+        a[q][p] = 0.0;
+        // Rotate the entries coupling row/column `r` to `p` and `q`, keeping
+        // the matrix symmetric.
+        let a_rp = a[r][p];
+        let a_rq = a[r][q];
+        let new_rp = cos * a_rp - sin * a_rq;
+        let new_rq = sin * a_rp + cos * a_rq;
+        a[r][p] = new_rp;
+        a[p][r] = new_rp;
+        a[r][q] = new_rq;
+        a[q][r] = new_rq;
+    }
+    a[0][0].max(a[1][1]).max(a[2][2])
+}
+
 // ---------------------------------------------------------------------------
 // WasmSphConfig
 // ---------------------------------------------------------------------------
@@ -1286,6 +1344,15 @@ pub struct WasmFlowAnalyzer {
     domain: [f64; 6],
     /// Number of steps taken in pathline integration — private; use get_pathline_steps from JS.
     pathline_steps: u64,
+    /// Linear velocity field Jacobian `A` (row-major 3×3) defining the
+    /// advection field `u(x) = A·x + b`. Used by [`Self::compute_ftle`].
+    /// Private — set via [`Self::set_linear_velocity_field`].
+    velocity_jacobian: [[f64; 3]; 3],
+    /// Constant offset `b` of the linear velocity field `u(x) = A·x + b`.
+    velocity_offset: [f64; 3],
+    /// Whether a velocity field has been configured. When `false`,
+    /// [`Self::compute_ftle`] returns an honest error rather than a field.
+    has_velocity_field: bool,
 }
 
 impl WasmFlowAnalyzer {
@@ -1352,19 +1419,202 @@ impl WasmFlowAnalyzer {
         }
     }
 
-    /// Compute FTLE field for a uniform grid.
-    pub fn compute_ftle(&mut self, nx: usize, ny: usize, nz: usize, t: f64) -> &[f64] {
+    /// Configure the analytic velocity field `u(x) = A·x + b` used to advect
+    /// tracers when computing the FTLE field.
+    ///
+    /// `jacobian` is the row-major 3×3 spatial gradient `A` and `offset` is the
+    /// constant translation `b`. This linear family covers the standard
+    /// validation flows: uniform translation (`A = 0`), linear strain / saddle
+    /// (`A = diag(a, −a, 0)`), and solid-body rotation (`A = [[0,−ω,0],[ω,0,0],[0,0,0]]`).
+    pub fn set_linear_velocity_field(&mut self, jacobian: [[f64; 3]; 3], offset: [f64; 3]) {
+        self.velocity_jacobian = jacobian;
+        self.velocity_offset = offset;
+        self.has_velocity_field = true;
+    }
+
+    /// Configure a spatially-uniform (translation) velocity field `u(x) = b`.
+    ///
+    /// Convenience wrapper around [`Self::set_linear_velocity_field`] with a
+    /// zero Jacobian.
+    pub fn set_uniform_velocity_field(&mut self, velocity: [f64; 3]) {
+        self.set_linear_velocity_field([[0.0; 3]; 3], velocity);
+    }
+
+    /// Clear any configured velocity field, reverting [`Self::compute_ftle`] to
+    /// returning an honest error until a new field is supplied.
+    pub fn clear_velocity_field(&mut self) {
+        self.velocity_jacobian = [[0.0; 3]; 3];
+        self.velocity_offset = [0.0; 3];
+        self.has_velocity_field = false;
+    }
+
+    /// Whether a velocity field has been configured for FTLE computation.
+    pub fn has_velocity_field(&self) -> bool {
+        self.has_velocity_field
+    }
+
+    /// Evaluate the configured linear velocity field `u(x) = A·x + b` at `pos`.
+    #[inline]
+    fn velocity_at(&self, pos: [f64; 3]) -> [f64; 3] {
+        let a = &self.velocity_jacobian;
+        [
+            a[0][0] * pos[0] + a[0][1] * pos[1] + a[0][2] * pos[2] + self.velocity_offset[0],
+            a[1][0] * pos[0] + a[1][1] * pos[1] + a[1][2] * pos[2] + self.velocity_offset[1],
+            a[2][0] * pos[0] + a[2][1] * pos[1] + a[2][2] * pos[2] + self.velocity_offset[2],
+        ]
+    }
+
+    /// Advect a single tracer from `start` through the configured velocity
+    /// field for total time `t`, using the crate's RK4 integrator with
+    /// `n_steps` sub-steps. Returns the final tracer position (the flow map
+    /// `F_0^t(start)`).
+    fn advect_tracer(&self, start: [f64; 3], t: f64, n_steps: usize) -> [f64; 3] {
+        let steps = n_steps.max(1);
+        let h = t / steps as f64;
+        let vel_fn = |p: [f64; 3]| self.velocity_at(p);
+        let mut pos = start;
+        for _ in 0..steps {
+            pos = self.rk4_step(pos, h, &vel_fn);
+        }
+        pos
+    }
+
+    /// Compute the real Finite-Time Lyapunov Exponent (FTLE) field over a
+    /// uniform grid spanning the analyser's domain.
+    ///
+    /// For each grid node the method seeds a tracer plus six (four in 2-D)
+    /// neighbour tracers offset by half a grid spacing, advects them all
+    /// through the configured velocity field for time `t` using the crate's
+    /// RK4 integrator ([`Self::rk4_step`]), then forms the flow-map Jacobian
+    /// `∇F` by central finite differences of the final positions. The FTLE is
+    ///
+    /// ```text
+    /// σ = (1 / |t|) · ln( sqrt( λ_max( ∇Fᵀ ∇F ) ) )
+    /// ```
+    ///
+    /// where `λ_max` is the largest eigenvalue of the right Cauchy–Green
+    /// tensor. Negative values (contraction-dominated nodes where
+    /// `λ_max < 1`) are clamped to zero, matching the convention that the FTLE
+    /// reports the forward stretching rate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no velocity field has been configured (call
+    /// [`Self::set_linear_velocity_field`] / [`Self::set_uniform_velocity_field`]
+    /// first), if the grid is empty, or if `t` is non-finite / effectively
+    /// zero. No fabricated field is ever returned.
+    pub fn compute_ftle(
+        &mut self,
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        t: f64,
+    ) -> Result<&[f64], String> {
+        if !self.has_velocity_field {
+            return Err(
+                "no velocity field configured; call set_linear_velocity_field or \
+                 set_uniform_velocity_field before compute_ftle"
+                    .to_string(),
+            );
+        }
         let n = nx * ny * nz;
-        self.ftle = (0..n)
-            .map(|i| {
-                let x = (i % nx) as f64 / nx.max(1) as f64;
-                let y = ((i / nx) % ny) as f64 / ny.max(1) as f64;
-                ((x * std::f64::consts::TAU).sin() * (y * std::f64::consts::TAU).cos()
-                    / t.max(1e-30))
-                .abs()
-            })
-            .collect();
-        &self.ftle
+        if n == 0 {
+            return Err("grid must have a positive number of nodes".to_string());
+        }
+        if !t.is_finite() || t.abs() < 1e-30 {
+            return Err("advection time t must be finite and non-zero".to_string());
+        }
+
+        // Physical grid spacing along each axis (degenerate axes use the
+        // perturbation epsilon so the central difference stays well-posed).
+        let span = |lo: f64, hi: f64, count: usize| -> f64 {
+            if count > 1 {
+                (hi - lo) / (count - 1) as f64
+            } else {
+                0.0
+            }
+        };
+        let dx = span(self.domain[0], self.domain[1], nx);
+        let dy = span(self.domain[2], self.domain[3], ny);
+        let dz = span(self.domain[4], self.domain[5], nz);
+
+        // Finite-difference perturbation: half a cell where the axis is
+        // resolved, otherwise a small fixed epsilon so ∇F is computable.
+        let scale = (dx.abs().max(dy.abs()).max(dz.abs())).max(1.0);
+        let eps = 1e-4 * scale;
+        let hx = if dx.abs() > 0.0 { 0.5 * dx } else { eps };
+        let hy = if dy.abs() > 0.0 { 0.5 * dy } else { eps };
+        let hz = if dz.abs() > 0.0 { 0.5 * dz } else { eps };
+
+        // Number of RK4 sub-steps for the advection (resolution of the flow
+        // map); scales with |t| so longer windows stay accurate.
+        let n_steps = ((t.abs() * 64.0).ceil() as usize).clamp(64, 4096);
+        let inv_t = 1.0 / t.abs();
+
+        let mut field = vec![0.0_f64; n];
+        for (idx, cell) in field.iter_mut().enumerate() {
+            let ix = idx % nx;
+            let iy = (idx / nx) % ny;
+            let iz = idx / (nx * ny);
+            let x = self.domain[0] + ix as f64 * dx;
+            let y = self.domain[2] + iy as f64 * dy;
+            let z = self.domain[4] + iz as f64 * dz;
+
+            // Central differences of the flow map w.r.t. each seed axis.
+            let fxp = self.advect_tracer([x + hx, y, z], t, n_steps);
+            let fxm = self.advect_tracer([x - hx, y, z], t, n_steps);
+            let fyp = self.advect_tracer([x, y + hy, z], t, n_steps);
+            let fym = self.advect_tracer([x, y - hy, z], t, n_steps);
+            let fzp = self.advect_tracer([x, y, z + hz], t, n_steps);
+            let fzm = self.advect_tracer([x, y, z - hz], t, n_steps);
+
+            // Columns of the flow-map Jacobian ∇F = ∂F_i / ∂x_j.
+            let col_x = [
+                (fxp[0] - fxm[0]) / (2.0 * hx),
+                (fxp[1] - fxm[1]) / (2.0 * hx),
+                (fxp[2] - fxm[2]) / (2.0 * hx),
+            ];
+            let col_y = [
+                (fyp[0] - fym[0]) / (2.0 * hy),
+                (fyp[1] - fym[1]) / (2.0 * hy),
+                (fyp[2] - fym[2]) / (2.0 * hy),
+            ];
+            let col_z = [
+                (fzp[0] - fzm[0]) / (2.0 * hz),
+                (fzp[1] - fzm[1]) / (2.0 * hz),
+                (fzp[2] - fzm[2]) / (2.0 * hz),
+            ];
+
+            // Right Cauchy–Green tensor C = ∇Fᵀ ∇F (symmetric, 3×3).
+            let dot = |a: &[f64; 3], b: &[f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+            let c = [
+                [
+                    dot(&col_x, &col_x),
+                    dot(&col_x, &col_y),
+                    dot(&col_x, &col_z),
+                ],
+                [
+                    dot(&col_y, &col_x),
+                    dot(&col_y, &col_y),
+                    dot(&col_y, &col_z),
+                ],
+                [
+                    dot(&col_z, &col_x),
+                    dot(&col_z, &col_y),
+                    dot(&col_z, &col_z),
+                ],
+            ];
+
+            let lambda_max = largest_eigenvalue_sym3(&c);
+            *cell = if lambda_max > 1.0 {
+                inv_t * 0.5 * lambda_max.ln()
+            } else {
+                0.0
+            };
+        }
+
+        self.ftle = field;
+        Ok(&self.ftle)
     }
 
     /// Return the number of computed streamlines.
@@ -1409,10 +1659,53 @@ impl WasmFlowAnalyzer {
         self.integrate_streamlines([vx, vy, vz]);
     }
 
-    /// Compute FTLE field; returns the FTLE values as `Vec<f64>`.
-    pub fn compute_ftle_js(&mut self, nx: u32, ny: u32, nz: u32, t: f64) -> Vec<f64> {
+    /// Compute the FTLE field; returns the FTLE values as `Vec<f64>`.
+    ///
+    /// Errors (e.g. no velocity field configured, empty grid, invalid `t`) are
+    /// surfaced to JavaScript as a thrown exception rather than a fabricated
+    /// field. Configure the field first via `set_uniform_velocity_field_js` or
+    /// `set_linear_velocity_field_js`.
+    pub fn compute_ftle_js(
+        &mut self,
+        nx: u32,
+        ny: u32,
+        nz: u32,
+        t: f64,
+    ) -> Result<Vec<f64>, JsValue> {
         self.compute_ftle(nx as usize, ny as usize, nz as usize, t)
-            .to_vec()
+            .map(<[f64]>::to_vec)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Configure a spatially-uniform (translation) velocity field `u(x) = b`
+    /// for FTLE computation.
+    pub fn set_uniform_velocity_field_js(&mut self, vx: f64, vy: f64, vz: f64) {
+        self.set_uniform_velocity_field([vx, vy, vz]);
+    }
+
+    /// Configure a linear velocity field `u(x) = A·x + b` for FTLE computation.
+    ///
+    /// `coeffs` must contain 12 values: the nine row-major entries of the 3×3
+    /// Jacobian `A` followed by the three components of the offset `b`. Returns
+    /// an error to JavaScript if a different length is supplied.
+    pub fn set_linear_velocity_field_js(&mut self, coeffs: Vec<f64>) -> Result<(), JsValue> {
+        if coeffs.len() != 12 {
+            return Err(JsValue::from_str(
+                "expected 12 coefficients: 9 Jacobian entries (row-major) + 3 offset components",
+            ));
+        }
+        let jacobian = [
+            [coeffs[0], coeffs[1], coeffs[2]],
+            [coeffs[3], coeffs[4], coeffs[5]],
+            [coeffs[6], coeffs[7], coeffs[8]],
+        ];
+        self.set_linear_velocity_field(jacobian, [coeffs[9], coeffs[10], coeffs[11]]);
+        Ok(())
+    }
+
+    /// Whether a velocity field has been configured (JS-exposed).
+    pub fn has_velocity_field_js(&self) -> bool {
+        self.has_velocity_field()
     }
 
     /// Number of computed streamlines as u32.
@@ -1452,476 +1745,5 @@ impl WasmFlowAnalyzer {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // --- WasmSphConfig ---
-
-    #[test]
-    fn test_sph_config_default_valid() {
-        let cfg = WasmSphConfig::default();
-        assert!(cfg.validate().is_ok());
-    }
-
-    #[test]
-    fn test_sph_config_invalid_radius() {
-        let cfg = WasmSphConfig {
-            particle_radius: -0.01,
-            ..Default::default()
-        };
-        assert!(cfg.validate().is_err());
-    }
-
-    #[test]
-    fn test_sph_config_smoothing_too_small() {
-        let cfg = WasmSphConfig {
-            particle_radius: 0.1,
-            smoothing_length: 0.05,
-            ..Default::default()
-        };
-        assert!(cfg.validate().is_err());
-    }
-
-    #[test]
-    fn test_sph_kernel_wendland_at_zero() {
-        let cfg = WasmSphConfig::default();
-        let w = cfg.kernel_wendland(0.0);
-        assert!(w > 0.0);
-    }
-
-    #[test]
-    fn test_sph_kernel_wendland_beyond_h_is_zero_like() {
-        let cfg = WasmSphConfig::default();
-        let w = cfg.kernel_wendland(cfg.smoothing_length * 2.0);
-        assert!(w >= 0.0);
-    }
-
-    #[test]
-    fn test_sph_kernel_cubic_decays() {
-        let cfg = WasmSphConfig::default();
-        let w0 = cfg.kernel_cubic(0.0);
-        let w1 = cfg.kernel_cubic(cfg.smoothing_length * 0.5);
-        assert!(w0 > w1);
-    }
-
-    // --- WasmSphParticle ---
-
-    #[test]
-    fn test_sph_particle_kinetic_energy() {
-        let mut p = WasmSphParticle::new(0, [0.0; 3], 1.0);
-        p.velocity = [1.0, 0.0, 0.0];
-        assert!((p.kinetic_energy() - 0.5).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_sph_particle_speed() {
-        let mut p = WasmSphParticle::new(1, [0.0; 3], 1.0);
-        p.velocity = [3.0, 4.0, 0.0];
-        assert!((p.speed() - 5.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_sph_particle_boundary() {
-        let p = WasmSphParticle::boundary(0, [0.0; 3], 1.0);
-        assert!(p.is_boundary);
-    }
-
-    // --- WasmSphSimulation ---
-
-    #[test]
-    fn test_sph_sim_add_particle() {
-        let mut sim = WasmSphSimulation::new(WasmSphConfig::default());
-        let idx = sim.add_particle([0.0, 1.0, 0.0], 0.1);
-        assert_eq!(idx, 0);
-        assert_eq!(sim.particles.len(), 1);
-    }
-
-    #[test]
-    fn test_sph_sim_add_particles_flat() {
-        let mut sim = WasmSphSimulation::new(WasmSphConfig::default());
-        let positions = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
-        sim.add_particles(&positions, 0.1);
-        assert_eq!(sim.particles.len(), 3);
-    }
-
-    #[test]
-    fn test_sph_sim_step_advances_time() {
-        let mut sim = WasmSphSimulation::new(WasmSphConfig::default());
-        sim.add_particle([0.0, 1.0, 0.0], 0.1);
-        sim.step(0.01);
-        assert!((sim.time - 0.01).abs() < 1e-15);
-        assert_eq!(sim.step_count, 1);
-    }
-
-    #[test]
-    fn test_sph_sim_gravity_accelerates_particle() {
-        let mut sim = WasmSphSimulation::new(WasmSphConfig::default());
-        sim.add_particle([0.0, 1.0, 0.0], 0.1);
-        sim.step(0.1);
-        let vy = sim.particles[0].velocity[1];
-        assert!(vy < 0.0, "gravity should accelerate particle downward");
-    }
-
-    #[test]
-    fn test_sph_sim_get_positions_length() {
-        let mut sim = WasmSphSimulation::new(WasmSphConfig::default());
-        sim.add_particle([0.0; 3], 0.1);
-        sim.add_particle([1.0, 0.0, 0.0], 0.1);
-        let pos = sim.get_positions();
-        assert_eq!(pos.len(), 6);
-    }
-
-    #[test]
-    fn test_sph_sim_fluid_count_excludes_boundary() {
-        let mut sim = WasmSphSimulation::new(WasmSphConfig::default());
-        sim.add_particle([0.0; 3], 0.1);
-        sim.particles
-            .push(WasmSphParticle::boundary(99, [1.0; 3], 0.1));
-        assert_eq!(sim.fluid_count(), 1);
-    }
-
-    #[test]
-    fn test_sph_sim_total_kinetic_energy() {
-        let mut sim = WasmSphSimulation::new(WasmSphConfig::default());
-        let idx = sim.add_particle([0.0; 3], 1.0);
-        sim.particles[idx].velocity = [1.0, 0.0, 0.0];
-        let ke = sim.total_kinetic_energy();
-        assert!((ke - 0.5).abs() < 1e-10);
-    }
-
-    // --- L1: SPH density summation tests ---
-
-    #[test]
-    fn test_sph_density_single_particle_self_contribution() {
-        use std::f64::consts::PI;
-        let h = 0.2_f64;
-        let m = 0.5_f64;
-        let expected = m * 8.0 / (PI * h.powi(3));
-        let densities = compute_sph_densities(&[WasmSphParticle::new(0, [0.0; 3], m)], h);
-        assert!(
-            (densities[0] - expected).abs() < 1e-12,
-            "single-particle density {:.6} != expected {:.6}",
-            densities[0],
-            expected
-        );
-    }
-
-    #[test]
-    fn test_sph_density_cubic_lattice_symmetry() {
-        let h = 0.2_f64;
-        let m = 0.1_f64;
-        let s = h / 2.0;
-        let positions: Vec<[f64; 3]> = vec![
-            [0.0, 0.0, 0.0],
-            [s, 0.0, 0.0],
-            [0.0, s, 0.0],
-            [s, s, 0.0],
-            [0.0, 0.0, s],
-            [s, 0.0, s],
-            [0.0, s, s],
-            [s, s, s],
-        ];
-        let particles: Vec<WasmSphParticle> = positions
-            .iter()
-            .enumerate()
-            .map(|(i, &pos)| WasmSphParticle::new(i as u64, pos, m))
-            .collect();
-        let densities = compute_sph_densities(&particles, h);
-        let rho0 = densities[0];
-        for (i, &rho) in densities.iter().enumerate() {
-            assert!(
-                (rho - rho0).abs() < 1e-12,
-                "particle {i} density {rho:.6} differs from particle 0 density {rho0:.6}"
-            );
-        }
-        let expected = m
-            * (cubic_spline_compact(0.0, h)
-                + 3.0 * cubic_spline_compact(s, h)
-                + 3.0 * cubic_spline_compact(s * std::f64::consts::SQRT_2, h)
-                + cubic_spline_compact(s * 3.0_f64.sqrt(), h));
-        assert!(
-            (rho0 - expected).abs() < 1e-10,
-            "cubic-lattice density {rho0:.6} != expected {expected:.6}"
-        );
-        assert!(rho0 > 0.0 && rho0.is_finite());
-    }
-
-    #[test]
-    fn test_sph_density_step_not_stub() {
-        let mut sim = WasmSphSimulation::new(WasmSphConfig::default());
-        let h = sim.config.smoothing_length;
-        sim.add_particle([0.0, 0.0, 0.0], 0.1);
-        sim.add_particle([h * 0.3, 0.0, 0.0], 0.1);
-        sim.step(0.001);
-        let rho0 = sim.particles[0].density;
-        let rho1 = sim.particles[1].density;
-        assert!(
-            rho0 > 0.0 && rho0 < sim.config.rest_density * 0.5,
-            "density {rho0:.4} should be well below rest_density after real SPH summation"
-        );
-        assert!(
-            (rho0 - rho1).abs() < 1e-8,
-            "symmetric pair should have equal densities: {rho0:.6} vs {rho1:.6}"
-        );
-    }
-
-    // --- WasmLbmConfig ---
-
-    #[test]
-    fn test_lbm_config_d2q9_valid() {
-        let cfg = WasmLbmConfig::d2q9(64, 64, 0.1);
-        assert!(cfg.validate().is_ok());
-    }
-
-    #[test]
-    fn test_lbm_config_d3q19_valid() {
-        let cfg = WasmLbmConfig::d3q19(32, 32, 32, 0.1);
-        assert!(cfg.validate().is_ok());
-    }
-
-    #[test]
-    fn test_lbm_config_invalid_grid() {
-        let cfg = WasmLbmConfig {
-            nx: 0,
-            ..Default::default()
-        };
-        assert!(cfg.validate().is_err());
-    }
-
-    #[test]
-    fn test_lbm_config_invalid_tau() {
-        let cfg = WasmLbmConfig {
-            tau: 0.4,
-            ..Default::default()
-        };
-        assert!(cfg.validate().is_err());
-    }
-
-    #[test]
-    fn test_lbm_config_reynolds_number() {
-        let cfg = WasmLbmConfig::d2q9(64, 64, 0.1);
-        let re = cfg.reynolds_number(0.1, 10.0);
-        assert!((re - 10.0).abs() < 1e-10);
-    }
-
-    // --- WasmLbmSimulation ---
-
-    #[test]
-    fn test_lbm_sim_node_count() {
-        let cfg = WasmLbmConfig::d2q9(8, 16, 0.1);
-        let sim = WasmLbmSimulation::new(cfg);
-        assert_eq!(sim.node_count(), 128);
-    }
-
-    #[test]
-    fn test_lbm_sim_step_increments_count() {
-        let mut sim = WasmLbmSimulation::new(WasmLbmConfig::default());
-        sim.step();
-        assert_eq!(sim.step_count, 1);
-    }
-
-    #[test]
-    fn test_lbm_sim_set_boundary() {
-        let mut sim = WasmLbmSimulation::new(WasmLbmConfig::d2q9(8, 8, 0.1));
-        sim.set_boundary(0, 0, 0, true);
-        assert!(sim.boundary[0]);
-    }
-
-    #[test]
-    fn test_lbm_sim_pressure_field_length() {
-        let sim = WasmLbmSimulation::new(WasmLbmConfig::d2q9(4, 4, 0.1));
-        let p = sim.get_pressure_field();
-        assert_eq!(p.len(), 16);
-    }
-
-    // --- L2: LBM D3Q19 BGK facade tests ---
-
-    #[test]
-    fn test_lbm_d3q19_step_no_panic() {
-        let mut sim = WasmLbmSimulation::new(WasmLbmConfig::d3q19(4, 4, 4, 0.1));
-        sim.step();
-        assert_eq!(sim.step_count, 1);
-    }
-
-    #[test]
-    fn test_lbm_d3q19_density_nonzero_after_init() {
-        let sim = WasmLbmSimulation::new(WasmLbmConfig::d3q19(4, 4, 4, 0.1));
-        let mean = sim.mean_density();
-        assert!(
-            (mean - 1.0).abs() < 1e-10,
-            "initial mean density should be 1.0, got {mean}"
-        );
-        assert!(sim.density.iter().all(|&rho| rho > 0.0));
-    }
-
-    #[test]
-    fn test_lbm_d3q19_density_conservation() {
-        let mut sim = WasmLbmSimulation::new(WasmLbmConfig::d3q19(8, 8, 4, 0.6));
-        let total_init: f64 = sim.density.iter().sum();
-        for _ in 0..10 {
-            sim.step();
-        }
-        let total_final: f64 = sim.density.iter().sum();
-        let rel_err = (total_final - total_init).abs() / total_init;
-        assert!(
-            rel_err < 1e-10,
-            "total density changed by relative error {rel_err:.2e} (should be < 1e-10)"
-        );
-    }
-
-    // --- WasmFluidStats ---
-
-    #[test]
-    fn test_fluid_stats_from_sph_empty() {
-        let sim = WasmSphSimulation::new(WasmSphConfig::default());
-        let stats = WasmFluidStats::from_sph(&sim, 0.01, 0.05);
-        assert_eq!(stats.active_count, 0);
-    }
-
-    #[test]
-    fn test_fluid_stats_cfl_ok() {
-        let mut stats = WasmFluidStats::new();
-        stats.cfl = 0.5;
-        assert!(stats.is_cfl_ok());
-        stats.cfl = 1.1;
-        assert!(!stats.is_cfl_ok());
-    }
-
-    // --- WasmMultiphaseConfig ---
-
-    #[test]
-    fn test_multiphase_density_ratio() {
-        let cfg = WasmMultiphaseConfig::default();
-        let ratio = cfg.density_ratio();
-        assert!(ratio > 100.0);
-    }
-
-    #[test]
-    fn test_multiphase_capillary_length() {
-        let cfg = WasmMultiphaseConfig::default();
-        let l = cfg.capillary_length();
-        assert!(l > 0.001 && l < 0.01);
-    }
-
-    // --- WasmFluidCoupling ---
-
-    #[test]
-    fn test_coupling_buoyancy() {
-        let c = WasmFluidCoupling::sphere_in_water();
-        let f = c.buoyancy(0.001);
-        assert!((f - 9.81).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_coupling_stokes_drag() {
-        let c = WasmFluidCoupling::sphere_in_water();
-        let f = c.stokes_drag(0.01, 0.1);
-        assert!(f > 0.0);
-    }
-
-    #[test]
-    fn test_coupling_reynolds() {
-        let c = WasmFluidCoupling::sphere_in_water();
-        let re = c.reynolds(1.0, 0.01);
-        assert!((re - 10000.0).abs() < 1.0);
-    }
-
-    // --- WasmParticleEmitter ---
-
-    #[test]
-    fn test_emitter_emit_zero_dt() {
-        let mut em = WasmParticleEmitter::new([0.0; 3], [0.0, 1.0, 0.0], 100.0, 1.0, 5.0, 0.01);
-        let particles = em.emit(0.0);
-        assert_eq!(particles.len(), 0);
-    }
-
-    #[test]
-    fn test_emitter_emit_one_second() {
-        let mut em = WasmParticleEmitter::new([0.0; 3], [0.0, 1.0, 0.0], 10.0, 1.0, 5.0, 0.01);
-        let particles = em.emit(1.0);
-        assert_eq!(particles.len(), 10);
-    }
-
-    #[test]
-    fn test_emitter_total_emitted() {
-        let mut em = WasmParticleEmitter::new([0.0; 3], [1.0, 0.0, 0.0], 5.0, 2.0, 10.0, 0.1);
-        em.emit(1.0);
-        assert_eq!(em.total_emitted(), 5);
-    }
-
-    #[test]
-    fn test_emitter_reset() {
-        let mut em = WasmParticleEmitter::new([0.0; 3], [1.0, 0.0, 0.0], 10.0, 1.0, 5.0, 0.01);
-        em.emit(1.0);
-        em.reset();
-        assert_eq!(em.total_emitted(), 0);
-    }
-
-    // --- WasmFlowAnalyzer ---
-
-    #[test]
-    fn test_flow_analyzer_add_seeds() {
-        let mut fa = WasmFlowAnalyzer::new([0.0, 1.0, 0.0, 1.0, 0.0, 1.0]);
-        fa.add_seed(StreamlineSeed::new([0.5, 0.5, 0.5], 1.0, 0.1));
-        assert_eq!(fa.seeds.len(), 1);
-    }
-
-    #[test]
-    fn test_flow_analyzer_integrate_streamlines() {
-        let mut fa = WasmFlowAnalyzer::new([0.0, 10.0, 0.0, 10.0, 0.0, 10.0]);
-        fa.add_seed(StreamlineSeed::new([1.0, 5.0, 5.0], 2.0, 0.5));
-        fa.integrate_streamlines([1.0, 0.0, 0.0]);
-        assert_eq!(fa.streamline_count(), 1);
-        assert!(fa.streamlines[0].len() >= 2);
-    }
-
-    #[test]
-    fn test_flow_analyzer_ftle_length() {
-        let mut fa = WasmFlowAnalyzer::new([0.0, 1.0, 0.0, 1.0, 0.0, 1.0]);
-        let ftle = fa.compute_ftle(4, 4, 1, 1.0);
-        assert_eq!(ftle.len(), 16);
-    }
-
-    #[test]
-    fn test_flow_analyzer_clear() {
-        let mut fa = WasmFlowAnalyzer::new([0.0, 1.0, 0.0, 1.0, 0.0, 1.0]);
-        fa.add_seed(StreamlineSeed::new([0.5; 3], 1.0, 0.1));
-        fa.integrate_streamlines([1.0, 0.0, 0.0]);
-        fa.clear_results();
-        assert_eq!(fa.streamline_count(), 0);
-    }
-
-    #[test]
-    fn test_flow_analyzer_total_points() {
-        let mut fa = WasmFlowAnalyzer::new([0.0, 100.0, 0.0, 100.0, 0.0, 100.0]);
-        fa.add_seed(StreamlineSeed::new([0.0, 50.0, 50.0], 10.0, 1.0));
-        fa.add_seed(StreamlineSeed::new([0.0, 25.0, 50.0], 5.0, 1.0));
-        fa.integrate_streamlines([1.0, 0.0, 0.0]);
-        assert!(fa.total_points() > 0);
-    }
-
-    #[test]
-    fn test_strouhal_viv() {
-        let st = WasmFluidCoupling::strouhal_viv(0.2, 0.01, 1.0);
-        assert!((st - 0.002).abs() < 1e-10);
-    }
-
-    // --- H4: RK4 circular streamline ---
-
-    #[test]
-    fn rk4_circular_streamline() {
-        let fa = WasmFlowAnalyzer::new([-10.0, 10.0, -10.0, 10.0, -10.0, 10.0]);
-        let h = 0.01_f64;
-        let steps = 100_usize;
-        let mut pos = [1.0_f64, 0.0, 0.0];
-        let vel_fn = |p: [f64; 3]| -> [f64; 3] { [-p[1], p[0], 0.0] };
-        for _ in 0..steps {
-            pos = fa.rk4_step(pos, h, &vel_fn);
-        }
-        let radius = (pos[0] * pos[0] + pos[1] * pos[1]).sqrt();
-        assert!(
-            (radius - 1.0).abs() < 0.01,
-            "RK4 radius error too large: radius = {radius}"
-        );
-    }
-}
+#[path = "fluid_bridge_tests.rs"]
+mod tests;

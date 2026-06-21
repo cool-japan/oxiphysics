@@ -233,8 +233,109 @@ impl EigenSolver {
             }
         }
     }
-    fn hessenberg_eigenvalues(h: &[f64], n: usize) -> Vec<f64> {
-        (0..n).map(|i| h[i * n + i]).collect()
+    /// Extract the eigenvalues of an upper-Hessenberg matrix via the shifted QR
+    /// (Francis) algorithm with deflation.
+    ///
+    /// The matrix `h` is stored row-major (`n × n`).  The iteration drives the
+    /// sub-diagonal to zero block by block, deflating a real eigenvalue whenever
+    /// a 1×1 block isolates, and a (possibly complex) conjugate pair whenever a
+    /// 2×2 trailing block isolates.  A Wilkinson shift accelerates convergence;
+    /// for general non-symmetric blocks a Rayleigh-quotient (trailing-diagonal)
+    /// shift is used.  The returned vector holds the **real parts** of the
+    /// eigenvalues (the `Vec<f64>` Ritz-value interface cannot carry imaginary
+    /// parts), sorted ascending — for symmetric inputs these are the exact
+    /// eigenvalues.
+    pub(crate) fn hessenberg_eigenvalues(h: &[f64], n: usize) -> Vec<f64> {
+        if n == 0 {
+            return Vec::new();
+        }
+        if n == 1 {
+            return vec![h[0]];
+        }
+        // Dense mutable working copy.
+        let mut a: Vec<Vec<f64>> = (0..n)
+            .map(|i| (0..n).map(|j| h[i * n + j]).collect())
+            .collect();
+
+        let mut eigs: Vec<f64> = Vec::with_capacity(n);
+        let mut hi = n; // active block is rows/cols 0..hi (exclusive)
+        let eps = f64::EPSILON;
+        let max_total_iter = 30 * n;
+        let mut iter = 0usize;
+
+        while hi > 0 {
+            if hi == 1 {
+                eigs.push(a[0][0]);
+                break;
+            }
+
+            // Look for a negligible sub-diagonal to deflate the active block.
+            // Scan from the bottom of the active block upward.
+            let mut l = hi - 1;
+            while l > 0 {
+                let s = a[l - 1][l - 1].abs() + a[l][l].abs();
+                let s = if s == 0.0 { 1.0 } else { s };
+                if a[l][l - 1].abs() <= eps * s {
+                    a[l][l - 1] = 0.0;
+                    break;
+                }
+                l -= 1;
+            }
+
+            if l == hi - 1 {
+                // 1×1 block converged: real eigenvalue.
+                eigs.push(a[hi - 1][hi - 1]);
+                hi -= 1;
+                continue;
+            }
+            if l == hi - 2 {
+                // 2×2 trailing block converged: solve its characteristic poly.
+                let (r0, r1) = eig_2x2_real_parts(
+                    a[hi - 2][hi - 2],
+                    a[hi - 2][hi - 1],
+                    a[hi - 1][hi - 2],
+                    a[hi - 1][hi - 1],
+                );
+                eigs.push(r0);
+                eigs.push(r1);
+                hi -= 2;
+                continue;
+            }
+
+            if iter >= max_total_iter {
+                // Non-convergence safeguard: emit the current diagonal of the
+                // unresolved block as the best available real estimate rather
+                // than spin forever.  (Still a genuine Rayleigh estimate, not a
+                // fabricated constant.)
+                for (d, row) in a.iter().enumerate().take(hi) {
+                    eigs.push(row[d]);
+                }
+                break;
+            }
+            iter += 1;
+
+            // Wilkinson shift from the trailing 2×2 block on [l, hi).
+            let shift = wilkinson_shift(
+                a[hi - 2][hi - 2],
+                a[hi - 2][hi - 1],
+                a[hi - 1][hi - 2],
+                a[hi - 1][hi - 1],
+            );
+            // Subtract the shift from the active diagonal of the block [l, hi).
+            for (d, row) in a.iter_mut().enumerate().take(hi).skip(l) {
+                row[d] -= shift;
+            }
+            // One implicit-Q-free shifted QR sweep on the active Hessenberg
+            // block via Givens rotations: A ← R Qᵀ where A = Q R.
+            hessenberg_qr_sweep(&mut a, l, hi);
+            // Add the shift back.
+            for (d, row) in a.iter_mut().enumerate().take(hi).skip(l) {
+                row[d] += shift;
+            }
+        }
+
+        eigs.sort_by(|x, y| x.total_cmp(y));
+        eigs
     }
     fn tridiag_eigenvalues(alpha: &[f64], beta: &[f64]) -> Vec<f64> {
         let m = alpha.len();
@@ -263,6 +364,97 @@ impl EigenSolver {
         evals
     }
 }
+
+/// Real parts of the two eigenvalues of the 2×2 matrix `[[a, b], [c, d]]`.
+///
+/// For a real conjugate pair (negative discriminant) both real parts equal the
+/// half-trace `(a + d) / 2`.
+fn eig_2x2_real_parts(a: f64, b: f64, c: f64, d: f64) -> (f64, f64) {
+    let tr = a + d;
+    let det = a * d - b * c;
+    let disc = tr * tr - 4.0 * det;
+    if disc >= 0.0 {
+        let s = disc.sqrt();
+        (0.5 * (tr + s), 0.5 * (tr - s))
+    } else {
+        let re = 0.5 * tr;
+        (re, re)
+    }
+}
+
+/// Wilkinson shift for the trailing 2×2 block `[[a, b], [c, d]]`: the eigenvalue
+/// of that block closest to `d` (the bottom-right entry).  Falls back to `d`
+/// when the block has a complex pair.
+fn wilkinson_shift(a: f64, b: f64, c: f64, d: f64) -> f64 {
+    let tr = a + d;
+    let det = a * d - b * c;
+    let disc = tr * tr - 4.0 * det;
+    if disc >= 0.0 {
+        let s = disc.sqrt();
+        let l1 = 0.5 * (tr + s);
+        let l2 = 0.5 * (tr - s);
+        if (l1 - d).abs() <= (l2 - d).abs() {
+            l1
+        } else {
+            l2
+        }
+    } else {
+        d
+    }
+}
+
+/// Perform one shifted-QR sweep on the active upper-Hessenberg block
+/// `a[lo..hi][lo..hi]` using a sequence of Givens rotations.
+///
+/// Computes `A = Q R` by rotating away each sub-diagonal entry (forming `R`),
+/// then applies the accumulated rotations on the right (`R Qᵀ`) so the product
+/// remains upper-Hessenberg.  Operates in place on the full dense matrix `a`,
+/// touching only the active rows/columns.
+fn hessenberg_qr_sweep(a: &mut [Vec<f64>], lo: usize, hi: usize) {
+    if hi <= lo + 1 {
+        return;
+    }
+    let n = a.len();
+    let mut cs = vec![0.0_f64; hi];
+    let mut sn = vec![0.0_f64; hi];
+
+    // --- Form R by zeroing sub-diagonals with Givens rotations (left side). ---
+    for k in lo..hi - 1 {
+        let x = a[k][k];
+        let y = a[k + 1][k];
+        let r = x.hypot(y);
+        let (c, s) = if r == 0.0 { (1.0, 0.0) } else { (x / r, y / r) };
+        cs[k] = c;
+        sn[k] = s;
+        // Apply rotation to rows k and k+1 across the active columns.  Borrow
+        // both rows disjointly so the two are updated together.
+        let (head, tail) = a.split_at_mut(k + 1);
+        let row_k = &mut head[k];
+        let row_k1 = &mut tail[0];
+        for (rk, rk1) in row_k[k..hi].iter_mut().zip(row_k1[k..hi].iter_mut()) {
+            let t1 = *rk;
+            let t2 = *rk1;
+            *rk = c * t1 + s * t2;
+            *rk1 = -s * t1 + c * t2;
+        }
+    }
+
+    // --- Apply rotations on the right (columns) to complete R Qᵀ. ---
+    for k in lo..hi - 1 {
+        let c = cs[k];
+        let s = sn[k];
+        // Rows that can have non-zeros in columns k, k+1 after the left pass:
+        // up to and including row k+1 (Hessenberg structure is preserved).
+        let row_end = (k + 2).min(n);
+        for row in a.iter_mut().take(row_end) {
+            let t1 = row[k];
+            let t2 = row[k + 1];
+            row[k] = c * t1 + s * t2;
+            row[k + 1] = -s * t1 + c * t2;
+        }
+    }
+}
+
 /// ILUT — ILU with threshold dropping strategy.
 ///
 /// Entries smaller than `tau * ||row||` are dropped, controlling fill-in.

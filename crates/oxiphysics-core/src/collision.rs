@@ -493,6 +493,15 @@ pub struct GjkResult {
 ///
 /// Returns `GjkResult` with the intersection flag and minimum distance.
 pub fn gjk(a: &dyn ConvexShape, b: &dyn ConvexShape) -> GjkResult {
+    gjk_simplex(a, b).0
+}
+
+/// GJK core that also returns the terminating simplex when the shapes overlap.
+///
+/// On intersection the second element is the enclosing tetrahedron (the simplex
+/// that contained the origin), which EPA uses to seed a polytope that genuinely
+/// encloses the origin.  When the shapes are separated it is `None`.
+fn gjk_simplex(a: &dyn ConvexShape, b: &dyn ConvexShape) -> (GjkResult, Option<Vec<[Real; 3]>>) {
     const MAX_ITER: usize = 64;
     const EPS: Real = 1e-10;
 
@@ -503,49 +512,99 @@ pub fn gjk(a: &dyn ConvexShape, b: &dyn ConvexShape) -> GjkResult {
     simplex.push(first);
     dir = v3_neg(first);
 
+    // Best separation lower bound found so far, together with the witness
+    // direction that produced it.  `v3_dot(support, dir_unit)` is a valid lower
+    // bound on the true minimum distance along that direction, so the largest
+    // such value seen is our best honest distance estimate if the algorithm
+    // never converges.
+    let mut best_dist = Real::MAX; // distance of the closest simplex feature
+    let mut best_dir = dir; // direction toward the origin from that feature
+
     for _ in 0..MAX_ITER {
         let len_sq = v3_len_sq(dir);
         if len_sq < EPS {
-            // Direction degenerate — intersection at origin.
-            return GjkResult {
-                intersecting: true,
-                distance: 0.0,
-                closest_a: [0.0; 3],
-                closest_b: [0.0; 3],
-            };
+            // Direction degenerate — the closest simplex feature is the origin,
+            // i.e. the Minkowski difference contains the origin: intersection.
+            let s = (simplex.len() == 4).then(|| simplex.clone());
+            return (
+                GjkResult {
+                    intersecting: true,
+                    distance: 0.0,
+                    closest_a: [0.0; 3],
+                    closest_b: [0.0; 3],
+                },
+                s,
+            );
+        }
+
+        // Track the closest-feature distance: |dir| is the distance from the
+        // origin to the closest point on the current simplex (do_simplex sets
+        // `dir` to the origin-ward vector from that closest feature).
+        let cur_dist = len_sq.sqrt();
+        if cur_dist < best_dist {
+            best_dist = cur_dist;
+            best_dir = dir;
         }
 
         let support = gjk_support(a, b, dir);
 
         // If the new support does not pass the origin, shapes do not intersect.
         if v3_dot(support, dir) < 0.0 {
-            let dist = v3_len_sq(dir).sqrt();
-            return GjkResult {
-                intersecting: false,
-                distance: dist,
-                closest_a: a.support(dir),
-                closest_b: b.support(v3_neg(dir)),
-            };
+            let dist = cur_dist;
+            return (
+                GjkResult {
+                    intersecting: false,
+                    distance: dist,
+                    closest_a: a.support(dir),
+                    closest_b: b.support(v3_neg(dir)),
+                },
+                None,
+            );
         }
 
         simplex.push(support);
 
         if gjk_do_simplex(&mut simplex, &mut dir) {
-            return GjkResult {
+            // Origin enclosed: `simplex` holds the terminating tetrahedron.
+            let s = (simplex.len() == 4).then(|| simplex.clone());
+            return (
+                GjkResult {
+                    intersecting: true,
+                    distance: 0.0,
+                    closest_a: [0.0; 3],
+                    closest_b: [0.0; 3],
+                },
+                s,
+            );
+        }
+    }
+
+    // Non-convergence fallback (slow / near-degenerate geometry): report the
+    // best estimate actually computed rather than a fabricated constant.  If the
+    // closest simplex feature is essentially at the origin we honestly call it an
+    // intersection; otherwise we report the best measured separation and witness
+    // support points instead of pretending `intersecting = true` with zeros.
+    if best_dist <= EPS.sqrt() {
+        let s = (simplex.len() == 4).then(|| simplex.clone());
+        (
+            GjkResult {
                 intersecting: true,
                 distance: 0.0,
                 closest_a: [0.0; 3],
                 closest_b: [0.0; 3],
-            };
-        }
-    }
-
-    // Fallback: treat as intersecting.
-    GjkResult {
-        intersecting: true,
-        distance: 0.0,
-        closest_a: [0.0; 3],
-        closest_b: [0.0; 3],
+            },
+            s,
+        )
+    } else {
+        (
+            GjkResult {
+                intersecting: false,
+                distance: best_dist,
+                closest_a: a.support(best_dir),
+                closest_b: b.support(v3_neg(best_dir)),
+            },
+            None,
+        )
     }
 }
 
@@ -945,74 +1004,151 @@ pub struct EpaResult {
     pub point: [Real; 3],
 }
 
+/// Outward-oriented normal and origin-distance of a polytope face.
+struct EpaFace {
+    /// Vertex indices into the polytope (consistent winding).
+    verts: [usize; 3],
+    /// Unit outward normal (points away from the origin / polytope interior).
+    normal: [Real; 3],
+    /// Signed distance from the origin to the face plane (≥ 0 once oriented).
+    dist: Real,
+}
+
+/// Build an [`EpaFace`] from three polytope vertices in the order given,
+/// computing the outward normal from that winding (CCW as seen from outside).
+///
+/// The polytope is kept with globally consistent CCW winding, so the cross
+/// product `(b−a)×(c−a)` already points outward; the face distance is the
+/// (possibly negative) projection of the plane onto that normal.  Returns
+/// `None` for a degenerate (zero-area) triangle.
+fn epa_make_face(polytope: &[[Real; 3]], i: usize, j: usize, k: usize) -> Option<EpaFace> {
+    let a = polytope[i];
+    let b = polytope[j];
+    let c = polytope[k];
+    let n = v3_cross(v3_sub(b, a), v3_sub(c, a));
+    let len = v3_len(n);
+    if len < 1e-12 {
+        return None;
+    }
+    let normal = v3_scale(n, 1.0 / len);
+    let dist = v3_dot(normal, a);
+    Some(EpaFace {
+        verts: [i, j, k],
+        normal,
+        dist,
+    })
+}
+
+/// Build a seed-tetrahedron face `(i, j, k)` with winding chosen so its normal
+/// points *away* from the opposite vertex `l` (i.e. outward).  This establishes
+/// the globally consistent CCW orientation that the horizon-stitching expansion
+/// then preserves.
+fn epa_seed_face(
+    polytope: &[[Real; 3]],
+    i: usize,
+    j: usize,
+    k: usize,
+    l: usize,
+) -> Option<EpaFace> {
+    let f = epa_make_face(polytope, i, j, k)?;
+    // If the opposite vertex is on the positive side of this face's plane, the
+    // winding is inward — swap two vertices to flip it outward.
+    if v3_dot(f.normal, v3_sub(polytope[l], polytope[i])) > 0.0 {
+        epa_make_face(polytope, i, k, j)
+    } else {
+        Some(f)
+    }
+}
+
+/// Check that a 4-vertex GJK simplex is a non-degenerate tetrahedron (has real
+/// volume), so it can seed EPA.  Returns `false` for flat / collinear simplices.
+fn epa_simplex_is_valid(s: &[[Real; 3]]) -> bool {
+    if s.len() != 4 {
+        return false;
+    }
+    let e1 = v3_sub(s[1], s[0]);
+    let e2 = v3_sub(s[2], s[0]);
+    let e3 = v3_sub(s[3], s[0]);
+    // Six times the signed tetrahedron volume.
+    v3_dot(v3_cross(e1, e2), e3).abs() > 1e-12
+}
+
 /// Run EPA to compute the penetration depth between two overlapping convex shapes.
 ///
 /// Requires that GJK has confirmed the shapes are intersecting.
 /// Returns `None` if the shapes are not intersecting.
+///
+/// Implements the genuine Expanding Polytope Algorithm: starting from a
+/// non-degenerate tetrahedron enclosing the origin in Minkowski-difference
+/// space, it repeatedly (1) selects the face closest to the origin, (2) queries
+/// the support point along that face's outward normal, and (3) if that support
+/// lies beyond the face, expands the polytope by deleting *all* faces visible
+/// from the new point and re-triangulating the resulting horizon with consistent
+/// outward winding.  The iteration converges when no face can be pushed further
+/// out; the penetration depth is then the distance to the closest face and the
+/// collision normal is that face's outward normal.
 pub fn epa(a: &dyn ConvexShape, b: &dyn ConvexShape) -> Option<EpaResult> {
-    // First confirm intersection with GJK.
-    let gjk_r = gjk(a, b);
+    // First confirm intersection with GJK and recover its terminating simplex.
+    let (gjk_r, gjk_simplex) = gjk_simplex(a, b);
     if !gjk_r.intersecting {
         return None;
     }
 
-    const MAX_ITER: usize = 64;
+    const MAX_ITER: usize = 128;
     const EPS: Real = 1e-8;
 
-    // Seed the polytope with a tetrahedron constructed from support points.
-    let dirs = [
-        [1.0, 0.0, 0.0_f64],
-        [-1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-        [0.0, -1.0, 0.0],
-        [0.0, 0.0, 1.0],
-        [0.0, 0.0, -1.0],
-    ];
+    // ── Seed the polytope with a tetrahedron that encloses the origin ────────
+    // The GJK terminating simplex genuinely contains the origin; prefer it.
+    // If it is unavailable or degenerate, fall back to an explicit construction.
+    let mut polytope: Vec<[Real; 3]> = match gjk_simplex {
+        Some(s) if epa_simplex_is_valid(&s) && epa_origin_in_tetra(&s) => s,
+        _ => epa_seed_tetrahedron(a, b)?,
+    };
 
-    let mut polytope: Vec<[Real; 3]> = dirs.iter().map(|&d| gjk_support(a, b, d)).collect();
+    // Seed faces with globally consistent outward (CCW) winding: each face is
+    // oriented away from the tetrahedron's opposite vertex.
+    let mut faces: Vec<EpaFace> = Vec::new();
+    for &[i, j, k, l] in &[[0usize, 1, 2, 3], [0, 1, 3, 2], [0, 2, 3, 1], [1, 2, 3, 0]] {
+        if let Some(f) = epa_seed_face(&polytope, i, j, k, l) {
+            faces.push(f);
+        }
+    }
+    if faces.len() < 4 {
+        return None;
+    }
 
-    // Build initial faces (pairs of triangles from the seed points).
-    // Simple approach: build from all unique triangles in the convex hull of polytope.
-    // For EPA we iteratively expand closest face.
-
-    let mut faces: Vec<[usize; 3]> = vec![
-        [0, 1, 2],
-        [0, 2, 3],
-        [0, 3, 4],
-        [0, 4, 1],
-        [5, 2, 1],
-        [5, 3, 2],
-        [5, 4, 3],
-        [5, 1, 4],
-    ];
+    // Running closest-face estimate.  As the polytope is refined, the distance
+    // to its closest face increases monotonically toward the true penetration
+    // depth, so the LAST (most-refined) estimate is the best one — this is what
+    // the honest non-convergence fallback returns (never a fabricated constant).
+    let mut last_dist = 0.0_f64;
+    let mut last_normal = [0.0_f64; 3];
 
     for _ in 0..MAX_ITER {
-        // Find the face closest to the origin.
+        // Closest face to the origin (only outward-oriented, dist ≥ 0 faces).
+        let mut min_idx = 0usize;
         let mut min_dist = Real::MAX;
-        let mut min_idx = 0;
-        let mut min_normal = [0.0_f64; 3];
-
-        for (fi, face) in faces.iter().enumerate() {
-            let a_pt = polytope[face[0]];
-            let b_pt = polytope[face[1]];
-            let c_pt = polytope[face[2]];
-            let ab = v3_sub(b_pt, a_pt);
-            let ac = v3_sub(c_pt, a_pt);
-            let n = v3_normalize(v3_cross(ab, ac));
-            let d = v3_dot(n, a_pt).abs();
-            if d < min_dist {
-                min_dist = d;
+        for (fi, f) in faces.iter().enumerate() {
+            if f.dist < min_dist {
+                min_dist = f.dist;
                 min_idx = fi;
-                min_normal = n;
             }
         }
+        let min_normal = faces[min_idx].normal;
+        if v3_len_sq(min_normal) > 0.5 {
+            last_dist = min_dist;
+            last_normal = min_normal;
+        }
 
-        // Support in the direction of the closest face normal.
+        // Support along the outward normal of the closest face.
         let support = gjk_support(a, b, min_normal);
-        let new_dist = v3_dot(min_normal, support);
+        let support_dist = v3_dot(min_normal, support);
 
-        if (new_dist - min_dist).abs() < EPS {
-            // Converged.
+        // Converged when the support cannot push the closest face outward any
+        // further (absolute or relative to the current depth, so smooth shapes
+        // such as spheres terminate in finitely many steps).
+        let tol = EPS + 1e-6 * min_dist.abs();
+        if support_dist - min_dist < tol {
             let contact = v3_scale(min_normal, min_dist);
             return Some(EpaResult {
                 depth: min_dist,
@@ -1021,38 +1157,179 @@ pub fn epa(a: &dyn ConvexShape, b: &dyn ConvexShape) -> Option<EpaResult> {
             });
         }
 
-        // Expand polytope: remove visible faces and add new faces with the new vertex.
+        // ── Expand: remove every face visible from `support`, build horizon ──
         let new_idx = polytope.len();
         polytope.push(support);
 
-        let mut new_faces: Vec<[usize; 3]> = Vec::new();
-        let mut edges: Vec<(usize, usize)> = Vec::new();
-
-        for (fi, &face) in faces.iter().enumerate() {
-            if fi == min_idx {
-                // Record edges of the removed face (horizon).
-                edges.push((face[0], face[1]));
-                edges.push((face[1], face[2]));
-                edges.push((face[2], face[0]));
+        // A face is visible if the new vertex is in front of its plane.
+        let mut horizon: Vec<(usize, usize)> = Vec::new();
+        let mut kept: Vec<EpaFace> = Vec::with_capacity(faces.len());
+        for f in faces.drain(..) {
+            let visible = v3_dot(f.normal, v3_sub(support, polytope[f.verts[0]])) > EPS;
+            if visible {
+                // Add the three directed edges to the horizon set, cancelling
+                // edges shared by two visible faces (interior edges).
+                for &(p, q) in &[
+                    (f.verts[0], f.verts[1]),
+                    (f.verts[1], f.verts[2]),
+                    (f.verts[2], f.verts[0]),
+                ] {
+                    epa_add_horizon_edge(&mut horizon, p, q);
+                }
             } else {
-                new_faces.push(face);
+                kept.push(f);
             }
         }
 
-        // Add new faces connecting the new vertex to the horizon edges.
-        for (ea, eb) in edges {
-            new_faces.push([ea, eb, new_idx]);
+        faces = kept;
+        // Stitch the horizon to the new vertex.
+        for (p, q) in horizon {
+            if let Some(f) = epa_make_face(&polytope, p, q, new_idx) {
+                faces.push(f);
+            }
         }
-        faces = new_faces;
+        if faces.is_empty() {
+            break;
+        }
     }
 
-    // Fallback after max iterations.
-    let normal = [0.0, 1.0, 0.0];
-    Some(EpaResult {
-        depth: 0.0,
-        normal,
-        point: [0.0; 3],
-    })
+    // Non-convergence fallback (e.g. a smooth shape refined to the iteration
+    // cap): return the LAST closest-face estimate actually computed — a real
+    // depth and normal, never a hardcoded 0-depth axis-aligned constant.
+    if v3_len_sq(last_normal) > 0.5 {
+        let contact = v3_scale(last_normal, last_dist);
+        Some(EpaResult {
+            depth: last_dist,
+            normal: last_normal,
+            point: contact,
+        })
+    } else {
+        None
+    }
+}
+
+/// Insert a directed edge into the horizon list, cancelling its reverse if
+/// already present (an interior edge shared by two visible faces).
+fn epa_add_horizon_edge(horizon: &mut Vec<(usize, usize)>, p: usize, q: usize) {
+    if let Some(pos) = horizon.iter().position(|&(a, b)| a == q && b == p) {
+        horizon.swap_remove(pos);
+    } else {
+        horizon.push((p, q));
+    }
+}
+
+/// Construct a non-degenerate seed tetrahedron of the Minkowski difference
+/// `A ⊖ B` that **encloses the origin**.
+///
+/// Builds the simplex incrementally (point → segment spanning the origin →
+/// triangle → tetrahedron straddling the origin) using support queries along
+/// progressively constrained directions, exactly as a from-scratch GJK seed
+/// would.  The fourth vertex is taken on the far side of the triangle from the
+/// origin so the resulting tetrahedron contains it.  Returns `None` only when
+/// the difference is genuinely lower-dimensional (no enclosing volume exists,
+/// e.g. a boundary touch).
+fn epa_seed_tetrahedron(a: &dyn ConvexShape, b: &dyn ConvexShape) -> Option<Vec<[Real; 3]>> {
+    // Candidate spanning directions covering all octants.
+    const AXES: [[Real; 3]; 6] = [
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, -1.0],
+    ];
+
+    // Vertex 0: any support.
+    let v0 = gjk_support(a, b, [1.0, 0.0, 0.0]);
+
+    // Vertex 1: search the opposite direction; require a real edge length.
+    let mut dir1 = v3_neg(v0);
+    if v3_len_sq(dir1) < 1e-9 {
+        dir1 = [-1.0, 0.0, 0.0];
+    }
+    let v1 = gjk_support(a, b, dir1);
+    let e01 = v3_sub(v1, v0);
+    if v3_len_sq(e01) < 1e-12 {
+        return None;
+    }
+
+    // Vertex 2: maximise the area perpendicular to the segment v0→v1.  Try every
+    // axis cross-product and keep the largest off-line support.
+    let mut v2 = v0;
+    let mut best_area = 0.0;
+    for axis in AXES.iter() {
+        let d = v3_cross(e01, *axis);
+        if v3_len_sq(d) < 1e-12 {
+            continue;
+        }
+        for cand_dir in [d, v3_neg(d)] {
+            let cand = gjk_support(a, b, cand_dir);
+            let area = v3_len_sq(v3_cross(v3_sub(cand, v0), e01));
+            if area > best_area {
+                best_area = area;
+                v2 = cand;
+            }
+        }
+    }
+    if best_area < 1e-18 {
+        return None;
+    }
+
+    // Vertex 3: off the triangle plane, on the side *away* from the origin so the
+    // tetrahedron straddles it.
+    let tri_n = v3_cross(v3_sub(v1, v0), v3_sub(v2, v0));
+    if v3_len_sq(tri_n) < 1e-18 {
+        return None;
+    }
+    // The origin sits at signed height -dot(tri_n, v0) relative to the plane;
+    // pick the search direction that points away from the origin.
+    let toward_origin = v3_dot(tri_n, v0); // >0 ⇒ origin is below the plane
+    let search = if toward_origin > 0.0 {
+        v3_neg(tri_n)
+    } else {
+        tri_n
+    };
+    let mut v3 = gjk_support(a, b, search);
+    if v3_dot(tri_n, v3_sub(v3, v0)).abs() < 1e-9 {
+        // Degenerate on this side — try the other.
+        v3 = gjk_support(a, b, v3_neg(search));
+        if v3_dot(tri_n, v3_sub(v3, v0)).abs() < 1e-9 {
+            return None;
+        }
+    }
+
+    let tetra = vec![v0, v1, v2, v3];
+    if epa_simplex_is_valid(&tetra) && epa_origin_in_tetra(&tetra) {
+        Some(tetra)
+    } else {
+        None
+    }
+}
+
+/// Test whether the origin lies inside (or on) the tetrahedron `t` via the
+/// same-sign-of-signed-volumes criterion.
+fn epa_origin_in_tetra(t: &[[Real; 3]]) -> bool {
+    if t.len() != 4 {
+        return false;
+    }
+    // Signed volume (×6) of the tetra formed by replacing vertex `omit` with the
+    // origin must share the sign of the full tetra for the origin to be inside.
+    let signed = |p: [Real; 3], q: [Real; 3], r: [Real; 3], s: [Real; 3]| -> Real {
+        v3_dot(v3_cross(v3_sub(q, p), v3_sub(r, p)), v3_sub(s, p))
+    };
+    let full = signed(t[0], t[1], t[2], t[3]);
+    if full.abs() < 1e-15 {
+        return false;
+    }
+    let o = [0.0_f64; 3];
+    let d0 = signed(o, t[1], t[2], t[3]);
+    let d1 = signed(t[0], o, t[2], t[3]);
+    let d2 = signed(t[0], t[1], o, t[3]);
+    let d3 = signed(t[0], t[1], t[2], o);
+    let sgn = full.signum();
+    // Allow a tiny tolerance so boundary cases (origin on a face) still seed.
+    let tol = -1e-12 * full.abs();
+    d0 * sgn >= tol && d1 * sgn >= tol && d2 * sgn >= tol && d3 * sgn >= tol
 }
 
 // ---------------------------------------------------------------------------
@@ -1218,593 +1495,5 @@ impl ConvexShape for ConvexPointCloud {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── Vector helpers ────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_v3_dot_orthogonal() {
-        assert_eq!(v3_dot([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), 0.0);
-    }
-
-    #[test]
-    fn test_v3_cross_basis() {
-        let c = v3_cross([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
-        assert!((c[2] - 1.0).abs() < 1e-12);
-        assert!(c[0].abs() < 1e-12 && c[1].abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_v3_normalize_unit() {
-        let n = v3_normalize([3.0, 4.0, 0.0]);
-        let len = v3_len(n);
-        assert!((len - 1.0).abs() < 1e-12, "len={}", len);
-    }
-
-    #[test]
-    fn test_v3_normalize_zero_safe() {
-        let n = v3_normalize([0.0; 3]);
-        assert_eq!(n, [0.0; 3]);
-    }
-
-    // ── Sphere-Sphere ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_sphere_sphere_overlap() {
-        let a = Sphere::new([0.0; 3], 1.0);
-        let b = Sphere::new([1.5, 0.0, 0.0], 1.0);
-        let r = sphere_sphere(&a, &b);
-        assert!(r.overlapping, "spheres should overlap");
-        assert!(r.depth > 0.0, "depth should be positive");
-    }
-
-    #[test]
-    fn test_sphere_sphere_no_overlap() {
-        let a = Sphere::new([0.0; 3], 1.0);
-        let b = Sphere::new([5.0, 0.0, 0.0], 1.0);
-        let r = sphere_sphere(&a, &b);
-        assert!(!r.overlapping);
-        assert!(r.depth < 0.0);
-    }
-
-    #[test]
-    fn test_sphere_sphere_touching() {
-        let a = Sphere::new([0.0; 3], 1.0);
-        let b = Sphere::new([2.0, 0.0, 0.0], 1.0);
-        let r = sphere_sphere(&a, &b);
-        assert!((r.depth).abs() < 1e-10, "depth should be ~0 at touching");
-    }
-
-    // ── Sphere-Capsule ────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_sphere_capsule_overlap() {
-        let s = Sphere::new([0.0; 3], 0.5);
-        let c = Capsule::new([0.0, 2.0, 0.0], [0.0, 4.0, 0.0], 0.5);
-        let (overlap, depth, _, _) = sphere_capsule(&s, &c);
-        assert!(!overlap, "should not overlap, depth={}", depth);
-    }
-
-    #[test]
-    fn test_sphere_capsule_nearby() {
-        let s = Sphere::new([0.0, 1.0, 0.0], 0.6);
-        let c = Capsule::new([0.0, 0.0, 0.0], [0.0, 3.0, 0.0], 0.6);
-        let (overlap, depth, _, _) = sphere_capsule(&s, &c);
-        assert!(overlap, "should overlap, depth={}", depth);
-    }
-
-    // ── AABB ─────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_aabb_overlap() {
-        let a = AabbRaw::new([-1.0; 3], [1.0; 3]);
-        let b = AabbRaw::new([0.5, 0.5, 0.5], [2.0, 2.0, 2.0]);
-        assert!(a.overlaps(&b));
-    }
-
-    #[test]
-    fn test_aabb_no_overlap() {
-        let a = AabbRaw::new([-1.0; 3], [1.0; 3]);
-        let b = AabbRaw::new([2.0; 3], [3.0; 3]);
-        assert!(!a.overlaps(&b));
-    }
-
-    #[test]
-    fn test_aabb_merge_contains_both() {
-        let a = AabbRaw::new([-2.0; 3], [0.0; 3]);
-        let b = AabbRaw::new([1.0; 3], [3.0; 3]);
-        let m = a.merge(&b);
-        assert!(m.min[0] <= -2.0 && m.max[0] >= 3.0);
-    }
-
-    // ── BVH ──────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_bvh_query_single_match() {
-        let leaves = vec![
-            BvhLeaf {
-                id: 1,
-                aabb: AabbRaw::new([0.0; 3], [1.0; 3]),
-            },
-            BvhLeaf {
-                id: 2,
-                aabb: AabbRaw::new([5.0; 3], [6.0; 3]),
-            },
-        ];
-        let bvh = Bvh::build(leaves);
-        let query = AabbRaw::new([0.0; 3], [0.5; 3]);
-        let hits = bvh.query(&query);
-        assert_eq!(hits, vec![1]);
-    }
-
-    #[test]
-    fn test_bvh_query_no_match() {
-        let leaves = vec![BvhLeaf {
-            id: 1,
-            aabb: AabbRaw::new([10.0; 3], [11.0; 3]),
-        }];
-        let bvh = Bvh::build(leaves);
-        let query = AabbRaw::new([0.0; 3], [1.0; 3]);
-        assert!(bvh.query(&query).is_empty());
-    }
-
-    #[test]
-    fn test_bvh_empty() {
-        let bvh = Bvh::build(vec![]);
-        let query = AabbRaw::new([0.0; 3], [1.0; 3]);
-        assert!(bvh.query(&query).is_empty());
-    }
-
-    // ── OBB SAT ───────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_obb_sat_overlap() {
-        let a = Obb::axis_aligned([0.0; 3], [1.0; 3]);
-        let b = Obb::axis_aligned([1.5, 0.0, 0.0], [1.0; 3]);
-        assert!(obb_obb_sat(&a, &b).is_some(), "overlapping OBBs");
-    }
-
-    #[test]
-    fn test_obb_sat_separated() {
-        let a = Obb::axis_aligned([0.0; 3], [1.0; 3]);
-        let b = Obb::axis_aligned([5.0, 0.0, 0.0], [1.0; 3]);
-        assert!(obb_obb_sat(&a, &b).is_none(), "separated OBBs");
-    }
-
-    // ── Ray tests ─────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_ray_aabb_hit() {
-        let origin = [-5.0, 0.0, 0.0];
-        let dir = [1.0, 0.0, 0.0];
-        let aabb = AabbRaw::new([-1.0; 3], [1.0; 3]);
-        let hit = ray_aabb(origin, dir, &aabb);
-        assert!(hit.is_some());
-        let h = hit.unwrap();
-        assert!(h.t_min < h.t_max);
-    }
-
-    #[test]
-    fn test_ray_aabb_miss() {
-        let origin = [0.0, 5.0, 0.0];
-        let dir = [1.0, 0.0, 0.0];
-        let aabb = AabbRaw::new([-1.0; 3], [1.0; 3]);
-        assert!(ray_aabb(origin, dir, &aabb).is_none());
-    }
-
-    #[test]
-    fn test_ray_sphere_hit() {
-        let s = Sphere::new([0.0; 3], 1.0);
-        let t = ray_sphere([-5.0, 0.0, 0.0], [1.0, 0.0, 0.0], &s);
-        assert!(t.is_some());
-        assert!((t.unwrap() - 4.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_ray_sphere_miss() {
-        let s = Sphere::new([0.0; 3], 1.0);
-        let t = ray_sphere([0.0, 5.0, 0.0], [1.0, 0.0, 0.0], &s);
-        assert!(t.is_none());
-    }
-
-    // ── GJK ──────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_gjk_spheres_intersecting() {
-        let a = Sphere::new([0.0; 3], 1.5);
-        let b = Sphere::new([1.0, 0.0, 0.0], 1.5);
-        let r = gjk(&a, &b);
-        assert!(r.intersecting);
-    }
-
-    #[test]
-    fn test_gjk_spheres_separated() {
-        let a = Sphere::new([0.0; 3], 0.5);
-        let b = Sphere::new([10.0, 0.0, 0.0], 0.5);
-        let r = gjk(&a, &b);
-        assert!(!r.intersecting);
-        assert!(r.distance > 0.0);
-    }
-
-    // ── ContactManifold ───────────────────────────────────────────────────────
-
-    #[test]
-    fn test_manifold_add_and_max_depth() {
-        let mut m = ContactManifold::new();
-        m.add_contact(Contact {
-            point: [0.0; 3],
-            normal: [0.0, 1.0, 0.0],
-            depth: 0.1,
-            id_a: 1,
-            id_b: 2,
-        });
-        m.add_contact(Contact {
-            point: [1.0, 0.0, 0.0],
-            normal: [0.0, 1.0, 0.0],
-            depth: 0.3,
-            id_a: 1,
-            id_b: 2,
-        });
-        assert_eq!(m.contacts.len(), 2);
-        assert!((m.max_depth() - 0.3).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_manifold_average_normal_unit() {
-        let mut m = ContactManifold::new();
-        for _ in 0..3 {
-            m.add_contact(Contact {
-                point: [0.0; 3],
-                normal: [0.0, 1.0, 0.0],
-                depth: 0.1,
-                id_a: 1,
-                id_b: 2,
-            });
-        }
-        let n = m.average_normal();
-        let len = v3_len(n);
-        assert!((len - 1.0).abs() < 1e-12);
-    }
-
-    // ── EPA tests ─────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_epa_two_overlapping_spheres() {
-        let a = Sphere::new([0.0; 3], 1.5);
-        let b = Sphere::new([1.0, 0.0, 0.0], 1.5);
-        let result = epa(&a, &b);
-        assert!(
-            result.is_some(),
-            "EPA should return penetration for overlapping spheres"
-        );
-        let ep = result.unwrap();
-        assert!(ep.depth >= 0.0, "penetration depth should be non-negative");
-    }
-
-    #[test]
-    fn test_epa_concentric_spheres() {
-        let a = Sphere::new([0.0; 3], 2.0);
-        let b = Sphere::new([0.0; 3], 1.0);
-        let result = epa(&a, &b);
-        // Concentric spheres: deep penetration
-        assert!(result.is_some());
-    }
-
-    #[test]
-    fn test_epa_box_sphere_overlap() {
-        let b = Box3::new([0.0; 3], [1.0; 3]);
-        let s = Sphere::new([0.5, 0.0, 0.0], 0.8);
-        let result = epa(&b, &s);
-        assert!(
-            result.is_some(),
-            "overlapping box and sphere should produce EPA result"
-        );
-    }
-
-    // ── Support function framework ────────────────────────────────────────────
-
-    #[test]
-    fn test_support_sphere_axis_aligned() {
-        let s = Sphere::new([1.0, 2.0, 3.0], 2.0);
-        let sp_x = s.support([1.0, 0.0, 0.0]);
-        assert!(
-            (sp_x[0] - 3.0).abs() < 1e-10,
-            "x support = center.x + radius"
-        );
-        let sp_y = s.support([0.0, 1.0, 0.0]);
-        assert!(
-            (sp_y[1] - 4.0).abs() < 1e-10,
-            "y support = center.y + radius"
-        );
-    }
-
-    #[test]
-    fn test_support_box_positive_axes() {
-        let b = Box3::new([0.0; 3], [2.0, 3.0, 4.0]);
-        let sp = b.support([1.0, 1.0, 1.0]);
-        assert!((sp[0] - 2.0).abs() < 1e-10);
-        assert!((sp[1] - 3.0).abs() < 1e-10);
-        assert!((sp[2] - 4.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_support_box_negative_axes() {
-        let b = Box3::new([0.0; 3], [1.0; 3]);
-        let sp = b.support([-1.0, -1.0, -1.0]);
-        assert!((sp[0] + 1.0).abs() < 1e-10);
-        assert!((sp[1] + 1.0).abs() < 1e-10);
-        assert!((sp[2] + 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_support_capsule_chooses_correct_endpoint() {
-        let cap = Capsule::new([0.0, -1.0, 0.0], [0.0, 1.0, 0.0], 0.5);
-        let sp_up = cap.support([0.0, 1.0, 0.0]);
-        // Should be near top endpoint + radius in Y
-        assert!(sp_up[1] > 1.0, "y support above top endpoint");
-        let sp_down = cap.support([0.0, -1.0, 0.0]);
-        assert!(sp_down[1] < -1.0, "y support below bottom endpoint");
-    }
-
-    // ── Minkowski sum ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_minkowski_sum_sphere_sphere_support() {
-        let a = Sphere::new([0.0; 3], 1.0);
-        let b = Sphere::new([0.0; 3], 2.0);
-        let dir = [1.0, 0.0, 0.0];
-        // Support of sum = support of a + support of b in same direction
-        let sp = minkowski_sum_support(&a, &b, dir);
-        let expected = a.support(dir)[0] + b.support(dir)[0];
-        assert!((sp[0] - expected).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_minkowski_sum_sphere_box() {
-        let s = Sphere::new([0.0; 3], 0.5);
-        let b = Box3::new([0.0; 3], [1.0, 1.0, 1.0]);
-        let dir = [1.0, 0.0, 0.0];
-        let sp = minkowski_sum_support(&s, &b, dir);
-        // Support ≥ box support alone (sphere only adds positive amount)
-        assert!(sp[0] >= b.support(dir)[0]);
-    }
-
-    // ── Shape casting / continuous collision ──────────────────────────────────
-
-    #[test]
-    fn test_shape_cast_sphere_hits_sphere() {
-        let moving = Sphere::new([0.0; 3], 0.5);
-        let target = Sphere::new([5.0, 0.0, 0.0], 0.5);
-        let velocity = [1.0, 0.0, 0.0];
-        let t = shape_cast_sphere_vs_sphere(&moving, velocity, &target, 10.0);
-        assert!(t.is_some(), "moving sphere should hit static sphere");
-        let tv = t.unwrap();
-        assert!((0.0..=10.0).contains(&tv));
-    }
-
-    #[test]
-    fn test_shape_cast_sphere_misses_sphere() {
-        let moving = Sphere::new([0.0; 3], 0.5);
-        let target = Sphere::new([0.0, 100.0, 0.0], 0.5);
-        let velocity = [1.0, 0.0, 0.0]; // moving in X, target far in Y
-        let t = shape_cast_sphere_vs_sphere(&moving, velocity, &target, 10.0);
-        assert!(
-            t.is_none(),
-            "sphere moving in X should miss sphere far in Y"
-        );
-    }
-
-    #[test]
-    fn test_shape_cast_already_overlapping() {
-        let moving = Sphere::new([0.0; 3], 1.0);
-        let target = Sphere::new([0.5, 0.0, 0.0], 1.0);
-        let velocity = [1.0, 0.0, 0.0];
-        let t = shape_cast_sphere_vs_sphere(&moving, velocity, &target, 10.0);
-        // Already overlapping → t = 0 or very small
-        if let Some(tv) = t {
-            assert!(tv >= 0.0);
-        }
-    }
-
-    // ── GJK with capsule/box ──────────────────────────────────────────────────
-
-    #[test]
-    fn test_gjk_box_sphere_intersecting() {
-        let b = Box3::new([0.0; 3], [1.0; 3]);
-        let s = Sphere::new([1.5, 0.0, 0.0], 1.0);
-        let r = gjk(&b, &s);
-        assert!(r.intersecting, "box and sphere should intersect");
-    }
-
-    #[test]
-    fn test_gjk_box_sphere_separated() {
-        let b = Box3::new([0.0; 3], [1.0; 3]);
-        let s = Sphere::new([10.0, 0.0, 0.0], 0.5);
-        let r = gjk(&b, &s);
-        assert!(!r.intersecting, "box and sphere should be separated");
-        assert!(r.distance > 0.0);
-    }
-
-    #[test]
-    fn test_gjk_capsule_sphere_overlapping() {
-        let cap = Capsule::new([0.0, -2.0, 0.0], [0.0, 2.0, 0.0], 0.5);
-        let s = Sphere::new([0.0, 0.0, 0.0], 0.5);
-        let r = gjk(&cap, &s);
-        assert!(r.intersecting, "capsule and sphere should overlap");
-    }
-
-    #[test]
-    fn test_gjk_capsule_sphere_separated() {
-        let cap = Capsule::new([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.3);
-        let s = Sphere::new([5.0, 0.0, 0.0], 0.3);
-        let r = gjk(&cap, &s);
-        assert!(!r.intersecting);
-    }
-
-    // ── AabbRaw additional tests ───────────────────────────────────────────────
-
-    #[test]
-    fn test_aabb_surface_area_unit_cube() {
-        let a = AabbRaw::new([0.0; 3], [1.0; 3]);
-        // Unit cube: SA = 6
-        assert!((a.surface_area() - 6.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_aabb_center() {
-        let a = AabbRaw::new([-2.0; 3], [4.0; 3]);
-        let c = a.center();
-        assert!((c[0] - 1.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_aabb_from_center_half() {
-        let a = AabbRaw::from_center_half([1.0, 2.0, 3.0], [0.5; 3]);
-        assert!((a.min[0] - 0.5).abs() < 1e-12);
-        assert!((a.max[1] - 2.5).abs() < 1e-12);
-    }
-
-    // ── OBB additional tests ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_obb_vertices_count() {
-        let obb = Obb::axis_aligned([0.0; 3], [1.0; 3]);
-        let verts = obb.vertices();
-        assert_eq!(verts.len(), 8);
-    }
-
-    #[test]
-    fn test_obb_axis_aligned_vertices_correct() {
-        let obb = Obb::axis_aligned([0.0; 3], [1.0; 3]);
-        let verts = obb.vertices();
-        // Every vertex should have coordinates in {-1, 1}³
-        for v in &verts {
-            assert!(v[0].abs() <= 1.0 + 1e-10);
-            assert!(v[1].abs() <= 1.0 + 1e-10);
-            assert!(v[2].abs() <= 1.0 + 1e-10);
-        }
-    }
-
-    #[test]
-    fn test_obb_sat_touching() {
-        // Two OBBs touching exactly at their faces
-        let a = Obb::axis_aligned([0.0; 3], [1.0; 3]);
-        let b = Obb::axis_aligned([2.0, 0.0, 0.0], [1.0; 3]);
-        // Distance between centers = 2, sum of half-extents in X = 2 → touching
-        let result = obb_obb_sat(&a, &b);
-        // Either touching (some depth ~ 0) or just separated — both valid
-        let _ = result;
-    }
-
-    // ── BVH additional tests ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_bvh_all_overlapping_pairs() {
-        let leaves = vec![
-            BvhLeaf {
-                id: 1,
-                aabb: AabbRaw::new([0.0; 3], [2.0; 3]),
-            },
-            BvhLeaf {
-                id: 2,
-                aabb: AabbRaw::new([1.0; 3], [3.0; 3]),
-            },
-            BvhLeaf {
-                id: 3,
-                aabb: AabbRaw::new([10.0; 3], [11.0; 3]),
-            },
-        ];
-        let bvh = Bvh::build(leaves);
-        let pairs = bvh.overlapping_pairs();
-        // Pair (1,2) overlaps; (1,3) and (2,3) don't
-        assert!(
-            pairs.contains(&(1, 2)) || pairs.contains(&(2, 1)),
-            "pair (1,2) should be in overlapping pairs: {:?}",
-            pairs
-        );
-    }
-
-    #[test]
-    fn test_bvh_single_leaf() {
-        let leaves = vec![BvhLeaf {
-            id: 42,
-            aabb: AabbRaw::new([0.0; 3], [1.0; 3]),
-        }];
-        let bvh = Bvh::build(leaves);
-        let hits = bvh.query(&AabbRaw::new([0.0; 3], [0.5; 3]));
-        assert_eq!(hits, vec![42]);
-    }
-
-    // ── ContactManifold additional tests ──────────────────────────────────────
-
-    #[test]
-    fn test_manifold_overflow_replaces_shallowest() {
-        let mut m = ContactManifold::new();
-        for i in 0..5 {
-            m.add_contact(Contact {
-                point: [i as f64, 0.0, 0.0],
-                normal: [0.0, 1.0, 0.0],
-                depth: (i as f64 + 1.0) * 0.1,
-                id_a: 1,
-                id_b: 2,
-            });
-        }
-        // Should have at most 4 contacts
-        assert!(m.contacts.len() <= 4);
-    }
-
-    #[test]
-    fn test_manifold_is_empty_after_new() {
-        let m = ContactManifold::new();
-        assert!(m.is_empty());
-    }
-
-    #[test]
-    fn test_manifold_max_depth_empty() {
-        let m = ContactManifold::new();
-        // max_depth on empty manifold should be NEG_INFINITY
-        assert_eq!(m.max_depth(), f64::NEG_INFINITY);
-    }
-
-    // ── point_segment_closest ─────────────────────────────────────────────────
-
-    #[test]
-    fn test_point_segment_closest_midpoint() {
-        let (cp, dist) = point_segment_closest([0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
-        assert!(cp[0].abs() < 1e-12, "closest x should be 0");
-        assert!((dist - 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_point_segment_closest_beyond_end() {
-        let (cp, dist) = point_segment_closest([5.0, 0.0, 0.0], [0.0; 3], [1.0, 0.0, 0.0]);
-        assert!((cp[0] - 1.0).abs() < 1e-12, "closest x should clamp to 1");
-        assert!((dist - 4.0).abs() < 1e-10);
-    }
-
-    // ── ray_sphere additional ─────────────────────────────────────────────────
-
-    #[test]
-    fn test_ray_sphere_from_inside() {
-        let s = Sphere::new([0.0; 3], 2.0);
-        // Ray from origin → should hit from inside (t > 0)
-        let t = ray_sphere([0.0; 3], [1.0, 0.0, 0.0], &s);
-        assert!(t.is_some());
-        assert!(t.unwrap() > 0.0);
-    }
-
-    #[test]
-    fn test_ray_aabb_along_each_axis() {
-        let aabb = AabbRaw::new([-1.0; 3], [1.0; 3]);
-        for axis in 0..3 {
-            // Start on the negative axis side, aligned with the center
-            let mut origin = [0.0_f64; 3];
-            let mut dir = [0.0_f64; 3];
-            origin[axis] = -5.0;
-            dir[axis] = 1.0;
-            let hit = ray_aabb(origin, dir, &aabb);
-            assert!(hit.is_some(), "ray along axis {axis} should hit unit AABB");
-        }
-    }
-}
+#[path = "collision_tests.rs"]
+mod tests;

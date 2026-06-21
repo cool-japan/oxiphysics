@@ -182,6 +182,11 @@ pub struct StepResult {
     /// Number of active simulation islands this step.
     pub active_islands: u32,
     /// Wall-clock time spent in physics this step (ms).
+    ///
+    /// Measured with a real monotonic clock (`std::time::Instant` natively,
+    /// `performance.now()` on wasm). `0.0` when the step did nothing (paused /
+    /// no substeps). `f64::NAN` is an honest sentinel meaning the target
+    /// exposes no clock — measure on the JS side via `performance.now()`.
     pub perf_ms: f64,
     /// Whether any constraint was violated beyond the tolerance.
     pub constraint_violation: bool,

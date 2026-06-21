@@ -28,7 +28,7 @@
 //! ## Usage
 //!
 //! ```
-//! use oxiphysics_constraints::simd_pgs::{BatchPgsSolver, SoaConstraints};
+//! use oxiphysics_constraints::simd_pgs::{BatchPgsSolver, SoaConstraintRow, SoaConstraints};
 //!
 //! let mut soa = SoaConstraints::new();
 //! // Populate constraints from your scene …

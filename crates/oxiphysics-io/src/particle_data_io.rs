@@ -198,6 +198,54 @@ impl ParticleDataset {
 }
 
 // ---------------------------------------------------------------------------
+// ByteCursor — little-endian reader for binary particle formats
+// ---------------------------------------------------------------------------
+
+/// A forward-only cursor over a byte slice that reads little-endian scalars.
+///
+/// Every read is bounds-checked and returns [`crate::Error::Parse`] on a short
+/// (truncated) buffer rather than panicking or silently returning a default.
+struct ByteCursor<'a> {
+    data: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> ByteCursor<'a> {
+    /// Wrap a byte slice, starting at offset 0.
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, offset: 0 }
+    }
+
+    /// Read exactly `N` bytes, advancing the cursor, or error if truncated.
+    fn read_array<const N: usize>(&mut self) -> crate::Result<[u8; N]> {
+        let end = self.offset.checked_add(N).ok_or_else(|| {
+            crate::Error::Parse("H5Part: byte offset overflow while reading".to_string())
+        })?;
+        let slice = self.data.get(self.offset..end).ok_or_else(|| {
+            crate::Error::Parse(format!(
+                "H5Part: truncated input — need {N} bytes at offset {} but only {} available",
+                self.offset,
+                self.data.len().saturating_sub(self.offset),
+            ))
+        })?;
+        let mut buf = [0u8; N];
+        buf.copy_from_slice(slice);
+        self.offset = end;
+        Ok(buf)
+    }
+
+    /// Read a little-endian `u64`.
+    fn read_u64(&mut self) -> crate::Result<u64> {
+        Ok(u64::from_le_bytes(self.read_array::<8>()?))
+    }
+
+    /// Read a little-endian `f64`.
+    fn read_f64(&mut self) -> crate::Result<f64> {
+        Ok(f64::from_le_bytes(self.read_array::<8>()?))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // H5Part (HDF5-based particle format) — pure-Rust simulation
 // ---------------------------------------------------------------------------
 
@@ -231,16 +279,71 @@ impl H5partReader {
         Self::default()
     }
 
-    /// Load a dataset from a byte slice simulating H5Part binary content.
+    /// Load a dataset from a byte slice produced by [`H5partWriter::to_bytes`].
     ///
-    /// In a real implementation this would call `hdf5` crate APIs.
-    /// Here we parse a simple custom binary format for testing purposes.
+    /// This is the exact inverse of the writer's binary layout:
+    ///
+    /// ```text
+    /// magic           : b"H5PART\0\0"          (8 bytes)
+    /// num_steps        : u64 little-endian       (8 bytes)
+    /// per step:
+    ///     step             : u64 little-endian
+    ///     time             : f64 little-endian
+    ///     particle_count   : u64 little-endian
+    ///     per particle:
+    ///         pos[0..3]    : 3 × f64 little-endian
+    ///         vel[0..3]    : 3 × f64 little-endian
+    ///         mass         : f64 little-endian
+    ///         radius       : f64 little-endian
+    /// ```
+    ///
+    /// Note: the on-disk format produced by [`H5partWriter::to_bytes`] does not
+    /// store particle IDs or named properties, so the reconstructed datasets use
+    /// sequential IDs (`0..particle_count`) and carry no extra properties. All
+    /// positions, velocities, masses and radii are recovered exactly.
+    ///
+    /// Returns [`crate::Error::Parse`] for any input that is not a valid H5Part
+    /// stream or that is truncated mid-record (never a silent empty reader).
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
-        // Minimal "magic" header check (8 bytes: b"H5PART\0\0").
-        if data.len() < 8 || &data[..6] != b"H5PART" {
+        // Magic header check (8 bytes: b"H5PART\0\0").
+        if data.len() < 8 || &data[..8] != b"H5PART\0\0" {
             return Err(crate::Error::Parse("not a valid H5Part file".to_string()));
         }
-        Ok(Self::default())
+
+        // Cursor over the payload following the 8-byte magic.
+        let mut cursor = ByteCursor::new(&data[8..]);
+
+        let num_steps = cursor.read_u64()?;
+        let mut steps = Vec::with_capacity(num_steps as usize);
+
+        for step_index in 0..num_steps {
+            let step = cursor.read_u64()?;
+            let time = cursor.read_f64()?;
+            let particle_count = cursor.read_u64()?;
+
+            let mut dataset = ParticleDataset::with_time(time, step);
+            for particle_index in 0..particle_count {
+                let position = [cursor.read_f64()?, cursor.read_f64()?, cursor.read_f64()?];
+                let velocity = [cursor.read_f64()?, cursor.read_f64()?, cursor.read_f64()?];
+                let mass = cursor.read_f64()?;
+                let radius = cursor.read_f64()?;
+                // The writer does not persist IDs; assign sequential IDs so the
+                // reconstructed dataset is internally consistent.
+                let _ = step_index;
+                dataset.add_particle(particle_index, position, velocity, mass, radius);
+            }
+
+            steps.push(H5PartStep {
+                step,
+                time,
+                dataset,
+            });
+        }
+
+        Ok(Self {
+            steps,
+            attributes: HashMap::new(),
+        })
     }
 
     /// Return the number of time steps.
@@ -1331,6 +1434,69 @@ mod tests {
         let r = w.into_reader();
         assert_eq!(r.num_steps(), 1);
         assert_eq!(r.step(0).unwrap().dataset.len(), ds.len());
+    }
+
+    #[test]
+    fn test_h5part_to_bytes_from_bytes_round_trip() {
+        // Build two steps with several particles carrying distinct values so
+        // that any silent loss (empty/default reader) is impossible to miss.
+        let mut step0 = ParticleDataset::with_time(0.25, 0);
+        step0.add_particle(0, [1.0, 2.0, 3.0], [0.1, 0.2, 0.3], 1.5, 0.4);
+        step0.add_particle(1, [-4.0, 5.5, 6.25], [-0.4, 0.0, 0.9], 2.0, 0.7);
+        step0.add_particle(2, [10.0, 11.0, 12.0], [1.1, -1.2, 1.3], 3.25, 1.0);
+
+        let mut step1 = ParticleDataset::with_time(1.75, 0);
+        step1.add_particle(0, [100.0, 200.0, 300.0], [9.9, 8.8, 7.7], 5.0, 2.5);
+        step1.add_particle(1, [-1.0, -2.0, -3.0], [-9.0, -8.0, -7.0], 6.5, 3.0);
+
+        let mut w = H5partWriter::new();
+        w.write_step(step0.clone());
+        w.write_step(step1.clone());
+
+        let bytes = w.to_bytes();
+
+        // Reconstruct strictly from serialized bytes (NOT via into_reader).
+        let r = H5partReader::from_bytes(&bytes).unwrap();
+
+        assert_eq!(r.num_steps(), 2);
+
+        // Step indices are assigned sequentially by the writer.
+        let s0 = r.step(0).unwrap();
+        let s1 = r.step(1).unwrap();
+        assert_eq!(s0.step, 0);
+        assert_eq!(s1.step, 1);
+
+        // Per-step time must match exactly.
+        assert!((s0.time - 0.25).abs() < 1e-12, "s0.time={}", s0.time);
+        assert!((s1.time - 1.75).abs() < 1e-12, "s1.time={}", s1.time);
+        assert!((s0.dataset.time - 0.25).abs() < 1e-12);
+        assert!((s1.dataset.time - 1.75).abs() < 1e-12);
+
+        // Particle counts must match.
+        assert_eq!(s0.dataset.len(), 3);
+        assert_eq!(s1.dataset.len(), 2);
+
+        // Every position / velocity / mass / radius must round-trip bit-faithfully
+        // (f64 -> LE bytes -> f64 is exact).
+        for (got, expected) in [(s0, &step0), (s1, &step1)] {
+            for i in 0..expected.len() {
+                assert_eq!(got.dataset.positions[i], expected.positions[i], "pos {i}");
+                assert_eq!(got.dataset.velocities[i], expected.velocities[i], "vel {i}");
+                assert_eq!(got.dataset.masses[i], expected.masses[i], "mass {i}");
+                assert_eq!(got.dataset.radii[i], expected.radii[i], "radius {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_h5part_from_bytes_truncated_is_error() {
+        // A valid magic + num_steps=1 header, but the step record is cut off.
+        let mut data = b"H5PART\0\0".to_vec();
+        data.extend_from_slice(&1u64.to_le_bytes()); // num_steps = 1
+        data.extend_from_slice(&0u64.to_le_bytes()); // step = 0
+        // (missing time, particle_count, and particle data)
+        let result = H5partReader::from_bytes(&data);
+        assert!(result.is_err(), "truncated input must be a loud Err");
     }
 
     #[test]

@@ -185,16 +185,53 @@ pub fn total_awake_bodies(islands: &[Island]) -> usize {
 ///
 /// Two islands are connected when a constraint spans bodies in both.
 /// This can occur after island splitting if a joint bridges two components.
-pub fn build_island_dependency_graph(islands: &[Island]) -> Vec<IslandDependency> {
-    let mut handle_to_island: std::collections::HashMap<(u32, u32), usize> =
-        std::collections::HashMap::new();
+///
+/// Each constraint reports the bodies it touches via
+/// [`Constraint::body_handles`]; for every constraint whose first two bodies
+/// resolve to *different* islands an [`IslandDependency`] edge is produced.
+/// Edges are deduplicated across the (unordered) island pair and the number of
+/// constraints linking each pair is accumulated into
+/// [`IslandDependency::constraint_count`].
+pub fn build_island_dependency_graph(
+    islands: &[Island],
+    constraints: &[Box<dyn Constraint>],
+) -> Vec<IslandDependency> {
+    let mut handle_to_island: HashMap<(u32, u32), usize> = HashMap::new();
     for (idx, island) in islands.iter().enumerate() {
         for &h in &island.body_handles {
             handle_to_island.insert((h.index, h.generation), idx);
         }
     }
-    let deps: Vec<IslandDependency> = Vec::new();
-    let _ = handle_to_island;
+    let mut deps: Vec<IslandDependency> = Vec::new();
+    for constraint in constraints {
+        if !constraint.is_active() {
+            continue;
+        }
+        let handles = constraint.body_handles();
+        if handles.len() < 2 {
+            continue;
+        }
+        let ka = (handles[0].index, handles[0].generation);
+        let kb = (handles[1].index, handles[1].generation);
+        let ia = handle_to_island.get(&ka).copied();
+        let ib = handle_to_island.get(&kb).copied();
+        if let (Some(a), Some(b)) = (ia, ib)
+            && a != b
+        {
+            if let Some(existing) = deps
+                .iter_mut()
+                .find(|d| (d.from == a && d.to == b) || (d.from == b && d.to == a))
+            {
+                existing.constraint_count += 1;
+            } else {
+                deps.push(IslandDependency {
+                    from: a,
+                    to: b,
+                    constraint_count: 1,
+                });
+            }
+        }
+    }
     deps
 }
 /// Estimate the parallel speedup achievable with `n_threads` for `islands`.
@@ -1076,15 +1113,107 @@ mod tests {
     }
     #[test]
     fn test_build_island_dependency_graph_empty() {
-        let deps = build_island_dependency_graph(&[]);
+        let constraints: Vec<Box<dyn Constraint>> = vec![];
+        let deps = build_island_dependency_graph(&[], &constraints);
         assert!(deps.is_empty());
     }
     #[test]
     fn test_build_island_dependency_graph_no_deps() {
         let mut island = Island::new();
         island.body_handles.push(BodyHandle::new(0, 0));
-        let deps = build_island_dependency_graph(&[island]);
+        let constraints: Vec<Box<dyn Constraint>> = vec![];
+        let deps = build_island_dependency_graph(&[island], &constraints);
         assert!(deps.is_empty());
+    }
+    #[test]
+    fn test_build_island_dependency_graph_cross_island_edge() {
+        // Two genuinely separate islands: island 0 = {body 0}, island 1 = {body 1}.
+        let mut island_a = Island::new();
+        island_a.body_handles.push(BodyHandle::new(0, 1));
+        let mut island_b = Island::new();
+        island_b.body_handles.push(BodyHandle::new(1, 1));
+        let islands = vec![island_a, island_b];
+        // A joint whose two bodies live in *different* islands must yield an edge.
+        let bridging: Box<dyn Constraint> = Box::new(BallJoint::new(
+            BodyHandle::new(0, 1),
+            BodyHandle::new(1, 1),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(-1.0, 0.0, 0.0),
+        ));
+        let constraints: Vec<Box<dyn Constraint>> = vec![bridging];
+        let deps = build_island_dependency_graph(&islands, &constraints);
+        assert_eq!(deps.len(), 1, "exactly one cross-island edge expected");
+        let edge = &deps[0];
+        // Endpoints must be the two distinct islands (order is unspecified).
+        assert!(
+            (edge.from == 0 && edge.to == 1) || (edge.from == 1 && edge.to == 0),
+            "edge must connect island 0 and island 1, got {} -> {}",
+            edge.from,
+            edge.to
+        );
+        assert_eq!(edge.constraint_count, 1);
+    }
+    #[test]
+    fn test_build_island_dependency_graph_intra_island_no_edge() {
+        // One island containing both bodies 0 and 1.
+        let mut island = Island::new();
+        island.body_handles.push(BodyHandle::new(0, 1));
+        island.body_handles.push(BodyHandle::new(1, 1));
+        let islands = vec![island];
+        // A joint *within* the single island must NOT create a spurious edge.
+        let internal: Box<dyn Constraint> = Box::new(BallJoint::new(
+            BodyHandle::new(0, 1),
+            BodyHandle::new(1, 1),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(-1.0, 0.0, 0.0),
+        ));
+        let constraints: Vec<Box<dyn Constraint>> = vec![internal];
+        let deps = build_island_dependency_graph(&islands, &constraints);
+        assert!(
+            deps.is_empty(),
+            "intra-island constraint must not create an edge, got {} edges",
+            deps.len()
+        );
+    }
+    #[test]
+    fn test_build_island_dependency_graph_dedup_and_count() {
+        // Three islands; two parallel joints bridge islands 0 and 2.
+        let mut island0 = Island::new();
+        island0.body_handles.push(BodyHandle::new(0, 1));
+        let mut island1 = Island::new();
+        island1.body_handles.push(BodyHandle::new(1, 1));
+        let mut island2 = Island::new();
+        island2.body_handles.push(BodyHandle::new(2, 1));
+        let islands = vec![island0, island1, island2];
+        let bridge_one: Box<dyn Constraint> = Box::new(BallJoint::new(
+            BodyHandle::new(0, 1),
+            BodyHandle::new(2, 1),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(-1.0, 0.0, 0.0),
+        ));
+        let bridge_two: Box<dyn Constraint> = Box::new(BallJoint::new(
+            BodyHandle::new(2, 1),
+            BodyHandle::new(0, 1),
+            Vec3::new(0.5, 0.0, 0.0),
+            Vec3::new(-0.5, 0.0, 0.0),
+        ));
+        let constraints: Vec<Box<dyn Constraint>> = vec![bridge_one, bridge_two];
+        let deps = build_island_dependency_graph(&islands, &constraints);
+        // Both joints connect the same unordered pair {0, 2}: one deduped edge,
+        // constraint_count == 2.
+        assert_eq!(
+            deps.len(),
+            1,
+            "parallel constraints must collapse to one edge"
+        );
+        let edge = &deps[0];
+        assert!(
+            (edge.from == 0 && edge.to == 2) || (edge.from == 2 && edge.to == 0),
+            "edge must connect island 0 and island 2, got {} -> {}",
+            edge.from,
+            edge.to
+        );
+        assert_eq!(edge.constraint_count, 2);
     }
     #[test]
     fn test_amdahl_speedup_empty() {

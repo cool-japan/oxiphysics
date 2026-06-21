@@ -469,6 +469,75 @@ mod tests {
         assert_eq!(u_new.len(), nx * ny * nz);
     }
     #[test]
+    fn test_heat3d_implicit_split_unconditionally_stable() {
+        // Grid + diffusivity chosen so the explicit CFL limit (r <= 1/6) is
+        // violated by a wide margin: r = D*dt/dx^2 = 1.0 * 0.5 / 0.1^2 = 50.
+        let nx = 6;
+        let ny = 6;
+        let nz = 6;
+        let dx = 0.1;
+        let dt = 0.5;
+        let diffusivity = 1.0;
+        let r = diffusivity * dt / (dx * dx);
+        assert!(r > 1.0 / 6.0, "test must exceed explicit CFL: r = {r}");
+
+        let heat = HeatEquation3D::new(
+            nx,
+            ny,
+            nz,
+            dx,
+            dt,
+            diffusivity,
+            BoundaryCondition::Dirichlet(0.0),
+        );
+
+        // Interior hot (=1), boundaries cold (=0).  Steady state is u ≡ 0.
+        let mut u_init = vec![0.0_f64; nx * ny * nz];
+        for k in 1..nz - 1 {
+            for j in 1..ny - 1 {
+                for i in 1..nx - 1 {
+                    u_init[heat.idx(i, j, k)] = 1.0;
+                }
+            }
+        }
+
+        // (a) Explicit step at this dt must blow up far past the initial range.
+        let u_exp = heat.step_explicit(&u_init);
+        let exp_max = u_exp.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+        assert!(
+            exp_max > 5.0 || u_exp.iter().any(|v| !v.is_finite()),
+            "explicit scheme should be unstable beyond CFL, max = {exp_max}"
+        );
+
+        // (b) Implicit ADI must stay bounded and relax monotonically toward 0.
+        let mut u = u_init.clone();
+        let mut prev_max = 1.0_f64;
+        for step in 0..40 {
+            u = heat.step_implicit_split(&u);
+            assert!(
+                u.iter().all(|v| v.is_finite()),
+                "implicit ADI produced non-finite at step {step}"
+            );
+            let cur_max = u.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+            // Maximum principle: never exceeds the initial maximum (+tiny slack).
+            assert!(
+                cur_max <= 1.0 + 1e-9,
+                "implicit ADI violated max principle at step {step}: {cur_max}"
+            );
+            // Monotone decay toward the cold steady state.
+            assert!(
+                cur_max <= prev_max + 1e-9,
+                "implicit ADI not relaxing at step {step}: {cur_max} > {prev_max}"
+            );
+            prev_max = cur_max;
+        }
+        // After many large steps the field has essentially reached steady state.
+        assert!(
+            prev_max < 1e-2,
+            "implicit ADI did not relax toward steady state: residual {prev_max}"
+        );
+    }
+    #[test]
     fn test_thomas_three_by_three() {
         let a = vec![0.0, 1.0, 1.0];
         let b = vec![4.0, 4.0, 4.0];

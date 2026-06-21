@@ -518,6 +518,53 @@ mod tests {
         assert!(g.tult_md > 100.0, "tult_md={}", g.tult_md);
     }
     #[test]
+    fn geogrid_interaction_coefficient_is_real_ci() {
+        // Ci = tan(δ) / tan(φ_soil); must vary with φ_soil and NOT be the old
+        // constant 0.8 (the previous body was 0.8·tan(φ)/tan(φ) ≡ 0.8).
+        let g = Geogrid::bx1100(); // δ = 30°
+        let ci_30 = g.interaction_coefficient(30.0);
+        let ci_36 = g.interaction_coefficient(36.0);
+        let ci_25 = g.interaction_coefficient(25.0);
+
+        // δ = φ_soil = 30° ⇒ Ci = 1.0 (full friction mobilised).
+        assert!((ci_30 - 1.0).abs() < 1e-9, "ci_30={ci_30}");
+        // Stiffer soil (φ > δ) ⇒ Ci < 1; weaker soil (φ < δ) ⇒ Ci > 1.
+        assert!(ci_36 < ci_30, "ci_36={ci_36} ci_30={ci_30}");
+        assert!(ci_25 > ci_30, "ci_25={ci_25} ci_30={ci_30}");
+        // Genuinely input-dependent: the three values differ from each other.
+        assert!((ci_36 - ci_25).abs() > 0.05, "ci_36={ci_36} ci_25={ci_25}");
+
+        // Closed-form check against tan(δ)/tan(φ).
+        let expected = (30f64).to_radians().tan() / (36f64).to_radians().tan();
+        assert!(
+            (ci_36 - expected).abs() < 1e-9,
+            "ci_36={ci_36} exp={expected}"
+        );
+
+        // Must NOT be pinned at the fabricated constant 0.8 for every input.
+        assert!(
+            (ci_36 - 0.8).abs() > 0.01 || (ci_25 - 0.8).abs() > 0.01,
+            "Ci collapsed to the old constant 0.8"
+        );
+
+        // Different geogrid (different δ) ⇒ different Ci at the same soil angle.
+        let g2 = Geogrid::ux1500hs(); // δ = 32°
+        let ci2_30 = g2.interaction_coefficient(30.0);
+        assert!(
+            (ci2_30 - ci_30).abs() > 0.01,
+            "ci2_30={ci2_30} ci_30={ci_30}"
+        );
+
+        // Degenerate soil angle is handled without NaN/∞.
+        let ci_zero = g.interaction_coefficient(0.0);
+        assert!(ci_zero.is_finite(), "ci_zero={ci_zero}");
+        assert_eq!(ci_zero, 0.0, "ci_zero={ci_zero}");
+        assert!(
+            g.interaction_coefficient(-5.0).is_finite(),
+            "negative φ_soil must stay finite"
+        );
+    }
+    #[test]
     fn geosynthetic_horizontal_stress_increases_with_depth() {
         let r = GeosyntheticReinforcement::new("geogrid", 10.0, 0.6, 34.0, 20.0, 0.9);
         let s1 = r.horizontal_stress(3.0);

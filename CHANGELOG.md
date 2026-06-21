@@ -11,7 +11,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+### Removed
+- `oxiphysics-gpu`: Deleted four orphaned, never-compiled CPU-reference kernel modules
+  (`src/kernels/{md,fem,collision,lbm}_kernels.rs`, ~155 KB) that were not declared in
+  `kernels/mod.rs` (zero references workspace-wide) and had been superseded by the wired,
+  `splitrs`-refactored `kernels/md_force/`, `kernels/rigid/`, `kernels/sph.rs`,
+  `kernels/broadphase.rs`. Dead duplicate code left over from a prior refactor.
+
 ### Fixed
+Honesty audit (`/strict-check`): eradicated **silent fabrications** — code that compiled and
+returned plausible-but-fake values with no loud marker, where callers could not tell a real
+computation never happened. Each was replaced with a real implementation (or an honest error),
+plus a regression test asserting the real behavior instead of the fabricated constant. The
+workspace has **zero** `todo!`/`unimplemented!` stubs and the CUDA backend (cudarc) was
+confirmed honest (real device queries, `NotAvailable`/`FeatureNotEnabled` errors).
+
+- `oxiphysics-core` `neural_ode`: `AdjointMethod::backward` returned the negated input
+  (`-loss_grad`) — a fake gradient that silently broke training. Now computes a real
+  transpose-Jacobian–vector product of one RK4 step via central finite differences of the
+  actual dynamics.
+- `oxiphysics-core` `pde`: `HeatEquation3D::step_implicit_split` merely called `step_explicit`
+  while advertising operator-split ADI (so it inherited the explicit CFL limit it claimed to
+  escape). Now a real LOD backward-Euler ADI with an O(n) Thomas tridiagonal solver in x/y/z;
+  unconditionally stable.
+- `oxiphysics-core` `collision`: EPA returned a hardcoded `depth: 0.0, normal: [0,1,0]` for
+  GJK-confirmed overlaps (the whole EPA loop also failed to enclose the origin for smooth
+  shapes), and GJK reported `intersecting: true`/zero-distance on non-convergence. EPA was
+  rewritten (origin-enclosing seed tetrahedron, outward winding, horizon-edge expansion, real
+  convergence) to return true penetration depth/normal; GJK now reports its real best estimate.
+- `oxiphysics-core` `numerical_linear_algebra`: `hessenberg_eigenvalues` returned the raw
+  Hessenberg diagonal as "eigenvalues" with `converged: true`, feeding wrong Ritz values to the
+  Arnoldi eigensolver. Now a real shifted-QR (Francis) iteration with deflation.
+- `oxiphysics-materials` `construction`: `Geogrid::interaction_coefficient` was
+  `0.8 * tan(φ)/tan(φ)` — identically 0.8 (NaN at φ=0). Now the real `Ci = tan(δ)/tan(φ)` from a
+  stored soil–geogrid interface friction angle; varies with inputs and is finite at 0.
+- `oxiphysics-materials` `battery_materials`: `apparent_activation_energy_ev` ignored both
+  temperature arguments and returned the stored Ea. Now a real two-point Arrhenius fit from
+  `ionic_conductivity(T1)`/`(T2)`; honest `NaN` for degenerate inputs.
+- `oxiphysics-fem` `modal`: the Lanczos modal eigensolver returned raw Krylov basis vectors as
+  "mode shapes" and diagonalized a mis-indexed tridiagonal matrix (off-by-one sub-diagonal)
+  while reporting convergence. Replaced with a real EISPACK-`tql2` symmetric-QL solver with
+  eigenvector accumulation and proper Ritz vectors `V·y` (M-normalized); fixed a start vector
+  that silently dropped antisymmetric modes.
+- `oxiphysics-constraints` `islands`: `build_island_dependency_graph` discarded its work and
+  returned an empty `Vec` for all inputs (its tests passed vacuously). Now takes the constraints
+  and builds the real cross-island edge set (deduplicated, with honest per-edge counts).
+- `oxiphysics-sph` `sph_analysis`: `SphDiagnostics::compute` hardcoded `disorder_parameter: 0.0`
+  despite a real helper existing. Now computes the data-driven neighbor-count disorder.
+- `oxiphysics-sph` `dfsph_solver`: `PressureSolveIter::iterate` computed the kernel gradient then
+  discarded it (`let _ = g;`), applying no velocity correction while claiming to. Implemented the
+  missing DFSPH constant-density pressure projection; verified to drive density error below
+  tolerance end-to-end.
+- `oxiphysics-io` `particle_data_io`: `H5partReader::from_bytes` checked the magic then returned
+  an empty reader, silently dropping everything `H5partWriter::to_bytes` wrote. Now the real
+  inverse parse (bounds-checked, honest `Err` on truncation); full round-trip restored.
+- `oxiphysics-io` `mesh_io`: `GltfMeshReader::parse_json` returned empty geometry while the writer
+  emitted real base64 vertex/index buffers. Now decodes the base64 buffer and accessors (via the
+  existing `decode_f32`/`decode_u32` plus a pure-Rust base64 decoder); writer↔reader round-trip
+  recovers vertices and indices.
+- `oxiphysics-wasm` `fluid_bridge`: `compute_ftle` returned a hardcoded `|sin·cos/t|` pattern
+  independent of the flow. Now a real finite-time Lyapunov exponent — tracer advection (RK4) →
+  flow-map Jacobian → `(1/t)·ln√λ_max(FᵀF)`; honest `Err` when no velocity field is set.
+  Validated against analytic flows (uniform → 0, linear strain → strain rate).
+- `oxiphysics-wasm` `sim_controls`/`web_worker`: `StepResult.perf_ms` and the worker's `step_us`
+  were fabricated constants (`frame_time*0.01`, `100`) and `contact_count` was hardcoded `0`. Now
+  measured with a real monotonic clock (`Instant` native / `performance.now()` on wasm32), and the
+  worker preview is honestly documented as contactless ballistic integration.
 
 ## [0.1.2] - 2026-06-06
 

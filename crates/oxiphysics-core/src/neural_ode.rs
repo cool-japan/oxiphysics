@@ -471,18 +471,58 @@ impl AdjointMethod {
         }
     }
 
-    /// Compute parameter gradients given the loss gradient at the final time.
+    /// One-step adjoint VJP: propagate `loss_grad` backward through a single RK4
+    /// step of `solver`'s dynamics.
     ///
-    /// This is a simplified adjoint implementation: it propagates `loss_grad`
-    /// backward through one RK4 step and returns the approximate gradient with
-    /// respect to the initial state.
+    /// Given the loss gradient `g = ∂L/∂z₁` at the *output* state `z₁ = Φ(z₀)`
+    /// (where `Φ` is one fixed-step RK4 integration of `dz/dt = f(t,z)` over
+    /// `[t0, t0 + dt]`), this returns the gradient with respect to the *input*
+    /// state:
     ///
-    /// In a full implementation, `func` would be called to integrate the adjoint
-    /// ODE backward; here we use a finite-difference approximation to illustrate
-    /// the interface.
-    pub fn backward(&self, loss_grad: &[f64]) -> Vec<f64> {
-        // Simplified: return negative of loss_grad scaled by 1 (identity Jacobian approximation)
-        loss_grad.iter().map(|&g| -g).collect()
+    ///   `∂L/∂z₀ = (∂Φ/∂z₀)ᵀ · g`
+    ///
+    /// The transpose-Jacobian–vector product `(∂Φ/∂z₀)ᵀ · g` is formed column by
+    /// column via central finite differences of the actual RK4 step map: for each
+    /// input coordinate `j`, the `j`-th component of the result is
+    /// `Σ_i g_i · [Φ(z₀ + ε e_j) − Φ(z₀ − ε e_j)]_i / (2ε)`.
+    ///
+    /// This is the honest reverse-mode gradient of one integration step — it
+    /// invokes the real dynamics, so its value depends on `z0` and `f`, not just
+    /// on the sign of `loss_grad`.
+    pub fn backward(
+        &self,
+        solver: &NeuralOdeSolver,
+        z0: &[f64],
+        loss_grad: &[f64],
+        t0: f64,
+        dt: f64,
+    ) -> Vec<f64> {
+        let n = self.state_dim.min(z0.len()).min(loss_grad.len());
+        if n == 0 {
+            return vec![0.0; self.state_dim];
+        }
+        // Relative finite-difference step, robust to the scale of z0.
+        let eps_base = 1e-6;
+        let forward = |t: f64, y: &[f64]| solver.func.forward(t, y);
+
+        let mut grad = vec![0.0_f64; z0.len()];
+        for j in 0..n {
+            let eps = eps_base * (1.0 + z0[j].abs());
+            let mut z_plus = z0.to_vec();
+            let mut z_minus = z0.to_vec();
+            z_plus[j] += eps;
+            z_minus[j] -= eps;
+            // Φ(z₀ ± ε e_j): a single RK4 step of the real dynamics.
+            let phi_plus = rk4_step(&forward, t0, &z_plus, dt);
+            let phi_minus = rk4_step(&forward, t0, &z_minus, dt);
+            // (column j of ∂Φ/∂z₀) ⋅ loss_grad  →  component j of (∂Φ/∂z₀)ᵀ g.
+            let mut acc = 0.0;
+            for i in 0..n {
+                acc += loss_grad[i] * (phi_plus[i] - phi_minus[i]) / (2.0 * eps);
+            }
+            grad[j] = acc;
+        }
+        grad
     }
 
     /// Set the final adjoint state from `loss_grad` and propagate it backward
@@ -1016,18 +1056,59 @@ mod tests {
 
     #[test]
     fn test_adjoint_backward_shape() {
+        let func = NeuralOdeFunc::new(4, 8, 33);
+        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
         let adj = AdjointMethod::new(4);
+        let z0 = vec![0.2, -0.1, 0.4, 0.0];
         let loss_grad = vec![1.0, -1.0, 0.5, -0.5];
-        let grad = adj.backward(&loss_grad);
+        let grad = adj.backward(&solver, &z0, &loss_grad, 0.0, 0.1);
         assert_eq!(grad.len(), 4);
     }
 
+    /// The one-step adjoint VJP must equal the gradient of the *actual* loss
+    /// `L(z0) = loss_grad · Φ(z0)` (Φ = one RK4 step of the real dynamics) with
+    /// respect to z0 — verified against an independent central finite difference
+    /// of L itself.  This pins down that `backward` is a real adjoint, NOT the
+    /// old `-loss_grad` fabrication.
     #[test]
-    fn test_adjoint_backward_negation() {
+    fn test_adjoint_backward_matches_finite_difference_of_loss() {
+        let func = NeuralOdeFunc::new(3, 6, 101);
+        let solver = NeuralOdeSolver::new(func, 1e-3, 1e-6);
         let adj = AdjointMethod::new(3);
-        let loss_grad = vec![2.0, -3.0, 1.0];
-        let grad = adj.backward(&loss_grad);
-        assert_eq!(grad, vec![-2.0, 3.0, -1.0]);
+        let z0 = vec![0.3, -0.2, 0.5];
+        let loss_grad = vec![0.7, -1.3, 0.4];
+        let t0 = 0.0;
+        let dt = 0.15;
+
+        let grad = adj.backward(&solver, &z0, &loss_grad, t0, dt);
+
+        // Independent reference: L(z0) = loss_grad · Φ(z0); dL/dz0[j] via FD.
+        let loss = |z: &[f64]| -> f64 {
+            let forward = |t: f64, y: &[f64]| solver.func.forward(t, y);
+            let z1 = rk4_step(&forward, t0, z, dt);
+            loss_grad.iter().zip(z1.iter()).map(|(g, z)| g * z).sum()
+        };
+        let fd_eps = 1e-6;
+        for j in 0..3 {
+            let mut zp = z0.clone();
+            let mut zm = z0.clone();
+            zp[j] += fd_eps;
+            zm[j] -= fd_eps;
+            let fd = (loss(&zp) - loss(&zm)) / (2.0 * fd_eps);
+            assert!(
+                (grad[j] - fd).abs() < 1e-4,
+                "adjoint grad[{j}]={} disagrees with FD dL/dz0={fd}",
+                grad[j]
+            );
+        }
+
+        // And it is emphatically NOT the old fabrication (-loss_grad).
+        let negation: Vec<f64> = loss_grad.iter().map(|g| -g).collect();
+        let differs = grad
+            .iter()
+            .zip(negation.iter())
+            .any(|(a, b)| (a - b).abs() > 1e-3);
+        assert!(differs, "backward must not return the negated loss_grad");
     }
 
     #[test]

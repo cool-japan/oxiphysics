@@ -575,19 +575,36 @@ impl SphDiagnostics {
             neighbor_counts.iter().sum::<usize>() as f64 / neighbor_counts.len() as f64
         };
 
+        // Disorder is the mean relative spread of neighbour counts about their
+        // own mean (the data-derived "ideal" lattice count). A perfectly
+        // regular packing has every particle at the mean count ⇒ disorder ≈ 0,
+        // while an irregular neighbour-count distribution yields a positive
+        // value. When the mean count is zero (no neighbours at all) there is no
+        // meaningful target and the disorder is defined to be zero.
+        let disorder = if avg_nb > 0.0 {
+            Self::compute_disorder(neighbor_counts, avg_nb)
+        } else {
+            0.0
+        };
+
         Self {
             max_velocity: max_vel,
             max_density_error: max_dens_err,
             avg_neighbor_count: avg_nb,
-            disorder_parameter: 0.0,
+            disorder_parameter: disorder,
         }
     }
 
-    /// Compute disorder parameter: average deviation from target neighbor count.
+    /// Compute disorder parameter: average relative deviation from a target
+    /// neighbour count.
     ///
-    /// disorder = |N_actual - N_target| / N_target
+    /// `disorder = mean_i |N_i − N_target| / N_target`
+    ///
+    /// `N_target` is the reference (ideal-lattice) neighbour count; pass the
+    /// mean neighbour count to measure deviation from the configuration's own
+    /// average. Returns `0.0` for an empty input or a non-positive target.
     pub fn compute_disorder(neighbor_counts: &[usize], n_target: f64) -> f64 {
-        if neighbor_counts.is_empty() {
+        if neighbor_counts.is_empty() || n_target <= 0.0 {
             return 0.0;
         }
         let sum: f64 = neighbor_counts
@@ -1247,6 +1264,48 @@ mod tests {
         let nb = vec![10, 12, 8];
         let d = SphDiagnostics::compute_disorder(&nb, 10.0);
         assert!(d >= 0.0);
+        // |10-10|/10 + |12-10|/10 + |8-10|/10 = 0 + 0.2 + 0.2 = 0.4, /3
+        assert!(
+            (d - 0.4 / 3.0).abs() < 1e-12,
+            "disorder should be 0.4/3, got {d}"
+        );
+    }
+
+    #[test]
+    fn test_diagnostics_disorder_is_computed_not_hardcoded() {
+        let vels = vec![[0.0_f64; 3]; 6];
+        let dens = vec![1000.0; 6];
+
+        // Perfectly regular neighbour-count distribution: disorder must be ~0.
+        let regular = [20usize, 20, 20, 20, 20, 20];
+        let diag_regular = SphDiagnostics::compute(&vels, &dens, 1000.0, &regular);
+        assert!(
+            diag_regular.disorder_parameter < 1e-12,
+            "regular packing must have ~zero disorder, got {}",
+            diag_regular.disorder_parameter
+        );
+        assert!((diag_regular.avg_neighbor_count - 20.0).abs() < 1e-12);
+
+        // Irregular/disordered neighbour-count distribution: disorder must be
+        // strictly positive. If `compute` still hard-coded 0.0 this fails.
+        let irregular = [5usize, 35, 8, 31, 12, 29];
+        let diag_irregular = SphDiagnostics::compute(&vels, &dens, 1000.0, &irregular);
+        assert!(
+            diag_irregular.disorder_parameter > 0.3,
+            "disordered packing must have a clearly positive disorder, got {}",
+            diag_irregular.disorder_parameter
+        );
+
+        // Cross-check the integrated value equals the helper applied to the
+        // data-derived mean target (proves `compute` actually calls it).
+        let mean = irregular.iter().sum::<usize>() as f64 / irregular.len() as f64;
+        let expected = SphDiagnostics::compute_disorder(&irregular, mean);
+        assert!(
+            (diag_irregular.disorder_parameter - expected).abs() < 1e-12,
+            "compute() disorder ({}) must match compute_disorder() ({})",
+            diag_irregular.disorder_parameter,
+            expected
+        );
     }
 
     // SphVtkExporter tests

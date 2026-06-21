@@ -9,6 +9,8 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
+use crate::gltf::types::{AccessorType, ComponentType, TypedAccessor};
+
 // ---------------------------------------------------------------------------
 // Helper free functions
 // ---------------------------------------------------------------------------
@@ -43,6 +45,78 @@ pub fn base64_encode_buffer(data: &[u8]) -> String {
         }
     }
     out
+}
+
+/// Decode a base-64 ASCII string back to bytes (pure-Rust, no external crate).
+///
+/// This is the exact inverse of [`base64_encode_buffer`]: it accepts the
+/// standard alphabet (`A–Z a–z 0–9 + /`) with `=` padding, skips ASCII
+/// whitespace, and returns `None` on any invalid character or malformed length.
+pub fn base64_decode_buffer(text: &str) -> Option<Vec<u8>> {
+    /// Map a base-64 ASCII byte to its 6-bit value, or `None` if invalid.
+    fn sextet(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+
+    // Collect significant characters (drop ASCII whitespace), tracking padding.
+    let mut symbols: Vec<u8> = Vec::with_capacity(text.len());
+    let mut padding = 0usize;
+    for &byte in text.as_bytes() {
+        match byte {
+            b' ' | b'\t' | b'\r' | b'\n' => continue,
+            b'=' => padding += 1,
+            other => {
+                if padding != 0 {
+                    // Padding must only appear at the very end.
+                    return None;
+                }
+                symbols.push(sextet(other)?);
+            }
+        }
+    }
+
+    // Each 4-symbol group (including padding) encodes up to 3 bytes.
+    if !(symbols.len() + padding).is_multiple_of(4) || padding > 2 {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity(symbols.len() / 4 * 3 + 3);
+    let mut chunks = symbols.chunks_exact(4);
+    for chunk in &mut chunks {
+        let n = (u32::from(chunk[0]) << 18)
+            | (u32::from(chunk[1]) << 12)
+            | (u32::from(chunk[2]) << 6)
+            | u32::from(chunk[3]);
+        out.push((n >> 16) as u8);
+        out.push((n >> 8) as u8);
+        out.push(n as u8);
+    }
+
+    // Handle the final, padded group (2 or 3 significant symbols).
+    let tail = chunks.remainder();
+    match tail.len() {
+        0 => {}
+        2 => {
+            let n = (u32::from(tail[0]) << 18) | (u32::from(tail[1]) << 12);
+            out.push((n >> 16) as u8);
+        }
+        3 => {
+            let n =
+                (u32::from(tail[0]) << 18) | (u32::from(tail[1]) << 12) | (u32::from(tail[2]) << 6);
+            out.push((n >> 16) as u8);
+            out.push((n >> 8) as u8);
+        }
+        _ => return None,
+    }
+
+    Some(out)
 }
 
 /// Write a glTF accessor JSON fragment.
@@ -202,26 +276,224 @@ pub struct GltfMeshReader {
 }
 
 impl GltfMeshReader {
-    /// Parse a glTF JSON string (very simplified: extracts node names only).
+    /// Parse a glTF JSON string and recover its geometry.
+    ///
+    /// This is the inverse of [`GltfMeshWriter::write_gltf_json`]: it locates the
+    /// embedded `data:application/octet-stream;base64,…` buffer URI, base-64
+    /// decodes it, then uses the accessor / buffer-view metadata to decode the
+    /// `POSITION` accessor into [`Self::vertices`] and the indices accessor into
+    /// [`Self::indices`] (via the shared [`TypedAccessor`] decoders).
+    ///
+    /// Node `"name"` values are still extracted into [`Self::node_names`].
+    ///
+    /// Scope / limitations: the geometry decoder targets exactly the layout that
+    /// [`GltfMeshWriter::write_gltf_json`] emits — a single embedded buffer whose
+    /// `POSITION` accessor is `VEC3`/`FLOAT` and whose indices accessor is
+    /// `SCALAR`/`UNSIGNED_INT`, with each `bufferView` carrying an explicit
+    /// `byteOffset`. Geometry stored in external buffer files (non-`data:` URIs),
+    /// `UNSIGNED_SHORT`/`UNSIGNED_BYTE` index types, or interleaved buffer views
+    /// is not decoded (such inputs yield empty `vertices`/`indices`); the
+    /// writer↔reader round-trip is always fully recovered. Malformed or absent
+    /// geometry never panics — it degrades to empty vectors.
     pub fn parse_json(json: &str) -> Self {
-        let mut node_names = Vec::new();
-        // Extract mesh names
-        for line in json.lines() {
-            let line = line.trim();
-            if line.contains("\"name\"")
-                && let Some(start) = line.find("\"name\":")
-            {
-                let rest = &line[start + 7..].trim_start_matches([' ', '"'].as_ref());
-                let end = rest.find('"').unwrap_or(rest.len());
-                node_names.push(rest[..end].to_string());
-            }
-        }
+        let node_names = extract_node_names(json);
+        let (vertices, indices) = decode_gltf_geometry(json).unwrap_or_default();
         GltfMeshReader {
-            vertices: Vec::new(),
-            indices: Vec::new(),
+            vertices,
+            indices,
             node_names,
         }
     }
+}
+
+/// Extract every `"name": "…"` string value found in the glTF JSON.
+fn extract_node_names(json: &str) -> Vec<String> {
+    let mut node_names = Vec::new();
+    for line in json.lines() {
+        let line = line.trim();
+        if line.contains("\"name\"")
+            && let Some(start) = line.find("\"name\":")
+        {
+            let rest = line[start + 7..].trim_start_matches([' ', '"'].as_ref());
+            let end = rest.find('"').unwrap_or(rest.len());
+            node_names.push(rest[..end].to_string());
+        }
+    }
+    node_names
+}
+
+/// Locate, decode and return the embedded base-64 buffer payload, if present.
+///
+/// Searches for the `data:` URI scheme with a `;base64,` marker (matching what
+/// [`GltfMeshWriter`] emits) and decodes everything up to the closing quote.
+fn extract_embedded_buffer(json: &str) -> Option<Vec<u8>> {
+    const MARKER: &str = ";base64,";
+    let marker_pos = json.find(MARKER)?;
+    // The URI must be the `data:` scheme to be an embedded buffer.
+    if !json[..marker_pos].contains("data:") {
+        return None;
+    }
+    let payload_start = marker_pos + MARKER.len();
+    let rest = &json[payload_start..];
+    let payload_end = rest.find('"').unwrap_or(rest.len());
+    base64_decode_buffer(&rest[..payload_end])
+}
+
+/// Read the first integer value of a named JSON field within `object` text.
+///
+/// Accepts surrounding whitespace, e.g. `"byteOffset": 48`.
+fn json_uint_field(object: &str, key: &str) -> Option<usize> {
+    let needle = format!("\"{key}\"");
+    let key_pos = object.find(&needle)?;
+    let after = &object[key_pos + needle.len()..];
+    let colon = after.find(':')?;
+    let value_region = &after[colon + 1..];
+    let digits: String = value_region
+        .chars()
+        .skip_while(|c| c.is_whitespace())
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse::<usize>().ok()
+    }
+}
+
+/// Read the first quoted string value of a named JSON field within `object`.
+fn json_str_field(object: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let key_pos = object.find(&needle)?;
+    let after = &object[key_pos + needle.len()..];
+    let colon = after.find(':')?;
+    let value_region = &after[colon + 1..];
+    let open = value_region.find('"')?;
+    let rest = &value_region[open + 1..];
+    let close = rest.find('"')?;
+    Some(rest[..close].to_string())
+}
+
+/// Slice out the `[...]` array body that follows `"<key>":` in the JSON.
+///
+/// Returns the text between the matching `[` and `]`, honouring nesting so that
+/// nested objects/arrays do not terminate the slice early.
+fn json_array_body<'a>(json: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("\"{key}\"");
+    let key_pos = json.find(&needle)?;
+    let after = &json[key_pos + needle.len()..];
+    let open_rel = after.find('[')?;
+    let body = &after[open_rel + 1..];
+    let mut depth = 1i32;
+    for (i, ch) in body.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&body[..i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split a JSON array body into its top-level `{...}` object substrings.
+fn split_json_objects(array_body: &str) -> Vec<&str> {
+    let mut objects = Vec::new();
+    let mut depth = 0i32;
+    let mut start = None;
+    for (i, ch) in array_body.char_indices() {
+        match ch {
+            '{' => {
+                if depth == 0 {
+                    start = Some(i);
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0
+                    && let Some(s) = start.take()
+                {
+                    objects.push(&array_body[s..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    objects
+}
+
+/// Resolve the absolute byte offset of an accessor within the decoded buffer.
+///
+/// glTF addresses data through a `bufferView` (which carries the offset into the
+/// buffer) plus an optional `byteOffset` on the accessor itself. The writer uses
+/// a single buffer, so the buffer-view offset is the absolute offset.
+fn accessor_absolute_offset(accessor: &str, buffer_views: &[&str]) -> Option<usize> {
+    let view_index = json_uint_field(accessor, "bufferView")?;
+    let view = buffer_views.get(view_index)?;
+    let view_offset = json_uint_field(view, "byteOffset").unwrap_or(0);
+    let accessor_offset = json_uint_field(accessor, "byteOffset").unwrap_or(0);
+    view_offset.checked_add(accessor_offset)
+}
+
+/// Recovered triangle-mesh geometry: `(vertices, triangle indices)`.
+type MeshGeometry = (Vec<[f64; 3]>, Vec<[u32; 3]>);
+
+/// Decode the `POSITION` and indices geometry from a writer-produced glTF JSON.
+///
+/// Returns `(vertices, triangles)`. Any structural mismatch yields `None`, which
+/// the caller maps to empty geometry (never a panic).
+fn decode_gltf_geometry(json: &str) -> Option<MeshGeometry> {
+    let buffer = extract_embedded_buffer(json)?;
+
+    let accessors_body = json_array_body(json, "accessors")?;
+    let accessors = split_json_objects(accessors_body);
+    let buffer_views_body = json_array_body(json, "bufferViews")?;
+    let buffer_views = split_json_objects(buffer_views_body);
+
+    let mut vertices: Vec<[f64; 3]> = Vec::new();
+    let mut triangles: Vec<[u32; 3]> = Vec::new();
+
+    for accessor in &accessors {
+        let component_type = json_uint_field(accessor, "componentType")?;
+        let type_str = json_str_field(accessor, "type")?;
+        let count = json_uint_field(accessor, "count")?;
+        let offset = accessor_absolute_offset(accessor, &buffer_views)?;
+
+        if component_type == ComponentType::Float as usize && type_str == "VEC3" {
+            // POSITION accessor: count vec3 elements of f32.
+            let typed = TypedAccessor::new(
+                "POSITION",
+                0,
+                offset,
+                ComponentType::Float,
+                AccessorType::Vec3,
+                count,
+            );
+            let floats = typed.decode_f32(&buffer)?;
+            vertices = floats
+                .chunks_exact(3)
+                .map(|c| [c[0] as f64, c[1] as f64, c[2] as f64])
+                .collect();
+        } else if component_type == ComponentType::UnsignedInt as usize && type_str == "SCALAR" {
+            // Indices accessor: count scalar u32 values (3 per triangle).
+            let typed = TypedAccessor::new(
+                "indices",
+                0,
+                offset,
+                ComponentType::UnsignedInt,
+                AccessorType::Scalar,
+                count,
+            );
+            let flat = typed.decode_u32(&buffer)?;
+            triangles = flat.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+        }
+    }
+
+    Some((vertices, triangles))
 }
 
 // ---------------------------------------------------------------------------
@@ -1088,6 +1360,84 @@ mod tests {
             "names={:?}",
             r.node_names
         );
+    }
+
+    // --- base64 decode round-trip ---
+
+    #[test]
+    fn base64_decode_inverts_encode() {
+        for raw in [
+            &b""[..],
+            &b"M"[..],
+            &b"Ma"[..],
+            &b"Man"[..],
+            &b"Many hands make light work."[..],
+            &[0u8, 1, 2, 3, 250, 251, 252, 253, 254, 255][..],
+        ] {
+            let encoded = base64_encode_buffer(raw);
+            let decoded = base64_decode_buffer(&encoded).expect("valid base64");
+            assert_eq!(decoded, raw, "round-trip failed for {raw:?}");
+        }
+    }
+
+    #[test]
+    fn base64_decode_rejects_garbage() {
+        assert!(base64_decode_buffer("####").is_none());
+        // Wrong length (not a multiple of 4 once padding is accounted for).
+        assert!(base64_decode_buffer("ABC").is_none());
+    }
+
+    // --- GltfMeshReader geometry round-trip (NOT just node names) ---
+
+    #[test]
+    fn gltf_writer_reader_geometry_round_trip() {
+        // Two triangles sharing an edge, with distinct, non-trivial coordinates.
+        let verts = vec![
+            [0.0f64, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.5],
+        ];
+        let indices = vec![[0u32, 1, 2], [1u32, 3, 2]];
+        let w = GltfMeshWriter::new(verts.clone(), vec![], vec![], indices.clone());
+
+        let mut buf = Vec::new();
+        w.write_gltf_json(&mut buf).unwrap();
+        let json = String::from_utf8(buf).unwrap();
+
+        let r = GltfMeshReader::parse_json(&json);
+
+        // Node-name extraction still works ("mesh" from the meshes array).
+        assert!(
+            r.node_names.iter().any(|n| n == "mesh"),
+            "node_names={:?}",
+            r.node_names
+        );
+
+        // Geometry is fully recovered (f64 -> f32 -> f64, so tolerance applies).
+        assert_eq!(r.vertices.len(), verts.len());
+        for (got, expected) in r.vertices.iter().zip(verts.iter()) {
+            for k in 0..3 {
+                assert!(
+                    (got[k] - expected[k]).abs() < 1e-6,
+                    "vertex mismatch: got {got:?} expected {expected:?}"
+                );
+            }
+        }
+
+        // Indices are recovered exactly (u32 is lossless).
+        assert_eq!(r.indices, indices);
+    }
+
+    #[test]
+    fn gltf_reader_missing_geometry_is_empty_not_panic() {
+        // A names-only document with no embedded buffer must not panic and must
+        // yield empty geometry honestly.
+        let json = r#"{"meshes": [{"name": "MyMesh"}]}"#;
+        let r = GltfMeshReader::parse_json(json);
+        assert!(r.vertices.is_empty());
+        assert!(r.indices.is_empty());
+        assert!(r.node_names.iter().any(|n| n == "MyMesh"));
     }
 
     // --- UsdMeshWriter ---

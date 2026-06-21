@@ -183,6 +183,38 @@ mod tests {
         assert_eq!(ctrl.stats.constraint_count, 50);
     }
 
+    #[test]
+    fn test_controller_perf_ms_is_real_measurement_not_input_scaling() {
+        // The old fabrication set perf_ms = frame_time * 1000 * 0.01, i.e. a
+        // deterministic 1% of the input. Verify the reported value is a real
+        // wall-clock measurement instead: on the host it must be finite and
+        // non-negative, and it must NOT equal that fabricated formula (the
+        // chance a real elapsed time coincides exactly is negligible).
+        let mut ctrl = SimulationController::new(SimulationConfig::default());
+        ctrl.resume();
+        let frame_time = 1.0 / 60.0;
+        let r = ctrl.step(frame_time);
+        let fabricated = frame_time * 1_000.0 * 0.01;
+        assert!(
+            r.perf_ms.is_finite() && r.perf_ms >= 0.0,
+            "perf_ms should be a real non-negative measurement on host, got {}",
+            r.perf_ms
+        );
+        assert!(
+            (r.perf_ms - fabricated).abs() > f64::EPSILON,
+            "perf_ms still matches the discarded fabricated formula ({fabricated})"
+        );
+    }
+
+    #[test]
+    fn test_controller_perf_ms_zero_while_paused() {
+        // A paused controller does no physics work; perf_ms must be exactly
+        // zero, never a fabricated fraction of the frame time.
+        let mut ctrl = SimulationController::new(SimulationConfig::default());
+        let r = ctrl.step(1.0);
+        assert_eq!(r.perf_ms, 0.0);
+    }
+
     // --- StepResult ---
 
     #[test]

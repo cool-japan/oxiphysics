@@ -1437,6 +1437,13 @@ pub struct Geogrid {
     pub ltds: f64,
     /// Coverage ratio (ratio of solid area to total area).
     pub coverage_ratio: f64,
+    /// Soil–geogrid interface friction angle δ (degrees).
+    ///
+    /// This is a measured material/interface property (e.g. from a direct
+    /// shear or pullout test) and is independent of the backfill soil's own
+    /// friction angle. It drives the interaction coefficient
+    /// `Ci = tan(δ) / tan(φ_soil)`.
+    pub interface_friction_angle: f64,
 }
 impl Geogrid {
     /// Create a typical biaxial polypropylene geogrid (BX-1100).
@@ -1448,6 +1455,9 @@ impl Geogrid {
             aperture_size: 33.0,
             ltds: 8.0,
             coverage_ratio: 0.35,
+            // Biaxial PP geogrid in well-graded granular fill: pullout interface
+            // friction angle δ ≈ 30° (FHWA-NHI-10-024 typical range 28–32°).
+            interface_friction_angle: 30.0,
         }
     }
     /// Create a uniaxial HDPE geogrid (UX-1500HS).
@@ -1459,6 +1469,9 @@ impl Geogrid {
             aperture_size: 16.0,
             ltds: 80.0,
             coverage_ratio: 0.70,
+            // Uniaxial HDPE geogrid with larger rib bearing area mobilises
+            // near-full soil friction: δ ≈ 32° in compacted granular backfill.
+            interface_friction_angle: 32.0,
         }
     }
     /// Reduction factor for installation damage RF_ID (typically 1.1–1.4).
@@ -1466,12 +1479,28 @@ impl Geogrid {
     pub fn allowable_strength(&self, rf_id: f64, rf_cr: f64) -> f64 {
         self.ltds / (rf_id * rf_cr)
     }
-    /// Interaction coefficient for soil-geogrid friction Ci.
-    /// `phi_soil` = soil friction angle (degrees).
+    /// Interaction coefficient for soil-geogrid friction `Ci`.
+    ///
+    /// `Ci = tan(δ_interface) / tan(φ_soil)`, where `δ_interface` is the stored
+    /// soil–geogrid interface friction angle (`interface_friction_angle`, degrees)
+    /// and `phi_soil` is the backfill soil friction angle (degrees). `Ci` therefore
+    /// varies with both the geogrid's interface property and the actual soil it is
+    /// placed in; it equals 1.0 only when the interface mobilises the full soil
+    /// friction (`δ = φ_soil`).
+    ///
+    /// For a non-positive soil friction angle (`φ_soil ≤ 0`) there is no soil
+    /// shear strength to mobilise, so `tan(φ_soil)` would be zero or undefined;
+    /// the method returns `0.0` in that degenerate case rather than `NaN`/`∞`.
     pub fn interaction_coefficient(&self, phi_soil: f64) -> f64 {
-        let base_ci = 0.8;
-        let phi = phi_soil.to_radians();
-        base_ci * phi.tan() / phi.tan()
+        if phi_soil <= 0.0 {
+            return 0.0;
+        }
+        let tan_phi_soil = phi_soil.to_radians().tan();
+        if tan_phi_soil.abs() < 1e-12 {
+            return 0.0;
+        }
+        let tan_delta = self.interface_friction_angle.to_radians().tan();
+        tan_delta / tan_phi_soil
     }
     /// Passive resistance contribution τ_p (kPa) per geogrid layer.
     pub fn passive_resistance(&self, sigma_v: f64) -> f64 {

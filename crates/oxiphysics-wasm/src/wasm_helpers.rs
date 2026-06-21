@@ -86,6 +86,57 @@ pub fn opt_vec4_to_js(opt: Option<[f64; 4]>) -> Vec<f64> {
 }
 
 // ---------------------------------------------------------------------------
+// Monotonic wall-clock
+// ---------------------------------------------------------------------------
+
+/// Return a monotonic wall-clock timestamp in **milliseconds**, or `None` when
+/// no real clock is available on the current target.
+///
+/// - On native targets this uses a process-lifetime [`std::time::Instant`]
+///   baseline (`Instant` is monotonic but epoch-free, so timestamps are
+///   relative to first call — only differences are meaningful).
+/// - On `wasm32` with a browser/worker global this uses
+///   [`web_sys::Performance::now`] (sub-millisecond resolution, already in ms).
+/// - On `wasm32-unknown-unknown` without a `Performance` (e.g. a bare
+///   non-browser host), it returns `None` so callers can report an honest
+///   sentinel instead of a fabricated number. `std::time::Instant` is *not*
+///   used on wasm because it panics there.
+///
+/// Use two calls and subtract to measure an elapsed interval.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn now_ms() -> Option<f64> {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static BASE: OnceLock<Instant> = OnceLock::new();
+    let base = BASE.get_or_init(Instant::now);
+    Some(base.elapsed().as_secs_f64() * 1_000.0)
+}
+
+/// Monotonic wall-clock timestamp in milliseconds (wasm32 implementation).
+///
+/// See the native overload for semantics. Resolves `performance.now()` on the
+/// global object via `js-sys` reflection so it works from both a `Window` and a
+/// `WorkerGlobalScope` (off-thread physics) without requiring additional
+/// `web-sys` features. On the main thread the typed
+/// [`web_sys::Performance::now`] path is preferred.
+#[cfg(target_arch = "wasm32")]
+pub fn now_ms() -> Option<f64> {
+    // Fast path: typed Window → Performance (Window + Performance features).
+    if let Some(perf) = web_sys::window().and_then(|w| w.performance()) {
+        return Some(perf.now());
+    }
+    // Worker / fallback path: globalThis.performance.now() via reflection.
+    let global = js_sys::global();
+    let performance = js_sys::Reflect::get(&global, &JsValue::from_str("performance")).ok()?;
+    if performance.is_undefined() || performance.is_null() {
+        return None;
+    }
+    let now_fn = js_sys::Reflect::get(&performance, &JsValue::from_str("now")).ok()?;
+    let now_fn = now_fn.dyn_ref::<js_sys::Function>()?;
+    now_fn.call0(&performance).ok()?.as_f64()
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -115,5 +166,22 @@ mod tests {
     #[test]
     fn opt_vec3_to_js_some() {
         assert_eq!(opt_vec3_to_js(Some([1.0, 2.0, 3.0])), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn now_ms_is_real_and_monotonic() {
+        // On the host this must be a real Instant-based measurement, not a
+        // sentinel — and it must be non-decreasing across calls.
+        let t0 = now_ms().expect("native clock should be available");
+        assert!(t0.is_finite() && t0 >= 0.0);
+        let mut spins = 0u64;
+        let mut t1 = now_ms().expect("native clock should be available");
+        // Busy-spin until the monotonic clock visibly advances.
+        while t1 <= t0 && spins < 100_000_000 {
+            spins += 1;
+            t1 = now_ms().expect("native clock should be available");
+        }
+        assert!(t1 >= t0, "clock went backwards: {t0} -> {t1}");
     }
 }

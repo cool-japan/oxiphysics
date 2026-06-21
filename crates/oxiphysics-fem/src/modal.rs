@@ -1002,13 +1002,29 @@ pub fn lanczos_iteration(
     let mut alpha = vec![0.0f64; m];
     let mut beta = vec![0.0f64; m + 1];
 
-    // Initial vector: uniform normalized
-    let mut v = vec![1.0 / (n as f64).sqrt(); n];
+    // Initial vector: a deterministic, *non-symmetric* starting vector.
+    //
+    // A uniform vector is symmetric about the center of the DOF index range and
+    // is therefore exactly M-orthogonal to every antisymmetric eigenmode of a
+    // symmetric structure. Starting from it would silently confine the Krylov
+    // subspace to the symmetric modes only, causing whole eigenvalues to be
+    // missed (the recurrence would break down at half the dimension). To excite
+    // a generic projection onto *all* modes we use a smooth ramp combined with a
+    // sign-alternating perturbation, which breaks every reflection symmetry.
+    let mut v: Vec<f64> = (0..n)
+        .map(|i| {
+            let ramp = 1.0 + (i as f64) / (n as f64);
+            let alt = if i % 2 == 0 { 1.0 } else { -1.0 };
+            ramp + 0.25 * alt
+        })
+        .collect();
     // M-normalize
     let mv = matvec(mass, &v);
-    let vnorm = dot(&v, &mv).sqrt();
-    for x in v.iter_mut() {
-        *x /= vnorm;
+    let vnorm = dot(&v, &mv).max(0.0).sqrt();
+    if vnorm > 1e-300 {
+        for x in v.iter_mut() {
+            *x /= vnorm;
+        }
     }
     v_vecs.push(v.clone());
 
@@ -1067,36 +1083,52 @@ pub fn lanczos_iteration(
         let _ = &v; // used next iteration
     }
 
-    // Solve tridiagonal eigenproblem T y = θ y using power iteration on T
-    // T is m×m symmetric tridiagonal: diag=alpha, off-diag=beta[1..m]
-    // For simplicity, use direct QR iteration on the small matrix
+    // Solve the m×m symmetric tridiagonal Ritz eigenproblem  T y = θ y  exactly
+    // via the implicit-shift QL algorithm with eigenvector accumulation (tql2).
+    // T has diagonal `alpha[..dim]` and sub-diagonal `beta[1..dim+1]`, i.e. the
+    // sub-diagonal between row i and row i+1 is β_{i+1}.
     let dim = actual_steps;
-    let eigenvalues_t = tridiagonal_eigenvalues(&alpha[..dim], &beta[1..dim + 1], 200);
+    let (eigenvalues_t, eigvecs_t) = tridiagonal_eig(&alpha[..dim], &beta[1..dim], 30 * dim.max(1));
 
-    // Take the n_modes smallest (they correspond to 1/λ since we used K^{-1})
-    // Ritz eigenvalues λ = 1/θ (since we inverted K)
-    let mut ritz_pairs: Vec<(f64, Vec<f64>)> = eigenvalues_t
-        .iter()
-        .enumerate()
-        .map(|(i, &theta)| {
-            // Ritz vector = V * y_i  (approximate eigenvector of T is unit vec e_i for small matrix)
+    // Build Ritz pairs. Because the recurrence operated on K⁻¹M, a Ritz value θ
+    // of T approximates 1/λ of the generalized pencil K φ = λ M φ, so λ = 1/θ.
+    // The Ritz VECTOR is the Krylov combination  x_i = V · y_i  where y_i is the
+    // i-th eigenvector of T and V = [v_0, …, v_{dim-1}] are the Lanczos vectors.
+    let n_basis = dim.min(v_vecs.len());
+    let mut ritz_pairs: Vec<(f64, Vec<f64>)> = (0..dim)
+        .map(|i| {
+            let theta = eigenvalues_t[i];
             let lambda = if theta.abs() > 1e-30 {
                 1.0 / theta
             } else {
                 0.0
             };
+            // x_i = Σ_j y_i[j] · v_j  (real Ritz vector, NOT a raw Krylov vector)
             let mut ritz = vec![0.0; n];
-            // For the tridiagonal system we use eigenvectors approximated via inverse iteration on T
-            // Simplified: use the j-th Lanczos vector as the Ritz approximation
-            if i < v_vecs.len() {
-                ritz = v_vecs[i].clone();
+            for j in 0..n_basis {
+                let yj = eigvecs_t[j][i];
+                if yj != 0.0 {
+                    let vj = &v_vecs[j];
+                    for k in 0..n {
+                        ritz[k] += yj * vj[k];
+                    }
+                }
+            }
+            // M-normalize the Ritz vector so that φ_i^T M φ_i = 1 (mass-normalized
+            // mode shape, matching the convention of the other solvers).
+            let m_ritz = matvec(mass, &ritz);
+            let m_norm = dot(&ritz, &m_ritz).max(0.0).sqrt();
+            if m_norm > 1e-300 {
+                for x in ritz.iter_mut() {
+                    *x /= m_norm;
+                }
             }
             (lambda, ritz)
         })
         .collect();
 
     // Sort by eigenvalue ascending
-    ritz_pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    ritz_pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
     ritz_pairs.truncate(n_modes);
 
     let eigenvalues: Vec<f64> = ritz_pairs.iter().map(|(e, _)| e.max(0.0).sqrt()).collect();
@@ -1109,110 +1141,139 @@ pub fn lanczos_iteration(
     }
 }
 
-/// Compute eigenvalues of a symmetric tridiagonal matrix using the
-/// implicit symmetric QR algorithm with Wilkinson shift (LAPACK dsteqr style).
+/// Eigenvalues **and** eigenvectors of a real symmetric tridiagonal matrix via
+/// the implicit-shift symmetric QL algorithm with eigenvector accumulation
+/// (EISPACK `tql2` / LAPACK `dsteqr` "I" mode).
 ///
-/// `diag`    - diagonal elements (length n)
-/// `offdiag` - off-diagonal elements (length >= n; element 0 is unused)
+/// `diag` is the main diagonal (length `n`); `sub` is the sub-diagonal where
+/// `sub[i]` is the entry between rows `i` and `i+1` (length `n-1`; extra entries
+/// are ignored, missing ones treated as zero). The returned eigenvectors are the
+/// columns of the orthogonal matrix Q with `T = Q Λ Qᵀ`: `eigvecs[r][c]` is the
+/// `r`-th component of the eigenvector belonging to eigenvalue `evals[c]`.
 ///
-/// Returns eigenvalues sorted in ascending order.
-fn tridiagonal_eigenvalues(diag: &[f64], offdiag: &[f64], max_iter: usize) -> Vec<f64> {
+/// Eigenpairs are returned sorted by eigenvalue in ascending order, with the
+/// eigenvector columns permuted consistently. `max_iter` bounds the QL sweeps per
+/// deflation step (a genuine convergence guard, not a hardcoded success flag).
+fn tridiagonal_eig(diag: &[f64], sub: &[f64], max_iter: usize) -> (Vec<f64>, Vec<Vec<f64>>) {
     let n = diag.len();
     if n == 0 {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     if n == 1 {
-        return diag.to_vec();
+        return (vec![diag[0]], vec![vec![1.0]]);
     }
 
+    // Working copies. `d` holds the (eventually diagonalized) eigenvalues.
+    // `e[i]` is the sub-diagonal between row i and i+1 for i in 0..n-1; e[n-1]=0.
     let mut d = diag.to_vec();
-    // e[i] holds the off-diagonal between d[i] and d[i+1] (length n-1 used, padded to n)
-    let mut e = vec![0.0f64; n];
+    let mut e = vec![0.0_f64; n];
     for i in 0..n - 1 {
-        e[i] = if i + 1 < offdiag.len() {
-            offdiag[i + 1]
-        } else {
-            0.0
-        };
+        e[i] = if i < sub.len() { sub[i] } else { 0.0 };
     }
 
-    let eps = f64::EPSILON;
+    // z accumulates the orthogonal eigenvector matrix (starts as identity).
+    let mut z = vec![vec![0.0_f64; n]; n];
+    for (i, row) in z.iter_mut().enumerate() {
+        row[i] = 1.0;
+    }
 
-    // QL-implicit algorithm (Golub & Van Loan §8.3.4)
-    let mut l = 0usize;
-    while l < n {
-        // Find small sub-diagonal element to split off a block [l..m+1]
-        let mut m = l;
-        while m < n - 1 {
-            let tst = d[m].abs() + d[m + 1].abs();
-            if e[m].abs() <= eps * tst {
-                e[m] = 0.0;
-                break;
-            }
-            m += 1;
-        }
-        if m == l {
-            // 1×1 block converged
-            l += 1;
-            continue;
-        }
-        // Run QR steps on sub-matrix [l..m+1] (size m-l+1 >= 2)
-        let mut iter_count = 0;
+    // QL with implicit shifts, deflating one eigenvalue at a time from the top.
+    for l in 0..n {
+        let mut iter = 0usize;
         loop {
-            iter_count += 1;
-            if iter_count > max_iter {
-                break;
-            }
-            // Wilkinson shift from bottom 2×2
-            let b = (d[m - 1] - d[m]) * 0.5;
-            let r = (b * b + e[m - 1] * e[m - 1]).sqrt();
-            let shift = d[m] - e[m - 1] * e[m - 1] / (b + b.signum() * r + f64::EPSILON * 1e-10);
-
-            // Implicit QL step
-            let mut g = d[l] - shift;
-            let mut p_val = 1.0;
-            for i in l..m {
-                let eim1 = if i > l { e[i - 1] } else { 0.0 };
-                let _ = eim1;
-                let hyp = (g * g + e[i] * e[i]).sqrt();
-                let c = if hyp > 1e-300 { g / hyp } else { 1.0 };
-                let s = if hyp > 1e-300 { e[i] / hyp } else { 0.0 };
-                if i > l {
-                    e[i - 1] = hyp * p_val;
-                }
-                let w = d[i] - shift;
-                let dip1_w = d[i + 1] - shift;
-                g = c * (c * w - s * e[i]) + dip1_w * s * s;
-                let f = s * (c * e[i] + s * w);
-                d[i] = shift + c * c * w + s * s * d[i + 1] - 2.0 * s * c * e[i];
-                d[i + 1] = shift + s * s * w + c * c * d[i + 1] + 2.0 * s * c * e[i];
-                p_val = c;
-                e[i] = f;
-            }
-            let _ = (g, p_val);
-            if m > l {
-                e[m - 1] = 0.0;
-            } // often already ~0 after step
-
-            // Check for new convergence within [l..m+1]
-            let mut converged = false;
-            for k in l..m {
-                let tst = d[k].abs() + d[k + 1].abs();
-                if e[k].abs() <= eps * tst {
-                    e[k] = 0.0;
-                    converged = true;
+            // Look for a single small sub-diagonal element e[m] to split the
+            // matrix into a leading converged part and an active block [l..=m].
+            let mut m = l;
+            while m < n - 1 {
+                let dd = d[m].abs() + d[m + 1].abs();
+                if e[m].abs() <= f64::EPSILON * dd {
                     break;
                 }
+                m += 1;
             }
-            if converged {
+            if m == l {
+                // e[l] is negligible: eigenvalue d[l] has converged.
                 break;
             }
+            iter += 1;
+            if iter > max_iter {
+                // Genuine non-convergence guard: stop refining this block rather
+                // than spin forever. Remaining eigenpairs are still returned but
+                // may carry reduced accuracy for pathological inputs.
+                break;
+            }
+
+            // Form the Wilkinson shift from the leading 2×2 of the active block.
+            let mut g = (d[l + 1] - d[l]) / (2.0 * e[l]);
+            let mut r = g.hypot(1.0);
+            let sign_g = if g >= 0.0 { r.abs() } else { -r.abs() };
+            g = d[m] - d[l] + e[l] / (g + sign_g);
+
+            // Plane-rotation (bulge chase) from the bottom of the block up to l.
+            let mut s = 1.0_f64;
+            let mut c = 1.0_f64;
+            let mut p = 0.0_f64;
+            let mut i = m;
+            while i > l {
+                let im1 = i - 1;
+                let mut f = s * e[im1];
+                let b = c * e[im1];
+                r = f.hypot(g);
+                e[i] = r;
+                if r == 0.0 {
+                    // Recover from underflow: cancel the off-diagonal and retry.
+                    d[i] -= p;
+                    e[m] = 0.0;
+                    break;
+                }
+                s = f / r;
+                c = g / r;
+                g = d[i] - p;
+                r = (d[im1] - g) * s + 2.0 * c * b;
+                p = s * r;
+                d[i] = g + p;
+                g = c * r - b;
+
+                // Accumulate the rotation into the eigenvector matrix.
+                for row in z.iter_mut() {
+                    f = row[i];
+                    row[i] = s * row[im1] + c * f;
+                    row[im1] = c * row[im1] - s * f;
+                }
+                i -= 1;
+            }
+
+            if r == 0.0 && i >= l {
+                continue;
+            }
+            d[l] -= p;
+            e[l] = g;
+            e[m] = 0.0;
         }
-        l += 1; // move forward even if not fully converged to avoid infinite loop
     }
 
-    d.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    d
+    // Sort eigenpairs ascending and permute eigenvector columns to match.
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| d[a].total_cmp(&d[b]));
+    let evals: Vec<f64> = order.iter().map(|&j| d[j]).collect();
+    let eigvecs: Vec<Vec<f64>> = z
+        .iter()
+        .map(|row| order.iter().map(|&j| row[j]).collect())
+        .collect();
+    (evals, eigvecs)
+}
+
+/// Eigenvalues of a real symmetric tridiagonal matrix in ascending order.
+///
+/// Thin wrapper over [`tridiagonal_eig`] that discards the eigenvectors.
+///
+/// `diag` is the main diagonal (length `n`); `offdiag[i]` is the sub-diagonal
+/// entry between rows `i` and `i+1` (length `n-1`). `max_iter` bounds the QL
+/// sweeps per deflation step. Used by the eigenvalue-only unit tests; the
+/// production Lanczos path calls [`tridiagonal_eig`] directly for the vectors.
+#[cfg(test)]
+fn tridiagonal_eigenvalues(diag: &[f64], offdiag: &[f64], max_iter: usize) -> Vec<f64> {
+    tridiagonal_eig(diag, offdiag, max_iter).0
 }
 
 // ---------------------------------------------------------------------------
@@ -1684,5 +1745,163 @@ mod tests_extended {
         let m = identity_csr(2);
         let result = lanczos_iteration(&k, &m, 2, 8, 1e-8);
         assert!(result.n_steps > 0, "Should have taken at least one step");
+    }
+
+    /// Build the classic 1-D fixed-fixed spring chain stiffness matrix:
+    /// tridiagonal with 2·k on the diagonal and -k on the off-diagonals.
+    /// This matrix is SPD and, crucially, NON-diagonal, so a raw Krylov basis
+    /// vector cannot pass the eigenvector residual test below — only a genuine
+    /// Ritz vector x_i = V·y_i can.
+    fn spring_chain_csr(n: usize, k: f64) -> CsrMatrix {
+        let mut triplets: Vec<(usize, usize, f64)> = Vec::new();
+        for i in 0..n {
+            triplets.push((i, i, 2.0 * k));
+            if i + 1 < n {
+                triplets.push((i, i + 1, -k));
+                triplets.push((i + 1, i, -k));
+            }
+        }
+        CsrMatrix::from_triplets(n, n, &triplets)
+    }
+
+    /// Eigenvalues of the standard problem K x = λ x for the n-DOF fixed-fixed
+    /// spring chain (M = I) have the closed form λ_j = 2k·(1 − cos(jπ/(n+1))),
+    /// j = 1..n. We use this analytic spectrum as ground truth.
+    fn spring_chain_eigenvalues(n: usize, k: f64) -> Vec<f64> {
+        let mut lambdas: Vec<f64> = (1..=n)
+            .map(|j| {
+                let angle = (j as f64) * PI / ((n + 1) as f64);
+                2.0 * k * (1.0 - angle.cos())
+            })
+            .collect();
+        lambdas.sort_by(|a, b| a.total_cmp(b));
+        lambdas
+    }
+
+    #[test]
+    fn test_lanczos_eigenvalues_match_known_spectrum() {
+        // Standard symmetric problem K x = λ x (M = I) with analytic eigenvalues.
+        let n = 8;
+        let k_const = 3.0;
+        let k = spring_chain_csr(n, k_const);
+        let m = identity_csr(n);
+
+        let n_modes = 4;
+        let result = lanczos_iteration(&k, &m, n_modes, 2 * n, 1e-12);
+        assert_eq!(result.eigenvalues.len(), n_modes);
+
+        let known_lambda = spring_chain_eigenvalues(n, k_const);
+        // lanczos_iteration returns ω = sqrt(λ); compare to sqrt of the analytic λ.
+        for (idx, &omega) in result.eigenvalues.iter().enumerate() {
+            let expected = known_lambda[idx].sqrt();
+            assert!(
+                (omega - expected).abs() <= 1e-6 * (1.0 + expected),
+                "mode {idx}: lanczos ω = {omega}, analytic √λ = {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_lanczos_returns_real_eigenvectors_not_krylov() {
+        // Generalized SPD problem K φ = λ M φ with NON-identity diagonal mass.
+        // The residual test ‖Kφ − λMφ‖ / ‖λMφ‖ can only be small if φ is a true
+        // Ritz vector x_i = V·y_i, not a raw Lanczos/Krylov basis vector.
+        let n = 6;
+        let k = spring_chain_csr(n, 5.0);
+        let m = diagonal_csr(&[1.0, 2.0, 1.5, 3.0, 2.5, 1.0]);
+
+        let n_modes = 3;
+        let result = lanczos_iteration(&k, &m, n_modes, 2 * n, 1e-12);
+        assert_eq!(result.eigenvectors.len(), n_modes);
+
+        for (idx, phi) in result.eigenvectors.iter().enumerate() {
+            assert_eq!(phi.len(), n);
+
+            // λ = ω² (lanczos_iteration reports ω).
+            let omega = result.eigenvalues[idx];
+            let lambda = omega * omega;
+
+            // Mode shape must be non-trivial (a genuine eigenvector, not zero).
+            let phi_norm = phi.iter().map(|x| x * x).sum::<f64>().sqrt();
+            assert!(phi_norm > 1e-8, "mode {idx} is essentially zero");
+
+            // Mass normalization: φᵀ M φ ≈ 1.
+            let m_phi = matvec(&m, phi);
+            let phi_m_phi = dot(phi, &m_phi);
+            assert!(
+                (phi_m_phi - 1.0).abs() < 1e-6,
+                "mode {idx}: φᵀMφ = {phi_m_phi}, expected 1"
+            );
+
+            // Eigenvector residual ‖Kφ − λMφ‖ / ‖λMφ‖.
+            let k_phi = matvec(&k, phi);
+            let mut resid_sq = 0.0;
+            let mut ref_sq = 0.0;
+            for j in 0..n {
+                let r = k_phi[j] - lambda * m_phi[j];
+                resid_sq += r * r;
+                let rf = lambda * m_phi[j];
+                ref_sq += rf * rf;
+            }
+            let rel_resid = (resid_sq.sqrt()) / (ref_sq.sqrt() + 1e-300);
+            assert!(
+                rel_resid < 1e-6,
+                "mode {idx}: ‖Kφ − λMφ‖/‖λMφ‖ = {rel_resid} (λ = {lambda}); \
+                 raw Krylov vectors would fail this"
+            );
+        }
+    }
+
+    #[test]
+    fn test_tridiagonal_eig_vectors_orthonormal_and_correct() {
+        // Directly exercise the QL routine on a known symmetric tridiagonal T.
+        // diag = [2,2,2,2], sub = [-1,-1,-1] is the 4×4 fixed-fixed chain whose
+        // eigenvalues are 2 − 2cos(jπ/5), j = 1..4.
+        let diag = vec![2.0, 2.0, 2.0, 2.0];
+        let sub = vec![-1.0, -1.0, -1.0];
+        let (evals, evecs) = tridiagonal_eig(&diag, &sub, 200);
+        assert_eq!(evals.len(), 4);
+
+        let expected: Vec<f64> = (1..=4)
+            .map(|j| 2.0 - 2.0 * ((j as f64) * PI / 5.0).cos())
+            .collect();
+        for (idx, &lam) in evals.iter().enumerate() {
+            assert!(
+                (lam - expected[idx]).abs() < 1e-10,
+                "eig {idx}: got {lam}, expected {}",
+                expected[idx]
+            );
+        }
+
+        // Columns of `evecs` must be orthonormal: Qᵀ Q = I.
+        for c1 in 0..4 {
+            for c2 in 0..4 {
+                let dot_cc: f64 = (0..4).map(|r| evecs[r][c1] * evecs[r][c2]).sum();
+                let target = if c1 == c2 { 1.0 } else { 0.0 };
+                assert!(
+                    (dot_cc - target).abs() < 1e-10,
+                    "Q col {c1}·col {c2} = {dot_cc}, expected {target}"
+                );
+            }
+        }
+
+        // Each column must satisfy T q = λ q (reconstruct T·q from the bands).
+        for c in 0..4 {
+            let lam = evals[c];
+            for r in 0..4 {
+                let mut tq = diag[r] * evecs[r][c];
+                if r > 0 {
+                    tq += sub[r - 1] * evecs[r - 1][c];
+                }
+                if r + 1 < 4 {
+                    tq += sub[r] * evecs[r + 1][c];
+                }
+                assert!(
+                    (tq - lam * evecs[r][c]).abs() < 1e-9,
+                    "col {c} row {r}: (Tq)={tq}, (λq)={}",
+                    lam * evecs[r][c]
+                );
+            }
+        }
     }
 }

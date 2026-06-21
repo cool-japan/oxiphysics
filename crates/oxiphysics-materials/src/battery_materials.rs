@@ -469,13 +469,38 @@ impl SolidElectrolyte {
         self.sigma_0 * (-self.activation_energy / (GAS_CONSTANT * temperature)).exp()
     }
 
-    /// Apparent activation energy \[eV\] estimated from conductivity at two temperatures.
+    /// Apparent activation energy \[eV\] fitted from the ionic conductivity
+    /// measured at two temperatures `t1`, `t2` \[K\] (two-point Arrhenius fit).
     ///
-    /// `Ea = R × T₁ × T₂ / (T₁ - T₂) × ln(σ(T₂) / σ(T₁))`
-    pub fn apparent_activation_energy_ev(&self, _t1: f64, _t2: f64) -> f64 {
-        let ev_per_j_per_mol = 1.0 / (GAS_CONSTANT * 96_485.0 / FARADAY);
-        // Just return stored activation energy converted to eV
-        self.activation_energy / (GAS_CONSTANT * 96_485.0 / FARADAY) * ev_per_j_per_mol
+    /// Starting from `σ(T) = σ₀ exp(−Ea / (R T))`, taking the log at the two
+    /// temperatures and eliminating `σ₀` gives
+    ///
+    /// `Ea = −R · ln(σ(T₂) / σ(T₁)) / (1/T₂ − 1/T₁)`
+    ///
+    /// (equivalently `Ea = R · T₁ T₂ / (T₁ − T₂) · ln(σ(T₂)/σ(T₁))`), which is
+    /// then converted from J/mol to eV by dividing by the Faraday constant.
+    ///
+    /// This actually evaluates [`Self::ionic_conductivity`] at both temperatures
+    /// rather than echoing the stored `activation_energy`, so for a perfectly
+    /// Arrhenius electrolyte it recovers the true `Ea` from any pair of distinct
+    /// temperatures.
+    ///
+    /// Returns `f64::NAN` (a documented sentinel) when the fit is undefined:
+    /// non-positive temperatures, `t1 == t2`, or a non-positive conductivity at
+    /// either temperature.
+    pub fn apparent_activation_energy_ev(&self, t1: f64, t2: f64) -> f64 {
+        if t1 <= 0.0 || t2 <= 0.0 || (t1 - t2).abs() < f64::EPSILON {
+            return f64::NAN;
+        }
+        let sigma_1 = self.ionic_conductivity(t1);
+        let sigma_2 = self.ionic_conductivity(t2);
+        if sigma_1 <= 0.0 || sigma_2 <= 0.0 {
+            return f64::NAN;
+        }
+        // Ea [J/mol] = −R · ln(σ₂/σ₁) / (1/T₂ − 1/T₁)
+        let ea_j_per_mol = -GAS_CONSTANT * (sigma_2 / sigma_1).ln() / (1.0 / t2 - 1.0 / t1);
+        // Convert J/mol → eV (per elementary charge): divide by Faraday constant.
+        ea_j_per_mol / FARADAY
     }
 
     /// Ionic conductivity with grain boundary contribution.
@@ -1465,6 +1490,52 @@ mod tests {
         let se = SolidElectrolyte::llzo();
         let tau = se.relaxation_time(300.0);
         assert!(tau > 0.0 && tau.is_finite());
+    }
+
+    // 51b. SolidElectrolyte: two-point Arrhenius fit recovers the true Ea.
+    #[test]
+    fn test_solid_electrolyte_apparent_activation_energy_recovers_ea() {
+        // Build an electrolyte with a known Arrhenius Ea (45 kJ/mol).
+        let ea_j_per_mol = 45_000.0;
+        let se = SolidElectrolyte::new(1.0e5, ea_j_per_mol, 0.99, 1e-8, 1.0e-3);
+
+        // The fit must recover Ea/F in eV from any pair of distinct temperatures.
+        let expected_ev = ea_j_per_mol / FARADAY;
+        let fitted = se.apparent_activation_energy_ev(280.0, 360.0);
+        assert!(
+            (fitted - expected_ev).abs() < 1e-9,
+            "fitted={fitted} expected={expected_ev}"
+        );
+
+        // Sanity: ~0.466 eV for 45 kJ/mol, in the physical garnet range.
+        assert!((fitted - 0.466).abs() < 0.01, "fitted={fitted}");
+
+        // It must actually depend on T1, T2 — not echo the stored Ea blindly.
+        // The result is temperature-pair invariant only because σ is *exactly*
+        // Arrhenius here; symmetry (swap T1↔T2) must still hold for a real fit.
+        let swapped = se.apparent_activation_energy_ev(360.0, 280.0);
+        assert!(
+            (swapped - fitted).abs() < 1e-9,
+            "swapped={swapped} fitted={fitted}"
+        );
+
+        // A different Ea ⇒ a different fitted value (proves the two-point formula
+        // reads the conductivities, not a constant rescale of one field).
+        let se_low = SolidElectrolyte::new(1.0e5, 20_000.0, 0.99, 1e-8, 1.0e-3);
+        let fitted_low = se_low.apparent_activation_energy_ev(280.0, 360.0);
+        assert!(
+            (fitted_low - 20_000.0 / FARADAY).abs() < 1e-9,
+            "fitted_low={fitted_low}"
+        );
+        assert!(
+            fitted_low < fitted,
+            "fitted_low={fitted_low} fitted={fitted}"
+        );
+
+        // Guards: degenerate inputs return the NAN sentinel, not a fake number.
+        assert!(se.apparent_activation_energy_ev(300.0, 300.0).is_nan());
+        assert!(se.apparent_activation_energy_ev(-10.0, 360.0).is_nan());
+        assert!(se.apparent_activation_energy_ev(280.0, 0.0).is_nan());
     }
 
     // ─── BatteryDegradation tests ────────────────────────────────────────────

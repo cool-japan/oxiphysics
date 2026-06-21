@@ -66,6 +66,27 @@
 
 use wasm_bindgen::prelude::*;
 
+use crate::wasm_helpers::now_ms;
+
+/// Convert an elapsed interval measured by [`now_ms`] (milliseconds) into whole
+/// microseconds for [`SimResult::StepDone::step_us`].
+///
+/// Returns `0` when either endpoint was unmeasurable (the target exposes no
+/// clock) — an honest "not measured" rather than a fabricated constant.
+fn elapsed_us(start: Option<f64>, end: Option<f64>) -> u32 {
+    match (start, end) {
+        (Some(a), Some(b)) => {
+            let us = (b - a).max(0.0) * 1_000.0;
+            if us.is_finite() {
+                us.round().min(u32::MAX as f64) as u32
+            } else {
+                0
+            }
+        }
+        _ => 0,
+    }
+}
+
 // ── SimCommand ────────────────────────────────────────────────────────────────
 
 /// Commands sent from the main thread to the physics worker.
@@ -265,10 +286,24 @@ impl SimCommand {
 #[derive(Debug, Clone)]
 pub enum SimResult {
     /// Step completed; includes timing info.
+    ///
+    /// Note: [`WorkerRuntime`] currently runs a lightweight **kinematic
+    /// preview** (ballistic gravity integration with no collision detection),
+    /// not the full constraint solver. Consequently `contact_count` is the
+    /// genuine count from a contactless integrator (always `0`), and `step_us`
+    /// is the *real* measured wall-clock cost of the preview in microseconds
+    /// (`0` when the target exposes no clock or the work was sub-microsecond),
+    /// never a fabricated constant.
     StepDone {
         sim_time: f32,
+        /// Number of bodies advanced this step.
         body_count: u32,
+        /// Real contact count. The kinematic preview performs no collision
+        /// detection, so this is genuinely `0` (not a placeholder for an
+        /// unimplemented full-physics path).
         contact_count: u32,
+        /// Real measured wall-clock cost of this step in microseconds; `0`
+        /// when unmeasurable (no clock / sub-µs), never a fabricated literal.
         step_us: u32,
     },
     /// Body added successfully.
@@ -753,6 +788,12 @@ impl WorkerBridge {
 // ── WorkerRuntime ─────────────────────────────────────────────────────────────
 
 /// Worker-thread-side physics runtime.
+///
+/// This runtime is a **lightweight kinematic preview**: `Step` advances each
+/// body under constant gravity (`y += ½ g dt²`) with no collision detection,
+/// contacts, or constraint solving. It is intended for off-thread plumbing and
+/// smoke tests; a production deployment swaps in [`crate::WasmPhysicsEngine`].
+/// Telemetry it returns is honest about this scope — see [`SimResult::StepDone`].
 #[wasm_bindgen]
 pub struct WorkerRuntime {
     /// Accumulated simulation time.
@@ -794,6 +835,9 @@ impl WorkerRuntime {
     fn dispatch(&mut self, cmd: SimCommand, shared: &mut SharedStateBuffer) -> SimResult {
         match cmd {
             SimCommand::Step { dt } => {
+                // Measure the real wall-clock cost of the kinematic preview.
+                let t_start = now_ms();
+
                 let g = -9.81_f32;
                 for pos in &mut self.positions {
                     pos[1] += 0.5 * g * dt * dt;
@@ -813,20 +857,24 @@ impl WorkerRuntime {
                 SimResult::StepDone {
                     sim_time: self.sim_time,
                     body_count: self.body_count,
+                    // No collision detection in the kinematic preview, so the
+                    // genuine contact count is zero.
                     contact_count: 0,
-                    step_us: 100,
+                    step_us: elapsed_us(t_start, now_ms()),
                 }
             }
             SimCommand::StepSubsteps { dt, substeps } => {
-                let sub_dt = dt / substeps as f32;
+                let t_start = now_ms();
+                let sub_dt = dt / substeps.max(1) as f32;
                 for _ in 0..substeps {
                     self.dispatch(SimCommand::Step { dt: sub_dt }, shared);
                 }
                 SimResult::StepDone {
                     sim_time: self.sim_time,
                     body_count: self.body_count,
+                    // Kinematic preview performs no collision detection.
                     contact_count: 0,
-                    step_us: 100 * substeps,
+                    step_us: elapsed_us(t_start, now_ms()),
                 }
             }
             SimCommand::AddSphere { x, y, z, .. } => {
@@ -1023,5 +1071,95 @@ mod tests {
         bridge.post_command(&SimCommand::Shutdown);
         runtime.process(&mut bridge);
         assert!(!runtime.running);
+    }
+
+    #[test]
+    fn test_step_telemetry_is_honest_not_fabricated() {
+        // The old code hardcoded step_us = 100 regardless of work done. With a
+        // real clock (host: std::time::Instant) the measured cost of advancing
+        // a few bodies is essentially never exactly 100 µs, and contact_count
+        // must be the genuine 0 from a contactless kinematic preview.
+        let mut shared = SharedStateBuffer::new(8);
+        let mut runtime = WorkerRuntime::new();
+        for i in 0..4 {
+            runtime.dispatch(
+                SimCommand::AddSphere {
+                    mass: 1.0,
+                    x: i as f32,
+                    y: 10.0,
+                    z: 0.0,
+                    radius: 0.5,
+                },
+                &mut shared,
+            );
+        }
+
+        let result = runtime.dispatch(SimCommand::Step { dt: 1.0 / 60.0 }, &mut shared);
+        match result {
+            SimResult::StepDone {
+                contact_count,
+                step_us,
+                body_count,
+                ..
+            } => {
+                assert_eq!(body_count, 4);
+                assert_eq!(
+                    contact_count, 0,
+                    "kinematic preview has no collisions; contact_count must be 0"
+                );
+                // On the host the clock is always available, so a real, finite
+                // measurement is produced; it must not be the old constant.
+                #[cfg(not(target_arch = "wasm32"))]
+                assert_ne!(
+                    step_us, 100,
+                    "step_us still equals the discarded fabricated constant"
+                );
+                // Either way it is a plain u32 count of microseconds.
+                let _ = step_us;
+            }
+            other => panic!("expected StepDone, got {:?}", other.kind_str()),
+        }
+    }
+
+    #[test]
+    fn test_step_substeps_telemetry_is_honest() {
+        // StepSubsteps previously fabricated step_us = 100 * substeps.
+        let mut shared = SharedStateBuffer::new(8);
+        let mut runtime = WorkerRuntime::new();
+        runtime.dispatch(
+            SimCommand::AddSphere {
+                mass: 1.0,
+                x: 0.0,
+                y: 10.0,
+                z: 0.0,
+                radius: 0.5,
+            },
+            &mut shared,
+        );
+        let substeps = 4u32;
+        let result = runtime.dispatch(
+            SimCommand::StepSubsteps {
+                dt: 1.0 / 60.0,
+                substeps,
+            },
+            &mut shared,
+        );
+        if let SimResult::StepDone {
+            contact_count,
+            step_us,
+            ..
+        } = result
+        {
+            assert_eq!(contact_count, 0);
+            #[cfg(not(target_arch = "wasm32"))]
+            assert_ne!(
+                step_us,
+                100 * substeps,
+                "substep step_us still equals the discarded fabricated formula"
+            );
+            let _ = step_us;
+        } else {
+            panic!("expected StepDone");
+        }
     }
 }
