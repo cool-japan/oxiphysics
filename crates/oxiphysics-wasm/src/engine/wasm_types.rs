@@ -583,8 +583,8 @@ export class WasmPhysicsEngine {
   /** Get contact information from last step. */
   getContacts(): ContactInfo[];
 
-  /** Run a WebGPU compute placeholder (returns mock data). */
-  webgpuComputePlaceholder(workgroupSize: number): Float64Array;
+  /** Accumulated simulation time in seconds. */
+  time(): number;
 }
 
 /** JS-facing 3D vector. */

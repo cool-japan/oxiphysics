@@ -707,7 +707,7 @@ fn test_ts_definitions_content() {
     assert!(TS_DEFINITIONS.contains("getContacts"));
     assert!(TS_DEFINITIONS.contains("addColliderSphere"));
     assert!(TS_DEFINITIONS.contains("addColliderBox"));
-    assert!(TS_DEFINITIONS.contains("webgpuComputePlaceholder"));
+    assert!(TS_DEFINITIONS.contains("time()"));
 }
 
 #[test]
@@ -837,21 +837,16 @@ fn test_wasm_bindings_contacts_json() {
 }
 
 #[test]
-fn test_wasm_bindings_webgpu_placeholder() {
+fn test_wasm_bindings_time_query() {
     let mut api = WasmBindings::new(0.0, -9.81, 0.0);
     api.add_rigid_body(0.0, 1.0, 0.0, 1.0);
+    assert_eq!(api.time(), 0.0, "a fresh engine starts at t = 0");
     api.step(1.0 / 60.0);
-    let result = api.webgpu_compute_placeholder(64);
-    assert_eq!(result.len(), 64);
-    assert!((result[0] - 1.0).abs() < 1e-10);
-    assert!(result[1] > 0.0); // simulation time > 0
-}
-
-#[test]
-fn test_wasm_bindings_webgpu_placeholder_min_size() {
-    let api = WasmBindings::new(0.0, -9.81, 0.0);
-    let result = api.webgpu_compute_placeholder(0);
-    assert_eq!(result.len(), 2); // clamped to min 2
+    assert!(
+        (api.time() - 1.0 / 60.0).abs() < 1e-12,
+        "time must advance by the stepped dt, got {}",
+        api.time()
+    );
 }
 
 #[test]

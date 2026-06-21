@@ -311,6 +311,23 @@ mod tests {
         }
     }
     #[test]
+    fn test_von_mises_thermal_isotropic_is_zero() {
+        // Uniform thermal stress is hydrostatic (isotropic) => von Mises = 0,
+        // even though the hydrostatic magnitude itself is large and non-zero.
+        let ts = ThermalStress::new(200e9, 12e-6, 0.3, 293.15);
+        assert!(ts.thermal_stress_magnitude(393.15).abs() > 1.0);
+        assert!(ts.von_mises_thermal(393.15) < EPS);
+    }
+    #[test]
+    fn test_von_mises_voigt_uniaxial() {
+        // Uniaxial stress σ_xx = 100 => von Mises equals the axial stress.
+        let vm = von_mises_voigt(&[100.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert!((vm - 100.0).abs() < 1e-9);
+        // Pure shear τ_xy = 50 => von Mises = √3 · 50.
+        let vm_shear = von_mises_voigt(&[0.0, 0.0, 0.0, 0.0, 0.0, 50.0]);
+        assert!((vm_shear - 3.0f64.sqrt() * 50.0).abs() < 1e-9);
+    }
+    #[test]
     fn test_cubic_kernel_positive() {
         let w = cubic_kernel(0.5, 1.0);
         assert!(w > 0.0);

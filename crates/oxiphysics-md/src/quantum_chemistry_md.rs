@@ -374,7 +374,7 @@ impl CarParrinelloMd {
     /// * `dt` – Time step in atomic units.
     pub fn step(&mut self, dt: f64) {
         // Update ionic positions
-        let forces = self.ionic_forces_vec();
+        let forces = self.ionic_forces();
         // Update ionic positions
         for ((pos, vel), (f, &m)) in self
             .ionic_positions
@@ -394,7 +394,7 @@ impl CarParrinelloMd {
         }
         self.orthogonalize_orbitals();
         // Update ionic velocities (simple Euler for now)
-        let forces2 = self.ionic_forces_vec();
+        let forces2 = self.ionic_forces();
         for ((vel, &m), (f, f2)) in self
             .ionic_velocities
             .iter_mut()
@@ -444,14 +444,21 @@ impl CarParrinelloMd {
         }
     }
 
-    /// Compute Hellmann-Feynman-like forces on ions.
+    /// Pairwise nuclear-repulsion forces on the ions.
     ///
-    /// Returns forces as a public `Vec<[f64;3]>`.
-    pub fn ionic_forces(&self) {
-        let _ = self.ionic_forces_vec();
-    }
-
-    fn ionic_forces_vec(&self) -> Vec<[f64; 3]> {
+    /// Returns the force vector `Vec<[f64; 3]>` (one 3-vector per ion). This is
+    /// a deliberately **simplified** model: it sums a pairwise repulsive ~1/r²
+    /// interaction between the ionic centres,
+    ///
+    /// F_i = Σ_{j≠i} (R_i − R_j) / |R_i − R_j|³,
+    ///
+    /// the gradient of a 1/r repulsion with unit coupling. It is *not* a full
+    /// Hellmann-Feynman force: the electronic contribution from the orbitals
+    /// `psi` and the true nuclear charges are not included (they cannot be
+    /// recovered from the stored coefficient data), so callers needing
+    /// ab-initio forces must supply them from a real electronic-structure
+    /// evaluation.
+    pub fn ionic_forces(&self) -> Vec<[f64; 3]> {
         let n = self.ionic_positions.len();
         let mut f = vec![[0.0f64; 3]; n];
         for (i, f_i) in f.iter_mut().enumerate() {
@@ -460,14 +467,14 @@ impl CarParrinelloMd {
                     continue;
                 }
                 let r = dist(&self.ionic_positions[i], &self.ionic_positions[j]).max(1e-6);
-                // Simple 1/r^2 nuclear repulsion as placeholder
+                // Repulsive gradient of a unit 1/r interaction: +(R_i - R_j)/r^3.
                 let coeff = 1.0 / (r * r * r);
                 for (fk, (&pi_k, &pj_k)) in f_i.iter_mut().zip(
                     self.ionic_positions[i]
                         .iter()
                         .zip(self.ionic_positions[j].iter()),
                 ) {
-                    *fk -= coeff * (pi_k - pj_k);
+                    *fk += coeff * (pi_k - pj_k);
                 }
             }
         }
@@ -677,53 +684,88 @@ impl NebMethod {
         }
     }
 
-    /// Compute NEB force on each image (spring + perpendicular true force).
+    /// Compute the NEB force on each interior image from the supplied true
+    /// (potential) atomic forces.
     ///
-    /// Returns force vectors with spring forces projected along the tangent
-    /// and true forces projected onto the hyperplane perpendicular to the tangent.
-    pub fn neb_force(&self) -> Vec<Vec<[f64; 3]>> {
+    /// For each interior image `i` the NEB force is
+    ///
+    /// F_i = F_i^⊥(true) + F_i^∥(spring),
+    ///
+    /// where the true force is projected onto the hyperplane perpendicular to
+    /// the local tangent τ̂_i and the spring force is projected onto τ̂_i:
+    ///
+    /// F^⊥ = F_true − (F_true·τ̂)τ̂,   F^∥ = k(|R_{i+1}−R_i| − |R_i−R_{i−1}|) τ̂.
+    ///
+    /// `true_forces[i][a]` is the physical force (−∇V) on atom `a` of image `i`,
+    /// which the caller must obtain from the potential-energy surface — this
+    /// method evaluates no PES of its own. Endpoint images are fixed and receive
+    /// zero NEB force; missing entries in `true_forces` are treated as zero.
+    pub fn neb_force(&self, true_forces: &[Vec<[f64; 3]>]) -> Vec<Vec<[f64; 3]>> {
         let n = self.images.len();
-        let mut forces = vec![vec![[0.0f64; 3]; self.images[0].len()]; n];
+        let n_atoms = self.images.first().map(|im| im.len()).unwrap_or(0);
+        let mut forces = vec![vec![[0.0f64; 3]; n_atoms]; n];
+        if n < 3 {
+            return forces;
+        }
         for (i, force_row) in forces.iter_mut().enumerate().take(n - 1).skip(1) {
             let tau = self.local_tangent(i);
-            for (a, f_ia) in force_row.iter_mut().enumerate() {
-                // Spring force component along tangent
-                let r_next = dist(&self.images[i + 1][a], &self.images[i][a]);
-                let r_prev = dist(&self.images[i][a], &self.images[i - 1][a]);
-                let f_spring = self.spring_k * (r_next - r_prev);
-                for (&tau_k, f_ia_k) in tau.iter().zip(f_ia.iter_mut()) {
-                    *f_ia_k += f_spring * tau_k;
-                }
-                // Placeholder true force perpendicular to tangent
-                let f_true = -0.1 * self.images[i][a][0];
-                for (&tau_k, f_ia_k) in tau.iter().zip(f_ia.iter_mut()) {
-                    let proj = f_true * tau_k;
-                    *f_ia_k += f_true - proj;
+            // Full-configuration distances to the neighbouring images.
+            let mut d_next_sq = 0.0f64;
+            let mut d_prev_sq = 0.0f64;
+            for (a_next, a_cur) in self.images[i + 1].iter().zip(self.images[i].iter()) {
+                d_next_sq += dist(a_next, a_cur).powi(2);
+            }
+            for (a_cur, a_prev) in self.images[i].iter().zip(self.images[i - 1].iter()) {
+                d_prev_sq += dist(a_cur, a_prev).powi(2);
+            }
+            let f_spring = self.spring_k * (d_next_sq.sqrt() - d_prev_sq.sqrt());
+            for (a, fa) in force_row.iter_mut().enumerate() {
+                let ft = true_forces
+                    .get(i)
+                    .and_then(|im| im.get(a))
+                    .copied()
+                    .unwrap_or([0.0; 3]);
+                let f_dot_tau = ft[0] * tau[0] + ft[1] * tau[1] + ft[2] * tau[2];
+                for (k, fak) in fa.iter_mut().enumerate() {
+                    *fak = ft[k] - f_dot_tau * tau[k] + f_spring * tau[k];
                 }
             }
         }
         forces
     }
 
-    /// Climbing-image NEB: the highest-energy image climbs to the saddle point.
+    /// Compute the climbing-image NEB force on the highest-energy interior image.
     ///
-    /// Inverts the true force component along the tangent for the climbing image
-    /// so it converges to the transition state.
-    pub fn climbing_image_neb(&mut self) {
-        let ci = self.highest_energy_image();
+    /// The climbing image feels the full true force with its tangential
+    /// component inverted (and no spring force), so it is driven uphill to the
+    /// saddle point:
+    ///
+    /// F^CI = F_true − 2 (F_true·τ̂) τ̂.
+    ///
+    /// Returns the per-atom climbing force for the highest-energy image.
+    /// `true_forces` supplies the physical atomic forces (the caller evaluates
+    /// the PES). Returns an empty vector when there are fewer than three images.
+    pub fn climbing_image_neb(&self, true_forces: &[Vec<[f64; 3]>]) -> Vec<[f64; 3]> {
         let n = self.images.len();
-        if ci == 0 || ci == n - 1 {
-            return;
+        if n < 3 {
+            return Vec::new();
         }
+        let ci = self.highest_energy_image();
         let tau = self.local_tangent(ci);
-        let _n_atoms = self.images[ci].len();
-        // Invert tangential component of force for climbing image
-        for img in self.images[ci].iter_mut() {
-            let f_tang = 0.1 * img[1];
+        let n_atoms = self.images[ci].len();
+        let mut f_ci = vec![[0.0f64; 3]; n_atoms];
+        for (a, f_a) in f_ci.iter_mut().enumerate() {
+            let ft = true_forces
+                .get(ci)
+                .and_then(|im| im.get(a))
+                .copied()
+                .unwrap_or([0.0; 3]);
+            let f_dot_tau = ft[0] * tau[0] + ft[1] * tau[1] + ft[2] * tau[2];
             for k in 0..3 {
-                img[k] -= 0.01 * f_tang * tau[k];
+                f_a[k] = ft[k] - 2.0 * f_dot_tau * tau[k];
             }
         }
+        f_ci
     }
 
     /// Reaction coordinate (arc length) along the NEB path in Angstrom.
@@ -1004,8 +1046,18 @@ mod tests {
             vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
             vec![12.0, 16.0],
         );
-        // Should not panic
-        cp.ionic_forces();
+        let f = cp.ionic_forces();
+        assert_eq!(f.len(), 2);
+        // Two ions on the x-axis: force must be non-zero, purely along x,
+        // repulsive (ion 0 pushed toward -x, ion 1 toward +x) and obey
+        // Newton's third law f0 = -f1.
+        assert!(f[0][0].abs() > 1e-9);
+        assert!(f[0][0] < 0.0);
+        assert!(f[1][0] > 0.0);
+        for (a, b) in f[0].iter().zip(f[1].iter()) {
+            assert!((a + b).abs() < 1e-12);
+        }
+        assert!(f[0][1].abs() < 1e-12 && f[0][2].abs() < 1e-12);
     }
 
     // --- SemiempiricalMd ---
@@ -1130,18 +1182,44 @@ mod tests {
         let start = vec![[0.0f64, 0.0, 0.0]];
         let end = vec![[3.0f64, 0.0, 0.0]];
         let neb = NebMethod::new(start, end, 5, 1.0);
-        let f = neb.neb_force();
+        let true_forces = vec![vec![[0.0f64; 3]]; 5];
+        let f = neb.neb_force(&true_forces);
         assert_eq!(f.len(), 5);
     }
 
     #[test]
-    fn test_neb_climbing_image_no_panic() {
+    fn test_neb_force_removes_tangential_component() {
+        // 3 equally spaced images on the x-axis: tangent at the middle image is
+        // +x. A true force [3, 5, 0] must lose its tangential (x) part and keep
+        // the perpendicular (y) part; equal spacing => zero spring force.
+        let start = vec![[0.0f64, 0.0, 0.0]];
+        let end = vec![[2.0f64, 0.0, 0.0]];
+        let neb = NebMethod::new(start, end, 3, 1.0);
+        let mut true_forces = vec![vec![[0.0f64; 3]]; 3];
+        true_forces[1][0] = [3.0, 5.0, 0.0];
+        let f = neb.neb_force(&true_forces);
+        assert!(f[1][0][0].abs() < 1e-9); // tangential x removed
+        assert!((f[1][0][1] - 5.0).abs() < 1e-9); // perpendicular y kept
+        // Endpoints stay fixed (zero NEB force).
+        assert_eq!(f[0][0], [0.0, 0.0, 0.0]);
+        assert_eq!(f[2][0], [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_neb_climbing_image_inverts_tangential_force() {
+        // Highest-energy interior image is index 2; tangent is +x. The climbing
+        // force inverts the tangential component (+2 -> -2) and keeps the
+        // perpendicular component (1).
         let start = vec![[0.0f64, 0.0, 0.0]];
         let end = vec![[3.0f64, 0.0, 0.0]];
         let mut neb = NebMethod::new(start, end, 5, 1.0);
         neb.energies = vec![0.0, 0.3, 0.8, 0.4, 0.0];
-        neb.climbing_image_neb();
-        assert_eq!(neb.images.len(), 5);
+        let mut true_forces = vec![vec![[0.0f64; 3]]; 5];
+        true_forces[2][0] = [2.0, 1.0, 0.0];
+        let f_ci = neb.climbing_image_neb(&true_forces);
+        assert_eq!(f_ci.len(), 1);
+        assert!((f_ci[0][0] + 2.0).abs() < 1e-9);
+        assert!((f_ci[0][1] - 1.0).abs() < 1e-9);
     }
 
     #[test]

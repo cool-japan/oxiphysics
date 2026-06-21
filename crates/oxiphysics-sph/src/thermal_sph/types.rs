@@ -319,12 +319,39 @@ impl ThermalStress {
         let s = self.thermal_stress_magnitude(temp);
         [s, s, s, 0.0, 0.0, 0.0]
     }
-    /// Von Mises equivalent thermal stress: σ_VM = E α |ΔT| * √(2/3) * √3.
+    /// Von Mises equivalent stress of the thermo-elastic stress state.
+    ///
+    /// A uniform temperature change produces a purely *hydrostatic* (isotropic)
+    /// stress σ = \[s, s, s, 0, 0, 0\] in Voigt notation. The von Mises
+    /// (deviatoric) equivalent stress
+    ///
+    /// σ_VM = √( ½\[(σ_xx−σ_yy)² + (σ_yy−σ_zz)² + (σ_zz−σ_xx)²\]
+    ///           + 3(σ_yz² + σ_xz² + σ_xy²) )
+    ///
+    /// vanishes for any isotropic state (σ_xx = σ_yy = σ_zz with no shear), so
+    /// this returns exactly 0 for the uniform thermal stress. The value is
+    /// computed from the actual Voigt vector via [`von_mises_voigt`], so it
+    /// reports a non-zero result for a genuinely anisotropic stress state.
     pub fn von_mises_thermal(&self, temp: f64) -> f64 {
-        let s = self.thermal_stress_magnitude(temp).abs();
-        let _ = s;
-        0.0
+        von_mises_voigt(&self.thermal_stress_voigt(temp))
     }
+}
+
+/// Von Mises equivalent stress from a Voigt stress vector
+/// `[σ_xx, σ_yy, σ_zz, σ_yz, σ_xz, σ_xy]` (Pa).
+///
+/// σ_VM = √( ½\[(σ_xx−σ_yy)² + (σ_yy−σ_zz)² + (σ_zz−σ_xx)²\]
+///           + 3(σ_yz² + σ_xz² + σ_xy²) ).
+///
+/// Returns 0 for a purely hydrostatic (isotropic) stress state.
+pub fn von_mises_voigt(stress: &[f64; 6]) -> f64 {
+    let s = stress;
+    let val = 0.5
+        * ((s[0] - s[1]).powi(2)
+            + (s[1] - s[2]).powi(2)
+            + (s[2] - s[0]).powi(2)
+            + 6.0 * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]));
+    val.sqrt()
 }
 /// Semi-analytic Stefan problem solution for validation.
 ///

@@ -607,12 +607,17 @@ mod tests {
 
     #[test]
     fn test_hp_mean_velocity() {
-        // Mean velocity = Q / (π R²) = u_max / 2
+        // Mean velocity = Q / (π R²) = u_max / 2 exactly (analytic identity);
+        // the two evaluation paths differ only by floating-point rounding, so
+        // compare with a relative tolerance near machine epsilon rather than an
+        // unphysical sub-ULP absolute bound.
         let hp = HagenPoiseuilleFlow::new(1000.0, 1e-3, 50e-6, 1e-2);
         let q = hp.flow_rate();
         let a = PI * (50e-6_f64).powi(2);
         let u_mean = q / a;
-        assert!((u_mean - hp.max_velocity() / 2.0).abs() < 1e-18);
+        let expected = hp.max_velocity() / 2.0;
+        let rel_err = (u_mean - expected).abs() / expected.abs();
+        assert!(rel_err < 1e-12, "relative error = {rel_err}");
     }
 
     #[test]

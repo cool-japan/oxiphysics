@@ -456,12 +456,14 @@ mod tests {
         }
 
         fn step(&mut self, _dt: f64) {
-            // Busy-spin to burn some CPU time.
+            // Busy-spin to burn a deterministic amount of CPU work. `black_box`
+            // on the loop variable forces the optimizer to actually iterate (it
+            // cannot fold the sum into a closed form), so the measured wall-clock
+            // cost scales with `spin_iters`.
             let mut acc = 0u64;
             for i in 0..self.spin_iters {
-                acc = acc.wrapping_add(i);
+                acc = acc.wrapping_add(std::hint::black_box(i));
             }
-            // Prevent the optimizer from eliding the loop.
             std::hint::black_box(acc);
         }
 
@@ -598,9 +600,12 @@ mod tests {
         orch.add_stage("fast", &[]);
         orch.add_stage("slow", &[]);
 
+        // The 10× work gap is sized so the slow stage's wall time dominates
+        // scheduler jitter even when the whole suite runs under heavy parallel
+        // load, keeping `timings[1] > timings[0]` robust rather than flaky.
         let mut stages: Vec<Box<dyn SolverStage>> = vec![
-            Box::new(TimedStage::new("fast", 1_000)),
-            Box::new(TimedStage::new("slow", 1_000_000)),
+            Box::new(TimedStage::new("fast", 5_000_000)),
+            Box::new(TimedStage::new("slow", 50_000_000)),
         ];
 
         // Run multiple times to accumulate.

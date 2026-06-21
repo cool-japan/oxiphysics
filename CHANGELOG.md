@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `kernels/mod.rs` (zero references workspace-wide) and had been superseded by the wired,
   `splitrs`-refactored `kernels/md_force/`, `kernels/rigid/`, `kernels/sph.rs`,
   `kernels/broadphase.rs`. Dead duplicate code left over from a prior refactor.
+- `oxiphysics-core` `pde`: removed a dead duplicate `src/pde/types/types.rs` — an orphaned
+  pre-refactor module never declared in `pde/types/mod.rs` (which declares only
+  `types_2`/`types_3`/`types_impl`) and referenced nowhere in the workspace.
 
 ### Fixed
 Honesty audit (`/strict-check`): eradicated **silent fabrications** — code that compiled and
@@ -77,6 +80,64 @@ confirmed honest (real device queries, `NotAvailable`/`FeatureNotEnabled` errors
   were fabricated constants (`frame_time*0.01`, `100`) and `contact_count` was hardcoded `0`. Now
   measured with a real monotonic clock (`Instant` native / `performance.now()` on wasm32), and the
   worker preview is honestly documented as contactless ballistic integration.
+
+Follow-up honesty sweep (the deferred latent tier — unreachable-but-fabricating GPU paths,
+zero-returning "placeholder" methods, and docs/names that overclaimed). Same discipline: each
+became a real implementation (or an honest error) with a regression test asserting real behavior.
+
+- `oxiphysics-constraints` `gpu_constraint_solver`: `solve_gpu` looped a **no-op** `WgpuBackend`
+  dispatch and read the *unchanged* uploaded buffers back, returning the inputs as a "solved"
+  system with `used_gpu: true`. Now runs the real projected-Gauss-Seidel sweep through a shared
+  `run_pgs` helper that `solve_cpu` also calls (GPU-path ≡ CPU-path, asserted to 1e-6), and
+  `used_gpu` honestly reflects `backend.is_available()`. Corrected `oxiphysics-gpu` `WgpuBackend`
+  docs that falsely claimed the stub executed kernels / stored shaders (it is a no-op CPU
+  emulation; the real on-device path is `WgpuBackendReal`).
+- `oxiphysics-fem` `boundary_element`: `DualBem::assemble` returned an all-zero matrix and RHS
+  ("Simplified placeholder"). Now a real dual-BEM system — displacement BIE on boundary elements
+  (Kelvin `U`/`T` kernels) plus the hypersingular traction BIE on crack elements (derived `D`/`S`
+  kernels with a Hadamard finite-part self-term). Validated against the closed-form penny-crack
+  opening `Δu_z = p(1−ν)a/μ` and `K_I` load-scaling. Split into `boundary_element_dual.rs` to keep
+  both files <2000 lines.
+- `oxiphysics-fem` `fluid_structure`: `MonolithicFsi` exposed only a placeholder `zero_matrix`.
+  Added a real coupled saddle-point tangent `assemble_tangent` (continuity `B`/`−Bᵀ` blocks,
+  symmetric added-mass interface coupling, PSPG `−τ·L_pp` stabilization) that validates block
+  sizes and returns an honest `Error` on mismatch.
+- `oxiphysics-wasm` `web_worker`: `SimCommand::ApplyImpulse` discarded the impulse entirely and
+  reported `StepDone { step_us: 0 }`. The preview now tracks per-body velocity; `ApplyImpulse`
+  applies a real `Δv = impulse/m` (documented unit-mass preview) that bends the ballistic path,
+  `step_us` is really measured, and an out-of-range handle returns an honest `Error`.
+  `RequestSnapshot` now reports the real tracked velocities instead of hardcoded zeros.
+- `oxiphysics-wasm` `engine`: removed `webgpu_compute_placeholder` — a "WebGPU compute" mock that
+  did no GPU work, returning body-count/time padded with zeros; its one unique value is now a
+  clean `time()` query with no false GPU framing.
+- `oxiphysics-md` `quantum_chemistry_md`: `ionic_forces` returned `()` while computing and
+  discarding the `Vec` its doc promised (with an inverted, attractive sign); now returns the real
+  repulsive forces obeying Newton's third law. `neb_force`/`climbing_image_neb` fabricated a
+  `-0.1·x` "true force"; both now take caller-supplied atomic forces and perform the real NEB
+  tangential projection (the climbing image inverts the tangential component).
+- `oxiphysics-sph` `thermal_sph`: `von_mises_thermal` discarded its argument and returned `0`
+  behind a doc stating a nonzero formula. Replaced with a real `von_mises_voigt` (genuinely 0 for
+  the isotropic thermal-stress state, nonzero for anisotropic stresses) with corrected docs.
+- `oxiphysics-gpu` `scheduler`: `AsyncCompute::tick` fabricated `output = vec![0u8; 4]` on a
+  lifecycle transition; removed — the simulated lifecycle runs no kernel and so produces no output.
+- `oxiphysics-geometry` `origami`: `gaussian_curvature_at` ignored its vertex index and returned a
+  bare `f64` while documenting an `Option`. Now the real Descartes/Gauss-Bonnet angle deficit
+  `2π − Σθ` over incident facets, returning `Option<f64>` (`None` for boundary/isolated vertices).
+- `oxiphysics-md` `solvation`: the Born `entropy_contribution` returning `0` is physically correct
+  (constant ε ⇒ ∂ΔG/∂T = 0), so the "returns 0 as a placeholder" wording was corrected and a real
+  temperature-dependent `entropy_contribution_with_dielectric_slope` was added.
+- Doc/name honesty where the math was already real but the documentation overclaimed:
+  `oxiphysics-md` `electrostatics/coulomb` (a genuine NGP-grid FFT Ewald reciprocal estimate, not
+  the "full B-spline PME" claimed), `simulation/{core_sim,plain_sim}`, `rare_event` (a
+  deterministic `round(n·p)`, not a Bernoulli trial), and `ab_initio_md` Ehrenfest coupling.
+
+Test robustness (failures pre-existing under the optimized parallel test profile, not fabrications):
+- `oxiphysics-core` `parallel_orchestrator::test_timing_accumulation`: `black_box` moved inside the
+  busy-loop (the optimizer can no longer fold it to a closed form) and the inter-stage work gap
+  widened to 10×, so the wall-clock ordering assertion holds under a contended test run.
+- `oxiphysics-lbm` `microfluidics::test_hp_mean_velocity`: the unphysical `< 1e-18` absolute
+  tolerance (below a ULP at the values' magnitude) replaced with a relative `1e-12` bound — the two
+  sides are the exact analytic identity `R²ΔP/(8μL)`, differing only by float rounding.
 
 ## [0.1.2] - 2026-06-06
 

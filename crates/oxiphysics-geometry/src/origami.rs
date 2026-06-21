@@ -228,15 +228,57 @@ impl OrigamiPattern {
         interior_vertices.max(1)
     }
 
-    /// Compute approximate Gaussian curvature at vertex `vi` using the angle deficit.
+    /// Discrete Gaussian curvature at vertex `vi` from the angle deficit.
     ///
-    /// Returns `None` if the vertex index is out of range or has no adjacent facets.
-    pub fn gaussian_curvature_at(&self, _vi: usize) -> f64 {
-        // Placeholder: angle deficit = 2π - sum of sector angles
-        // For a flat sheet all Gaussian curvature is 0 except at fold vertices
-        let sector_angle_sum: f64 = self.fold_lines.iter().map(|fl| fl.fold_angle.abs()).sum();
-        let n = self.fold_lines.len().max(1) as f64;
-        2.0 * PI - sector_angle_sum / n
+    /// Computes the Descartes / Gauss-Bonnet angle deficit
+    ///
+    /// K(vi) = 2π − Σ_f θ_f(vi),
+    ///
+    /// where θ_f(vi) is the interior (sector) angle subtended by facet `f` at
+    /// vertex `vi`, summed over every active facet incident to `vi`. A flat,
+    /// developable vertex (sector angles summing to 2π) has zero curvature;
+    /// cone/fold vertices have a non-zero deficit.
+    ///
+    /// Returns `None` if `vi` is out of range or has no incident facet.
+    pub fn gaussian_curvature_at(&self, vi: usize) -> Option<f64> {
+        if vi >= self.vertices.len() {
+            return None;
+        }
+        let v = self.vertices[vi];
+        let mut angle_sum = 0.0f64;
+        let mut incident = false;
+        for facet in &self.facets {
+            if !facet.active {
+                continue;
+            }
+            let m = facet.vertex_indices.len();
+            if m < 3 {
+                continue;
+            }
+            for (k, &idx) in facet.vertex_indices.iter().enumerate() {
+                if idx != vi {
+                    continue;
+                }
+                let prev = facet.vertex_indices[(k + m - 1) % m];
+                let next = facet.vertex_indices[(k + 1) % m];
+                if prev >= self.vertices.len() || next >= self.vertices.len() {
+                    continue;
+                }
+                let e1 = self.vertices[prev] - v;
+                let e2 = self.vertices[next] - v;
+                let n1 = e1.norm();
+                let n2 = e2.norm();
+                if n1 > 1e-12 && n2 > 1e-12 {
+                    let cos_a = (e1.dot(&e2) / (n1 * n2)).clamp(-1.0, 1.0);
+                    angle_sum += cos_a.acos();
+                    incident = true;
+                }
+            }
+        }
+        if !incident {
+            return None;
+        }
+        Some(2.0 * PI - angle_sum)
     }
 }
 
@@ -970,6 +1012,57 @@ mod tests {
         let i = pat.add_vertex(Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(i, 0);
         assert_eq!(pat.vertices.len(), 1);
+    }
+
+    #[test]
+    fn test_gaussian_curvature_flat_vertex_is_zero() {
+        // Centre vertex (0) surrounded by four right-angle triangles tiling the
+        // plane: sector angles sum to 2π, so the angle deficit is zero.
+        let mut pat = OrigamiPattern::new();
+        let c = pat.add_vertex(Vec3::new(0.0, 0.0, 0.0));
+        let e = pat.add_vertex(Vec3::new(1.0, 0.0, 0.0));
+        let nth = pat.add_vertex(Vec3::new(0.0, 1.0, 0.0));
+        let w = pat.add_vertex(Vec3::new(-1.0, 0.0, 0.0));
+        let s = pat.add_vertex(Vec3::new(0.0, -1.0, 0.0));
+        pat.add_facet(OrigamiFacet::new(vec![c, e, nth]));
+        pat.add_facet(OrigamiFacet::new(vec![c, nth, w]));
+        pat.add_facet(OrigamiFacet::new(vec![c, w, s]));
+        pat.add_facet(OrigamiFacet::new(vec![c, s, e]));
+        let k = pat.gaussian_curvature_at(c).expect("centre is incident");
+        assert!(
+            k.abs() < 1e-9,
+            "flat vertex must have zero curvature, got {k}"
+        );
+    }
+
+    #[test]
+    fn test_gaussian_curvature_cone_vertex_positive() {
+        // Same fan but with one quadrant removed: sector angles sum to 3π/2,
+        // giving a positive angle deficit (cone point) of π/2.
+        let mut pat = OrigamiPattern::new();
+        let c = pat.add_vertex(Vec3::new(0.0, 0.0, 0.0));
+        let e = pat.add_vertex(Vec3::new(1.0, 0.0, 0.0));
+        let nth = pat.add_vertex(Vec3::new(0.0, 1.0, 0.0));
+        let w = pat.add_vertex(Vec3::new(-1.0, 0.0, 0.0));
+        let s = pat.add_vertex(Vec3::new(0.0, -1.0, 0.0));
+        pat.add_facet(OrigamiFacet::new(vec![c, e, nth]));
+        pat.add_facet(OrigamiFacet::new(vec![c, nth, w]));
+        pat.add_facet(OrigamiFacet::new(vec![c, w, s]));
+        let k = pat.gaussian_curvature_at(c).expect("centre is incident");
+        assert!(
+            (k - PI / 2.0).abs() < 1e-9,
+            "cone deficit should be π/2, got {k}"
+        );
+    }
+
+    #[test]
+    fn test_gaussian_curvature_out_of_range_and_isolated() {
+        let mut pat = OrigamiPattern::new();
+        pat.add_vertex(Vec3::new(0.0, 0.0, 0.0));
+        // Out-of-range index.
+        assert!(pat.gaussian_curvature_at(7).is_none());
+        // In-range vertex with no incident facet.
+        assert!(pat.gaussian_curvature_at(0).is_none());
     }
 
     #[test]

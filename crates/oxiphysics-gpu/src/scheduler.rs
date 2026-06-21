@@ -473,14 +473,18 @@ pub enum AsyncState {
     Failed(String),
 }
 
-/// A promise-like result from an async compute submission.
+/// A promise-like handle tracking the lifecycle of a submitted task.
+///
+/// [`AsyncCompute`] models task scheduling/lifecycle only and runs no kernel,
+/// so `output` stays empty unless a real executor populates it.
 #[derive(Debug, Clone)]
 pub struct AsyncResult {
     /// Task name.
     pub name: String,
-    /// Current state.
+    /// Current lifecycle state.
     pub state: AsyncState,
-    /// Simulated output data (bytes).
+    /// Result payload. Empty for the lifecycle model (no kernel is executed);
+    /// a real backend would fill it with the computed bytes.
     pub output: Vec<u8>,
 }
 
@@ -491,7 +495,11 @@ impl AsyncResult {
     }
 }
 
-/// Simulated async compute queue.
+/// In-process async compute scheduler that models task lifecycle transitions.
+///
+/// Tracks the state machine (Pending → Running → Done) of submitted tasks for
+/// frame-budgeting and ordering experiments. It does **not** execute any kernel
+/// and therefore produces no result bytes of its own.
 #[derive(Debug, Default)]
 pub struct AsyncCompute {
     /// All submitted tasks.
@@ -515,18 +523,18 @@ impl AsyncCompute {
         idx
     }
 
-    /// Advance all pending tasks by one simulated tick.
+    /// Advance every task by one lifecycle tick.
     ///
     /// - Pending → Running
-    /// - Running → Done (with placeholder output)
+    /// - Running → Done
+    ///
+    /// This only drives the state machine; no kernel is executed, so completed
+    /// tasks carry no output bytes (a real executor would attach them).
     pub fn tick(&mut self) {
         for r in &mut self.results {
             match r.state {
                 AsyncState::Pending => r.state = AsyncState::Running,
-                AsyncState::Running => {
-                    r.state = AsyncState::Done;
-                    r.output = vec![0u8; 4]; // placeholder
-                }
+                AsyncState::Running => r.state = AsyncState::Done,
                 _ => {}
             }
         }

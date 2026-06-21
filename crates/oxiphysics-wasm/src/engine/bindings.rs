@@ -179,15 +179,15 @@ impl WasmBindings {
     }
 
     // -----------------------------------------------------------------------
-    // WebGPU compute placeholder
+    // Simulation queries
     // -----------------------------------------------------------------------
 
-    /// WebGPU compute shader placeholder.
+    /// Accumulated simulation time in seconds.
     ///
-    /// The mock result contains:
-    /// - slot 0: body count (as f64)
-    /// - slot 1: simulation time
-    /// - remaining: zeros
+    /// CPU-side scalar query backed directly by the engine clock. The flat
+    /// wrapper otherwise surfaces simulation time only embedded inside
+    /// [`Self::state_to_json`]; body count is available via
+    /// [`Self::body_count`].
     ///
     /// # Example
     ///
@@ -198,16 +198,10 @@ impl WasmBindings {
     /// api.add_rigid_body(0.0, 1.0, 0.0, 1.0);
     /// api.step(1.0 / 60.0);
     ///
-    /// let result = api.webgpu_compute_placeholder(64);
-    /// assert_eq!(result.len(), 64);
-    /// assert!((result[0] - 1.0).abs() < 1e-10); // body count
+    /// assert!(api.time() > 0.0);
     /// ```
-    pub fn webgpu_compute_placeholder(&self, workgroup_size: u32) -> Vec<f64> {
-        let n = (workgroup_size as usize).max(2);
-        let mut out = vec![0.0f64; n];
-        out[0] = self.engine.get_body_count() as f64;
-        out[1] = self.engine.time();
-        out
+    pub fn time(&self) -> f64 {
+        self.engine.time()
     }
 
     // -----------------------------------------------------------------------

@@ -92,9 +92,10 @@ impl ForwardFlux {
 
 /// Simulate a single FFS stage: shoot trajectories from interface `i`.
 ///
-/// This is a placeholder that uses a Bernoulli trial with the given
-/// `success_probability` to mimic whether each trajectory crosses to the
-/// next interface.
+/// Uses a deterministic expected-value approximation rather than per-shot
+/// random sampling: it records `round(n_shots · success_probability)` of the
+/// `n_shots` trial trajectories as crossing to the next interface. The
+/// deterministic choice keeps the stage reproducible.
 ///
 /// # Arguments
 /// * `ffs` — mutable FFS state

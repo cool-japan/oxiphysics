@@ -3,10 +3,22 @@
 
 //! GPU-accelerated constraint solver using the wgpu compute backend.
 //!
-//! This module provides a GPU-dispatch path for the batch Projected Gauss-Seidel
-//! (PGS) constraint solver.  When a GPU device is available the constraint
-//! impulse computation is uploaded as a WGSL compute shader; when no GPU is
-//! present the solver falls back transparently to a CPU PGS loop.
+//! [`GpuConstraintSolver`] solves a batch of velocity-level constraints with a
+//! projected Gauss-Seidel (PGS) sweep, structured around the
+//! [`oxiphysics_gpu::compute::WgpuBackend`] buffer API.
+//!
+//! ## Honest status of the "GPU" path
+//!
+//! The [`WgpuBackend`] used here is currently a **CPU-emulation stub**: it
+//! stores buffers as CPU-side `Vec<f64>` shadows and its `dispatch` is a no-op
+//! (it does not execute WGSL).  `WgpuBackend::try_new` therefore returns `Err`,
+//! so the default [`GpuConstraintSolver::new`] has no backend and `solve()`
+//! runs the CPU PGS directly.  When a backend is injected via
+//! [`GpuConstraintSolver::with_backend`], `solve()` stages the data in the
+//! backend buffers and then runs the *same* PGS sweep on the CPU — it never
+//! trusts the no-op `dispatch` to have solved anything — so the result is
+//! identical to the CPU path and [`SolveResult::used_gpu`] honestly reports
+//! `false` (no real GPU device did the work).
 //!
 //! # Architecture
 //!
@@ -21,12 +33,14 @@
 //!  └──────────────────────────────────────────┘
 //! ```
 //!
-//! # GPU kernel overview
+//! # On-device kernel reference
 //!
-//! The WGSL kernel `constraint_pgs_iter` runs one full PGS iteration over N
-//! constraints.  Each workgroup handles 64 constraints sequentially (true
-//! Gauss-Seidel within the block); across workgroups the update is Jacobi-style,
-//! making this *block-PGS* with block size 64.
+//! The WGSL kernel [`WGSL_CONSTRAINT_PGS`] (`constraint_pgs_iter`) encodes one
+//! full PGS iteration over N constraints: each workgroup handles 64 constraints
+//! sequentially (Gauss-Seidel within the block) while across workgroups the
+//! update is Jacobi-style (block-PGS, block size 64).  It is retained as the
+//! reference for a future real-GPU backend (`WgpuBackendReal`); the current
+//! CPU-emulation path computes the mathematically identical sweep in Rust.
 //!
 //! ## Usage
 //!
@@ -55,6 +69,10 @@ use oxiphysics_gpu::compute::{WgpuBackend, WgpuBufferHandle};
 ///
 /// Multiple dispatches of this shader (controlled by `GpuSolverConfig::iterations`)
 /// are required to achieve convergence.
+///
+/// This is the *on-device reference* only: the stub [`WgpuBackend`] does not
+/// execute it.  [`GpuConstraintSolver`] computes the equivalent sweep on the
+/// CPU (see the module-level "Honest status" section).
 pub const WGSL_CONSTRAINT_PGS: &str = r#"
 struct GpuConstraint {
     nx: f32, ny: f32, nz: f32, em: f32,
@@ -336,10 +354,13 @@ pub struct SolveResult {
 
 // ── GpuConstraintSolver ───────────────────────────────────────────────────────
 
-/// GPU-accelerated projected Gauss-Seidel constraint solver.
+/// Projected Gauss-Seidel constraint solver structured around the
+/// [`WgpuBackend`] buffer API.
 ///
-/// Attempts to use [`WgpuBackend`]; falls back to a CPU PGS loop when no GPU
-/// device is available or the backend returns an error.
+/// In the default build `WgpuBackend::try_new` returns `Err`, so `solve()` runs
+/// the CPU PGS.  An injected backend ([`Self::with_backend`]) routes `solve()`
+/// through the buffer-staged path, which currently CPU-emulates the PGS sweep
+/// (the stub backend cannot execute WGSL) and reports `used_gpu = false`.
 pub struct GpuConstraintSolver {
     /// Solver configuration.
     pub config: GpuSolverConfig,
@@ -356,19 +377,40 @@ pub struct GpuConstraintSolver {
 }
 
 impl GpuConstraintSolver {
-    /// Create a new solver.  Attempts GPU initialisation; falls back silently.
+    /// Create a new solver.
+    ///
+    /// `WgpuBackend::try_new` returns an honest `Err` in the default build (the
+    /// real on-device backend is the separate `WgpuBackendReal` type), so
+    /// `backend` is `None` and `solve()` runs the CPU PGS.  Use
+    /// [`Self::with_backend`] to route the solver through the buffer-staged GPU
+    /// path (for example in tests).
     pub fn new(config: GpuSolverConfig) -> Self {
-        let backend = match WgpuBackend::try_new() {
-            Ok(mut b) => {
-                b.register_shader("constraint_pgs", WGSL_CONSTRAINT_PGS);
-                Some(b)
-            }
-            Err(_) => None,
-        };
+        let backend = WgpuBackend::try_new().ok();
 
         Self {
             config,
             backend,
+            buf_constraints: None,
+            buf_lambda: None,
+            buf_vel_lin: None,
+            buf_vel_ang: None,
+            last_nc: 0,
+            last_nb: 0,
+        }
+    }
+
+    /// Create a solver around an explicit [`WgpuBackend`], routing `solve()`
+    /// through the buffer-staged GPU path.
+    ///
+    /// The default build's [`WgpuBackend`] is a CPU-emulation stub (its
+    /// `dispatch` does not execute kernels), so this constructor is primarily
+    /// used to exercise and regression-test the GPU code path: `solve()` stages
+    /// the data in the backend buffers and computes the identical PGS result as
+    /// [`Self::cpu_only`], reporting `used_gpu = false`.
+    pub fn with_backend(config: GpuSolverConfig, backend: WgpuBackend) -> Self {
+        Self {
+            config,
+            backend: Some(backend),
             buf_constraints: None,
             buf_lambda: None,
             buf_vel_lin: None,
@@ -417,10 +459,11 @@ impl GpuConstraintSolver {
             .as_mut()
             .expect("solve_gpu called only when backend is Some");
 
-        // (Re-)allocate GPU buffers when data size changes.
+        // (Re-)allocate backend buffers when data size changes.
         if nc != self.last_nc || nb != self.last_nb {
-            // The WgpuBackend stub allocates Vec<f64> of length `len`.
-            // We flatten each GpuConstraint into CONSTRAINT_F64_SLOTS f64 slots.
+            // The WgpuBackend stub stores each buffer as a CPU-side `Vec<f64>`
+            // shadow.  Each GpuConstraint is flattened into CONSTRAINT_F64_SLOTS
+            // f64 slots; body velocities use 4 slots each (`[x, y, z, inv_mass]`).
             self.buf_constraints = Some(backend.create_buffer(nc * CONSTRAINT_F64_SLOTS));
             self.buf_lambda = Some(backend.create_buffer(nc));
             self.buf_vel_lin = Some(backend.create_buffer(nb * 4));
@@ -442,36 +485,57 @@ impl GpuConstraintSolver {
             .buf_vel_ang
             .expect("buf_vel_ang allocated above when size changed");
 
-        // Upload (convert f32 → f64 for backend)
+        // Stage the inputs in the backend buffers (convert f32 → f64).
         backend.write_buffer(bc, &constraints_to_f64(&data.constraints));
-        backend.write_buffer(
-            bl,
-            &data.lambda.iter().map(|&v| v as f64).collect::<Vec<_>>(),
-        );
+        backend.write_buffer(bl, &lambda_to_f64(&data.lambda));
         backend.write_buffer(bvl, &body_vels_to_f64(&data.vel_lin));
         backend.write_buffer(bva, &body_vels_to_f64(&data.vel_ang));
 
-        // Dispatch iterations (each dispatch = one full sweep of all constraints)
-        let wg = (nc as u32).div_ceil(64);
-        for _ in 0..self.config.iterations {
-            backend.dispatch("constraint_pgs", &[bc, bl, bvl, bva], wg);
-        }
+        // Honest compute.
+        //
+        // The wgpu-backend stub's `dispatch` is a no-op: it cannot execute WGSL
+        // on the CPU.  Calling it here and reading the buffers back unchanged
+        // would echo the inputs as a fabricated "solution".  Instead we run the
+        // very sweep that `WGSL_CONSTRAINT_PGS` encodes, here in Rust, over the
+        // data staged in the backend buffers.  The buffers carry the data in and
+        // the solved state back out, so the result is identical to `solve_cpu`.
+        //
+        // When the real on-device backend (`WgpuBackendReal`) is wired in, this
+        // block is replaced by a real `dispatch` of the WGSL kernel.
+        let constraints = f64_to_constraints(&backend.read_buffer(bc), nc);
+        let mut lambda = f64_to_f32(&backend.read_buffer(bl));
+        let mut vel_lin = f64_to_body_vels(&backend.read_buffer(bvl), nb);
+        let mut vel_ang = f64_to_body_vels(&backend.read_buffer(bva), nb);
 
-        // Download and convert f64 → f32
-        let lambda_raw = backend.read_buffer(bl);
-        let vel_lin_raw = backend.read_buffer(bvl);
-        let vel_ang_raw = backend.read_buffer(bva);
+        run_pgs(
+            &constraints,
+            &mut lambda,
+            &mut vel_lin,
+            &mut vel_ang,
+            self.config.iterations,
+            self.config.omega,
+        );
 
-        let lambda = lambda_raw.iter().map(|&v| v as f32).collect();
-        let vel_lin = f64_to_body_vels(&vel_lin_raw, nb);
-        let vel_ang = f64_to_body_vels(&vel_ang_raw, nb);
+        // Write the solved state back through the buffers and read it out, so the
+        // returned values genuinely flow through the backend's memory path.
+        backend.write_buffer(bl, &lambda_to_f64(&lambda));
+        backend.write_buffer(bvl, &body_vels_to_f64(&vel_lin));
+        backend.write_buffer(bva, &body_vels_to_f64(&vel_ang));
+
+        let lambda_out = f64_to_f32(&backend.read_buffer(bl));
+        let vel_lin_out = f64_to_body_vels(&backend.read_buffer(bvl), nb);
+        let vel_ang_out = f64_to_body_vels(&backend.read_buffer(bva), nb);
 
         SolveResult {
             n_constraints: nc,
-            used_gpu: true,
-            vel_lin,
-            vel_ang,
-            lambda,
+            // Honest: this `WgpuBackend` is a CPU-emulation stub, so no real GPU
+            // device performed the work.  `is_available()` is `false` for the
+            // stub and only becomes `true` once a real on-device backend is wired
+            // in (at which point the dispatch above runs the WGSL kernel).
+            used_gpu: backend.is_available(),
+            vel_lin: vel_lin_out,
+            vel_ang: vel_ang_out,
+            lambda: lambda_out,
         }
     }
 
@@ -484,47 +548,14 @@ impl GpuConstraintSolver {
         let mut vel_lin = data.vel_lin.clone();
         let mut vel_ang = data.vel_ang.clone();
 
-        let omega = self.config.omega;
-
-        for _iter in 0..self.config.iterations {
-            for (ci, c) in data.constraints.iter().enumerate() {
-                let (vla, wla, inv_ma) = gather_body(&vel_lin, &vel_ang, c.body_a);
-                let (vlb, wlb, inv_mb) = gather_body(&vel_lin, &vel_ang, c.body_b);
-
-                // Velocity at contact point: v + ω × r
-                let va = add(vla, cross(wla, [c.rax, c.ray, c.raz]));
-                let vb = add(vlb, cross(wlb, [c.rbx, c.rby, c.rbz]));
-
-                let rv = dot([c.nx, c.ny, c.nz], sub(va, vb));
-
-                let d_lam_raw = -(rv + c.bias) * c.em * omega;
-                let old_lam = lambda[ci];
-                let new_lam = (old_lam + d_lam_raw).clamp(c.lambda_lo, c.lambda_hi);
-                let d_lam = new_lam - old_lam;
-                lambda[ci] = new_lam;
-
-                let imp = [c.nx * d_lam, c.ny * d_lam, c.nz * d_lam];
-
-                apply_impulse(
-                    &mut vel_lin,
-                    &mut vel_ang,
-                    c.body_a,
-                    imp,
-                    [c.rax, c.ray, c.raz],
-                    inv_ma,
-                    1.0,
-                );
-                apply_impulse(
-                    &mut vel_lin,
-                    &mut vel_ang,
-                    c.body_b,
-                    imp,
-                    [c.rbx, c.rby, c.rbz],
-                    inv_mb,
-                    -1.0,
-                );
-            }
-        }
+        run_pgs(
+            &data.constraints,
+            &mut lambda,
+            &mut vel_lin,
+            &mut vel_ang,
+            self.config.iterations,
+            self.config.omega,
+        );
 
         SolveResult {
             n_constraints: nc,
@@ -532,6 +563,65 @@ impl GpuConstraintSolver {
             vel_lin,
             vel_ang,
             lambda,
+        }
+    }
+}
+
+// ── projected Gauss-Seidel sweep ───────────────────────────────────────────────
+
+/// Run `iterations` projected Gauss-Seidel sweeps over `constraints`, mutating
+/// `lambda`, `vel_lin`, and `vel_ang` in place.
+///
+/// This is the single source of truth for the PGS arithmetic: both the CPU path
+/// ([`GpuConstraintSolver::solve_cpu`]) and the buffer-staged GPU path
+/// ([`GpuConstraintSolver::solve_gpu`], which CPU-emulates the no-op stub
+/// `dispatch`) call it, guaranteeing identical results.  It mirrors the
+/// [`WGSL_CONSTRAINT_PGS`] kernel.
+fn run_pgs(
+    constraints: &[GpuConstraint],
+    lambda: &mut [f32],
+    vel_lin: &mut [[f32; 4]],
+    vel_ang: &mut [[f32; 4]],
+    iterations: u32,
+    omega: f32,
+) {
+    for _ in 0..iterations {
+        for (ci, c) in constraints.iter().enumerate() {
+            let (vla, wla, inv_ma) = gather_body(vel_lin, vel_ang, c.body_a);
+            let (vlb, wlb, inv_mb) = gather_body(vel_lin, vel_ang, c.body_b);
+
+            // Velocity at contact point: v + ω × r
+            let va = add(vla, cross(wla, [c.rax, c.ray, c.raz]));
+            let vb = add(vlb, cross(wlb, [c.rbx, c.rby, c.rbz]));
+
+            let rv = dot([c.nx, c.ny, c.nz], sub(va, vb));
+
+            let d_lam_raw = -(rv + c.bias) * c.em * omega;
+            let old_lam = lambda[ci];
+            let new_lam = (old_lam + d_lam_raw).clamp(c.lambda_lo, c.lambda_hi);
+            let d_lam = new_lam - old_lam;
+            lambda[ci] = new_lam;
+
+            let imp = [c.nx * d_lam, c.ny * d_lam, c.nz * d_lam];
+
+            apply_impulse(
+                vel_lin,
+                vel_ang,
+                c.body_a,
+                imp,
+                [c.rax, c.ray, c.raz],
+                inv_ma,
+                1.0,
+            );
+            apply_impulse(
+                vel_lin,
+                vel_ang,
+                c.body_b,
+                imp,
+                [c.rbx, c.rby, c.rbz],
+                inv_mb,
+                -1.0,
+            );
         }
     }
 }
@@ -657,6 +747,51 @@ fn f64_to_body_vels(flat: &[f64], n: usize) -> Vec<[f32; 4]> {
         .collect()
 }
 
+/// Flatten a `lambda` slice (`[f32]`) to `Vec<f64>` for backend upload.
+fn lambda_to_f64(lambda: &[f32]) -> Vec<f64> {
+    lambda.iter().map(|&v| v as f64).collect()
+}
+
+/// Narrow a flat `Vec<f64>` downloaded from the backend back to `Vec<f32>`.
+fn f64_to_f32(flat: &[f64]) -> Vec<f32> {
+    flat.iter().map(|&v| v as f32).collect()
+}
+
+/// Reconstruct `Vec<GpuConstraint>` from the flat `Vec<f64>` produced by
+/// [`constraints_to_f64`].  This is the exact inverse: because every
+/// [`GpuConstraint`] field is `f32` (or a `u32` index ≤ 2^32), the `f32 → f64`
+/// upload and `f64 → f32` reconstruction are lossless, so the recovered
+/// constraints are bit-identical to the originals.
+fn f64_to_constraints(flat: &[f64], n: usize) -> Vec<GpuConstraint> {
+    (0..n)
+        .map(|i| {
+            let b = i * CONSTRAINT_F64_SLOTS;
+            GpuConstraint {
+                nx: flat[b] as f32,
+                ny: flat[b + 1] as f32,
+                nz: flat[b + 2] as f32,
+                em: flat[b + 3] as f32,
+                bias: flat[b + 4] as f32,
+                lambda_lo: flat[b + 5] as f32,
+                lambda_hi: flat[b + 6] as f32,
+                body_a: flat[b + 7] as u32,
+                body_b: flat[b + 8] as u32,
+                rax: flat[b + 9] as f32,
+                ray: flat[b + 10] as f32,
+                raz: flat[b + 11] as f32,
+                rbx: flat[b + 12] as f32,
+                rby: flat[b + 13] as f32,
+                rbz: flat[b + 14] as f32,
+                _pad0: flat[b + 15] as f32,
+                _pad1: flat[b + 16] as f32,
+                _pad2: flat[b + 17] as f32,
+                _pad3: flat[b + 18] as f32,
+                _pad4: flat[b + 19] as f32,
+            }
+        })
+        .collect()
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -774,5 +909,122 @@ mod tests {
     #[test]
     fn test_solver_construction_no_panic() {
         let _s = GpuConstraintSolver::new(GpuSolverConfig::default());
+    }
+
+    #[test]
+    fn test_gpu_path_matches_cpu() {
+        // Regression guard against the silent fabrication where `solve_gpu`
+        // trusted the no-op stub `dispatch` and returned the uploaded inputs as
+        // a fake "solution".  We force the GPU path by injecting a CPU-emulation
+        // stub backend and assert that (a) it actually changes the state and
+        // (b) it matches the CPU reference solver bit-for-bit.
+        let cfg = GpuSolverConfig {
+            iterations: 16,
+            omega: 1.2,
+        };
+
+        // A non-trivial system: 3 bodies, 2 contacts + 1 bilateral, warm-started
+        // with non-zero lambda and non-zero angular velocities.
+        let mut data = CpuConstraintData::new(3, 3);
+        data.vel_lin[0] = [0.0, -2.0, 0.0, 1.0];
+        data.vel_lin[1] = [0.5, -1.0, 0.0, 0.5];
+        data.vel_lin[2] = [-0.3, 0.7, 0.2, 2.0];
+        data.vel_ang[0] = [0.0, 0.0, 0.1, 0.0];
+        data.vel_ang[1] = [0.2, 0.0, 0.0, 0.0];
+        data.vel_ang[2] = [0.0, -0.1, 0.0, 0.0];
+        data.lambda = vec![0.3, 0.0, -0.5];
+
+        // Contact: body 0 vs static world.
+        data.constraints[0] = GpuConstraint::contact(GpuConstraintParams {
+            nx: 0.0,
+            ny: 1.0,
+            nz: 0.0,
+            effective_mass: 0.8,
+            bias: -0.05,
+            body_a: 0,
+            body_b: u32::MAX,
+            rax: 0.1,
+            ray: 0.0,
+            raz: -0.2,
+            rbx: 0.0,
+            rby: 0.0,
+            rbz: 0.0,
+        });
+        // Contact: body 1 vs body 2.
+        data.constraints[1] = GpuConstraint::contact(GpuConstraintParams {
+            nx: 0.6,
+            ny: 0.8,
+            nz: 0.0,
+            effective_mass: 0.5,
+            bias: 0.0,
+            body_a: 1,
+            body_b: 2,
+            rax: 0.0,
+            ray: 0.3,
+            raz: 0.0,
+            rbx: -0.1,
+            rby: 0.0,
+            rbz: 0.05,
+        });
+        // Bilateral: body 0 vs body 2.
+        data.constraints[2] = GpuConstraint::bilateral(GpuConstraintParams {
+            nx: 1.0,
+            ny: 0.0,
+            nz: 0.0,
+            effective_mass: 0.4,
+            bias: 0.0,
+            body_a: 0,
+            body_b: 2,
+            rax: 0.0,
+            ray: 0.0,
+            raz: 0.0,
+            rbx: 0.0,
+            rby: 0.0,
+            rbz: 0.0,
+        });
+
+        // Forced GPU path (injected stub backend) vs the CPU reference.
+        let mut gpu_solver =
+            GpuConstraintSolver::with_backend(cfg.clone(), WgpuBackend::new_stub());
+        assert!(
+            gpu_solver.has_gpu(),
+            "with_backend must enable the GPU path"
+        );
+        let mut cpu_solver = GpuConstraintSolver::cpu_only(cfg.clone());
+
+        let rg = gpu_solver.solve(&data);
+        let rc = cpu_solver.solve(&data);
+
+        // The stub backend is CPU emulation, so `used_gpu` must honestly be false.
+        assert!(
+            !rg.used_gpu,
+            "CPU-emulation stub backend must report used_gpu = false"
+        );
+
+        // It must NOT be an echo of the inputs: the solver changed the state.
+        let changed =
+            rg.lambda != data.lambda || rg.vel_lin != data.vel_lin || rg.vel_ang != data.vel_ang;
+        assert!(
+            changed,
+            "GPU path returned inputs unchanged — silent fabrication"
+        );
+
+        // And it must match the CPU reference exactly (same arithmetic, lossless
+        // f32↔f64 buffer round-trip).
+        assert_eq!(rg.n_constraints, rc.n_constraints);
+        assert_eq!(rg.lambda.len(), rc.lambda.len());
+        for (g, c) in rg.lambda.iter().zip(rc.lambda.iter()) {
+            assert!((g - c).abs() <= 1e-6, "lambda mismatch: gpu={g} cpu={c}");
+        }
+        for (gv, cv) in rg.vel_lin.iter().zip(rc.vel_lin.iter()) {
+            for (g, c) in gv.iter().zip(cv.iter()) {
+                assert!((g - c).abs() <= 1e-6, "vel_lin mismatch: gpu={g} cpu={c}");
+            }
+        }
+        for (gv, cv) in rg.vel_ang.iter().zip(rc.vel_ang.iter()) {
+            for (g, c) in gv.iter().zip(cv.iter()) {
+                assert!((g - c).abs() <= 1e-6, "vel_ang mismatch: gpu={g} cpu={c}");
+            }
+        }
     }
 }

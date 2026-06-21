@@ -8,16 +8,16 @@
 //!
 //! ## Feature flag
 //!
-//! This module is gated behind the `wgpu-backend` Cargo feature:
+//! The stub [`WgpuBackend`] in this module is **always** compiled: it stores
+//! buffers as CPU-side `Vec<f64>` shadows and never touches a GPU, so the crate
+//! builds without the `wgpu` dependency.  The real on-device backend
+//! `real::WgpuBackendReal` and its `wgpu` / `pollster` / `bytemuck` dependencies
+//! are gated behind the `wgpu-backend` Cargo feature:
 //!
 //! ```toml
 //! [dependencies]
 //! oxiphysics-gpu = { features = ["wgpu-backend"] }
 //! ```
-//!
-//! When the feature is disabled the module compiles to an empty stub.  This allows
-//! the crate to compile without the `wgpu` dependency on platforms or toolchains
-//! where GPU support is not required.
 //!
 //! ## Enabling the dependency
 //!
@@ -90,12 +90,15 @@ pub struct WgpuDeviceInfo {
 
 /// WebGPU compute backend.
 ///
-/// When compiled **without** the `wgpu-backend` feature this struct is a no-op
-/// stub that will return an error from [`WgpuBackend::try_new`].  When compiled
-/// **with** the feature, a real wgpu `Device` / `Queue` pair is created.
+/// This struct is **always** a CPU-emulation backend: it stores buffers as
+/// CPU-side `Vec<f64>` shadows and its [`dispatch`](Self::dispatch) is a no-op
+/// (it does not execute WGSL).  [`try_new`](Self::try_new) therefore returns
+/// `Err(WgpuInitError::NotAvailable)`; use [`new_stub`](Self::new_stub) to get
+/// an instance for exercising the buffer API.
 ///
-/// For the real implementation, `try_new` should be called within an async
-/// runtime (tokio or wasm-bindgen-futures for browser targets).
+/// The real on-device GPU backend is `real::WgpuBackendReal`, compiled under the
+/// `wgpu-backend` feature; it owns the actual `wgpu::Device` / `Queue` and runs
+/// WGSL kernels via `dispatch_wgsl`.
 #[derive(Debug)]
 pub struct WgpuBackend {
     /// Device info (populated at initialisation).
@@ -120,37 +123,19 @@ struct WgpuBufferEntry {
 }
 
 impl WgpuBackend {
-    /// Attempt to create a wgpu backend.
+    /// Attempt to create a GPU-backed `WgpuBackend`.
     ///
-    /// Returns `Ok(Self)` when a compatible GPU adapter is available, or
-    /// `Err(WgpuInitError::NotAvailable)` when no adapter can be found (e.g.
-    /// running headless without a GPU or without the `wgpu-backend` feature).
-    ///
-    /// In the current stub implementation this always returns a CPU-fallback
-    /// instance with `available = false`.  The full implementation calls
-    /// `wgpu::Instance::request_adapter` and `adapter.request_device`.
+    /// This stub type never owns a real GPU device, so it **always** returns
+    /// `Err(WgpuInitError::NotAvailable)` — an honest "not available", never a
+    /// fabricated success.  Construct a CPU-emulation instance explicitly with
+    /// [`new_stub`](Self::new_stub) when you need to exercise the buffer API, or
+    /// use the real on-device backend `real::WgpuBackendReal` (the `wgpu-backend`
+    /// feature) for actual GPU compute.
     pub fn try_new() -> Result<Self, WgpuInitError> {
-        // ── TODO (wgpu-backend feature) ─────────────────────────────────────
-        // When `wgpu-backend` is enabled, replace this stub with:
-        //
-        //   let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        //       backends: wgpu::Backends::all(),
-        //       ..Default::default()
-        //   });
-        //   let adapter = pollster::block_on(instance.request_adapter(
-        //       &wgpu::RequestAdapterOptions {
-        //           power_preference: wgpu::PowerPreference::HighPerformance,
-        //           ..Default::default()
-        //       },
-        //   )).ok_or(WgpuInitError::NoAdapter)?;
-        //   let (device, queue) = pollster::block_on(adapter.request_device(
-        //       &wgpu::DeviceDescriptor::default(),
-        //       None,
-        //   ))?;
-        //   let info = adapter.get_info();
-        //   Ok(Self { device, queue, info, buffers: Vec::new(), available: true })
-        // ────────────────────────────────────────────────────────────────────
-
+        // The real GPU adapter/device setup lives in `real::WgpuBackendReal`
+        // (feature-gated): it calls `wgpu::Instance::request_adapter` and
+        // `adapter.request_device`.  This stub owns no device, so it is honestly
+        // unavailable rather than pretending to have initialised a GPU.
         Err(WgpuInitError::NotAvailable)
     }
 
@@ -227,9 +212,14 @@ impl WgpuBackend {
 
     /// Dispatch a compute kernel with `work_groups_x` workgroups.
     ///
-    /// In the stub, the kernel's `execute` method is called on the CPU-side
-    /// shadow data.  In the full implementation a `ComputePipeline` is looked
-    /// up from the shader registry and `encoder.dispatch_workgroups` is called.
+    /// **This stub does not execute any kernel.**  It is a no-op pass-through:
+    /// every buffer is left exactly as written.  It exists only so that code
+    /// targeting the backend interface compiles and runs without a GPU — callers
+    /// must therefore **not** treat the buffers as "computed" after a stub
+    /// dispatch (doing so would turn unchanged inputs into a fabricated result).
+    /// The real implementation `real::WgpuBackendReal::dispatch_wgsl` looks a
+    /// `ComputePipeline` up from the shader cache and calls
+    /// `encoder.dispatch_workgroups`.
     ///
     /// # Arguments
     ///
@@ -242,38 +232,23 @@ impl WgpuBackend {
         buffers: &[WgpuBufferHandle],
         work_groups_x: u32,
     ) {
-        // ── TODO (wgpu-backend feature) ─────────────────────────────────────
-        // When enabled:
-        //   let pipeline = self.shader_registry.get_pipeline(kernel_name)?;
-        //   let bind_group = self.device.create_bind_group(…);
-        //   let mut encoder = self.device.create_command_encoder(…);
-        //   {
-        //       let mut pass = encoder.begin_compute_pass(…);
-        //       pass.set_pipeline(&pipeline);
-        //       pass.set_bind_group(0, &bind_group, &[]);
-        //       pass.dispatch_workgroups(work_groups_x, 1, 1);
-        //   }
-        //   self.queue.submit([encoder.finish()]);
-        // ────────────────────────────────────────────────────────────────────
-
-        // Stub: identity kernel (pass-through, no-op)
+        // No-op: this stub owns no GPU device and cannot execute WGSL, so the
+        // buffers are left unchanged.  Callers must not assume they were
+        // modified — the real dispatch is `real::WgpuBackendReal::dispatch_wgsl`.
         let _ = (kernel_name, buffers, work_groups_x);
     }
 
     // ── WGSL shader registry ──────────────────────────────────────────────────
 
-    /// Register a WGSL compute shader source and associate it with a name.
+    /// Register a WGSL compute shader source under `name`.
     ///
-    /// In the stub, the source is stored but not compiled.
-    /// In the full implementation, `device.create_shader_module` is called and
-    /// the resulting `ShaderModule` is cached.
+    /// **This stub discards the source** — it neither stores nor compiles it,
+    /// because the stub never dispatches WGSL.  The real implementation
+    /// `real::WgpuBackendReal` compiles the WGSL lazily on first dispatch via
+    /// `device.create_shader_module` and caches the resulting pipeline.
     pub fn register_shader(&mut self, name: &str, wgsl_source: &str) {
-        // ── TODO (wgpu-backend feature) ─────────────────────────────────────
-        // let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        //     label: Some(name),
-        //     source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
-        // });
-        // self.shader_registry.insert(name.to_string(), module);
+        // No-op: the stub does not execute WGSL, so there is nothing to compile
+        // or store.  The real pipeline cache lives in `real::WgpuBackendReal`.
         let _ = (name, wgsl_source);
     }
 }

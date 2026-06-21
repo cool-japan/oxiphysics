@@ -790,9 +790,11 @@ impl WorkerBridge {
 /// Worker-thread-side physics runtime.
 ///
 /// This runtime is a **lightweight kinematic preview**: `Step` advances each
-/// body under constant gravity (`y += ½ g dt²`) with no collision detection,
-/// contacts, or constraint solving. It is intended for off-thread plumbing and
-/// smoke tests; a production deployment swaps in [`crate::WasmPhysicsEngine`].
+/// body under constant gravity (`y += ½ g dt²`, a direct positional term) and
+/// integrates any externally-imparted velocity (`pos += v · dt`) carried by
+/// [`SimCommand::ApplyImpulse`]. It performs no collision detection, contacts,
+/// or constraint solving. It is intended for off-thread plumbing and smoke
+/// tests; a production deployment swaps in [`crate::WasmPhysicsEngine`].
 /// Telemetry it returns is honest about this scope — see [`SimResult::StepDone`].
 #[wasm_bindgen]
 pub struct WorkerRuntime {
@@ -804,6 +806,14 @@ pub struct WorkerRuntime {
     pub body_count: u32,
     /// Body positions (stub storage for testing).
     positions: Vec<[f32; 3]>,
+    /// Body velocities, kept parallel to [`Self::positions`] (one entry per
+    /// body). The preview tracks the velocity imparted by
+    /// [`SimCommand::ApplyImpulse`] and integrates it into position each
+    /// [`SimCommand::Step`]. Gravity is modeled as a direct positional term
+    /// (see the `Step` arm of [`Self::dispatch`]) and is intentionally *not*
+    /// accumulated here, so a body that received no impulse has zero tracked
+    /// velocity.
+    velocities: Vec<[f32; 3]>,
     /// Running flag.
     pub running: bool,
 }
@@ -817,6 +827,7 @@ impl WorkerRuntime {
             step_count: 0,
             body_count: 0,
             positions: Vec::new(),
+            velocities: Vec::new(),
             running: true,
         }
     }
@@ -839,8 +850,17 @@ impl WorkerRuntime {
                 let t_start = now_ms();
 
                 let g = -9.81_f32;
-                for pos in &mut self.positions {
+                for (pos, vel) in self.positions.iter_mut().zip(self.velocities.iter_mut()) {
+                    // Ballistic gravity: documented direct positional term, not
+                    // accumulated into velocity.
                     pos[1] += 0.5 * g * dt * dt;
+                    // Integrate any externally-imparted (impulse) velocity so
+                    // that `ApplyImpulse` actually bends the trajectory. A body
+                    // that received no impulse has zero velocity and therefore
+                    // stays on its pure-gravity ballistic path.
+                    pos[0] += vel[0] * dt;
+                    pos[1] += vel[1] * dt;
+                    pos[2] += vel[2] * dt;
                 }
                 self.sim_time += dt;
                 self.step_count += 1;
@@ -851,6 +871,9 @@ impl WorkerRuntime {
                 shared.write_body_count(self.body_count);
                 for (i, &p) in self.positions.iter().enumerate() {
                     shared.write_body_position(i, p);
+                }
+                for (i, &v) in self.velocities.iter().enumerate() {
+                    shared.write_body_velocity(i, v);
                 }
                 shared.unlock();
 
@@ -880,6 +903,7 @@ impl WorkerRuntime {
             SimCommand::AddSphere { x, y, z, .. } => {
                 let handle = self.body_count;
                 self.positions.push([x, y, z]);
+                self.velocities.push([0.0, 0.0, 0.0]);
                 self.body_count += 1;
                 shared.write_body_position(handle as usize, [x, y, z]);
                 SimResult::BodyAdded { handle }
@@ -887,17 +911,48 @@ impl WorkerRuntime {
             SimCommand::AddStaticBox { x, y, z, .. } => {
                 let handle = self.body_count;
                 self.positions.push([x, y, z]);
+                self.velocities.push([0.0, 0.0, 0.0]);
                 self.body_count += 1;
                 SimResult::BodyAdded { handle }
             }
-            SimCommand::ApplyImpulse { .. } => SimResult::StepDone {
-                sim_time: self.sim_time,
-                body_count: self.body_count,
-                contact_count: 0,
-                step_us: 0,
-            },
+            SimCommand::ApplyImpulse { handle, ix, iy, iz } => {
+                // Measure the real wall-clock cost of resolving the body and
+                // applying the impulse (same clock the other arms use).
+                let t_start = now_ms();
+                let idx = handle as usize;
+                let Some(vel) = self.velocities.get_mut(idx) else {
+                    // No body owns this handle — there is nothing to push on.
+                    // Report the truth instead of a fabricated StepDone.
+                    return SimResult::Error(format!(
+                        "ApplyImpulse: body handle {handle} out of range (have {} bodies)",
+                        self.body_count
+                    ));
+                };
+                // The kinematic preview carries no per-body mass, so every body
+                // is modeled as unit mass (m = 1 kg): Δv = impulse / m = impulse.
+                // This is an honest, documented unit-mass approximation — the
+                // impulse genuinely changes the body's velocity (and hence its
+                // trajectory once integrated in `Step`), not a silent no-op.
+                vel[0] += ix;
+                vel[1] += iy;
+                vel[2] += iz;
+                let new_vel = *vel;
+                // Publish the updated velocity so the main thread can read it
+                // lock-free before the next `Step`.
+                shared.lock();
+                shared.write_body_velocity(idx, new_vel);
+                shared.unlock();
+                SimResult::StepDone {
+                    sim_time: self.sim_time,
+                    body_count: self.body_count,
+                    // No collision detection in the kinematic preview.
+                    contact_count: 0,
+                    step_us: elapsed_us(t_start, now_ms()),
+                }
+            }
             SimCommand::Reset => {
                 self.positions.clear();
+                self.velocities.clear();
                 self.body_count = 0;
                 self.sim_time = 0.0;
                 self.step_count = 0;
@@ -913,12 +968,21 @@ impl WorkerRuntime {
                     .iter()
                     .flat_map(|p| p.iter().cloned())
                     .collect();
+                // Report the *actual* tracked velocities (impulse-imparted; see
+                // the `velocities` field docs) rather than a hardcoded zero
+                // vector. Orientations are identity because the kinematic
+                // preview models no rotation — a genuine value, not a stand-in.
+                let velocities: Vec<f32> = self
+                    .velocities
+                    .iter()
+                    .flat_map(|v| v.iter().cloned())
+                    .collect();
                 SimResult::Snapshot {
                     positions,
                     orientations: (0..self.body_count as usize)
                         .flat_map(|_| [0_f32, 0., 0., 1.])
                         .collect(),
-                    velocities: vec![0.; self.body_count as usize * 3],
+                    velocities,
                     sim_time: self.sim_time,
                 }
             }
@@ -1160,6 +1224,126 @@ mod tests {
             let _ = step_us;
         } else {
             panic!("expected StepDone");
+        }
+    }
+
+    #[test]
+    fn test_apply_impulse_changes_trajectory() {
+        // Regression: `ApplyImpulse` used to be a silent no-op that discarded
+        // the handle/impulse and fabricated `step_us = 0`. It must now impart a
+        // real Δv (unit-mass preview: Δv = impulse) that bends the trajectory,
+        // while a zero impulse leaves the body on its pure-gravity ballistic
+        // path.
+        let mut shared = SharedStateBuffer::new(8);
+        let mut runtime = WorkerRuntime::new();
+
+        // Two bodies starting at exactly the same point.
+        for _ in 0..2 {
+            runtime.dispatch(
+                SimCommand::AddSphere {
+                    mass: 1.0,
+                    x: 0.0,
+                    y: 10.0,
+                    z: 0.0,
+                    radius: 0.5,
+                },
+                &mut shared,
+            );
+        }
+
+        let dt = 1.0_f32 / 60.0;
+        let ix = 3.0_f32;
+
+        // Body 0 receives a known impulse; the ack must be honest StepDone.
+        let res0 = runtime.dispatch(
+            SimCommand::ApplyImpulse {
+                handle: 0,
+                ix,
+                iy: 0.0,
+                iz: 0.0,
+            },
+            &mut shared,
+        );
+        assert!(
+            matches!(res0, SimResult::StepDone { .. }),
+            "valid impulse should acknowledge with StepDone"
+        );
+        // Δv landed in the shared velocity buffer immediately (unit mass).
+        let v0 = shared.read_body_velocity(0);
+        assert!(
+            (v0[0] - ix).abs() < 1e-5,
+            "impulse Δv not applied: vx={}",
+            v0[0]
+        );
+
+        // Body 1 receives an explicit *zero* impulse: a genuine no-effect.
+        runtime.dispatch(
+            SimCommand::ApplyImpulse {
+                handle: 1,
+                ix: 0.0,
+                iy: 0.0,
+                iz: 0.0,
+            },
+            &mut shared,
+        );
+        let v1 = shared.read_body_velocity(1);
+        assert!(
+            v1[0].abs() < 1e-6 && v1[1].abs() < 1e-6 && v1[2].abs() < 1e-6,
+            "zero impulse must not impart velocity: {v1:?}"
+        );
+
+        // Advance: the impulse velocity must integrate into position.
+        runtime.dispatch(SimCommand::Step { dt }, &mut shared);
+
+        let p0 = shared.read_body_position(0);
+        let p1 = shared.read_body_position(1);
+
+        let g = -9.81_f32;
+        let gravity_y = 10.0 + 0.5 * g * dt * dt;
+
+        // Impulsed body: moved +x by Δv·dt, fell by the gravity term, z fixed.
+        assert!((p0[0] - ix * dt).abs() < 1e-5, "impulsed x={}", p0[0]);
+        assert!((p0[1] - gravity_y).abs() < 1e-4, "impulsed y={}", p0[1]);
+        assert!(p0[2].abs() < 1e-6, "impulsed z drifted={}", p0[2]);
+
+        // Zero-impulse body: stays on its prior ballistic path (gravity only).
+        assert!(p1[0].abs() < 1e-6, "no-impulse x drifted={}", p1[0]);
+        assert!((p1[1] - gravity_y).abs() < 1e-4, "no-impulse y={}", p1[1]);
+        assert!(p1[2].abs() < 1e-6, "no-impulse z drifted={}", p1[2]);
+
+        // The two trajectories differ *only* in x, exactly by the integrated
+        // impulse — proof the impulse, and nothing else, changed the path.
+        assert!(((p0[0] - p1[0]) - ix * dt).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_apply_impulse_out_of_range_is_honest_error() {
+        // An impulse to a non-existent body must surface an honest `Error`,
+        // not a fabricated `StepDone` success.
+        let mut shared = SharedStateBuffer::new(4);
+        let mut runtime = WorkerRuntime::new();
+        runtime.dispatch(
+            SimCommand::AddSphere {
+                mass: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                radius: 0.5,
+            },
+            &mut shared,
+        );
+        let res = runtime.dispatch(
+            SimCommand::ApplyImpulse {
+                handle: 7,
+                ix: 1.0,
+                iy: 0.0,
+                iz: 0.0,
+            },
+            &mut shared,
+        );
+        match res {
+            SimResult::Error(msg) => assert!(msg.contains("out of range"), "msg={msg}"),
+            other => panic!("expected Error, got {}", other.kind_str()),
         }
     }
 }

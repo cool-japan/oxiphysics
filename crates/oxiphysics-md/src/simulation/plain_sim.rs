@@ -111,11 +111,12 @@ impl MdSimulationPlain {
     // Velocity-Verlet integration
     // -----------------------------------------------------------------------
 
-    /// Perform one velocity-Verlet step with a zero-force placeholder.
+    /// Perform one velocity-Verlet step using the pre-stored per-atom forces.
     ///
-    /// All force components are assumed to be pre-stored in `atom.force`.
-    /// After the step, forces are left unchanged (caller must update them
-    /// before the next step for a real physical simulation).
+    /// All force components are read from `atom.force` (which the caller must
+    /// populate; they default to zero, giving free-particle motion). Forces are
+    /// left unchanged by this method, so the caller must recompute them before
+    /// the next step for an interacting physical simulation.
     pub fn step(&mut self, dt: f64) {
         let n = self.n_atoms();
 

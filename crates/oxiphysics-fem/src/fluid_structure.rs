@@ -11,10 +11,11 @@
 //! - [`HydroelasticPressure`] — pressure load on structure from fluid
 //! - [`FsiConvergenceMonitor`] — FSI coupling convergence monitoring
 //! - [`PartitionedFsi`] — partitioned (staggered) coupling strategy
-//! - [`MonolithicFsi`] — placeholder for monolithic FSI assembly
+//! - [`MonolithicFsi`] — monolithic FSI tangent (block) assembly
 //! - [`StructuralDamping`] — Rayleigh proportional damping C = αM + βK
 //! - [`VortexInducedVibration`] — VIV lock-in criterion and amplitude model
 
+use crate::error::{Error, Result};
 use std::f64::consts::PI;
 
 // ── Math helpers ─────────────────────────────────────────────────────────────
@@ -596,11 +597,12 @@ impl PartitionedFsi {
 // § 8  MonolithicFsi
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Placeholder for a monolithic FSI system.
+/// Block-structured monolithic FSI system descriptor and tangent assembler.
 ///
-/// In a monolithic approach, the coupled fluid-structure system is assembled
-/// into a single matrix and solved simultaneously. This struct holds the
-/// block structure metadata needed for that assembly.
+/// In a monolithic approach the coupled fluid-structure system is assembled into
+/// a single matrix and solved simultaneously. This struct holds the block sizes
+/// and stabilisation parameter, and [`MonolithicFsi::assemble_tangent`]
+/// assembles the coupled saddle-point tangent from the constituent blocks.
 #[derive(Debug, Clone)]
 pub struct MonolithicFsi {
     /// Number of structural DOFs.
@@ -642,12 +644,106 @@ impl MonolithicFsi {
         (s, p, v)
     }
 
-    /// Assemble a zero flat matrix (row-major) of size `n × n`.
+    /// Allocate a zero-initialised dense system matrix (flat row-major, `n × n`).
     ///
-    /// This is the placeholder for the full monolithic tangent matrix.
+    /// Convenience allocator for the monolithic system; use
+    /// [`Self::assemble_tangent`] to populate it with the coupled FSI blocks.
     pub fn zero_matrix(&self) -> Vec<f64> {
         let n = self.total_dof();
         vec![0.0f64; n * n]
+    }
+
+    /// Assemble the full monolithic FSI tangent matrix (flat row-major, size
+    /// `total_dof × total_dof`) from its constituent blocks.
+    ///
+    /// The unknowns are ordered `[structural | pressure | velocity]` per
+    /// [`Self::block_offsets`], giving the saddle-point block structure
+    ///
+    /// ```text
+    ///        s            p             v
+    /// s [ K_struct        0           C_sv      ]
+    /// p [    0         −τ·L_pp          B        ]
+    /// v [  C_svᵀ         −Bᵀ       K_fluid_vel   ]
+    /// ```
+    ///
+    /// where (all inputs flat row-major):
+    /// - `k_struct`     (n_s × n_s) — structural tangent;
+    /// - `k_fluid_vel`  (n_v × n_v) — fluid momentum block;
+    /// - `div_op` = B   (n_p × n_v) — discrete continuity (divergence) operator;
+    ///   its negative transpose `−Bᵀ` is the pressure-gradient coupling;
+    /// - `coupling_sv`  (n_s × n_v) — fluid-structure interface (added-mass)
+    ///   coupling, entered symmetrically as `C_sv` and `C_svᵀ`;
+    /// - `pressure_lap` (n_p × n_p) — pressure Laplacian, entered as the PSPG
+    ///   pressure-stabilisation block `−τ·L_pp` with τ = [`Self::tau_stab`].
+    ///
+    /// Returns an [`Error`] if any block length is inconsistent with the
+    /// declared DOF counts.
+    pub fn assemble_tangent(
+        &self,
+        k_struct: &[f64],
+        k_fluid_vel: &[f64],
+        div_op: &[f64],
+        coupling_sv: &[f64],
+        pressure_lap: &[f64],
+    ) -> Result<Vec<f64>> {
+        let n_s = self.n_structural_dof;
+        let n_p = self.n_fluid_pressure_dof;
+        let n_v = self.n_fluid_velocity_dof;
+
+        let check = |label: &str, got: usize, want: usize| -> Result<()> {
+            if got != want {
+                Err(Error::General(format!(
+                    "MonolithicFsi::assemble_tangent: {label} has length {got}, expected {want}"
+                )))
+            } else {
+                Ok(())
+            }
+        };
+        check("k_struct", k_struct.len(), n_s * n_s)?;
+        check("k_fluid_vel", k_fluid_vel.len(), n_v * n_v)?;
+        check("div_op", div_op.len(), n_p * n_v)?;
+        check("coupling_sv", coupling_sv.len(), n_s * n_v)?;
+        check("pressure_lap", pressure_lap.len(), n_p * n_p)?;
+
+        let n = n_s + n_p + n_v;
+        let (s_off, p_off, v_off) = self.block_offsets();
+        let mut a = vec![0.0f64; n * n];
+
+        // (s,s) ← K_struct
+        for r in 0..n_s {
+            for c in 0..n_s {
+                a[(s_off + r) * n + (s_off + c)] = k_struct[r * n_s + c];
+            }
+        }
+        // (v,v) ← K_fluid_vel
+        for r in 0..n_v {
+            for c in 0..n_v {
+                a[(v_off + r) * n + (v_off + c)] = k_fluid_vel[r * n_v + c];
+            }
+        }
+        // (p,v) ← B  and  (v,p) ← −Bᵀ
+        for r in 0..n_p {
+            for c in 0..n_v {
+                let b = div_op[r * n_v + c];
+                a[(p_off + r) * n + (v_off + c)] = b;
+                a[(v_off + c) * n + (p_off + r)] = -b;
+            }
+        }
+        // (s,v) ← C_sv  and  (v,s) ← C_svᵀ
+        for r in 0..n_s {
+            for c in 0..n_v {
+                let coup = coupling_sv[r * n_v + c];
+                a[(s_off + r) * n + (v_off + c)] = coup;
+                a[(v_off + c) * n + (s_off + r)] = coup;
+            }
+        }
+        // (p,p) ← −τ·L_pp  (PSPG pressure stabilisation)
+        for r in 0..n_p {
+            for c in 0..n_p {
+                a[(p_off + r) * n + (p_off + c)] = -self.tau_stab * pressure_lap[r * n_p + c];
+            }
+        }
+        Ok(a)
     }
 }
 
@@ -1166,6 +1262,64 @@ mod tests {
         let m = mfsi.zero_matrix();
         assert_eq!(m.len(), 100); // 10*10
         assert!(m.iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    fn test_monolithic_assemble_tangent_block_structure() {
+        // n_s = 2, n_p = 1, n_v = 2, τ = 0.5. Order: [s s | p | v v], n = 5.
+        let mfsi = MonolithicFsi::new(2, 1, 2, 0.5);
+        let k_struct = [1.0, 0.0, 0.0, 1.0]; // 2x2 identity
+        let k_fluid_vel = [2.0, 0.0, 0.0, 2.0]; // 2x2, diag 2
+        let div_op = [3.0, 4.0]; // B: 1x2
+        let coupling_sv = [5.0, 6.0, 7.0, 8.0]; // C_sv: 2x2
+        let pressure_lap = [9.0]; // L_pp: 1x1
+        let a = mfsi
+            .assemble_tangent(
+                &k_struct,
+                &k_fluid_vel,
+                &div_op,
+                &coupling_sv,
+                &pressure_lap,
+            )
+            .expect("assembly should succeed");
+        let n = 5usize;
+        assert_eq!(a.len(), n * n);
+        let at = |r: usize, c: usize| a[r * n + c];
+        // Structural block.
+        assert_eq!(at(0, 0), 1.0);
+        assert_eq!(at(1, 1), 1.0);
+        // Fluid velocity block (v_off = 3).
+        assert_eq!(at(3, 3), 2.0);
+        assert_eq!(at(4, 4), 2.0);
+        // Continuity B (p_off = 2) and its negative transpose −Bᵀ.
+        assert_eq!(at(2, 3), 3.0);
+        assert_eq!(at(2, 4), 4.0);
+        assert_eq!(at(3, 2), -3.0);
+        assert_eq!(at(4, 2), -4.0);
+        // Symmetric interface coupling C_sv / C_svᵀ.
+        assert_eq!(at(0, 3), 5.0);
+        assert_eq!(at(3, 0), 5.0);
+        assert_eq!(at(1, 4), 8.0);
+        assert_eq!(at(4, 1), 8.0);
+        // PSPG pressure stabilisation −τ·L_pp.
+        assert_eq!(at(2, 2), -0.5 * 9.0);
+        // Off-coupling structural/pressure entries stay zero.
+        assert_eq!(at(0, 2), 0.0);
+        assert_eq!(at(2, 0), 0.0);
+    }
+
+    #[test]
+    fn test_monolithic_assemble_tangent_size_mismatch_errors() {
+        let mfsi = MonolithicFsi::new(2, 1, 2, 0.5);
+        // k_struct has wrong length (3 instead of 4).
+        let res = mfsi.assemble_tangent(
+            &[1.0, 0.0, 0.0],
+            &[2.0, 0.0, 0.0, 2.0],
+            &[3.0, 4.0],
+            &[5.0, 6.0, 7.0, 8.0],
+            &[9.0],
+        );
+        assert!(res.is_err());
     }
 
     // ── StructuralDamping ───────────────────────────────────────────────────

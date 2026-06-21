@@ -160,10 +160,15 @@ impl MdSim {
     // Single combined step
     // -----------------------------------------------------------------------
 
-    /// Perform one full MD step: integrate, then apply ensemble controls.
+    /// Advance one step of *force-free* (ballistic) dynamics, then apply the
+    /// configured ensemble controls.
     ///
-    /// Uses a zero-force placeholder; real simulations should call
-    /// `velocity_verlet_step` directly with a physical force function.
+    /// This integrator deliberately uses zero inter-particle forces: it
+    /// propagates the particles as a non-interacting (ideal-gas) system, which
+    /// is useful for exercising the thermostat / ensemble machinery or for free
+    /// streaming. It computes **no** physical forces. For an interacting system,
+    /// call [`Self::velocity_verlet_step`] or [`Self::run_with_forces`] with a
+    /// real force function.
     pub fn step(&mut self) {
         let zero_forces = |pos: &[[f64; 3]], _box: &[f64; 3]| vec![[0.0f64; 3]; pos.len()];
         self.velocity_verlet_step(zero_forces);

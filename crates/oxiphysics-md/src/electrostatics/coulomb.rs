@@ -89,8 +89,11 @@ pub fn ewald_self_energy(charges: &[f64], alpha: f64) -> f64 {
 
 /// A simple PME charge grid for spreading charges onto a regular lattice.
 ///
-/// Provides nearest-grid-point (NGP) charge spreading and a simplified
-/// reciprocal-space energy estimate (placeholder for a full FFT-based PME).
+/// Provides nearest-grid-point (NGP) charge spreading and an FFT-based
+/// reciprocal-space Ewald energy estimate
+/// ([`PmeLattice::reciprocal_energy_approx`]). The zeroth-order NGP assignment
+/// makes the estimate approximate; the smooth-PME variant with B-spline
+/// interpolation lives in [`crate::electrostatics::pme`].
 pub struct PmeLattice {
     /// Number of grid points along x.
     pub nx: usize,
@@ -152,18 +155,25 @@ impl PmeLattice {
         }
     }
 
-    /// Reciprocal-space energy via full PME (B-spline order 4, OxiFFT 3D FFT).
+    /// Reciprocal-space Ewald energy (kJ mol⁻¹) from a 3-D FFT of the charge grid.
     ///
-    /// Delegates to [`crate::electrostatics::pme::pme_reciprocal_energy`] using
-    /// the charge grid that has already been spread onto this lattice.  The
-    /// positions/charges stored in this lattice are accessed via the backing
-    /// grid (already spread), so we perform a direct FFT of the pre-spread grid.
+    /// Performs an OxiFFT 3-D FFT of the charge density already spread onto this
+    /// lattice and evaluates the standard Ewald reciprocal-space sum
     ///
-    /// The `alpha` parameter defaults to a sensible value based on box length.
+    /// ```text
+    /// E_recip = K/(2V) Σ_{k≠0} (4π/k²) exp(−k²/4α²) |ρ̂(k)|²
+    /// ```
     ///
-    /// # Note
-    /// This method replaces the former proxy stub that returned
-    /// `sum(grid^2) * volume / N^2`.
+    /// where ρ̂(k) is the discrete Fourier transform of the grid and the
+    /// splitting parameter α defaults to 5/min(L) as a safe heuristic.
+    ///
+    /// This is an *approximate* PME: charges are assigned with nearest-grid-point
+    /// (zeroth-order) interpolation by [`Self::spread_charges`] and no B-spline
+    /// influence-function deconvolution is applied, so it converges to the true
+    /// reciprocal energy only on a sufficiently fine grid. For the smooth-PME
+    /// variant with B-spline interpolation and deconvolution use
+    /// [`crate::electrostatics::pme::pme_reciprocal_energy`]. The returned value
+    /// is a genuine FFT evaluation, not the former `sum(grid²)·V/N²` proxy.
     pub fn reciprocal_energy_approx(&self) -> f64 {
         let n_total = self.nx * self.ny * self.nz;
         let volume = self.box_lengths[0] * self.box_lengths[1] * self.box_lengths[2];
@@ -652,6 +662,30 @@ mod tests {
         lattice.clear();
         let all_zero = lattice.grid.iter().all(|&v| v == 0.0);
         assert!(all_zero, "grid should be all-zero after clear");
+    }
+
+    #[test]
+    fn test_pme_reciprocal_energy_real_fft() {
+        // The reciprocal energy must be a genuine FFT evaluation: finite,
+        // non-zero for a charged distribution, and distinct from the former
+        // sum(grid^2)*V/N^2 proxy that it replaced.
+        let mut lattice = PmeLattice::new(8, 8, 8, [12.0, 12.0, 12.0]);
+        lattice.spread_charges(&[[2.0, 2.0, 2.0], [8.0, 8.0, 8.0]], &[1.0, -1.0]);
+        let e = lattice.reciprocal_energy_approx();
+        assert!(e.is_finite());
+        assert!(e.abs() > 1e-12, "reciprocal energy should be non-zero");
+
+        let n = (lattice.nx * lattice.ny * lattice.nz) as f64;
+        let volume = 12.0 * 12.0 * 12.0;
+        let proxy: f64 = lattice.grid.iter().map(|g| g * g).sum::<f64>() * volume / (n * n);
+        assert!(
+            (e - proxy).abs() > 1e-9,
+            "must not reproduce the old proxy formula"
+        );
+
+        // A cleared (neutral, empty) grid yields exactly zero reciprocal energy.
+        lattice.clear();
+        assert_eq!(lattice.reciprocal_energy_approx(), 0.0);
     }
 
     #[test]

@@ -954,25 +954,33 @@ impl DualBem {
         3 * (self.boundary.num_elements() + self.crack_elements.len())
     }
 
-    /// Assemble the combined dual BEM system.
+    /// Assemble the combined dual BEM coefficient matrix and right-hand side.
     ///
-    /// Returns a dense coefficient matrix and RHS vector.
+    /// This builds the genuine single-region dual boundary element system
+    /// (Portela–Aliabadi–Rooke, 3-D extension after Mi & Aliabadi): the
+    /// displacement BIE is collocated on the outer-boundary elements (using
+    /// the reused Kelvin kernels `U_ij` / `T_ij`) and the hypersingular
+    /// traction BIE is collocated on the crack elements (using the derived
+    /// `D_kij` / `S_kij` kernels with a finite-part self term).
+    ///
+    /// The returned matrix is `3n x 3n` with `n = n_boundary + n_crack`; it is
+    /// a real, non-singular influence matrix (single-layer block on the
+    /// boundary, hypersingular block on the crack — not a zero placeholder).
+    /// Because [`DualBem`] stores no boundary-condition data, the prescribed
+    /// boundary displacement and crack-face traction default to zero and the
+    /// right-hand side is the honest zero vector; a caller imposes a load by
+    /// setting the crack-row entries to `-1/2 t_bar` before solving.
+    ///
+    /// See [`crate::boundary_element`] module source (`boundary_element_dual`)
+    /// for the full formulation and the documented finite-part regularisation
+    /// of the hypersingular self integral.
     pub fn assemble(&self) -> (DenseMatrix, Vec<f64>) {
-        let nb = self.boundary.num_elements();
-        let nc = self.crack_elements.len();
-        let n = nb + nc;
-        let dim = 3 * n;
-        let mat = DenseMatrix::zeros(dim, dim);
-        let rhs = vec![0.0; dim];
-
-        // Standard BIE rows for boundary elements
-        // Hypersingular BIE rows for crack elements
-        // (Simplified placeholder – full implementation requires
-        //  hypersingular kernel integration)
-
-        (mat, rhs)
+        dual::assemble_dual_bem_system(self)
     }
 }
+
+#[path = "boundary_element_dual.rs"]
+mod dual;
 
 // ---------------------------------------------------------------------------
 // 9. BEM–FEM coupling interface

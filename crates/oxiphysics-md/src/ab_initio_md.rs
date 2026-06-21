@@ -432,7 +432,9 @@ impl EhrenfestState {
 /// # Arguments
 /// - `state`: current Ehrenfest state (modified in place)
 /// - `forces`: mean-field forces on each nucleus `[[fx,fy,fz\], ...]`
-/// - `coupling`: non-adiabatic coupling between state 0 and 1 (scalar placeholder)
+/// - `coupling`: scalar non-adiabatic coupling between states 0 and 1 (a scalar
+///   approximation to the full coupling vector), used directly in the 2-state
+///   population rate equation
 /// - `dt`: timestep in fs
 pub fn ehrenfest_dynamics(state: &mut EhrenfestState, forces: &[[f64; 3]], coupling: f64, dt: f64) {
     let n = state.positions.len();

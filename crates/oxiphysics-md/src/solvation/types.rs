@@ -649,12 +649,33 @@ impl BornSolvation {
         let q_c = self.charge * ELEM_CHARGE;
         q_c * q_c * J_TO_KJMOL / (8.0 * PI * EPS0 * self.dielectric * self.radius)
     }
-    /// Entropy contribution −T ∂ΔG/∂T (kJ/mol), assuming ε_r(T) is constant.
+    /// Entropic contribution −T ∂ΔG/∂T to the Born free energy (kJ/mol).
     ///
-    /// For a pure Born model with constant ε, the entropy term is zero.
-    /// This method returns 0 as a placeholder.
+    /// This model treats the solvent permittivity ε_r as
+    /// temperature-independent, so ∂ΔG/∂T = 0 and the entropic term is
+    /// *exactly* zero — the correct value for the constant-ε Born model, not a
+    /// stand-in. For a temperature-dependent permittivity use
+    /// [`Self::entropy_contribution_with_dielectric_slope`].
     pub fn entropy_contribution(&self) -> f64 {
         0.0
+    }
+
+    /// Entropic contribution −T ∂ΔG/∂T (kJ/mol) for a temperature-dependent
+    /// solvent permittivity, given the slope `depsr_dt` = dε_r/dT (1/K).
+    ///
+    /// Differentiating ΔG = −P(1 − 1/ε_r) with P = q²N_A / (8π ε₀ R) gives
+    /// ∂ΔG/∂T = −P ε_r⁻² (dε_r/dT), hence
+    ///
+    /// −T ∂ΔG/∂T = T · P · (dε_r/dT) / ε_r².
+    ///
+    /// For water near 298 K, dε_r/dT ≈ −0.36 K⁻¹, giving a negative entropic
+    /// term. Returns 0 if the radius or dielectric constant are non-physical.
+    pub fn entropy_contribution_with_dielectric_slope(&self, depsr_dt: f64) -> f64 {
+        if self.radius <= 0.0 || self.dielectric <= 0.0 {
+            return 0.0;
+        }
+        self.temperature * self.self_energy_vacuum() * depsr_dt
+            / (self.dielectric * self.dielectric)
     }
     /// Scale the solvation energy by a partial-charge Born radius product.
     ///

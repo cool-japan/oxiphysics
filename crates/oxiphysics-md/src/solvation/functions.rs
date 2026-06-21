@@ -181,6 +181,19 @@ mod tests {
         assert_eq!(b.entropy_contribution(), 0.0);
     }
     #[test]
+    fn test_born_solvation_entropy_temperature_dependent() {
+        let b = BornSolvation::new(1.0, 1.9e-10, 78.5, 298.15);
+        // Water's permittivity falls with temperature (dε/dT < 0), so the
+        // entropic term is negative and non-zero — a genuine computation.
+        let s = b.entropy_contribution_with_dielectric_slope(-0.36);
+        assert!(s < 0.0);
+        let p = b.self_energy_vacuum();
+        let expected = b.temperature * p * (-0.36) / (78.5 * 78.5);
+        assert!((s - expected).abs() < 1e-9 * expected.abs().max(1.0));
+        // A zero slope reproduces the exact constant-ε (zero) result.
+        assert_eq!(b.entropy_contribution_with_dielectric_slope(0.0), 0.0);
+    }
+    #[test]
     fn test_born_solvation_scaled_energy() {
         let b = BornSolvation::new(1.0, 1.9e-10, 78.5, 298.15);
         let e = b.solvation_energy();
