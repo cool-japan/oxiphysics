@@ -2,7 +2,6 @@
 //!
 //! 🤖 Generated with [SplitRS](https://github.com/cool-japan/splitrs)
 
-// TODO(P4): public API churn — Point2::add/sub should become ops::Add/Sub impls
 use super::functions::*;
 use super::functions::{FaceId, HalfEdgeId, Point3, VertexId};
 
@@ -432,10 +431,6 @@ impl Point2 {
     pub fn new(x: f64, y: f64) -> Self {
         Self { x, y }
     }
-    /// Scale by a scalar.
-    pub fn scale(self, t: f64) -> Self {
-        Self::new(self.x * t, self.y * t)
-    }
     /// 2D cross product (scalar z-component of the 3D cross product).
     pub fn cross(self, other: Self) -> f64 {
         self.x * other.y - self.y * other.x
@@ -468,6 +463,12 @@ impl std::ops::Add for Point2 {
     type Output = Self;
     fn add(self, other: Self) -> Self {
         Self::new(self.x + other.x, self.y + other.y)
+    }
+}
+impl std::ops::Mul<f64> for Point2 {
+    type Output = Self;
+    fn mul(self, rhs: f64) -> Self {
+        Self::new(self.x * rhs, self.y * rhs)
     }
 }
 /// A manifold polygon mesh represented with the half-edge data structure.

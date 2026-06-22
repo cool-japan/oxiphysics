@@ -26,14 +26,22 @@
 //! a local two-difference transform). **No fused multiply-add (FMA) is used
 //! anywhere**, so every result is bit-for-bit deterministic across platforms.
 //!
-//! The stage-A error-bound constants are those derived in Shewchuk §4; the current
-//! implementation pairs each fast filter directly with the fully exact expansion
-//! fallback. The intermediate adaptive refinement stages (the B/C/D stages of the
-//! reference paper) are a future performance optimization -- their omission costs
-//! some speed in near-degenerate cases but never correctness, because the exact
-//! expansion is the authority for the sign.
+//! The stage-A error-bound constants are those derived in Shewchuk §4. When the
+//! fast filter cannot certify the sign, each predicate enters the adaptive
+//! refinement of Shewchuk §4-5 (implemented in the sibling [`adapt`] module): an
+//! incremental stage-B expansion of the rounded-difference determinant tested
+//! against a stage-B bound, followed by a first-order tail correction tested
+//! against the result bound. Only when *both* incremental stages remain uncertain
+//! does the predicate fall through to the fully exact expansion, which is the
+//! final authority for the sign. The adaptive path therefore always returns
+//! exactly the same sign as the exact expansion -- it is merely faster on the
+//! easy near-degenerate cases, never less correct.
 
 use crate::extended_precision::{fast_two_sum, two_prod, two_sum};
+
+/// Adaptive stage-B/stage-C refinement (Shewchuk §4-5); see [`adapt`] for details.
+#[path = "exact_predicates_adapt.rs"]
+mod adapt;
 
 // =====================================================================
 // (A) Expansion arithmetic
@@ -345,8 +353,7 @@ pub fn orient2d(pa: [f64; 2], pb: [f64; 2], pc: [f64; 2]) -> Orientation {
     if det.abs() >= errbound {
         return from_sign(det);
     }
-    // TODO(perf): intermediate adaptive C-stage refinement (Shewchuk) is a follow-up optimization; exact expansion guarantees correctness now.
-    from_isign(orient2d_exact(pa, pb, pc))
+    from_isign(adapt::orient2d_adapt(pa, pb, pc, detsum))
 }
 
 /// Computes the exact sign of the 2D orientation determinant of `(pa, pb, pc)`.
@@ -397,8 +404,7 @@ pub fn orient3d(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3], pd: [f64; 3]) -> Orien
     if det.abs() >= errbound {
         return from_sign(det);
     }
-    // TODO(perf): intermediate adaptive C-stage refinement (Shewchuk) is a follow-up optimization; exact expansion guarantees correctness now.
-    from_isign(orient3d_exact(pa, pb, pc, pd))
+    from_isign(adapt::orient3d_adapt(pa, pb, pc, pd, permanent))
 }
 
 /// Computes the exact sign of the 3D orientation determinant of `(pa, pb, pc, pd)`.
@@ -466,8 +472,7 @@ pub fn incircle(pa: [f64; 2], pb: [f64; 2], pc: [f64; 2], pd: [f64; 2]) -> Orien
     if det.abs() >= errbound {
         return from_sign(det);
     }
-    // TODO(perf): incircle adaptive B/C/D stages (Shewchuk) are a follow-up; exact expansion is the correctness authority.
-    from_isign(incircle_exact(pa, pb, pc, pd))
+    from_isign(adapt::incircle_adapt(pa, pb, pc, pd, permanent))
 }
 
 /// Computes the exact sign of the in-circle determinant of `(pa, pb, pc, pd)`.
@@ -559,8 +564,7 @@ pub fn insphere(points: [[f64; 3]; 5]) -> Orientation {
     if det.abs() >= errbound {
         return from_sign(det);
     }
-    // TODO(perf): insphere adaptive stages are a follow-up; exact expansion is the correctness authority.
-    from_isign(insphere_exact(points))
+    from_isign(adapt::insphere_adapt(points, permanent))
 }
 
 /// Computes the exact sign of the in-sphere determinant for the five `points`.
@@ -1194,5 +1198,258 @@ mod tests {
         let zero = expansion_diff(&e, &e);
         assert_eq!(expansion_sign(&zero), 0);
         assert_eq!(estimate(&zero), 0.0);
+    }
+
+    // ---- (5) Adaptive stage (B/C) vs exact expansion vs Dd oracle ----
+    //
+    // These hammer near-degenerate inputs: an exactly-degenerate configuration
+    // perturbed by 1-3 ULPs across a wide power-of-two exponent range. For such
+    // inputs the stage-A filter almost always fails, so the public predicate is
+    // resolved by the adaptive stage-B/stage-C path (or, when those remain
+    // uncertain, by the exact fallback). Every sample must satisfy
+    //   adaptive sign == exact-path sign == double-double oracle sign.
+    // A mismatch would mean the stage-B/C error bounds or the expansion ordering
+    // are wrong; the assertions must never be loosened to hide such a bug.
+
+    #[test]
+    fn adaptive_matches_exact_and_oracle_orient2d() {
+        let mut rng = Lcg(0xc0ff_ee12_3456_789a);
+        for i in 0..150_000u64 {
+            let exp = (rng.next_f64() * 120.0) as i32 - 60;
+            let s = 2f64.powi(exp);
+            let m = ((rng.next_f64() * 6.0) as i64 + 2) as f64;
+            let k = ((rng.next_f64() * 9.0) as i64 + 1) as f64;
+            // Collinear on the line y = x.
+            let mut pa = [s, s];
+            let mut pb = [s * m, s * m];
+            let mut pc = [s * k, s * k];
+            let which = (rng.next_f64() * 6.0) as usize % 6;
+            let steps = (rng.next_f64() * 3.0) as i32 + 1; // 1..=3 ULPs
+            let up = rng.next_f64() < 0.5;
+            let target: &mut f64 = match which {
+                0 => &mut pa[0],
+                1 => &mut pa[1],
+                2 => &mut pb[0],
+                3 => &mut pb[1],
+                4 => &mut pc[0],
+                _ => &mut pc[1],
+            };
+            for _ in 0..steps {
+                *target = if up {
+                    target.next_up()
+                } else {
+                    target.next_down()
+                };
+            }
+            let adaptive = orient2d(pa, pb, pc);
+            let exact = from_isign(orient2d_exact(pa, pb, pc));
+            let oracle = from_isign(orient2d_oracle(pa, pb, pc));
+            assert_eq!(
+                adaptive, exact,
+                "adaptive != exact at {i}: {pa:?} {pb:?} {pc:?}"
+            );
+            assert_eq!(
+                exact, oracle,
+                "exact != oracle at {i}: {pa:?} {pb:?} {pc:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn adaptive_matches_exact_and_oracle_orient3d() {
+        let mut rng = Lcg(0xa11c_e5ed_0bad_f00d);
+        for i in 0..50_000u64 {
+            let exp = (rng.next_f64() * 90.0) as i32 - 45;
+            let s = 2f64.powi(exp);
+            // Coplanar configuration (all four points share a z-coordinate),
+            // translated off the axes so no coordinate is an exact 0.0: a ULP
+            // perturbation of 0.0 would produce a subnormal, outside the
+            // predicates' valid no-underflow domain (where even the exact
+            // Dekker-product expansion loses exactness).
+            let z = s * 2.0;
+            let mut pa = [s * 3.0, s * 5.0, z];
+            let mut pb = [s * 4.0, s * 5.0, z];
+            let mut pc = [s * 3.0, s * 6.0, z];
+            let mut pd = [s * 4.0, s * 6.0, z];
+            let which = (rng.next_f64() * 12.0) as usize % 12;
+            let steps = (rng.next_f64() * 3.0) as i32 + 1;
+            let up = rng.next_f64() < 0.5;
+            let target: &mut f64 = match which {
+                0 => &mut pa[0],
+                1 => &mut pa[1],
+                2 => &mut pa[2],
+                3 => &mut pb[0],
+                4 => &mut pb[1],
+                5 => &mut pb[2],
+                6 => &mut pc[0],
+                7 => &mut pc[1],
+                8 => &mut pc[2],
+                9 => &mut pd[0],
+                10 => &mut pd[1],
+                _ => &mut pd[2],
+            };
+            for _ in 0..steps {
+                *target = if up {
+                    target.next_up()
+                } else {
+                    target.next_down()
+                };
+            }
+            let adaptive = orient3d(pa, pb, pc, pd);
+            let exact = from_isign(orient3d_exact(pa, pb, pc, pd));
+            let oracle = from_isign(orient3d_oracle(pa, pb, pc, pd));
+            assert_eq!(
+                adaptive, exact,
+                "adaptive != exact at {i}: {pa:?} {pb:?} {pc:?} {pd:?}"
+            );
+            assert_eq!(
+                exact, oracle,
+                "exact != oracle at {i}: {pa:?} {pb:?} {pc:?} {pd:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn adaptive_matches_exact_and_oracle_incircle() {
+        let mut rng = Lcg(0xfeed_c0de_5a5a_1234);
+        for i in 0..100_000u64 {
+            let exp = (rng.next_f64() * 100.0) as i32 - 50;
+            let s = 2f64.powi(exp);
+            // Cocircular square (pa,pb,pc CCW, pd the fourth corner), translated
+            // off the axes so no coordinate is an exact 0.0 (a ULP perturbation
+            // of 0.0 would yield a subnormal, outside the valid domain).
+            let mut pa = [s * 3.0, s * 5.0];
+            let mut pb = [s * 4.0, s * 5.0];
+            let mut pc = [s * 4.0, s * 6.0];
+            let mut pd = [s * 3.0, s * 6.0];
+            let which = (rng.next_f64() * 8.0) as usize % 8;
+            let steps = (rng.next_f64() * 3.0) as i32 + 1;
+            let up = rng.next_f64() < 0.5;
+            let target: &mut f64 = match which {
+                0 => &mut pa[0],
+                1 => &mut pa[1],
+                2 => &mut pb[0],
+                3 => &mut pb[1],
+                4 => &mut pc[0],
+                5 => &mut pc[1],
+                6 => &mut pd[0],
+                _ => &mut pd[1],
+            };
+            for _ in 0..steps {
+                *target = if up {
+                    target.next_up()
+                } else {
+                    target.next_down()
+                };
+            }
+            let adaptive = incircle(pa, pb, pc, pd);
+            let exact = from_isign(incircle_exact(pa, pb, pc, pd));
+            let oracle = from_isign(incircle_oracle(pa, pb, pc, pd));
+            assert_eq!(
+                adaptive, exact,
+                "adaptive != exact at {i}: {pa:?} {pb:?} {pc:?} {pd:?}"
+            );
+            assert_eq!(
+                exact, oracle,
+                "exact != oracle at {i}: {pa:?} {pb:?} {pc:?} {pd:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn adaptive_matches_exact_and_oracle_insphere() {
+        let mut rng = Lcg(0x2718_2818_3141_5926);
+        for i in 0..20_000u64 {
+            let exp = (rng.next_f64() * 80.0) as i32 - 40;
+            let s = 2f64.powi(exp);
+            // Cospherical axis points (radius s) translated to centre
+            // (3s, 5s, 7s) so that no coordinate is an exact 0.0: ULP-perturbing
+            // 0.0 yields a subnormal, outside the predicates' valid domain (where
+            // even the exact Dekker-product expansion underflows and loses its
+            // sign authority).
+            let mut points = [
+                [s * 4.0, s * 5.0, s * 7.0],
+                [s * 2.0, s * 5.0, s * 7.0],
+                [s * 3.0, s * 6.0, s * 7.0],
+                [s * 3.0, s * 5.0, s * 8.0],
+                [s * 3.0, s * 4.0, s * 7.0],
+            ];
+            let pt = (rng.next_f64() * 5.0) as usize % 5;
+            let co = (rng.next_f64() * 3.0) as usize % 3;
+            let steps = (rng.next_f64() * 3.0) as i32 + 1;
+            let up = rng.next_f64() < 0.5;
+            let target = &mut points[pt][co];
+            for _ in 0..steps {
+                *target = if up {
+                    target.next_up()
+                } else {
+                    target.next_down()
+                };
+            }
+            let adaptive = insphere(points);
+            let exact = from_isign(insphere_exact(points));
+            let oracle = from_isign(insphere_oracle(points));
+            assert_eq!(adaptive, exact, "adaptive != exact at {i}: {points:?}");
+            assert_eq!(exact, oracle, "exact != oracle at {i}: {points:?}");
+        }
+    }
+
+    /// Directly exercises the adaptive entry point and asserts it returns exactly
+    /// the same sign as the exact expansion for every case that reaches it
+    /// (including cases the stage-A filter could already certify -- the adaptive
+    /// stage B must agree there too). `reached` guards against the batch silently
+    /// degenerating into a no-op.
+    #[test]
+    fn orient2d_adapt_direct_matches_exact() {
+        let mut rng = Lcg(0x1357_9bdf_2468_ace0);
+        let mut reached = 0u64;
+        for _ in 0..100_000u64 {
+            let exp = (rng.next_f64() * 100.0) as i32 - 50;
+            let s = 2f64.powi(exp);
+            let k = ((rng.next_f64() * 8.0) as i64 + 1) as f64;
+            let mut pa = [s, s];
+            let mut pb = [s * 2.0, s * 2.0];
+            let mut pc = [s * k, s * k];
+            let which = (rng.next_f64() * 6.0) as usize % 6;
+            let up = rng.next_f64() < 0.5;
+            let target: &mut f64 = match which {
+                0 => &mut pa[0],
+                1 => &mut pa[1],
+                2 => &mut pb[0],
+                3 => &mut pb[1],
+                4 => &mut pc[0],
+                _ => &mut pc[1],
+            };
+            *target = if up {
+                target.next_up()
+            } else {
+                target.next_down()
+            };
+            // Recompute detsum exactly as the orient2d driver does; skip cases
+            // where the driver returns before detsum is defined.
+            let detleft = (pa[0] - pc[0]) * (pb[1] - pc[1]);
+            let detright = (pa[1] - pc[1]) * (pb[0] - pc[0]);
+            let detsum = if detleft > 0.0 {
+                if detright <= 0.0 {
+                    continue;
+                }
+                detleft + detright
+            } else if detleft < 0.0 {
+                if detright >= 0.0 {
+                    continue;
+                }
+                -detleft - detright
+            } else {
+                continue;
+            };
+            reached += 1;
+            let adapt_sign = super::adapt::orient2d_adapt(pa, pb, pc, detsum);
+            let exact_sign = orient2d_exact(pa, pb, pc);
+            assert_eq!(
+                adapt_sign, exact_sign,
+                "adapt != exact: {pa:?} {pb:?} {pc:?}"
+            );
+        }
+        assert!(reached > 0, "adaptive path was never exercised");
     }
 }

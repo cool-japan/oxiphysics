@@ -13,16 +13,34 @@ mod tests {
     use crate::computational_geometry::SlabPointLocator;
     use crate::computational_geometry::VisibilityGraph;
     use crate::computational_geometry::*;
-    use std::ops::{Add, Sub};
     #[test]
     fn test_point2_add_sub() {
         let a = Point2::new(1.0, 2.0);
         let b = Point2::new(3.0, 4.0);
-        let s = a.add(b);
+        let s = a + b;
         assert!((s.x - 4.0).abs() < 1e-12);
         assert!((s.y - 6.0).abs() < 1e-12);
-        let d = b.sub(a);
+        let d = b - a;
         assert!((d.x - 2.0).abs() < 1e-12);
+    }
+    /// Verifies the `std::ops` operator impls (`Add`, `Sub`, `Mul<f64>`)
+    /// give the same results as the former `add`/`sub`/`scale` methods.
+    #[test]
+    fn test_point2_operators() {
+        let a = Point2::new(1.0, 2.0);
+        let b = Point2::new(3.0, 4.0);
+        // `Add`: former `a.add(b)`.
+        let sum = a + b;
+        assert!((sum.x - 4.0).abs() < 1e-12);
+        assert!((sum.y - 6.0).abs() < 1e-12);
+        // `Sub`: former `b.sub(a)`.
+        let diff = b - a;
+        assert!((diff.x - 2.0).abs() < 1e-12);
+        assert!((diff.y - 2.0).abs() < 1e-12);
+        // `Mul<f64>`: former `a.scale(t)`.
+        let scaled = a * 2.5;
+        assert!((scaled.x - 2.5).abs() < 1e-12);
+        assert!((scaled.y - 5.0).abs() < 1e-12);
     }
     #[test]
     fn test_point2_cross() {

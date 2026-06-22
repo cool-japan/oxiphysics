@@ -5,7 +5,6 @@
 use super::types::{
     ArtGalleryResult, ConvexFace3D, ConvexHull3D, DelaunayTri, Line2D, Point2, VoronoiCell2D,
 };
-use std::ops::{Add, Sub};
 
 /// A point in 3D space represented as a plain array.
 pub type Point3 = [f64; 3];
@@ -243,15 +242,15 @@ pub fn clip_polygon_by_edge(polygon: &[Point2], edge_a: Point2, edge_b: Point2) 
 }
 /// Compute the intersection of segment (p, q) with the line through (a, b).
 pub(super) fn edge_intersect(p: Point2, q: Point2, a: Point2, b: Point2) -> Point2 {
-    let pq = q.sub(p);
-    let ab = b.sub(a);
-    let ap = a.sub(p);
+    let pq = q - p;
+    let ab = b - a;
+    let ap = a - p;
     let denom = pq.cross(ab);
     if denom.abs() < 1e-15 {
         return p;
     }
     let t = ap.cross(ab) / denom;
-    p.add(pq.scale(t))
+    p + pq * t
 }
 /// Clip a subject polygon against a convex clipping polygon using the
 /// Sutherland-Hodgman algorithm.
@@ -309,10 +308,10 @@ pub fn minkowski_sum(p: &[Point2], q: &[Point2]) -> Vec<Point2> {
     let m = q.len();
     let p_rot: Vec<Point2> = (0..n).map(|i| p[(start_p + i) % n]).collect();
     let q_rot: Vec<Point2> = (0..m).map(|i| q[(start_q + i) % m]).collect();
-    let edges_p: Vec<Point2> = (0..n).map(|i| p_rot[(i + 1) % n].sub(p_rot[i])).collect();
-    let edges_q: Vec<Point2> = (0..m).map(|i| q_rot[(i + 1) % m].sub(q_rot[i])).collect();
+    let edges_p: Vec<Point2> = (0..n).map(|i| p_rot[(i + 1) % n] - p_rot[i]).collect();
+    let edges_q: Vec<Point2> = (0..m).map(|i| q_rot[(i + 1) % m] - q_rot[i]).collect();
     let mut result = Vec::with_capacity(n + m);
-    let mut cur = p_rot[0].add(q_rot[0]);
+    let mut cur = p_rot[0] + q_rot[0];
     result.push(cur);
     let mut i = 0;
     let mut j = 0;
@@ -337,10 +336,10 @@ pub fn minkowski_sum(p: &[Point2], q: &[Point2]) -> Vec<Point2> {
         } else {
             i += 1;
             j += 1;
-            ep.add(eq)
+            ep + eq
         };
         if i <= n || j <= m {
-            cur = cur.add(next_edge);
+            cur = cur + next_edge;
             result.push(cur);
         }
     }
