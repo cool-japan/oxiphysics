@@ -41,7 +41,7 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 cudarc = { version = "0.19", default-features = false, features = ["driver", "nvrtc", "dynamic-loading", "cuda-12080"] }
 
 ndarray = { version = "0.17.2", default-features = false, features = ["std"] }
-scirs2-integrate = { version = "0.5.0" }
+scirs2-integrate = { version = "0.5.1" }
 
 # Workspace-internal dependencies
 oxiphysics-articulated = { path = "crates/oxiphysics-articulated", version = "0.1.3" }
