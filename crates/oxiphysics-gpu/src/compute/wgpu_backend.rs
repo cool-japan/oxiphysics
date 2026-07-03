@@ -603,6 +603,7 @@ pub mod real {
                     power_preference: wgpu::PowerPreference::HighPerformance,
                     compatible_surface: None,
                     force_fallback_adapter: false,
+                    apply_limit_buckets: false,
                 })
                 .await
                 .map_err(|_| WgpuInitError::NoAdapter)?;
@@ -744,7 +745,9 @@ pub mod real {
                 return Vec::new();
             }
 
-            let mapped = slice.get_mapped_range();
+            let Ok(mapped) = slice.get_mapped_range() else {
+                return Vec::new();
+            };
             let f32_data: &[f32] = bytemuck::cast_slice(&mapped);
             let result: Vec<f64> = f32_data.iter().map(|&v| v as f64).collect();
             drop(mapped);
@@ -813,7 +816,9 @@ pub mod real {
                 return Vec::new();
             }
 
-            let mapped = slice.get_mapped_range();
+            let Ok(mapped) = slice.get_mapped_range() else {
+                return Vec::new();
+            };
             let result: Vec<f32> = bytemuck::cast_slice::<u8, f32>(&mapped).to_vec();
             drop(mapped);
             staging.unmap();
@@ -865,7 +870,9 @@ pub mod real {
                 return Vec::new();
             }
 
-            let mapped = slice.get_mapped_range();
+            let Ok(mapped) = slice.get_mapped_range() else {
+                return Vec::new();
+            };
             let result: Vec<u32> = bytemuck::cast_slice::<u8, u32>(&mapped).to_vec();
             drop(mapped);
             staging.unmap();
