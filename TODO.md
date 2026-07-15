@@ -2,7 +2,7 @@
 
 **Current Version:** 0.1.3 (branch 0.1.3) | **Last Updated:** 2026-06-11
 **Status:** v0.1.x roadmap complete (Phases 1–22, 75/75 items) + #[allow] purge campaign COMPLETE — forward roadmap below targets v0.2.0 → v1.0
-**Scale:** ~1.46M Rust SLoC across 19 crates (tokei 2026-06-11) | 60,115 tests passing (11 skipped) | 0 `#[allow]` attributes | clippy -D warnings green
+**Scale:** ~1.46M Rust SLoC across 19 crates (tokei 2026-06-11) | 60,115 test functions counted, 11 skipped (static count, not re-verified this pass — see CHANGELOG for the last actual `cargo nextest run` result) | 0 `#[allow]` attributes | clippy -D warnings green
 
 ## Contents
 
@@ -334,7 +334,7 @@ Verification snapshot backing the header metrics (gathered 2026-06-11 on branch 
 | Metric | Value | Source |
 |--------|-------|--------|
 | Rust SLoC (19 crates under `crates/`) | 1,455,171 (~1.46M) across 2,860 files | tokei |
-| Workspace tests | 60,115 passed, 11 skipped | cargo nextest (per README Highlights) |
+| Workspace tests | 60,115 test functions counted, 11 skipped (static count; not re-run for this snapshot) | grep / `cargo nextest list` (per README Highlights) |
 | `#[allow(` outer attributes | 0 | grep census over `crates/*/src` |
 | `#![allow(` inner attributes | 0 | grep census over `crates/*/src` |
 | Clippy | `--workspace --all-features --all-targets -- -D warnings` green | P2–P4b campaign close |
@@ -575,7 +575,7 @@ The v0.2.0 themes below are the agreed one-line summaries from the 2026-06-11 de
 
 Housekeeping (cross-file gaps spotted during the 2026-06-11 audit):
 
-- [ ] README status table is missing the oxiphysics-articulated row (tracked in crates/oxiphysics-articulated/TODO.md)
+- [x] README status table is missing the oxiphysics-articulated row (tracked in crates/oxiphysics-articulated/TODO.md) — fixed 2026-07-15: row added (Partial, 94 tests).
 - [ ] Umbrella crate has 3 orphan source files (builder.rs, prelude.rs, diagnostics.rs) never declared as modules (tracked in crates/oxiphysics/TODO.md)
 
 ---

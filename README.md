@@ -5,14 +5,17 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.1.3-green.svg)](CHANGELOG.md)
 
-OxiPhysics is a unified, pure-Rust physics engine targeting the same problem
-domains as **Bullet** (rigid body), **OpenFOAM** (CFD), **LAMMPS** (molecular
-dynamics), and **CalculiX** (FEM) — with no C or Fortran dependencies,
-`unsafe` confined to the collision-dispatch and GPU-backend layers (each carrying a documented soundness contract), and strict Rustdoc enforcement.
+OxiPhysics is an ambitious, in-progress pure-Rust physics engine targeting the
+same problem domains as **Bullet** (rigid body), **OpenFOAM** (CFD), **LAMMPS**
+(molecular dynamics), and **CalculiX** (FEM) — a from-scratch implementation
+aiming at that scope, **not** a validated drop-in replacement for any of them
+today. It has no C or Fortran dependencies, `unsafe` confined to the
+collision-dispatch and GPU-backend layers (each carrying a documented
+soundness contract), and strict Rustdoc enforcement.
 
 ---
 
-## Implementation Status — v0.1.3 (2026-06-06)
+## Implementation Status (latest release: v0.1.2 — 2026-06-06; v0.1.3 in active development, unreleased)
 
 | Crate | Status | Tests | Domain summary |
 |---|---|---|---|
@@ -29,6 +32,7 @@ dynamics), and **CalculiX** (FEM) — with no C or Fortran dependencies,
 | `oxiphysics-rigid` | **Stable** | 3,820 | Rigid body dynamics, aerospace, spacecraft, marine, swarm |
 | `oxiphysics-softbody` | **Stable** | 3,473 | PBD, XPBD, cloth, hair, ropes, Cosserat rods, surgical sim |
 | `oxiphysics-constraints` | **Stable** | 2,188 | PGS/TGS solvers, joints, motors, islands, trajectory opt |
+| `oxiphysics-articulated` | **Partial** | 94 | Featherstone RNEA/ABA/CRBA/OSC, spatial algebra, analytical derivatives, damped-least-squares IK; URDF import, actuator/transmission models, and loop closure still planned |
 | `oxiphysics-vehicle` | **Stable** | 2,687 | Vehicle dynamics, Pacejka tires, EV, autonomous driving |
 | `oxiphysics-viz` | **Stable** | 4,114 | CPU software renderer, scientific plotting, volume rendering, VR |
 | `oxiphysics-python` | **Stable** | — | PyO3 0.28 bindings — 210 `#[pyclass]` across 14 domain modules |
@@ -37,12 +41,14 @@ dynamics), and **CalculiX** (FEM) — with no C or Fortran dependencies,
 
 *`oxiphysics-python` is validated via its pytest suite (PyO3 extension-module; not counted in the cargo nextest total).*
 
+*A 2026 honesty audit (`[0.1.3]` development cycle — see [CHANGELOG](CHANGELOG.md)) found and fixed dozens of silent fabrications in several of the crates above: code that compiled and returned plausible-but-fake results with no error or stub marker, e.g. an eigensolver reporting `converged: true` on fake eigenvalues, a GPU constraint-solver path returning its unmodified input as "solved", and an all-zero boundary-element matrix. Each was replaced with a real implementation plus a regression test (full list in the changelog), but **Stable** in this table means "implemented and covered by passing tests," not independently validated for production use.*
+
 ---
 
 ## Highlights
 
-- **Zero stubs** — no `todo!()` or `unimplemented!()` calls anywhere in the workspace.
-- **60,115 tests** (11 skipped) across the workspace, all passing under `cargo nextest`.
+- **Zero stubs** — no `todo!()` or `unimplemented!()` calls anywhere in the workspace (see the honesty-audit note under Implementation Status above for what this does and doesn't guarantee).
+- **60,115 tests** (11 skipped) — a static count of test functions across the workspace (`cargo nextest list`), not re-verified as part of writing this document; see [CHANGELOG](CHANGELOG.md) for the most recent actual `cargo nextest run` pass/fail result.
 - **Strict docs** — `RUSTDOCFLAGS='-D warnings' cargo doc` passes with no missing-docs warnings.
 - **Pure Rust** — zero C/Fortran build-time dependencies; default features are 100% Rust.
 - **`cargo publish --dry-run` passes** for the top-level `oxiphysics` crate.
@@ -97,20 +103,21 @@ What is already implemented in each domain:
 
 ## Installation
 
-Add to your `Cargo.toml`:
+Add to your `Cargo.toml` (0.1.2 is the latest published release; 0.1.3 is under
+active development and not yet on crates.io — see Implementation Status above):
 
 ```toml
 [dependencies]
-oxiphysics = "0.1.3"
+oxiphysics = "0.1.2"
 ```
 
 Or use individual sub-crates for smaller build graphs, e.g.:
 
 ```toml
 [dependencies]
-oxiphysics-core = "0.1.3"
-oxiphysics-collision = "0.1.3"
-oxiphysics-rigid = "0.1.3"
+oxiphysics-core = "0.1.2"
+oxiphysics-collision = "0.1.2"
+oxiphysics-rigid = "0.1.2"
 ```
 
 ---
