@@ -33,7 +33,7 @@ wgpu = "30"
 naga = "30"
 bitvec = "1"
 oxiarc-zstd = "0.3.6"
-oxifft = "0.3.2"
+oxifft = "0.4.0"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 console_error_panic_hook = "0.1.7"
