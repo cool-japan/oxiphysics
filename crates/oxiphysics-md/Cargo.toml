@@ -7,7 +7,7 @@ repository.workspace = true
 documentation.workspace = true
 description = "Molecular dynamics simulation for the OxiPhysics engine"
 readme = "README.md"
-categories = ["science", "simulation"]
+categories = ["science::computational-chemistry::molecular-simulation", "simulation"]
 keywords = ["molecular-dynamics", "physics", "atomistic", "force-field", "simulation"]
 
 [dependencies]

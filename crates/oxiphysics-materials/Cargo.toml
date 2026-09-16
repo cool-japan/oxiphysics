@@ -7,7 +7,7 @@ repository.workspace = true
 documentation.workspace = true
 description = "Material properties and material library for the OxiPhysics engine"
 readme = "README.md"
-categories = ["science", "simulation"]
+categories = ["science::materials", "simulation"]
 keywords = ["materials", "physics", "constitutive", "plasticity", "simulation"]
 
 [dependencies]
